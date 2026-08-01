@@ -1,0 +1,7 @@
+Bundled JVM extractor dependencies
+
+| Maven artifact | Version | License and restrictions | Included text | Upstream |
+| --- | --- | --- | --- | --- |
+| net.sf.sevenzipjbinding:sevenzipjbinding:16.02-2.01 | 16.02-2.01 | GNU Lesser General Public License 2.1 or later; bundled 7-Zip code includes the unRAR restriction | licenses/LGPL-2.1.txt; licenses/7-Zip-license.txt | https://sevenzipjbind.sourceforge.net/ |
+| net.sf.sevenzipjbinding:sevenzipjbinding-all-platforms:16.02-2.01 | 16.02-2.01 | GNU Lesser General Public License 2.1 or later; bundled 7-Zip code includes the unRAR restriction | licenses/LGPL-2.1.txt; licenses/7-Zip-license.txt | https://sevenzipjbind.sourceforge.net/ |
+| net.lingala.zip4j:zip4j:2.11.5 | 2.11.5 | Apache License 2.0 | licenses/Apache-2.0.txt | https://github.com/srikanth-lingala/zip4j |

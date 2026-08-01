@@ -1,0 +1,132 @@
+import { describe, expect, it } from "vitest";
+import { extractHttpLinksFromText, parsePackagesFromLinksText, isHttpLink, sanitizeFilename, formatEta, filenameFromUrl, looksLikeOpaqueFilename } from "../src/main/utils";
+
+describe("utils", () => {
+  it("validates http links", () => {
+    expect(isHttpLink("https://example.com/file")).toBe(true);
+    expect(isHttpLink("http://example.com/file")).toBe(true);
+    expect(isHttpLink("ftp://example.com")).toBe(false);
+    expect(isHttpLink("foo bar")).toBe(false);
+  });
+
+  it("extracts links from text and trims trailing punctuation", () => {
+    const links = extractHttpLinksFromText("See (https://example.com/test) and https://rapidgator.net/file/abc123, plus https://example.com/a.b.");
+    expect(links).toEqual([
+      "https://example.com/test",
+      "https://rapidgator.net/file/abc123",
+      "https://example.com/a.b"
+    ]);
+  });
+
+  it("sanitizes filenames", () => {
+    expect(sanitizeFilename("foo/bar:baz*")).toBe("foo bar baz");
+    expect(sanitizeFilename("   ")).toBe("Paket");
+    expect(sanitizeFilename("test\0file.txt")).toBe("testfile.txt");
+    expect(sanitizeFilename("\0\0\0")).toBe("Paket");
+    expect(sanitizeFilename("..")).toBe("Paket");
+    expect(sanitizeFilename(".")).toBe("Paket");
+    expect(sanitizeFilename("release... ")).toBe("release");
+    expect(sanitizeFilename(" con ")).toBe("con_");
+  });
+
+  it("parses package markers", () => {
+    const parsed = parsePackagesFromLinksText(
+      "# package: A\nhttps://a.com/1\nhttps://a.com/2\n# package: B\nhttps://b.com/1\n",
+      "Default"
+    );
+    expect(parsed).toHaveLength(2);
+    expect(parsed[0].name).toBe("A");
+    expect(parsed[0].links).toHaveLength(2);
+    expect(parsed[1].name).toBe("B");
+  });
+
+  it("parses optional file markers for roundtrip imports", () => {
+    const parsed = parsePackagesFromLinksText(
+      "# rd-link-export: 1\n# package: Dave Staffel 1\n# file: Folge 001.rar\nhttps://a.com/1\n# file: Folge 002.rar\nhttps://a.com/2\n",
+      "Default"
+    );
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].name).toBe("Dave Staffel 1");
+    expect(parsed[0].links).toEqual(["https://a.com/1", "https://a.com/2"]);
+    expect(parsed[0].fileNames).toEqual(["Folge 001.rar", "Folge 002.rar"]);
+  });
+
+  it("does not carry a file marker across package boundaries", () => {
+    const parsed = parsePackagesFromLinksText(
+      "# package: Dave Staffel 1\n# file: Folge 001.rar\n# package: Dave Staffel 2\nhttps://a.com/2\n",
+      "Default"
+    );
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].name).toBe("Dave Staffel 2");
+    expect(parsed[0].links).toEqual(["https://a.com/2"]);
+    expect(parsed[0].fileNames).toBeUndefined();
+  });
+
+  it("formats eta", () => {
+    expect(formatEta(-1)).toBe("--");
+    expect(formatEta(65)).toBe("01:05");
+    expect(formatEta(3661)).toBe("01:01:01");
+  });
+
+  it("normalizes filenames from links", () => {
+    expect(filenameFromUrl("https://rapidgator.net/file/id/show.part1.rar.html")).toBe("show.part1.rar");
+    expect(filenameFromUrl("https://debrid.example/dl/abc?filename=Movie.S01E01.mkv")).toBe("Movie.S01E01.mkv");
+    expect(filenameFromUrl("https://debrid.example/dl/%E0%A4%A")).toBe("%E0%A4%A");
+    expect(filenameFromUrl("https://debrid.example/dl/e51f6809bb6ca615601f5ac5db433737")).toBe("e51f6809bb6ca615601f5ac5db433737");
+    expect(filenameFromUrl("data:text/plain;base64,SGVsbG8=")).toBe("download.bin");
+    expect(filenameFromUrl("blob:https://example.com/12345678-1234-1234-1234-1234567890ab")).toBe("download.bin");
+    expect(looksLikeOpaqueFilename("download.bin")).toBe(true);
+    expect(looksLikeOpaqueFilename("e51f6809bb6ca615601f5ac5db433737")).toBe(true);
+    expect(looksLikeOpaqueFilename("movie.part1.rar")).toBe(false);
+  });
+
+  it("preserves unicode filenames", () => {
+    expect(sanitizeFilename("日本語ファイル.txt")).toBe("日本語ファイル.txt");
+    expect(sanitizeFilename("Ünïcödé Tëst.mkv")).toBe("Ünïcödé Tëst.mkv");
+    expect(sanitizeFilename("파일이름.rar")).toBe("파일이름.rar");
+    expect(sanitizeFilename("файл.zip")).toBe("файл.zip");
+  });
+
+  it("handles very long filenames", () => {
+    const longName = "a".repeat(300);
+    const result = sanitizeFilename(longName);
+    expect(typeof result).toBe("string");
+    expect(result.length).toBeGreaterThan(0);
+    expect(result).toBe(longName);
+  });
+
+  it("formats eta with very large values without crashing", () => {
+    const result = formatEta(999999);
+    expect(typeof result).toBe("string");
+    expect(result.length).toBeGreaterThan(0);
+    expect(result).toBe("277:46:39");
+  });
+
+  it("formats eta with edge cases", () => {
+    expect(formatEta(0)).toBe("00:00");
+    expect(formatEta(NaN)).toBe("--");
+    expect(formatEta(Infinity)).toBe("--");
+    expect(formatEta(Number.MAX_SAFE_INTEGER)).toMatch(/^\d+:\d{2}:\d{2}$/);
+  });
+
+  it("extracts filenames from URLs with encoded characters", () => {
+    expect(filenameFromUrl("https://example.com/file%20with%20spaces.rar")).toBe("file with spaces.rar");
+    expect(filenameFromUrl("https://example.com/t%C3%A9st%20file.zip")).toBe("t\u00e9st file.zip");
+    expect(filenameFromUrl("https://example.com/dl?filename=Movie%20Name%20S01E01.mkv")).toBe("Movie Name S01E01.mkv");
+    const result = filenameFromUrl("https://example.com/%ZZ%invalid");
+    expect(typeof result).toBe("string");
+    expect(result.length).toBeGreaterThan(0);
+  });
+
+  it("handles looksLikeOpaqueFilename edge cases", () => {
+    expect(looksLikeOpaqueFilename("")).toBe(false);
+    expect(looksLikeOpaqueFilename("a")).toBe(false);
+    expect(looksLikeOpaqueFilename("ab")).toBe(false);
+    expect(looksLikeOpaqueFilename("abc")).toBe(false);
+    expect(looksLikeOpaqueFilename("download.bin")).toBe(true);
+    expect(looksLikeOpaqueFilename("abcdef123456789012345678")).toBe(true);
+    expect(looksLikeOpaqueFilename("abcdef1234567890abcdef12")).toBe(true);
+    expect(looksLikeOpaqueFilename("abcdef12345")).toBe(false);
+    expect(looksLikeOpaqueFilename("Show.S01E01.720p.mkv")).toBe(false);
+  });
+});

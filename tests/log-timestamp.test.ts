@@ -1,0 +1,23 @@
+import { describe, expect, it } from "vitest";
+import { logTimestamp } from "../src/main/log-timestamp";
+
+describe("logTimestamp", () => {
+  it("formats local time with an explicit UTC offset (ISO 8601), not a UTC 'Z' string", () => {
+    const instant = new Date("2026-05-31T17:29:43.605Z");
+    const formatted = logTimestamp(instant);
+
+    expect(formatted).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}$/);
+    expect(formatted.endsWith("Z")).toBe(false);
+  });
+
+  it("is parseable back to the exact same instant (offset keeps it unambiguous)", () => {
+    const instant = new Date("2026-05-31T17:29:43.605Z");
+    expect(new Date(logTimestamp(instant)).getTime()).toBe(instant.getTime());
+  });
+
+  it("shows the LOCAL wall-clock hour (machine-timezone-independent assertion)", () => {
+    const instant = new Date("2026-05-31T17:29:43.605Z");
+    const formatted = logTimestamp(instant);
+    expect(formatted.slice(11, 13)).toBe(String(instant.getHours()).padStart(2, "0"));
+  });
+});

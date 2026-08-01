@@ -1,0 +1,284 @@
+import fs from "node:fs";
+import { logTimestamp } from "./log-timestamp";
+import { recordRecentError } from "./error-ring";
+import path from "node:path";
+
+export function isDebugFlagEnabled(value: string | undefined): boolean {
+  if (!value) {
+    return false;
+  }
+  return /^(1|true|yes|on)$/i.test(value.trim());
+}
+
+// Read once at startup. Enabling verbose DEBUG logging on the (unattended) server
+// is a deliberate support action that requires a restart — the runtime-toggleable
+// channel is the trace log, not this.
+const DEBUG_ENABLED = isDebugFlagEnabled(process.env.RD_DEBUG);
+
+export function isDebugLoggingEnabled(): boolean {
+  return DEBUG_ENABLED;
+}
+
+let logFilePath = path.resolve(process.cwd(), "rd_downloader.log");
+let fallbackLogFilePath: string | null = null;
+const LOG_FLUSH_INTERVAL_MS = 120;
+const LOG_BUFFER_LIMIT_CHARS = 1_000_000;
+const LOG_MAX_FILE_BYTES = 10 * 1024 * 1024;
+const rotateCheckAtByFile = new Map<string, number>();
+
+type LogListener = (line: string) => void;
+const logListeners = new Set<LogListener>();
+let legacyLogListener: LogListener | null = null;
+
+let pendingLines: string[] = [];
+let pendingChars = 0;
+let flushTimer: NodeJS.Timeout | null = null;
+let flushInFlight = false;
+let exitHookAttached = false;
+
+export function setLogListener(listener: LogListener | null): void {
+  if (legacyLogListener) {
+    logListeners.delete(legacyLogListener);
+  }
+  legacyLogListener = listener;
+  if (listener) {
+    logListeners.add(listener);
+  }
+}
+
+export function addLogListener(listener: LogListener): void {
+  logListeners.add(listener);
+}
+
+export function removeLogListener(listener: LogListener): void {
+  logListeners.delete(listener);
+  if (legacyLogListener === listener) {
+    legacyLogListener = null;
+  }
+}
+
+export function configureLogger(baseDir: string): void {
+  logFilePath = path.join(baseDir, "rd_downloader.log");
+  const cwdLogPath = path.resolve(process.cwd(), "rd_downloader.log");
+  fallbackLogFilePath = cwdLogPath === logFilePath ? null : cwdLogPath;
+}
+
+function appendLine(filePath: string, line: string): { ok: boolean; errorText: string } {
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.appendFileSync(filePath, line, "utf8");
+    return { ok: true, errorText: "" };
+  } catch (error) {
+    return { ok: false, errorText: String(error) };
+  }
+}
+
+async function appendChunk(filePath: string, chunk: string): Promise<{ ok: boolean; errorText: string }> {
+  try {
+    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.promises.appendFile(filePath, chunk, "utf8");
+    return { ok: true, errorText: "" };
+  } catch (error) {
+    return { ok: false, errorText: String(error) };
+  }
+}
+
+function writeStderr(text: string): void {
+  try {
+    process.stderr.write(text);
+  } catch {
+  }
+}
+
+function flushSyncPending(): void {
+  if (pendingLines.length === 0) {
+    return;
+  }
+
+  const chunk = pendingLines.join("");
+  pendingLines = [];
+  pendingChars = 0;
+
+  rotateIfNeeded(logFilePath);
+  const primary = appendLine(logFilePath, chunk);
+  if (fallbackLogFilePath) {
+    rotateIfNeeded(fallbackLogFilePath);
+    const fallback = appendLine(fallbackLogFilePath, chunk);
+    if (!primary.ok && !fallback.ok) {
+      writeStderr(`LOGGER write failed (primary+fallback): ${primary.errorText} | ${fallback.errorText}\n`);
+    }
+    return;
+  }
+
+  if (!primary.ok) {
+    writeStderr(`LOGGER write failed: ${primary.errorText}\n`);
+  }
+}
+
+function scheduleFlush(immediate = false): void {
+  if (flushInFlight) {
+    return;
+  }
+  if (immediate) {
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    void flushAsync();
+    return;
+  }
+  if (flushTimer) {
+    return;
+  }
+  flushTimer = setTimeout(() => {
+    flushTimer = null;
+    void flushAsync();
+  }, LOG_FLUSH_INTERVAL_MS);
+}
+
+function rotateIfNeeded(filePath: string): void {
+  try {
+    const now = Date.now();
+    const lastRotateCheckAt = rotateCheckAtByFile.get(filePath) || 0;
+    if (now - lastRotateCheckAt < 60_000) {
+      return;
+    }
+    rotateCheckAtByFile.set(filePath, now);
+    const stat = fs.statSync(filePath);
+    if (stat.size < LOG_MAX_FILE_BYTES) {
+      return;
+    }
+    const backup = `${filePath}.old`;
+    try {
+      fs.rmSync(backup, { force: true });
+    } catch {
+    }
+    fs.renameSync(filePath, backup);
+  } catch {
+  }
+}
+
+async function rotateIfNeededAsync(filePath: string): Promise<void> {
+  try {
+    const now = Date.now();
+    const lastRotateCheckAt = rotateCheckAtByFile.get(filePath) || 0;
+    if (now - lastRotateCheckAt < 60_000) {
+      return;
+    }
+    rotateCheckAtByFile.set(filePath, now);
+    const stat = await fs.promises.stat(filePath);
+    if (stat.size < LOG_MAX_FILE_BYTES) {
+      return;
+    }
+    const backup = `${filePath}.old`;
+    await fs.promises.rm(backup, { force: true }).catch(() => {});
+    await fs.promises.rename(filePath, backup);
+  } catch {
+  }
+}
+
+async function flushAsync(): Promise<void> {
+  if (flushInFlight || pendingLines.length === 0) {
+    return;
+  }
+
+  flushInFlight = true;
+  // Move (not copy) the pending lines out and take ownership. A concurrent write()
+  // during the await below pushes new lines AND can trim the 1MB cap from the FRONT
+  // of pendingLines; the old count-based removal (pendingLines.slice(snapshot.length))
+  // then sliced off the wrong lines and dropped unwritten ones. Resetting the buffer
+  // here means await-time writes queue independently and nothing desyncs.
+  const linesSnapshot = pendingLines;
+  pendingLines = [];
+  pendingChars = 0;
+  const chunk = linesSnapshot.join("");
+
+  try {
+    await rotateIfNeededAsync(logFilePath);
+    const primary = await appendChunk(logFilePath, chunk);
+    let wroteAny = primary.ok;
+    if (fallbackLogFilePath) {
+      await rotateIfNeededAsync(fallbackLogFilePath);
+      const fallback = await appendChunk(fallbackLogFilePath, chunk);
+      wroteAny = wroteAny || fallback.ok;
+      if (!primary.ok && !fallback.ok) {
+        writeStderr(`LOGGER write failed (primary+fallback): ${primary.errorText} | ${fallback.errorText}\n`);
+      }
+    } else if (!primary.ok) {
+      writeStderr(`LOGGER write failed: ${primary.errorText}\n`);
+    }
+    if (!wroteAny) {
+      // Write failed: requeue the unwritten lines AHEAD of anything that arrived
+      // during the await (preserve order), then re-apply the buffer cap so a
+      // persistent write failure cannot grow the buffer without bound.
+      pendingLines = linesSnapshot.concat(pendingLines);
+      pendingChars += chunk.length;
+      while (pendingChars > LOG_BUFFER_LIMIT_CHARS && pendingLines.length > 1) {
+        const removed = pendingLines.shift();
+        if (!removed) {
+          break;
+        }
+        pendingChars = Math.max(0, pendingChars - removed.length);
+      }
+    }
+  } finally {
+    flushInFlight = false;
+    if (pendingLines.length > 0) {
+      scheduleFlush();
+    }
+  }
+}
+
+function ensureExitHook(): void {
+  if (exitHookAttached) {
+    return;
+  }
+  exitHookAttached = true;
+  process.once("beforeExit", flushSyncPending);
+  process.once("exit", flushSyncPending);
+}
+
+function write(level: "DEBUG" | "INFO" | "WARN" | "ERROR", message: string): void {
+  ensureExitHook();
+  const ts = logTimestamp();
+  const line = `${ts} [${level}] ${message}\n`;
+  pendingLines.push(line);
+  pendingChars += line.length;
+
+  // Single chokepoint: every WARN/ERROR also lands in the in-memory ring so
+  // "what failed recently" is answerable even after the file rotates.
+  if (level === "ERROR" || level === "WARN") {
+    recordRecentError(level, message, ts);
+  }
+
+  for (const listener of logListeners) {
+    try { listener(line); } catch {  }
+  }
+
+  while (pendingChars > LOG_BUFFER_LIMIT_CHARS && pendingLines.length > 1) {
+    const removed = pendingLines.shift();
+    if (!removed) {
+      break;
+    }
+    pendingChars = Math.max(0, pendingChars - removed.length);
+  }
+
+  if (level === "ERROR") {
+    scheduleFlush(true);
+    return;
+  }
+  scheduleFlush();
+}
+
+export const logger = {
+  // Gated to a no-op when RD_DEBUG is unset so verbose call sites cost nothing
+  // (no formatting, no allocation) in the normal/production path.
+  debug: DEBUG_ENABLED ? (msg: string): void => write("DEBUG", msg) : (_msg: string): void => {},
+  info: (msg: string): void => write("INFO", msg),
+  warn: (msg: string): void => write("WARN", msg),
+  error: (msg: string): void => write("ERROR", msg)
+};
+
+export function getLogFilePath(): string {
+  return logFilePath;
+}

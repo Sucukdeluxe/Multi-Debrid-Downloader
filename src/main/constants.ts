@@ -1,0 +1,141 @@
+import path from "node:path";
+import os from "node:os";
+import { AppSettings } from "../shared/types";
+import { getProviderUsageDayKey } from "../shared/provider-daily-limits";
+import packageJson from "../../package.json";
+
+export const APP_NAME = "Multi Debrid Downloader";
+export const APP_VERSION: string = packageJson.version;
+export const API_BASE_URL = "https://api.real-debrid.com/rest/1.0";
+
+export const DCRYPT_UPLOAD_URL = "https://dcrypt.it/decrypt/upload";
+export const DCRYPT_PASTE_URL = "https://dcrypt.it/decrypt/paste";
+export const DLC_SERVICE_URL = "https://service.jdownloader.org/dlcrypt/service.php?srcType=dlc&destType=pylo&data={KEY}";
+export const DLC_AES_KEY = Buffer.from("cb99b5cbc24db398", "utf8");
+export const DLC_AES_IV = Buffer.from("9bc24cb995cb8db3", "utf8");
+
+export const REQUEST_RETRIES = 3;
+export const CHUNK_SIZE = 512 * 1024;
+
+export const WRITE_BUFFER_SIZE = 512 * 1024;
+export const WRITE_FLUSH_TIMEOUT_MS = 2000;
+export const ALLOCATION_UNIT_SIZE = 4096;
+export const STREAM_HIGH_WATER_MARK = 512 * 1024;
+export const DISK_BUSY_THRESHOLD_MS = 300;
+export const DISK_BUSY_STATUS_THRESHOLD_MS = 500;
+
+export const SAMPLE_DIR_NAMES = new Set(["sample", "samples"]);
+export const SAMPLE_VIDEO_EXTENSIONS = new Set([".mkv", ".mp4", ".avi", ".mov", ".wmv", ".m4v", ".ts", ".m2ts", ".webm"]);
+export const LINK_ARTIFACT_EXTENSIONS = new Set([".url", ".webloc", ".dlc", ".rsdf", ".ccf"]);
+export const SAMPLE_TOKEN_RE = /(^|[._\-\s])sample([._\-\s]|$)/i;
+
+export const ARCHIVE_TEMP_EXTENSIONS = new Set([".rar", ".zip", ".7z", ".tmp", ".part", ".tar", ".gz", ".bz2", ".xz", ".rev"]);
+export const RAR_SPLIT_RE = /\.r\d{2,3}$/i;
+
+export const MAX_MANIFEST_FILE_BYTES = 5 * 1024 * 1024;
+export const MAX_LINK_ARTIFACT_BYTES = 256 * 1024;
+export const SPEED_WINDOW_SECONDS = 1;
+export const CLIPBOARD_POLL_INTERVAL_MS = 2000;
+
+export const DEFAULT_UPDATE_REPO = "Sucukdeluxe/multi-debrid-downloader";
+
+export function defaultSettings(): AppSettings {
+  const baseDir = path.join(os.homedir(), "Downloads", "RealDebrid");
+  return {
+    token: "",
+    realDebridUseWebLogin: false,
+    megaLogin: "",
+    megaPassword: "",
+    megaCredentials: "",
+    megaDebridApiEnabled: false,
+    megaDebridWebEnabled: false,
+    megaDebridPreferApi: true,
+    bestToken: "",
+    bestDebridUseWebLogin: false,
+    allDebridToken: "",
+    allDebridUseWebLogin: false,
+    ddownloadLogin: "",
+    ddownloadPassword: "",
+    oneFichierApiKey: "",
+    debridLinkApiKeys: "",
+    debridLinkDisabledKeyIds: [],
+    linkSnappyLogin: "",
+    linkSnappyPassword: "",
+    archivePasswordList: "",
+    rememberToken: true,
+    providerOrder: ["realdebrid", "megadebrid-api", "bestdebrid"],
+    providerPrimary: "realdebrid",
+    providerSecondary: "megadebrid-api",
+    providerTertiary: "bestdebrid",
+    autoProviderFallback: true,
+    outputDir: baseDir,
+    packageName: "",
+    autoExtract: true,
+    autoRename4sf4sj: false,
+    keepGermanAudioOnly: false,
+    germanAudioMode: "tag",
+    extractDir: path.join(baseDir, "_entpackt"),
+    collectMkvToLibrary: false,
+    mkvLibraryDir: path.join(baseDir, "_mkv"),
+    createExtractSubfolder: true,
+    hybridExtract: true,
+    cleanupMode: "none",
+    extractConflictMode: "overwrite",
+    removeLinkFilesAfterExtract: false,
+    removeSamplesAfterExtract: false,
+    enableIntegrityCheck: true,
+    autoResumeOnStart: true,
+    autoReconnect: false,
+    reconnectWaitSeconds: 45,
+    completedCleanupPolicy: "never",
+    maxParallel: 4,
+    maxParallelExtract: 2,
+    retryLimit: 0,
+    speedLimitEnabled: false,
+    speedLimitKbps: 0,
+    speedLimitMode: "global",
+    updateRepo: DEFAULT_UPDATE_REPO,
+    autoUpdateCheck: true,
+    clipboardWatch: false,
+    minimizeToTray: false,
+    theme: "dark" as const,
+    collapseNewPackages: true,
+    historyRetentionMode: "permanent",
+    historyMaxEntries: 500,
+    historyMaxAgeDays: 0,
+    accountListShowDetailedDebridLinkKeys: false,
+    autoSortPackagesByProgress: true,
+    autoSkipExtracted: false,
+    hideExtractedItems: true,
+    confirmDeleteSelection: true,
+    backupIncludeDownloads: false,
+    backupIncludeRemoteDiagnostics: false,
+    notifyUrl: "",
+    notifyMention: "",
+    notifyOnPackageCompleted: false,
+    notifyOnPackageFailed: false,
+    notifyOnRunFinished: false,
+    totalDownloadedAllTime: 0,
+    totalCompletedFilesAllTime: 0,
+    totalRuntimeAllTimeMs: 0,
+    bandwidthSchedules: [],
+    columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"],
+    extractCpuPriority: "high",
+    autoExtractWhenStopped: true,
+    disabledProviders: [],
+    hosterRouting: {},
+    providerDailyLimitBytes: {},
+    providerDailyUsageBytes: {},
+    providerTotalUsageBytes: {},
+    debridLinkApiKeyDailyLimitBytes: {},
+    debridLinkApiKeyDailyUsageBytes: {},
+    debridLinkApiKeyTotalUsageBytes: {},
+    megaDebridDisabledAccountIds: [],
+    megaDebridAccountDailyLimitBytes: {},
+    megaDebridAccountDailyUsageBytes: {},
+    megaDebridAccountTotalUsageBytes: {},
+    debridAccountStatuses: {},
+    providerDailyUsageDay: getProviderUsageDayKey(),
+    scheduledStartEpochMs: 0
+  };
+}
