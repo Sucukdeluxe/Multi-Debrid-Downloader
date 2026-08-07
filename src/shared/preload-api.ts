@@ -59,6 +59,8 @@ export interface ElectronApi {
   quit: () => Promise<void>;
   exportBackup: () => Promise<{ saved: boolean }>;
   importBackup: () => Promise<{ restored: boolean; relaunch: boolean; message: string }>;
+  exportOnlineBackup: () => Promise<{ key: string }>;
+  importOnlineBackup: (key: string) => Promise<{ restored: boolean; relaunch: false; message: string }>;
   exportSupportBundle: () => Promise<{ saved: boolean; filePath?: string }>;
   openLog: () => Promise<void>;
   openAuditLog: () => Promise<void>;

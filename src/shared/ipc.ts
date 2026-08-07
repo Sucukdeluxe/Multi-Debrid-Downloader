@@ -38,6 +38,8 @@ export const IPC_CHANNELS = {
   QUIT: "app:quit",
   EXPORT_BACKUP: "app:export-backup",
   IMPORT_BACKUP: "app:import-backup",
+  EXPORT_ONLINE_BACKUP: "app:export-online-backup",
+  IMPORT_ONLINE_BACKUP: "app:import-online-backup",
   EXPORT_SUPPORT_BUNDLE: "app:export-support-bundle",
   OPEN_LOG: "app:open-log",
   OPEN_AUDIT_LOG: "app:open-audit-log",

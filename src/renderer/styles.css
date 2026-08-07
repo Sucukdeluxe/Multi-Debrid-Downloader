@@ -3118,6 +3118,38 @@ td {
   flex-wrap: wrap;
 }
 
+.online-backup-modal {
+  width: min(620px, 100%);
+}
+
+.online-backup-key {
+  width: 100%;
+  min-height: 86px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 10px 12px;
+  font: 13px/1.55 "Cascadia Mono", "Consolas", monospace;
+  overflow-wrap: anywhere;
+}
+
+.online-backup-key:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  border-color: var(--accent);
+}
+
+.online-backup-status {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.online-backup-error {
+  color: var(--danger);
+  font-size: 13px;
+}
+
 @media (max-width: 1100px) {
   .control-strip {
     flex-direction: column;

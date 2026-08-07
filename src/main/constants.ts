@@ -38,6 +38,7 @@ export const SPEED_WINDOW_SECONDS = 1;
 export const CLIPBOARD_POLL_INTERVAL_MS = 2000;
 
 export const DEFAULT_UPDATE_REPO = "Sucukdeluxe/multi-debrid-downloader";
+export const ONLINE_BACKUP_API_URL = "https://backup.24-music.de";
 
 export function defaultSettings(): AppSettings {
   const baseDir = path.join(os.homedir(), "Downloads", "RealDebrid");

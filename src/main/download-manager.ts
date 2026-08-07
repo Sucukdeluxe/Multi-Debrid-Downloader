@@ -2156,7 +2156,7 @@ export class DownloadManager extends EventEmitter {
     this.emitState();
   }
 
-  public setSettings(next: AppSettings, opts?: { suppressRetroactiveCleanup?: boolean }): void {
+  public setSettings(next: AppSettings, opts?: { suppressRetroactiveCleanup?: boolean; settingsOnlyImport?: boolean }): void {
     const previous = this.settings;
     next.totalDownloadedAllTime = Math.max(next.totalDownloadedAllTime || 0, this.settings.totalDownloadedAllTime || 0);
     next.totalCompletedFilesAllTime = Math.max(next.totalCompletedFilesAllTime || 0, this.settings.totalCompletedFilesAllTime || 0);
@@ -2174,7 +2174,7 @@ export class DownloadManager extends EventEmitter {
     const nextOrder = JSON.stringify(next.providerOrder ?? []);
     const prevRouting = JSON.stringify(previous.hosterRouting ?? {});
     const nextRouting = JSON.stringify(next.hosterRouting ?? {});
-    if (prevOrder !== nextOrder || prevRouting !== nextRouting) {
+    if (!opts?.settingsOnlyImport && (prevOrder !== nextOrder || prevRouting !== nextRouting)) {
       const activeItemIds = new Set([...this.activeTasks.values()].map((t) => t.itemId));
       for (const item of Object.values(this.session.items)) {
         if (!activeItemIds.has(item.id) && item.status !== "completed" && item.status !== "failed") {
@@ -2185,7 +2185,7 @@ export class DownloadManager extends EventEmitter {
 
     const previousArchivePasswords = String(previous.archivePasswordList || "").replace(/\r\n|\r/g, "\n");
     const nextArchivePasswords = String(next.archivePasswordList || "").replace(/\r\n|\r/g, "\n");
-    if (previousArchivePasswords !== nextArchivePasswords) {
+    if (!opts?.settingsOnlyImport && previousArchivePasswords !== nextArchivePasswords) {
       this.hybridExtractedPaths.clear();
       this.hybridFailedArchives.clear();
       const pwCount = nextArchivePasswords.split("\n").filter(Boolean).length;
@@ -2218,10 +2218,12 @@ export class DownloadManager extends EventEmitter {
       logger.info(`Settings-Update: ${clearedProviderFailures} Provider-Failure(s) gecleart wegen geaenderter Credentials`);
     }
 
-    this.resolveExistingQueuedOpaqueFilenames();
-    void this.cleanupExistingExtractedArchives().catch((err) => logger.warn(`cleanupExistingExtractedArchives Fehler (setSettings): ${compactErrorText(err)}`));
-    if (!opts?.suppressRetroactiveCleanup && next.completedCleanupPolicy !== "never") {
-      this.applyRetroactiveCleanupPolicy();
+    if (!opts?.settingsOnlyImport) {
+      this.resolveExistingQueuedOpaqueFilenames();
+      void this.cleanupExistingExtractedArchives().catch((err) => logger.warn(`cleanupExistingExtractedArchives Fehler (setSettings): ${compactErrorText(err)}`));
+      if (!opts?.suppressRetroactiveCleanup && next.completedCleanupPolicy !== "never") {
+        this.applyRetroactiveCleanupPolicy();
+      }
     }
     this.emitState();
   }

@@ -166,6 +166,31 @@ afterEach(async () => {
 });
 
 describe("download manager", () => {
+  it("applies an imported settings snapshot without touching queued items or filesystem workflows", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-settings-import-"));
+    tempDirs.push(root);
+    const settings = { ...defaultSettings(), outputDir: path.join(root, "downloads") };
+    const manager = new DownloadManager(settings, emptySession(), createStoragePaths(path.join(root, "state")));
+    manager.addPackages([{ name: "queue", links: ["https://example.com/file.bin"] }]);
+    const item = Object.values((manager as any).session.items)[0] as { provider: string | null };
+    item.provider = "realdebrid";
+    const resolveSpy = vi.spyOn(manager as any, "resolveExistingQueuedOpaqueFilenames");
+    const cleanupSpy = vi.spyOn(manager as any, "cleanupExistingExtractedArchives");
+    const retroactiveCleanupSpy = vi.spyOn(manager as any, "applyRetroactiveCleanupPolicy");
+
+    manager.setSettings({
+      ...settings,
+      providerOrder: ["bestdebrid", "realdebrid"],
+      hosterRouting: { "example.com": "bestdebrid" },
+      completedCleanupPolicy: "immediate"
+    }, { settingsOnlyImport: true });
+
+    expect(item.provider).toBe("realdebrid");
+    expect(resolveSpy).not.toHaveBeenCalled();
+    expect(cleanupSpy).not.toHaveBeenCalled();
+    expect(retroactiveCleanupSpy).not.toHaveBeenCalled();
+  });
+
   it("clears the BestDebrid circuit breaker when its token changes", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-best-token-"));
     tempDirs.push(root);

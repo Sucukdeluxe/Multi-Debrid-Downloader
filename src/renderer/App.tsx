@@ -63,6 +63,13 @@ interface ConfirmPromptState {
   detailsLabel?: string;
 }
 
+interface OnlineBackupDialogState {
+  mode: "export" | "import";
+  key: string;
+  busy: boolean;
+  error: string;
+}
+
 interface ContextMenuState {
   x: number;
   y: number;
@@ -1762,6 +1769,7 @@ export function App(): ReactElement {
   const [startConflictPrompt, setStartConflictPrompt] = useState<StartConflictPromptState | null>(null);
   const startConflictResolverRef = useRef<((result: { policy: Extract<DuplicatePolicy, "skip" | "overwrite">; applyToAll: boolean } | null) => void) | null>(null);
   const [confirmPrompt, setConfirmPrompt] = useState<ConfirmPromptState | null>(null);
+  const [onlineBackupDialog, setOnlineBackupDialog] = useState<OnlineBackupDialogState | null>(null);
   const [remoteDiag, setRemoteDiag] = useState<RemoteDiagnosticsInfo | null>(null);
   const [remoteDiagOpen, setRemoteDiagOpen] = useState(false);
   const [remoteDiagBusy, setRemoteDiagBusy] = useState(false);
@@ -4248,6 +4256,48 @@ export function App(): ReactElement {
     });
   };
 
+  const onCreateOnlineBackup = async (): Promise<void> => {
+    closeMenus();
+    setOnlineBackupDialog({ mode: "export", key: "", busy: true, error: "" });
+    try {
+      const result = await window.rd.exportOnlineBackup();
+      setOnlineBackupDialog({ mode: "export", key: result.key, busy: false, error: "" });
+      showToast("Online-Schlüssel erstellt", 2600);
+    } catch {
+      setOnlineBackupDialog({ mode: "export", key: "", busy: false, error: "Online-Sicherung konnte nicht erstellt werden." });
+    }
+  };
+
+  const onOpenOnlineBackupImport = (): void => {
+    closeMenus();
+    setOnlineBackupDialog({ mode: "import", key: "", busy: false, error: "" });
+  };
+
+  const onImportOnlineBackup = async (): Promise<void> => {
+    const key = onlineBackupDialog?.mode === "import" ? onlineBackupDialog.key.trim() : "";
+    if (!key) return;
+    setOnlineBackupDialog((current) => current ? { ...current, busy: true, error: "" } : current);
+    try {
+      const result = await window.rd.importOnlineBackup(key);
+      const fresh = await window.rd.getSnapshot();
+      applyPersistedSettings(fresh.settings);
+      setOnlineBackupDialog(null);
+      showToast(result.message, 4000);
+    } catch {
+      setOnlineBackupDialog((current) => current ? { ...current, busy: false, error: "Online-Sicherung konnte nicht geladen werden. Schlüssel prüfen und erneut versuchen." } : current);
+    }
+  };
+
+  const onCopyOnlineBackupKey = async (): Promise<void> => {
+    if (!onlineBackupDialog?.key) return;
+    try {
+      await navigator.clipboard.writeText(onlineBackupDialog.key);
+      showToast("Online-Schlüssel kopiert", 2200);
+    } catch {
+      showToast("Schlüssel konnte nicht kopiert werden", 2600);
+    }
+  };
+
   const onExportSupportBundle = async (): Promise<void> => {
     closeMenus();
     await performQuickAction(async () => {
@@ -4651,6 +4701,9 @@ export function App(): ReactElement {
                   <div className="menu-submenu-dropdown">
                     <button className="menu-dropdown-item" onClick={() => { void onExportBackup(); }}>Exportieren</button>
                     <button className="menu-dropdown-item" onClick={() => { void onImportBackup(); }}>Importieren</button>
+                    <div className="menu-separator" />
+                    <button className="menu-dropdown-item" onClick={() => { void onCreateOnlineBackup(); }}>Online-Schlüssel erstellen</button>
+                    <button className="menu-dropdown-item" onClick={onOpenOnlineBackupImport}>Online-Schlüssel importieren</button>
                   </div>
                 )}
               </div>
@@ -6024,6 +6077,42 @@ export function App(): ReactElement {
               >
                 {confirmPrompt.confirmLabel}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {onlineBackupDialog && (
+        <div className="modal-backdrop" onClick={() => { if (!onlineBackupDialog.busy) setOnlineBackupDialog(null); }}>
+          <div className="modal-card online-backup-modal" onClick={(event) => event.stopPropagation()}>
+            <h3>{onlineBackupDialog.mode === "export" ? "Online-Schlüssel" : "Online-Schlüssel importieren"}</h3>
+            <p>
+              {onlineBackupDialog.mode === "export"
+                ? "Dieser Schlüssel stellt deine Einstellungen inklusive gespeicherter Zugangsdaten wieder her. Bewahre ihn wie ein Passwort auf."
+                : "Füge den vollständigen MDD2-Schlüssel ein. Die aktuellen Einstellungen werden durch die gespeicherte Version ersetzt."}
+            </p>
+            {onlineBackupDialog.mode === "export" && onlineBackupDialog.busy && <div className="online-backup-status">Online-Sicherung wird verschlüsselt und gespeichert …</div>}
+            {onlineBackupDialog.mode === "export" && onlineBackupDialog.key && (
+              <textarea className="online-backup-key" value={onlineBackupDialog.key} readOnly spellCheck={false} aria-label="Online-Sicherungsschlüssel" />
+            )}
+            {onlineBackupDialog.mode === "import" && (
+              <textarea
+                className="online-backup-key"
+                value={onlineBackupDialog.key}
+                onChange={(event) => setOnlineBackupDialog((current) => current ? { ...current, key: event.target.value, error: "" } : current)}
+                placeholder="MDD2-…"
+                spellCheck={false}
+                autoComplete="off"
+                disabled={onlineBackupDialog.busy}
+                autoFocus
+                aria-label="Online-Sicherungsschlüssel eingeben"
+              />
+            )}
+            {onlineBackupDialog.error && <div className="online-backup-error">{onlineBackupDialog.error}</div>}
+            <div className="modal-actions">
+              <button className="btn" onClick={() => setOnlineBackupDialog(null)} disabled={onlineBackupDialog.busy}>Schließen</button>
+              {onlineBackupDialog.mode === "export" && onlineBackupDialog.key && <button className="btn primary" onClick={() => { void onCopyOnlineBackupKey(); }}>Kopieren</button>}
+              {onlineBackupDialog.mode === "import" && <button className="btn primary" onClick={() => { void onImportOnlineBackup(); }} disabled={onlineBackupDialog.busy || !onlineBackupDialog.key.trim()}>{onlineBackupDialog.busy ? "Wird geladen …" : "Importieren"}</button>}
             </div>
           </div>
         </div>

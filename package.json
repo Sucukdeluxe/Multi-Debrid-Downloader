@@ -14,7 +14,10 @@
     "build:main": "tsup src/main/main.ts src/preload/preload.ts --out-dir build/main --format cjs --target node20 --external electron --sourcemap",
     "build:renderer": "vite build",
     "start": "cross-env NODE_ENV=production electron .",
-    "test": "vitest run",
+    "test": "npm run test:client && npm run test:backup-api",
+    "test:client": "vitest run",
+    "test:backup-api": "npm --prefix services/backup-api test",
+    "start:backup-api": "npm --prefix services/backup-api start",
     "self-check": "tsx tests/self-check.ts",
     "release:win": "npm run build && electron-builder --publish never --win nsis portable",
     "verify:release": "node scripts/verify_public_release.mjs"

@@ -583,6 +583,16 @@ function registerIpcHandlers(): void {
     return { saved: true };
   });
 
+  ipcMain.handle(IPC_CHANNELS.EXPORT_ONLINE_BACKUP, async () => controller.exportOnlineBackup());
+
+  ipcMain.handle(IPC_CHANNELS.IMPORT_ONLINE_BACKUP, async (_event: IpcMainInvokeEvent, rawKey: unknown) => {
+    const key = validateString(rawKey, "key").trim();
+    if (key.length > 128) {
+      throw new Error("Online-Sicherungsschlüssel ist ungültig");
+    }
+    return controller.importOnlineBackup(key);
+  });
+
   ipcMain.handle(IPC_CHANNELS.EXPORT_SUPPORT_BUNDLE, async () => {
     const options = {
       defaultPath: controller.getSupportBundleDefaultFileName(),

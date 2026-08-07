@@ -25,7 +25,7 @@ import {
 } from "../shared/types";
 import { resetDebridLinkApiKeyDailyUsage, resetProviderDailyUsage } from "../shared/provider-daily-limits";
 import { importDlcContainers } from "./container";
-import { APP_VERSION } from "./constants";
+import { APP_VERSION, ONLINE_BACKUP_API_URL } from "./constants";
 import { DownloadManager } from "./download-manager";
 import { fetchAllDebridHostInfo, fetchDebridLinkHostLimits } from "./debrid";
 import { checkAllDebridAccounts, checkMegaDebridAccount } from "./account-check";
@@ -58,6 +58,7 @@ import { buildAccountSummary, diffAccountSummary } from "./support-data";
 import { buildSupportBundle, getSupportBundleDefaultFileName } from "./support-bundle";
 import { getTraceConfig, getTraceLogPath, initTraceLog, logTraceEvent, setTraceEnabled, shutdownTraceLog } from "./trace-log";
 import type { DebugSetupCheckResult, SupportTraceConfig } from "../shared/types";
+import { createOnlineBackup, downloadOnlineBackup, uploadOnlineBackup } from "./online-backup";
 
 function sanitizeSettingsPatch(partial: Partial<AppSettings>): Partial<AppSettings> {
   const entries = Object.entries(partial || {}).filter(([, value]) => value !== undefined);
@@ -432,6 +433,17 @@ export class AppController {
     target.debridAccountStatuses = { ...(liveSettings.debridAccountStatuses || {}) };
   }
 
+  private applySettingsOnlyBackup(importedSettings: AppSettings, remoteDiagnostics?: unknown, restoreRemoteDiagnostics = false): void {
+    const restoredSettings = normalizeSettings(importedSettings);
+    this.overlayLiveUsageCounters(restoredSettings);
+    this.settings = restoredSettings;
+    saveSettings(this.storagePaths, this.settings);
+    this.manager.setSettings(this.settings, { settingsOnlyImport: true });
+    if (restoreRemoteDiagnostics) {
+      this.restoreRemoteDiagnosticsFromBackup(remoteDiagnostics, true);
+    }
+  }
+
   public updateSettings(partial: Partial<AppSettings>): AppSettings {
     const sanitizedPatch = sanitizeSettingsPatch(partial);
     const previousSettings = this.settings;
@@ -774,6 +786,23 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     return encryptBackup(JSON.stringify(payloadObj));
   }
 
+  public async exportOnlineBackup(): Promise<{ key: string }> {
+    const created = createOnlineBackup({ ...this.settings }, APP_VERSION);
+    await uploadOnlineBackup(created.record, ONLINE_BACKUP_API_URL);
+    this.audit("INFO", "Online-Sicherung erstellt", { kind: "settings-only" });
+    return { key: created.key };
+  }
+
+  public async importOnlineBackup(key: string): Promise<{ restored: boolean; relaunch: false; message: string }> {
+    const payload = await downloadOnlineBackup(key, ONLINE_BACKUP_API_URL);
+    this.applySettingsOnlyBackup(payload.settings);
+    this.audit("INFO", "Online-Sicherung importiert", {
+      kind: "settings-only",
+      accountSummary: buildAccountSummary(this.settings)
+    });
+    return { restored: true, relaunch: false, message: "Einstellungen aus Online-Sicherung wiederhergestellt" };
+  }
+
   public async exportSupportBundle(): Promise<{ buffer: Buffer; defaultFileName: string }> {
     this.audit("INFO", "Support-Bundle exportiert");
     logTraceEvent("INFO", "support", "Support-Bundle erstellt", {
@@ -833,11 +862,7 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     // policy still governs FUTURE completions through the normal path. Do NOT stop the
     // manager, wipe the session, block persistence or relaunch.
     if (!hasSession) {
-      this.overlayLiveUsageCounters(restoredSettings);
-      this.settings = restoredSettings;
-      saveSettings(this.storagePaths, this.settings);
-      this.manager.setSettings(this.settings, { suppressRetroactiveCleanup: true });
-      this.restoreRemoteDiagnosticsFromBackup(parsed.remoteDiagnostics, true);
+      this.applySettingsOnlyBackup(restoredSettings, parsed.remoteDiagnostics, true);
       this.audit("INFO", "Backup importiert (nur Einstellungen)", {
         accountSummary: buildAccountSummary(this.settings)
       });
