@@ -10,6 +10,11 @@ Desktop downloader for Windows with package-based queue management, multi-provid
 
 ## Changelog
 
+### 2.0.11
+
+- Keep Account Overview and Usage Rules inside the same fixed layout frame.
+- Prevent sizing and scroll-mode changes when switching between the account tabs.
+
 ### 2.0.10
 
 - Add locally bundled provider logos throughout account management.

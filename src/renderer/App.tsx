@@ -5692,7 +5692,7 @@ export function App(): ReactElement {
                   </div>
                 )}
                 {settingsSubTab === "accounts" && (
-                  <div className={`account-settings-layout ${accountManagementTab}`}>
+                  <div className="account-settings-layout">
                     <div className="account-management-heading">
                       <div>
                         <h3>Accountverwaltung</h3>
@@ -5735,7 +5735,8 @@ export function App(): ReactElement {
                       </div>
                     </div>
 
-                    <div className="settings-section card account-rule-section" hidden={accountManagementTab !== "rules"}>
+                    <div className="account-rules-panel" hidden={accountManagementTab !== "rules"}>
+                    <div className="settings-section card account-rule-section">
                       <div className="account-board-header">
                         <div>
                           <h3>Rotations-Verlauf</h3>
@@ -5760,7 +5761,7 @@ export function App(): ReactElement {
                       </div>
                     </div>
 
-                    <div className="settings-section card account-rule-section" hidden={accountManagementTab !== "rules"}>
+                    <div className="settings-section card account-rule-section">
                       <h3>Hoster-Reihenfolge</h3>
                       <div className="hint">
                         Lege fest, in welcher Reihenfolge die Debrid-Accounts für Links genutzt werden.
@@ -5817,7 +5818,7 @@ export function App(): ReactElement {
                     </div>
 
                     {configuredProviders.length >= 1 && (
-                    <div className="settings-section card account-rule-section" hidden={accountManagementTab !== "rules"}>
+                    <div className="settings-section card account-rule-section">
                       <h3>Hoster-Zuordnung</h3>
                       <div className="hint">Lege fest, welcher Debrid-Provider sich um welchen Filehoster kümmert. Nicht zugeordnete Hoster nutzen die Standard-Reihenfolge oben.</div>
                       {(() => {
@@ -5905,6 +5906,7 @@ export function App(): ReactElement {
                       })()}
                     </div>
                     )}
+                    </div>
 
                     <div hidden>
                   <div className="settings-section card">
