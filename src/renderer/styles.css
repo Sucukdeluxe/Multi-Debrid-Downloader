@@ -3370,7 +3370,7 @@ td {
 .acct2-head,
 .acct2-row {
   display: grid;
-  grid-template-columns: 32px minmax(0, 1.4fr) minmax(0, 1.4fr) minmax(0, 1.3fr) minmax(0, 1.7fr) minmax(0, 1fr) 196px;
+  grid-template-columns: 32px minmax(0, 1.35fr) minmax(0, 1.25fr) minmax(0, 1.3fr) minmax(0, 1.45fr) minmax(0, 1fr) minmax(0, 0.9fr) 56px;
   align-items: center;
   gap: 10px;
   padding: 7px 12px;
@@ -3412,6 +3412,7 @@ td {
 .acct2-c-check { display: flex; justify-content: center; }
 .acct2-c-check input { cursor: pointer; }
 .acct2-c-actions { display: flex; gap: 6px; justify-content: flex-end; }
+.acct2-menu-button { min-width: 38px; padding-inline: 8px; font-size: 18px; line-height: 1; }
 .acct2-hoster { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .acct2-hoster strong { font-size: 13px; }
 .acct2-mode { font-size: 11px; color: var(--muted); }
@@ -3422,8 +3423,14 @@ td {
 .acct2-sortable { cursor: pointer; user-select: none; }
 .acct2-sortable:hover { color: var(--text); }
 .acct2-user { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct2-credential { color: var(--muted); white-space: nowrap; }
 .acct2-status .account-validity-badge { margin-top: 0; }
 .acct2-nostatus { color: var(--muted); opacity: 0.6; font-variant-numeric: tabular-nums; }
+
+.account-context-menu { min-width: 230px; }
+.account-context-heading { display: grid; gap: 3px; padding: 8px 12px; }
+.account-context-heading strong { color: var(--text); font-size: 13px; }
+.account-context-heading span { color: var(--muted); font-size: 11px; }
 
 .rotation-panel { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; }
 .rotation-empty { color: var(--muted, #a59c8e); font-size: 12px; }

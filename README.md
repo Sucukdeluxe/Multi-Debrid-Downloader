@@ -10,6 +10,12 @@ Desktop downloader for Windows with package-based queue management, multi-provid
 
 ## Changelog
 
+### 2.0.8
+
+- Add a compact account-management table with traffic, status, expiry, username, and credential columns.
+- Add account actions through right-click and the row action menu.
+- Support quick edit, status checks, enable/disable, and removal without expanding the full account form.
+
 ### 2.0.7
 
 - Improve account filter readability in dark and light themes.

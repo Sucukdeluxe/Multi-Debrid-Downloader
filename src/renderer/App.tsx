@@ -167,6 +167,31 @@ interface ConfiguredAccountEntry {
   debridLinkKeys: DebridLinkAccountKeyEntry[];
 }
 
+interface AccountTableRow {
+  rowKey: string;
+  entry: ConfiguredAccountEntry;
+  hosterLabel: string;
+  modeLabel: string;
+  username: string;
+  credentialLabel: string;
+  accountId: string | null;
+  checkable: boolean;
+  disabled: boolean;
+  dailyUsedBytes: number;
+  dailyLimitBytes: number;
+  dailyRemainingBytes: number;
+  totalUsedBytes: number;
+  toggleKind: "mega" | "dl" | "single";
+  megaLogin?: string;
+  dlKey?: DebridLinkAccountKeyEntry;
+}
+
+interface AccountContextMenuState {
+  x: number;
+  y: number;
+  row: AccountTableRow;
+}
+
 function buildDebugSetupDetails(setup: DebugSetupCheckResult): string {
   const formatDiskLine = (label: string, value: DebugSetupCheckResult["diskSpace"]["runtime"]): string => {
     if (value.freeBytes === null || value.totalBytes === null) {
@@ -443,6 +468,28 @@ function getAccountPickerFunctionLabel(option: AccountOption): string {
       return "Login + Passwort";
     default:
       return option.modeLabel;
+  }
+}
+
+function getAccountCredentialLabel(kind: AccountKind): string {
+  switch (kind) {
+    case "megadebrid-api":
+    case "megadebrid-web":
+    case "ddownload-login":
+    case "linksnappy-login":
+      return "••••••";
+    case "bestdebrid-web":
+    case "realdebrid-web":
+    case "alldebrid-web":
+      return "Login gespeichert";
+    case "realdebrid-api":
+    case "bestdebrid-api":
+    case "alldebrid-api":
+    case "onefichier-api":
+    case "debridlink-api":
+      return "API-Key gespeichert";
+    default:
+      return "Zugang gespeichert";
   }
 }
 
@@ -1781,6 +1828,8 @@ export function App(): ReactElement {
   const importQueueFocusHandlerRef = useRef<(() => void) | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const ctxMenuRef = useRef<HTMLDivElement>(null);
+  const [accountContextMenu, setAccountContextMenu] = useState<AccountContextMenuState | null>(null);
+  const accountContextMenuRef = useRef<HTMLDivElement>(null);
   const [linkPopup, setLinkPopup] = useState<LinkPopupState | null>(null);
   const [accountDialog, setAccountDialog] = useState<AccountDialogState | null>(null);
   const [accountDialogSearch, setAccountDialogSearch] = useState("");
@@ -2552,24 +2601,7 @@ export function App(): ReactElement {
   const configuredAccountServices = useMemo(() => new Set(configuredAccounts.map((entry) => entry.service)), [configuredAccounts]);
 
   const accountRows = useMemo(() => {
-    type AccountRow = {
-      rowKey: string;
-      entry: ConfiguredAccountEntry;
-      hosterLabel: string;
-      modeLabel: string;
-      username: string;
-      accountId: string | null;
-      checkable: boolean;
-      disabled: boolean;
-      dailyUsedBytes: number;
-      dailyLimitBytes: number;
-      dailyRemainingBytes: number;
-      totalUsedBytes: number;
-      toggleKind: "mega" | "dl" | "single";
-      megaLogin?: string;
-      dlKey?: DebridLinkAccountKeyEntry;
-    };
-    const rows: AccountRow[] = [];
+    const rows: AccountTableRow[] = [];
     for (const entry of configuredAccounts) {
       if (entry.kind === "megadebrid-api" || entry.kind === "megadebrid-web") {
         const accounts = parseMegaDebridAccounts(settingsDraft.megaCredentials || "", settingsDraft.megaPassword || "");
@@ -2582,6 +2614,7 @@ export function App(): ReactElement {
             hosterLabel: entry.serviceLabel,
             modeLabel: entry.modeLabel,
             username: acc.maskedLogin,
+            credentialLabel: "••••••",
             accountId: acc.id,
             checkable: true,
             disabled: (settingsDraft.megaDebridDisabledAccountIds || []).includes(acc.id),
@@ -2601,6 +2634,7 @@ export function App(): ReactElement {
             hosterLabel: entry.serviceLabel,
             modeLabel: entry.modeLabel,
             username: key.masked,
+            credentialLabel: "API-Key",
             accountId: key.id,
             checkable: true,
             disabled: key.disabled,
@@ -2619,6 +2653,7 @@ export function App(): ReactElement {
           hosterLabel: entry.serviceLabel,
           modeLabel: entry.modeLabel,
           username: entry.summary,
+          credentialLabel: getAccountCredentialLabel(entry.kind),
           accountId: null,
           checkable: false,
           disabled: entry.disabled,
@@ -2687,13 +2722,16 @@ export function App(): ReactElement {
     });
   };
 
-  const renderAccountRow = (row: (typeof accountRows)[number], isMember: boolean): ReactElement => {
+  const renderAccountRow = (row: AccountTableRow, isMember: boolean): ReactElement => {
     const st = row.accountId ? (snapshot.settings?.debridAccountStatuses?.[row.accountId] ?? null) : null;
     const checking = row.accountId ? megaCheckingIds.has(row.accountId) : false;
     let statusCls = "none";
     let statusText = "—";
     if (row.disabled) { statusCls = "disabled"; statusText = "Deaktiviert"; }
-    else if (!row.checkable) { statusCls = "none"; statusText = "—"; }
+    else if (!row.checkable) {
+      statusCls = row.entry.statusLabel === "Aktiviert" ? "unknown" : "ok";
+      statusText = row.entry.statusLabel === "Aktiviert" ? "Aktiv" : row.entry.statusLabel;
+    }
     else if (checking) { statusCls = "unknown"; statusText = "Prüfe…"; }
     else if (!st) { statusCls = "unknown"; statusText = "Noch nicht geprüft"; }
     else if (!st.valid) { statusCls = "invalid"; statusText = st.message || "Login ungültig"; }
@@ -2707,7 +2745,16 @@ export function App(): ReactElement {
       ? `${humanSize(row.dailyRemainingBytes)} von ${humanSize(row.dailyLimitBytes)} übrig`
       : "Unbeschränkt";
     return (
-      <div key={row.rowKey} className={`acct2-row${row.disabled ? " acct2-disabled" : ""}${isProblem ? " acct2-problem" : ""}${isMember ? " acct2-member" : ""}`}>
+      <div
+        key={row.rowKey}
+        className={`acct2-row${row.disabled ? " acct2-disabled" : ""}${isProblem ? " acct2-problem" : ""}${isMember ? " acct2-member" : ""}`}
+        onDoubleClick={() => openEditAccountDialog(row.entry.kind)}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setAccountContextMenu({ x: event.clientX, y: event.clientY, row });
+        }}
+      >
         <span className="acct2-c-check">
           <input
             type="checkbox"
@@ -2733,18 +2780,21 @@ export function App(): ReactElement {
         </span>
         <span className="acct2-user" title={usernameTitle}>{username}</span>
         <span className="acct2-expiry">{expiry}</span>
+        <span className="acct2-credential" title="Zugangsdaten werden niemals im Klartext angezeigt">{row.credentialLabel}</span>
         <span className="acct2-c-actions">
-          {row.toggleKind === "single" && getAccountQuickActionMeta(row.entry.kind) && (
-            <button className="btn btn-sm" disabled={actionBusy} onClick={() => { void onAccountRowQuickAction(row.entry); }}>
-              {getAccountQuickActionMeta(row.entry.kind)?.label}
-            </button>
-          )}
-          <button className="btn btn-sm" disabled={actionBusy} title="Account bearbeiten" onClick={() => openEditAccountDialog(row.entry.kind)}>Bearbeiten</button>
-          <button className="btn btn-sm danger" disabled={actionBusy} title="Account entfernen" onClick={() => {
-            if (row.toggleKind === "mega" && row.megaLogin) { void onRemoveMegaAccount(row.megaLogin); }
-            else if (row.toggleKind === "dl" && row.dlKey) { void onRemoveDebridLinkKey(row.dlKey); }
-            else { void onRemoveAccount(row.entry); }
-          }}>Entfernen</button>
+          <button
+            className="btn btn-sm acct2-menu-button"
+            disabled={actionBusy}
+            title="Account-Aktionen"
+            aria-label={`${row.hosterLabel} Account-Aktionen`}
+            onClick={(event) => {
+              event.stopPropagation();
+              const rect = event.currentTarget.getBoundingClientRect();
+              setAccountContextMenu({ x: rect.right, y: rect.bottom, row });
+            }}
+          >
+            ⋯
+          </button>
         </span>
       </div>
     );
@@ -3214,6 +3264,49 @@ export function App(): ReactElement {
     }, (error) => {
       showToast(`${entry.serviceLabel} konnte nicht umgeschaltet werden: ${String(error)}`, 3200);
     });
+  };
+
+  const toggleAccountTableRow = (row: AccountTableRow): void => {
+    setAccountContextMenu(null);
+    if (row.toggleKind === "mega" && row.megaLogin) {
+      void onToggleMegaAccountEnabled(row.megaLogin, row.disabled);
+    } else if (row.toggleKind === "dl" && row.dlKey) {
+      void onToggleDebridLinkApiKeyEnabled(row.entry, row.dlKey);
+    } else {
+      void onToggleAccountEnabled(row.entry);
+    }
+  };
+
+  const removeAccountTableRow = (row: AccountTableRow): void => {
+    setAccountContextMenu(null);
+    if (row.toggleKind === "mega" && row.megaLogin) {
+      void onRemoveMegaAccount(row.megaLogin);
+    } else if (row.toggleKind === "dl" && row.dlKey) {
+      void onRemoveDebridLinkKey(row.dlKey);
+    } else {
+      void onRemoveAccount(row.entry);
+    }
+  };
+
+  const checkAccountTableRow = (row: AccountTableRow): void => {
+    setAccountContextMenu(null);
+    if (row.toggleKind === "mega" && row.megaLogin) {
+      const account = parseMegaDebridAccounts(settingsDraft.megaCredentials || "", settingsDraft.megaPassword || "")
+        .find((entry) => entry.id === row.accountId);
+      if (account) {
+        void runMegaAccountCheck(account.login, account.password);
+      }
+      return;
+    }
+    if (row.toggleKind === "dl") {
+      void checkAllAccounts();
+      return;
+    }
+    if (getAccountQuickActionMeta(row.entry.kind)) {
+      void onAccountRowQuickAction(row.entry);
+      return;
+    }
+    showToast("Für diesen Account ist keine direkte Statusprüfung verfügbar.", 2800);
   };
 
   const onCheckUpdates = async (): Promise<void> => {
@@ -4136,6 +4229,17 @@ export function App(): ReactElement {
     };
   }, [contextMenu]);
 
+  useEffect(() => {
+    if (!accountContextMenu) { return; }
+    const close = (): void => setAccountContextMenu(null);
+    window.addEventListener("click", close);
+    window.addEventListener("contextmenu", close);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("contextmenu", close);
+    };
+  }, [accountContextMenu]);
+
   useLayoutEffect(() => {
     if (!contextMenu || !ctxMenuRef.current) return;
     const el = ctxMenuRef.current;
@@ -4147,6 +4251,18 @@ export function App(): ReactElement {
       el.style.left = `${Math.max(0, contextMenu.x - rect.width)}px`;
     }
   }, [contextMenu]);
+
+  useLayoutEffect(() => {
+    if (!accountContextMenu || !accountContextMenuRef.current) return;
+    const el = accountContextMenuRef.current;
+    const rect = el.getBoundingClientRect();
+    if (rect.bottom > window.innerHeight) {
+      el.style.top = `${Math.max(0, accountContextMenu.y - rect.height)}px`;
+    }
+    if (rect.right > window.innerWidth) {
+      el.style.left = `${Math.max(0, accountContextMenu.x - rect.width)}px`;
+    }
+  }, [accountContextMenu]);
 
   useEffect(() => {
     if (!colHeaderCtx) return;
@@ -5562,8 +5678,8 @@ export function App(): ReactElement {
                     <div className="settings-section card account-board">
                       <div className="account-board-header">
                         <div>
-                          <h3>Accounts</h3>
-                          <div className="hint">Accounts werden als Liste verwaltet. Neue Einträge kommen über den Dialog oben rechts dazu.</div>
+                          <h3>Accountverwaltung</h3>
+                          <div className="hint">Kompakte Übersicht mit Hoster, Traffic, Status, Benutzername, Ablauf und Zugang. Rechtsklick oder Doppelklick öffnet die Aktionen.</div>
                         </div>
                         <div className="account-board-header-actions">
                           <button className="btn" disabled={actionBusy || accountCheckBusy} onClick={() => { void checkAllAccounts(); }} title="Prüft Login-Gültigkeit und Premium-Restlaufzeit aller Mega-Debrid-/Debrid-Link-Accounts">
@@ -5602,6 +5718,7 @@ export function App(): ReactElement {
                             <span className="acct2-sortable" title="Nach Premium-Restlaufzeit sortieren (längste/kürzeste)" onClick={cycleAccountStatusSort}>Status{accountStatusSort === "desc" ? " ▼" : accountStatusSort === "asc" ? " ▲" : ""}</span>
                             <span>Benutzername</span>
                             <span>Verfallsdatum</span>
+                            <span>Zugang</span>
                             <span className="acct2-c-actions">Aktion</span>
                           </div>
                           {groupedAccountRows.flatMap((group) => {
@@ -5625,15 +5742,16 @@ export function App(): ReactElement {
                                   <span className="acct2-mode">{group.rows.length} Accounts</span>
                                 </span>
                                 <span className="acct2-traffic" />
-                                <span className="acct2-status acct2-grp-sum">
-                                  {okCount > 0 && <span className="account-validity-badge ok">{okCount} OK</span>}
-                                  {problemCount > 0 && <span className="account-validity-badge invalid">{problemCount} Problem</span>}
-                                  {offCount > 0 && <span className="account-validity-badge disabled">{offCount} aus</span>}
-                                </span>
-                                <span />
-                                <span />
-                                <span />
-                              </div>
+                            <span className="acct2-status acct2-grp-sum">
+                              {okCount > 0 && <span className="account-validity-badge ok">{okCount} OK</span>}
+                              {problemCount > 0 && <span className="account-validity-badge invalid">{problemCount} Problem</span>}
+                              {offCount > 0 && <span className="account-validity-badge disabled">{offCount} aus</span>}
+                            </span>
+                            <span />
+                            <span />
+                            <span />
+                            <span />
+                          </div>
                             ];
                             if (!collapsed) {
                               for (const row of group.rows) elements.push(renderAccountRow(row, true));
@@ -6702,6 +6820,38 @@ export function App(): ReactElement {
       )}
       {statusToast && <div className="toast">{statusToast}</div>}
       {dragOver && <div className="drop-overlay">Links, .dlc oder Export-Dateien hier ablegen</div>}
+      {accountContextMenu && (
+        <div
+          ref={accountContextMenuRef}
+          className="ctx-menu account-context-menu"
+          style={{ left: accountContextMenu.x, top: accountContextMenu.y }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="account-context-heading">
+            <strong>{accountContextMenu.row.hosterLabel}</strong>
+            <span>{accountContextMenu.row.modeLabel} · {accountContextMenu.row.username}</span>
+          </div>
+          <div className="ctx-menu-sep" />
+          <button className="ctx-menu-item" onClick={() => { const row = accountContextMenu.row; setAccountContextMenu(null); openEditAccountDialog(row.entry.kind); }}>
+            Bearbeiten
+          </button>
+          <button className="ctx-menu-item" onClick={() => checkAccountTableRow(accountContextMenu.row)}>
+            Account prüfen
+          </button>
+          {getAccountQuickActionMeta(accountContextMenu.row.entry.kind) && (
+            <button className="ctx-menu-item" onClick={() => { const row = accountContextMenu.row; setAccountContextMenu(null); void onAccountRowQuickAction(row.entry); }}>
+              {getAccountQuickActionMeta(accountContextMenu.row.entry.kind)?.label}
+            </button>
+          )}
+          <button className="ctx-menu-item" onClick={() => toggleAccountTableRow(accountContextMenu.row)}>
+            {accountContextMenu.row.disabled ? "Account aktivieren" : "Account deaktivieren"}
+          </button>
+          <div className="ctx-menu-sep" />
+          <button className="ctx-menu-item ctx-danger" onClick={() => removeAccountTableRow(accountContextMenu.row)}>
+            Account entfernen
+          </button>
+        </div>
+      )}
       {contextMenu && (() => {
         const multi = selectedIds.size > 1;
         const selectedPackageIds = [...selectedIds].filter((id) => snapshot.session.packages[id]);
