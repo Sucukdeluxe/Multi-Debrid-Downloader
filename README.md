@@ -10,6 +10,13 @@ Desktop downloader for Windows with package-based queue management, multi-provid
 
 ## Changelog
 
+### 2.0.9
+
+- Rebuild the Accounts view as a viewport-filling, JDownloader-style table with flat 24-pixel rows and bottom-aligned actions.
+- Separate account usage rules from the overview so rotation and routing controls no longer reduce the visible account list.
+- Redesign the account dialog with one-line provider rows, an immediate default selection, compact credential fields, and split cancel/save actions.
+- Add a global account enable/disable control while preserving unrelated provider state.
+
 ### 2.0.8
 
 - Add a compact account-management table with traffic, status, expiry, username, and credential columns.
@@ -85,7 +92,6 @@ Desktop downloader for Windows with package-based queue management, multi-provid
 - AllDebrid browser-login flow and in-app Rapidgator host status display.
 - Debrid-Link multi-key management with optional detailed line-by-line key display.
 - Debrid-Link API-key statistics popup with per-key Rapidgator traffic quota, link quota, reset, activate/deactivate, and click-to-copy masked keys.
-- Reset button for stored account column widths in the Accounts table.
 
 ### Download engine
 

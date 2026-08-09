@@ -6,6 +6,7 @@ function megaDialog(kind: "megadebrid-api" | "megadebrid-web"): AccountDialogSta
   return {
     mode: "edit",
     kind,
+    service: kind,
     token: "",
     login: "",
     password: "",

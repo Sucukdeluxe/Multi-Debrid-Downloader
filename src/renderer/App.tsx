@@ -1,4 +1,4 @@
-import { CSSProperties, DragEvent, KeyboardEvent as ReactKeyboardEvent, ReactElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { DragEvent, KeyboardEvent as ReactKeyboardEvent, ReactElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
 import { getMegaDebridAccountId, parseMegaDebridAccounts, serializeMegaDebridAccounts, maskMegaDebridLogin } from "../shared/mega-debrid-accounts";
 import type {
@@ -38,7 +38,7 @@ import {
 } from "../shared/provider-daily-limits";
 import { reorderPackageOrderByDrop, sortPackageOrderByName, sortPackagesForDisplay } from "./package-order";
 import { pruneSelection } from "./selection";
-import { matchesAccountModeFilter } from "./account-ui";
+import { buildBulkAccountEnabledState, buildConfiguredProviderOrder, getAccountDialogSelectableOptions, isAccountRowSelectionKey, matchesAccountModeFilter, pruneAccountRowSelection, resolveVisibleAccountKind } from "./account-ui";
 import type { AccountModeFilter } from "./account-ui";
 import { DOWNLOAD_SPEED_MAX_SAMPLES, updateDownloadSpeedHistory } from "./download-speed-state";
 import type { DownloadSpeedHistoryState } from "./download-speed-state";
@@ -103,8 +103,6 @@ type AccountKind =
   | "linksnappy-login";
 
 type AccountQuickAction = "realdebrid-login" | "bestdebrid-cookies" | "alldebrid-login" | "alldebrid-status";
-type AccountColumnKey = "service" | "mode" | "status" | "secret";
-
 interface AccountOption {
   kind: AccountKind;
   service: AccountService;
@@ -124,6 +122,7 @@ interface MegaDialogAccount {
 export interface AccountDialogState {
   mode: "create" | "edit";
   kind: AccountKind | null;
+  service: AccountService | null;
   token: string;
   login: string;
   password: string;
@@ -370,41 +369,6 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
 
 const ACCOUNT_SERVICES: AccountService[] = ["realdebrid", "megadebrid-api", "megadebrid-web", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink", "linksnappy"];
 const ACCOUNT_LIMIT_BYTES_PER_GIB = 1024 * 1024 * 1024;
-const ACCOUNT_COLUMN_STORAGE_KEY = "rd-account-column-widths-v2";
-const ACCOUNT_COLUMN_DEFAULT_WIDTHS: Record<AccountColumnKey, number> = {
-  service: 240,
-  mode: 96,
-  status: 320,
-  secret: 210
-};
-const ACCOUNT_COLUMN_MIN_WIDTHS: Record<AccountColumnKey, number> = {
-  service: 180,
-  mode: 80,
-  status: 180,
-  secret: 140
-};
-
-function loadAccountColumnWidths(): Record<AccountColumnKey, number> {
-  if (typeof window === "undefined") {
-    return { ...ACCOUNT_COLUMN_DEFAULT_WIDTHS };
-  }
-  try {
-    const raw = window.localStorage.getItem(ACCOUNT_COLUMN_STORAGE_KEY);
-    if (!raw) {
-      return { ...ACCOUNT_COLUMN_DEFAULT_WIDTHS };
-    }
-    const parsed = JSON.parse(raw) as Partial<Record<AccountColumnKey, unknown>>;
-    return {
-      service: Math.max(ACCOUNT_COLUMN_MIN_WIDTHS.service, Number(parsed.service) || ACCOUNT_COLUMN_DEFAULT_WIDTHS.service),
-      mode: Math.max(ACCOUNT_COLUMN_MIN_WIDTHS.mode, Number(parsed.mode) || ACCOUNT_COLUMN_DEFAULT_WIDTHS.mode),
-      status: Math.max(ACCOUNT_COLUMN_MIN_WIDTHS.status, Number(parsed.status) || ACCOUNT_COLUMN_DEFAULT_WIDTHS.status),
-      secret: Math.max(ACCOUNT_COLUMN_MIN_WIDTHS.secret, Number(parsed.secret) || ACCOUNT_COLUMN_DEFAULT_WIDTHS.secret)
-    };
-  } catch {
-    return { ...ACCOUNT_COLUMN_DEFAULT_WIDTHS };
-  }
-}
-
 function findAccountOption(kind: AccountKind): AccountOption {
   const option = ACCOUNT_OPTIONS.find((entry) => entry.kind === kind);
   if (!option) {
@@ -526,19 +490,14 @@ function getConfiguredProvidersFromSettings(settings: AppSettings): DebridProvid
 
 function getActiveProvidersFromSettings(settings: AppSettings): DebridProvider[] {
   const disabled = new Set(settings.disabledProviders || []);
-  return getConfiguredProvidersFromSettings(settings).filter((p) => !disabled.has(p));
+  return getConfiguredProvidersFromSettings(settings).filter((provider) => !disabled.has(provider));
 }
 
 const DIRECT_HOSTERS: ReadonlySet<DebridProvider> = new Set(["onefichier", "ddownload"]);
 
 function normalizeProviderOrderForSettings(settings: AppSettings): DebridProvider[] {
-  const active = new Set(getActiveProvidersFromSettings(settings).filter((p) => !DIRECT_HOSTERS.has(p)));
-  const ordered = (settings.providerOrder || []).filter((p) => active.has(p));
-  const inOrder = new Set(ordered);
-  for (const p of active) {
-    if (!inOrder.has(p)) ordered.push(p);
-  }
-  return ordered;
+  const configured = getConfiguredProvidersFromSettings(settings).filter((provider) => !DIRECT_HOSTERS.has(provider));
+  return buildConfiguredProviderOrder(settings.providerOrder || [], configured);
 }
 
 function normalizeProviderSelectionForSettings(
@@ -649,6 +608,7 @@ function createAccountDialogState(mode: "create" | "edit", kind: AccountKind | n
     return {
       mode,
       kind: null,
+      service: null,
       token: "",
       login: "",
       password: "",
@@ -657,13 +617,14 @@ function createAccountDialogState(mode: "create" | "edit", kind: AccountKind | n
       ...baseMega
     };
   }
-  const provider = getAccountServiceProvider(findAccountOption(kind).service);
+  const service = findAccountOption(kind).service;
+  const provider = getAccountServiceProvider(service);
   const dailyLimitGb = formatAccountDailyLimitInput(getProviderDailyLimitBytes(settings, provider));
   switch (kind) {
     case "realdebrid-api":
-      return { mode, kind, token: settings.token, login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {}, ...baseMega };
+      return { mode, kind, service, token: settings.token, login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {}, ...baseMega };
     case "realdebrid-web":
-      return { mode, kind, token: "", login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {}, ...baseMega };
+      return { mode, kind, service, token: "", login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {}, ...baseMega };
     case "megadebrid-api":
     case "megadebrid-web": {
       let megaToken = (settings.megaCredentials || "").trim();
@@ -674,24 +635,25 @@ function createAccountDialogState(mode: "create" | "edit", kind: AccountKind | n
       const megaAccounts = parsed.map((a) => ({ login: a.login, password: a.password }));
       const loadedIds = new Set(parsed.map((a) => a.id));
       const megaDisabledIds = (settings.megaDebridDisabledAccountIds || []).filter((id) => loadedIds.has(id));
-      return { mode, kind, token: megaToken, login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {}, megaAccounts, megaNewLogin: "", megaNewPassword: "", megaDisabledIds };
+      return { mode, kind, service, token: megaToken, login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {}, megaAccounts, megaNewLogin: "", megaNewPassword: "", megaDisabledIds };
     }
     case "bestdebrid-api":
-      return { mode, kind, token: settings.bestToken, login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {}, ...baseMega };
+      return { mode, kind, service, token: settings.bestToken, login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {}, ...baseMega };
     case "bestdebrid-web":
-      return { mode, kind, token: "", login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {}, ...baseMega };
+      return { mode, kind, service, token: "", login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {}, ...baseMega };
     case "alldebrid-api":
-      return { mode, kind, token: settings.allDebridToken, login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {}, ...baseMega };
+      return { mode, kind, service, token: settings.allDebridToken, login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {}, ...baseMega };
     case "alldebrid-web":
-      return { mode, kind, token: "", login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {}, ...baseMega };
+      return { mode, kind, service, token: "", login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {}, ...baseMega };
     case "ddownload-login":
-      return { mode, kind, token: "", login: settings.ddownloadLogin, password: settings.ddownloadPassword, dailyLimitGb, keyDailyLimitGbById: {}, ...baseMega };
+      return { mode, kind, service, token: "", login: settings.ddownloadLogin, password: settings.ddownloadPassword, dailyLimitGb, keyDailyLimitGbById: {}, ...baseMega };
     case "onefichier-api":
-      return { mode, kind, token: settings.oneFichierApiKey, login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {}, ...baseMega };
+      return { mode, kind, service, token: settings.oneFichierApiKey, login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {}, ...baseMega };
     case "debridlink-api":
       return {
         mode,
         kind,
+        service,
         token: settings.debridLinkApiKeys || "",
         login: "",
         password: "",
@@ -700,9 +662,9 @@ function createAccountDialogState(mode: "create" | "edit", kind: AccountKind | n
         ...baseMega
       };
     case "linksnappy-login":
-      return { mode, kind, token: "", login: settings.linkSnappyLogin || "", password: settings.linkSnappyPassword || "", dailyLimitGb, keyDailyLimitGbById: {}, ...baseMega };
+      return { mode, kind, service, token: "", login: settings.linkSnappyLogin || "", password: settings.linkSnappyPassword || "", dailyLimitGb, keyDailyLimitGbById: {}, ...baseMega };
     default:
-      return { mode, kind, token: "", login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {}, ...baseMega };
+      return { mode, kind, service, token: "", login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {}, ...baseMega };
   }
 }
 
@@ -1757,7 +1719,6 @@ export function App(): ReactElement {
   const [settingsDraft, setSettingsDraft] = useState<AppSettings>(emptySnapshot().settings);
   const [speedLimitInput, setSpeedLimitInput] = useState(() => formatMbpsInputFromKbps(emptySnapshot().settings.speedLimitKbps));
   const [scheduleSpeedInputs, setScheduleSpeedInputs] = useState<Record<string, string>>({});
-  const [accountColumnWidths, setAccountColumnWidths] = useState<Record<AccountColumnKey, number>>(loadAccountColumnWidths);
   const [settingsDirty, setSettingsDirty] = useState(false);
   const [schedulePickerOpen, setSchedulePickerOpen] = useState(false);
   const [scheduleTimeInput, setScheduleTimeInput] = useState("");
@@ -1810,6 +1771,8 @@ export function App(): ReactElement {
   const dragDepthRef = useRef(0);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [settingsSubTab, setSettingsSubTab] = useState<SettingsSubTab>("allgemein");
+  const [accountManagementTab, setAccountManagementTab] = useState<"overview" | "rules">("overview");
+  const [selectedAccountRowKey, setSelectedAccountRowKey] = useState<string | null>(null);
   const [openSubmenu, setOpenSubmenu] = useState<string | null>(null);
   const [startConflictPrompt, setStartConflictPrompt] = useState<StartConflictPromptState | null>(null);
   const startConflictResolverRef = useRef<((result: { policy: Extract<DuplicatePolicy, "skip" | "overwrite">; applyToAll: boolean } | null) => void) | null>(null);
@@ -1856,37 +1819,6 @@ export function App(): ReactElement {
   const [allDebridHostLoading, setAllDebridHostLoading] = useState(false);
   const allDebridHostRequestRef = useRef(0);
   const debridLinkHostLimitsRequestRef = useRef(0);
-  const accountColumnResizeRef = useRef<{ key: AccountColumnKey; startX: number; startWidth: number } | null>(null);
-  const onAccountColumnResizeMove = useCallback((event: MouseEvent): void => {
-    const active = accountColumnResizeRef.current;
-    if (!active) {
-      return;
-    }
-    const nextWidth = Math.max(
-      ACCOUNT_COLUMN_MIN_WIDTHS[active.key],
-      Math.round(active.startWidth + (event.clientX - active.startX))
-    );
-    setAccountColumnWidths((prev) => (
-      prev[active.key] === nextWidth ? prev : { ...prev, [active.key]: nextWidth }
-    ));
-  }, []);
-
-  const stopAccountColumnResize = useCallback((): void => {
-    accountColumnResizeRef.current = null;
-    window.removeEventListener("mousemove", onAccountColumnResizeMove);
-    window.removeEventListener("mouseup", stopAccountColumnResize);
-  }, [onAccountColumnResizeMove]);
-
-  const startAccountColumnResize = useCallback((key: AccountColumnKey, clientX: number): void => {
-    accountColumnResizeRef.current = {
-      key,
-      startX: clientX,
-      startWidth: accountColumnWidths[key]
-    };
-    window.addEventListener("mousemove", onAccountColumnResizeMove);
-    window.addEventListener("mouseup", stopAccountColumnResize);
-  }, [accountColumnWidths, onAccountColumnResizeMove, stopAccountColumnResize]);
-
   useEffect(() => {
     if (tab !== "history") return;
     const loadHistory = async (): Promise<void> => {
@@ -1903,22 +1835,6 @@ export function App(): ReactElement {
   }, [tab]);
 
   useEffect(() => { historyEntriesRef.current = historyEntries; }, [historyEntries]);
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(ACCOUNT_COLUMN_STORAGE_KEY, JSON.stringify(accountColumnWidths));
-    } catch {
-    }
-  }, [accountColumnWidths]);
-
-  const resetAccountColumnWidths = useCallback((): void => {
-    setAccountColumnWidths({ ...ACCOUNT_COLUMN_DEFAULT_WIDTHS });
-    try {
-      window.localStorage.removeItem(ACCOUNT_COLUMN_STORAGE_KEY);
-    } catch {
-    }
-    showToast("Accounts-Spalten zurückgesetzt", 1800);
-  }, []);
 
   const columnOrderKey = useMemo(
     () => (snapshot.settings.columnOrder || []).join("|"),
@@ -2217,12 +2133,11 @@ export function App(): ReactElement {
         const request = confirmQueueRef.current.shift();
         request?.resolve(false);
       }
-      stopAccountColumnResize();
       if (unsubscribe) { unsubscribe(); }
       if (unsubClipboard) { unsubClipboard(); }
       if (unsubUpdateInstallProgress) { unsubUpdateInstallProgress(); }
     };
-  }, [clearImportQueueFocusListener, stopAccountColumnResize]);
+  }, [clearImportQueueFocusListener]);
 
   const downloadsTabActive = tab === "downloads";
   const deferredDownloadSearch = useDeferredValue(downloadSearch);
@@ -2671,58 +2586,29 @@ export function App(): ReactElement {
   const [accountStatusSort, setAccountStatusSort] = useState<"none" | "desc" | "asc">("none");
   const cycleAccountStatusSort = (): void => setAccountStatusSort((s) => (s === "none" ? "desc" : s === "desc" ? "asc" : "none"));
 
-  const groupedAccountRows = useMemo(() => {
-    const groups: { service: string; serviceLabel: string; rows: typeof accountRows }[] = [];
-    const byService = new Map<string, { service: string; serviceLabel: string; rows: typeof accountRows }>();
-    for (const row of accountRows) {
-      const key = row.entry.service;
-      let group = byService.get(key);
-      if (!group) {
-        group = { service: key, serviceLabel: row.hosterLabel, rows: [] };
-        byService.set(key, group);
-        groups.push(group);
-      }
-      group.rows.push(row);
-    }
-    if (accountStatusSort !== "none") {
-      const statuses = snapshot.settings?.debridAccountStatuses || {};
-      const now = Date.now();
-      const remainingMs = (row: (typeof accountRows)[number]): number => {
-        const st = row.accountId ? statuses[row.accountId] : null;
-        return st && st.premiumUntilMs && st.premiumUntilMs > now ? st.premiumUntilMs - now : -1;
-      };
-      for (const group of groups) {
-        group.rows = [...group.rows].sort((a, b) => {
-          const ra = remainingMs(a);
-          const rb = remainingMs(b);
-          if (ra > 0 && rb > 0) return accountStatusSort === "desc" ? rb - ra : ra - rb;
-          if (ra > 0) return -1;
-          if (rb > 0) return 1;
-          return 0;
-        });
-      }
-    }
-    return groups;
+  const sortedAccountRows = useMemo(() => {
+    if (accountStatusSort === "none") return accountRows;
+    const statuses = snapshot.settings?.debridAccountStatuses || {};
+    const now = Date.now();
+    const remainingMs = (row: (typeof accountRows)[number]): number => {
+      const status = row.accountId ? statuses[row.accountId] : null;
+      return status && status.premiumUntilMs && status.premiumUntilMs > now ? status.premiumUntilMs - now : -1;
+    };
+    return [...accountRows].sort((a, b) => {
+      const remainingA = remainingMs(a);
+      const remainingB = remainingMs(b);
+      if (remainingA > 0 && remainingB > 0) return accountStatusSort === "desc" ? remainingB - remainingA : remainingA - remainingB;
+      if (remainingA > 0) return -1;
+      if (remainingB > 0) return 1;
+      return 0;
+    });
   }, [accountRows, accountStatusSort, snapshot.settings]);
 
-  const [collapsedAccountGroups, setCollapsedAccountGroups] = useState<Set<string>>(() => {
-    try {
-      const raw = localStorage.getItem("rd-account-collapsed-groups-v1");
-      if (raw) return new Set(JSON.parse(raw) as string[]);
-    } catch { /* ignore */ }
-    return new Set<string>();
-  });
+  useEffect(() => {
+    setSelectedAccountRowKey((current) => pruneAccountRowSelection(current, accountRows.map((row) => row.rowKey)));
+  }, [accountRows]);
 
-  const toggleAccountGroup = (service: string): void => {
-    setCollapsedAccountGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(service)) next.delete(service); else next.add(service);
-      try { localStorage.setItem("rd-account-collapsed-groups-v1", JSON.stringify([...next])); } catch { /* ignore */ }
-      return next;
-    });
-  };
-
-  const renderAccountRow = (row: AccountTableRow, isMember: boolean): ReactElement => {
+  const renderAccountRow = (row: AccountTableRow): ReactElement => {
     const st = row.accountId ? (snapshot.settings?.debridAccountStatuses?.[row.accountId] ?? null) : null;
     const checking = row.accountId ? megaCheckingIds.has(row.accountId) : false;
     let statusCls = "none";
@@ -2747,7 +2633,17 @@ export function App(): ReactElement {
     return (
       <div
         key={row.rowKey}
-        className={`acct2-row${row.disabled ? " acct2-disabled" : ""}${isProblem ? " acct2-problem" : ""}${isMember ? " acct2-member" : ""}`}
+        className={`acct2-row${row.disabled ? " acct2-disabled" : ""}${isProblem ? " acct2-problem" : ""}${selectedAccountRowKey === row.rowKey ? " selected" : ""}`}
+        role="row"
+        tabIndex={0}
+        aria-selected={selectedAccountRowKey === row.rowKey}
+        onClick={() => setSelectedAccountRowKey(row.rowKey)}
+        onKeyDown={(event) => {
+          if (isAccountRowSelectionKey(event.key, event.target === event.currentTarget)) {
+            event.preventDefault();
+            setSelectedAccountRowKey(row.rowKey);
+          }
+        }}
         onDoubleClick={() => openEditAccountDialog(row.entry.kind)}
         onContextMenu={(event) => {
           event.preventDefault();
@@ -2768,7 +2664,8 @@ export function App(): ReactElement {
             }}
           />
         </span>
-        <span className="acct2-hoster">
+        <span className="acct2-hoster" title={`${row.hosterLabel} · ${row.modeLabel}`}>
+          <span className={`acct2-service-icon service-${row.entry.service}`}>{row.hosterLabel.slice(0, 1).toUpperCase()}</span>
           <strong>{row.hosterLabel}</strong>
           <span className="acct2-mode">{row.modeLabel}</span>
         </span>
@@ -2807,14 +2704,13 @@ export function App(): ReactElement {
     if (!accountDialog) {
       return [];
     }
-    if (accountDialog.mode === "edit") {
-      if (!accountDialogOption) {
-        return [];
-      }
-      return ACCOUNT_OPTIONS.filter((option) => option.service === accountDialogOption.service);
-    }
-    return availableAccountOptions;
-  }, [accountDialog, accountDialogOption, availableAccountOptions]);
+    return getAccountDialogSelectableOptions(
+      ACCOUNT_OPTIONS,
+      availableAccountOptions,
+      accountDialog.mode,
+      accountDialog.service
+    );
+  }, [accountDialog, availableAccountOptions]);
   const accountDialogSearchQuery = accountDialogSearch.trim().toLowerCase();
   const filteredAccountDialogOptions = useMemo(() => (
     accountDialogSelectableOptions.filter((option) => {
@@ -2834,13 +2730,6 @@ export function App(): ReactElement {
       return haystack.includes(accountDialogSearchQuery);
     })
   ), [accountDialogModeFilter, accountDialogSearchQuery, accountDialogSelectableOptions]);
-  const accountTableStyle = useMemo(() => ({
-    "--account-col-service": `${accountColumnWidths.service}px`,
-    "--account-col-mode": `${accountColumnWidths.mode}px`,
-    "--account-col-status": `${accountColumnWidths.status}px`,
-    "--account-col-secret": `${accountColumnWidths.secret}px`
-  } as CSSProperties), [accountColumnWidths]);
-
   const handleUpdateResult = async (result: UpdateCheckResult, source: "manual" | "startup"): Promise<void> => {
     if (!mountedRef.current) {
       return;
@@ -3055,7 +2944,7 @@ export function App(): ReactElement {
   const openCreateAccountDialog = (): void => {
     setAccountDialogSearch("");
     setAccountDialogModeFilter("all");
-    setAccountDialog(createAccountDialogState("create", null, settingsDraft));
+    setAccountDialog(createAccountDialogState("create", availableAccountOptions[0]?.kind ?? null, settingsDraft));
   };
 
   const openEditAccountDialog = (kind: AccountKind): void => {
@@ -3064,7 +2953,7 @@ export function App(): ReactElement {
     setAccountDialog(createAccountDialogState("edit", kind, settingsDraft));
   };
 
-  const updateAccountDialogKind = (kind: AccountKind): void => {
+  const updateAccountDialogKind = useCallback((kind: AccountKind): void => {
     setAccountDialog((prev) => {
       const next = createAccountDialogState(prev?.mode ?? "create", kind, settingsDraft);
       if (!prev) {
@@ -3085,7 +2974,25 @@ export function App(): ReactElement {
       next.dailyLimitGb = prev.dailyLimitGb;
       return next;
     });
-  };
+  }, [settingsDraft]);
+
+  useEffect(() => {
+    if (!accountDialog) {
+      return;
+    }
+    const visibleKind = resolveVisibleAccountKind(
+      accountDialog.kind,
+      filteredAccountDialogOptions.map((option) => option.kind)
+    );
+    if (visibleKind === accountDialog.kind) {
+      return;
+    }
+    if (visibleKind) {
+      updateAccountDialogKind(visibleKind);
+      return;
+    }
+    setAccountDialog((current) => current ? { ...current, kind: null } : current);
+  }, [accountDialog?.kind, filteredAccountDialogOptions, updateAccountDialogKind]);
 
   const closeAccountDialog = useCallback((): void => {
     setAccountDialog(null);
@@ -3275,6 +3182,27 @@ export function App(): ReactElement {
     } else {
       void onToggleAccountEnabled(row.entry);
     }
+  };
+
+  const setAllAccountsEnabled = async (enabled: boolean): Promise<void> => {
+    await performQuickAction(async () => {
+      const configuredProviderIds = [...new Set(configuredAccounts.map((entry) => entry.service as DebridProvider))];
+      const nextEnabledState = buildBulkAccountEnabledState(
+        settingsDraft.disabledProviders || [],
+        configuredProviderIds,
+        accountRows.filter((row) => row.toggleKind === "mega" && row.accountId).map((row) => row.accountId as string),
+        accountRows.filter((row) => row.toggleKind === "dl" && row.accountId).map((row) => row.accountId as string),
+        enabled
+      );
+      const nextDraft: AppSettings = {
+        ...settingsDraft,
+        ...nextEnabledState
+      };
+      await persistSpecificSettings(nextDraft);
+      showToast(enabled ? "Accounts aktiviert" : "Accounts deaktiviert", 2200);
+    }, (error) => {
+      showToast(`Accounts konnten nicht umgeschaltet werden: ${String(error)}`, 3200);
+    });
   };
 
   const removeAccountTableRow = (row: AccountTableRow): void => {
@@ -5580,7 +5508,7 @@ export function App(): ReactElement {
                   <button key={st.key} className={`settings-sidebar-tab${settingsSubTab === st.key ? " active" : ""}`} onClick={() => setSettingsSubTab(st.key)}>{st.label}</button>
                 ))}
               </nav>
-              <div className="settings-content" key={settingsSubTab}>
+              <div className={`settings-content${settingsSubTab === "accounts" ? " settings-content-accounts" : ""}`} key={settingsSubTab}>
                 {settingsSubTab === "allgemein" && (
                   <div className="settings-section card">
                     <h3>Allgemein</h3>
@@ -5674,95 +5602,50 @@ export function App(): ReactElement {
                   </div>
                 )}
                 {settingsSubTab === "accounts" && (
-                  <div className="account-settings-layout">
-                    <div className="settings-section card account-board">
-                      <div className="account-board-header">
-                        <div>
-                          <h3>Accountverwaltung</h3>
-                          <div className="hint">Kompakte Übersicht mit Hoster, Traffic, Status, Benutzername, Ablauf und Zugang. Rechtsklick oder Doppelklick öffnet die Aktionen.</div>
-                        </div>
-                        <div className="account-board-header-actions">
-                          <button className="btn" disabled={actionBusy || accountCheckBusy} onClick={() => { void checkAllAccounts(); }} title="Prüft Login-Gültigkeit und Premium-Restlaufzeit aller Mega-Debrid-/Debrid-Link-Accounts">
-                            {accountCheckBusy ? "Prüfe Accounts…" : "Alle prüfen"}
-                          </button>
-                          <button className="btn account-add-button" disabled={actionBusy || availableAccountOptions.length === 0} onClick={openCreateAccountDialog}>
-                            Account hinzufügen
-                          </button>
-                        </div>
+                  <div className={`account-settings-layout ${accountManagementTab}`}>
+                    <div className="account-management-heading">
+                      <div>
+                        <h3>Accountverwaltung</h3>
+                        <div className="hint">Hier kannst Du Deine Accounts hinzufügen, prüfen und verwalten.</div>
                       </div>
-
-                      <div className="account-board-summary">
-                        <span className="account-inline-stat">{accountRows.length} {accountRows.length === 1 ? "Account" : "Accounts"}</span>
-                        <span className="account-inline-stat">{availableAccountOptions.length} weitere Typen verfügbar</span>
-                      </div>
-
-                      {configuredAccountServices.has("megadebrid-api") && configuredAccountServices.has("megadebrid-web") && (
-                        <div className="account-mode-note">
-                          <strong>Mega-Debrid API + Web sind derselbe Account</strong>, nur zwei Zugriffsarten: API (schnell) wird zuerst versucht, Web dient als Fallback. Gleicher Login, kein zweites Konto — beide Zeilen teilen sich dasselbe Tageslimit und denselben Premium-Status.
-                        </div>
-                      )}
-
-                      {accountRows.length === 0 && (
-                        <div className="account-empty-state">
-                          <strong>Noch keine Accounts hinterlegt</strong>
-                          <span>Füge über "Account hinzufügen" den ersten Dienst hinzu. Danach erscheinen hier Status, Zugang und Aktionen als Liste.</span>
-                        </div>
-                      )}
-
-                      {accountRows.length > 0 && (
-                        <div className="acct2-table">
-                          <div className="acct2-head">
-                            <span className="acct2-c-check" />
-                            <span>Hoster</span>
-                            <span>Download-Traffic</span>
-                            <span className="acct2-sortable" title="Nach Premium-Restlaufzeit sortieren (längste/kürzeste)" onClick={cycleAccountStatusSort}>Status{accountStatusSort === "desc" ? " ▼" : accountStatusSort === "asc" ? " ▲" : ""}</span>
-                            <span>Benutzername</span>
-                            <span>Verfallsdatum</span>
-                            <span>Zugang</span>
-                            <span className="acct2-c-actions">Aktion</span>
-                          </div>
-                          {groupedAccountRows.flatMap((group) => {
-                            if (group.rows.length < 2) {
-                              return group.rows.map((row) => renderAccountRow(row, false));
-                            }
-                            const collapsed = collapsedAccountGroups.has(group.service);
-                            let okCount = 0;
-                            let problemCount = 0;
-                            let offCount = 0;
-                            for (const r of group.rows) {
-                              if (r.disabled) { offCount += 1; continue; }
-                              const s = r.accountId ? (snapshot.settings?.debridAccountStatuses?.[r.accountId] ?? null) : null;
-                              if (r.checkable && s && !s.valid) { problemCount += 1; } else { okCount += 1; }
-                            }
-                            const elements: ReactElement[] = [
-                              <div key={`grp-${group.service}`} className="acct2-row acct2-group-head" title={collapsed ? "Ausklappen" : "Einklappen"} onClick={() => toggleAccountGroup(group.service)}>
-                                <span className="acct2-c-check"><span className={`acct2-chevron${collapsed ? "" : " open"}`}>{"▶"}</span></span>
-                                <span className="acct2-hoster">
-                                  <strong>{group.serviceLabel}</strong>
-                                  <span className="acct2-mode">{group.rows.length} Accounts</span>
-                                </span>
-                                <span className="acct2-traffic" />
-                            <span className="acct2-status acct2-grp-sum">
-                              {okCount > 0 && <span className="account-validity-badge ok">{okCount} OK</span>}
-                              {problemCount > 0 && <span className="account-validity-badge invalid">{problemCount} Problem</span>}
-                              {offCount > 0 && <span className="account-validity-badge disabled">{offCount} aus</span>}
-                            </span>
-                            <span />
-                            <span />
-                            <span />
-                            <span />
-                          </div>
-                            ];
-                            if (!collapsed) {
-                              for (const row of group.rows) elements.push(renderAccountRow(row, true));
-                            }
-                            return elements;
-                          })}
-                        </div>
-                      )}
+                      <label className="account-use-toggle"><input type="checkbox" checked={accountRows.some((row) => !row.disabled)} disabled={actionBusy || accountRows.length === 0} onChange={(event) => { void setAllAccountsEnabled(event.target.checked); }} /> Accounts zum Herunterladen verwenden</label>
                     </div>
 
-                    <div className="settings-section card">
+                    <div className="account-management-tabs" role="tablist" aria-label="Accountverwaltung">
+                      <button className={accountManagementTab === "overview" ? "active" : ""} onClick={() => setAccountManagementTab("overview")} role="tab" aria-selected={accountManagementTab === "overview"}>Übersicht</button>
+                      <button className={accountManagementTab === "rules" ? "active" : ""} onClick={() => setAccountManagementTab("rules")} role="tab" aria-selected={accountManagementTab === "rules"}>Verwendungsregeln</button>
+                    </div>
+
+                    <div className="account-overview-panel" hidden={accountManagementTab !== "overview"}>
+                      <div className="acct2-table" role="table" aria-label="Accounts">
+                        <div className="acct2-head" role="row">
+                          <span className="acct2-c-check" role="columnheader" aria-label="Aktiviert" />
+                          <span role="columnheader">Hoster</span>
+                          <span role="columnheader">Download-Traffic übrig</span>
+                          <span role="columnheader"><button type="button" className="acct2-sortable" title="Nach Premium-Restlaufzeit sortieren" onClick={cycleAccountStatusSort}>Status{accountStatusSort === "desc" ? " ▼" : accountStatusSort === "asc" ? " ▲" : ""}</button></span>
+                          <span role="columnheader">Benutzername</span>
+                          <span role="columnheader">Verfallsdatum</span>
+                          <span role="columnheader">Passwort / Zugang</span>
+                          <span className="acct2-c-actions" role="columnheader" aria-label="Aktionen" />
+                        </div>
+                        <div className="acct2-body" role="rowgroup">
+                          {accountRows.length === 0 ? (
+                            <div className="acct2-empty">Noch keine Accounts vorhanden.</div>
+                          ) : sortedAccountRows.map((row) => renderAccountRow(row))}
+                        </div>
+                      </div>
+                      <div className="account-table-actions">
+                        <button className="btn btn-sm" disabled={actionBusy || availableAccountOptions.length === 0} onClick={openCreateAccountDialog}>＋ Hinzufügen</button>
+                        <button className="btn btn-sm" disabled={actionBusy || !selectedAccountRowKey} onClick={() => {
+                          const selectedRow = accountRows.find((row) => row.rowKey === selectedAccountRowKey);
+                          if (selectedRow) removeAccountTableRow(selectedRow);
+                        }}>－ Entfernen</button>
+                        <button className="btn btn-sm" disabled={actionBusy || accountCheckBusy} onClick={() => { void checkAllAccounts(); }}>{accountCheckBusy ? "Prüfe…" : "↻ Aktualisieren"}</button>
+                        <span>{accountRows.length} {accountRows.length === 1 ? "Account" : "Accounts"}</span>
+                      </div>
+                    </div>
+
+                    <div className="settings-section card account-rule-section" hidden={accountManagementTab !== "rules"}>
                       <div className="account-board-header">
                         <div>
                           <h3>Rotations-Verlauf</h3>
@@ -5787,7 +5670,7 @@ export function App(): ReactElement {
                       </div>
                     </div>
 
-                    <div className="settings-section card">
+                    <div className="settings-section card account-rule-section" hidden={accountManagementTab !== "rules"}>
                       <h3>Hoster-Reihenfolge</h3>
                       <div className="hint">
                         Lege fest, in welcher Reihenfolge die Debrid-Accounts für Links genutzt werden.
@@ -5844,7 +5727,7 @@ export function App(): ReactElement {
                     </div>
 
                     {configuredProviders.length >= 1 && (
-                    <div className="settings-section card">
+                    <div className="settings-section card account-rule-section" hidden={accountManagementTab !== "rules"}>
                       <h3>Hoster-Zuordnung</h3>
                       <div className="hint">Lege fest, welcher Debrid-Provider sich um welchen Filehoster kümmert. Nicht zugeordnete Hoster nutzen die Standard-Reihenfolge oben.</div>
                       {(() => {
@@ -6427,17 +6310,14 @@ export function App(): ReactElement {
 
       {accountDialog && (
         <div className="modal-backdrop" onClick={closeAccountDialog}>
-          <div className="modal-card account-modal" onClick={(event) => event.stopPropagation()}>
+          <div className="modal-card account-modal" role="dialog" aria-modal="true" aria-labelledby="account-dialog-title" onClick={(event) => event.stopPropagation()}>
             <div className="account-modal-header">
-              <div>
-                <h3>{accountDialog.mode === "edit" ? "Account bearbeiten" : "Account hinzufügen"}</h3>
-                <p>Wie in JDownloader: oben Account-Typ auswaehlen, unten Zugangsdaten direkt eintragen.</p>
-              </div>
+              <h3 id="account-dialog-title">{accountDialog.mode === "edit" ? "Account bearbeiten" : "Neuen Account hinzufügen"}</h3>
             </div>
 
             <div className="account-modal-body">
-              <div className="account-dialog-step">
-                <div className="account-dialog-step-label">1. Account-Typ auswaehlen</div>
+              <div className="account-dialog-step account-modal-provider-list">
+                <div className="account-dialog-step-label">1. Wähle einen Hoster aus</div>
                 <div className="account-picker-toolbar">
                   <select
                     className="account-picker-filter"
@@ -6451,6 +6331,7 @@ export function App(): ReactElement {
                   </select>
                   <input
                     className="account-picker-search"
+                    autoFocus
                     placeholder="Dienst oder Typ suchen"
                     value={accountDialogSearch}
                     onChange={(event) => setAccountDialogSearch(event.target.value)}
@@ -6477,22 +6358,16 @@ export function App(): ReactElement {
                       className={`account-picker-row${accountDialog.kind === option.kind ? " active" : ""}`}
                       onClick={() => updateAccountDialogKind(option.kind)}
                     >
-                      <div>
-                        <strong>{option.title}</strong>
-                        <span>{option.serviceLabel}</span>
-                      </div>
-                      <div>
-                        <strong>{getAccountPickerFunctionLabel(option)}</strong>
-                        <span>{option.pickerDescription}</span>
-                      </div>
+                      <span className="account-picker-domain"><span className={`account-picker-icon service-${option.service}`}>{option.serviceLabel.slice(0, 1).toUpperCase()}</span><strong>{option.title}</strong></span>
+                      <span className="account-picker-function">{getAccountPickerFunctionLabel(option)}</span>
                     </button>
                   ))}
                 </div>
               </div>
 
-              <div className="account-dialog-step">
+              <div className="account-dialog-step account-modal-credentials">
                 <div className="account-dialog-step-label">
-                  {accountDialogOption ? `2. ${accountDialogOption.serviceLabel} - Zugangsdaten eingeben` : "2. Zugangsdaten eingeben"}
+                  {accountDialogOption ? `2. Gib Deine ${accountDialogOption.serviceLabel}-Zugangsdaten ein` : "2. Zugangsdaten eingeben"}
                 </div>
 
                 {!accountDialogOption && (
@@ -6504,11 +6379,6 @@ export function App(): ReactElement {
 
                 {accountDialogOption && (
                   <>
-                    <div className="account-form-summary">
-                      <strong>{accountDialogOption.title}</strong>
-                      <span>{accountDialogOption.pickerDescription}</span>
-                    </div>
-
                     <div className="account-modal-fields">
                       {(accountDialogOption.service === "megadebrid-api" || accountDialogOption.service === "megadebrid-web") && (
                         <div>
@@ -6730,7 +6600,7 @@ export function App(): ReactElement {
                       )}
                     </div>
 
-                    <div className="modal-actions">
+                    <div className="modal-actions account-modal-actions">
                       <button className="btn" onClick={closeAccountDialog}>Abbrechen</button>
                       {accountDialog.kind === "realdebrid-web" && (
                         <button className="btn" disabled={actionBusy} onClick={() => { void onSaveAccountDialog("realdebrid-login"); }}>
