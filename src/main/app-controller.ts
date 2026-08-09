@@ -546,14 +546,16 @@ export class AppController {
     return fetchDebridLinkHostLimits(this.settings.debridLinkApiKeys, host);
   }
 
-public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
-    const statuses = await checkAllDebridAccounts(this.settings);
-    this.manager.applyDebridAccountStatuses(statuses);
-    this.audit("INFO", "Debrid-Accounts geprueft", {
-      total: statuses.length,
-      valid: statuses.filter((s) => s.valid).length,
-      premium: statuses.filter((s) => s.isPremium).length
-    });
+public async checkDebridAccounts(settingsOverride?: AppSettings): Promise<DebridAccountStatus[]> {
+    const statuses = await checkAllDebridAccounts(settingsOverride ? normalizeSettings(settingsOverride) : this.settings);
+    if (!settingsOverride) {
+      this.manager.applyDebridAccountStatuses(statuses);
+      this.audit("INFO", "Debrid-Accounts geprueft", {
+        total: statuses.length,
+        valid: statuses.filter((s) => s.valid).length,
+        premium: statuses.filter((s) => s.isPremium).length
+      });
+    }
     return statuses;
   }
 

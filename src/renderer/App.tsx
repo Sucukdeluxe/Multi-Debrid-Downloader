@@ -38,6 +38,10 @@ import {
 } from "../shared/provider-daily-limits";
 import { reorderPackageOrderByDrop, sortPackageOrderByName, sortPackagesForDisplay } from "./package-order";
 import { pruneSelection } from "./selection";
+import { matchesAccountModeFilter } from "./account-ui";
+import type { AccountModeFilter } from "./account-ui";
+import { DOWNLOAD_SPEED_MAX_SAMPLES, updateDownloadSpeedHistory } from "./download-speed-state";
+import type { DownloadSpeedHistoryState } from "./download-speed-state";
 
 type Tab = "collector" | "downloads" | "history" | "statistics" | "settings";
 type SettingsSubTab = "allgemein" | "accounts" | "entpacken" | "geschwindigkeit" | "bereinigung" | "updates";
@@ -245,8 +249,8 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
     kind: "realdebrid-web",
     service: "realdebrid",
     serviceLabel: "Real-Debrid",
-    title: "Real-Debrid Web",
-    modeLabel: "Web",
+    title: "Real-Debrid Web-Login",
+    modeLabel: "Web-Login",
     pickerDescription: "Login über Browserfenster statt Token."
   },
   {
@@ -262,8 +266,8 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
     kind: "megadebrid-web",
     service: "megadebrid-web",
     serviceLabel: "Mega-Debrid",
-    title: "Mega-Debrid Web",
-    modeLabel: "Web",
+    title: "Mega-Debrid Web-Login",
+    modeLabel: "Web-Login",
     pickerDescription: "Login:Passwort-Paare für Mega-Debrid (Web). Mehrere Accounts zeilenweise für Multi-Account.",
     needsToken: true
   },
@@ -280,8 +284,8 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
     kind: "bestdebrid-web",
     service: "bestdebrid",
     serviceLabel: "BestDebrid",
-    title: "BestDebrid Web",
-    modeLabel: "Web",
+    title: "BestDebrid Web-Login",
+    modeLabel: "Web-Login",
     pickerDescription: "Cookie-Import aus dem Browser statt API-Token."
   },
   {
@@ -297,8 +301,8 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
     kind: "alldebrid-web",
     service: "alldebrid",
     serviceLabel: "AllDebrid",
-    title: "AllDebrid Web",
-    modeLabel: "Web",
+    title: "AllDebrid Web-Login",
+    modeLabel: "Web-Login",
     pickerDescription: "Login über Browserfenster für reCAPTCHA.",
   },
   {
@@ -332,8 +336,8 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
     kind: "linksnappy-login",
     service: "linksnappy",
     serviceLabel: "LinkSnappy",
-    title: "LinkSnappy Web",
-    modeLabel: "Web",
+    title: "LinkSnappy Web-Login",
+    modeLabel: "Web-Login",
     pickerDescription: "Login für linksnappy.com mit Benutzername und Passwort.",
     needsCredentials: true
   }
@@ -803,6 +807,9 @@ function validateAccountDialog(dialog: AccountDialogState): string | null {
     }
   }
   if (dialog.kind === "debridlink-api") {
+    if (parseDebridLinkApiKeys(dialog.token).length === 0) {
+      return `${option.title}: Bitte mindestens einen gültigen API-Key eintragen.`;
+    }
     for (const key of parseDebridLinkApiKeys(dialog.token)) {
       const raw = dialog.keyDailyLimitGbById?.[key.id] || "";
       if (!raw.trim()) {
@@ -1486,14 +1493,12 @@ interface DownloadSpeedSparklineProps {
   items: Record<string, DownloadItem>;
   running: boolean;
   paused: boolean;
+  speedStateRef: React.MutableRefObject<DownloadSpeedHistoryState>;
+  hidden?: boolean;
 }
 
-const SPARKLINE_MAX_SAMPLES = 160;
-
-const DownloadSpeedSparkline = memo(function DownloadSpeedSparkline({ items, running, paused }: DownloadSpeedSparklineProps): ReactElement {
+const DownloadSpeedSparkline = memo(function DownloadSpeedSparkline({ items, running, paused, speedStateRef, hidden = false }: DownloadSpeedSparklineProps): ReactElement {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const histRef = useRef<number[]>([]);
-  const displayRef = useRef<number>(0);
   const itemsRef = useRef(items);
   const activeRef = useRef(running && !paused);
   const [liveSpeed, setLiveSpeed] = useState(0);
@@ -1515,7 +1520,7 @@ const DownloadSpeedSparkline = memo(function DownloadSpeedSparkline({ items, run
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, cssW, cssH);
 
-      const hist = histRef.current;
+      const hist = speedStateRef.current.history;
       if (hist.length < 2) return;
 
       const isDark = document.documentElement.getAttribute("data-theme") !== "light";
@@ -1528,8 +1533,8 @@ const DownloadSpeedSparkline = memo(function DownloadSpeedSparkline({ items, run
 
       const pad = 2;
       const h = cssH - pad * 2;
-      const step = cssW / (SPARKLINE_MAX_SAMPLES - 1);
-      const startIdx = SPARKLINE_MAX_SAMPLES - hist.length;
+      const step = cssW / (DOWNLOAD_SPEED_MAX_SAMPLES - 1);
+      const startIdx = DOWNLOAD_SPEED_MAX_SAMPLES - hist.length;
       const px = (i: number): number => (startIdx + i) * step;
       const py = (v: number): number => pad + h - (v / maxV) * h;
 
@@ -1558,14 +1563,7 @@ const DownloadSpeedSparkline = memo(function DownloadSpeedSparkline({ items, run
           if (it.status === "downloading") target += it.speedBps || 0;
         }
       }
-      const cur = displayRef.current;
-      const alpha = target > cur ? 0.45 : 0.12;
-      let next = cur + (target - cur) * alpha;
-      if (next < 1) next = 0;
-      displayRef.current = next;
-      const hist = histRef.current;
-      hist.push(next);
-      if (hist.length > SPARKLINE_MAX_SAMPLES) hist.splice(0, hist.length - SPARKLINE_MAX_SAMPLES);
+      speedStateRef.current = updateDownloadSpeedHistory(speedStateRef.current, target);
       setLiveSpeed(target);
       draw();
     };
@@ -1575,7 +1573,7 @@ const DownloadSpeedSparkline = memo(function DownloadSpeedSparkline({ items, run
   }, []);
 
   return (
-    <div className="speed-sparkline" title="Aktuelle Download-Geschwindigkeit (geglättet)">
+    <div className={`speed-sparkline${hidden ? " speed-sparkline-hidden" : ""}`} aria-hidden={hidden} title="Aktuelle Download-Geschwindigkeit (geglättet)">
       <canvas ref={canvasRef} className="speed-sparkline-canvas" />
       <span className="speed-sparkline-value">{liveSpeed > 0 ? formatSpeedMbps(liveSpeed) : "0 B/s"}</span>
     </div>
@@ -1786,6 +1784,7 @@ export function App(): ReactElement {
   const [linkPopup, setLinkPopup] = useState<LinkPopupState | null>(null);
   const [accountDialog, setAccountDialog] = useState<AccountDialogState | null>(null);
   const [accountDialogSearch, setAccountDialogSearch] = useState("");
+  const [accountDialogModeFilter, setAccountDialogModeFilter] = useState<AccountModeFilter>("all");
   const [keyStatsPopup, setKeyStatsPopup] = useState<string | null>(null);
   const [debridLinkHostLimits, setDebridLinkHostLimits] = useState<Record<string, DebridLinkHostLimitInfo>>({});
   const [debridLinkHostLimitsLoading, setDebridLinkHostLimitsLoading] = useState(false);
@@ -2769,6 +2768,9 @@ export function App(): ReactElement {
   const accountDialogSearchQuery = accountDialogSearch.trim().toLowerCase();
   const filteredAccountDialogOptions = useMemo(() => (
     accountDialogSelectableOptions.filter((option) => {
+      if (!matchesAccountModeFilter(option, accountDialogModeFilter)) {
+        return false;
+      }
       if (!accountDialogSearchQuery) {
         return true;
       }
@@ -2781,7 +2783,7 @@ export function App(): ReactElement {
       ].join(" ").toLowerCase();
       return haystack.includes(accountDialogSearchQuery);
     })
-  ), [accountDialogSearchQuery, accountDialogSelectableOptions]);
+  ), [accountDialogModeFilter, accountDialogSearchQuery, accountDialogSelectableOptions]);
   const accountTableStyle = useMemo(() => ({
     "--account-col-service": `${accountColumnWidths.service}px`,
     "--account-col-mode": `${accountColumnWidths.mode}px`,
@@ -3002,11 +3004,13 @@ export function App(): ReactElement {
 
   const openCreateAccountDialog = (): void => {
     setAccountDialogSearch("");
+    setAccountDialogModeFilter("all");
     setAccountDialog(createAccountDialogState("create", null, settingsDraft));
   };
 
   const openEditAccountDialog = (kind: AccountKind): void => {
     setAccountDialogSearch("");
+    setAccountDialogModeFilter("all");
     setAccountDialog(createAccountDialogState("edit", kind, settingsDraft));
   };
 
@@ -3036,6 +3040,7 @@ export function App(): ReactElement {
   const closeAccountDialog = useCallback((): void => {
     setAccountDialog(null);
     setAccountDialogSearch("");
+    setAccountDialogModeFilter("all");
   }, []);
 
   const onSaveAccountDialog = async (quickAction?: AccountQuickAction): Promise<void> => {
@@ -3051,6 +3056,20 @@ export function App(): ReactElement {
     const selectedOption = dialogSnapshot.kind ? findAccountOption(dialogSnapshot.kind) : null;
     await performQuickAction(async () => {
       const nextDraft = applyAccountDialogToSettings(settingsDraft, dialogSnapshot);
+      const requiresCredentialCheck = selectedOption?.kind === "megadebrid-api"
+        || selectedOption?.kind === "megadebrid-web"
+        || selectedOption?.kind === "debridlink-api";
+      if (requiresCredentialCheck) {
+        const statuses = await window.rd.checkDebridAccounts(nextDraft);
+        const invalidStatuses = statuses.filter((status) => !status.valid);
+        if (invalidStatuses.length > 0) {
+          const details = invalidStatuses
+            .map((status) => status.message || "Zugangsdaten ungültig")
+            .join(" | ");
+          showToast(`Prüfung fehlgeschlagen: ${details}`, 4200);
+          return;
+        }
+      }
       await persistSpecificSettings(nextDraft);
       closeAccountDialog();
       if (quickAction) {
@@ -3917,6 +3936,7 @@ export function App(): ReactElement {
   }, []);
 
   const speedHistoryRef = useRef<{ time: number; speed: number }[]>([]);
+  const speedSparklineStateRef = useRef<DownloadSpeedHistoryState>({ history: [], display: 0 });
   const dragSelectRef = useRef(false);
   const dragAnchorRef = useRef<string | null>(null);
   const dragDidMoveRef = useRef(false);
@@ -4999,13 +5019,13 @@ export function App(): ReactElement {
         <button className={tab === "history" ? "tab active" : "tab"} onClick={() => setTab("history")}>Verlauf</button>
         <button className={tab === "statistics" ? "tab active" : "tab"} onClick={() => setTab("statistics")}>Statistiken</button>
         <div className="tab-actions">
-          {tab === "downloads" && (
-            <DownloadSpeedSparkline
-              items={snapshot.session.items}
-              running={snapshot.session.running}
-              paused={snapshot.session.paused}
-            />
-          )}
+          <DownloadSpeedSparkline
+            items={snapshot.session.items}
+            running={snapshot.session.running}
+            paused={snapshot.session.paused}
+            speedStateRef={speedSparklineStateRef}
+            hidden={tab !== "downloads"}
+          />
           {tab === "downloads" && (
             <input
               className="search-input tab-search"
@@ -5549,7 +5569,7 @@ export function App(): ReactElement {
                           <button className="btn" disabled={actionBusy || accountCheckBusy} onClick={() => { void checkAllAccounts(); }} title="Prüft Login-Gültigkeit und Premium-Restlaufzeit aller Mega-Debrid-/Debrid-Link-Accounts">
                             {accountCheckBusy ? "Prüfe Accounts…" : "Alle prüfen"}
                           </button>
-                          <button className="btn accent" disabled={actionBusy || availableAccountOptions.length === 0} onClick={openCreateAccountDialog}>
+                          <button className="btn account-add-button" disabled={actionBusy || availableAccountOptions.length === 0} onClick={openCreateAccountDialog}>
                             Account hinzufügen
                           </button>
                         </div>
@@ -6300,12 +6320,24 @@ export function App(): ReactElement {
             <div className="account-modal-body">
               <div className="account-dialog-step">
                 <div className="account-dialog-step-label">1. Account-Typ auswaehlen</div>
-                <input
-                  className="account-picker-search"
-                  placeholder="Dienst oder Typ suchen"
-                  value={accountDialogSearch}
-                  onChange={(event) => setAccountDialogSearch(event.target.value)}
-                />
+                <div className="account-picker-toolbar">
+                  <select
+                    className="account-picker-filter"
+                    aria-label="Account-Typ filtern"
+                    value={accountDialogModeFilter}
+                    onChange={(event) => setAccountDialogModeFilter(event.target.value as AccountModeFilter)}
+                  >
+                    <option value="all">Alle anzeigen</option>
+                    <option value="api">Nur API</option>
+                    <option value="web">Nur Web-Login</option>
+                  </select>
+                  <input
+                    className="account-picker-search"
+                    placeholder="Dienst oder Typ suchen"
+                    value={accountDialogSearch}
+                    onChange={(event) => setAccountDialogSearch(event.target.value)}
+                  />
+                </div>
                 <div className="account-picker-table">
                   <div className="account-picker-head">
                     <span>Account</span>
@@ -6502,7 +6534,7 @@ export function App(): ReactElement {
                           value={accountDialog.dailyLimitGb}
                           onChange={(event) => setAccountDialog((prev) => prev ? { ...prev, dailyLimitGb: event.target.value } : prev)}
                         />
-                        <div className="account-modal-note">Ab 00:00 wird der Zähler automatisch zurückgesetzt. Wenn das Limit erreicht ist, nutzt die App den nächsten Hoster aus der Reihenfolge.</div>
+                        <div className="account-modal-note account-daily-limit-note">Ab 00:00 wird der Zähler automatisch zurückgesetzt. Wenn das Limit erreicht ist, nutzt die App den nächsten Hoster aus der Reihenfolge.</div>
                       </div>
 
                       {accountDialog.kind === "debridlink-api" && parseDebridLinkApiKeys(accountDialog.token).length > 0 && (
@@ -6598,7 +6630,7 @@ export function App(): ReactElement {
                         </button>
                       )}
                       <button className="btn accent" disabled={actionBusy || !accountDialog.kind} onClick={() => { void onSaveAccountDialog(); }}>
-                        Speichern
+                        Prüfen und speichern
                       </button>
                     </div>
                   </>

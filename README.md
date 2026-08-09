@@ -8,6 +8,14 @@ Desktop downloader for Windows with package-based queue management, multi-provid
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
+## Changelog
+
+### 2.0.6
+
+- Keeps the download speed history alive when switching between tabs.
+- Adds API and Web-Login filters to the account picker.
+- Uses clearer Web-Login account labels and validates supported credentials before saving.
+
 ## Why this tool?
 
 - JDownloader-style workflow with packages, progress, extraction, history, and clean post-processing.

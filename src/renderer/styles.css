@@ -475,6 +475,17 @@ body,
   border-color: #f0982f;
 }
 
+.btn.account-add-button {
+  background: linear-gradient(180deg, #63b3ed, #3182ce);
+  color: #061424;
+  border-color: #63b3ed;
+}
+
+.btn.account-add-button:hover:not(:disabled) {
+  background: linear-gradient(180deg, #7cc4f4, #3b8ed8);
+  border-color: #90cdf4;
+}
+
 .btn.danger {
   border-color: rgba(244, 63, 94, 0.7);
   color: #fda4af;
@@ -545,6 +556,11 @@ body,
   background: var(--field);
   border: 1px solid var(--border);
   border-radius: 8px;
+}
+
+.speed-sparkline-hidden {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .speed-sparkline-canvas {
@@ -1925,6 +1941,12 @@ body,
   width: 100%;
 }
 
+.account-picker-toolbar {
+  display: grid;
+  grid-template-columns: minmax(145px, 0.32fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
 .account-modal label {
   display: block;
   margin-bottom: 6px;
@@ -2086,6 +2108,10 @@ body,
   color: var(--text);
   font-size: 13px;
   line-height: 1.5;
+}
+
+.account-daily-limit-note {
+  margin-top: 10px;
 }
 
 .account-mode-note {
@@ -3228,6 +3254,10 @@ td {
   }
 
   .account-picker-list {
+    grid-template-columns: 1fr;
+  }
+
+  .account-picker-toolbar {
     grid-template-columns: 1fr;
   }
 
