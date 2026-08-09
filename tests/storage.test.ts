@@ -108,6 +108,17 @@ describe("settings storage", () => {
     expect(normalized.updateRepo).toBe(defaultSettings().updateRepo);
   });
 
+  it("migrates the previous private update repository to the public release repository", () => {
+    for (const updateRepo of [
+      "legacy-owner/real-debrid-downloader",
+      "legacy-owner/multi-debrid-downloader",
+      "legacy-owner/real-debrid-downloader.git"
+    ]) {
+      const normalized = normalizeSettings({ ...defaultSettings(), updateRepo });
+      expect(normalized.updateRepo).toBe(defaultSettings().updateRepo);
+    }
+  });
+
   it("normalizes malformed persisted config on load", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
     tempDirs.push(dir);

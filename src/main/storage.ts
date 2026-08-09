@@ -328,13 +328,15 @@ function normalizeProviderOrder(
   return result;
 }
 
-const DEPRECATED_UPDATE_REPOS = new Set([
-  "sucukdeluxe/real-debrid-downloader"
+const DEPRECATED_UPDATE_REPO_NAMES = new Set([
+  "real-debrid-downloader",
+  "multi-debrid-downloader"
 ]);
 
 function migrateUpdateRepo(raw: string, fallback: string): string {
   const trimmed = raw.trim();
-  if (!trimmed || DEPRECATED_UPDATE_REPOS.has(trimmed.toLowerCase())) {
+  const repoName = trimmed.split("/").filter(Boolean).pop()?.replace(/\.git$/i, "").toLowerCase() || "";
+  if (!trimmed || (DEPRECATED_UPDATE_REPO_NAMES.has(repoName) && trimmed.toLowerCase() !== fallback.toLowerCase())) {
     return fallback;
   }
   return trimmed;
