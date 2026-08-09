@@ -233,7 +233,7 @@ After startup, the app also writes `debug_support_manifest.json` into the same r
 
 If you want extra support detail during a flaky or hard-to-reproduce issue, the app also maintains a `trace.log` plus `trace_config.json`. You can enable or disable the support trace from the app menu or remotely via the debug API. By default, the support trace now auto-disables again after 2 hours so it does not stay enabled forever by accident.
 
-The app menu under `Hilfe` also includes a `Debug-Setup prüfen` action. It verifies the current host/port/token/support-manifest/trace setup locally and now also reports free disk space, current support-log sizes, and an estimated support-bundle size.
+The app menu under `Help` also includes a `Check debug setup` action. It verifies the current host/port/token/support-manifest/trace setup locally and now also reports free disk space, current support-log sizes, and an estimated support-bundle size.
 
 Available endpoints after restart:
 
@@ -295,11 +295,16 @@ This makes it easy to share one URL plus token during support, so current packag
 - Debrid-Link quota looks wrong: open the API-key statistics popup and check the Rapidgator quota for the affected key.
 - Extraction fails: verify passwords and installed extraction tools. The native backend is the default; JVM extraction is optional.
 - Downloads stall: check active speed limits, bandwidth schedules, reconnect settings, and provider health.
-- Accounts table looks misaligned on one machine: use `Spalten zuruecksetzen` in the Accounts view to clear the locally stored column widths.
+- Accounts table looks misaligned on one machine: use `Reset columns` in the Accounts view to clear the locally stored column widths.
 
 ## Changelog
 
 Detailed release history is published on [GitHub Releases](https://github.com/Sucukdeluxe/multi-debrid-downloader/releases).
+
+### 2.0.3
+
+- Keep online backup keys on a single line in the export and import dialog.
+- Widen the online backup dialog on larger windows while keeping it responsive on smaller screens.
 
 ## License
 
