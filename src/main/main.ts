@@ -747,8 +747,8 @@ function registerIpcHandlers(): void {
     return controller.getDebridLinkHostLimits();
   });
 
-  ipcMain.handle(IPC_CHANNELS.CHECK_DEBRID_ACCOUNTS, async (_event, settings?: AppSettings) => {
-    return controller.checkDebridAccounts(settings);
+  ipcMain.handle(IPC_CHANNELS.CHECK_DEBRID_ACCOUNTS, async (_event, settings?: AppSettings, persistValidOverride = false, expectedAccountId?: string) => {
+    return controller.checkDebridAccounts(settings, persistValidOverride === true, expectedAccountId);
   });
 
   ipcMain.handle(IPC_CHANNELS.CHECK_MEGA_DEBRID_ACCOUNT, async (_event, login: string, password: string) => {

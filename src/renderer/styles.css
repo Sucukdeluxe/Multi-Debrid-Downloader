@@ -2207,16 +2207,12 @@ body,
 
 .account-picker-icon,
 .acct2-service-icon {
-  display: inline-grid;
-  place-items: center;
-  width: 15px;
-  height: 15px;
-  flex: 0 0 15px;
+  display: block;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
   border-radius: 3px;
-  background: color-mix(in srgb, var(--accent) 24%, var(--field));
-  color: color-mix(in srgb, var(--accent) 78%, var(--text));
-  font-size: 9px;
-  font-weight: 800;
+  object-fit: contain;
 }
 
 .account-modal-fields {
@@ -3491,7 +3487,7 @@ td {
 .acct2-head,
 .acct2-row {
   display: grid;
-  grid-template-columns: 24px minmax(150px, 1.25fr) minmax(165px, 1.3fr) minmax(190px, 1.5fr) minmax(165px, 1.3fr) minmax(100px, 0.72fr) minmax(140px, 0.9fr) 30px;
+  grid-template-columns: 24px minmax(170px, 1.25fr) minmax(210px, 1.5fr) minmax(180px, 1.3fr) minmax(180px, 1.3fr) minmax(110px, 0.72fr) minmax(145px, 0.9fr) 30px;
   align-items: center;
   gap: 6px;
   min-width: 1120px;
@@ -3519,9 +3515,10 @@ td {
   color: var(--muted);
 }
 .acct2-row {
-  min-height: 24px;
+  min-height: 28px;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
-  font-size: 11px;
+  font-size: 14px;
+  line-height: 1.2;
   cursor: default;
 }
 .acct2-row:last-child { border-bottom: 0; }
@@ -3536,19 +3533,118 @@ td {
 .acct2-c-check input { cursor: pointer; }
 .acct2-c-actions { display: flex; gap: 6px; justify-content: flex-end; }
 .acct2-menu-button { width: 22px; min-width: 22px; height: 19px; padding: 0; font-size: 14px; line-height: 1; }
-.acct2-hoster { display: grid; grid-template-columns: 15px auto minmax(0, 1fr); align-items: center; gap: 5px; min-width: 0; }
-.acct2-hoster strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.acct2-mode { overflow: hidden; color: var(--muted); font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
+.acct2-hoster { display: grid; grid-template-columns: 18px auto minmax(0, 1fr); align-items: center; gap: 6px; min-width: 0; }
+.acct2-hoster strong { overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.acct2-mode { overflow: hidden; color: var(--muted); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
 .acct2-traffic,
 .acct2-expiry { font-variant-numeric: tabular-nums; color: var(--muted); }
-.acct2-head > span:nth-child(3),
+.acct2-head > span:nth-child(4),
 .acct2-traffic { text-align: center; }
 .acct2-sortable { width: 100%; padding: 0; border: 0; color: inherit; background: transparent; font: inherit; letter-spacing: inherit; text-align: left; text-transform: inherit; cursor: pointer; user-select: none; }
 .acct2-sortable:hover { color: var(--text); }
 .acct2-user { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acct2-credential { color: var(--muted); white-space: nowrap; }
-.acct2-status .account-validity-badge { height: 16px; margin-top: 0; padding: 0 5px; font-size: 9px; line-height: 14px; }
+.acct2-status .account-validity-badge { max-width: 100%; height: 20px; margin-top: 0; padding: 0 7px; overflow: hidden; font-size: 12px; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
 .acct2-nostatus { color: var(--muted); opacity: 0.6; font-variant-numeric: tabular-nums; }
+
+.account-edit-modal {
+  width: min(600px, calc(100vw - 36px));
+  max-height: calc(100vh - 36px);
+  gap: 14px;
+  overflow-y: auto;
+  padding: 18px;
+}
+
+.account-edit-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.account-edit-logo {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border-radius: 6px;
+  object-fit: contain;
+}
+
+.account-edit-header h3 {
+  margin: 0 0 2px;
+  font-size: 18px;
+}
+
+.account-edit-header span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.account-edit-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.account-edit-summary > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--field) 70%, transparent);
+}
+
+.account-edit-summary span {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.account-edit-summary strong {
+  overflow: hidden;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-edit-fields {
+  display: grid;
+  gap: 12px;
+}
+
+.account-edit-fields label {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.account-edit-note {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.account-edit-note.prominent {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: 8px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+.account-edit-quick-action {
+  justify-self: start;
+}
+
+.account-edit-actions {
+  justify-content: space-between;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
 
 .account-table-actions {
   display: flex;

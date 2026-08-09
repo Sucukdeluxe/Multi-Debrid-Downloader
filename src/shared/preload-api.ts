@@ -84,7 +84,7 @@ export interface ElectronApi {
   importBestDebridCookies: () => Promise<number>;
   getAllDebridHostInfo: () => Promise<AllDebridHostInfo>;
   getDebridLinkHostLimits: () => Promise<DebridLinkHostLimitInfo[]>;
-  checkDebridAccounts: (settings?: AppSettings) => Promise<DebridAccountStatus[]>;
+  checkDebridAccounts: (settings?: AppSettings, persistValidOverride?: boolean, expectedAccountId?: string) => Promise<DebridAccountStatus[]>;
   checkMegaDebridAccount: (login: string, password: string) => Promise<DebridAccountStatus | null>;
   retryExtraction: (packageId: string) => Promise<void>;
   extractNow: (packageId: string) => Promise<void>;

@@ -6,6 +6,7 @@ import {
   isAccountRowSelectionKey,
   matchesAccountModeFilter,
   pruneAccountRowSelection,
+  resolveAccountUsername,
   resolveVisibleAccountKind
 } from "../src/renderer/account-ui";
 
@@ -87,5 +88,13 @@ describe("account selection", () => {
     expect(isAccountRowSelectionKey(" ", true)).toBe(true);
     expect(isAccountRowSelectionKey("Enter", false)).toBe(false);
     expect(isAccountRowSelectionKey(" ", false)).toBe(false);
+  });
+});
+
+describe("account usernames", () => {
+  it("shows the full stored login and prefers a checked provider email", () => {
+    expect(resolveAccountUsername("member@example.com", undefined)).toBe("member@example.com");
+    expect(resolveAccountUsername("stored@example.com", "verified@example.com")).toBe("verified@example.com");
+    expect(resolveAccountUsername("", undefined)).toBe("—");
   });
 });

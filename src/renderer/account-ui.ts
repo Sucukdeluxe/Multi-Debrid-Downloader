@@ -55,6 +55,10 @@ export function isAccountRowSelectionKey(key: string, originatedOnRow: boolean):
   return originatedOnRow && (key === "Enter" || key === " ");
 }
 
+export function resolveAccountUsername(storedUsername: string, checkedEmail?: string): string {
+  return checkedEmail?.trim() || storedUsername.trim() || "—";
+}
+
 export function buildBulkAccountEnabledState(
   currentDisabledProviders: DebridProvider[],
   configuredProviders: DebridProvider[],

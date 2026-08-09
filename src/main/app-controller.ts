@@ -2,7 +2,6 @@ import path from "node:path";
 import os from "node:os";
 import v8 from "node:v8";
 import { app } from "electron";
-import { getDebridLinkApiKeyIds } from "../shared/debrid-link-keys";
 import {
   AddLinksPayload,
   AllDebridHostInfo,
@@ -59,6 +58,8 @@ import { buildSupportBundle, getSupportBundleDefaultFileName } from "./support-b
 import { getTraceConfig, getTraceLogPath, initTraceLog, logTraceEvent, setTraceEnabled, shutdownTraceLog } from "./trace-log";
 import type { DebugSetupCheckResult, SupportTraceConfig } from "../shared/types";
 import { createOnlineBackup, downloadOnlineBackup, uploadOnlineBackup } from "./online-backup";
+import { overlayLiveUsageCounters } from "./settings-live-overlay";
+import { canPersistExpectedAccountStatus } from "./account-status-persistence";
 
 function sanitizeSettingsPatch(partial: Partial<AppSettings>): Partial<AppSettings> {
   const entries = Object.entries(partial || {}).filter(([, value]) => value !== undefined);
@@ -418,19 +419,7 @@ export class AppController {
   // live; per-key Debrid-Link usage is filtered to keys that still exist.
   private overlayLiveUsageCounters(target: AppSettings): void {
     const liveSettings = this.manager.getSettings();
-    target.totalDownloadedAllTime = Math.max(target.totalDownloadedAllTime || 0, liveSettings.totalDownloadedAllTime || 0);
-    target.totalCompletedFilesAllTime = Math.max(target.totalCompletedFilesAllTime || 0, liveSettings.totalCompletedFilesAllTime || 0);
-    target.totalRuntimeAllTimeMs = Math.max(target.totalRuntimeAllTimeMs || 0, this.manager.getLiveTotalRuntimeMs());
-    target.providerDailyUsageDay = liveSettings.providerDailyUsageDay;
-    target.providerDailyUsageBytes = { ...(liveSettings.providerDailyUsageBytes || {}) };
-    target.providerTotalUsageBytes = { ...(liveSettings.providerTotalUsageBytes || {}) };
-    target.debridLinkApiKeyDailyUsageBytes = Object.fromEntries(
-      Object.entries(liveSettings.debridLinkApiKeyDailyUsageBytes || {}).filter(([keyId]) => getDebridLinkApiKeyIds(target.debridLinkApiKeys).includes(keyId))
-    );
-    target.debridLinkApiKeyTotalUsageBytes = Object.fromEntries(
-      Object.entries(liveSettings.debridLinkApiKeyTotalUsageBytes || {}).filter(([keyId]) => getDebridLinkApiKeyIds(target.debridLinkApiKeys).includes(keyId))
-    );
-    target.debridAccountStatuses = { ...(liveSettings.debridAccountStatuses || {}) };
+    overlayLiveUsageCounters(target, liveSettings, this.manager.getLiveTotalRuntimeMs());
   }
 
   private applySettingsOnlyBackup(importedSettings: AppSettings, remoteDiagnostics?: unknown, restoreRemoteDiagnostics = false): void {
@@ -546,10 +535,12 @@ export class AppController {
     return fetchDebridLinkHostLimits(this.settings.debridLinkApiKeys, host);
   }
 
-public async checkDebridAccounts(settingsOverride?: AppSettings): Promise<DebridAccountStatus[]> {
+public async checkDebridAccounts(settingsOverride?: AppSettings, persistValidOverride = false, expectedAccountId?: string): Promise<DebridAccountStatus[]> {
     const statuses = await checkAllDebridAccounts(settingsOverride ? normalizeSettings(settingsOverride) : this.settings);
-    if (!settingsOverride) {
+    if (!settingsOverride || (persistValidOverride && canPersistExpectedAccountStatus(statuses, expectedAccountId))) {
       this.manager.applyDebridAccountStatuses(statuses);
+    }
+    if (!settingsOverride) {
       this.audit("INFO", "Debrid-Accounts geprueft", {
         total: statuses.length,
         valid: statuses.filter((s) => s.valid).length,

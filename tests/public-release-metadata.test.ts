@@ -41,6 +41,7 @@ const { verifyPublicRelease, verifyReleaseArchives } = await import(verifierUrl)
 const fixtureRoots: string[] = [];
 const redistributionFiles = [
   "LICENSE",
+  "THIRD_PARTY_NOTICES.md",
   "resources/extractor-jvm/licenses/LGPL-2.1.txt",
   "resources/extractor-jvm/licenses/7-Zip-license.txt",
   "resources/extractor-jvm/licenses/Apache-2.0.txt",
@@ -59,6 +60,8 @@ function writeRedistributionFiles(rootDir: string, packaged = false): void {
     let targetPath: string = relativePath;
     if (packaged && relativePath === "LICENSE") {
       targetPath = "win-unpacked/resources/LICENSE";
+    } else if (packaged && relativePath === "THIRD_PARTY_NOTICES.md") {
+      targetPath = "win-unpacked/resources/THIRD_PARTY_NOTICES.md";
     } else if (packaged) {
       targetPath = `win-unpacked/resources/app.asar.unpacked/${relativePath}`;
     }
@@ -74,6 +77,8 @@ function writeArchivePayload(outputDir: string, omittedName = ""): void {
     const content = fs.readFileSync(path.resolve(...relativePath.split("/")));
     const targetPath = relativePath === "LICENSE"
       ? "resources/LICENSE"
+      : relativePath === "THIRD_PARTY_NOTICES.md"
+        ? "resources/THIRD_PARTY_NOTICES.md"
       : `resources/app.asar.unpacked/${relativePath}`;
     writeFile(outputDir, targetPath, content);
   }
@@ -117,12 +122,17 @@ function createReleaseFixture(): string {
         "build/renderer/**/*",
         "resources/extractor-jvm/**/*",
         "LICENSE",
+        "THIRD_PARTY_NOTICES.md",
         "package.json"
       ],
       extraResources: [
         {
           from: "LICENSE",
           to: "LICENSE"
+        },
+        {
+          from: "THIRD_PARTY_NOTICES.md",
+          to: "THIRD_PARTY_NOTICES.md"
         }
       ],
       nsis: {

@@ -16,7 +16,8 @@ const EXPECTED_NSIS_ARTIFACT_NAME = "${productName}-Setup-${version}.${ext}";
 const EXPECTED_PORTABLE_ARTIFACT_NAME = "${productName}-${version}-portable.${ext}";
 const REQUIRED_BUILD_FILES = Object.freeze([
   "resources/extractor-jvm/**/*",
-  "LICENSE"
+  "LICENSE",
+  "THIRD_PARTY_NOTICES.md"
 ]);
 const EXPECTED_EXTRA_RESOURCE = Object.freeze({
   from: "LICENSE",
@@ -27,6 +28,11 @@ const REDISTRIBUTION_FILES = Object.freeze([
     sourcePath: "LICENSE",
     packagedPath: "resources/LICENSE",
     sha256: "f2c1bc02d9ba5235cc67dfea734e7dc90559b00d8cb2d142bad7a984ff96d3f6"
+  }),
+  Object.freeze({
+    sourcePath: "THIRD_PARTY_NOTICES.md",
+    packagedPath: "resources/THIRD_PARTY_NOTICES.md",
+    sha256: "b5d923900e9bf932fbf173191973d0892a091ac5afdc4907b8b9f4f846e8126c"
   }),
   Object.freeze({
     sourcePath: "resources/extractor-jvm/licenses/LGPL-2.1.txt",

@@ -10,9 +10,18 @@ Desktop downloader for Windows with package-based queue management, multi-provid
 
 ## Changelog
 
+### 2.0.10
+
+- Add locally bundled provider logos throughout account management.
+- Reorder the account table to Hoster, Status, Download Traffic Remaining, Username, Expiry Date, and Password / Access.
+- Increase account-row and status text sizes while keeping the table compact.
+- Show full account usernames while continuing to protect passwords and API keys.
+- Replace the provider-wide edit form with a compact editor for the selected account or API key.
+- Preserve sibling accounts, usage counters, limits, and status metadata during account-specific edits.
+
 ### 2.0.9
 
-- Rebuild the Accounts view as a viewport-filling, JDownloader-style table with flat 24-pixel rows and bottom-aligned actions.
+- Rebuild the Accounts view as a viewport-filling compact table with flat rows and bottom-aligned actions.
 - Separate account usage rules from the overview so rotation and routing controls no longer reduce the visible account list.
 - Redesign the account dialog with one-line provider rows, an immediate default selection, compact credential fields, and split cancel/save actions.
 - Add a global account enable/disable control while preserving unrelated provider state.
@@ -35,7 +44,7 @@ Desktop downloader for Windows with package-based queue management, multi-provid
 
 ## Why this tool?
 
-- JDownloader-style workflow with packages, progress, extraction, history, and clean post-processing.
+- Package-based workflow with progress, extraction, history, and clean post-processing.
 - Multiple debrid accounts in one app, including provider order, automatic fallback, and per-hoster routing.
 - Built for large queues with session persistence, retries, reconnect handling, resume support, and integrity checks.
 - Includes an in-app updater for releases published on GitHub.
@@ -344,3 +353,5 @@ Detailed release history is published on [GitHub Releases](https://github.com/Su
 The project is licensed under the MIT License. See `LICENSE`.
 
 Bundled JVM extractor licenses and redistribution notices are available in `resources/extractor-jvm`.
+
+Bundled provider icon notices are available in `THIRD_PARTY_NOTICES.md`.

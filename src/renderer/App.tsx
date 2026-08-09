@@ -38,8 +38,11 @@ import {
 } from "../shared/provider-daily-limits";
 import { reorderPackageOrderByDrop, sortPackageOrderByName, sortPackagesForDisplay } from "./package-order";
 import { pruneSelection } from "./selection";
-import { buildBulkAccountEnabledState, buildConfiguredProviderOrder, getAccountDialogSelectableOptions, isAccountRowSelectionKey, matchesAccountModeFilter, pruneAccountRowSelection, resolveVisibleAccountKind } from "./account-ui";
+import { buildBulkAccountEnabledState, buildConfiguredProviderOrder, getAccountDialogSelectableOptions, isAccountRowSelectionKey, matchesAccountModeFilter, pruneAccountRowSelection, resolveAccountUsername, resolveVisibleAccountKind } from "./account-ui";
 import type { AccountModeFilter } from "./account-ui";
+import { applyAccountEdit, buildAccountEditCheckSettings, createAccountEditState, getAccountEditExpectedStatusId, removeAccountTarget, validateAccountEdit, validateAccountEditStatuses } from "./account-edit";
+import type { AccountEditState, AccountEditTarget, AccountKind, AccountService, SingleAccountKind } from "./account-edit";
+import { ACCOUNT_SERVICE_ICONS } from "./account-service-icons";
 import { DOWNLOAD_SPEED_MAX_SAMPLES, updateDownloadSpeedHistory } from "./download-speed-state";
 import type { DownloadSpeedHistoryState } from "./download-speed-state";
 
@@ -86,21 +89,6 @@ interface LinkPopupState {
   links: { name: string; url: string }[];
   isPackage: boolean;
 }
-
-type AccountService = "realdebrid" | "megadebrid-api" | "megadebrid-web" | "bestdebrid" | "alldebrid" | "ddownload" | "onefichier" | "debridlink" | "linksnappy";
-type AccountKind =
-  | "realdebrid-api"
-  | "realdebrid-web"
-  | "megadebrid-api"
-  | "megadebrid-web"
-  | "bestdebrid-api"
-  | "bestdebrid-web"
-  | "alldebrid-api"
-  | "alldebrid-web"
-  | "ddownload-login"
-  | "onefichier-api"
-  | "debridlink-api"
-  | "linksnappy-login";
 
 type AccountQuickAction = "realdebrid-login" | "bestdebrid-cookies" | "alldebrid-login" | "alldebrid-status";
 interface AccountOption {
@@ -183,12 +171,32 @@ interface AccountTableRow {
   toggleKind: "mega" | "dl" | "single";
   megaLogin?: string;
   dlKey?: DebridLinkAccountKeyEntry;
+  editTarget: AccountEditTarget;
 }
 
 interface AccountContextMenuState {
   x: number;
   y: number;
   row: AccountTableRow;
+}
+
+function AccountServiceLogo({ service, className }: { service: AccountService; className: string }): ReactElement {
+  return <img className={className} src={ACCOUNT_SERVICE_ICONS[service]} alt="" aria-hidden="true" draggable={false} />;
+}
+
+function getAccountQuickActionMeta(kind: AccountKind): { label: string; action: AccountQuickAction } | null {
+  switch (kind) {
+    case "realdebrid-web":
+      return { label: "Login", action: "realdebrid-login" };
+    case "bestdebrid-web":
+      return { label: "Cookies", action: "bestdebrid-cookies" };
+    case "alldebrid-api":
+      return { label: "Status", action: "alldebrid-status" };
+    case "alldebrid-web":
+      return { label: "Login", action: "alldebrid-login" };
+    default:
+      return null;
+  }
 }
 
 function buildDebugSetupDetails(setup: DebugSetupCheckResult): string {
@@ -600,6 +608,22 @@ function summarizeAccountLines(kind: AccountKind, settings: AppSettings): string
     }
   }
   return [summarizeAccount(kind, settings)];
+}
+
+function getStoredAccountUsername(kind: AccountKind, settings: AppSettings): string {
+  switch (kind) {
+    case "ddownload-login":
+      return settings.ddownloadLogin;
+    case "linksnappy-login":
+      return settings.linkSnappyLogin;
+    case "realdebrid-web":
+    case "alldebrid-web":
+      return "Browser-Login";
+    case "bestdebrid-web":
+      return "Cookies.txt";
+    default:
+      return "API-Account";
+  }
 }
 
 function createAccountDialogState(mode: "create" | "edit", kind: AccountKind | null, settings: AppSettings): AccountDialogState {
@@ -1795,6 +1819,7 @@ export function App(): ReactElement {
   const accountContextMenuRef = useRef<HTMLDivElement>(null);
   const [linkPopup, setLinkPopup] = useState<LinkPopupState | null>(null);
   const [accountDialog, setAccountDialog] = useState<AccountDialogState | null>(null);
+  const [accountEditDialog, setAccountEditDialog] = useState<AccountEditState | null>(null);
   const [accountDialogSearch, setAccountDialogSearch] = useState("");
   const [accountDialogModeFilter, setAccountDialogModeFilter] = useState<AccountModeFilter>("all");
   const [keyStatsPopup, setKeyStatsPopup] = useState<string | null>(null);
@@ -2528,7 +2553,7 @@ export function App(): ReactElement {
             entry,
             hosterLabel: entry.serviceLabel,
             modeLabel: entry.modeLabel,
-            username: acc.maskedLogin,
+            username: acc.login,
             credentialLabel: "••••••",
             accountId: acc.id,
             checkable: true,
@@ -2538,7 +2563,14 @@ export function App(): ReactElement {
             dailyRemainingBytes: limit > 0 ? Math.max(0, limit - used) : 0,
             totalUsedBytes: getMegaDebridAccountTotalUsageBytes(snapshot.settings, acc.id),
             toggleKind: "mega",
-            megaLogin: acc.login
+            megaLogin: acc.login,
+            editTarget: {
+              type: "mega",
+              rowKey: `mega-${entry.kind}-${acc.id}`,
+              kind: entry.kind,
+              service: entry.service as "megadebrid-api" | "megadebrid-web",
+              accountId: acc.id
+            }
           });
         }
       } else if (entry.kind === "debridlink-api") {
@@ -2548,7 +2580,7 @@ export function App(): ReactElement {
             entry,
             hosterLabel: entry.serviceLabel,
             modeLabel: entry.modeLabel,
-            username: key.masked,
+            username: "",
             credentialLabel: "API-Key",
             accountId: key.id,
             checkable: true,
@@ -2558,7 +2590,14 @@ export function App(): ReactElement {
             dailyRemainingBytes: key.dailyLimitBytes > 0 ? Math.max(0, key.dailyLimitBytes - key.dailyUsedBytes) : 0,
             totalUsedBytes: key.totalUsedBytes,
             toggleKind: "dl",
-            dlKey: key
+            dlKey: key,
+            editTarget: {
+              type: "debridlink",
+              rowKey: `dl-${key.id}`,
+              kind: "debridlink-api",
+              service: "debridlink",
+              keyId: key.id
+            }
           });
         }
       } else {
@@ -2567,7 +2606,7 @@ export function App(): ReactElement {
           entry,
           hosterLabel: entry.serviceLabel,
           modeLabel: entry.modeLabel,
-          username: entry.summary,
+          username: getStoredAccountUsername(entry.kind, settingsDraft),
           credentialLabel: getAccountCredentialLabel(entry.kind),
           accountId: null,
           checkable: false,
@@ -2576,7 +2615,14 @@ export function App(): ReactElement {
           dailyLimitBytes: entry.dailyLimitBytes,
           dailyRemainingBytes: entry.dailyLimitBytes > 0 ? Math.max(0, entry.dailyRemainingBytes ?? 0) : 0,
           totalUsedBytes: entry.totalUsedBytes,
-          toggleKind: "single"
+          toggleKind: "single",
+          editTarget: {
+            type: "single",
+            rowKey: `svc-${entry.service}`,
+            kind: entry.kind as SingleAccountKind,
+            service: entry.service,
+            provider: entry.provider
+          }
         });
       }
     }
@@ -2624,8 +2670,8 @@ export function App(): ReactElement {
     else if (!st.isPremium) { statusCls = "free"; statusText = "Free Account"; }
     else { statusCls = "ok"; statusText = st.message || "Premium Account"; }
     const isProblem = statusCls === "invalid";
-    const username = row.username;
-    const usernameTitle = st && st.email && st.email.toLowerCase() !== row.username.toLowerCase() ? `${row.username} (Mail: ${st.email})` : row.username;
+    const username = resolveAccountUsername(row.username, st?.email);
+    const usernameTitle = username;
     const expiry = st && st.premiumUntilMs && st.premiumUntilMs > 0 ? new Date(st.premiumUntilMs).toLocaleDateString("de-DE") : "—";
     const traffic = row.dailyLimitBytes > 0
       ? `${humanSize(row.dailyRemainingBytes)} von ${humanSize(row.dailyLimitBytes)} übrig`
@@ -2644,7 +2690,7 @@ export function App(): ReactElement {
             setSelectedAccountRowKey(row.rowKey);
           }
         }}
-        onDoubleClick={() => openEditAccountDialog(row.entry.kind)}
+        onDoubleClick={() => openEditAccountDialog(row)}
         onContextMenu={(event) => {
           event.preventDefault();
           event.stopPropagation();
@@ -2657,6 +2703,7 @@ export function App(): ReactElement {
             checked={!row.disabled}
             disabled={actionBusy}
             title={row.disabled ? "Account aktivieren" : "Account deaktivieren (bleibt gespeichert)"}
+            aria-label={`${row.hosterLabel} ${row.modeLabel} ${row.disabled ? "aktivieren" : "deaktivieren"}`}
             onChange={() => {
               if (row.toggleKind === "mega" && row.megaLogin) { void onToggleMegaAccountEnabled(row.megaLogin, row.disabled); }
               else if (row.toggleKind === "dl" && row.dlKey) { void onToggleDebridLinkApiKeyEnabled(row.entry, row.dlKey); }
@@ -2665,19 +2712,19 @@ export function App(): ReactElement {
           />
         </span>
         <span className="acct2-hoster" title={`${row.hosterLabel} · ${row.modeLabel}`}>
-          <span className={`acct2-service-icon service-${row.entry.service}`}>{row.hosterLabel.slice(0, 1).toUpperCase()}</span>
+          <AccountServiceLogo service={row.entry.service} className="acct2-service-icon" />
           <strong>{row.hosterLabel}</strong>
           <span className="acct2-mode">{row.modeLabel}</span>
         </span>
-        <span className="acct2-traffic">{traffic}</span>
         <span className="acct2-status">
           {statusCls === "none"
             ? <span className="acct2-nostatus" title="Für diesen Anbieter gibt es keine Status-Prüfung">—</span>
             : <span className={`account-validity-badge ${statusCls}`}>{statusText}</span>}
         </span>
+        <span className="acct2-traffic">{traffic}</span>
         <span className="acct2-user" title={usernameTitle}>{username}</span>
         <span className="acct2-expiry">{expiry}</span>
-        <span className="acct2-credential" title="Zugangsdaten werden niemals im Klartext angezeigt">{row.credentialLabel}</span>
+        <span className="acct2-credential" title="Passwörter und API-Schlüssel bleiben geschützt">{row.credentialLabel}</span>
         <span className="acct2-c-actions">
           <button
             className="btn btn-sm acct2-menu-button"
@@ -2699,6 +2746,10 @@ export function App(): ReactElement {
   const availableAccountOptions = useMemo(() => (
     ACCOUNT_OPTIONS.filter((option) => !configuredAccountServices.has(option.service))
   ), [configuredAccountServices]);
+  const accountEditOption = accountEditDialog ? findAccountOption(accountEditDialog.target.kind) : null;
+  const accountEditRow = accountEditDialog ? accountRows.find((row) => row.rowKey === accountEditDialog.target.rowKey) ?? null : null;
+  const accountEditStatus = accountEditRow?.accountId ? snapshot.settings.debridAccountStatuses?.[accountEditRow.accountId] ?? null : null;
+  const accountEditQuickAction = accountEditOption ? getAccountQuickActionMeta(accountEditOption.kind) : null;
   const accountDialogOption = accountDialog?.kind ? findAccountOption(accountDialog.kind) : null;
   const accountDialogSelectableOptions = useMemo(() => {
     if (!accountDialog) {
@@ -2853,7 +2904,9 @@ export function App(): ReactElement {
       providerDailyUsageBytes: { ...(result.providerDailyUsageBytes || {}) },
       providerTotalUsageBytes: { ...(result.providerTotalUsageBytes || {}) },
       debridLinkApiKeyDailyUsageBytes: { ...(result.debridLinkApiKeyDailyUsageBytes || {}) },
-      debridLinkApiKeyTotalUsageBytes: { ...(result.debridLinkApiKeyTotalUsageBytes || {}) }
+      debridLinkApiKeyTotalUsageBytes: { ...(result.debridLinkApiKeyTotalUsageBytes || {}) },
+      megaDebridAccountDailyUsageBytes: { ...(result.megaDebridAccountDailyUsageBytes || {}) },
+      megaDebridAccountTotalUsageBytes: { ...(result.megaDebridAccountTotalUsageBytes || {}) }
     }));
   };
 
@@ -2887,21 +2940,6 @@ export function App(): ReactElement {
         return;
       default:
         return;
-    }
-  };
-
-  const getAccountQuickActionMeta = (kind: AccountKind): { label: string; action: AccountQuickAction } | null => {
-    switch (kind) {
-      case "realdebrid-web":
-        return { label: "Login", action: "realdebrid-login" };
-      case "bestdebrid-web":
-        return { label: "Cookies", action: "bestdebrid-cookies" };
-      case "alldebrid-api":
-        return { label: "Status", action: "alldebrid-status" };
-      case "alldebrid-web":
-        return { label: "Login", action: "alldebrid-login" };
-      default:
-        return null;
     }
   };
 
@@ -2947,10 +2985,12 @@ export function App(): ReactElement {
     setAccountDialog(createAccountDialogState("create", availableAccountOptions[0]?.kind ?? null, settingsDraft));
   };
 
-  const openEditAccountDialog = (kind: AccountKind): void => {
-    setAccountDialogSearch("");
-    setAccountDialogModeFilter("all");
-    setAccountDialog(createAccountDialogState("edit", kind, settingsDraft));
+  const openEditAccountDialog = (row: AccountTableRow): void => {
+    try {
+      setAccountEditDialog(createAccountEditState(row.editTarget, settingsDraft));
+    } catch (error) {
+      showToast(String(error), 3200);
+    }
   };
 
   const updateAccountDialogKind = useCallback((kind: AccountKind): void => {
@@ -2999,6 +3039,42 @@ export function App(): ReactElement {
     setAccountDialogSearch("");
     setAccountDialogModeFilter("all");
   }, []);
+
+  const closeAccountEditDialog = useCallback((): void => {
+    setAccountEditDialog(null);
+  }, []);
+
+  const onSaveAccountEditDialog = async (quickAction?: AccountQuickAction): Promise<void> => {
+    if (!accountEditDialog) {
+      return;
+    }
+    const editSnapshot = accountEditDialog;
+    const validationError = validateAccountEdit(editSnapshot, settingsDraft);
+    if (validationError) {
+      showToast(validationError, 2800);
+      return;
+    }
+    await performQuickAction(async () => {
+      const nextDraft = applyAccountEdit(settingsDraft, editSnapshot);
+      if (editSnapshot.target.type === "mega" || editSnapshot.target.type === "debridlink") {
+        const statuses = await window.rd.checkDebridAccounts(buildAccountEditCheckSettings(nextDraft, editSnapshot), true, getAccountEditExpectedStatusId(editSnapshot) || undefined);
+        const statusError = validateAccountEditStatuses(editSnapshot, statuses);
+        if (statusError) {
+          showToast(`Prüfung fehlgeschlagen: ${statusError}`, 4200);
+          return;
+        }
+      }
+      await persistSpecificSettings(nextDraft);
+      closeAccountEditDialog();
+      if (quickAction) {
+        await runAccountQuickAction(quickAction);
+      } else {
+        showToast(`${findAccountOption(editSnapshot.target.kind).title} gespeichert`, 2200);
+      }
+    }, (error) => {
+      showToast(`Account konnte nicht gespeichert werden: ${String(error)}`, 3200);
+    });
+  };
 
   const onSaveAccountDialog = async (quickAction?: AccountQuickAction): Promise<void> => {
     if (!accountDialog) {
@@ -3207,13 +3283,27 @@ export function App(): ReactElement {
 
   const removeAccountTableRow = (row: AccountTableRow): void => {
     setAccountContextMenu(null);
-    if (row.toggleKind === "mega" && row.megaLogin) {
-      void onRemoveMegaAccount(row.megaLogin);
-    } else if (row.toggleKind === "dl" && row.dlKey) {
-      void onRemoveDebridLinkKey(row.dlKey);
-    } else {
-      void onRemoveAccount(row.entry);
-    }
+    void (async () => {
+      const username = resolveAccountUsername(row.username, row.accountId ? snapshot.settings.debridAccountStatuses?.[row.accountId]?.email : undefined);
+      const confirmed = await askConfirmPrompt({
+        title: `${row.hosterLabel} entfernen`,
+        message: `Soll ${row.hosterLabel}${username !== "—" ? ` (${username})` : ""} wirklich entfernt werden?`,
+        confirmLabel: "Entfernen",
+        danger: true
+      });
+      if (!confirmed) {
+        return;
+      }
+      await performQuickAction(async () => {
+        await persistSpecificSettings(removeAccountTarget(settingsDraft, row.editTarget));
+        if (row.entry.service === "alldebrid") {
+          setAllDebridHostInfo(null);
+        }
+        showToast(`${row.hosterLabel} entfernt`, 2200);
+      }, (error) => {
+        showToast(`Account konnte nicht entfernt werden: ${String(error)}`, 3200);
+      });
+    })();
   };
 
   const checkAccountTableRow = (row: AccountTableRow): void => {
@@ -5621,8 +5711,8 @@ export function App(): ReactElement {
                         <div className="acct2-head" role="row">
                           <span className="acct2-c-check" role="columnheader" aria-label="Aktiviert" />
                           <span role="columnheader">Hoster</span>
-                          <span role="columnheader">Download-Traffic übrig</span>
                           <span role="columnheader"><button type="button" className="acct2-sortable" title="Nach Premium-Restlaufzeit sortieren" onClick={cycleAccountStatusSort}>Status{accountStatusSort === "desc" ? " ▼" : accountStatusSort === "asc" ? " ▲" : ""}</button></span>
+                          <span role="columnheader">Download-Traffic übrig</span>
                           <span role="columnheader">Benutzername</span>
                           <span role="columnheader">Verfallsdatum</span>
                           <span role="columnheader">Passwort / Zugang</span>
@@ -6308,6 +6398,80 @@ export function App(): ReactElement {
         </div>
       )}
 
+      {accountEditDialog && accountEditOption && (
+        <div className="modal-backdrop" onClick={closeAccountEditDialog}>
+          <div className="modal-card account-edit-modal" role="dialog" aria-modal="true" aria-labelledby="account-edit-dialog-title" onClick={(event) => event.stopPropagation()}>
+            <div className="account-edit-header">
+              <AccountServiceLogo service={accountEditOption.service} className="account-edit-logo" />
+              <div>
+                <h3 id="account-edit-dialog-title">Account bearbeiten</h3>
+                <span>{accountEditOption.serviceLabel} · {accountEditOption.modeLabel}</span>
+              </div>
+            </div>
+
+            <div className="account-edit-summary">
+              <div>
+                <span>Benutzername</span>
+                <strong>{resolveAccountUsername(accountEditRow?.username || accountEditDialog.login, accountEditStatus?.email)}</strong>
+              </div>
+              <div>
+                <span>Status</span>
+                <strong>{accountEditRow?.disabled
+                  ? "Deaktiviert"
+                  : accountEditStatus
+                    ? accountEditStatus.valid
+                      ? accountEditStatus.isPremium ? accountEditStatus.message || "Premium Account" : "Free Account"
+                      : accountEditStatus.message || "Ungültig"
+                    : accountEditRow?.entry.statusLabel || "Noch nicht geprüft"}</strong>
+              </div>
+            </div>
+
+            <div className="account-edit-fields">
+              {(accountEditDialog.target.type === "mega" || accountEditOption.needsCredentials) && (
+                <div className="field-grid two">
+                  <div>
+                    <label htmlFor="account-edit-login">Login / E-Mail</label>
+                    <input id="account-edit-login" autoComplete="username" value={accountEditDialog.login} onChange={(event) => setAccountEditDialog((prev) => prev ? { ...prev, login: event.target.value } : prev)} />
+                  </div>
+                  <div>
+                    <label htmlFor="account-edit-password">Passwort</label>
+                    <input id="account-edit-password" type="password" autoComplete="current-password" value={accountEditDialog.password} onChange={(event) => setAccountEditDialog((prev) => prev ? { ...prev, password: event.target.value } : prev)} />
+                  </div>
+                </div>
+              )}
+
+              {(accountEditDialog.target.type === "debridlink" || (accountEditOption.needsToken && accountEditDialog.target.type === "single")) && (
+                <div>
+                  <label htmlFor="account-edit-token">{accountEditDialog.target.type === "debridlink" ? "API-Key" : "Token / API-Key"}</label>
+                  <input id="account-edit-token" type="password" autoComplete="off" value={accountEditDialog.token} onChange={(event) => setAccountEditDialog((prev) => prev ? { ...prev, token: event.target.value } : prev)} />
+                </div>
+              )}
+
+              <div>
+                <label htmlFor="account-edit-daily-limit">Tageslimit (GB, optional)</label>
+                <input id="account-edit-daily-limit" inputMode="decimal" placeholder="z.B. 250" value={accountEditDialog.dailyLimitGb} onChange={(event) => setAccountEditDialog((prev) => prev ? { ...prev, dailyLimitGb: event.target.value } : prev)} />
+                <div className="account-edit-note">Leer oder 0 bedeutet unbegrenzt. Der Zähler wird täglich um 00:00 Uhr zurückgesetzt.</div>
+              </div>
+
+              {!accountEditOption.needsCredentials && !accountEditOption.needsToken && accountEditDialog.target.type === "single" && (
+                <div className="account-edit-note prominent">Dieser Account verwendet den gespeicherten Browser- oder Cookie-Login.</div>
+              )}
+
+              {accountEditQuickAction && (
+                <button className="btn account-edit-quick-action" disabled={actionBusy} onClick={() => { void runAccountQuickAction(accountEditQuickAction.action); }}>
+                  {accountEditQuickAction.label === "Cookies" ? "Cookies importieren" : accountEditQuickAction.label === "Login" ? "Login öffnen" : "Status prüfen"}
+                </button>
+              )}
+            </div>
+
+            <div className="modal-actions account-edit-actions">
+              <button className="btn" onClick={closeAccountEditDialog}>Abbrechen</button>
+              <button className="btn accent" disabled={actionBusy} onClick={() => { void onSaveAccountEditDialog(); }}>Prüfen und speichern</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {accountDialog && (
         <div className="modal-backdrop" onClick={closeAccountDialog}>
           <div className="modal-card account-modal" role="dialog" aria-modal="true" aria-labelledby="account-dialog-title" onClick={(event) => event.stopPropagation()}>
@@ -6358,7 +6522,7 @@ export function App(): ReactElement {
                       className={`account-picker-row${accountDialog.kind === option.kind ? " active" : ""}`}
                       onClick={() => updateAccountDialogKind(option.kind)}
                     >
-                      <span className="account-picker-domain"><span className={`account-picker-icon service-${option.service}`}>{option.serviceLabel.slice(0, 1).toUpperCase()}</span><strong>{option.title}</strong></span>
+                      <span className="account-picker-domain"><AccountServiceLogo service={option.service} className="account-picker-icon" /><strong>{option.title}</strong></span>
                       <span className="account-picker-function">{getAccountPickerFunctionLabel(option)}</span>
                     </button>
                   ))}
@@ -6702,7 +6866,7 @@ export function App(): ReactElement {
             <span>{accountContextMenu.row.modeLabel} · {accountContextMenu.row.username}</span>
           </div>
           <div className="ctx-menu-sep" />
-          <button className="ctx-menu-item" onClick={() => { const row = accountContextMenu.row; setAccountContextMenu(null); openEditAccountDialog(row.entry.kind); }}>
+          <button className="ctx-menu-item" onClick={() => { const row = accountContextMenu.row; setAccountContextMenu(null); openEditAccountDialog(row); }}>
             Bearbeiten
           </button>
           <button className="ctx-menu-item" onClick={() => checkAccountTableRow(accountContextMenu.row)}>
