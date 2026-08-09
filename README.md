@@ -301,6 +301,10 @@ This makes it easy to share one URL plus token during support, so current packag
 
 Detailed release history is published on [GitHub Releases](https://github.com/Sucukdeluxe/multi-debrid-downloader/releases).
 
+### 2.0.4
+
+- Rename the online backup action from "create" to "export" for clearer wording.
+
 ### 2.0.3
 
 - Keep online backup keys on a single line in the export and import dialog.

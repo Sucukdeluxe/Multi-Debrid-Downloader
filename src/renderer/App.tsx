@@ -4702,7 +4702,7 @@ export function App(): ReactElement {
                     <button className="menu-dropdown-item" onClick={() => { void onExportBackup(); }}>Exportieren</button>
                     <button className="menu-dropdown-item" onClick={() => { void onImportBackup(); }}>Importieren</button>
                     <div className="menu-separator" />
-                    <button className="menu-dropdown-item" onClick={() => { void onCreateOnlineBackup(); }}>Online-Schlüssel erstellen</button>
+                    <button className="menu-dropdown-item" onClick={() => { void onCreateOnlineBackup(); }}>Online-Schlüssel exportieren</button>
                     <button className="menu-dropdown-item" onClick={onOpenOnlineBackupImport}>Online-Schlüssel importieren</button>
                   </div>
                 )}
