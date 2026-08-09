@@ -3119,7 +3119,7 @@ td {
 }
 
 .online-backup-modal {
-  width: min(620px, 100%);
+  width: min(760px, calc(100vw - 24px));
 }
 
 .online-backup-key {
@@ -3132,7 +3132,11 @@ td {
   color: var(--text);
   padding: 10px 12px;
   font: 13px/1.55 "Cascadia Mono", "Consolas", monospace;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: normal;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .online-backup-key:focus {
