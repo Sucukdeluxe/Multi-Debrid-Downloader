@@ -1075,6 +1075,16 @@ body,
   min-height: 0;
 }
 
+.app-shell.settings-active {
+  user-select: none;
+}
+
+.app-shell.settings-active input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+.app-shell.settings-active textarea,
+.app-shell.settings-active [contenteditable]:not([contenteditable="false"]) {
+  user-select: text;
+}
+
 .settings-toolbar {
   display: flex;
   flex-direction: row;

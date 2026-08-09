@@ -10,6 +10,11 @@ Desktop downloader for Windows with package-based queue management, multi-provid
 
 ## Changelog
 
+### 2.0.12
+
+- Prevent static headings, labels, hints, and card text from being selected throughout Settings.
+- Keep editable fields and text areas selectable for normal copy and paste.
+
 ### 2.0.11
 
 - Keep Account Overview and Usage Rules inside the same fixed layout frame.

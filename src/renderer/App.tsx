@@ -4796,7 +4796,7 @@ export function App(): ReactElement {
 
   return (
     <div
-      className={`app-shell${dragOver ? " drag-over" : ""}`}
+      className={`app-shell${dragOver ? " drag-over" : ""}${tab === "settings" ? " settings-active" : ""}`}
       onDragEnter={(event) => {
         event.preventDefault();
         if (draggedPackageIdRef.current) { return; }
