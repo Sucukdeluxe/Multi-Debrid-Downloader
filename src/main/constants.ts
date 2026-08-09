@@ -41,7 +41,7 @@ export const DEFAULT_UPDATE_REPO = "Sucukdeluxe/multi-debrid-downloader";
 export const ONLINE_BACKUP_API_URL = "https://downloader.24-music.de/backup-api";
 
 export function defaultSettings(): AppSettings {
-  const baseDir = path.join(os.homedir(), "Downloads", "RealDebrid");
+  const baseDir = path.join(os.homedir(), "Desktop", "Multi-Debrid-Downloader");
   return {
     token: "",
     realDebridUseWebLogin: false,

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { getDebridLinkApiKeyIds } from "../shared/debrid-link-keys";
 import { getMegaDebridAccountIds } from "../shared/mega-debrid-accounts";
@@ -102,6 +103,36 @@ function normalizeAbsoluteDir(value: unknown, fallback: string): string {
     return path.resolve(fallback);
   }
   return path.resolve(text);
+}
+
+function samePath(left: unknown, right: string): boolean {
+  const leftText = asText(left);
+  if (!leftText) {
+    return false;
+  }
+  const leftResolved = path.resolve(leftText);
+  const rightResolved = path.resolve(right);
+  return process.platform === "win32"
+    ? leftResolved.toLowerCase() === rightResolved.toLowerCase()
+    : leftResolved === rightResolved;
+}
+
+function migrateLegacyDefaultDirectories(settings: AppSettings, defaults: AppSettings): AppSettings {
+  const legacyBaseDir = path.join(os.homedir(), "Downloads", "RealDebrid");
+  const legacyExtractDir = path.join(legacyBaseDir, "_entpackt");
+  const legacyMkvLibraryDir = path.join(legacyBaseDir, "_mkv");
+  const isUntouchedLegacyConfiguration = samePath(settings.outputDir, legacyBaseDir)
+    && samePath(settings.extractDir, legacyExtractDir)
+    && samePath(settings.mkvLibraryDir, legacyMkvLibraryDir);
+  if (!isUntouchedLegacyConfiguration) {
+    return settings;
+  }
+  return {
+    ...settings,
+    outputDir: defaults.outputDir,
+    extractDir: defaults.extractDir,
+    mkvLibraryDir: defaults.mkvLibraryDir
+  };
 }
 
 const DEFAULT_COLUMN_ORDER = ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"];
@@ -344,6 +375,7 @@ function migrateUpdateRepo(raw: string, fallback: string): string {
 
 export function normalizeSettings(settings: AppSettings): AppSettings {
   const defaults = defaultSettings();
+  const directorySettings = migrateLegacyDefaultDirectories(settings, defaults);
   const currentUsageDay = getProviderUsageDayKey();
   const megaLogin = asText(settings.megaLogin);
   const megaPassword = asText(settings.megaPassword);
@@ -419,15 +451,15 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     providerSecondary: normalizeFallbackProvider(settings.providerSecondary, megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled),
     providerTertiary: normalizeFallbackProvider(settings.providerTertiary, megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled),
     autoProviderFallback: Boolean(settings.autoProviderFallback),
-    outputDir: normalizeAbsoluteDir(settings.outputDir, defaults.outputDir),
+    outputDir: normalizeAbsoluteDir(directorySettings.outputDir, defaults.outputDir),
     packageName: asText(settings.packageName),
     autoExtract: Boolean(settings.autoExtract),
     autoRename4sf4sj: Boolean(settings.autoRename4sf4sj),
     keepGermanAudioOnly: Boolean(settings.keepGermanAudioOnly),
     germanAudioMode: settings.germanAudioMode === "first" ? "first" : "tag",
-    extractDir: normalizeAbsoluteDir(settings.extractDir, defaults.extractDir),
+    extractDir: normalizeAbsoluteDir(directorySettings.extractDir, defaults.extractDir),
     collectMkvToLibrary: Boolean(settings.collectMkvToLibrary),
-    mkvLibraryDir: normalizeAbsoluteDir(settings.mkvLibraryDir, defaults.mkvLibraryDir),
+    mkvLibraryDir: normalizeAbsoluteDir(directorySettings.mkvLibraryDir, defaults.mkvLibraryDir),
     createExtractSubfolder: Boolean(settings.createExtractSubfolder),
     hybridExtract: Boolean(settings.hybridExtract),
     cleanupMode: settings.cleanupMode,

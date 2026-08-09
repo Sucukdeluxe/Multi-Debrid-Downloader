@@ -301,6 +301,11 @@ This makes it easy to share one URL plus token during support, so current packag
 
 Detailed release history is published on [GitHub Releases](https://github.com/Sucukdeluxe/multi-debrid-downloader/releases).
 
+### 2.0.5
+
+- Move the default download, extraction, and video collection directories to the desktop under `Multi-Debrid-Downloader`.
+- Migrate untouched legacy default directories from `Downloads\RealDebrid` to the new desktop location.
+
 ### 2.0.4
 
 - Rename the online backup action from "create" to "export" for clearer wording.

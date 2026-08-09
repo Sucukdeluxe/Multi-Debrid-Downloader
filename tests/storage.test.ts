@@ -17,6 +17,45 @@ afterEach(() => {
 });
 
 describe("settings storage", () => {
+  it("defaults download directories to the desktop project folder", () => {
+    const baseDir = path.join(os.homedir(), "Desktop", "Multi-Debrid-Downloader");
+    const defaults = defaultSettings();
+
+    expect(defaults.outputDir).toBe(baseDir);
+    expect(defaults.extractDir).toBe(path.join(baseDir, "_entpackt"));
+    expect(defaults.mkvLibraryDir).toBe(path.join(baseDir, "_mkv"));
+  });
+
+  it("migrates an untouched legacy directory configuration", () => {
+    const legacyBaseDir = path.join(os.homedir(), "Downloads", "RealDebrid");
+    const normalized = normalizeSettings({
+      ...defaultSettings(),
+      outputDir: legacyBaseDir,
+      extractDir: path.join(legacyBaseDir, "_entpackt"),
+      mkvLibraryDir: path.join(legacyBaseDir, "_mkv")
+    });
+    const defaults = defaultSettings();
+
+    expect(normalized.outputDir).toBe(defaults.outputDir);
+    expect(normalized.extractDir).toBe(defaults.extractDir);
+    expect(normalized.mkvLibraryDir).toBe(defaults.mkvLibraryDir);
+  });
+
+  it("keeps custom directory choices during legacy migration", () => {
+    const legacyBaseDir = path.join(os.homedir(), "Downloads", "RealDebrid");
+    const customOutputDir = path.join(os.homedir(), "Videos", "Custom-Downloads");
+    const normalized = normalizeSettings({
+      ...defaultSettings(),
+      outputDir: customOutputDir,
+      extractDir: path.join(legacyBaseDir, "_entpackt"),
+      mkvLibraryDir: path.join(legacyBaseDir, "_mkv")
+    });
+
+    expect(normalized.outputDir).toBe(customOutputDir);
+    expect(normalized.extractDir).toBe(path.join(legacyBaseDir, "_entpackt"));
+    expect(normalized.mkvLibraryDir).toBe(path.join(legacyBaseDir, "_mkv"));
+  });
+
   it("does not persist provider credentials when rememberToken is disabled", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
     tempDirs.push(dir);
