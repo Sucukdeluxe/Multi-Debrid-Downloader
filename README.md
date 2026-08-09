@@ -10,6 +10,10 @@ Desktop downloader for Windows with package-based queue management, multi-provid
 
 ## Changelog
 
+### 2.0.7
+
+- Improve account filter readability in dark and light themes.
+
 ### 2.0.6
 
 - Keeps the download speed history alive when switching between tabs.
