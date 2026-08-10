@@ -3,7 +3,7 @@ import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { DownloadItem, DownloadStatus, UiSnapshot } from "../src/shared/types";
-import { readBandwidthChartPalette } from "../src/renderer/App";
+import { appendBandwidthSample, readBandwidthChartPalette } from "../src/renderer/App";
 import {
   buildStatisticsViewModel,
   type StatisticsMetric,
@@ -18,6 +18,21 @@ import {
 import { createVisualFixture } from "./visual/fixtures";
 
 const now = new Date(2026, 7, 10, 12, 0, 0, 0).getTime();
+
+describe("bandwidth sampling", () => {
+  it("keeps the latest minute and normalizes invalid speeds", () => {
+    const history = [
+      { time: now - 61000, speed: 1 },
+      { time: now - 59000, speed: 2 }
+    ];
+
+    expect(appendBandwidthSample(history, Number.NaN, now)).toEqual([
+      { time: now - 59000, speed: 2 },
+      { time: now, speed: 0 }
+    ]);
+    expect(history).toHaveLength(2);
+  });
+});
 
 function createSnapshot(): UiSnapshot {
   return structuredClone(createVisualFixture("empty").snapshot);
@@ -385,6 +400,15 @@ describe("statistics view", () => {
 });
 
 describe("bandwidth chart palette", () => {
+  it("collects bandwidth samples from the mounted application instead of the statistics tab", () => {
+    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
+    const chartBlock = source.slice(source.indexOf("const BandwidthChart"), source.indexOf("interface DownloadSpeedSparklineProps"));
+
+    expect(source).toContain("appendBandwidthSample(speedHistoryRef.current, liveDownloadSpeedBps");
+    expect(chartBlock).not.toContain("history.push");
+    expect(chartBlock).not.toContain('item.status === "downloading"');
+  });
+
   it("defines semantic speed and progress text colors for both themes", () => {
     const css = readFileSync(new URL("../src/renderer/theme.css", import.meta.url), "utf8");
     const dark = css.match(/:root,\s*:root\[data-theme="dark"\]\s*\{([\s\S]*?)\}/)?.[1];

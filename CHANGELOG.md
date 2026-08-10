@@ -2,6 +2,29 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.16] - 2026-08-10
+
+### Downloads and telemetry
+
+- Started bandwidth-history collection with the active download session instead of waiting for the Statistics view to be opened.
+- Kept the latest 60 seconds of speed samples available when Statistics is opened later.
+- Updated the sidebar link counter immediately as individual files finish, fail, or leave the active queue.
+- Added locale-aware thousands separators to package, link, and hoster counters.
+
+### Interface fixes
+
+- Kept nested application-menu entries visible in narrow windows without introducing a horizontal scrollbar.
+- Opened nested right-side menus toward the available left side of the application frame.
+- Changed enabled settings switches to the semantic success color.
+- Changed online file indicators to the semantic success color.
+- Removed overlapping light text fragments from the dark-on-green progress labels and strengthened their weight.
+- Made service and status labels react to their actual column width, with compact labels and complete accessible names and tooltips.
+- Shortened Mega-Debrid service labels in narrow columns while preserving the full account description as a tooltip.
+
+### Reliability and testing
+
+- Added regression coverage for background bandwidth sampling, 60-second history trimming, nested menu overflow, enabled switch colors, progress-label clipping, responsive service/status cells, immediate queue counts, and localized sidebar counters.
+
 ## [2.0.15] - 2026-08-10
 
 ### Highlights

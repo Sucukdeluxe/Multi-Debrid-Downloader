@@ -2,6 +2,7 @@ import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties,
 import type { DownloadItem } from "../../../shared/types";
 import {
   compactProviderLabels,
+  compactDownloadServiceLabel,
   extractHoster,
   formatAudioStripSummary,
   formatDateTime,
@@ -147,6 +148,17 @@ function DownloadStatusCell({ status, title }: { status: string; title?: string 
   );
 }
 
+function DownloadServiceCell({ label }: { label: string }): ReactElement {
+  const full = normalizeDownloadServiceLabel(label);
+  const compact = compactDownloadServiceLabel(label);
+  return (
+    <span aria-label={full} className="downloads-cell downloads-service-cell" title={label}>
+      <span aria-hidden="true" className="downloads-service-full">{full}</span>
+      <span aria-hidden="true" className="downloads-service-compact">{compact}</span>
+    </span>
+  );
+}
+
 function itemCell(item: DownloadItem, column: string, sessionRunning: boolean): ReactElement | null {
   const displayStatus = displayedStatus(item, sessionRunning);
   const retrySuffix = item.retries > 0 ? ` (R${item.retries})` : "";
@@ -174,7 +186,7 @@ function itemCell(item: DownloadItem, column: string, sessionRunning: boolean): 
   }
   if (column === "account") {
     const full = item.providerLabel || (item.provider ? providerLabels[item.provider] : "");
-    return <span className="downloads-cell" title={full}>{normalizeDownloadServiceLabel(full)}</span>;
+    return <DownloadServiceCell label={full} />;
   }
   if (column === "prio") return <span className="downloads-cell" />;
   if (column === "status") return <DownloadStatusCell status={displayStatus} title={statusTitle} />;
@@ -393,7 +405,7 @@ function packageCell(row: DownloadPackageRow, column: string, packageSpeedBps: n
   }
   if (column === "account") {
     const full = compactProviderLabels(row.items.map((item) => item.providerLabel || (item.provider ? providerLabels[item.provider] : "")).filter(Boolean));
-    return <span className="downloads-cell" title={full}>{normalizeDownloadServiceLabel(full)}</span>;
+    return <DownloadServiceCell label={full} />;
   }
   if (column === "prio") return <span className="downloads-cell">{entry.priority === "high" ? "Hoch" : entry.priority === "low" ? "Niedrig" : ""}</span>;
   if (column === "status") {

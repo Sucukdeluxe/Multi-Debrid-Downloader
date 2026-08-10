@@ -83,6 +83,14 @@ export function getDownloadQueueTotalBytes(items: Iterable<DownloadItem>): numbe
   return total;
 }
 
+export function getPendingDownloadItemCount(items: Iterable<DownloadItem>): number {
+  let count = 0;
+  for (const item of items) {
+    if (item.status !== "completed" && item.status !== "cancelled" && item.status !== "failed") count += 1;
+  }
+  return count;
+}
+
 export function getDownloadSpeedBps(packageSpeeds: Record<string, number>): number {
   let total = 0;
   for (const speed of Object.values(packageSpeeds)) {

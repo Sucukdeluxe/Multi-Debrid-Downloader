@@ -10,6 +10,7 @@ import {
   buildDownloadsViewModel,
   classifyDownloadStatus,
   getDownloadQueueTotalBytes,
+  getPendingDownloadItemCount,
   getDownloadSpeedBps,
   type DownloadSidebarFilter,
   type DownloadsModelInput
@@ -33,7 +34,7 @@ import {
   downloadColumnDefinitions,
   getAvailabilitySummary
 } from "../src/renderer/views/downloads/DownloadsTable";
-import { normalizeDownloadServiceLabel } from "../src/renderer/download-format";
+import { compactDownloadServiceLabel, normalizeDownloadServiceLabel } from "../src/renderer/download-format";
 import { getRollingMetricDirection } from "../src/renderer/ui/RollingMetricValue";
 
 const now = new Date(2026, 7, 10, 12, 0, 0, 0).getTime();
@@ -125,6 +126,28 @@ describe("Download-Gesamtgröße", () => {
   });
 });
 
+describe("laufender Queue-Linkzähler", () => {
+  it("sinkt sofort, sobald eine Unterdatei abgeschlossen ist", () => {
+    const items = [
+      item("queued", "package-a", "queued"),
+      item("active", "package-a", "downloading"),
+      item("done", "package-a", "completed"),
+      item("failed", "package-a", "failed")
+    ];
+
+    expect(getPendingDownloadItemCount(items)).toBe(2);
+  });
+
+  it("formatiert große Sidebar-Zähler mit deutschen Tausenderpunkten", () => {
+    const model = withRuntime(createInput(), {
+      status: { ...withRuntime(createInput()).status, packages: 130, links: 2484 }
+    });
+    const html = renderToStaticMarkup(<DownloadsSidebarStatus model={model} />);
+
+    expect(html).toContain(">2.484<");
+  });
+});
+
 describe("responsive Downloadstatus und Servicebezeichnungen", () => {
   it("keeps full status details while providing compact table text", () => {
     expect(compactDownloadStatus("Link wird umgewandelt")).toBe("Umwandeln");
@@ -137,6 +160,8 @@ describe("responsive Downloadstatus und Servicebezeichnungen", () => {
     expect(normalizeDownloadServiceLabel("Mega-Debrid Web (Web Account)")).toBe("Mega-Debrid Web");
     expect(normalizeDownloadServiceLabel("Mega-Debrid API (API Account)")).toBe("Mega-Debrid API");
     expect(normalizeDownloadServiceLabel("Real-Debrid (Web Account)")).toBe("Real-Debrid (Web Account)");
+    expect(normalizeDownloadServiceLabel("Mega-Debrid Web (Web Account), Mega-Debrid API (API Account)")).toBe("Mega-Debrid Web, Mega-Debrid API");
+    expect(compactDownloadServiceLabel("Mega-Debrid Web (Web Account), Mega-Debrid API (API Account)")).toBe("Mega-Debrid");
   });
 });
 
@@ -622,7 +647,14 @@ describe("downloads view", () => {
     expect(css).toMatch(/\.downloads-package-items\s*\{[^}]*height:\s*auto;[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.downloads-package-items\.is-collapsed\s*\{[^}]*height:\s*0;[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s);
     expect(css).toMatch(/\.downloads-meter-label\.is-track\s*\{[^}]*color:\s*var\(--ui-progress-track-text/s);
+    expect(css).toMatch(/\.downloads-meter-label\s*\{[^}]*font-weight:\s*700;/s);
+    expect(css).toMatch(/\.downloads-meter-label\.is-track\s*\{[^}]*clip-path:\s*inset\(0 0 0 var\(--downloads-progress\)\);/s);
     expect(css).toMatch(/\.downloads-meter-label\.is-filled\s*\{[^}]*color:\s*var\(--ui-progress-fill-text/s);
+    expect(css).toMatch(/\.downloads-link-state\.online\s*\{[^}]*background:\s*var\(--ui-success\);/s);
+    expect(css).toMatch(/\.downloads-status-cell\s*\{[^}]*container-type:\s*inline-size;/s);
+    expect(css).toMatch(/\.downloads-service-cell\s*\{[^}]*container-type:\s*inline-size;/s);
+    expect(css).toMatch(/@container\s*\(max-width:\s*150px\)[\s\S]*\.downloads-status-full[^{]*\{[^}]*display:\s*none;[\s\S]*\.downloads-status-compact[^{]*\{[^}]*display:\s*inline;/s);
+    expect(css).toMatch(/@container\s*\(max-width:\s*150px\)[\s\S]*\.downloads-service-full[^{]*\{[^}]*display:\s*none;[\s\S]*\.downloads-service-compact[^{]*\{[^}]*display:\s*inline;/s);
     expect(readFileSync(new URL("../src/renderer/views/downloads/DownloadsTable.tsx", import.meta.url), "utf8")).toMatch(/\.animate\(\[\{ height: "0px", opacity: 0 \}, \{ height: `\$\{targetHeight\}px`, opacity: 1 \}\]/);
     expect(css).toMatch(/\.downloads-footer\s*\{[^}]*height:\s*60px;[^}]*padding:\s*0 12px 0 60px;/s);
     expect(css).toMatch(/\.downloads-package-card\s*\{[^}]*border:\s*0;[^}]*border-bottom:\s*1px solid color-mix\(in srgb, var\(--ui-border\) 72%, transparent\);[^}]*padding:\s*0;/s);
@@ -800,7 +832,8 @@ describe("download table row contracts", () => {
     expect(html).toContain('class="downloads-status-compact"');
     expect(html).toContain("DL läuft");
     expect(html).toContain('title="Mega-Debrid Web (Web Account)"');
-    expect(html).toContain(">Mega-Debrid Web</span>");
+    expect(html).toContain('class="downloads-service-full">Mega-Debrid Web</span>');
+    expect(html).toContain('class="downloads-service-compact">Mega-Debrid</span>');
   });
 
   it("sets the whole visible selection atomically from the header checkbox", () => {

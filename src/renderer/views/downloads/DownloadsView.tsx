@@ -11,6 +11,8 @@ import {
 } from "./DownloadsTable";
 import "./downloads.css";
 
+const integerFormatter = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 0 });
+
 export interface DownloadsStatusModel {
   packages: number;
   links: number;
@@ -104,11 +106,11 @@ export function DownloadsSidebarStatus({ model }: { model: DownloadsViewModel })
   const speed = model.status.speed.replace(/^Geschwindigkeit:\s*/i, "");
   const eta = model.status.eta.replace(/^ETA:\s*/i, "");
   const entries = [
-    { label: "Pakete", metric: "packages", numericValue: model.status.packages, value: String(model.status.packages) },
-    { label: "Links", metric: "links", numericValue: model.status.links, value: String(model.status.links) },
+    { label: "Pakete", metric: "packages", numericValue: model.status.packages, value: integerFormatter.format(model.status.packages) },
+    { label: "Links", metric: "links", numericValue: model.status.links, value: integerFormatter.format(model.status.links) },
     { label: "Sitzung", metric: "session", numericValue: model.status.sessionBytes, value: model.status.session },
     { label: "Gesamt", metric: "total", numericValue: model.status.totalBytes, value: model.status.total },
-    { label: "Hoster", metric: "hosters", numericValue: model.status.hosters, value: String(model.status.hosters) }
+    { label: "Hoster", metric: "hosters", numericValue: model.status.hosters, value: integerFormatter.format(model.status.hosters) }
   ];
   return <section className="downloads-sidebar-status" data-visual-region="downloads-sidebar-status" aria-label="Downloadstatus">{entries.map((entry) => <div key={entry.metric}><span>{entry.label}</span><RollingMetricValue numericValue={entry.numericValue} value={entry.value} /></div>)}<div><span>Geschwindigkeit</span><strong data-status-metric="speed">{speed}</strong></div><div><span>ETA</span><strong data-status-metric="eta">{eta}</strong></div></section>;
 }

@@ -697,6 +697,7 @@ describe("settings geometry", () => {
     expect(css).toMatch(/\.settings-form-column\s*{[^}]*width:\s*500px;[^}]*max-width:\s*100%;/s);
     expect(css).toMatch(/\.settings-control\s*{[^}]*height:\s*44px;[^}]*border-radius:\s*6px;/s);
     expect(css).toMatch(/\.settings-switch\s*{[^}]*width:\s*40px;[^}]*height:\s*20px;/s);
+    expect(css).toMatch(/\.settings-switch\.is-on\s*{[^}]*border-color:\s*var\(--ui-success\);[^}]*background:\s*var\(--ui-success\);/s);
     expect(css).toMatch(/\.settings-account-table-header\s*{[^}]*height:\s*41px;/s);
     expect(css).toMatch(/\.settings-account-table-header\s*{[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.settings-account-table-grid\s*{[^}]*color:\s*var\(--ui-text\);/s);

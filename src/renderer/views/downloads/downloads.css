@@ -545,7 +545,7 @@
 }
 
 .downloads-link-state.online {
-  background: var(--ui-primary);
+  background: var(--ui-success);
 }
 
 .downloads-link-state.offline {
@@ -637,10 +637,11 @@
   justify-content: center;
   height: 100%;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .downloads-meter-label.is-track {
+  clip-path: inset(0 0 0 var(--downloads-progress));
   color: var(--ui-progress-track-text, #fff);
 }
 
@@ -656,7 +657,16 @@
   color: var(--ui-progress-fill-text, #171a1f);
 }
 
-.downloads-status-compact {
+.downloads-status-cell {
+  container-type: inline-size;
+}
+
+.downloads-service-cell {
+  container-type: inline-size;
+}
+
+.downloads-status-compact,
+.downloads-service-compact {
   display: none;
 }
 
@@ -665,14 +675,22 @@
   --downloads-status-min: 90px;
 }
 
-.md-shell.is-compact .downloads-status-full,
-.md-shell.is-minimum .downloads-status-full {
-  display: none;
-}
+@container (max-width: 150px) {
+  .downloads-status-full {
+    display: none;
+  }
 
-.md-shell.is-compact .downloads-status-compact,
-.md-shell.is-minimum .downloads-status-compact {
-  display: inline;
+  .downloads-status-compact {
+    display: inline;
+  }
+
+  .downloads-service-full {
+    display: none;
+  }
+
+  .downloads-service-compact {
+    display: inline;
+  }
 }
 
 .downloads-empty-state,

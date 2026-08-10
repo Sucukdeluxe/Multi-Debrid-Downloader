@@ -90,7 +90,7 @@ import {
   StatisticsSidebarStatus,
   type StatisticsViewActions
 } from "./views/statistics/StatisticsView";
-import { buildDownloadsViewModel, getDownloadQueueTotalBytes, getDownloadSpeedBps, type DownloadDisplayMode, type DownloadSidebarFilter } from "./views/downloads/downloads-model";
+import { buildDownloadsViewModel, getDownloadQueueTotalBytes, getDownloadSpeedBps, getPendingDownloadItemCount, type DownloadDisplayMode, type DownloadSidebarFilter } from "./views/downloads/downloads-model";
 import { downloadColumnDefinitions, type DownloadSortColumn } from "./views/downloads/DownloadsTable";
 import { beginDownloadColumnDrag, clearDownloadColumnDrag, settleDownloadColumnDrag, updateDownloadColumnDrag, type DownloadColumnDragSession } from "./views/downloads/column-drag";
 import {
@@ -1316,17 +1316,26 @@ export function readBandwidthChartPalette(
   };
 }
 
+export function appendBandwidthSample(
+  history: { time: number; speed: number }[],
+  speed: number,
+  now = Date.now()
+): { time: number; speed: number }[] {
+  const next = [...history, { time: now, speed: Number.isFinite(speed) ? Math.max(0, speed) : 0 }];
+  const cutoff = now - 60000;
+  const firstVisible = next.findIndex((point) => point.time >= cutoff);
+  return firstVisible > 0 ? next.slice(firstVisible) : next;
+}
+
 interface BandwidthChartProps {
-  items: Record<string, DownloadItem>;
   running: boolean;
   paused: boolean;
   speedHistoryRef: React.MutableRefObject<{ time: number; speed: number }[]>;
 }
 
-const BandwidthChart = memo(function BandwidthChart({ items, running, paused, speedHistoryRef }: BandwidthChartProps): ReactElement {
+const BandwidthChart = memo(function BandwidthChart({ running, paused, speedHistoryRef }: BandwidthChartProps): ReactElement {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const lastUpdateRef = useRef<number>(0);
 
   const animationFrameRef = useRef<number>(0);
 
@@ -1464,30 +1473,6 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused, sp
   }, [drawChart, running, paused]);
 
   useEffect(() => {
-    if (!running || paused) return;
-
-    const now = Date.now();
-    const activeItems = Object.values(items).filter((item) => item.status === "downloading");
-    if (activeItems.length === 0) return;
-
-    const totalSpeed = activeItems.reduce((sum, item) => sum + (item.speedBps || 0), 0);
-
-    const history = speedHistoryRef.current;
-    history.push({ time: now, speed: totalSpeed });
-
-    const cutoff = now - 60000;
-    let trimIndex = 0;
-    while (trimIndex < history.length && history[trimIndex].time < cutoff) {
-      trimIndex += 1;
-    }
-    if (trimIndex > 0) {
-      speedHistoryRef.current = history.slice(trimIndex);
-    }
-
-    lastUpdateRef.current = now;
-  }, [items, paused, running]);
-
-  useEffect(() => {
     const handleResize = () => {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = requestAnimationFrame(drawChart);
@@ -1504,7 +1489,7 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused, sp
 
   useEffect(() => {
     drawChart();
-  }, [drawChart, items, paused]);
+  }, [drawChart, paused]);
 
   return (
     <div ref={containerRef} className="bandwidth-chart-container">
@@ -4946,6 +4931,10 @@ export function App(): ReactElement {
 
   const downloadPackageSpeeds = useMemo(() => Object.fromEntries(packageSpeedMap), [packageSpeedMap]);
   const liveDownloadSpeedBps = useMemo(() => getDownloadSpeedBps(snapshot.packageSpeedBps), [snapshot.packageSpeedBps]);
+  useEffect(() => {
+    if (!snapshot.session.running || snapshot.session.paused) return;
+    speedHistoryRef.current = appendBandwidthSample(speedHistoryRef.current, liveDownloadSpeedBps);
+  }, [liveDownloadSpeedBps, snapshot.packageSpeedBps, snapshot.session.paused, snapshot.session.running]);
   const downloadQueueTotalBytes = useMemo(() => getDownloadQueueTotalBytes(Object.values(snapshot.session.items)), [snapshot.session.items]);
   const downloadsViewModel = useMemo<DownloadsViewModel>(() => ({
     ...downloadsViewCore,
@@ -4971,7 +4960,7 @@ export function App(): ReactElement {
     sortDirection: downloadsSortDescending ? "desc" : "asc",
     status: {
       packages: snapshot.stats.totalPackages,
-      links: Object.keys(snapshot.session.items).length,
+      links: getPendingDownloadItemCount(Object.values(snapshot.session.items)),
       session: humanSize(snapshot.stats.totalDownloaded),
       sessionBytes: snapshot.stats.totalDownloaded,
       total: humanSize(downloadQueueTotalBytes),
@@ -5963,7 +5952,7 @@ export function App(): ReactElement {
         {tab === "statistics" && (
           <StatisticsContent
             actions={statisticsActions}
-            chart={<BandwidthChart items={snapshot.session.items} running={snapshot.session.running} paused={snapshot.session.paused} speedHistoryRef={speedHistoryRef} />}
+            chart={<BandwidthChart running={snapshot.session.running} paused={snapshot.session.paused} speedHistoryRef={speedHistoryRef} />}
             model={statisticsViewModel}
           />
         )}

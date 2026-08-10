@@ -296,8 +296,8 @@
 }
 
 .settings-switch.is-on {
-  border-color: var(--ui-accent);
-  background: var(--ui-accent);
+  border-color: var(--ui-success);
+  background: var(--ui-success);
 }
 
 .settings-switch.is-on > span {

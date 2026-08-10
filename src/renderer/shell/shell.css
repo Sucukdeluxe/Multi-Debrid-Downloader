@@ -601,11 +601,16 @@
 .md-application-menu-tree :where(.menu-dropdown, .menu-submenu-dropdown) {
   z-index: var(--md-layer-menu);
   max-height: calc(100vh - 16px);
-  overflow-y: auto;
+  overflow: visible;
 }
 
 .md-application-menu-tree > .menu-bar-item > .menu-dropdown {
   right: 0;
+  left: auto;
+}
+
+.md-application-menu-tree .menu-submenu-dropdown {
+  right: 100%;
   left: auto;
 }
 

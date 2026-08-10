@@ -30,6 +30,13 @@ describe("desktop shell", () => {
     expect(shellCss).toMatch(/\.md-application-menu-tree > \.menu-bar-item > \.menu-dropdown\s*\{[^}]*right:\s*0;[^}]*left:\s*auto;/s);
   });
 
+  it("keeps application submenus visible inside narrow right-aligned windows", () => {
+    const shellCss = readFileSync(new URL("../src/renderer/shell/shell.css", import.meta.url), "utf8");
+
+    expect(shellCss).toMatch(/\.md-application-menu-tree :where\(\.menu-dropdown, \.menu-submenu-dropdown\)\s*\{[^}]*overflow:\s*visible;/s);
+    expect(shellCss).toMatch(/\.md-application-menu-tree \.menu-submenu-dropdown\s*\{[^}]*right:\s*100%;[^}]*left:\s*auto;/s);
+  });
+
   it("uses the product asset in the header brand", () => {
     const html = renderToStaticMarkup(<AppHeader activeView="downloads" actions={null} onViewChange={() => {}} />);
     expect(html).toContain("Multi-Debrid Downloader");

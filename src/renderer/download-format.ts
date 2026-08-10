@@ -30,7 +30,11 @@ export function compactProviderLabels(labels: string[]): string {
 }
 
 export function normalizeDownloadServiceLabel(label: string): string {
-  return label.replace(/\s+(Web|API)\s+\(\1 Account\)$/i, " $1");
+  return [...new Set(label.split(",").map((entry) => entry.trim().replace(/\s+(Web|API)\s+\(\1 Account\)$/i, " $1")).filter(Boolean))].join(", ");
+}
+
+export function compactDownloadServiceLabel(label: string): string {
+  return [...new Set(normalizeDownloadServiceLabel(label).split(",").map((entry) => entry.trim().replace(/\s+(Web|API)$/i, "")).filter(Boolean))].join(", ");
 }
 
 export function formatDateTime(timestamp: number): string {
