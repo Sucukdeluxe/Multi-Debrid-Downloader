@@ -68,6 +68,7 @@ import { logRenameEvent as writeRenameLogEvent } from "./rename-log";
 import { logDesktopRename, verifyRename, verifyRenameAsync, type RenameVerification } from "./desktop-rename-log";
 import { StoragePaths, saveSession, saveSessionAsync, saveSettings, saveSettingsAsync } from "./storage";
 import { compactErrorText, ensureDirPath, filenameFromUrl, formatEta, humanSize, looksLikeOpaqueFilename, nowMs, sanitizeFilename, sleep } from "./utils";
+import { mergeKnownTotalBytes } from "./download-size";
 
 type ActiveTask = {
   itemId: string;
@@ -9044,7 +9045,7 @@ export class DownloadManager extends EventEmitter {
           ? existingTargetPath
           : path.join(pkg.outputDir, item.fileName);
         item.targetPath = this.claimTargetPath(item.id, preferredTargetPath, Boolean(canReuseExistingTarget));
-        item.totalBytes = unrestricted.fileSize;
+        item.totalBytes = mergeKnownTotalBytes(item.totalBytes, unrestricted.fileSize);
         item.status = "downloading";
         const pLabel = unrestricted.providerLabel;
         const statusLabel = providerLabel(unrestricted.provider) || pLabel;
@@ -9122,7 +9123,7 @@ export class DownloadManager extends EventEmitter {
                 item.status = "integrity_check";
                 item.progressPercent = 0;
                 item.downloadedBytes = 0;
-                item.totalBytes = unrestricted.fileSize;
+                item.totalBytes = mergeKnownTotalBytes(item.totalBytes, unrestricted.fileSize);
                 this.emitState();
                 await sleep(300);
                 continue;

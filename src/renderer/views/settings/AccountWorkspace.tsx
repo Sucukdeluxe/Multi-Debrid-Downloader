@@ -1,6 +1,5 @@
 import {
   cloneElement,
-  type ChangeEvent,
   type DragEvent,
   type KeyboardEvent,
   type MouseEvent,
@@ -482,9 +481,7 @@ export function AccountAddDialog({
   model: AccountAddDialogModel;
   actions: AccountAddDialogActions;
 }): ReactElement | null {
-  const onFilterChange = (event: ChangeEvent<HTMLSelectElement>): void => {
-    actions.onFilterChange(event.target.value as AccountAddFilter);
-  };
+  const selectedOption = model.options.find((option) => option.id === model.selectedOptionId);
   return (
     <Dialog
       actions={(
@@ -501,49 +498,34 @@ export function AccountAddDialog({
       size="account"
       title="Account hinzufügen"
     >
-      <div className="settings-account-picker-controls">
-        <input
-          aria-label="Accounts durchsuchen"
+      <label className="settings-account-picker-selector">
+        <span>Dienst / Zugangstyp</span>
+        <select
+          aria-label="Dienst / Zugangstyp"
           className="settings-control"
-          onChange={(event) => actions.onQueryChange(event.target.value)}
-          placeholder="Dienst oder Zugangstyp suchen"
-          type="search"
-          value={model.query}
-        />
-        <select aria-label="Account-Typ filtern" className="settings-control" onChange={onFilterChange} value={model.filter}>
-          <option value="all">Alle</option>
-          <option value="api">API</option>
-          <option value="web">Web</option>
+          onChange={(event) => actions.onOptionSelect(event.target.value)}
+          value={model.selectedOptionId ?? ""}
+        >
+          {model.options.map((option) => (
+            <option key={option.id} value={option.id}>{option.title} · {option.mode}</option>
+          ))}
         </select>
-      </div>
-      <div aria-label="Verfügbare Account-Typen" className="settings-account-picker" role="listbox">
-        {model.options.length === 0 ? (
-          <span className="settings-account-picker-empty">Keine passenden Account-Typen.</span>
-        ) : model.options.map((option) => {
-          const selected = option.id === model.selectedOptionId;
-          return (
-            <div className="settings-account-picker-entry" key={option.id}>
-              <button
-                aria-selected={selected}
-                className={`settings-account-picker-row${selected ? " is-selected" : ""}`}
-                onClick={() => actions.onOptionSelect(option.id)}
-                role="option"
-                type="button"
-              >
-                <span>
-                  <strong>{option.title}</strong>
-                  <small>{option.description}</small>
-                </span>
-                <span>
-                  <strong>{option.mode}</strong>
-                  <small>{option.functionLabel}</small>
-                </span>
-              </button>
-              {selected ? <AccountDialogFields fields={model.fields} onChange={actions.onFieldChange} /> : null}
+      </label>
+      {selectedOption ? (
+        <>
+          <div className="settings-account-option-meta">
+            <div>
+              <strong>{selectedOption.title}</strong>
+              <span>{selectedOption.description}</span>
             </div>
-          );
-        })}
-      </div>
+            <div>
+              <strong>{selectedOption.mode}</strong>
+              <span>{selectedOption.functionLabel}</span>
+            </div>
+          </div>
+          <AccountDialogFields fields={model.fields} onChange={actions.onFieldChange} />
+        </>
+      ) : null}
       {model.error ? <p className="settings-account-dialog-error" role="alert">{model.error}</p> : null}
     </Dialog>
   );

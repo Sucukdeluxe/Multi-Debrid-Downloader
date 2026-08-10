@@ -29,6 +29,10 @@ export function compactProviderLabels(labels: string[]): string {
   return [...groups].map(([base, details]) => details.length === 0 ? base : `${base} (${details.join(" + ")})`).join(", ");
 }
 
+export function normalizeDownloadServiceLabel(label: string): string {
+  return label.replace(/\s+(Web|API)\s+\(\1 Account\)$/i, " $1");
+}
+
 export function formatDateTime(timestamp: number): string {
   if (!timestamp) return "";
   const date = new Date(timestamp);

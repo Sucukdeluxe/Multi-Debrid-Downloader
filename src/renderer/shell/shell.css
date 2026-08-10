@@ -604,7 +604,7 @@
   overflow-y: auto;
 }
 
-.md-application-menu-tree .menu-bar-item:last-child > .menu-dropdown {
+.md-application-menu-tree > .menu-bar-item > .menu-dropdown {
   right: 0;
   left: auto;
 }

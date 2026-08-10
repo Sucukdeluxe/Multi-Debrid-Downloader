@@ -2,6 +2,42 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.15] - 2026-08-10
+
+### Highlights
+
+- Unified live speed reporting across the header, package table, and sidebar with a single telemetry source and consistent two-decimal formatting.
+- Reworked account creation into one clear service and access-type selector with the relevant credentials form directly below it.
+- Improved dense download views with responsive status labels, clearer progress text, and safer package expansion behavior.
+
+### Downloads and telemetry
+
+- Removed the redundant Add links toolbar action so Start is now the first download control.
+- Removed the additional renderer delay for large active queues, allowing manager telemetry to appear without a second buffering interval.
+- Kept the header sparkline, package speeds, and sidebar speed synchronized from the same package telemetry snapshot.
+- Preserved known file sizes when an unrestrict response does not provide a replacement size, preventing temporary queue-total drops when a download starts.
+- Restricted package expansion and collapse to the visible disclosure button so ordinary row clicks no longer change the package state.
+- Added compact window labels for link conversion, active downloads, and extraction while retaining complete status details in tooltips and accessibility labels.
+- Removed duplicated access-mode wording from Mega-Debrid service labels while preserving the complete source label as a tooltip.
+
+### Interface and accessibility
+
+- Added clipped dual-color progress labels so text remains light over the unfilled track and dark over the green fill.
+- Added a dedicated orange bandwidth-chart accent with a restrained matching area fill.
+- Changed active premium account indicators to the success color.
+- Kept the File, Settings, and Help menus inside the application frame at narrow window widths.
+- Added semantic progressbar values and accessible labels to package and file size/progress meters.
+
+### Settings and accounts
+
+- Replaced the expandable account-type list with a single service/access selector.
+- Displayed the selected account type description and exactly one matching credentials form.
+- Retained the existing account validation, protected secret fields, and save flow.
+
+### Reliability and testing
+
+- Added regression coverage for stable file-size transitions, unified speed telemetry, responsive status presentation, service-label cleanup, progress contrast, package disclosure behavior, account selection, premium status colors, chart colors, toolbar ordering, and narrow application menus.
+
 ## [2.0.14] - 2026-08-10
 
 ### Highlights

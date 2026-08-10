@@ -555,6 +555,7 @@ describe("account workspace", () => {
   });
 
   it("keeps add and edit dialogs separate and every secret field protected", () => {
+    const options = accountOptions();
     const addHtml = renderToStaticMarkup(
       <AccountAddDialog
         actions={{
@@ -569,7 +570,7 @@ describe("account workspace", () => {
           open: true,
           query: "",
           filter: "all",
-          options: accountOptions(),
+          options,
           selectedOptionId: "megadebrid-api",
           fields: [
             { id: "login", label: "Login", type: "text", value: "member@example.test" },
@@ -609,15 +610,54 @@ describe("account workspace", () => {
 
     expect(addHtml).toContain("Account hinzufügen");
     expect(addHtml).toContain("Prüfen und speichern");
-    expect(addHtml).toContain("Alle");
-    expect(addHtml).toContain("API");
-    expect(addHtml).toContain("Web");
+    expect(count(addHtml, "<select")).toBe(1);
+    expect(addHtml).toContain('aria-label="Dienst / Zugangstyp"');
+    expect(count(addHtml, "<option")).toBe(options.length);
+    options.forEach((option) => expect(addHtml).toContain(`value="${option.id}"`));
+    expect(addHtml).toContain('<option value="megadebrid-api" selected="">Mega-Debrid · API</option>');
+    expect(addHtml).toContain("Weiteren Account hinzufügen");
+    expect(addHtml).toContain("Login:Passwort");
+    expect(addHtml).not.toContain('type="search"');
+    expect(addHtml).not.toContain("Account-Typ filtern");
+    expect(addHtml).not.toContain("settings-account-picker-row");
+    expect(count(addHtml, 'class="settings-account-dialog-fields"')).toBe(1);
+    expect(addHtml.indexOf('aria-label="Dienst / Zugangstyp"')).toBeLessThan(addHtml.indexOf("settings-account-option-meta"));
+    expect(addHtml.indexOf("settings-account-option-meta")).toBeLessThan(addHtml.indexOf("settings-account-dialog-fields"));
     expect(editHtml).toContain("Account bearbeiten");
     expect(editHtml).toContain("member@example.test");
     expect(editHtml).toContain("Entfernen");
     expect(editHtml).toContain("Prüfen");
     expect(count(addHtml, "type=\"password\"")).toBe(1);
     expect(count(editHtml, "type=\"password\"")).toBe(2);
+  });
+
+  it("selects the account option through the single service selector", () => {
+    const selected: string[] = [];
+    const tree = AccountAddDialog({
+      actions: {
+        onQueryChange: () => {},
+        onFilterChange: () => {},
+        onOptionSelect: (optionId) => selected.push(optionId),
+        onFieldChange: () => {},
+        onClose: () => {},
+        onSubmit: () => {}
+      },
+      model: {
+        open: true,
+        query: "",
+        filter: "all",
+        options: accountOptions(),
+        selectedOptionId: "megadebrid-api",
+        fields: [],
+        error: "",
+        busy: false
+      }
+    });
+    const selector = findElement(tree, (element) => element.type === "select" && element.props["aria-label"] === "Dienst / Zugangstyp");
+
+    selector.props.onChange({ target: { value: "debridlink-api" } });
+
+    expect(selected).toEqual(["debridlink-api"]);
   });
 });
 
@@ -662,6 +702,7 @@ describe("settings geometry", () => {
     expect(css).toMatch(/\.settings-account-table-grid\s*{[^}]*color:\s*var\(--ui-text\);/s);
     expect(css).toMatch(/\.settings-account-row\s*{[^}]*height:\s*48px;/s);
     expect(css).toMatch(/\.settings-account-table-body\s*{[^}]*overflow:\s*auto;/s);
+    expect(css).toMatch(/\.settings-account-status-badge\.is-ok::before\s*{[^}]*background:\s*var\(--ui-success\);/s);
     expect(accountWorkspaceSource).toContain("onScroll={syncAccountTableScroll}");
     expect(css).toMatch(/\.settings-view\s*{[^}]*min-width:\s*0;/s);
     expect(css).toMatch(/\.settings-account-workspace\s*{[^}]*width:\s*100%;[^}]*min-width:\s*0;[^}]*min-height:\s*0;/s);

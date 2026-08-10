@@ -90,7 +90,7 @@ import {
   StatisticsSidebarStatus,
   type StatisticsViewActions
 } from "./views/statistics/StatisticsView";
-import { buildDownloadsViewModel, getDownloadQueueTotalBytes, type DownloadDisplayMode, type DownloadSidebarFilter } from "./views/downloads/downloads-model";
+import { buildDownloadsViewModel, getDownloadQueueTotalBytes, getDownloadSpeedBps, type DownloadDisplayMode, type DownloadSidebarFilter } from "./views/downloads/downloads-model";
 import { downloadColumnDefinitions, type DownloadSortColumn } from "./views/downloads/DownloadsTable";
 import { beginDownloadColumnDrag, clearDownloadColumnDrag, settleDownloadColumnDrag, updateDownloadColumnDrag, type DownloadColumnDragSession } from "./views/downloads/column-drag";
 import {
@@ -1084,6 +1084,13 @@ const historyRetentionLabels: Record<AppSettings["historyRetentionMode"], string
 
 const AUTO_RENDER_PACKAGE_LIMIT = 260;
 
+export function getSnapshotRenderDelay(itemCount: number, running: boolean, activeTab: MainView): number {
+  let delay = itemCount >= 700 ? 0 : itemCount >= 250 ? 50 : 100;
+  if (!running) delay = Math.min(delay, 200);
+  if (activeTab !== "downloads") delay = Math.max(delay, 800);
+  return delay;
+}
+
 const KNOWN_HOSTERS: { id: string; label: string }[] = [
   { id: "rapidgator", label: "Rapidgator" },
   { id: "uploaded", label: "Uploaded" },
@@ -1304,7 +1311,7 @@ export function readBandwidthChartPalette(
   return {
     grid: readProperty("--ui-border").trim(),
     text: readProperty("--ui-text-muted").trim(),
-    accent: readProperty("--ui-accent").trim(),
+    accent: readProperty("--ui-speed-accent").trim(),
     fontFamily: fontFamily.trim()
   };
 }
@@ -1507,20 +1514,15 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused, sp
 });
 
 interface DownloadSpeedSparklineProps {
-  items: Record<string, DownloadItem>;
-  running: boolean;
-  paused: boolean;
+  speedBps: number;
   speedStateRef: React.MutableRefObject<DownloadSpeedHistoryState>;
   hidden?: boolean;
 }
 
-const DownloadSpeedSparkline = memo(function DownloadSpeedSparkline({ items, running, paused, speedStateRef, hidden = false }: DownloadSpeedSparklineProps): ReactElement {
+const DownloadSpeedSparkline = memo(function DownloadSpeedSparkline({ speedBps, speedStateRef, hidden = false }: DownloadSpeedSparklineProps): ReactElement {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const itemsRef = useRef(items);
-  const activeRef = useRef(running && !paused);
-  const [liveSpeed, setLiveSpeed] = useState(0);
-  itemsRef.current = items;
-  activeRef.current = running && !paused;
+  const speedRef = useRef(speedBps);
+  speedRef.current = speedBps;
 
   useEffect(() => {
     const draw = (): void => {
@@ -1574,14 +1576,8 @@ const DownloadSpeedSparkline = memo(function DownloadSpeedSparkline({ items, run
     };
 
     const tick = (): void => {
-      let target = 0;
-      if (activeRef.current) {
-        for (const it of Object.values(itemsRef.current)) {
-          if (it.status === "downloading") target += it.speedBps || 0;
-        }
-      }
+      const target = speedRef.current;
       speedStateRef.current = updateDownloadSpeedHistory(speedStateRef.current, target);
-      setLiveSpeed(target);
       draw();
     };
 
@@ -1592,7 +1588,7 @@ const DownloadSpeedSparkline = memo(function DownloadSpeedSparkline({ items, run
   return (
     <div className={`speed-sparkline${hidden ? " speed-sparkline-hidden" : ""}`} aria-hidden={hidden} title="Aktuelle Download-Geschwindigkeit (geglättet)">
       <canvas ref={canvasRef} className="speed-sparkline-canvas" />
-      <span className="speed-sparkline-value">{liveSpeed > 0 ? formatSpeedMbps(liveSpeed) : "0 B/s"}</span>
+      <span className="speed-sparkline-value">{speedBps > 0 ? formatSpeedMbps(speedBps) : "0 B/s"}</span>
     </div>
   );
 });
@@ -2166,19 +2162,7 @@ export function App(): ReactElement {
       if (stateFlushTimerRef.current) { return; }
 
       const itemCount = Object.keys(merged.session.items).length;
-      let flushDelay = itemCount >= 1500
-        ? 900
-        : itemCount >= 700
-          ? 650
-          : itemCount >= 250
-            ? 400
-            : 150;
-      if (!merged.session.running) {
-        flushDelay = Math.min(flushDelay, 200);
-      }
-      if (activeTabRef.current !== "downloads") {
-        flushDelay = Math.max(flushDelay, 800);
-      }
+      const flushDelay = getSnapshotRenderDelay(itemCount, merged.session.running, activeTabRef.current);
 
       stateFlushTimerRef.current = setTimeout(() => {
         stateFlushTimerRef.current = null;
@@ -4961,6 +4945,7 @@ export function App(): ReactElement {
   }, [downloadsViewCore.actionableSelectedIds, executeDeleteSelection, settingsDraft.confirmDeleteSelection]);
 
   const downloadPackageSpeeds = useMemo(() => Object.fromEntries(packageSpeedMap), [packageSpeedMap]);
+  const liveDownloadSpeedBps = useMemo(() => getDownloadSpeedBps(snapshot.packageSpeedBps), [snapshot.packageSpeedBps]);
   const downloadQueueTotalBytes = useMemo(() => getDownloadQueueTotalBytes(Object.values(snapshot.session.items)), [snapshot.session.items]);
   const downloadsViewModel = useMemo<DownloadsViewModel>(() => ({
     ...downloadsViewCore,
@@ -4992,10 +4977,10 @@ export function App(): ReactElement {
       total: humanSize(downloadQueueTotalBytes),
       totalBytes: downloadQueueTotalBytes,
       hosters: providerStats.length,
-      speed: snapshot.speedText,
+      speed: liveDownloadSpeedBps > 0 ? formatSpeedMbps(liveDownloadSpeedBps) : "0 B/s",
       eta: snapshot.etaText
     }
-  }), [actionBusy, columnOrder, downloadPackageSpeeds, downloadQueueTotalBytes, downloadsSortColumn, downloadsSortDescending, downloadsViewCore, editingName, editingPackageId, gridTemplate, providerStats.length, scheduleCountdown, schedulePickerOpen, scheduleTimeInput, snapshot.canPause, snapshot.canStart, snapshot.canStop, snapshot.clipboardActive, snapshot.etaText, snapshot.reconnectSeconds, snapshot.session.items, snapshot.session.paused, snapshot.session.reconnectReason, snapshot.session.running, snapshot.settings.scheduledStartEpochMs, snapshot.speedText, snapshot.stats.totalDownloaded, snapshot.stats.totalPackages]);
+  }), [actionBusy, columnOrder, downloadPackageSpeeds, downloadQueueTotalBytes, downloadsSortColumn, downloadsSortDescending, downloadsViewCore, editingName, editingPackageId, gridTemplate, liveDownloadSpeedBps, providerStats.length, scheduleCountdown, schedulePickerOpen, scheduleTimeInput, snapshot.canPause, snapshot.canStart, snapshot.canStop, snapshot.clipboardActive, snapshot.etaText, snapshot.reconnectSeconds, snapshot.session.items, snapshot.session.paused, snapshot.session.reconnectReason, snapshot.session.running, snapshot.settings.scheduledStartEpochMs, snapshot.stats.totalDownloaded, snapshot.stats.totalPackages]);
 
   const downloadsActions: DownloadsViewActions = {
     onDisplayModeChange: setDownloadDisplayMode,
@@ -5651,9 +5636,7 @@ export function App(): ReactElement {
         headerActions={(
           <>
             <DownloadSpeedSparkline
-              items={snapshot.session.items}
-              running={snapshot.session.running}
-              paused={snapshot.session.paused}
+              speedBps={liveDownloadSpeedBps}
               speedStateRef={speedSparklineStateRef}
               hidden={tab !== "downloads"}
             />

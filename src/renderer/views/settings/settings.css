@@ -589,7 +589,7 @@
 }
 
 .settings-account-status-badge.is-ok::before {
-  background: var(--ui-primary);
+  background: var(--ui-success);
 }
 
 .settings-account-status-badge.is-free::before,
@@ -739,52 +739,36 @@
   min-height: 0;
 }
 
-.settings-account-picker-controls {
+.settings-account-picker-selector {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 128px;
-  gap: 8px;
+  gap: 7px;
 }
 
-.settings-account-picker {
-  display: grid;
-  max-height: 430px;
-  min-height: 0;
-  gap: 6px;
-  overflow-y: auto;
+.settings-account-picker-selector > span {
+  color: var(--ui-text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
 }
 
-.settings-account-picker-entry {
-  display: grid;
-  gap: 10px;
-}
-
-.settings-account-picker-row {
+.settings-account-option-meta {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 150px;
   gap: 12px;
-  width: 100%;
-  min-height: 52px;
-  padding: 8px 10px;
+  padding: 10px 12px;
   border: 1px solid var(--ui-border);
   border-radius: 6px;
   background: var(--ui-input);
   color: var(--ui-text-secondary);
-  font: inherit;
-  text-align: left;
 }
 
-.settings-account-picker-row.is-selected {
-  border-color: var(--ui-accent);
-  background: var(--ui-active);
-}
-
-.settings-account-picker-row > span {
+.settings-account-option-meta > div {
   display: grid;
   min-width: 0;
   gap: 2px;
 }
 
-.settings-account-picker-row small {
+.settings-account-option-meta span {
   overflow: hidden;
   color: var(--ui-text-muted);
   font-size: 12px;
@@ -792,16 +776,9 @@
   white-space: nowrap;
 }
 
-.settings-account-picker-empty {
-  padding: 24px;
-  color: var(--ui-text-muted);
-  text-align: center;
-}
-
 .settings-account-dialog-fields {
   display: grid;
   gap: 14px;
-  padding: 2px 10px 14px;
 }
 
 .settings-account-dialog-field {
@@ -873,8 +850,7 @@
   }
 
   .settings-theme-options,
-  .settings-account-picker-controls,
-  .settings-account-picker-row {
+  .settings-account-option-meta {
     grid-template-columns: minmax(0, 1fr);
   }
 }

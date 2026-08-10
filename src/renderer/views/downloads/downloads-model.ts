@@ -83,6 +83,14 @@ export function getDownloadQueueTotalBytes(items: Iterable<DownloadItem>): numbe
   return total;
 }
 
+export function getDownloadSpeedBps(packageSpeeds: Record<string, number>): number {
+  let total = 0;
+  for (const speed of Object.values(packageSpeeds)) {
+    if (Number.isFinite(speed) && speed > 0) total += speed;
+  }
+  return total;
+}
+
 function isExtracted(item: DownloadItem): boolean {
   return item.fullStatus.trim().toLocaleLowerCase("de-DE").startsWith("entpackt");
 }

@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactElement } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactElement } from "react";
 import type { DownloadItem } from "../../../shared/types";
 import {
   compactProviderLabels,
@@ -8,6 +8,7 @@ import {
   formatHosterLabel,
   formatSpeedMbps,
   humanSize,
+  normalizeDownloadServiceLabel,
   providerLabels
 } from "../../download-format";
 import type { DownloadPackageRow } from "./downloads-model";
@@ -45,7 +46,7 @@ export const downloadColumnDefinitions: Record<string, { label: string; width: s
   hoster: { label: "Hoster", width: "minmax(90px, 0.85fr)", sortable: "hoster" },
   account: { label: "Service", width: "minmax(90px, 0.85fr)" },
   prio: { label: "Priorität", width: "minmax(85px, 0.8fr)" },
-  status: { label: "Status", width: "minmax(90px, 0.85fr)" },
+  status: { label: "Status", width: "minmax(var(--downloads-status-min, 210px), 1.2fr)" },
   speed: { label: "Geschwindigkeit", width: "minmax(120px, 1fr)" },
   availability: { label: "Verfügbarkeit", width: "minmax(110px, 1fr)" },
   added: { label: "Hinzugefügt am", width: "minmax(135px, 1fr)" }
@@ -117,6 +118,35 @@ function progress(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value || 0)));
 }
 
+export function compactDownloadStatus(value: string): string {
+  const status = value.trim();
+  if (/Link wird umgewandelt/i.test(status)) return "Umwandeln";
+  if (/Download läuft\b/i.test(status)) return "DL läuft";
+  const extracting = status.match(/(Entpacken\s+\d+%)/i);
+  return extracting?.[1] ?? status;
+}
+
+function DownloadMeter({ value, text }: { value: number; text: string }): ReactElement {
+  const normalized = progress(value);
+  const style = { "--downloads-progress": `${normalized}%` } as CSSProperties;
+  return (
+    <span aria-label={text} aria-valuemax={100} aria-valuemin={0} aria-valuenow={normalized} className="downloads-meter" role="progressbar" style={style}>
+      <span className="downloads-meter-fill" />
+      <b aria-hidden="true" className="downloads-meter-label is-track">{text}</b>
+      <span aria-hidden="true" className="downloads-meter-filled-clip"><b className="downloads-meter-label is-filled">{text}</b></span>
+    </span>
+  );
+}
+
+function DownloadStatusCell({ status, title }: { status: string; title?: string }): ReactElement {
+  return (
+    <span aria-label={status} className="downloads-cell downloads-status-cell" title={title || status}>
+      <span aria-hidden="true" className="downloads-status-full">{status}</span>
+      <span aria-hidden="true" className="downloads-status-compact">{compactDownloadStatus(status)}</span>
+    </span>
+  );
+}
+
 function itemCell(item: DownloadItem, column: string, sessionRunning: boolean): ReactElement | null {
   const displayStatus = displayedStatus(item, sessionRunning);
   const retrySuffix = item.retries > 0 ? ` (R${item.retries})` : "";
@@ -130,20 +160,24 @@ function itemCell(item: DownloadItem, column: string, sessionRunning: boolean): 
   if (column === "size") {
     const total = item.totalBytes || item.downloadedBytes || 0;
     const value = total > 0 ? progress((item.downloadedBytes / total) * 100) : 0;
-    return <span className="downloads-cell downloads-size-cell">{total > 0 ? <span className="downloads-meter"><span style={{ width: `${value}%` }} /><b>{humanSize(item.downloadedBytes)} / {humanSize(total)}</b></span> : null}</span>;
+    const text = `${humanSize(item.downloadedBytes)} / ${humanSize(total)}`;
+    return <span className="downloads-cell downloads-size-cell">{total > 0 ? <DownloadMeter text={text} value={value} /> : null}</span>;
   }
   if (column === "progress") {
     const value = progress(item.progressPercent);
-    return <span className="downloads-cell downloads-progress-cell"><span className="downloads-meter"><span style={{ width: `${value}%` }} /><b>{value}%</b></span></span>;
+    return <span className="downloads-cell downloads-progress-cell"><DownloadMeter text={`${value}%`} value={value} /></span>;
   }
   if (column === "hoster") {
     const hoster = extractHoster(item.url);
     const label = formatHosterLabel(hoster);
     return <HosterLabels labels={[label]} />;
   }
-  if (column === "account") return <span className="downloads-cell">{item.providerLabel || (item.provider ? providerLabels[item.provider] : "")}</span>;
+  if (column === "account") {
+    const full = item.providerLabel || (item.provider ? providerLabels[item.provider] : "");
+    return <span className="downloads-cell" title={full}>{normalizeDownloadServiceLabel(full)}</span>;
+  }
   if (column === "prio") return <span className="downloads-cell" />;
-  if (column === "status") return <span className="downloads-cell" title={statusTitle}>{displayStatus}</span>;
+  if (column === "status") return <DownloadStatusCell status={displayStatus} title={statusTitle} />;
   if (column === "speed") return <span className="downloads-cell">{item.speedBps > 0 ? formatSpeedMbps(item.speedBps) : ""}</span>;
   if (column === "availability") {
     const state = item.onlineStatus === "online" ? "online" : item.onlineStatus === "offline" ? "offline" : "checking";
@@ -227,12 +261,13 @@ interface PackageItemsTransitionProps {
   collapsed: boolean;
   columnOrder: readonly string[];
   gridTemplate: string;
+  id: string;
   items: DownloadItem[];
   selectedIds: ReadonlySet<string>;
   sessionRunning: boolean;
 }
 
-function PackageItemsTransition({ actions, collapsed, columnOrder, gridTemplate, items, selectedIds, sessionRunning }: PackageItemsTransitionProps): ReactElement | null {
+function PackageItemsTransition({ actions, collapsed, columnOrder, gridTemplate, id, items, selectedIds, sessionRunning }: PackageItemsTransitionProps): ReactElement | null {
   const [renderItems, setRenderItems] = useState(!collapsed);
   const animationRef = useRef<Animation | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -278,6 +313,7 @@ function PackageItemsTransition({ actions, collapsed, columnOrder, gridTemplate,
     <div
       aria-hidden={collapsed}
       className={`downloads-package-items ${collapsed ? "is-collapsed" : "is-expanded"}`}
+      id={id}
       ref={containerRef}
     >
       <div className="downloads-package-items-inner" ref={innerRef}>
@@ -327,7 +363,7 @@ function packageCell(row: DownloadPackageRow, column: string, packageSpeedBps: n
   if (column === "name") {
     return (
       <span className="downloads-cell downloads-name-cell">
-        <button aria-label={row.collapsed ? `${entry.name} ausklappen` : `${entry.name} einklappen`} className="downloads-collapse-button" onClick={(event) => { event.stopPropagation(); actions.onTogglePackageCollapse(entry.id); }} type="button">{row.collapsed ? "+" : "−"}</button>
+        <button aria-controls={`downloads-package-items-${entry.id}`} aria-expanded={!row.collapsed} aria-label={row.collapsed ? `${entry.name} ausklappen` : `${entry.name} einklappen`} className="downloads-collapse-button" onClick={(event) => { event.stopPropagation(); actions.onTogglePackageCollapse(entry.id); }} type="button">{row.collapsed ? "+" : "−"}</button>
         {editing
           ? <input autoFocus className="downloads-rename-input" value={editingName} onBlur={() => finishRename(editingName)} onChange={(event) => actions.onPackageRenameChange(event.target.value)} onKeyDown={(event: ReactKeyboardEvent<HTMLInputElement>) => {
             if (event.key === "Enter") {
@@ -347,21 +383,24 @@ function packageCell(row: DownloadPackageRow, column: string, packageSpeedBps: n
     const total = row.items.reduce((sum, item) => sum + (item.totalBytes || item.downloadedBytes || 0), 0);
     const downloaded = row.items.reduce((sum, item) => sum + item.downloadedBytes, 0);
     const value = total > 0 ? progress((downloaded / total) * 100) : 0;
-    return <span className="downloads-cell downloads-size-cell">{total > 0 ? <span className="downloads-meter"><span style={{ width: `${value}%` }} /><b>{humanSize(downloaded)} / {humanSize(total)}</b></span> : null}</span>;
+    const text = `${humanSize(downloaded)} / ${humanSize(total)}`;
+    return <span className="downloads-cell downloads-size-cell">{total > 0 ? <DownloadMeter text={text} value={value} /> : null}</span>;
   }
-  if (column === "progress") return <span className="downloads-cell downloads-progress-cell"><span className="downloads-meter"><span style={{ width: `${stats.value}%` }} /><b>{stats.value}%</b></span></span>;
+  if (column === "progress") return <span className="downloads-cell downloads-progress-cell"><DownloadMeter text={`${stats.value}%`} value={stats.value} /></span>;
   if (column === "hoster") {
     const labels = [...new Set(row.items.map((item) => extractHoster(item.url)).filter(Boolean))].map(formatHosterLabel);
     return <HosterLabels labels={labels} />;
   }
   if (column === "account") {
-    const value = compactProviderLabels(row.items.map((item) => item.providerLabel || (item.provider ? providerLabels[item.provider] : "")).filter(Boolean));
-    return <span className="downloads-cell" title={value}>{value}</span>;
+    const full = compactProviderLabels(row.items.map((item) => item.providerLabel || (item.provider ? providerLabels[item.provider] : "")).filter(Boolean));
+    return <span className="downloads-cell" title={full}>{normalizeDownloadServiceLabel(full)}</span>;
   }
   if (column === "prio") return <span className="downloads-cell">{entry.priority === "high" ? "Hoch" : entry.priority === "low" ? "Niedrig" : ""}</span>;
   if (column === "status") {
     const audio = entry.audioStripSummary ? formatAudioStripSummary(entry.audioStripSummary) : null;
-    return <span className="downloads-cell" title={audio?.tooltip}>{stats.done}/{stats.total}{stats.failed > 0 ? ` · ${stats.failed} Fehler` : ""}{stats.cancelled > 0 ? ` · ${stats.cancelled} abgebrochen` : ""}{entry.postProcessLabel ? ` · ${entry.postProcessLabel}` : ""}{audio ? ` · ${audio.text}` : ""}</span>;
+    const status = `${stats.done}/${stats.total}${stats.failed > 0 ? ` · ${stats.failed} Fehler` : ""}${stats.cancelled > 0 ? ` · ${stats.cancelled} abgebrochen` : ""}${entry.postProcessLabel ? ` · ${entry.postProcessLabel}` : ""}${audio ? ` · ${audio.text}` : ""}`;
+    const title = audio?.tooltip ? `${status}\n${audio.tooltip}` : status;
+    return <DownloadStatusCell status={status} title={title} />;
   }
   if (column === "speed") return <span className="downloads-cell">{packageSpeedBps > 0 ? formatSpeedMbps(packageSpeedBps) : ""}</span>;
   if (column === "availability") {
@@ -418,13 +457,9 @@ export function PackageCardContent({ row, selectedIds, editing, editingName, pac
         role="row"
         style={{ gridTemplateColumns: downloadGridTemplate(gridTemplate) }}
         onClick={(event) => {
-          const target = event.target as HTMLElement;
           if (event.ctrlKey || event.metaKey || event.shiftKey) {
             actions.onToggleSelection(entry.id, event.ctrlKey || event.metaKey, event.shiftKey);
-            return;
           }
-          if (target.closest("button, input, select")) return;
-          actions.onTogglePackageCollapse(entry.id);
         }}
         onMouseDown={(event) => actions.onSelectionMouseDown(entry.id, event)}
         onMouseEnter={() => actions.onSelectionMouseEnter(entry.id)}
@@ -433,7 +468,7 @@ export function PackageCardContent({ row, selectedIds, editing, editingName, pac
         {columnOrder.map((column) => <span className="downloads-cell-slot" data-download-column={column} key={column} role="cell">{packageCell(row, column, packageSpeedBps, editing, editingName, actions, finishRename)}</span>)}
         <span className="downloads-action-cell" role="cell"><button aria-label={`${entry.name} Aktionen`} onClick={(event) => { event.stopPropagation(); actions.onOpenContextMenu(entry.id, event.clientX, event.clientY, entry.id); }} type="button">⋮</button></span>
       </div>
-      <PackageItemsTransition actions={actions} collapsed={row.collapsed} columnOrder={columnOrder} gridTemplate={gridTemplate} items={row.items} selectedIds={selectedIds} sessionRunning={sessionRunning} />
+      <PackageItemsTransition actions={actions} collapsed={row.collapsed} columnOrder={columnOrder} gridTemplate={gridTemplate} id={`downloads-package-items-${entry.id}`} items={row.items} selectedIds={selectedIds} sessionRunning={sessionRunning} />
     </article>
   );
 }

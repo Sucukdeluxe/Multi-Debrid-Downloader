@@ -621,14 +621,16 @@
   background: var(--ui-modal-secondary);
 }
 
-.downloads-meter > span {
+.downloads-meter-fill {
   position: absolute;
   inset: 0 auto 0 0;
+  width: var(--downloads-progress);
   background: var(--ui-success);
 }
 
-.downloads-meter > b {
-  position: relative;
+.downloads-meter-label {
+  position: absolute;
+  inset: 0;
   z-index: 1;
   display: flex;
   align-items: center;
@@ -638,8 +640,39 @@
   font-weight: 600;
 }
 
-.downloads-item-row .downloads-meter > b {
-  color: var(--ui-text);
+.downloads-meter-label.is-track {
+  color: var(--ui-progress-track-text, #fff);
+}
+
+.downloads-meter-filled-clip {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  clip-path: inset(0 calc(100% - var(--downloads-progress)) 0 0);
+  pointer-events: none;
+}
+
+.downloads-meter-label.is-filled {
+  color: var(--ui-progress-fill-text, #171a1f);
+}
+
+.downloads-status-compact {
+  display: none;
+}
+
+.md-shell.is-compact .downloads-view,
+.md-shell.is-minimum .downloads-view {
+  --downloads-status-min: 90px;
+}
+
+.md-shell.is-compact .downloads-status-full,
+.md-shell.is-minimum .downloads-status-full {
+  display: none;
+}
+
+.md-shell.is-compact .downloads-status-compact,
+.md-shell.is-minimum .downloads-status-compact {
+  display: inline;
 }
 
 .downloads-empty-state,

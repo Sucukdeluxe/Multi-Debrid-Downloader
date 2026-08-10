@@ -5,8 +5,14 @@ import { AvatarMenu, getAvatarMenuKeyboardAction } from "../src/renderer/shell/A
 import { AppHeader } from "../src/renderer/shell/AppHeader";
 import { AppShell } from "../src/renderer/shell/AppShell";
 import { buildMainNavigation } from "../src/renderer/shell/shell-model";
+import { getSnapshotRenderDelay } from "../src/renderer/App";
 
 describe("desktop shell", () => {
+  it("does not stack renderer latency on the manager cadence for large active queues", () => {
+    expect(getSnapshotRenderDelay(2_470, true, "downloads")).toBe(0);
+    expect(getSnapshotRenderDelay(2_470, true, "statistics")).toBe(800);
+  });
+
   it("keeps application menus mounted for animated opening and closing", () => {
     const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
     const css = readFileSync(new URL("../src/renderer/styles.css", import.meta.url), "utf8");
@@ -16,6 +22,12 @@ describe("desktop shell", () => {
     expect(css).toMatch(/\.menu-dropdown\s*\{[^}]*opacity:\s*0;[^}]*transform:\s*translateY\(-8px\);[^}]*visibility:\s*hidden;/s);
     expect(css).toMatch(/\.menu-dropdown\.is-open\s*\{[^}]*opacity:\s*1;[^}]*transform:\s*translateY\(0\);[^}]*visibility:\s*visible;/s);
     expect(shellCss).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.md-application-menu-tree \.menu-dropdown\s*\{[^}]*transition-duration:\s*150ms, 180ms, 0s !important;/);
+  });
+
+  it("anchors every top-level application dropdown to the right header edge", () => {
+    const shellCss = readFileSync(new URL("../src/renderer/shell/shell.css", import.meta.url), "utf8");
+
+    expect(shellCss).toMatch(/\.md-application-menu-tree > \.menu-bar-item > \.menu-dropdown\s*\{[^}]*right:\s*0;[^}]*left:\s*auto;/s);
   });
 
   it("uses the product asset in the header brand", () => {

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -384,12 +385,25 @@ describe("statistics view", () => {
 });
 
 describe("bandwidth chart palette", () => {
+  it("defines semantic speed and progress text colors for both themes", () => {
+    const css = readFileSync(new URL("../src/renderer/theme.css", import.meta.url), "utf8");
+    const dark = css.match(/:root,\s*:root\[data-theme="dark"\]\s*\{([\s\S]*?)\}/)?.[1];
+    const light = css.match(/:root\[data-theme="light"\]\s*\{([\s\S]*?)\}/)?.[1];
+
+    expect(dark).toContain("--ui-speed-accent: #F2942D;");
+    expect(dark).toContain("--ui-progress-track-text: #FFFFFF;");
+    expect(dark).toContain("--ui-progress-fill-text: #181A1F;");
+    expect(light).toContain("--ui-speed-accent: #C2701A;");
+    expect(light).toContain("--ui-progress-track-text: #181A1F;");
+    expect(light).toContain("--ui-progress-fill-text: #181A1F;");
+  });
+
   it("requests only the semantic UI color properties and keeps the computed font family", () => {
     const requested: string[] = [];
     const values: Record<string, string> = {
       "--ui-border": " rgb(61, 61, 61) ",
       "--ui-text-muted": " rgb(145, 145, 145) ",
-      "--ui-accent": " rgb(56, 134, 255) "
+      "--ui-speed-accent": " rgb(242, 148, 45) "
     };
 
     const palette = readBandwidthChartPalette((property) => {
@@ -397,11 +411,11 @@ describe("bandwidth chart palette", () => {
       return values[property];
     }, "Inter, Segoe UI, sans-serif");
 
-    expect(requested).toEqual(["--ui-border", "--ui-text-muted", "--ui-accent"]);
+    expect(requested).toEqual(["--ui-border", "--ui-text-muted", "--ui-speed-accent"]);
     expect(palette).toEqual({
       grid: "rgb(61, 61, 61)",
       text: "rgb(145, 145, 145)",
-      accent: "rgb(56, 134, 255)",
+      accent: "rgb(242, 148, 45)",
       fontFamily: "Inter, Segoe UI, sans-serif"
     });
   });

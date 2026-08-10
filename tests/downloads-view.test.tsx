@@ -10,6 +10,7 @@ import {
   buildDownloadsViewModel,
   classifyDownloadStatus,
   getDownloadQueueTotalBytes,
+  getDownloadSpeedBps,
   type DownloadSidebarFilter,
   type DownloadsModelInput
 } from "../src/renderer/views/downloads/downloads-model";
@@ -28,9 +29,11 @@ import {
   PackageCardContent,
   areItemRowPropsEqual,
   arePackageCardPropsEqual,
+  compactDownloadStatus,
   downloadColumnDefinitions,
   getAvailabilitySummary
 } from "../src/renderer/views/downloads/DownloadsTable";
+import { normalizeDownloadServiceLabel } from "../src/renderer/download-format";
 import { getRollingMetricDirection } from "../src/renderer/ui/RollingMetricValue";
 
 const now = new Date(2026, 7, 10, 12, 0, 0, 0).getTime();
@@ -119,6 +122,21 @@ describe("Download-Gesamtgröße", () => {
     ];
 
     expect(getDownloadQueueTotalBytes(items)).toBe(4_750);
+  });
+});
+
+describe("responsive Downloadstatus und Servicebezeichnungen", () => {
+  it("keeps full status details while providing compact table text", () => {
+    expect(compactDownloadStatus("Link wird umgewandelt")).toBe("Umwandeln");
+    expect(compactDownloadStatus("Download läuft (Mega-Debrid)")).toBe("DL läuft");
+    expect(compactDownloadStatus("Entpacken 1% (1/1) · Tonspur: Deutsch")).toBe("Entpacken 1%");
+    expect(compactDownloadStatus("0/11 · Entpacken 1% (1/1) · Tonspur: Deutsch")).toBe("Entpacken 1%");
+  });
+
+  it("removes duplicated access-mode wording from service labels", () => {
+    expect(normalizeDownloadServiceLabel("Mega-Debrid Web (Web Account)")).toBe("Mega-Debrid Web");
+    expect(normalizeDownloadServiceLabel("Mega-Debrid API (API Account)")).toBe("Mega-Debrid API");
+    expect(normalizeDownloadServiceLabel("Real-Debrid (Web Account)")).toBe("Real-Debrid (Web Account)");
   });
 });
 
@@ -265,6 +283,11 @@ function withRuntime(input: DownloadsModelInput, overrides: Record<string, unkno
 }
 
 describe("downloads model", () => {
+  it("uses the package telemetry as the single live speed source", () => {
+    expect(getDownloadSpeedBps({ a: 45_000_000, b: 30_400_000, idle: 0 })).toBe(75_400_000);
+    expect(getDownloadSpeedBps({ stale: -1, invalid: Number.NaN })).toBe(0);
+  });
+
   it("exports the sidebar filter contract used by the downloads shell", () => {
     const filter: DownloadSidebarFilter = "queued";
 
@@ -487,10 +510,9 @@ describe("downloads view", () => {
     expect(calls).toEqual(["start:package-a", "drop:package-b", "end"]);
   });
 
-  it("dispatches add, start, pause, stop, scheduling and selection actions through separate existing callbacks", () => {
+  it("starts with the local Start action and dispatches toolbar actions separately", () => {
     const calls: string[] = [];
     const actions = createActions({
-      onAddLinks: () => calls.push("add"),
       onStartDownloads: () => calls.push("start"),
       onPauseDownloads: () => calls.push("pause"),
       onStopDownloads: () => calls.push("stop"),
@@ -505,11 +527,14 @@ describe("downloads view", () => {
       model: withRuntime(createInput({ selectedIds: ["active"] }), { scheduleOpen: true })
     });
 
-    for (const label of ["Links hinzufügen", "Start", "Pause", "Stop", "Planen", "Nach oben", "Nach unten", "Umbenennen", "Entfernen"]) {
+    for (const label of ["Start", "Pause", "Stop", "Planen", "Nach oben", "Nach unten", "Umbenennen", "Entfernen"]) {
       findButton(toolbar, label).props.onClick();
     }
 
-    expect(calls).toEqual(["add", "start", "pause", "stop", "schedule", "up", "down", "rename", "remove"]);
+    const html = renderToStaticMarkup(toolbar);
+    expect(html).not.toContain("Links hinzufügen");
+    expect(html.indexOf(">Start<")).toBeLessThan(html.indexOf(">Pause<"));
+    expect(calls).toEqual(["start", "pause", "stop", "schedule", "up", "down", "rename", "remove"]);
   });
 
   it("uses exact toolbar disabled semantics without a dead reconnect branch", () => {
@@ -596,7 +621,8 @@ describe("downloads view", () => {
     expect(css).toMatch(/\[data-download-column="name"\][^{]*\{[^}]*justify-content:\s*flex-start;[^}]*text-align:\s*left;/s);
     expect(css).toMatch(/\.downloads-package-items\s*\{[^}]*height:\s*auto;[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.downloads-package-items\.is-collapsed\s*\{[^}]*height:\s*0;[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s);
-    expect(css).toMatch(/\.downloads-item-row\s+\.downloads-meter\s*>\s*b\s*\{[^}]*color:\s*var\(--ui-text\);/s);
+    expect(css).toMatch(/\.downloads-meter-label\.is-track\s*\{[^}]*color:\s*var\(--ui-progress-track-text/s);
+    expect(css).toMatch(/\.downloads-meter-label\.is-filled\s*\{[^}]*color:\s*var\(--ui-progress-fill-text/s);
     expect(readFileSync(new URL("../src/renderer/views/downloads/DownloadsTable.tsx", import.meta.url), "utf8")).toMatch(/\.animate\(\[\{ height: "0px", opacity: 0 \}, \{ height: `\$\{targetHeight\}px`, opacity: 1 \}\]/);
     expect(css).toMatch(/\.downloads-footer\s*\{[^}]*height:\s*60px;[^}]*padding:\s*0 12px 0 60px;/s);
     expect(css).toMatch(/\.downloads-package-card\s*\{[^}]*border:\s*0;[^}]*border-bottom:\s*1px solid color-mix\(in srgb, var\(--ui-border\) 72%, transparent\);[^}]*padding:\s*0;/s);
@@ -739,7 +765,42 @@ describe("download table row contracts", () => {
       selectedVersion: 0
     }));
 
-    expect(html).toContain("<b>70%</b>");
+    expect(html).toContain(">70%</b>");
+  });
+
+  it("renders meter text in clipped track and fill layers", () => {
+    const html = renderToStaticMarkup(ItemRowContent({
+      actions: createActions(),
+      columnOrder: ["size", "progress"],
+      gridTemplate: "180px 120px",
+      item: item("meter", "package-a", "downloading", { downloadedBytes: 750, totalBytes: 1_000, progressPercent: 75 }),
+      selected: false
+    }));
+
+    expect(html.match(/class="downloads-meter-label is-track"/g)).toHaveLength(2);
+    expect(html.match(/class="downloads-meter-label is-filled"/g)).toHaveLength(2);
+    expect(html.match(/role="progressbar"/g)).toHaveLength(2);
+    expect(html).toContain("--downloads-progress:75%");
+  });
+
+  it("shows compact status visually while preserving the full accessible text", () => {
+    const html = renderToStaticMarkup(ItemRowContent({
+      actions: createActions(),
+      columnOrder: ["status", "account"],
+      gridTemplate: "120px 120px",
+      item: item("status", "package-a", "downloading", {
+        fullStatus: "Download läuft (Mega-Debrid)",
+        providerLabel: "Mega-Debrid Web (Web Account)"
+      }),
+      selected: false
+    }));
+
+    expect(html).toContain('aria-label="Download läuft (Mega-Debrid)"');
+    expect(html).toContain('class="downloads-status-full"');
+    expect(html).toContain('class="downloads-status-compact"');
+    expect(html).toContain("DL läuft");
+    expect(html).toContain('title="Mega-Debrid Web (Web Account)"');
+    expect(html).toContain(">Mega-Debrid Web</span>");
   });
 
   it("sets the whole visible selection atomically from the header checkbox", () => {
@@ -816,6 +877,62 @@ describe("download table row contracts", () => {
     packageRow.props.onClick({ button: 0, ctrlKey: false, metaKey: false, shiftKey: true, target: {}, currentTarget: { contains: () => true } });
 
     expect(calls).toEqual(["select"]);
+  });
+
+  it("only collapses a package through its visible disclosure button", () => {
+    const calls: string[] = [];
+    const model = withRuntime(createInput());
+    const row = model.packageRows[0];
+    const component = PackageCardContent({
+      actions: createActions({ onTogglePackageCollapse: () => calls.push("collapse") }),
+      columnOrder: model.columnOrder,
+      editing: false,
+      editingName: "",
+      gridTemplate: model.gridTemplate,
+      packageSpeedBps: 0,
+      row,
+      selectedIds: new Set<string>(),
+      selectedVersion: 1
+    });
+    const packageRow = findElement(component, (element) => element.props["data-download-row-id"] === row.package.id);
+    const collapseButton = findElement(component, (element) => element.type === "button" && String(element.props.className || "").includes("downloads-collapse-button"));
+
+    packageRow.props.onClick({ ctrlKey: false, metaKey: false, shiftKey: false, target: {}, currentTarget: {} });
+    collapseButton.props.onClick({ stopPropagation: () => {} });
+
+    expect(calls).toEqual(["collapse"]);
+    expect(collapseButton.props["aria-expanded"]).toBe(true);
+    expect(collapseButton.props["aria-controls"]).toBe(`downloads-package-items-${row.package.id}`);
+  });
+
+  it("keeps the complete package status and audio details in the tooltip", () => {
+    const audioPackage = {
+      ...pkg("audio-package", "Audio package", ["audio-item"]),
+      postProcessLabel: "Entpacken 1%",
+      audioStripSummary: {
+        at: now,
+        candidates: 1,
+        remuxed: 1,
+        keptSingle: 0,
+        skippedNoGerman: 0,
+        skippedNoTool: 0,
+        failed: 0,
+        files: [{ name: "episode.mkv", action: "remuxed", reason: "German kept" }]
+      }
+    } as PackageEntry;
+    const html = renderToStaticMarkup(PackageCardContent({
+      actions: createActions(),
+      columnOrder: ["status"],
+      editing: false,
+      editingName: "",
+      gridTemplate: "220px",
+      packageSpeedBps: 0,
+      row: { package: audioPackage, items: [item("audio-item", audioPackage.id, "queued")], collapsed: true },
+      selectedIds: new Set<string>(),
+      selectedVersion: 0
+    }));
+
+    expect(html).toMatch(/title="0\/1 · Entpacken 1% · Tonspur: 1 OK[^\"]*episode\.mkv: remuxed \(German kept\)"/s);
   });
 
   it("commits Enter and the resulting Blur rename sequence exactly once", () => {
