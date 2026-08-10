@@ -2,6 +2,24 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.17] - 2026-08-10
+
+### Interface fixes
+
+- Added smooth horizontal opening and closing transitions to the Backup, Logs, Remote Support, and Diagnostics submenus.
+- Kept nested menus mounted during closing so their exit motion remains visible instead of disappearing immediately.
+- Preserved left-side submenu placement in narrow windows without restoring horizontal overflow.
+- Removed hidden submenu actions from keyboard navigation and respected reduced-motion preferences.
+- Simplified Mega-Debrid API service labels by removing redundant access-mode suffixes while retaining the complete source label as a tooltip.
+- Reduced download and extraction status cells to the active operation and percentage while keeping diagnostic details in tooltips.
+
+### Reliability and testing
+
+- Branded the development Electron executable with the application name, version metadata, and product icon for Windows system dialogs.
+- Made development launches resilient to stale executable locks by isolating each runtime executable.
+- Added regression coverage for persistent nested-menu rendering, hidden interaction states, and the shared submenu transition.
+- Added a Windows regression check for development executable metadata.
+
 ## [2.0.16] - 2026-08-10
 
 ### Downloads and telemetry

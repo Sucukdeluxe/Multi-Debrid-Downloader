@@ -1,6 +1,6 @@
 {
   "name": "real-debrid-downloader",
-  "version": "2.0.16",
+  "version": "2.0.17",
   "description": "Desktop downloader",
   "main": "build/main/main/main.js",
   "author": "Sucukdeluxe",
@@ -10,7 +10,7 @@
     "dev:renderer": "vite --port 5180 --strictPort",
     "visual:dev": "vite --config tests/visual/vite.config.mts --host 127.0.0.1 --port 5174 --strictPort",
     "dev:main:watch": "tsup src/main/main.ts src/preload/preload.ts --out-dir build/main --format cjs --target node20 --external electron --sourcemap --watch",
-    "dev:electron": "wait-on tcp:5180 file:build/main/main/main.js && cross-env NODE_ENV=development DEV_SERVER_PORT=5180 electron .",
+    "dev:electron": "wait-on tcp:5180 file:build/main/main/main.js && cross-env NODE_ENV=development DEV_SERVER_PORT=5180 tsx scripts/run-dev-electron.ts",
     "build": "npm run build:main && npm run build:renderer",
     "build:main": "tsup src/main/main.ts src/preload/preload.ts --out-dir build/main --format cjs --target node20 --external electron --sourcemap",
     "build:renderer": "vite build",

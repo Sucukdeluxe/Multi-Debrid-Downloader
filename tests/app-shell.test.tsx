@@ -31,10 +31,17 @@ describe("desktop shell", () => {
   });
 
   it("keeps application submenus visible inside narrow right-aligned windows", () => {
+    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
     const shellCss = readFileSync(new URL("../src/renderer/shell/shell.css", import.meta.url), "utf8");
 
+    expect(source.match(/aria-hidden=\{openSubmenu !==/g)).toHaveLength(4);
+    expect(source.match(/inert: ""/g)).toHaveLength(4);
+    expect(source.match(/menu-submenu-dropdown\$\{openSubmenu ===/g)).toHaveLength(4);
+    expect(source).not.toMatch(/\{openSubmenu === "(?:sicherung|hilfe-log|hilfe-remote|hilfe-diagnose)" && \(/);
     expect(shellCss).toMatch(/\.md-application-menu-tree :where\(\.menu-dropdown, \.menu-submenu-dropdown\)\s*\{[^}]*overflow:\s*visible;/s);
-    expect(shellCss).toMatch(/\.md-application-menu-tree \.menu-submenu-dropdown\s*\{[^}]*right:\s*100%;[^}]*left:\s*auto;/s);
+    expect(shellCss).toMatch(/\.md-application-menu-tree \.menu-submenu-dropdown\s*\{[^}]*right:\s*100%;[^}]*left:\s*auto;[^}]*opacity:\s*0;[^}]*transform:\s*translateX\(8px\);[^}]*visibility:\s*hidden;[^}]*pointer-events:\s*none;[^}]*transition:[^}]*transform 220ms cubic-bezier\(0\.22, 0\.76, 0\.22, 1\)/s);
+    expect(shellCss).toMatch(/\.md-application-menu-tree \.menu-submenu-dropdown\.is-open\s*\{[^}]*opacity:\s*1;[^}]*transform:\s*translateX\(0\);[^}]*visibility:\s*visible;[^}]*pointer-events:\s*auto;/s);
+    expect(shellCss).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.md-application-menu-tree \.menu-submenu-dropdown\s*\{[^}]*transition-duration:\s*0\.01ms !important;[^}]*transition-delay:\s*0s !important;/);
   });
 
   it("uses the product asset in the header brand", () => {

@@ -5679,15 +5679,17 @@ export function App(): ReactElement {
                 onMouseLeave={() => setOpenSubmenu(null)}
               >
                 <button className="menu-submenu-trigger">Sicherung</button>
-                {openSubmenu === "sicherung" && (
-                  <div className="menu-submenu-dropdown">
+                <div
+                  aria-hidden={openSubmenu !== "sicherung"}
+                  {...(openSubmenu !== "sicherung" ? { inert: "" } : {})}
+                  className={`menu-submenu-dropdown${openSubmenu === "sicherung" ? " is-open" : ""}`}
+                >
                     <button className="menu-dropdown-item" onClick={() => { void onExportBackup(); }}>Exportieren</button>
                     <button className="menu-dropdown-item" onClick={() => { void onImportBackup(); }}>Importieren</button>
                     <div className="menu-separator" />
                     <button className="menu-dropdown-item" onClick={() => { void onCreateOnlineBackup(); }}>Online-Schlüssel exportieren</button>
                     <button className="menu-dropdown-item" onClick={onOpenOnlineBackupImport}>Online-Schlüssel importieren</button>
-                  </div>
-                )}
+                </div>
               </div>
               <div className="menu-separator" />
               <button className="menu-dropdown-item" onClick={onMenuRestart}>
@@ -5827,15 +5829,17 @@ export function App(): ReactElement {
                 onMouseLeave={() => setOpenSubmenu(null)}
               >
                 <button className="menu-submenu-trigger">Logs öffnen</button>
-                {openSubmenu === "hilfe-log" && (
-                  <div className="menu-submenu-dropdown">
+                <div
+                  aria-hidden={openSubmenu !== "hilfe-log"}
+                  {...(openSubmenu !== "hilfe-log" ? { inert: "" } : {})}
+                  className={`menu-submenu-dropdown${openSubmenu === "hilfe-log" ? " is-open" : ""}`}
+                >
                     <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openLog().catch(() => {}); }}><span>Haupt-Log</span></button>
                     <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openAuditLog().catch(() => {}); }}><span>Audit-Log</span></button>
                     <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openRenameLog().catch(() => {}); }}><span>Rename-Log</span></button>
                     <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openSessionLog().catch(() => {}); }}><span>Session-Log</span></button>
                     <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openTraceLog().catch(() => {}); }}><span>Trace-Log</span></button>
-                  </div>
-                )}
+                </div>
               </div>
               <div
                 className="menu-submenu"
@@ -5843,13 +5847,15 @@ export function App(): ReactElement {
                 onMouseLeave={() => setOpenSubmenu(null)}
               >
                 <button className="menu-submenu-trigger">Remote-Support</button>
-                {openSubmenu === "hilfe-remote" && (
-                  <div className="menu-submenu-dropdown">
+                <div
+                  aria-hidden={openSubmenu !== "hilfe-remote"}
+                  {...(openSubmenu !== "hilfe-remote" ? { inert: "" } : {})}
+                  className={`menu-submenu-dropdown${openSubmenu === "hilfe-remote" ? " is-open" : ""}`}
+                >
                     <button className="menu-dropdown-item" onClick={() => { void onOpenRemoteDiagnostics(); }}><span>Ferndiagnose …</span></button>
                     <button className="menu-dropdown-item" onClick={() => { void onExportSupportBundle(); }}><span>Support-Bundle exportieren</span></button>
                     <button className="menu-dropdown-item" onClick={() => { void onToggleSupportTrace(); }}><span>{supportTraceEnabled ? "Support-Trace deaktivieren" : "Support-Trace aktivieren"}</span></button>
-                  </div>
-                )}
+                </div>
               </div>
               <div className="menu-separator" />
               <button className="menu-dropdown-item" onClick={() => { void onShowRecentErrors(); }}>
@@ -5861,12 +5867,14 @@ export function App(): ReactElement {
                 onMouseLeave={() => setOpenSubmenu(null)}
               >
                 <button className="menu-submenu-trigger">Diagnose</button>
-                {openSubmenu === "hilfe-diagnose" && (
-                  <div className="menu-submenu-dropdown">
+                <div
+                  aria-hidden={openSubmenu !== "hilfe-diagnose"}
+                  {...(openSubmenu !== "hilfe-diagnose" ? { inert: "" } : {})}
+                  className={`menu-submenu-dropdown${openSubmenu === "hilfe-diagnose" ? " is-open" : ""}`}
+                >
                     <button className="menu-dropdown-item" onClick={() => { void onRunDebugSetupCheck(); }}><span>Debug-Setup prüfen</span></button>
                     <button className="menu-dropdown-item" onClick={() => { void onRotateDebugToken(); }}><span>Debug-Token rotieren</span></button>
-                  </div>
-                )}
+                </div>
               </div>
               <div className="menu-separator" />
               <button className="menu-dropdown-item" onClick={() => { closeMenus(); void onCheckUpdates(); }}>

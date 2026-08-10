@@ -122,9 +122,13 @@ function progress(value: number): number {
 export function compactDownloadStatus(value: string): string {
   const status = value.trim();
   if (/Link wird umgewandelt/i.test(status)) return "Umwandeln";
-  if (/Download läuft\b/i.test(status)) return "DL läuft";
-  const extracting = status.match(/(Entpacken\s+\d+%)/i);
-  return extracting?.[1] ?? status;
+  if (/Download läuft\b/i.test(status)) return "Download läuft";
+  if (/Download running\b/i.test(status)) return "Download running";
+  const extracting = status.match(/Entpacken\s+(\d+)%/i);
+  if (extracting) return `Entpacken - ${extracting[1]}%`;
+  const extractingEnglish = status.match(/Extracting\s+(\d+)%/i);
+  if (extractingEnglish) return `Extracting - ${extractingEnglish[1]}%`;
+  return status;
 }
 
 function DownloadMeter({ value, text }: { value: number; text: string }): ReactElement {
@@ -140,10 +144,11 @@ function DownloadMeter({ value, text }: { value: number; text: string }): ReactE
 }
 
 function DownloadStatusCell({ status, title }: { status: string; title?: string }): ReactElement {
+  const visibleStatus = compactDownloadStatus(status);
   return (
-    <span aria-label={status} className="downloads-cell downloads-status-cell" title={title || status}>
-      <span aria-hidden="true" className="downloads-status-full">{status}</span>
-      <span aria-hidden="true" className="downloads-status-compact">{compactDownloadStatus(status)}</span>
+    <span aria-label={visibleStatus} className="downloads-cell downloads-status-cell" title={title || status}>
+      <span aria-hidden="true" className="downloads-status-full">{visibleStatus}</span>
+      <span aria-hidden="true" className="downloads-status-compact">{visibleStatus}</span>
     </span>
   );
 }
@@ -410,8 +415,12 @@ function packageCell(row: DownloadPackageRow, column: string, packageSpeedBps: n
   if (column === "prio") return <span className="downloads-cell">{entry.priority === "high" ? "Hoch" : entry.priority === "low" ? "Niedrig" : ""}</span>;
   if (column === "status") {
     const audio = entry.audioStripSummary ? formatAudioStripSummary(entry.audioStripSummary) : null;
-    const status = `${stats.done}/${stats.total}${stats.failed > 0 ? ` · ${stats.failed} Fehler` : ""}${stats.cancelled > 0 ? ` · ${stats.cancelled} abgebrochen` : ""}${entry.postProcessLabel ? ` · ${entry.postProcessLabel}` : ""}${audio ? ` · ${audio.text}` : ""}`;
-    const title = audio?.tooltip ? `${status}\n${audio.tooltip}` : status;
+    const details = `${stats.done}/${stats.total}${stats.failed > 0 ? ` · ${stats.failed} Fehler` : ""}${stats.cancelled > 0 ? ` · ${stats.cancelled} abgebrochen` : ""}${entry.postProcessLabel ? ` · ${entry.postProcessLabel}` : ""}${audio ? ` · ${audio.text}` : ""}`;
+    const downloading = entry.status === "downloading" || entry.status === "validating" || row.items.some((item) => item.status === "downloading" || item.status === "validating");
+    const status = entry.postProcessLabel && /Entpacken\s+\d+%/i.test(entry.postProcessLabel)
+      ? entry.postProcessLabel
+      : downloading ? "Download läuft" : details;
+    const title = audio?.tooltip ? `${details}\n${audio.tooltip}` : details;
     return <DownloadStatusCell status={status} title={title} />;
   }
   if (column === "speed") return <span className="downloads-cell">{packageSpeedBps > 0 ? formatSpeedMbps(packageSpeedBps) : ""}</span>;

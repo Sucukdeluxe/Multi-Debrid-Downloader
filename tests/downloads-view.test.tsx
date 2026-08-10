@@ -151,14 +151,17 @@ describe("laufender Queue-Linkzähler", () => {
 describe("responsive Downloadstatus und Servicebezeichnungen", () => {
   it("keeps full status details while providing compact table text", () => {
     expect(compactDownloadStatus("Link wird umgewandelt")).toBe("Umwandeln");
-    expect(compactDownloadStatus("Download läuft (Mega-Debrid)")).toBe("DL läuft");
-    expect(compactDownloadStatus("Entpacken 1% (1/1) · Tonspur: Deutsch")).toBe("Entpacken 1%");
-    expect(compactDownloadStatus("0/11 · Entpacken 1% (1/1) · Tonspur: Deutsch")).toBe("Entpacken 1%");
+    expect(compactDownloadStatus("Download läuft (Mega-Debrid API)")).toBe("Download läuft");
+    expect(compactDownloadStatus("Download running (Mega-Debrid API)")).toBe("Download running");
+    expect(compactDownloadStatus("Entpacken 1% (1/1) · Tonspur: Deutsch")).toBe("Entpacken - 1%");
+    expect(compactDownloadStatus("0/11 · Entpacken 53% (1/1) · scn2-httpv7-S01E102.rar")).toBe("Entpacken - 53%");
+    expect(compactDownloadStatus("Extracting 53% (1/1) · archive.rar")).toBe("Extracting - 53%");
   });
 
   it("removes duplicated access-mode wording from service labels", () => {
     expect(normalizeDownloadServiceLabel("Mega-Debrid Web (Web Account)")).toBe("Mega-Debrid Web");
     expect(normalizeDownloadServiceLabel("Mega-Debrid API (API Account)")).toBe("Mega-Debrid API");
+    expect(normalizeDownloadServiceLabel("Mega-Debrid API (API Access)")).toBe("Mega-Debrid API");
     expect(normalizeDownloadServiceLabel("Real-Debrid (Web Account)")).toBe("Real-Debrid (Web Account)");
     expect(normalizeDownloadServiceLabel("Mega-Debrid Web (Web Account), Mega-Debrid API (API Account)")).toBe("Mega-Debrid Web, Mega-Debrid API");
     expect(compactDownloadServiceLabel("Mega-Debrid Web (Web Account), Mega-Debrid API (API Account)")).toBe("Mega-Debrid");
@@ -827,10 +830,11 @@ describe("download table row contracts", () => {
       selected: false
     }));
 
-    expect(html).toContain('aria-label="Download läuft (Mega-Debrid)"');
+    expect(html).toContain('aria-label="Download läuft"');
     expect(html).toContain('class="downloads-status-full"');
     expect(html).toContain('class="downloads-status-compact"');
-    expect(html).toContain("DL läuft");
+    expect(html.match(/>Download läuft<\/span>/g)).toHaveLength(2);
+    expect(html).toContain('title="Download läuft (Mega-Debrid)"');
     expect(html).toContain('title="Mega-Debrid Web (Web Account)"');
     expect(html).toContain('class="downloads-service-full">Mega-Debrid Web</span>');
     expect(html).toContain('class="downloads-service-compact">Mega-Debrid</span>');
@@ -966,6 +970,24 @@ describe("download table row contracts", () => {
     }));
 
     expect(html).toMatch(/title="0\/1 · Entpacken 1% · Tonspur: 1 OK[^\"]*episode\.mkv: remuxed \(German kept\)"/s);
+  });
+
+  it("shows only the operation in an actively downloading package status", () => {
+    const activePackage = pkg("active-package", "Active package", ["active-item"]);
+    const html = renderToStaticMarkup(PackageCardContent({
+      actions: createActions(),
+      columnOrder: ["status"],
+      editing: false,
+      editingName: "",
+      gridTemplate: "220px",
+      packageSpeedBps: 1_000,
+      row: { package: activePackage, items: [item("active-item", activePackage.id, "downloading", { fullStatus: "Download läuft (Mega-Debrid API)" })], collapsed: true },
+      selectedIds: new Set<string>(),
+      selectedVersion: 0
+    }));
+
+    expect(html.match(/>Download läuft<\/span>/g)).toHaveLength(2);
+    expect(html).toContain('title="0/1"');
   });
 
   it("commits Enter and the resulting Blur rename sequence exactly once", () => {
