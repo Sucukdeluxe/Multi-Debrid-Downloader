@@ -1794,7 +1794,11 @@ export class DownloadManager extends EventEmitter {
 
   private packageDeferredPostProcessAbortControllers = new Map<string, AbortController>();
 
+  private packageDeferredPostProcessTasks = new Map<string, Set<Promise<void>>>();
+
   private packageHybridPostProcessControllers = new Map<string, Set<AbortController>>();
+
+  private packageHybridPostProcessTasks = new Map<string, Set<Promise<void>>>();
 
   private packagePostProcessVersions = new Map<string, number>();
 
@@ -2561,11 +2565,14 @@ export class DownloadManager extends EventEmitter {
     return next;
   }
 
-  private abortPackagePostProcessing(packageId: string, reason: string, invalidateDeferred = true): void {
+  private abortPackagePostProcessing(packageId: string, reason: string, invalidateDeferred = true): Promise<void>[] {
+    const tasks: Promise<void>[] = [];
     if (invalidateDeferred) {
       this.bumpPackagePostProcessVersion(packageId);
     }
 
+    const postProcessTask = this.packagePostProcessTasks.get(packageId);
+    if (postProcessTask) tasks.push(postProcessTask);
     const postProcessController = this.packagePostProcessAbortControllers.get(packageId);
     if (postProcessController && !postProcessController.signal.aborted) {
       postProcessController.abort(reason);
@@ -2578,6 +2585,9 @@ export class DownloadManager extends EventEmitter {
       deferredController.abort(reason);
     }
     this.packageDeferredPostProcessAbortControllers.delete(packageId);
+    const deferredTasks = this.packageDeferredPostProcessTasks.get(packageId);
+    if (deferredTasks) tasks.push(...deferredTasks);
+    this.packageDeferredPostProcessTasks.delete(packageId);
 
     const hybridSet = this.packageHybridPostProcessControllers.get(packageId);
     if (hybridSet) {
@@ -2588,9 +2598,13 @@ export class DownloadManager extends EventEmitter {
       }
       this.packageHybridPostProcessControllers.delete(packageId);
     }
+    const hybridTasks = this.packageHybridPostProcessTasks.get(packageId);
+    if (hybridTasks) tasks.push(...hybridTasks);
+    this.packageHybridPostProcessTasks.delete(packageId);
 
     this.hybridExtractRequeue.delete(packageId);
     this.clearHybridArchiveState(packageId);
+    return tasks;
   }
 
   private isDeferredPostProcessStillCurrent(
@@ -2893,7 +2907,9 @@ export class DownloadManager extends EventEmitter {
     this.packagePostProcessTasks.clear();
     this.packagePostProcessAbortControllers.clear();
     this.packageDeferredPostProcessAbortControllers.clear();
+    this.packageDeferredPostProcessTasks.clear();
     this.packageHybridPostProcessControllers.clear();
+    this.packageHybridPostProcessTasks.clear();
     this.hybridExtractRequeue.clear();
     this.hybridExtractedPaths.clear();
     this.hybridFailedArchives.clear();
@@ -2934,6 +2950,12 @@ export class DownloadManager extends EventEmitter {
         cancelled: false,
         enabled: true,
         priority: "normal",
+        cleanedCompletedItemCount: 0,
+        cleanedExtractedItemCount: 0,
+        cleanedDownloadedBytes: 0,
+        cleanedTotalBytes: 0,
+        cleanedUrls: [],
+        cleanedProviders: [],
         downloadStartedAt: 0,
         downloadCompletedAt: 0,
         createdAt: nowMs(),
@@ -4726,6 +4748,12 @@ export class DownloadManager extends EventEmitter {
   }
 
   private hasDeferredPostProcessPending(packageId: string): boolean {
+    if ((this.packageDeferredPostProcessTasks.get(packageId)?.size || 0) > 0) {
+      return true;
+    }
+    if ((this.packageHybridPostProcessTasks.get(packageId)?.size || 0) > 0) {
+      return true;
+    }
     const controller = this.packageDeferredPostProcessAbortControllers.get(packageId);
     if (controller && !controller.signal.aborted) {
       return true;
@@ -4742,6 +4770,12 @@ export class DownloadManager extends EventEmitter {
   }
 
   private hasAnyDeferredPostProcessPending(): boolean {
+    for (const tasks of this.packageDeferredPostProcessTasks.values()) {
+      if (tasks.size > 0) return true;
+    }
+    for (const tasks of this.packageHybridPostProcessTasks.values()) {
+      if (tasks.size > 0) return true;
+    }
     for (const controller of this.packageDeferredPostProcessAbortControllers.values()) {
       if (!controller.signal.aborted) {
         return true;
@@ -4769,6 +4803,9 @@ export class DownloadManager extends EventEmitter {
       if (!controller.signal.aborted) {
         target.add(id);
       }
+    }
+    for (const [id, tasks] of this.packageHybridPostProcessTasks) {
+      if (tasks.size > 0) target.add(id);
     }
     for (const [id, hybridSet] of this.packageHybridPostProcessControllers) {
       for (const c of hybridSet) {
@@ -5183,7 +5220,7 @@ export class DownloadManager extends EventEmitter {
       });
   }
 
-  public resetPackage(packageId: string): void {
+  public async resetPackage(packageId: string): Promise<void> {
     const pkg = this.session.packages[packageId];
     if (!pkg) return;
 
@@ -5227,17 +5264,22 @@ export class DownloadManager extends EventEmitter {
       item.updatedAt = nowMs();
     }
 
-    this.abortPackagePostProcessing(packageId, "reset");
+    const postProcessTasks = this.abortPackagePostProcessing(packageId, "reset");
     this.runCompletedPackages.delete(packageId);
-
-    if (pkg.outputDir) {
-      clearExtractResumeState(pkg.outputDir, packageId).catch(() => {});
-      clearExtractResumeState(pkg.outputDir).catch(() => {});
-    }
 
     pkg.status = "queued";
     pkg.cancelled = false;
     pkg.enabled = true;
+    pkg.postProcessLabel = undefined;
+    pkg.audioStripSummary = undefined;
+    pkg.cleanedCompletedItemCount = 0;
+    pkg.cleanedExtractedItemCount = 0;
+    pkg.cleanedDownloadedBytes = 0;
+    pkg.cleanedTotalBytes = 0;
+    pkg.cleanedUrls = [];
+    pkg.cleanedProviders = [];
+    pkg.downloadStartedAt = 0;
+    pkg.downloadCompletedAt = 0;
     pkg.updatedAt = nowMs();
     this.historyRecordedPackages.delete(packageId);
     this.notifiedPackages.delete(packageId);
@@ -5249,6 +5291,13 @@ export class DownloadManager extends EventEmitter {
       this.runPackageIds.add(packageId);
     }
 
+    await Promise.allSettled(postProcessTasks);
+    if (pkg.outputDir) {
+      await Promise.allSettled([
+        clearExtractResumeState(pkg.outputDir, packageId),
+        clearExtractResumeState(pkg.outputDir)
+      ]);
+    }
     logger.info(`Paket "${pkg.name}" zurückgesetzt (${itemIds.length} Items)`);
     this.persistSoon();
     this.emitState(true);
@@ -5257,8 +5306,9 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
-  public resetItems(itemIds: string[]): void {
+  public async resetItems(itemIds: string[]): Promise<void> {
     const affectedPackageIds = new Set<string>();
+    const postProcessTasks = new Set<Promise<void>>();
     for (const itemId of itemIds) {
       const item = this.session.items[itemId];
       if (!item) continue;
@@ -5305,21 +5355,30 @@ export class DownloadManager extends EventEmitter {
     }
 
     for (const pkgId of affectedPackageIds) {
-      this.abortPackagePostProcessing(pkgId, "reset");
+      for (const task of this.abortPackagePostProcessing(pkgId, "reset")) postProcessTasks.add(task);
       this.runCompletedPackages.delete(pkgId);
       this.historyRecordedPackages.delete(pkgId);
       this.notifiedPackages.delete(pkgId);
 
       const pkg = this.session.packages[pkgId];
-      if (pkg && (pkg.status === "completed" || pkg.status === "failed" || pkg.status === "cancelled")) {
-        pkg.status = "queued";
+      if (pkg) {
         pkg.cancelled = false;
+        pkg.postProcessLabel = undefined;
+        pkg.audioStripSummary = undefined;
+        pkg.downloadCompletedAt = 0;
+        this.refreshPackageStatus(pkg);
         pkg.updatedAt = nowMs();
       }
       if (this.session.running) {
         this.runPackageIds.add(pkgId);
       }
     }
+
+    await Promise.allSettled([...postProcessTasks]);
+    await Promise.allSettled([...affectedPackageIds].flatMap((pkgId) => {
+      const pkg = this.session.packages[pkgId];
+      return pkg?.outputDir ? [clearExtractResumeState(pkg.outputDir, pkgId)] : [];
+    }));
 
     logger.info(`${itemIds.length} Item(s) zurückgesetzt`);
     this.persistSoon();
@@ -7762,26 +7821,31 @@ export class DownloadManager extends EventEmitter {
       return;
     }
     const completedItems = items.filter(item => item.status === "completed");
-    if (completedItems.length === 0) {
+    const cleanedCount = Math.max(0, Number(pkg.cleanedCompletedItemCount || 0));
+    if (completedItems.length + cleanedCount === 0) {
       return;
     }
     this.historyRecordedPackages.add(packageId);
-    const totalBytes = completedItems.reduce((sum, item) => sum + (item.downloadedBytes || 0), 0);
+    const totalBytes = Math.max(0, Number(pkg.cleanedDownloadedBytes || 0))
+      + completedItems.reduce((sum, item) => sum + (item.downloadedBytes || 0), 0);
     const durationSeconds = this.getPackageHistoryDurationSeconds(pkg);
-    const providers = new Set(completedItems.map(item => item.provider).filter(Boolean));
+    const providers = new Set([
+      ...(pkg.cleanedProviders || []),
+      ...completedItems.map(item => item.provider).filter(Boolean)
+    ]);
     const provider = providers.size === 1 ? [...providers][0] : null;
     const entry: HistoryEntry = {
       id: generateHistoryId(),
       name: pkg.name,
       totalBytes,
       downloadedBytes: totalBytes,
-      fileCount: completedItems.length,
+      fileCount: cleanedCount + completedItems.length,
       provider,
       completedAt: nowMs(),
       durationSeconds,
       status: "completed",
       outputDir: pkg.outputDir,
-      urls: completedItems.map(item => item.url).filter(Boolean),
+      urls: [...new Set([...(pkg.cleanedUrls || []), ...completedItems.map(item => item.url).filter(Boolean)])],
     };
     this.onHistoryEntryCallback(entry);
   }
@@ -7797,11 +7861,16 @@ export class DownloadManager extends EventEmitter {
     if (pkg && this.onHistoryEntryCallback && reason === "deleted" && !this.historyRecordedPackages.has(packageId)) {
       const allItems = itemIds.map(id => this.session.items[id]).filter(Boolean) as DownloadItem[];
       const completedItems = allItems.filter(item => item.status === "completed");
-      const completedCount = completedItems.length;
+      const cleanedCount = Math.max(0, Number(pkg.cleanedCompletedItemCount || 0));
+      const completedCount = cleanedCount + completedItems.length;
       if (completedCount > 0) {
-        const totalBytes = completedItems.reduce((sum, item) => sum + (item.downloadedBytes || 0), 0);
+        const totalBytes = Math.max(0, Number(pkg.cleanedDownloadedBytes || 0))
+          + completedItems.reduce((sum, item) => sum + (item.downloadedBytes || 0), 0);
         const durationSeconds = this.getPackageHistoryDurationSeconds(pkg);
-        const providers = new Set(completedItems.map(item => item.provider).filter(Boolean));
+        const providers = new Set([
+          ...(pkg.cleanedProviders || []),
+          ...completedItems.map(item => item.provider).filter(Boolean)
+        ]);
         const provider = providers.size === 1 ? [...providers][0] : null;
         const entry: HistoryEntry = {
           id: generateHistoryId(),
@@ -7814,7 +7883,7 @@ export class DownloadManager extends EventEmitter {
           durationSeconds,
           status: "deleted",
           outputDir: pkg.outputDir,
-          urls: completedItems.map(item => item.url).filter(Boolean),
+          urls: [...new Set([...(pkg.cleanedUrls || []), ...completedItems.map(item => item.url).filter(Boolean)])],
         };
         this.onHistoryEntryCallback(entry);
       }
@@ -11511,7 +11580,7 @@ export class DownloadManager extends EventEmitter {
         },
         onProgress: (progress) => {
           if (progress.phase === "preparing") {
-            pkg.postProcessLabel = progress.archiveName || "Vorbereiten...";
+            pkg.postProcessLabel = "Entpacken - Ausstehend";
             this.emitState();
             return;
           }
@@ -11605,7 +11674,7 @@ export class DownloadManager extends EventEmitter {
           const activeArchive = !archiveFinished && Number(progress.archivePercent ?? 0) > 0 ? 1 : 0;
           const currentDisplay = Math.max(0, Math.min(progress.total, progress.current + activeArchive));
           if (progress.passwordFound) {
-            pkg.postProcessLabel = `Passwort gefunden · ${progress.archiveName || ""}`;
+            pkg.postProcessLabel = "Passwort gefunden";
           } else if (progress.passwordAttempt && progress.passwordTotal && progress.passwordTotal > 1) {
             const pwPct = Math.round((progress.passwordAttempt / progress.passwordTotal) * 100);
             pkg.postProcessLabel = `Passwort knacken: ${pwPct}%`;
@@ -11671,7 +11740,8 @@ export class DownloadManager extends EventEmitter {
         }
         hybridSet.add(hybridController);
         const hybridShouldAbort = (): boolean => hybridController.signal.aborted || this.session.packages[packageId] !== pkg;
-        void (async () => {
+        const hybridHandle: { task?: Promise<void> } = {};
+        const hybridTask = (async () => {
           try {
             await this.chainPackageFileOp(pkg.id, async () => {
               await this.autoRenameExtractedVideoFilesImpl(pkg.extractDir, pkg, hybridShouldAbort);
@@ -11688,8 +11758,17 @@ export class DownloadManager extends EventEmitter {
                 this.packageHybridPostProcessControllers.delete(packageId);
               }
             }
+            const tasks = this.packageHybridPostProcessTasks.get(packageId);
+            if (hybridHandle.task) tasks?.delete(hybridHandle.task);
+            if (tasks?.size === 0) {
+              this.packageHybridPostProcessTasks.delete(packageId);
+            }
           }
         })();
+        hybridHandle.task = hybridTask;
+        const hybridTasks = this.packageHybridPostProcessTasks.get(packageId) || new Set<Promise<void>>();
+        hybridTasks.add(hybridTask);
+        this.packageHybridPostProcessTasks.set(packageId, hybridTasks);
       }
       if (result.failed > 0) {
         logger.warn(`Hybrid-Extract: ${result.failed} Archive fehlgeschlagen, werden erst nach echter Aenderung oder manuellem Retry erneut versucht`);
@@ -12031,7 +12110,7 @@ export class DownloadManager extends EventEmitter {
           },
           onProgress: (progress) => {
             if (progress.phase === "preparing") {
-              pkg.postProcessLabel = progress.archiveName || "Vorbereiten...";
+              pkg.postProcessLabel = "Entpacken - Ausstehend";
               this.emitState();
               return;
             }
@@ -12251,13 +12330,14 @@ export class DownloadManager extends EventEmitter {
       pkg.status = "completed";
     }
 
+    pkg.postProcessLabel = undefined;
+    pkg.updatedAt = nowMs();
+
     if (pkg.status === "completed") {
       this.notifyPackageOutcome(pkg, "completed", `${success} Datei(en)${extractedCount > 0 ? `, ${extractedCount} entpackt` : ""}`);
     } else if (pkg.status === "failed") {
       this.notifyPackageOutcome(pkg, "failed", `${failed} von ${success + failed + cancelled} Datei(en) fehlgeschlagen`);
     }
-
-    this.emitState();
 
     if (pkg.status === "completed" || (pkg.status === "failed" && success > 0)) {
       this.recordPackageHistory(packageId, pkg, items);
@@ -12270,8 +12350,7 @@ export class DownloadManager extends EventEmitter {
         this.runCompletedPackages.delete(packageId);
       }
     }
-    pkg.postProcessLabel = undefined;
-    pkg.updatedAt = nowMs();
+    this.emitState();
     logger.info(`Post-Processing Ende: pkg=${pkg.name}, status=${pkg.status} (deferred work wird im Hintergrund ausgeführt)`);
     this.logPackageForPackage(pkg, "INFO", "Post-Processing Ende", {
       status: pkg.status,
@@ -12284,7 +12363,29 @@ export class DownloadManager extends EventEmitter {
     void this.runDeferredPostExtraction(packageId, pkg, success, failed, alreadyMarkedExtracted, extractedCount);
   }
 
-  private async runDeferredPostExtraction(
+  private runDeferredPostExtraction(
+    packageId: string,
+    pkg: PackageEntry,
+    success: number,
+    failed: number,
+    alreadyMarkedExtracted: boolean,
+    extractedCount: number
+  ): Promise<void> {
+    const task = this.executeDeferredPostExtraction(packageId, pkg, success, failed, alreadyMarkedExtracted, extractedCount)
+      .finally(() => {
+        const tasks = this.packageDeferredPostProcessTasks.get(packageId);
+        tasks?.delete(task);
+        if (tasks?.size === 0) {
+          this.packageDeferredPostProcessTasks.delete(packageId);
+        }
+      });
+    const tasks = this.packageDeferredPostProcessTasks.get(packageId) || new Set<Promise<void>>();
+    tasks.add(task);
+    this.packageDeferredPostProcessTasks.set(packageId, tasks);
+    return task;
+  }
+
+  private async executeDeferredPostExtraction(
     packageId: string,
     pkg: PackageEntry,
     success: number,
@@ -12537,6 +12638,17 @@ export class DownloadManager extends EventEmitter {
           return;
         }
       }
+      pkg.cleanedCompletedItemCount = Math.max(0, Number(pkg.cleanedCompletedItemCount || 0)) + 1;
+      if (isExtractedLabel(item.fullStatus || "")) {
+        pkg.cleanedExtractedItemCount = Math.max(0, Number(pkg.cleanedExtractedItemCount || 0)) + 1;
+      }
+      pkg.cleanedDownloadedBytes = Math.max(0, Number(pkg.cleanedDownloadedBytes || 0)) + Math.max(0, item.downloadedBytes || 0);
+      pkg.cleanedTotalBytes = Math.max(0, Number(pkg.cleanedTotalBytes || 0)) + Math.max(0, item.totalBytes || item.downloadedBytes || 0);
+      pkg.cleanedUrls = [...new Set([...(pkg.cleanedUrls || []), item.url].filter(Boolean))];
+      pkg.cleanedProviders = item.provider
+        ? [...new Set([...(pkg.cleanedProviders || []), item.provider])]
+        : [...(pkg.cleanedProviders || [])];
+      pkg.updatedAt = nowMs();
       pkg.itemIds = pkg.itemIds.filter((id) => id !== itemId);
       this.releaseTargetPath(itemId);
       this.dropItemContribution(itemId);

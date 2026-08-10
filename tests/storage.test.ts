@@ -6,7 +6,7 @@ import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
 import { AppSettings } from "../src/shared/types";
 import { defaultSettings } from "../src/main/constants";
-import { addHistoryEntryForRetention, createStoragePaths, emptySession, loadHistory, loadHistoryForRetention, loadSession, loadSettings, normalizeSettings, resetHistoryForRetention, saveHistory, saveSession, saveSessionAsync, saveSettings } from "../src/main/storage";
+import { addHistoryEntryForRetention, createStoragePaths, emptySession, loadHistory, loadHistoryForRetention, loadSession, loadSettings, normalizeLoadedSession, normalizeSettings, resetHistoryForRetention, saveHistory, saveSession, saveSessionAsync, saveSettings } from "../src/main/storage";
 
 const tempDirs: string[] = [];
 
@@ -670,6 +670,36 @@ describe("settings storage", () => {
     expect(loaded.items["item4"].status).toBe("queued");
     expect(loaded.items["item1"].downloadedBytes).toBe(5000);
     expect(loaded.packages["pkg1"].name).toBe("Test Package");
+  });
+
+  it("preserves cleaned package progress aggregates while normalizing a session", () => {
+    const session = emptySession();
+    session.packageOrder = ["pkg-progress"];
+    session.packages["pkg-progress"] = {
+      id: "pkg-progress",
+      name: "Progress",
+      outputDir: "C:\\Downloads\\Progress",
+      extractDir: "C:\\Downloads\\Progress\\Extracted",
+      status: "downloading",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      cleanedCompletedItemCount: 3,
+      cleanedExtractedItemCount: 2,
+      cleanedDownloadedBytes: 3_000,
+      cleanedTotalBytes: 4_000,
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+
+    const normalized = normalizeLoadedSession(session);
+
+    expect(normalized.packages["pkg-progress"]).toEqual(expect.objectContaining({
+      cleanedCompletedItemCount: 3,
+      cleanedExtractedItemCount: 2,
+      cleanedDownloadedBytes: 3_000,
+      cleanedTotalBytes: 4_000
+    }));
   });
 
   it("returns empty session when session file contains invalid JSON", () => {

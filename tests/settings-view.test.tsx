@@ -22,9 +22,11 @@ import {
   buildTargetedAccountCheck,
   filterAccountAddOptions,
   getSettingsSaveLabel,
+  getSettingsSelectNavigationIndex,
   projectAccountRows,
   pruneAccountSelection,
   reconcileAccountAddDraft,
+  resolveHistoryRetentionSelection,
   sortAccountRows,
   type AccountAddOption,
   type AccountRowSource,
@@ -51,6 +53,10 @@ const NOW = 1_700_000_000_000;
 const appSource = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
 const accountWorkspaceSource = readFileSync(
   new URL("../src/renderer/views/settings/AccountWorkspace.tsx", import.meta.url),
+  "utf8"
+);
+const settingsCss = readFileSync(
+  new URL("../src/renderer/views/settings/settings.css", import.meta.url),
   "utf8"
 );
 
@@ -105,7 +111,7 @@ function accountSources(): AccountRowSource[] {
       },
       dailyLimitBytes: 10 * GIB,
       dailyUsageBytes: 4 * GIB,
-      username: "stored@example.test",
+      username: "stored-user",
       credentialKind: "password",
       canCheck: true
     },
@@ -310,7 +316,8 @@ describe("settings model", () => {
     const rows = projectAccountRows(accountSources(), [], NOW);
 
     expect(rows.map((row) => row.id)).toEqual(accountSources().map((source) => buildAccountRowId(source.service, source.mode, source.identityId)));
-    expect(rows[0].username).toBe("verified@example.test");
+    expect(rows[0].username).toBe("stored-user");
+    expect(rows[0].email).toBe("verified@example.test");
     expect(rows[0].credential).toBe("••••••");
     expect(rows[1].credential).toBe("API-Key");
     expect(rows.map((row) => row.status.tone)).toEqual(["ok", "free", "invalid", "unknown", "disabled"]);
@@ -420,7 +427,7 @@ describe("settings views", () => {
     expect(html.match(/data-sliding-selection-active="true"/g)).toHaveLength(1);
   });
 
-  it("offers English and German as a live language setting", () => {
+  it("offers animated language and bounded history retention choices", () => {
     const form = buildSettingsFormViewModel({
       settings: defaultSettings(),
       section: "allgemein",
@@ -438,6 +445,53 @@ describe("settings views", () => {
         { value: "en", label: "English" },
         { value: "de", label: "Deutsch" }
       ]
+    });
+    const historyRetention = form.groups.flatMap((group) => group.fields).find((field) => field.id === "historyRetentionMode");
+
+    expect(historyRetention).toEqual({
+      id: "historyRetentionMode",
+      kind: "select",
+      label: "Verlauf speichern",
+      value: "permanent",
+      options: [
+        { value: "never", label: "Nie" },
+        { value: "session", label: "Nur aktuelle Session" },
+        { value: "permanent-100", label: "Nur letzte 100 Einträge" },
+        { value: "permanent-250", label: "Nur letzte 250 Einträge" },
+        { value: "permanent", label: "Dauerhaft" }
+      ]
+    });
+
+    const html = renderToStaticMarkup(<SettingsForm actions={{ onAction: () => {}, onChange: () => {} }} model={form} />);
+    expect(html).toContain("class=\"settings-select\"");
+    expect(html).toContain("role=\"combobox\"");
+    expect(html).toContain("role=\"listbox\"");
+    expect(settingsCss).toMatch(/\.settings-select-options\s*\{[^}]*opacity:\s*0[^}]*transform:\s*translateY\(-6px\)[^}]*transition:/s);
+    expect(settingsCss).toMatch(/\.settings-select\.is-open\s+\.settings-select-options\s*\{[^}]*opacity:\s*1[^}]*transform:\s*translateY\(0\)/s);
+  });
+
+  it("supports keyboard navigation in animated settings selects", () => {
+    expect(getSettingsSelectNavigationIndex(1, 3, "ArrowDown")).toBe(2);
+    expect(getSettingsSelectNavigationIndex(2, 3, "ArrowDown")).toBe(0);
+    expect(getSettingsSelectNavigationIndex(0, 3, "ArrowUp")).toBe(2);
+    expect(getSettingsSelectNavigationIndex(1, 3, "Home")).toBe(0);
+    expect(getSettingsSelectNavigationIndex(1, 3, "End")).toBe(2);
+
+    const source = readFileSync(new URL("../src/renderer/views/settings/SettingsForm.tsx", import.meta.url), "utf8");
+    expect(source).toContain("optionRefs.current[nextIndex]?.focus()");
+    expect(source).toContain('event.key === "Home"');
+    expect(source).toContain('event.key === "End"');
+    expect(source).toContain("onBlur={onBlur}");
+  });
+
+  it("clears a bounded history preset when permanent retention is selected", () => {
+    expect(resolveHistoryRetentionSelection("permanent", 100, "permanent")).toEqual({
+      historyRetentionMode: "permanent",
+      historyMaxEntries: 500
+    });
+    expect(resolveHistoryRetentionSelection("permanent", 250, "permanent-100")).toEqual({
+      historyRetentionMode: "permanent",
+      historyMaxEntries: 100
     });
   });
 
@@ -610,19 +664,22 @@ describe("account workspace", () => {
 
     expect(addHtml).toContain("Account hinzufügen");
     expect(addHtml).toContain("Prüfen und speichern");
-    expect(count(addHtml, "<select")).toBe(1);
-    expect(addHtml).toContain('aria-label="Dienst / Zugangstyp"');
-    expect(count(addHtml, "<option")).toBe(options.length);
-    options.forEach((option) => expect(addHtml).toContain(`value="${option.id}"`));
-    expect(addHtml).toContain('<option value="megadebrid-api" selected="">Mega-Debrid · API</option>');
+    expect(count(addHtml, "<select")).toBe(0);
+    expect(addHtml).toContain('aria-label="Dienst oder Zugangstyp suchen"');
+    expect(addHtml).toContain('role="listbox"');
+    expect(addHtml).toContain('class="settings-account-picker-header"');
+    expect(addHtml).toContain("Dienst");
+    expect(addHtml).toContain("Typ/Funktion");
+    options.forEach((option) => expect(addHtml).toContain(`data-account-option-id="${option.id}"`));
+    expect(addHtml).toContain('data-account-option-id="megadebrid-api"');
+    expect(addHtml).toContain('aria-selected="true"');
     expect(addHtml).toContain("Weiteren Account hinzufügen");
     expect(addHtml).toContain("Login:Passwort");
-    expect(addHtml).not.toContain('type="search"');
-    expect(addHtml).not.toContain("Account-Typ filtern");
-    expect(addHtml).not.toContain("settings-account-picker-row");
+    expect(addHtml).toContain('type="search"');
+    expect(addHtml).toContain("settings-account-picker-row");
     expect(count(addHtml, 'class="settings-account-dialog-fields"')).toBe(1);
-    expect(addHtml.indexOf('aria-label="Dienst / Zugangstyp"')).toBeLessThan(addHtml.indexOf("settings-account-option-meta"));
-    expect(addHtml.indexOf("settings-account-option-meta")).toBeLessThan(addHtml.indexOf("settings-account-dialog-fields"));
+    expect(addHtml.indexOf('aria-label="Dienst oder Zugangstyp suchen"')).toBeLessThan(addHtml.indexOf("settings-account-picker-table"));
+    expect(addHtml.indexOf("settings-account-picker-table")).toBeLessThan(addHtml.indexOf("settings-account-dialog-fields"));
     expect(editHtml).toContain("Account bearbeiten");
     expect(editHtml).toContain("member@example.test");
     expect(editHtml).toContain("Entfernen");
@@ -631,7 +688,7 @@ describe("account workspace", () => {
     expect(count(editHtml, "type=\"password\"")).toBe(2);
   });
 
-  it("selects the account option through the single service selector", () => {
+  it("selects the account option through the compact service table", () => {
     const selected: string[] = [];
     const tree = AccountAddDialog({
       actions: {
@@ -653,11 +710,23 @@ describe("account workspace", () => {
         busy: false
       }
     });
-    const selector = findElement(tree, (element) => element.type === "select" && element.props["aria-label"] === "Dienst / Zugangstyp");
+    const selector = findElement(tree, (element) => element.props["data-account-option-id"] === "debridlink-api");
 
-    selector.props.onChange({ target: { value: "debridlink-api" } });
+    selector.props.onClick();
 
     expect(selected).toEqual(["debridlink-api"]);
+  });
+
+  it("keeps stored usernames separate from provider email addresses", () => {
+    const rows = projectAccountRows(accountSources(), [], NOW);
+
+    expect(rows[0].username).toBe("stored-user");
+    expect(rows[0].email).toBe("verified@example.test");
+    expect(ACCOUNT_COLUMNS).toContain("E-Mail");
+
+    const html = renderToStaticMarkup(<AccountWorkspace actions={workspaceActions()} model={workspaceModel()} />);
+    expect(html).toContain("stored-user");
+    expect(html).toContain("verified@example.test");
   });
 });
 

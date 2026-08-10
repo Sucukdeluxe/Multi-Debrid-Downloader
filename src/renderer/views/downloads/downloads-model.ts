@@ -30,6 +30,7 @@ export interface DownloadFilterCounts {
 export interface DownloadPackageRow {
   package: PackageEntry;
   items: DownloadItem[];
+  allItems: DownloadItem[];
   collapsed: boolean;
 }
 
@@ -139,9 +140,10 @@ export function buildDownloadsViewModel(input: DownloadsModelInput): DownloadsVi
   const collapsed = new Set(input.collapsedPackageIds);
   const selectedIds = new Set(input.selectedIds);
   let packageRows = allPackages.flatMap((entry): DownloadPackageRow[] => {
-    const items = entry.itemIds
+    const allPackageItems = entry.itemIds
       .map((id) => input.items[id])
-      .filter((item): item is DownloadItem => Boolean(item))
+      .filter((item): item is DownloadItem => Boolean(item));
+    const items = allPackageItems
       .filter((item) => !input.hideExtractedItems || !isExtracted(item));
     const packageMatchesQuery = query === "" || matchesQuery(entry.name, query) || matchesQuery(entry.status, query);
     const matchingItems = items.filter((item) => {
@@ -158,7 +160,7 @@ export function buildDownloadsViewModel(input: DownloadsModelInput): DownloadsVi
     const visibleItems = packageMatchesQuery && query !== ""
       ? items.filter((item) => matchesFilter(item, input.filter) && matchesProvider(item, input.providerFilter))
       : matchingItems;
-    return [{ package: entry, items: visibleItems, collapsed: collapsed.has(entry.id) }];
+    return [{ package: entry, items: visibleItems, allItems: allPackageItems, collapsed: collapsed.has(entry.id) }];
   });
 
   const totalPackageRows = packageRows.length;

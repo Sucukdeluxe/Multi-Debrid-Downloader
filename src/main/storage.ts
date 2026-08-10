@@ -784,6 +784,16 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
       enabled: pkg.enabled === undefined ? true : Boolean(pkg.enabled),
       priority: VALID_PACKAGE_PRIORITIES.has(asText(pkg.priority)) ? asText(pkg.priority) as PackagePriority : "normal",
       audioStripSummary: normalizeAudioStripSummary(pkg.audioStripSummary),
+      cleanedCompletedItemCount: clampNumber(pkg.cleanedCompletedItemCount, 0, 0, 1_000_000),
+      cleanedExtractedItemCount: clampNumber(pkg.cleanedExtractedItemCount, 0, 0, 1_000_000),
+      cleanedDownloadedBytes: clampNumber(pkg.cleanedDownloadedBytes, 0, 0, 10_000_000_000_000),
+      cleanedTotalBytes: clampNumber(pkg.cleanedTotalBytes, 0, 0, 10_000_000_000_000),
+      cleanedUrls: Array.isArray(pkg.cleanedUrls)
+        ? [...new Set(pkg.cleanedUrls.map((value) => asText(value)).filter(Boolean))].slice(0, 1_000_000)
+        : [],
+      cleanedProviders: Array.isArray(pkg.cleanedProviders)
+        ? [...new Set(pkg.cleanedProviders.map((value) => asText(value) as DebridProvider).filter((value) => VALID_ITEM_PROVIDERS.has(value)))]
+        : [],
       downloadStartedAt: clampNumber(pkg.downloadStartedAt, 0, 0, Number.MAX_SAFE_INTEGER),
       downloadCompletedAt: clampNumber(pkg.downloadCompletedAt, 0, 0, Number.MAX_SAFE_INTEGER),
       createdAt: clampNumber(pkg.createdAt, now, 0, Number.MAX_SAFE_INTEGER),

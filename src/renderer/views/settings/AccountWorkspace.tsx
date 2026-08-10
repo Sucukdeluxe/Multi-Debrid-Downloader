@@ -222,6 +222,7 @@ function AccountRow({
       </span>
       <span className="settings-account-traffic" role="cell">{row.traffic}</span>
       <span className="settings-account-username settings-copyable" role="cell" title={row.username}>{row.username}</span>
+      <span className="settings-account-email settings-copyable" role="cell" title={row.email}>{row.email}</span>
       <span className="settings-account-expires" role="cell">{row.expires}</span>
       <span className="settings-account-credential" role="cell">{row.credential}</span>
       <span className="settings-account-column-actions" role="cell">
@@ -498,30 +499,47 @@ export function AccountAddDialog({
       size="account"
       title="Account hinzufügen"
     >
-      <label className="settings-account-picker-selector">
+      <div className="settings-account-picker-selector">
         <span>Dienst / Zugangstyp</span>
-        <select
-          aria-label="Dienst / Zugangstyp"
+        <input
+          aria-label="Dienst oder Zugangstyp suchen"
           className="settings-control"
-          onChange={(event) => actions.onOptionSelect(event.target.value)}
-          value={model.selectedOptionId ?? ""}
-        >
+          onChange={(event) => actions.onQueryChange(event.target.value)}
+          placeholder="Dienst oder Zugangstyp suchen"
+          type="search"
+          value={model.query}
+        />
+      </div>
+      <div className="settings-account-picker-table">
+        <div aria-hidden="true" className="settings-account-picker-header">
+          <span>Dienst</span>
+          <span>Typ/Funktion</span>
+        </div>
+        <div aria-label="Dienst / Zugangstyp" className="settings-account-picker-list" role="listbox">
           {model.options.map((option) => (
-            <option key={option.id} value={option.id}>{option.title} · {option.mode}</option>
+            <button
+              aria-selected={option.id === model.selectedOptionId}
+              className={`settings-account-picker-row${option.id === model.selectedOptionId ? " is-selected" : ""}`}
+              data-account-option-id={option.id}
+              key={option.id}
+              onClick={() => actions.onOptionSelect(option.id)}
+              role="option"
+              type="button"
+            >
+              <span className="settings-account-picker-service">
+                {option.icon ? <img alt="" aria-hidden="true" draggable={false} height="18" src={option.icon} width="18" /> : null}
+                <span>{option.title}</span>
+              </span>
+              <span>{option.functionLabel}</span>
+            </button>
           ))}
-        </select>
-      </label>
+        </div>
+      </div>
       {selectedOption ? (
         <>
-          <div className="settings-account-option-meta">
-            <div>
-              <strong>{selectedOption.title}</strong>
-              <span>{selectedOption.description}</span>
-            </div>
-            <div>
-              <strong>{selectedOption.mode}</strong>
-              <span>{selectedOption.functionLabel}</span>
-            </div>
+          <div className="settings-account-option-summary">
+            <strong>Zugangsdaten für {selectedOption.title}</strong>
+            <span>{selectedOption.description}</span>
           </div>
           <AccountDialogFields fields={model.fields} onChange={actions.onFieldChange} />
         </>

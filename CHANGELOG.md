@@ -2,6 +2,42 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.18] - 2026-08-11
+
+### Downloads and status handling
+
+- Preserved package byte totals, completed-item counts, and extraction progress when finished files are removed immediately from the queue.
+- Persisted cleaned package contributions so progress remains stable across application restarts.
+- Preserved final history file counts, byte totals, providers, and source URLs after immediate cleanup.
+- Reset selected files and their package post-processing state atomically after extraction failures.
+- Waited for cancelled extraction work and resume-state cleanup before restarting reset downloads.
+- Replaced contradictory unchecked package availability counters with a compact unchecked state.
+- Reduced extraction errors, pending extraction phases, password phases, and archive processing to concise visible status labels while retaining full diagnostics in tooltips and logs.
+- Cleared stale archive labels before final package state notifications and history updates.
+- Removed native whole-row dragging that could create a large drag preview while preserving header column reordering and explicit package move actions.
+- Expanded inline package-name editing to the full available name-column width.
+
+### Settings and account management
+
+- Added history retention choices for the latest 100 or 250 entries.
+- Kept permanent history retention selectable after using a bounded history preset.
+- Replaced native settings selectors with smooth, keyboard-accessible dropdowns for consistent opening and closing motion.
+- Reworked account creation into a compact searchable service table with separate service and access-type columns.
+- Displayed only the credentials required by the selected account type.
+- Separated usernames and email addresses in the account overview so verified email data no longer replaces a stored username.
+- Kept Mega-Debrid access types explicit as `Mega-Debrid (API)` and `Mega-Debrid (Web)`.
+
+### Interface fixes
+
+- Centered the package sidebar heading and added a high-contrast light-blue module accent.
+- Positioned context menus and nested menus before they become visible, preventing first-frame jumps at window edges.
+- Closed open context menus immediately when another package or file is clicked.
+- Kept context menus inside narrow application windows without introducing horizontal overflow.
+
+### Reliability and testing
+
+- Added regression coverage for cleanup-safe package progress, persisted progress aggregates, extraction reset state, compact availability, extraction diagnostics, native drag suppression, full-width renaming, animated settings selectors, account identity fields, and viewport-safe context menus.
+
 ## [2.0.17] - 2026-08-10
 
 ### Interface fixes

@@ -2711,7 +2711,7 @@ td {
 }
 
 .ctx-menu-sub-items {
-  display: none;
+  display: block;
   position: absolute;
   left: 100%;
   top: 0;
@@ -2722,10 +2722,16 @@ td {
   padding: 4px 0;
   box-shadow: 0 4px 12px rgba(0,0,0,.3);
   z-index: 1001;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
 }
 
-.ctx-menu-sub:hover .ctx-menu-sub-items {
-  display: block;
+.ctx-menu-sub:hover > .ctx-menu-sub-items.is-positioned,
+.ctx-menu-sub.is-keyboard-open > .ctx-menu-sub-items.is-positioned {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
 }
 
 .ctx-menu-active {
@@ -3058,6 +3064,11 @@ td {
   border-radius: 8px;
   padding: 4px 0;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.ctx-menu:not(.is-positioned) {
+  visibility: hidden;
+  opacity: 0;
 }
 
 .ctx-menu-item {

@@ -36,7 +36,7 @@ import {
   getProviderDailyUsageBytes,
   getProviderUsageDayKey
 } from "../shared/provider-daily-limits";
-import { reorderPackageOrderByDrop, sortPackageOrderByName, sortPackagesForDisplay } from "./package-order";
+import { sortPackageOrderByName, sortPackagesForDisplay } from "./package-order";
 import { pruneSelection, shouldClearDownloadSelection, shouldClearDownloadSelectionOnEscape } from "./selection";
 import { buildBulkAccountEnabledState, buildConfiguredProviderOrder, getAccountDialogSelectableOptions, matchesAccountModeFilter, pruneAccountRowSelection, resolveAccountUsername, resolveVisibleAccountKind } from "./account-ui";
 import type { AccountModeFilter } from "./account-ui";
@@ -107,6 +107,7 @@ import {
   buildSettingsFormViewModel,
   buildTargetedAccountCheck,
   projectAccountRows,
+  resolveHistoryRetentionSelection,
   sortAccountRows,
   type AccountAddOption,
   type AccountRowSource,
@@ -1765,7 +1766,6 @@ export function App(): ReactElement {
   const serverPackageOrderRef = useRef<string[]>([]);
   const pendingPackageOrderRef = useRef<string[] | null>(null);
   const pendingPackageOrderAtRef = useRef(0);
-  const draggedPackageIdRef = useRef<string | null>(null);
   const [collapsedPackages, setCollapsedPackages] = useState<Record<string, boolean>>({});
   const [downloadSearch, setDownloadSearch] = useState("");
   const [downloadDisplayMode, setDownloadDisplayMode] = useState<DownloadDisplayMode>("packages");
@@ -3871,34 +3871,6 @@ export function App(): ReactElement {
     });
   }, [showToast]);
 
-  const reorderPackagesByDrop = useCallback((draggedPackageId: string, targetPackageId: string) => {
-    const currentOrder = packageOrderRef.current;
-    const nextOrder = reorderPackageOrderByDrop(currentOrder, draggedPackageId, targetPackageId);
-    const unchanged = nextOrder.length === currentOrder.length
-      && nextOrder.every((id, index) => id === currentOrder[index]);
-    if (unchanged) {
-      return;
-    }
-    setDownloadsSortDescending(false);
-    pendingPackageOrderRef.current = [...nextOrder];
-    pendingPackageOrderAtRef.current = Date.now();
-    packageOrderRef.current = [...nextOrder];
-    setSnapshot((prev) => {
-      if (!prev) return prev;
-      return { ...prev, session: { ...prev.session, packageOrder: [...nextOrder] } };
-    });
-    void window.rd.reorderPackages(nextOrder).catch((error) => {
-      pendingPackageOrderRef.current = null;
-      pendingPackageOrderAtRef.current = 0;
-      packageOrderRef.current = serverPackageOrderRef.current;
-      setSnapshot((prev) => {
-        if (!prev) return prev;
-        return { ...prev, session: { ...prev.session, packageOrder: serverPackageOrderRef.current } };
-      });
-      showToast(`Sortierung fehlgeschlagen: ${String(error)}`, 2400);
-    });
-  }, [showToast]);
-
   const addCollectorTab = (): void => {
     const id = `tab-${nextCollectorId++}`;
     setCollectorTabs((prev) => {
@@ -3991,23 +3963,6 @@ export function App(): ReactElement {
     setSelectedCollectorRowIds(new Set());
     setCollectorError("");
   };
-
-  const onPackageDragStart = useCallback((packageId: string) => {
-    draggedPackageIdRef.current = packageId;
-  }, []);
-
-  const onPackageDrop = useCallback((targetPackageId: string) => {
-    const draggedPackageId = draggedPackageIdRef.current;
-    draggedPackageIdRef.current = null;
-    if (!draggedPackageId || draggedPackageId === targetPackageId) {
-      return;
-    }
-    reorderPackagesByDrop(draggedPackageId, targetPackageId);
-  }, [reorderPackagesByDrop]);
-
-  const onPackageDragEnd = useCallback(() => {
-    draggedPackageIdRef.current = null;
-  }, []);
 
   const onPackageStartEdit = useCallback((packageId: string, packageName: string): void => {
     setEditingPackageId(packageId);
@@ -5026,9 +4981,6 @@ export function App(): ReactElement {
       });
     },
     onShowAllPackages: () => setShowAllPackages(true),
-    onPackageDragStart,
-    onPackageDrop,
-    onPackageDragEnd,
     onSetVisibleSelection: (ids, selected) => {
       setSelectedIds((current) => {
         const next = new Set(current);
@@ -5358,6 +5310,12 @@ export function App(): ReactElement {
         applyTheme(next);
         return;
       }
+      if (fieldId === "historyRetentionMode" && typeof value === "string") {
+        const next = resolveHistoryRetentionSelection(settingsDraft.historyRetentionMode, settingsDraft.historyMaxEntries, value);
+        setText("historyRetentionMode", next.historyRetentionMode);
+        setNum("historyMaxEntries", next.historyMaxEntries);
+        return;
+      }
       if (typeof value === "boolean") {
         setBool(fieldId as keyof AppSettings, value);
         return;
@@ -5579,7 +5537,6 @@ export function App(): ReactElement {
       className={`md-runtime-root${dragOver ? " drag-over" : ""}${tab === "settings" ? " settings-active" : ""}`}
       onDragEnter={(event) => {
         event.preventDefault();
-        if (draggedPackageIdRef.current) { return; }
         const hasFiles = event.dataTransfer.types.includes("Files");
         const hasUri = event.dataTransfer.types.includes("text/uri-list");
         if (!hasFiles && !hasUri) { return; }
@@ -5593,7 +5550,6 @@ export function App(): ReactElement {
         e.preventDefault();
       }}
       onDragLeave={() => {
-        if (draggedPackageIdRef.current) { return; }
         dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
         if (dragDepthRef.current === 0 && dragOverRef.current) {
           dragOverRef.current = false;

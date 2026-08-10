@@ -222,6 +222,12 @@ export interface PackageEntry {
   priority?: PackagePriority;
   postProcessLabel?: string;
   audioStripSummary?: AudioStripSummary;
+  cleanedCompletedItemCount?: number;
+  cleanedExtractedItemCount?: number;
+  cleanedDownloadedBytes?: number;
+  cleanedTotalBytes?: number;
+  cleanedUrls?: string[];
+  cleanedProviders?: DebridProvider[];
   downloadStartedAt?: number;
   downloadCompletedAt?: number;
   createdAt: number;

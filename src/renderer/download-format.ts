@@ -30,7 +30,7 @@ export function compactProviderLabels(labels: string[]): string {
 }
 
 export function normalizeDownloadServiceLabel(label: string): string {
-  return [...new Set(label.split(",").map((entry) => entry.trim().replace(/^(Mega-Debrid)\s+(Web|API)(?:\s+\([^)]*\))?$/i, "$1 $2")).filter(Boolean))].join(", ");
+  return [...new Set(label.split(",").map((entry) => entry.trim().replace(/^(Mega-Debrid)\s+(Web|API)(?:\s+\([^)]*\))?$/i, "$1 ($2)")).filter(Boolean))].join(", ");
 }
 
 export function compactDownloadServiceLabel(label: string): string {

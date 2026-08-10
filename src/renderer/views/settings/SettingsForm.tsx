@@ -1,7 +1,9 @@
-import { cloneElement, type ChangeEvent, type ReactElement } from "react";
+import { cloneElement, useEffect, useRef, useState, type ChangeEvent, type FocusEvent, type KeyboardEvent, type ReactElement } from "react";
+import { getSettingsSelectNavigationIndex } from "./settings-model";
 import type {
   SettingsFieldViewModel,
   SettingsFormViewModel,
+  SettingsSelectFieldViewModel,
   SettingsTextFieldViewModel
 } from "./settings-model";
 
@@ -73,27 +75,117 @@ function TextControl({ field, actions }: { field: SettingsTextFieldViewModel; ac
   );
 }
 
+function SelectControl({ field, actions }: { field: SettingsSelectFieldViewModel; actions: SettingsFormActions }): ReactElement {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const selected = field.options.find((option) => option.value === field.value) ?? field.options[0];
+  const selectedIndex = Math.max(0, field.options.findIndex((option) => option.value === selected?.value));
+
+  const focusOption = (nextIndex: number): void => {
+    requestAnimationFrame(() => optionRefs.current[nextIndex]?.focus());
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: MouseEvent): void => {
+      if (event.target instanceof Node && !rootRef.current?.contains(event.target)) setOpen(false);
+    };
+    const onKeyDown = (event: globalThis.KeyboardEvent): void => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>): void => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      const nextIndex = getSettingsSelectNavigationIndex(selectedIndex, field.options.length, event.key);
+      setOpen(true);
+      focusOption(nextIndex);
+      return;
+    }
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      setOpen((current) => !current);
+      if (!open) focusOption(selectedIndex);
+    }
+  };
+
+  const onOptionKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number): void => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      const nextIndex = getSettingsSelectNavigationIndex(index, field.options.length, event.key);
+      focusOption(nextIndex);
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setOpen(false);
+      triggerRef.current?.focus();
+    }
+  };
+
+  const onBlur = (event: FocusEvent<HTMLDivElement>): void => {
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
+  };
+
+  return (
+    <div className="settings-field">
+      <label id={`${field.id}-label`}>{field.label}</label>
+      <div className={`settings-select${open ? " is-open" : ""}${field.disabled ? " is-disabled" : ""}`} onBlur={onBlur} ref={rootRef}>
+        <button
+          aria-controls={`${field.id}-options`}
+          aria-expanded={open}
+          aria-haspopup="listbox"
+          aria-labelledby={`${field.id}-label`}
+          className="settings-select-trigger"
+          disabled={field.disabled}
+          id={field.id}
+          onClick={() => setOpen((current) => !current)}
+          onKeyDown={onKeyDown}
+          ref={triggerRef}
+          role="combobox"
+          type="button"
+        >
+          <span>{selected?.label ?? ""}</span>
+          <span aria-hidden="true" className="settings-select-chevron">⌄</span>
+        </button>
+        <div aria-hidden={!open} className="settings-select-options" id={`${field.id}-options`} role="listbox">
+          {field.options.map((option, index) => (
+            <button
+              aria-selected={field.value === option.value}
+              className={`settings-select-option${field.value === option.value ? " is-selected" : ""}`}
+              key={option.value}
+              onClick={() => {
+                actions.onChange(field.id, option.value);
+                setOpen(false);
+              }}
+              onKeyDown={(event) => onOptionKeyDown(event, index)}
+              ref={(element) => { optionRefs.current[index] = element; }}
+              role="option"
+              type="button"
+            >{option.label}</button>
+          ))}
+        </div>
+      </div>
+      <FieldHelp field={field} />
+    </div>
+  );
+}
+
 function SettingsField({ field, actions }: { field: SettingsFieldViewModel; actions: SettingsFormActions }): ReactElement {
   if (field.kind === "text" || field.kind === "path" || field.kind === "number" || field.kind === "textarea") {
     return <TextControl actions={actions} field={field} />;
   }
   if (field.kind === "select") {
-    return (
-      <div className="settings-field">
-        <label htmlFor={field.id}>{field.label}</label>
-        <select
-          aria-describedby={field.help ? `${field.id}-help` : undefined}
-          className="settings-control"
-          disabled={field.disabled}
-          id={field.id}
-          onChange={(event) => actions.onChange(field.id, event.target.value)}
-          value={field.value}
-        >
-          {field.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-        </select>
-        <FieldHelp field={field} />
-      </div>
-    );
+    return <SelectControl actions={actions} field={field} />;
   }
   if (field.kind === "theme") {
     return (

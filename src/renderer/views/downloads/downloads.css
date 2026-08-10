@@ -43,11 +43,13 @@
   display: flex;
   min-height: 36px;
   align-items: center;
+  justify-content: center;
   padding: 0 10px;
   border: 1px solid var(--ui-border);
   border-radius: 6px;
-  color: var(--ui-text);
-  background: var(--ui-active);
+  color: #0a0f1a;
+  background: #90cdf4;
+  text-align: center;
   font-weight: 700;
 }
 
@@ -395,6 +397,12 @@
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+.downloads-name-cell .downloads-rename-input {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
 }
 
 .downloads-selection-cell,

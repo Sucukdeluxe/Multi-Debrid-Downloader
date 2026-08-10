@@ -1,4 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import {
   clampContextMenuPosition,
@@ -7,6 +8,9 @@ import {
   getContextMenuSubmenuKeyboardAction,
   getContextSubmenuPosition
 } from "../src/renderer/ui/ContextMenu";
+
+const contextMenuSource = readFileSync(new URL("../src/renderer/ui/ContextMenu.tsx", import.meta.url), "utf8");
+const stylesSource = readFileSync(new URL("../src/renderer/styles.css", import.meta.url), "utf8");
 
 describe("ContextMenu", () => {
   it("renders menu semantics and marks buttons as menu items", () => {
@@ -98,5 +102,14 @@ describe("ContextMenu", () => {
       { width: 180, height: 150 },
       { width: 800, height: 600 }
     )).toEqual({ x: 590, y: 450 });
+  });
+
+  it("keeps submenus hidden until their viewport-safe position is ready", () => {
+    expect(contextMenuSource).toContain('position.ready && position.sourceX === x && position.sourceY === y ? "is-positioned" : ""');
+    expect(contextMenuSource).toContain('parts.items.classList.add("is-positioned")');
+    expect(stylesSource).toMatch(/\.ctx-menu:not\(\.is-positioned\)\s*\{[^}]*visibility:\s*hidden/s);
+    expect(stylesSource).not.toMatch(/\.ctx-menu-sub:hover\s+\.ctx-menu-sub-items\s*\{\s*display:\s*block/s);
+    expect(stylesSource).toMatch(/\.ctx-menu-sub:hover\s*>\s*\.ctx-menu-sub-items\.is-positioned/s);
+    expect(contextMenuSource).toContain('window.addEventListener("pointerdown", onOutside, true)');
   });
 });

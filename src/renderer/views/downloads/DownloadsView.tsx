@@ -70,9 +70,6 @@ export interface DownloadsViewActions extends DownloadsTableActions {
   onClearAll: () => void;
   onToggleAllPackages: () => void;
   onShowAllPackages: () => void;
-  onPackageDragStart: (packageId: string) => void;
-  onPackageDrop: (packageId: string) => void;
-  onPackageDragEnd: () => void;
 }
 
 const filters: Array<{ id: DownloadSidebarFilter; label: string }> = [
@@ -152,9 +149,6 @@ function packageRows(model: DownloadsViewModel, actions: DownloadsViewActions): 
       gridTemplate={model.gridTemplate}
       key={row.package.id}
       packageSpeedBps={model.packageSpeedBps[row.package.id] ?? 0}
-      onDragEnd={actions.onPackageDragEnd}
-      onDragStart={actions.onPackageDragStart}
-      onDrop={actions.onPackageDrop}
       row={row}
       selectedIds={model.selectedIds}
       selectedVersion={model.actionableSelectedIds.length}

@@ -1,6 +1,5 @@
 import type { AppSettings } from "../../../shared/types";
 import type { AccountService } from "../../account-edit";
-import { resolveAccountUsername } from "../../account-ui";
 import { ACCOUNT_SERVICE_ICONS } from "../../account-service-icons";
 
 export type SettingsSection = "allgemein" | "accounts" | "extract" | "speed" | "cleanup" | "updates";
@@ -20,6 +19,7 @@ export const ACCOUNT_COLUMNS = [
   "Status",
   "Download-Traffic übrig",
   "Benutzername",
+  "E-Mail",
   "Verfallsdatum",
   "Passwort/Zugang"
 ] as const;
@@ -36,6 +36,42 @@ export function getSettingsSaveLabel(state: SettingsSaveState): string {
     case "saved":
       return "Gespeichert";
   }
+}
+
+export function getSettingsSelectNavigationIndex(currentIndex: number, optionCount: number, key: string): number {
+  if (optionCount <= 0) return -1;
+  const current = Math.max(0, Math.min(optionCount - 1, currentIndex));
+  if (key === "Home") return 0;
+  if (key === "End") return optionCount - 1;
+  if (key === "ArrowDown") return (current + 1) % optionCount;
+  if (key === "ArrowUp") return (current - 1 + optionCount) % optionCount;
+  return current;
+}
+
+export function resolveHistoryRetentionSelection(
+  currentMode: AppSettings["historyRetentionMode"],
+  currentMaxEntries: number,
+  value: string
+): Pick<AppSettings, "historyRetentionMode" | "historyMaxEntries"> {
+  const preset = /^permanent-(100|250)$/.exec(value);
+  if (preset) {
+    return {
+      historyRetentionMode: "permanent",
+      historyMaxEntries: Number(preset[1])
+    };
+  }
+  if (value === "permanent") {
+    return {
+      historyRetentionMode: "permanent",
+      historyMaxEntries: currentMode === "permanent" && (currentMaxEntries === 100 || currentMaxEntries === 250)
+        ? 500
+        : currentMaxEntries
+    };
+  }
+  return {
+    historyRetentionMode: value as AppSettings["historyRetentionMode"],
+    historyMaxEntries: currentMaxEntries
+  };
 }
 
 export type AccountStatusSourceState = "premium" | "free" | "invalid" | "checking" | "unchecked" | "disabled";
@@ -75,6 +111,7 @@ export interface AccountRowViewModel {
   };
   traffic: string;
   username: string;
+  email: string;
   expires: string;
   credential: string;
   canCheck: boolean;
@@ -450,10 +487,14 @@ export function buildSettingsFormViewModel({
             id: "historyRetentionMode",
             kind: "select",
             label: "Verlauf speichern",
-            value: settings.historyRetentionMode,
+            value: settings.historyRetentionMode === "permanent" && (settings.historyMaxEntries === 100 || settings.historyMaxEntries === 250)
+              ? `permanent-${settings.historyMaxEntries}`
+              : settings.historyRetentionMode,
             options: [
               { value: "never", label: "Nie" },
               { value: "session", label: "Nur aktuelle Session" },
+              { value: "permanent-100", label: "Nur letzte 100 Einträge" },
+              { value: "permanent-250", label: "Nur letzte 250 Einträge" },
               { value: "permanent", label: "Dauerhaft" }
             ]
           },
@@ -553,6 +594,16 @@ function projectCredential(kind: AccountRowSource["credentialKind"]): string {
   return kind === "password" ? "••••••" : "Geschützter Zugang";
 }
 
+function projectAccountIdentity(username: string, checkedEmail?: string): { username: string; email: string } {
+  const stored = username.trim();
+  const verifiedEmail = checkedEmail?.trim() || "";
+  const storedIsEmail = stored.includes("@");
+  return {
+    username: stored && !storedIsEmail ? stored : "—",
+    email: verifiedEmail || (storedIsEmail ? stored : "—")
+  };
+}
+
 export function projectAccountRows(
   sources: readonly AccountRowSource[],
   selectedIds: readonly string[],
@@ -565,6 +616,7 @@ export function projectAccountRows(
     const premiumUntilMs = source.status.premiumUntilMs && source.status.premiumUntilMs > nowMs
       ? source.status.premiumUntilMs
       : null;
+    const identity = projectAccountIdentity(source.username, source.status.email);
     return {
       id,
       service: source.service,
@@ -575,7 +627,8 @@ export function projectAccountRows(
       selected: selected.has(id),
       status,
       traffic: formatTraffic(source.dailyLimitBytes, source.dailyUsageBytes),
-      username: resolveAccountUsername(source.username, source.status.email),
+      username: identity.username,
+      email: identity.email,
       expires: formatExpiry(source.status.premiumUntilMs),
       credential: projectCredential(source.credentialKind),
       canCheck: source.canCheck,

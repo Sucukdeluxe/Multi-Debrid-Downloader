@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { DownloadItem, DownloadStatus, PackageEntry } from "../src/shared/types";
 import {
   buildDownloadSidebarCounts,
@@ -32,7 +32,9 @@ import {
   arePackageCardPropsEqual,
   compactDownloadStatus,
   downloadColumnDefinitions,
-  getAvailabilitySummary
+  getAvailabilitySummary,
+  getPackageProgress,
+  getPackageSizeProgress
 } from "../src/renderer/views/downloads/DownloadsTable";
 import { compactDownloadServiceLabel, normalizeDownloadServiceLabel } from "../src/renderer/download-format";
 import { getRollingMetricDirection } from "../src/renderer/ui/RollingMetricValue";
@@ -124,6 +126,23 @@ describe("Download-Gesamtgröße", () => {
 
     expect(getDownloadQueueTotalBytes(items)).toBe(4_750);
   });
+
+  it("preserves completed package bytes and progress after immediate cleanup", () => {
+    const active = item("active", "package-a", "downloading", {
+      downloadedBytes: 500,
+      totalBytes: 1_000,
+      progressPercent: 50
+    });
+    const packageEntry = pkg("package-a", "Serie", ["active"]);
+    packageEntry.cleanedCompletedItemCount = 2;
+    packageEntry.cleanedExtractedItemCount = 2;
+    packageEntry.cleanedDownloadedBytes = 2_000;
+    packageEntry.cleanedTotalBytes = 2_000;
+    const row = { package: packageEntry, items: [active], allItems: [active], collapsed: true };
+
+    expect(getPackageSizeProgress(row)).toEqual({ downloaded: 2_500, total: 3_000, value: 83 });
+    expect(getPackageProgress(row)).toEqual(expect.objectContaining({ done: 2, total: 3, value: 83 }));
+  });
 });
 
 describe("laufender Queue-Linkzähler", () => {
@@ -156,15 +175,19 @@ describe("responsive Downloadstatus und Servicebezeichnungen", () => {
     expect(compactDownloadStatus("Entpacken 1% (1/1) · Tonspur: Deutsch")).toBe("Entpacken - 1%");
     expect(compactDownloadStatus("0/11 · Entpacken 53% (1/1) · scn2-httpv7-S01E102.rar")).toBe("Entpacken - 53%");
     expect(compactDownloadStatus("Extracting 53% (1/1) · archive.rar")).toBe("Extracting - 53%");
+    expect(compactDownloadStatus("Passwort gefunden · archive.part1.rar")).toBe("Passwort gefunden");
+    expect(compactDownloadStatus("Entpacken - Ausstehend · archive.part1.rar")).toBe("Entpacken - Ausstehend");
+    expect(compactDownloadStatus("Entpack-Fehler [archive.part1.rar]: Unerwartetes Dateiende")).toBe("Entpack-Fehler");
+    expect(compactDownloadStatus("Extraction error [archive.part1.rar]: Unexpected end of file")).toBe("Extraction error");
   });
 
   it("removes duplicated access-mode wording from service labels", () => {
-    expect(normalizeDownloadServiceLabel("Mega-Debrid Web (Web Account)")).toBe("Mega-Debrid Web");
-    expect(normalizeDownloadServiceLabel("Mega-Debrid API (API Account)")).toBe("Mega-Debrid API");
-    expect(normalizeDownloadServiceLabel("Mega-Debrid API (API Access)")).toBe("Mega-Debrid API");
+    expect(normalizeDownloadServiceLabel("Mega-Debrid Web (Web Account)")).toBe("Mega-Debrid (Web)");
+    expect(normalizeDownloadServiceLabel("Mega-Debrid API (API Account)")).toBe("Mega-Debrid (API)");
+    expect(normalizeDownloadServiceLabel("Mega-Debrid API (API Access)")).toBe("Mega-Debrid (API)");
     expect(normalizeDownloadServiceLabel("Real-Debrid (Web Account)")).toBe("Real-Debrid (Web Account)");
-    expect(normalizeDownloadServiceLabel("Mega-Debrid Web (Web Account), Mega-Debrid API (API Account)")).toBe("Mega-Debrid Web, Mega-Debrid API");
-    expect(compactDownloadServiceLabel("Mega-Debrid Web (Web Account), Mega-Debrid API (API Account)")).toBe("Mega-Debrid");
+    expect(normalizeDownloadServiceLabel("Mega-Debrid Web (Web Account), Mega-Debrid API (API Account)")).toBe("Mega-Debrid (Web), Mega-Debrid (API)");
+    expect(compactDownloadServiceLabel("Mega-Debrid Web (Web Account), Mega-Debrid API (API Account)")).toBe("Mega-Debrid (Web), Mega-Debrid (API)");
   });
 });
 
@@ -218,9 +241,6 @@ function createActions(overrides: Partial<DownloadsViewActions> = {}): Downloads
     onClearAll: () => {},
     onToggleAllPackages: () => {},
     onShowAllPackages: () => {},
-    onPackageDragStart: () => {},
-    onPackageDrop: () => {},
-    onPackageDragEnd: () => {},
     onSetVisibleSelection: () => {},
     onToggleSelection: () => {},
     onSelectionMouseDown: () => {},
@@ -468,10 +488,12 @@ describe("downloads view", () => {
 
   it("shows only the package mode while the file mode remains hidden", () => {
     const html = renderToStaticMarkup(<DownloadsSidebar actions={createActions()} model={withRuntime(createInput())} />);
+    const css = fs.readFileSync(path.join(process.cwd(), "src/renderer/views/downloads/downloads.css"), "utf8");
 
     expect(html).toContain("Pakete");
     expect(html).not.toContain(">Dateien<");
     expect(html).not.toContain("downloads-mode-switch");
+    expect(css).toMatch(/\.downloads-mode-title\s*\{[^}]*justify-content:\s*center;[^}]*color:\s*#0a0f1a;[^}]*background:\s*#90cdf4;[^}]*text-align:\s*center;/s);
   });
 
   it("renders the five dense markers exactly once and the empty marker only for a true empty queue", () => {
@@ -518,24 +540,24 @@ describe("downloads view", () => {
     expect(toolbar).not.toContain("downloads-search-input");
   });
 
-  it("forwards package drag lifecycle callbacks through the extracted downloads content", () => {
-    const calls: string[] = [];
-    const actions = createActions() as DownloadsViewActions & {
-      onPackageDragStart: (packageId: string) => void;
-      onPackageDrop: (packageId: string) => void;
-      onPackageDragEnd: () => void;
-    };
-    actions.onPackageDragStart = (packageId) => calls.push(`start:${packageId}`);
-    actions.onPackageDrop = (packageId) => calls.push(`drop:${packageId}`);
-    actions.onPackageDragEnd = () => calls.push("end");
-    const content = DownloadsContent({ actions, model: withRuntime(createInput()) });
-    const packageElement = findElement(content, (element) => element.props.row?.package.id === "package-a");
+  it("blocks native package dragging while preserving explicit reorder actions", () => {
+    const model = withRuntime(createInput());
+    const component = PackageCardContent({
+      actions: createActions(),
+      columnOrder: model.columnOrder,
+      editing: false,
+      editingName: "",
+      gridTemplate: model.gridTemplate,
+      packageSpeedBps: 0,
+      row: model.packageRows[0],
+      selectedIds: new Set<string>(),
+      selectedVersion: 0
+    });
+    const preventDefault = vi.fn();
 
-    packageElement.props.onDragStart("package-a");
-    packageElement.props.onDrop("package-b");
-    packageElement.props.onDragEnd();
-
-    expect(calls).toEqual(["start:package-a", "drop:package-b", "end"]);
+    expect(component.props.draggable).toBeUndefined();
+    component.props.onDragStart({ preventDefault });
+    expect(preventDefault).toHaveBeenCalledOnce();
   });
 
   it("starts with the local Start action and dispatches toolbar actions separately", () => {
@@ -670,6 +692,7 @@ describe("downloads view", () => {
 
     expect(css).toMatch(/\.downloads-sidebar,\s*\.downloads-sidebar-status,\s*\.downloads-toolbar,\s*\.downloads-content,\s*\.downloads-footer\s*\{[^}]*user-select:\s*none;/s);
     expect(css).toMatch(/\.downloads-copyable,\s*\.downloads-search-input,\s*\.downloads-rename-input\s*\{[^}]*user-select:\s*text;/s);
+    expect(css).toMatch(/\.downloads-name-cell\s+\.downloads-rename-input\s*\{[^}]*flex:\s*1 1 auto;[^}]*width:\s*100%;[^}]*min-width:\s*0;/s);
   });
 
   it("marks selected rows clearly, enlarges selection checkboxes and slows package disclosure", () => {
@@ -740,6 +763,30 @@ describe("download table row contracts", () => {
     ])).toEqual({ online: 0, total: 1, state: "checking" });
   });
 
+  it("shows reset package availability as one compact unchecked label", () => {
+    const resetItems = [
+      item("reset-a", "package-a", "queued", { onlineStatus: undefined }),
+      item("reset-b", "package-a", "queued", { onlineStatus: undefined }),
+      item("reset-c", "package-a", "queued", { onlineStatus: undefined })
+    ];
+    const html = renderToStaticMarkup(PackageCardContent({
+      actions: createActions(),
+      columnOrder: ["availability"],
+      editing: false,
+      editingName: "",
+      gridTemplate: "150px",
+      packageSpeedBps: 0,
+      row: { package: pkg("package-a", "Reset", resetItems.map((entry) => entry.id)), items: resetItems, allItems: resetItems, collapsed: true },
+      selectedIds: new Set<string>(),
+      selectedVersion: 0
+    }));
+
+    expect(html).toContain(">Ungeprüft</span>");
+    expect(html).not.toContain(">0</span>");
+    expect(html).not.toContain(">3</span>");
+    expect(html).not.toContain(">online</span>");
+  });
+
   it("renders availability for package and file rows", () => {
     const onlineItem = item("online-file", "package-a", "queued", { onlineStatus: "online" });
     const packageHtml = renderToStaticMarkup(PackageCardContent({
@@ -749,7 +796,7 @@ describe("download table row contracts", () => {
       editingName: "",
       gridTemplate: "110px",
       packageSpeedBps: 0,
-      row: { package: pkg("package-a", "Paket", [onlineItem.id]), items: [onlineItem], collapsed: true },
+      row: { package: pkg("package-a", "Paket", [onlineItem.id]), items: [onlineItem], allItems: [onlineItem], collapsed: true },
       selectedIds: new Set<string>(),
       selectedVersion: 0
     }));
@@ -795,12 +842,35 @@ describe("download table row contracts", () => {
       editingName: "",
       gridTemplate: "80px",
       packageSpeedBps: 0,
-      row: { package: extractionPackage, items: [extractionItem], collapsed: true },
+      row: { package: extractionPackage, items: [extractionItem], allItems: [extractionItem], collapsed: true },
       selectedIds: new Set<string>(),
       selectedVersion: 0
     }));
 
     expect(html).toContain(">70%</b>");
+  });
+
+  it("never exposes archive filenames as the visible package status", () => {
+    const extractionItem = item("archive-item", "archive-package", "completed", { fullStatus: "Entpacken - Ausstehend" });
+    const extractionPackage = {
+      ...pkg("archive-package", "Archiv", [extractionItem.id]),
+      status: "extracting",
+      postProcessLabel: "release.part1.rar"
+    } as PackageEntry;
+    const html = renderToStaticMarkup(PackageCardContent({
+      actions: createActions(),
+      columnOrder: ["status"],
+      editing: false,
+      editingName: "",
+      gridTemplate: "220px",
+      packageSpeedBps: 0,
+      row: { package: extractionPackage, items: [extractionItem], allItems: [extractionItem], collapsed: true },
+      selectedIds: new Set<string>(),
+      selectedVersion: 0
+    }));
+
+    expect(html).toContain(">Entpacken - Ausstehend</span>");
+    expect(html).not.toContain(">release.part1.rar</span>");
   });
 
   it("renders meter text in clipped track and fill layers", () => {
@@ -836,8 +906,8 @@ describe("download table row contracts", () => {
     expect(html.match(/>Download läuft<\/span>/g)).toHaveLength(2);
     expect(html).toContain('title="Download läuft (Mega-Debrid)"');
     expect(html).toContain('title="Mega-Debrid Web (Web Account)"');
-    expect(html).toContain('class="downloads-service-full">Mega-Debrid Web</span>');
-    expect(html).toContain('class="downloads-service-compact">Mega-Debrid</span>');
+    expect(html).toContain('class="downloads-service-full">Mega-Debrid (Web)</span>');
+    expect(html).toContain('class="downloads-service-compact">Mega-Debrid (Web)</span>');
   });
 
   it("sets the whole visible selection atomically from the header checkbox", () => {
@@ -964,12 +1034,29 @@ describe("download table row contracts", () => {
       editingName: "",
       gridTemplate: "220px",
       packageSpeedBps: 0,
-      row: { package: audioPackage, items: [item("audio-item", audioPackage.id, "queued")], collapsed: true },
+      row: { package: audioPackage, items: [item("audio-item", audioPackage.id, "queued")], allItems: [item("audio-item", audioPackage.id, "queued")], collapsed: true },
       selectedIds: new Set<string>(),
       selectedVersion: 0
     }));
 
-    expect(html).toMatch(/title="0\/1 · Entpacken 1% · Tonspur: 1 OK[^\"]*episode\.mkv: remuxed \(German kept\)"/s);
+    expect(html).toMatch(/title="0\/1 · Entpacken - 1% · Tonspur: 1 OK[^\"]*episode\.mkv: remuxed \(German kept\)"/s);
+  });
+
+  it("shows only a compact extraction error while retaining diagnostics in the tooltip", () => {
+    const html = renderToStaticMarkup(ItemRowContent({
+      actions: createActions(),
+      columnOrder: ["status"],
+      gridTemplate: "220px",
+      item: item("extract-error", "package-a", "failed", {
+        fullStatus: "Entpack-Fehler [release.part1.rar]: Unerwartetes Dateiende",
+        lastError: "Mega-Debrid API: Kein Server verfügbar"
+      }),
+      selected: false
+    }));
+
+    expect(html.match(/>Entpack-Fehler<\/span>/g)).toHaveLength(2);
+    expect(html).toContain('title="Entpack-Fehler [release.part1.rar]: Unerwartetes Dateiende');
+    expect(html).toContain('Mega-Debrid API: Kein Server verfügbar');
   });
 
   it("shows only the operation in an actively downloading package status", () => {
@@ -981,7 +1068,7 @@ describe("download table row contracts", () => {
       editingName: "",
       gridTemplate: "220px",
       packageSpeedBps: 1_000,
-      row: { package: activePackage, items: [item("active-item", activePackage.id, "downloading", { fullStatus: "Download läuft (Mega-Debrid API)" })], collapsed: true },
+      row: { package: activePackage, items: [item("active-item", activePackage.id, "downloading", { fullStatus: "Download läuft (Mega-Debrid API)" })], allItems: [item("active-item", activePackage.id, "downloading", { fullStatus: "Download läuft (Mega-Debrid API)" })], collapsed: true },
       selectedIds: new Set<string>(),
       selectedVersion: 0
     }));

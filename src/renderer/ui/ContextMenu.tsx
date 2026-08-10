@@ -184,6 +184,7 @@ function positionSubmenu(parts: NonNullable<ReturnType<typeof getSubmenuParts>>)
   parts.items.style.position = "fixed";
   parts.items.style.left = `${position.x}px`;
   parts.items.style.top = `${position.y}px`;
+  parts.items.classList.add("is-positioned");
 }
 
 function closeSubmenu(parts: ReturnType<typeof getSubmenuParts>): void {
@@ -191,6 +192,7 @@ function closeSubmenu(parts: ReturnType<typeof getSubmenuParts>): void {
     return;
   }
   parts.container.classList.remove("is-keyboard-open");
+  parts.items.classList.remove("is-positioned");
   parts.trigger.setAttribute("aria-expanded", "false");
   parts.trigger.focus();
 }
@@ -209,7 +211,7 @@ export const ContextMenu = forwardRef<HTMLDivElement, ContextMenuProps>(function
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
   const ignoreOutsideRefsRef = useRef(ignoreOutsideRefs);
-  const [position, setPosition] = useState({ x, y });
+  const [position, setPosition] = useState({ x, y, sourceX: x, sourceY: y, ready: false });
   onCloseRef.current = onClose;
   ignoreOutsideRefsRef.current = ignoreOutsideRefs;
   useImperativeHandle(forwardedRef, () => menuRef.current as HTMLDivElement);
@@ -223,7 +225,9 @@ export const ContextMenu = forwardRef<HTMLDivElement, ContextMenuProps>(function
     }
     const rect = menuRef.current.getBoundingClientRect();
     const next = clampContextMenuPosition(x, y, rect.width, rect.height, window.innerWidth, window.innerHeight);
-    setPosition((current) => current.x === next.x && current.y === next.y ? current : next);
+    setPosition((current) => current.x === next.x && current.y === next.y && current.sourceX === x && current.sourceY === y && current.ready
+      ? current
+      : { ...next, sourceX: x, sourceY: y, ready: true });
     getTopLevelMenuItems(menuRef.current)[0]?.focus();
   }, [open, x, y]);
 
@@ -241,10 +245,10 @@ export const ContextMenu = forwardRef<HTMLDivElement, ContextMenuProps>(function
       }
       onCloseRef.current();
     };
-    window.addEventListener("mousedown", onOutside);
+    window.addEventListener("pointerdown", onOutside, true);
     window.addEventListener("contextmenu", onOutside);
     return () => {
-      window.removeEventListener("mousedown", onOutside);
+      window.removeEventListener("pointerdown", onOutside, true);
       window.removeEventListener("contextmenu", onOutside);
       const previousFocus = previousFocusRef.current;
       previousFocusRef.current = null;
@@ -295,7 +299,7 @@ export const ContextMenu = forwardRef<HTMLDivElement, ContextMenuProps>(function
   return (
     <div
       aria-label={ariaLabel}
-      className={["ctx-menu", "md-context-menu", className].filter(Boolean).join(" ")}
+      className={["ctx-menu", "md-context-menu", position.ready && position.sourceX === x && position.sourceY === y ? "is-positioned" : "", className].filter(Boolean).join(" ")}
       onClick={(event) => {
         event.stopPropagation();
         const item = event.target instanceof Element ? event.target.closest<HTMLElement>("[role='menuitem']") : null;

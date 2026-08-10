@@ -18,6 +18,7 @@ import { primeDebridLinkRuntimeCooldownForTests, resetDebridLinkRuntimeStateForT
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import { getRenameLogPath, initRenameLog, shutdownRenameLog } from "../src/main/rename-log";
 import { UnrestrictedLink } from "../src/main/realdebrid";
+import type { HistoryEntry } from "../src/shared/types";
 
 const tempDirs: string[] = [];
 const originalFetch = globalThis.fetch;
@@ -1146,7 +1147,6 @@ describe("download manager", () => {
         emptySession(),
         createStoragePaths(path.join(root, "state"))
       );
-
       manager.addPackages([{ name: "retry", links: ["https://dummy/retry"] }]);
       await manager.start();
       await waitFor(() => !manager.getSnapshot().session.running, 25000);
@@ -7487,6 +7487,83 @@ describe("download manager", () => {
     expect(snap.settings.providerDailyUsageBytes || {}).toEqual({});
   });
 
+  it("resets extraction state atomically for selected package items", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const session = emptySession();
+    const packageId = "reset-extraction-package";
+    const createdAt = Date.now();
+    const itemIds = ["reset-a", "reset-b", "reset-c"];
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "reset-extraction",
+      outputDir: path.join(root, "downloads", "reset-extraction"),
+      extractDir: path.join(root, "extract", "reset-extraction"),
+      status: "extracting",
+      itemIds,
+      cancelled: false,
+      enabled: true,
+      postProcessLabel: "release.part1.rar",
+      downloadCompletedAt: createdAt,
+      createdAt,
+      updatedAt: createdAt
+    };
+    for (const itemId of itemIds) {
+      session.items[itemId] = {
+        id: itemId,
+        packageId,
+        url: `https://dummy/${itemId}`,
+        provider: "megadebrid",
+        status: "completed",
+        retries: 0,
+        speedBps: 0,
+        downloadedBytes: 1_000,
+        totalBytes: 1_000,
+        progressPercent: 100,
+        fileName: `${itemId}.part1.rar`,
+        targetPath: path.join(root, "downloads", "reset-extraction", `${itemId}.part1.rar`),
+        resumable: true,
+        attempts: 1,
+        lastError: "Unerwartetes Dateiende",
+        fullStatus: `Entpack-Fehler [${itemId}.part1.rar]: Unerwartetes Dateiende`,
+        onlineStatus: "online",
+        createdAt,
+        updatedAt: createdAt
+      };
+    }
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    manager.resetItems(itemIds);
+
+    const snapshot = manager.getSnapshot().session;
+    expect(snapshot.packages[packageId]).toEqual(expect.objectContaining({
+      status: "queued",
+      postProcessLabel: undefined,
+      downloadCompletedAt: 0
+    }));
+    for (const itemId of itemIds) {
+      expect(snapshot.items[itemId]).toEqual(expect.objectContaining({
+        status: "queued",
+        downloadedBytes: 0,
+        totalBytes: null,
+        progressPercent: 0,
+        lastError: "",
+        fullStatus: "Wartet",
+        onlineStatus: undefined
+      }));
+    }
+  });
+
   it("does not freeze the scheduler when a reset item's old task is parked in a non-abort-observing await", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
@@ -8071,6 +8148,11 @@ describe("download manager", () => {
 
       manager.addPackages([{ name: "zip-pack", links: ["https://dummy/archive"] }]);
       const pkgId = manager.getSnapshot().session.packageOrder[0];
+      const completedPostProcessLabels: Array<string | undefined> = [];
+      manager.on("state", (state) => {
+        const emittedPackage = state.session.packages[pkgId];
+        if (emittedPackage?.status === "completed") completedPostProcessLabels.push(emittedPackage.postProcessLabel);
+      });
       const extractDir = manager.getSnapshot().session.packages[pkgId]?.extractDir || "";
       expect(extractDir).toBeTruthy();
       expect(fs.existsSync(extractDir)).toBe(false);
@@ -8080,11 +8162,17 @@ describe("download manager", () => {
       expect(fs.existsSync(extractDir)).toBe(false);
 
       await waitFor(() => fs.existsSync(path.join(extractDir, "inside.txt")), 30000);
+      await waitFor(() => {
+        const current = manager.getSnapshot().session.packages[pkgId];
+        return current?.status === "completed" && current.postProcessLabel === undefined;
+      }, 30000);
 
       const snapshot = manager.getSnapshot();
       const item = Object.values(snapshot.session.items)[0];
       expect(item?.status).toBe("completed");
       expect(item?.fullStatus.startsWith("Entpackt - Done")).toBe(true);
+      expect(snapshot.session.packages[pkgId]?.postProcessLabel).toBeUndefined();
+      expect(completedPostProcessLabels.every((label) => label === undefined)).toBe(true);
       expect(fs.existsSync(extractDir)).toBe(true);
       expect(fs.existsSync(path.join(extractDir, "inside.txt"))).toBe(true);
     } finally {
@@ -8167,6 +8255,243 @@ describe("download manager", () => {
       server.close();
       await once(server, "close");
     }
+  });
+
+  it("preserves completed package progress when immediate cleanup removes a finished item", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const session = emptySession();
+    const packageId = "cleanup-progress-package";
+    const completedItemId = "cleanup-progress-completed";
+    const queuedItemId = "cleanup-progress-queued";
+    const createdAt = Date.now();
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "cleanup-progress",
+      outputDir: path.join(root, "downloads", "cleanup-progress"),
+      extractDir: path.join(root, "extract", "cleanup-progress"),
+      status: "downloading",
+      itemIds: [completedItemId, queuedItemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[completedItemId] = {
+      id: completedItemId,
+      packageId,
+      url: "https://dummy/completed",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 1_000,
+      totalBytes: 1_000,
+      progressPercent: 100,
+      fileName: "completed.rar",
+      targetPath: path.join(root, "downloads", "cleanup-progress", "completed.rar"),
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Entpackt - Fertig",
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[queuedItemId] = {
+      ...session.items[completedItemId],
+      id: queuedItemId,
+      url: "https://dummy/queued",
+      status: "queued",
+      downloadedBytes: 0,
+      progressPercent: 0,
+      fileName: "queued.rar",
+      targetPath: path.join(root, "downloads", "cleanup-progress", "queued.rar"),
+      fullStatus: "Wartet"
+    };
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        completedCleanupPolicy: "immediate"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    (manager as any).applyCompletedCleanupPolicy(packageId, completedItemId);
+    (manager as any).applyCompletedCleanupPolicy(packageId, completedItemId);
+
+    const packageEntry = manager.getSnapshot().session.packages[packageId];
+    expect(packageEntry.itemIds).toEqual([queuedItemId]);
+    expect(packageEntry.cleanedCompletedItemCount).toBe(1);
+    expect(packageEntry.cleanedExtractedItemCount).toBe(1);
+    expect(packageEntry.cleanedDownloadedBytes).toBe(1_000);
+    expect(packageEntry.cleanedTotalBytes).toBe(1_000);
+  });
+
+  it("includes immediately cleaned items in the final package history entry", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const session = emptySession();
+    const packageId = "cleanup-history-package";
+    const firstItemId = "cleanup-history-first";
+    const secondItemId = "cleanup-history-second";
+    const createdAt = Date.now() - 5_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "cleanup-history",
+      outputDir: path.join(root, "downloads", "cleanup-history"),
+      extractDir: path.join(root, "extract", "cleanup-history"),
+      status: "downloading",
+      itemIds: [firstItemId, secondItemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[firstItemId] = {
+      id: firstItemId,
+      packageId,
+      url: "https://dummy/first",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 1_000,
+      totalBytes: 1_000,
+      progressPercent: 100,
+      fileName: "first.rar",
+      targetPath: path.join(root, "downloads", "cleanup-history", "first.rar"),
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Entpackt - Fertig",
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[secondItemId] = {
+      ...session.items[firstItemId],
+      id: secondItemId,
+      url: "https://dummy/second",
+      provider: "megadebrid-api",
+      status: "queued",
+      downloadedBytes: 2_000,
+      totalBytes: 2_000,
+      fileName: "second.rar",
+      targetPath: path.join(root, "downloads", "cleanup-history", "second.rar"),
+      fullStatus: "Wartet"
+    };
+    const history: HistoryEntry[] = [];
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        completedCleanupPolicy: "immediate"
+      },
+      session,
+      createStoragePaths(path.join(root, "state")),
+      { onHistoryEntry: (entry) => history.push(entry) }
+    );
+
+    (manager as any).applyCompletedCleanupPolicy(packageId, firstItemId);
+    const pkg = (manager as any).session.packages[packageId];
+    (manager as any).session.items[secondItemId].status = "completed";
+    (manager as any).session.items[secondItemId].fullStatus = "Entpackt - Fertig";
+    pkg.status = "completed";
+    (manager as any).recordPackageHistory(packageId, pkg, [(manager as any).session.items[secondItemId]]);
+
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({
+      totalBytes: 3_000,
+      downloadedBytes: 3_000,
+      fileCount: 2,
+      provider: null,
+      urls: ["https://dummy/first", "https://dummy/second"]
+    });
+
+    history.length = 0;
+    (manager as any).historyRecordedPackages.delete(packageId);
+    (manager as any).removePackageFromSession(packageId, [secondItemId], "deleted");
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({
+      totalBytes: 3_000,
+      downloadedBytes: 3_000,
+      fileCount: 2,
+      provider: null,
+      status: "deleted",
+      urls: ["https://dummy/first", "https://dummy/second"]
+    });
+  });
+
+  it("waits for aborted package post-processing before restarting reset items", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const session = emptySession();
+    const packageId = "reset-race-package";
+    const itemId = "reset-race-item";
+    const createdAt = Date.now() - 5_000;
+    session.running = true;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "reset-race",
+      outputDir: path.join(root, "downloads", "reset-race"),
+      extractDir: path.join(root, "extract", "reset-race"),
+      status: "failed",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/reset-race",
+      provider: "realdebrid",
+      status: "failed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 0,
+      totalBytes: 1_000,
+      progressPercent: 0,
+      fileName: "reset-race.rar",
+      targetPath: "",
+      resumable: true,
+      attempts: 1,
+      lastError: "extract failed",
+      fullStatus: "Entpack-Fehler",
+      createdAt,
+      updatedAt: createdAt
+    };
+    const manager = new DownloadManager(defaultSettings(), session, createStoragePaths(path.join(root, "state")));
+    let releaseTask = (): void => {};
+    const task = new Promise<void>((resolve) => { releaseTask = resolve; });
+    let releaseHybridTask = (): void => {};
+    const hybridTask = new Promise<void>((resolve) => { releaseHybridTask = resolve; });
+    const internal = manager as any;
+    internal.session.running = true;
+    internal.packagePostProcessTasks.set(packageId, task);
+    internal.packagePostProcessAbortControllers.set(packageId, new AbortController());
+    internal.packageHybridPostProcessTasks.set(packageId, new Set([hybridTask]));
+    internal.packageHybridPostProcessControllers.set(packageId, new Set([new AbortController()]));
+    internal.ensureScheduler = vi.fn(async () => {});
+
+    const resetPromise = Promise.resolve(manager.resetItems([itemId]));
+    await Promise.resolve();
+    expect(internal.ensureScheduler).not.toHaveBeenCalled();
+    releaseTask();
+    await Promise.resolve();
+    expect(internal.ensureScheduler).not.toHaveBeenCalled();
+    releaseHybridTask();
+    await resetPromise;
+    expect(internal.ensureScheduler).toHaveBeenCalledTimes(1);
   });
 
   it("removes finished package when package_done cleanup policy is enabled", async () => {
@@ -9780,6 +10105,8 @@ describe("download manager", () => {
       itemIds: [itemId],
       cancelled: false,
       enabled: true,
+      downloadStartedAt: createdAt,
+      downloadCompletedAt: createdAt + 10_000,
       createdAt,
       updatedAt: createdAt
     };
@@ -9841,13 +10168,16 @@ describe("download manager", () => {
     );
 
     await waitFor(() => renameStarted, 4000);
-    manager.resetPackage(packageId);
+    const resetPromise = manager.resetPackage(packageId);
     releaseRename();
     await deferredPromise;
+    await resetPromise;
 
     expect(cleanupRemainingArchiveArtifacts).not.toHaveBeenCalled();
     const snapshot = manager.getSnapshot();
     expect(snapshot.session.packages[packageId]?.status).toBe("queued");
+    expect(snapshot.session.packages[packageId]?.downloadStartedAt).toBe(0);
+    expect(snapshot.session.packages[packageId]?.downloadCompletedAt).toBe(0);
     expect(snapshot.session.items[itemId]?.status).toBe("queued");
   });
 

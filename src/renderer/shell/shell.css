@@ -773,10 +773,6 @@
   background: var(--ui-border);
 }
 
-.md-context-menu .ctx-menu-sub.is-keyboard-open > .ctx-menu-sub-items {
-  display: block;
-}
-
 .md-toast {
   right: 20px;
   bottom: 84px;

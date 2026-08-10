@@ -11,7 +11,7 @@ const pairs = [
   ["Speicherort, Download-Verhalten, Verlauf, Oberfläche und Benachrichtigungen.", "Storage location, download behavior, history, interface and notifications."],
   ["Download-Ordner", "Download folder"], ["Paketname (optional)", "Package name (optional)"], ["Max. gleichzeitige Downloads", "Max. concurrent downloads"], ["Automatische Wiederholungen", "Automatic retries"],
   ["Zielordner für heruntergeladene Dateien.", "Destination folder for downloaded files."],
-  ["Beim Start automatisch fortsetzen", "Resume automatically on startup"], ["Zwischenablage überwachen", "Monitor clipboard"], ["Verlauf speichern", "Save history"], ["Nur aktuelle Session", "Current session only"], ["Dauerhaft", "Permanent"],
+  ["Beim Start automatisch fortsetzen", "Resume automatically on startup"], ["Zwischenablage überwachen", "Monitor clipboard"], ["Verlauf speichern", "Save history"], ["Nur aktuelle Session", "Current session only"], ["Nur letzte 100 Einträge", "Last 100 entries only"], ["Nur letzte 250 Einträge", "Last 250 entries only"], ["Dauerhaft", "Permanent"],
   ["Maximale Verlauf-Einträge", "Maximum history entries"], ["Einträge löschen älter als (Tage)", "Delete entries older than (days)"], ["Neue Pakete eingeklappt zeigen", "Show new packages collapsed"],
   ["Nach Fortschritt sortieren", "Sort by progress"], ["In den Infobereich minimieren", "Minimize to tray"], ["Vor dem Löschen nachfragen", "Confirm before deleting"], ["Download-Liste mitsichern", "Include download list in backup"],
   ["Ferndiagnose-Einstellungen mitsichern", "Include remote diagnostics settings in backup"], ["Webhook-Adresse", "Webhook address"], ["Discord-Erwähnung (optional)", "Discord mention (optional)"],
@@ -29,7 +29,7 @@ const pairs = [
   ["Hoch", "High"], ["Normal", "Normal"], ["Niedrig", "Low"], ["In Warteschlange", "Queued"], ["Abgeschlossen", "Completed"], ["Entpackt", "Extracted"], ["Automatisch entpacken", "Extract automatically"],
   ["Liste leeren", "Clear list"], ["Sitzung", "Session"], ["Gesamt", "Total"], ["Bereit", "Ready"], ["Download läuft", "Download running"], ["Wartet", "Waiting"], ["Offline", "Offline"],
   ["Übersicht", "Overview"], ["Verwendungsregeln", "Usage rules"], ["Accountverwaltung", "Account management"], ["Accounts hinzufügen, prüfen und verwalten.", "Add, check and manage accounts."],
-  ["Accounts zum Herunterladen verwenden", "Use accounts for downloads"], ["Download-Traffic übrig", "Download traffic remaining"], ["Benutzername", "Username"], ["Verfallsdatum", "Expiration date"], ["Passwort/Zugang", "Password/access"],
+  ["Accounts zum Herunterladen verwenden", "Use accounts for downloads"], ["Download-Traffic übrig", "Download traffic remaining"], ["Benutzername", "Username"], ["E-Mail", "Email"], ["Verfallsdatum", "Expiration date"], ["Passwort/Zugang", "Password/access"],
   ["Account hinzufügen", "Add account"], ["Ausgewählte prüfen", "Check selected"], ["Ausgewählte entfernen", "Remove selected"], ["Aktivieren", "Enable"], ["Deaktivieren", "Disable"], ["Noch nicht geprüft", "Not checked yet"],
   ["Aktiviert", "Enabled"], ["Aktionen", "Actions"], ["Deaktiviert", "Disabled"], ["Premium aktiv", "Premium active"], ["API-Key aktiv", "API key active"], ["API-Account", "API account"], ["API-Key", "API key"],
   ["Ungültiger API-Key (nicht autorisiert)", "Invalid API key (not authorized)"], ["Free Account", "Free account"], ["Unbeschränkt", "Unlimited"], ["Keine Accounts eingerichtet", "No accounts configured"],
@@ -75,7 +75,7 @@ const pairs = [
   ["Füge einen Account hinzu, um Downloads über einen Anbieter zu starten.", "Add an account to start downloads through a provider."], ["Noch keine Accounts", "No accounts yet"], ["Keine Provider konfiguriert.", "No providers configured."],
   ["Keine eigenen Zuordnungen.", "No custom assignments."], ["Hoster-Routing hinzufügen", "Add hoster routing"], ["Hoster hinzufügen…", "Add hoster…"], ["Eigener Hoster…", "Custom hoster…"], ["Noch keine Rotations-Ereignisse.", "No rotation events yet."],
   ["Prüfen und speichern", "Check and save"], ["Wähle einen Dienst und trage die passenden Zugangsdaten ein.", "Choose a service and enter the matching credentials."], ["Accounts durchsuchen", "Search accounts"],
-  ["Dienst oder Zugangstyp suchen", "Search service or access type"], ["Account-Typ filtern", "Filter account type"], ["Verfügbare Account-Typen", "Available account types"], ["Keine passenden Account-Typen.", "No matching account types."],
+  ["Dienst / Zugangstyp", "Service / access type"], ["Dienst", "Service"], ["Typ/Funktion", "Type/function"], ["Dienst oder Zugangstyp suchen", "Search service or access type"], ["Account-Typ filtern", "Filter account type"], ["Verfügbare Account-Typen", "Available account types"], ["Keine passenden Account-Typen.", "No matching account types."],
   ["Prüfen", "Check"], ["Bearbeite ausschließlich den ausgewählten Account.", "Edit only the selected account."], ["Account bearbeiten", "Edit account"], ["Account aktiviert", "Account enabled"],
   ["Immer erste Tonspur", "Always first audio track"], ["Pro Download", "Per download"], ["Keine Archive löschen", "Do not delete archives"], ["Archive in Papierkorb", "Move archives to recycle bin"], ["Archive löschen", "Delete archives"],
   ["Accounts und Verwendungsregeln.", "Accounts and usage rules."], ["Premium Account", "Premium account"], ["Zugang ungültig", "Invalid access"], ["Prüft…", "Checking…"], ["Geschützter Zugang", "Protected access"],
@@ -238,6 +238,8 @@ function translateDynamic(value: string, language: AppLanguage): string {
     if (assignment) return `Remove ${assignment[1]} assignment`;
     const providerFor = value.match(/^Provider für (.+)$/);
     if (providerFor) return `Provider for ${providerFor[1]}`;
+    const credentialsFor = value.match(/^Zugangsdaten für (.+)$/);
+    if (credentialsFor) return `Credentials for ${credentialsFor[1]}`;
     const move = value.match(/^(.+) nach (oben|unten)$/);
     if (move) return `Move ${move[1]} ${move[2] === "oben" ? "up" : "down"}`;
     const audio = value.match(/^Tonspur: (.+)$/);
@@ -385,6 +387,8 @@ function translateDynamic(value: string, language: AppLanguage): string {
     if (extracting) return `Entpacken ${extracting[1]}`;
     const checkedUntil = value.match(/^Account checked — (.+) until (.+)$/);
     if (checkedUntil) return `Account geprüft — ${checkedUntil[1]} bis ${checkedUntil[2]}`;
+    const credentialsFor = value.match(/^Credentials for (.+)$/);
+    if (credentialsFor) return `Zugangsdaten für ${credentialsFor[1]}`;
     const checked = value.match(/^Account checked — (.+)$/);
     if (checked) return `Account geprüft — ${checked[1]}`;
     const invalid = value.match(/^Invalid account — (.+)$/);

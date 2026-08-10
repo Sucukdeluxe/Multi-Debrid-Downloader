@@ -124,6 +124,12 @@ export function compactDownloadStatus(value: string): string {
   if (/Link wird umgewandelt/i.test(status)) return "Umwandeln";
   if (/Download läuft\b/i.test(status)) return "Download läuft";
   if (/Download running\b/i.test(status)) return "Download running";
+  if (/^Passwort gefunden\b/i.test(status)) return "Passwort gefunden";
+  if (/^Password found\b/i.test(status)) return "Password found";
+  if (/^Entpack-Fehler\b/i.test(status)) return "Entpack-Fehler";
+  if (/^Extraction error\b/i.test(status)) return "Extraction error";
+  const extractionPending = status.match(/^(Entpacken|Extracting)\s*-\s*(Ausstehend|Pending|Warten auf Parts|Waiting for parts)/i);
+  if (extractionPending) return `${extractionPending[1]} - ${extractionPending[2]}`;
   const extracting = status.match(/Entpacken\s+(\d+)%/i);
   if (extracting) return `Entpacken - ${extracting[1]}%`;
   const extractingEnglish = status.match(/Extracting\s+(\d+)%/i);
@@ -340,15 +346,15 @@ function PackageItemsTransition({ actions, collapsed, columnOrder, gridTemplate,
   );
 }
 
-function packageProgress(row: DownloadPackageRow): { done: number; failed: number; cancelled: number; total: number; value: number } {
-  let done = 0;
+export function getPackageProgress(row: DownloadPackageRow): { done: number; failed: number; cancelled: number; total: number; value: number } {
+  let done = Math.max(0, Number(row.package.cleanedCompletedItemCount || 0));
   let failed = 0;
   let cancelled = 0;
-  let extracted = 0;
+  let extracted = Math.max(0, Number(row.package.cleanedExtractedItemCount || 0));
   let extracting = false;
   let activeProgress = 0;
   let extractingProgress = 0;
-  for (const item of row.items) {
+  for (const item of row.allItems) {
     if (item.status === "completed") done += 1;
     else if (item.status === "failed") failed += 1;
     else if (item.status === "cancelled") cancelled += 1;
@@ -364,7 +370,7 @@ function packageProgress(row: DownloadPackageRow): { done: number; failed: numbe
       activeProgress += (item.progressPercent || 0) / 100;
     }
   }
-  const total = Math.max(1, row.items.length);
+  const total = Math.max(1, Math.max(0, Number(row.package.cleanedCompletedItemCount || 0)) + row.allItems.length);
   const allDownloaded = done + failed + cancelled >= total;
   const allExtracted = extracted >= total;
   const useExtractSplit = extracting || row.package.status === "extracting" || (allDownloaded && !allExtracted && done > 0 && extracted > 0 && failed === 0 && cancelled === 0);
@@ -374,9 +380,17 @@ function packageProgress(row: DownloadPackageRow): { done: number; failed: numbe
   return { done, failed, cancelled, total, value };
 }
 
+export function getPackageSizeProgress(row: DownloadPackageRow): { downloaded: number; total: number; value: number } {
+  const downloaded = Math.max(0, Number(row.package.cleanedDownloadedBytes || 0))
+    + row.allItems.reduce((sum, item) => sum + item.downloadedBytes, 0);
+  const total = Math.max(0, Number(row.package.cleanedTotalBytes || 0))
+    + row.allItems.reduce((sum, item) => sum + (item.totalBytes || item.downloadedBytes || 0), 0);
+  return { downloaded, total, value: total > 0 ? progress((downloaded / total) * 100) : 0 };
+}
+
 function packageCell(row: DownloadPackageRow, column: string, packageSpeedBps: number, editing: boolean, editingName: string, actions: DownloadsTableActions, finishRename: (value: string) => void): ReactElement | null {
   const entry = row.package;
-  const stats = packageProgress(row);
+  const stats = getPackageProgress(row);
   if (column === "name") {
     return (
       <span className="downloads-cell downloads-name-cell">
@@ -397,9 +411,7 @@ function packageCell(row: DownloadPackageRow, column: string, packageSpeedBps: n
     );
   }
   if (column === "size") {
-    const total = row.items.reduce((sum, item) => sum + (item.totalBytes || item.downloadedBytes || 0), 0);
-    const downloaded = row.items.reduce((sum, item) => sum + item.downloadedBytes, 0);
-    const value = total > 0 ? progress((downloaded / total) * 100) : 0;
+    const { downloaded, total, value } = getPackageSizeProgress(row);
     const text = `${humanSize(downloaded)} / ${humanSize(total)}`;
     return <span className="downloads-cell downloads-size-cell">{total > 0 ? <DownloadMeter text={text} value={value} /> : null}</span>;
   }
@@ -415,18 +427,25 @@ function packageCell(row: DownloadPackageRow, column: string, packageSpeedBps: n
   if (column === "prio") return <span className="downloads-cell">{entry.priority === "high" ? "Hoch" : entry.priority === "low" ? "Niedrig" : ""}</span>;
   if (column === "status") {
     const audio = entry.audioStripSummary ? formatAudioStripSummary(entry.audioStripSummary) : null;
-    const details = `${stats.done}/${stats.total}${stats.failed > 0 ? ` · ${stats.failed} Fehler` : ""}${stats.cancelled > 0 ? ` · ${stats.cancelled} abgebrochen` : ""}${entry.postProcessLabel ? ` · ${entry.postProcessLabel}` : ""}${audio ? ` · ${audio.text}` : ""}`;
+    const rawPostProcessLabel = entry.postProcessLabel?.trim() || "";
+    const postProcessLabel = entry.status === "extracting" && /(?:^|[\\/])[^\\/]+\.(?:rar|zip|7z|tar|gz|bz2|xz)(?:\.\d+)?$/i.test(rawPostProcessLabel)
+      ? "Entpacken - Ausstehend"
+      : compactDownloadStatus(rawPostProcessLabel);
+    const details = `${stats.done}/${stats.total}${stats.failed > 0 ? ` · ${stats.failed} Fehler` : ""}${stats.cancelled > 0 ? ` · ${stats.cancelled} abgebrochen` : ""}${postProcessLabel ? ` · ${postProcessLabel}` : ""}${audio ? ` · ${audio.text}` : ""}`;
     const downloading = entry.status === "downloading" || entry.status === "validating" || row.items.some((item) => item.status === "downloading" || item.status === "validating");
-    const status = entry.postProcessLabel && /Entpacken\s+\d+%/i.test(entry.postProcessLabel)
-      ? entry.postProcessLabel
+    const status = postProcessLabel && (/Entpacken\s+\d+%/i.test(postProcessLabel) || entry.status === "extracting")
+      ? postProcessLabel
       : downloading ? "Download läuft" : details;
     const title = audio?.tooltip ? `${details}\n${audio.tooltip}` : details;
     return <DownloadStatusCell status={status} title={title} />;
   }
   if (column === "speed") return <span className="downloads-cell">{packageSpeedBps > 0 ? formatSpeedMbps(packageSpeedBps) : ""}</span>;
   if (column === "availability") {
-    const availability = getAvailabilitySummary(row.items);
-    return <Availability {...availability} />;
+    const availability = getAvailabilitySummary(row.allItems);
+    const text = availability.state === "checking"
+      ? row.allItems.some((item) => item.onlineStatus === "checking") ? "Prüfung" : "Ungeprüft"
+      : undefined;
+    return <Availability {...availability} text={text} />;
   }
   if (column === "added") return <span className="downloads-cell">{formatDateTime(entry.createdAt)}</span>;
   return null;
@@ -443,13 +462,9 @@ export interface PackageCardProps {
   columnOrder: readonly string[];
   gridTemplate: string;
   actions: DownloadsTableActions;
-  draggable?: boolean;
-  onDragStart?: (packageId: string) => void;
-  onDrop?: (packageId: string) => void;
-  onDragEnd?: () => void;
 }
 
-export function PackageCardContent({ row, selectedIds, editing, editingName, packageSpeedBps, sessionRunning = true, columnOrder, gridTemplate, actions, draggable = true, onDragStart, onDrop, onDragEnd }: PackageCardProps): ReactElement {
+export function PackageCardContent({ row, selectedIds, editing, editingName, packageSpeedBps, sessionRunning = true, columnOrder, gridTemplate, actions }: PackageCardProps): ReactElement {
   const entry = row.package;
   let renameFinished = false;
   const finishRename = (value: string): void => {
@@ -461,16 +476,12 @@ export function PackageCardContent({ row, selectedIds, editing, editingName, pac
     <article
       className={`downloads-package-card${entry.enabled ? "" : " is-disabled"}${selectedIds.has(entry.id) ? " is-selected" : ""}`}
       data-download-package-id={entry.id}
-      draggable={draggable}
       onContextMenu={(event) => {
         event.preventDefault();
         event.stopPropagation();
         actions.onOpenContextMenu(entry.id, event.clientX, event.clientY, entry.id);
       }}
-      onDragStart={(event) => { event.stopPropagation(); onDragStart?.(entry.id); }}
-      onDragOver={(event) => { event.preventDefault(); event.stopPropagation(); }}
-      onDrop={(event) => { event.preventDefault(); event.stopPropagation(); onDrop?.(entry.id); }}
-      onDragEnd={(event) => { event.stopPropagation(); onDragEnd?.(); }}
+      onDragStart={(event) => event.preventDefault()}
     >
       <div
         className="downloads-package-row"
@@ -498,7 +509,7 @@ export function arePackageCardPropsEqual(previous: PackageCardProps, next: Packa
   const a = previous.row.package;
   const b = next.row.package;
   if (a.id !== b.id || a.updatedAt !== b.updatedAt || a.status !== b.status || a.enabled !== b.enabled || a.name !== b.name || a.priority !== b.priority || a.createdAt !== b.createdAt) return false;
-  if (previous.packageSpeedBps !== next.packageSpeedBps || previous.editing !== next.editing || previous.editingName !== next.editingName || previous.row.collapsed !== next.row.collapsed || previous.sessionRunning !== next.sessionRunning || previous.columnOrder !== next.columnOrder || previous.gridTemplate !== next.gridTemplate || previous.actions !== next.actions || previous.draggable !== next.draggable || previous.onDragStart !== next.onDragStart || previous.onDrop !== next.onDrop || previous.onDragEnd !== next.onDragEnd) return false;
+  if (previous.packageSpeedBps !== next.packageSpeedBps || previous.editing !== next.editing || previous.editingName !== next.editingName || previous.row.collapsed !== next.row.collapsed || previous.sessionRunning !== next.sessionRunning || previous.columnOrder !== next.columnOrder || previous.gridTemplate !== next.gridTemplate || previous.actions !== next.actions) return false;
   if (previous.selectedVersion !== next.selectedVersion || previous.selectedIds !== next.selectedIds) {
     if (previous.selectedIds.has(a.id) !== next.selectedIds.has(a.id)) return false;
     for (const itemId of b.itemIds) {
