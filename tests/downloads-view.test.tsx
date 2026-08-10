@@ -1,4 +1,6 @@
 import { readFileSync } from "node:fs";
+import fs from "node:fs";
+import path from "node:path";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -7,6 +9,7 @@ import {
   buildDownloadSidebarCounts,
   buildDownloadsViewModel,
   classifyDownloadStatus,
+  getDownloadQueueTotalBytes,
   type DownloadSidebarFilter,
   type DownloadsModelInput
 } from "../src/renderer/views/downloads/downloads-model";
@@ -21,12 +24,63 @@ import {
 } from "../src/renderer/views/downloads/DownloadsView";
 import {
   DownloadsTableHeader,
+  ItemRowContent,
   PackageCardContent,
   areItemRowPropsEqual,
-  arePackageCardPropsEqual
+  arePackageCardPropsEqual,
+  downloadColumnDefinitions,
+  getAvailabilitySummary
 } from "../src/renderer/views/downloads/DownloadsTable";
+import { getRollingMetricDirection } from "../src/renderer/ui/RollingMetricValue";
 
 const now = new Date(2026, 7, 10, 12, 0, 0, 0).getTime();
+
+describe("Downloadtabellen-Spalten", () => {
+  it("verteilt die Breite mit ausreichend Platz für vollständige Überschriften", () => {
+    expect(downloadColumnDefinitions.name.width).toBe("minmax(290px, 2.3fr)");
+    expect(downloadColumnDefinitions.progress.width).toBe("minmax(105px, 0.85fr)");
+    expect(downloadColumnDefinitions.prio.width).toBe("minmax(85px, 0.8fr)");
+    expect(downloadColumnDefinitions.speed).toEqual(expect.objectContaining({ label: "Geschwindigkeit", width: "minmax(120px, 1fr)" }));
+    expect(downloadColumnDefinitions.availability).toEqual(expect.objectContaining({ label: "Verfügbarkeit", width: "minmax(110px, 1fr)" }));
+  });
+
+  it("uses the normal text color for sortable and static column headers", () => {
+    const css = fs.readFileSync(path.join(process.cwd(), "src/renderer/views/downloads/downloads.css"), "utf8");
+
+    expect(css).toMatch(/\.downloads-table-header\s*\{[^}]*color:\s*var\(--ui-text\);/s);
+  });
+
+  it("moves complete columns through pointer capture and animated transforms", () => {
+    const source = fs.readFileSync(path.join(process.cwd(), "src/renderer/views/downloads/DownloadsTable.tsx"), "utf8");
+    const dragSource = fs.readFileSync(path.join(process.cwd(), "src/renderer/views/downloads/column-drag.ts"), "utf8");
+    const css = fs.readFileSync(path.join(process.cwd(), "src/renderer/views/downloads/downloads.css"), "utf8");
+
+    expect(source).toContain("onColumnPointerDown");
+    expect(source).toContain("setPointerCapture");
+    expect(source).toContain("onPointerMove");
+    expect(source).not.toMatch(/className="downloads-column-header"[\s\S]{0,180}\sdraggable/);
+    expect(dragSource).toContain('root.style.setProperty(`--downloads-column-drag-${id}`');
+    expect(css).toMatch(/\.downloads-table\.is-column-drag-active \[data-download-column\]\s*\{[^}]*transform:\s*translate3d\(var\(--downloads-column-drag-x, 0px\), 0, 0\);[^}]*transition:\s*transform 220ms/s);
+    expect(css).toMatch(/\.downloads-table\.is-column-drag-active \[data-column-dragging="true"\]\s*\{[^}]*transition:\s*none;/s);
+    expect(css).not.toMatch(/\.downloads-table\.is-column-drag-active \[data-column-dragging="true"\]\s*\{[^}]*background:/s);
+    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.downloads-table\.is-column-drag-active \[data-download-column\][^{]*\{[^}]*transition-duration:\s*220ms !important;/s);
+  });
+});
+
+describe("rollende Downloadkennzahlen", () => {
+  it("moves increasing values up and decreasing values down", () => {
+    expect(getRollingMetricDirection(300, 600)).toBe("up");
+    expect(getRollingMetricDirection(600, 300)).toBe("down");
+    expect(getRollingMetricDirection(300, 300)).toBe("none");
+  });
+
+  it("animates exactly the five stable sidebar metrics", () => {
+    const html = renderToStaticMarkup(<DownloadsSidebarStatus model={withRuntime(createInput())} />);
+    expect(html.match(/class="downloads-rolling-value"/g)).toHaveLength(5);
+    expect(html).toContain('data-status-metric="speed"');
+    expect(html).toContain('data-status-metric="eta"');
+  });
+});
 
 function item(id: string, packageId: string, status: DownloadStatus, overrides: Partial<DownloadItem> = {}): DownloadItem {
   return {
@@ -57,10 +111,21 @@ function pkg(id: string, name: string, itemIds: string[]): PackageEntry {
   return { id, name, itemIds, createdAt: now } as PackageEntry;
 }
 
+describe("Download-Gesamtgröße", () => {
+  it("summiert bekannte Dateigrößen und verwendet geladene Bytes nur als Fallback", () => {
+    const items = [
+      item("known", "package-a", "queued", { totalBytes: 4_000, downloadedBytes: 500 }),
+      item("fallback", "package-a", "queued", { totalBytes: null, downloadedBytes: 750 })
+    ];
+
+    expect(getDownloadQueueTotalBytes(items)).toBe(4_750);
+  });
+});
+
 function createInput(overrides: Partial<DownloadsModelInput> = {}): DownloadsModelInput {
   const items = [
     item("active", "package-a", "downloading"),
-    item("queued", "package-a", "queued", { provider: "debridlink", providerLabel: "Debrid-Link" }),
+    item("queued", "package-a", "queued", { provider: "debridlink", providerLabel: "Debrid-Link", url: "https://ddownload.com/file/queued" }),
     item("failed", "package-b", "failed", { provider: "alldebrid", providerLabel: "AllDebrid" }),
     item("done", "package-b", "completed", { provider: "realdebrid", providerLabel: "Real-Debrid" })
   ];
@@ -114,7 +179,6 @@ function createActions(overrides: Partial<DownloadsViewActions> = {}): Downloads
     onToggleSelection: () => {},
     onSelectionMouseDown: () => {},
     onSelectionMouseEnter: () => {},
-    onTogglePackage: () => {},
     onTogglePackageCollapse: () => {},
     onStartPackageRename: () => {},
     onPackageRenameChange: () => {},
@@ -126,11 +190,10 @@ function createActions(overrides: Partial<DownloadsViewActions> = {}): Downloads
     onRemoveItem: () => {},
     onOpenContextMenu: () => {},
     onSortColumn: () => {},
-    onColumnDragStart: () => {},
-    onColumnDragOver: () => {},
-    onColumnDragLeave: () => {},
-    onColumnDrop: () => {},
-    onColumnDragEnd: () => {},
+    onColumnPointerDown: () => {},
+    onColumnPointerMove: () => {},
+    onColumnPointerUp: () => {},
+    onColumnPointerCancel: () => {},
     onColumnContextMenu: () => {},
     ...overrides
   };
@@ -190,7 +253,9 @@ function withRuntime(input: DownloadsModelInput, overrides: Record<string, unkno
       packages: 2,
       links: 4,
       session: "3,00 GB",
+      sessionBytes: 3_000_000_000,
       total: "10,00 GB",
+      totalBytes: 10_000_000_000,
       hosters: 3,
       speed: "96,00 Mbit/s",
       eta: "00:05:00"
@@ -325,6 +390,39 @@ describe("downloads model", () => {
 });
 
 describe("downloads view", () => {
+  it("pins the clipboard toggle separately at the bottom above the status metrics", () => {
+    const html = renderToStaticMarkup(<DownloadsSidebar actions={createActions()} model={withRuntime(createInput())} />);
+    const actionsMarkup = html.match(/<div class="downloads-sidebar-actions">([\s\S]*?)<\/div>/)?.[1] ?? "";
+    const css = fs.readFileSync(path.join(process.cwd(), "src/renderer/views/downloads/downloads.css"), "utf8");
+
+    expect(html).toContain('class="downloads-clipboard-toggle"');
+    expect(actionsMarkup).not.toContain("Zwischenablage überwachen");
+    expect(css).toMatch(/\.downloads-sidebar\s*\{[^}]*height:\s*100%;[^}]*padding:\s*14px 12px 6px;/s);
+    expect(css).toMatch(/\.downloads-clipboard-toggle\s*\{[^}]*margin-top:\s*auto;[^}]*border:\s*1px solid var\(--ui-border\);[^}]*background:\s*var\(--ui-input\);/s);
+  });
+
+  it("shows the sidebar actions as permanently recognizable buttons", () => {
+    const css = fs.readFileSync(path.join(process.cwd(), "src/renderer/views/downloads/downloads.css"), "utf8");
+
+    expect(css).toMatch(/\.downloads-sidebar-actions button\s*\{[^}]*border:\s*1px solid var\(--ui-border\);[^}]*background:\s*var\(--ui-input\);[^}]*padding:\s*0 10px;/s);
+  });
+
+  it("marks the download filters for one measured vertical selection indicator", () => {
+    const html = renderToStaticMarkup(<DownloadsSidebar actions={createActions()} model={withRuntime(createInput())} />);
+
+    expect(html).toContain("ui-sliding-selection ui-sliding-selection-vertical");
+    expect(html.match(/data-sliding-selection-item="true"/g)).toHaveLength(6);
+    expect(html.match(/data-sliding-selection-active="true"/g)).toHaveLength(1);
+  });
+
+  it("shows only the package mode while the file mode remains hidden", () => {
+    const html = renderToStaticMarkup(<DownloadsSidebar actions={createActions()} model={withRuntime(createInput())} />);
+
+    expect(html).toContain("Pakete");
+    expect(html).not.toContain(">Dateien<");
+    expect(html).not.toContain("downloads-mode-switch");
+  });
+
   it("renders the five dense markers exactly once and the empty marker only for a true empty queue", () => {
     const occupied = renderToStaticMarkup(<DownloadsView actions={createActions()} model={withRuntime(createInput())} />);
     const empty = renderToStaticMarkup(<DownloadsView actions={createActions()} model={withRuntime(createInput({ packageOrder: [], packages: {}, items: {} }), { running: false })} />);
@@ -474,15 +572,36 @@ describe("downloads view", () => {
 
     expect(html.indexOf("downloads-table-header")).toBeGreaterThan(html.indexOf("downloads-table"));
     expect(html.indexOf("data-visual-region=\"downloads-table-body\"")).toBeGreaterThan(html.indexOf("downloads-table-header"));
-    expect(css).toMatch(/\.downloads-table\s*\{[^}]*overflow-x:\s*auto;/s);
+    expect(html).toContain('class="downloads-package-card ');
+    expect(html).not.toContain('class="package-card');
+    expect(html).toContain('class="downloads-hoster-icon" data-hoster="rapidgator" src="data:image/x-icon;base64,');
+    expect(html).toContain('class="downloads-hoster-icon" data-hoster="ddownload" src="./provider-icons/ddownload.ico"');
+    expect(html).not.toContain('title="RapidGator">RG<');
+    expect(html).toContain('data-download-column="name"');
+    expect(html).toContain('data-download-column="hoster"');
+    expect(html).toMatch(/grid-template-columns:[^"]+ 60px/);
+    expect(html).toContain('class="downloads-package-items is-expanded"');
+    expect(html).toContain('class="downloads-package-items-inner"');
+    expect(css).toMatch(/\.downloads-table\s*\{[^}]*overflow-x:\s*auto;[^}]*scrollbar-gutter:\s*stable;/s);
+    expect(css).toMatch(/\.downloads-table-header,\s*\.downloads-table-body\s*\{[^}]*width:\s*100%;[^}]*min-width:\s*1191px;/s);
+    expect(css).not.toMatch(/min-width:\s*max-content;/);
     expect(css).toMatch(/\.downloads-table-header\s*\{[^}]*height:\s*41px;[^}]*position:\s*sticky;/s);
-    expect(css).toMatch(/\.downloads-item-row,\s*\.downloads-package-row\s*\{[^}]*height:\s*48px;/s);
+    expect(css).toMatch(/\.downloads-item-row,\s*\.downloads-package-row\s*\{[^}]*height:\s*40px;/s);
+    expect(css).toMatch(/\.downloads-item-row\s*\{[^}]*height:\s*38px;/s);
     expect(css).toMatch(/\.downloads-toolbar button,\s*\.downloads-footer button,[^{]+\{[^}]*height:\s*36px;/s);
     expect(css).toMatch(/\.downloads-content\s*\{[^}]*height:\s*100%;/s);
-    expect(css).toMatch(/\.downloads-action-cell button,\s*\.downloads-collapse-button\s*\{[^}]*width:\s*30px;[^}]*height:\s*30px;/s);
+    expect(css).toMatch(/\.downloads-collapse-button\s*\{[^}]*box-sizing:\s*border-box;[^}]*flex:\s*0 0 30px;[^}]*width:\s*30px;[^}]*min-width:\s*30px;[^}]*max-width:\s*30px;/s);
+    expect(css).toMatch(/\.downloads-cell-slot\s*\{[^}]*display:\s*flex;[^}]*justify-content:\s*center;/s);
+    expect(css).toMatch(/\.downloads-cell-slot\s*>\s*\.downloads-cell\s*\{[^}]*justify-content:\s*center;[^}]*text-align:\s*center;/s);
+    expect(css).toMatch(/\[data-download-column="name"\][^{]*\{[^}]*justify-content:\s*flex-start;[^}]*text-align:\s*left;/s);
+    expect(css).toMatch(/\.downloads-package-items\s*\{[^}]*height:\s*auto;[^}]*overflow:\s*hidden;/s);
+    expect(css).toMatch(/\.downloads-package-items\.is-collapsed\s*\{[^}]*height:\s*0;[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s);
+    expect(css).toMatch(/\.downloads-item-row\s+\.downloads-meter\s*>\s*b\s*\{[^}]*color:\s*var\(--ui-text\);/s);
+    expect(readFileSync(new URL("../src/renderer/views/downloads/DownloadsTable.tsx", import.meta.url), "utf8")).toMatch(/\.animate\(\[\{ height: "0px", opacity: 0 \}, \{ height: `\$\{targetHeight\}px`, opacity: 1 \}\]/);
     expect(css).toMatch(/\.downloads-footer\s*\{[^}]*height:\s*60px;[^}]*padding:\s*0 12px 0 60px;/s);
-    expect(css).toMatch(/\.downloads-package-card\s*\{[^}]*border:\s*0;[^}]*border-bottom:\s*1px solid var\(--ui-border\);[^}]*padding:\s*0;/s);
-    expect(css).not.toMatch(/gradient|box-shadow|nth-child/i);
+    expect(css).toMatch(/\.downloads-package-card\s*\{[^}]*border:\s*0;[^}]*border-bottom:\s*1px solid color-mix\(in srgb, var\(--ui-border\) 72%, transparent\);[^}]*padding:\s*0;/s);
+    expect(css).toMatch(/\.downloads-package-card\s*\{[^}]*box-shadow:\s*none;/s);
+    expect(css).not.toMatch(/gradient|nth-child/i);
   });
 
   it("keeps visible interaction text non-selectable and only inputs plus copy values selectable", () => {
@@ -490,6 +609,17 @@ describe("downloads view", () => {
 
     expect(css).toMatch(/\.downloads-sidebar,\s*\.downloads-sidebar-status,\s*\.downloads-toolbar,\s*\.downloads-content,\s*\.downloads-footer\s*\{[^}]*user-select:\s*none;/s);
     expect(css).toMatch(/\.downloads-copyable,\s*\.downloads-search-input,\s*\.downloads-rename-input\s*\{[^}]*user-select:\s*text;/s);
+  });
+
+  it("marks selected rows clearly, enlarges selection checkboxes and slows package disclosure", () => {
+    const css = readFileSync(new URL("../src/renderer/views/downloads/downloads.css", import.meta.url), "utf8");
+    const source = readFileSync(new URL("../src/renderer/views/downloads/DownloadsTable.tsx", import.meta.url), "utf8");
+
+    expect(css).toMatch(/\.downloads-item-row\.is-selected,\s*\.downloads-package-card\.is-selected\s*>\s*\.downloads-package-row\s*\{[^}]*background:\s*color-mix\(in srgb, var\(--ui-success\) 14%, var\(--ui-canvas\)\);[^}]*box-shadow:\s*inset 3px 0 0 var\(--ui-success\);/s);
+    expect(css).toMatch(/\.downloads-selection-cell\s+input\[type="checkbox"\]\s*\{[^}]*width:\s*18px;[^}]*height:\s*18px;/s);
+    expect(css).toMatch(/\.downloads-hoster-icon\s*\{[^}]*width:\s*18px;[^}]*height:\s*18px;[^}]*object-fit:\s*contain;/s);
+    expect(css).toMatch(/\.downloads-hoster-icon\[data-hoster="rapidgator"\]\s*\{[^}]*transform:\s*translateY\(-4px\) scale\(2\);/s);
+    expect(source.match(/duration:\s*300/g)).toHaveLength(2);
   });
 
   it("keeps the 1120px layout inside the single downloads table scroll owner", () => {
@@ -511,6 +641,14 @@ describe("downloads view", () => {
 });
 
 describe("downloads App integration", () => {
+  it("updates the clipboard checkbox optimistically before IPC reconciliation", () => {
+    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+
+    expect(source).toMatch(/const toggleClipboardWatcher = useCallback\(\(\): void => \{[\s\S]*setClipboardWatcherActive\(next\);[\s\S]*window\.rd\.toggleClipboard\(\)/);
+    expect(source).toContain("onToggleClipboardWatcher: toggleClipboardWatcher");
+    expect(source).not.toContain("onToggleClipboardWatcher: () => { void performQuickAction(() => window.rd.toggleClipboard()); }");
+  });
+
   it("uses the extracted table only, cleans temporary drag listeners and routes the global context start through the shared callback", () => {
     const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8").replaceAll("\r\n", "\n");
 
@@ -523,6 +661,63 @@ describe("downloads App integration", () => {
 });
 
 describe("download table row contracts", () => {
+  it("summarizes full, partial, offline and unchecked package availability", () => {
+    expect(getAvailabilitySummary([
+      item("online-a", "package-a", "queued", { onlineStatus: "online" }),
+      item("online-b", "package-a", "queued", { onlineStatus: "online" })
+    ])).toEqual({ online: 2, total: 2, state: "online" });
+    expect(getAvailabilitySummary([
+      item("partial-a", "package-a", "queued", { onlineStatus: "online" }),
+      item("partial-b", "package-a", "queued", { onlineStatus: "offline" })
+    ])).toEqual({ online: 1, total: 2, state: "partial" });
+    expect(getAvailabilitySummary([
+      item("offline-a", "package-a", "queued", { onlineStatus: "offline" }),
+      item("offline-b", "package-a", "queued", { onlineStatus: "offline" })
+    ])).toEqual({ online: 0, total: 2, state: "offline" });
+    expect(getAvailabilitySummary([
+      item("unknown-a", "package-a", "queued", { onlineStatus: undefined })
+    ])).toEqual({ online: 0, total: 1, state: "checking" });
+  });
+
+  it("renders availability for package and file rows", () => {
+    const onlineItem = item("online-file", "package-a", "queued", { onlineStatus: "online" });
+    const packageHtml = renderToStaticMarkup(PackageCardContent({
+      actions: createActions(),
+      columnOrder: ["availability"],
+      editing: false,
+      editingName: "",
+      gridTemplate: "110px",
+      packageSpeedBps: 0,
+      row: { package: pkg("package-a", "Paket", [onlineItem.id]), items: [onlineItem], collapsed: true },
+      selectedIds: new Set<string>(),
+      selectedVersion: 0
+    }));
+    const itemHtml = renderToStaticMarkup(ItemRowContent({
+      actions: createActions(),
+      columnOrder: ["availability"],
+      gridTemplate: "110px",
+      item: onlineItem,
+      selected: false
+    }));
+
+    expect(packageHtml).toContain("1/1 online");
+    expect(packageHtml).toContain("downloads-availability has-counts is-online");
+    expect(packageHtml).toContain("downloads-availability-count is-online-count");
+    expect(packageHtml).toContain("downloads-availability-separator");
+    expect(packageHtml).toContain("downloads-availability-count is-total-count");
+    expect(packageHtml).toContain("downloads-availability-label");
+    expect(itemHtml).toContain("Online");
+    expect(itemHtml).toContain("downloads-availability is-online");
+  });
+
+  it("aligns availability symbols, split counts and labels on fixed axes", () => {
+    const css = fs.readFileSync(path.join(process.cwd(), "src/renderer/views/downloads/downloads.css"), "utf8");
+
+    expect(css).toMatch(/\.downloads-availability\.has-counts\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*16px 4ch 1ch 4ch auto;[^}]*font-variant-numeric:\s*tabular-nums;/s);
+    expect(css).toMatch(/\.downloads-availability-count\.is-online-count\s*\{[^}]*text-align:\s*right;/s);
+    expect(css).toMatch(/\.downloads-availability-count\.is-total-count\s*\{[^}]*text-align:\s*left;/s);
+  });
+
   it("preserves the package download and extraction phase split", () => {
     const extractionPackage = {
       ...pkg("extracting-package", "Entpackendes Paket", ["extracting-item"]),
@@ -646,14 +841,13 @@ describe("download table row contracts", () => {
     expect(commits).toEqual(["package-a:Neuer Name"]);
   });
 
-  it("keeps package selection and activation as separate controls and sends context coordinates", () => {
+  it("removes the redundant package activation checkbox and preserves context actions", () => {
     const calls: Array<unknown> = [];
     const model = withRuntime(createInput());
     const row = model.packageRows[0];
     const component = PackageCardContent({
       actions: createActions({
-        onToggleSelection: (id) => calls.push(["select", id]),
-        onTogglePackage: (id) => calls.push(["toggle", id]),
+        onToggleSelection: (id, ctrl, shift) => calls.push(["select", id, ctrl, shift]),
         onOpenContextMenu: (id, x, y) => calls.push(["context", id, x, y])
       }),
       columnOrder: model.columnOrder,
@@ -666,13 +860,12 @@ describe("download table row contracts", () => {
       selectedVersion: 1
     });
     const selection = findElement(component, (element) => element.type === "input" && element.props["aria-label"] === "Aktive Serie auswählen");
-    const activation = findElement(component, (element) => element.type === "input" && element.props["aria-label"] === "Aktive Serie aktivieren");
     const packageElement = findElement(component, (element) => element.props["data-download-package-id"] === "package-a");
 
-    selection.props.onChange();
-    activation.props.onChange();
+    selection.props.onClick({ stopPropagation: () => {}, ctrlKey: false, metaKey: false, shiftKey: true });
     packageElement.props.onContextMenu({ preventDefault: () => {}, stopPropagation: () => {}, clientX: 30, clientY: 50 });
 
-    expect(calls).toEqual([["select", "package-a"], ["toggle", "package-a"], ["context", "package-a", 30, 50]]);
+    expect(calls).toEqual([["select", "package-a", true, true], ["context", "package-a", 30, 50]]);
+    expect(() => findElement(component, (element) => element.type === "input" && element.props["aria-label"] === "Aktive Serie aktivieren")).toThrow("Element not found");
   });
 });

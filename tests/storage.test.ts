@@ -17,6 +17,51 @@ afterEach(() => {
 });
 
 describe("settings storage", () => {
+  it("repairs a persisted version-2 column order that lost availability during default merging", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    fs.writeFileSync(paths.configFile, JSON.stringify({
+      ...defaultSettings(),
+      columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"],
+      columnOrderVersion: 2
+    }), "utf8");
+
+    const loaded = loadSettings(paths);
+
+    expect(loaded.columnOrder).toEqual(["name", "size", "progress", "hoster", "account", "prio", "status", "speed", "availability"]);
+    expect(loaded.columnOrderVersion).toBe(3);
+  });
+
+  it("adds availability beside speed once for legacy column settings", () => {
+    const legacy = { ...defaultSettings(), columnOrder: ["name", "status", "speed"] } as Partial<AppSettings>;
+    delete legacy.columnOrderVersion;
+
+    const normalized = normalizeSettings(legacy as AppSettings);
+
+    expect(normalized.columnOrder).toEqual(["name", "status", "speed", "availability"]);
+    expect(normalized.columnOrderVersion).toBe(3);
+    expect(normalizeSettings({ ...normalized, columnOrder: ["name", "speed"] }).columnOrder).toEqual(["name", "speed"]);
+  });
+
+  it("uses English for new installations and preserves only supported languages", () => {
+    expect(defaultSettings().language).toBe("en");
+    expect(normalizeSettings({ ...defaultSettings(), language: "de" }).language).toBe("de");
+    expect(normalizeSettings({ ...defaultSettings(), language: "fr" as "en" }).language).toBe("en");
+  });
+
+  it("keeps German for existing settings files created before language selection existed", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const legacy = { ...defaultSettings() } as Partial<AppSettings>;
+    delete legacy.language;
+    fs.mkdirSync(path.dirname(paths.configFile), { recursive: true });
+    fs.writeFileSync(paths.configFile, JSON.stringify(legacy), "utf8");
+
+    expect(loadSettings(paths).language).toBe("de");
+  });
+
   it("defaults download directories to the desktop project folder", () => {
     const baseDir = path.join(os.homedir(), "Desktop", "Multi-Debrid-Downloader");
     const defaults = defaultSettings();

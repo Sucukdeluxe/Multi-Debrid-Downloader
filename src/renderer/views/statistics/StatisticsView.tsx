@@ -5,6 +5,7 @@ import type {
   StatisticsRange,
   StatisticsViewModel
 } from "./statistics-model";
+import { SlidingSelection } from "../../ui/SlidingSelection";
 import "./statistics.css";
 
 export interface StatisticsViewActions {
@@ -109,17 +110,19 @@ export function StatisticsSidebar({ model, actions }: Pick<StatisticsViewProps, 
   return (
     <nav aria-label="Statistik-Zeitraum" className="statistics-sidebar" data-visual-region="statistics-sidebar">
       <strong className="statistics-sidebar-heading">Zeitraum</strong>
-      <div className="statistics-range-list">
+      <SlidingSelection activeKey={model.range} axis="vertical" className="statistics-range-list">
         {rangeItems.map((item) => (
           <button
             aria-current={model.range === item.id ? "page" : undefined}
             className={`statistics-range${model.range === item.id ? " statistics-range-active" : ""}`}
+            data-sliding-selection-active={model.range === item.id}
+            data-sliding-selection-item="true"
             key={item.id}
             onClick={() => actions.onRangeChange(item.id)}
             type="button"
           >{item.label}</button>
         ))}
-      </div>
+      </SlidingSelection>
       <p className="statistics-sidebar-message">{model.message}</p>
     </nav>
   );

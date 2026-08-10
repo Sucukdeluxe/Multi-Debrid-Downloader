@@ -57,8 +57,8 @@
 }
 
 .collector-sidebar-item.is-active {
-  background: var(--ui-active);
-  border-color: var(--ui-border);
+  background: transparent;
+  border-color: transparent;
 }
 
 .collector-sidebar-select,

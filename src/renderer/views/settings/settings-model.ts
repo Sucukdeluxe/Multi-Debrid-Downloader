@@ -409,6 +409,22 @@ export function buildSettingsFormViewModel({
     description: "Speicherort, Download-Verhalten, Verlauf, Oberfläche und Benachrichtigungen.",
     groups: [
       {
+        id: "general-language",
+        title: "Sprache",
+        fields: [
+          {
+            id: "language",
+            kind: "select",
+            label: "Sprache",
+            value: settings.language,
+            options: [
+              { value: "en", label: "English" },
+              { value: "de", label: "Deutsch" }
+            ]
+          }
+        ]
+      },
+      {
         id: "general-storage",
         title: "Speicherort",
         fields: [

@@ -1,5 +1,18 @@
 import type { SessionState } from "../shared/types";
 
+const DOWNLOAD_SELECTION_PRESERVE_SELECTOR = ".downloads-package-card, .downloads-item-row, .downloads-selection-cell, .package-card, .ctx-menu, .modal-backdrop, .modal-card";
+
+export function shouldClearDownloadSelection(target: Pick<Element, "closest">): boolean {
+  return !target.closest(DOWNLOAD_SELECTION_PRESERVE_SELECTOR);
+}
+
+export function shouldClearDownloadSelectionOnEscape(tagName: string, inputType = ""): boolean {
+  const normalizedTag = tagName.toUpperCase();
+  if (normalizedTag === "TEXTAREA") return false;
+  if (normalizedTag !== "INPUT") return true;
+  return ["checkbox", "radio", "button"].includes(inputType.toLowerCase());
+}
+
 /**
  * Drop selected ids whose package OR item no longer exists in the session.
  * The selection set mixes package and item ids; when entries vanish (delta

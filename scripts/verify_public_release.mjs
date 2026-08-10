@@ -23,6 +23,10 @@ const EXPECTED_EXTRA_RESOURCE = Object.freeze({
   from: "LICENSE",
   to: "LICENSE"
 });
+const EXPECTED_ICON_RESOURCE = Object.freeze({
+  from: "assets/app_icon.ico",
+  to: "assets/app_icon.ico"
+});
 const REDISTRIBUTION_FILES = Object.freeze([
   Object.freeze({
     sourcePath: "LICENSE",
@@ -32,7 +36,7 @@ const REDISTRIBUTION_FILES = Object.freeze([
   Object.freeze({
     sourcePath: "THIRD_PARTY_NOTICES.md",
     packagedPath: "resources/THIRD_PARTY_NOTICES.md",
-    sha256: "b5d923900e9bf932fbf173191973d0892a091ac5afdc4907b8b9f4f846e8126c"
+    sha256: "28f9d1f8692811758c41584e59d0db6cbf26654b4b93e335626921bef86bdf76"
   }),
   Object.freeze({
     sourcePath: "resources/extractor-jvm/licenses/LGPL-2.1.txt",
@@ -124,15 +128,29 @@ function verifyRedistributionFiles(baseDir, pathKey, label) {
   }
 }
 
-function hasExpectedExtraResource(extraResources) {
+function hasExtraResource(extraResources, expected) {
   const entries = Array.isArray(extraResources) ? extraResources : [extraResources];
   return entries.some((entry) => (
     entry
     && typeof entry === "object"
     && !Array.isArray(entry)
-    && entry.from === EXPECTED_EXTRA_RESOURCE.from
-    && entry.to === EXPECTED_EXTRA_RESOURCE.to
+    && entry.from === expected.from
+    && entry.to === expected.to
   ));
+}
+
+function sha256File(filePath) {
+  return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+}
+
+function verifyPackagedIcon(sourceRoot, packagedRoot, label) {
+  const sourcePath = path.join(sourceRoot, "assets", "app_icon.ico");
+  const packagedPath = path.join(packagedRoot, "resources", "assets", "app_icon.ico");
+  requireNonEmptyFile(sourcePath, "source application icon");
+  requireNonEmptyFile(packagedPath, `${label} application icon`);
+  if (sha256File(sourcePath) !== sha256File(packagedPath)) {
+    throw new Error(`${label} application icon content mismatch for resources/assets/app_icon.ico`);
+  }
 }
 
 function runCommand(command, args) {
@@ -195,7 +213,7 @@ function normalizeRelativePath(rootDir, filePath) {
   return path.relative(rootDir, filePath).split(path.sep).join("/");
 }
 
-function verifyArchiveRedistributionFiles(extractionRoot, archiveName) {
+function verifyArchiveRedistributionFiles(extractionRoot, archiveName, sourceRoot) {
   const extractedFiles = listFiles(extractionRoot);
   for (const file of REDISTRIBUTION_FILES) {
     const suffix = file.packagedPath.toLowerCase();
@@ -212,6 +230,19 @@ function verifyArchiveRedistributionFiles(extractionRoot, archiveName) {
       if (actualDigest !== file.sha256) {
         throw new Error(`Archive redistribution content mismatch for ${file.packagedPath} in ${archiveName}`);
       }
+    }
+  }
+  const iconMatches = extractedFiles.filter((filePath) => normalizeRelativePath(extractionRoot, filePath).toLowerCase().endsWith("resources/assets/app_icon.ico"));
+  if (iconMatches.length === 0) {
+    throw new Error(`Missing application icon resources/assets/app_icon.ico in archive ${archiveName}`);
+  }
+  const sourceIconPath = path.join(sourceRoot, "assets", "app_icon.ico");
+  requireNonEmptyFile(sourceIconPath, "source application icon");
+  const sourceDigest = sha256File(sourceIconPath);
+  for (const iconPath of iconMatches) {
+    requireNonEmptyFile(iconPath, `${archiveName} application icon`);
+    if (sha256File(iconPath) !== sourceDigest) {
+      throw new Error(`Archive application icon content mismatch in ${archiveName}`);
     }
   }
 }
@@ -260,8 +291,11 @@ export function verifyPublicRelease(rootDir = process.cwd()) {
   if (missingBuildFiles.length > 0) {
     throw new Error(`package.json build.files omits redistribution content: ${missingBuildFiles.join(", ")}`);
   }
-  if (!hasExpectedExtraResource(build.extraResources)) {
+  if (!hasExtraResource(build.extraResources, EXPECTED_EXTRA_RESOURCE)) {
     throw new Error("package.json build.extraResources must copy LICENSE to LICENSE");
+  }
+  if (!hasExtraResource(build.extraResources, EXPECTED_ICON_RESOURCE)) {
+    throw new Error("package.json build.extraResources must copy assets/app_icon.ico to assets/app_icon.ico");
   }
 
   const releaseDir = resolveReleaseDir(absoluteRoot);
@@ -310,6 +344,7 @@ export function verifyPublicRelease(rootDir = process.cwd()) {
 
   verifyRedistributionFiles(absoluteRoot, "sourcePath", "source");
   verifyRedistributionFiles(path.join(releaseDir, "win-unpacked"), "packagedPath", "win-unpacked");
+  verifyPackagedIcon(absoluteRoot, path.join(releaseDir, "win-unpacked"), "win-unpacked");
 
   return {
     publish: {
@@ -340,7 +375,7 @@ export function verifyReleaseArchives(rootDir = process.cwd(), options = {}) {
     const extractionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "public-release-archive-"));
     try {
       extractArchiveTree(archivePath, extractionRoot, sevenZipPath, commandRunner);
-      verifyArchiveRedistributionFiles(extractionRoot, archiveName);
+      verifyArchiveRedistributionFiles(extractionRoot, archiveName, absoluteRoot);
       verifiedArchives.push(archiveName);
     } finally {
       fs.rmSync(extractionRoot, { recursive: true, force: true });

@@ -294,6 +294,15 @@ describe("statistics model", () => {
 });
 
 describe("statistics view", () => {
+  it("marks statistic ranges for one measured vertical selection indicator", () => {
+    const model = buildStatisticsViewModel(createSnapshot(), "today", now);
+    const html = renderToStaticMarkup(<StatisticsSidebar actions={createActions()} model={model} />);
+
+    expect(html).toContain("ui-sliding-selection ui-sliding-selection-vertical");
+    expect(html.match(/data-sliding-selection-item="true"/g)).toHaveLength(5);
+    expect(html.match(/data-sliding-selection-active="true"/g)).toHaveLength(1);
+  });
+
   it("renders each statistics marker exactly once, all ranges and no download toolbar or pagination", () => {
     const snapshot = createSnapshot();
     snapshot.stats.totalDownloaded = 2_048;

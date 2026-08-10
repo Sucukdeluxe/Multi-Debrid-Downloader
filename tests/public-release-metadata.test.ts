@@ -82,6 +82,9 @@ function writeArchivePayload(outputDir: string, omittedName = ""): void {
       : `resources/app.asar.unpacked/${relativePath}`;
     writeFile(outputDir, targetPath, content);
   }
+  if (omittedName !== "app_icon.ico") {
+    writeFile(outputDir, "resources/assets/app_icon.ico", "application-icon");
+  }
 }
 
 function createArchiveCommandRunner(omittedName = "") {
@@ -133,6 +136,10 @@ function createReleaseFixture(): string {
         {
           from: "THIRD_PARTY_NOTICES.md",
           to: "THIRD_PARTY_NOTICES.md"
+        },
+        {
+          from: "assets/app_icon.ico",
+          to: "assets/app_icon.ico"
         }
       ],
       nsis: {
@@ -162,6 +169,8 @@ function createReleaseFixture(): string {
   writeFile(rootDir, "Real-Debrid-Downloader-1.7.233-portable.exe", "portable");
   writeRedistributionFiles(rootDir);
   writeRedistributionFiles(rootDir, true);
+  writeFile(rootDir, "assets/app_icon.ico", "application-icon");
+  writeFile(rootDir, "win-unpacked/resources/assets/app_icon.ico", "application-icon");
 
   return rootDir;
 }
@@ -334,6 +343,13 @@ describe("public release metadata", () => {
     fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
 
     expect(() => verifyPublicRelease(rootDir)).toThrow(/extraResources|LICENSE/);
+  });
+
+  it("rejects a packaged application without its window and tray icon", () => {
+    const rootDir = createReleaseFixture();
+    fs.rmSync(path.join(rootDir, "win-unpacked", "resources", "assets", "app_icon.ico"));
+
+    expect(() => verifyPublicRelease(rootDir)).toThrow(/app_icon|icon/i);
   });
 
   it("rejects incomplete third-party redistribution notices", () => {

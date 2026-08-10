@@ -1703,6 +1703,19 @@ function retryDelayWithJitter(attempt: number, baseMs: number): number {
   return Math.floor(jitter);
 }
 
+export async function runWithLimitedConcurrency<T>(items: readonly T[], concurrency: number, worker: (item: T) => Promise<void>): Promise<void> {
+  const workerCount = Math.min(items.length, Math.max(1, Math.floor(concurrency)));
+  let nextIndex = 0;
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const item = items[nextIndex];
+      nextIndex += 1;
+      await worker(item);
+    }
+  });
+  await Promise.all(workers);
+}
+
 export class DownloadManager extends EventEmitter {
   private settings: AppSettings;
 
@@ -3278,31 +3291,28 @@ export class DownloadManager extends EventEmitter {
       this.emitState();
     }
 
-    const checkedUrls = new Map<string, Awaited<ReturnType<typeof checkRapidgatorOnline>>>();
+    const checkedUrls = new Map<string, ReturnType<typeof checkRapidgatorOnline>>();
 
-    for (const { itemId, url } of itemsToCheck) {
+    await runWithLimitedConcurrency(itemsToCheck, 8, async ({ itemId, url }) => {
       const item = this.session.items[itemId];
-      if (!item) continue;
+      if (!item) return;
 
-      if (checkedUrls.has(url)) {
-        const cached = checkedUrls.get(url);
-        if (cached !== undefined) {
-          this.applyRapidgatorCheckResult(item, cached);
-        }
-        this.emitState();
-        continue;
+      let check = checkedUrls.get(url);
+      if (!check) {
+        check = checkRapidgatorOnline(url);
+        checkedUrls.set(url, check);
       }
 
       try {
-        const result = await checkRapidgatorOnline(url);
-        checkedUrls.set(url, result);
+        const result = await check;
         this.applyRapidgatorCheckResult(item, result);
       } catch (err) {
         logger.warn(`checkRapidgatorOnline Fehler für ${url}: ${compactErrorText(err)}`);
         item.onlineStatus = undefined;
       }
+      this.persistSoon();
       this.emitState();
-    }
+    });
 
     this.persistSoon();
   }
@@ -3355,6 +3365,9 @@ export class DownloadManager extends EventEmitter {
         item.fileName = sanitizeFilename(result.fileName);
         this.assignItemTargetPath(item, path.join(this.session.packages[item.packageId]?.outputDir || this.settings.outputDir, item.fileName));
       }
+      if (result.fileSizeBytes !== null && result.fileSizeBytes > 0) {
+        item.totalBytes = result.fileSizeBytes;
+      }
       item.onlineStatus = "online";
       item.updatedAt = nowMs();
     }
@@ -3364,7 +3377,8 @@ export class DownloadManager extends EventEmitter {
     const uncheckedIds: string[] = [];
     for (const item of Object.values(this.session.items)) {
       if (item.status !== "queued") continue;
-      if (item.onlineStatus) continue;
+      if (item.onlineStatus === "offline") continue;
+      if (item.onlineStatus === "online" && item.totalBytes !== null && item.totalBytes > 0) continue;
       try {
         const host = new URL(item.url).hostname.toLowerCase();
         if (host !== "rapidgator.net" && !host.endsWith(".rapidgator.net") && host !== "rg.to" && !host.endsWith(".rg.to")) continue;

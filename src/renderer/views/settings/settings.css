@@ -53,8 +53,8 @@
 }
 
 .settings-sidebar-item.is-active {
-  border-color: var(--ui-border);
-  background: var(--ui-active);
+  border-color: transparent;
+  background: transparent;
   color: var(--ui-text);
 }
 
@@ -439,7 +439,7 @@
 }
 
 .settings-account-tabs button[aria-selected="true"] {
-  border-bottom-color: var(--ui-accent);
+  border-bottom-color: transparent;
   color: var(--ui-text);
 }
 
@@ -474,11 +474,15 @@
 
 .settings-account-table-grid {
   height: 41px;
-  color: var(--ui-text-muted);
+  color: var(--ui-text);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+
+.settings-form-group:has(#update\:check) .settings-action-field {
+  justify-content: flex-end;
 }
 
 .settings-account-table-grid > span,
@@ -604,7 +608,7 @@
 .settings-account-traffic,
 .settings-account-expires,
 .settings-account-credential {
-  color: var(--ui-text-muted);
+  color: var(--ui-text);
   font-variant-numeric: tabular-nums;
   overflow: hidden;
   text-overflow: ellipsis;

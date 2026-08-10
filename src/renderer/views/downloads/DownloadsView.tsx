@@ -1,4 +1,6 @@
 import type { ReactElement } from "react";
+import { RollingMetricValue } from "../../ui/RollingMetricValue";
+import { SlidingSelection } from "../../ui/SlidingSelection";
 import type { DownloadPackageRow, DownloadsViewModelCore, DownloadDisplayMode, DownloadSidebarFilter } from "./downloads-model";
 import {
   DownloadsTableHeader,
@@ -13,7 +15,9 @@ export interface DownloadsStatusModel {
   packages: number;
   links: number;
   session: string;
+  sessionBytes: number;
   total: string;
+  totalBytes: number;
   hosters: number;
   speed: string;
   eta: string;
@@ -81,35 +85,32 @@ const filters: Array<{ id: DownloadSidebarFilter; label: string }> = [
 export function DownloadsSidebar({ actions, model }: { actions: DownloadsViewActions; model: DownloadsViewModel }): ReactElement {
   return (
     <aside className="downloads-sidebar" data-visual-region="downloads-sidebar">
-      <div className="downloads-mode-switch" role="group" aria-label="Downloadansicht">
-        <button className={model.displayMode === "packages" ? "is-active" : ""} onClick={() => actions.onDisplayModeChange("packages")} type="button">Pakete</button>
-        <button className={model.displayMode === "files" ? "is-active" : ""} onClick={() => actions.onDisplayModeChange("files")} type="button">Dateien</button>
-      </div>
-      <nav aria-label="Downloadfilter">
-        {filters.map((filter) => <button className={model.filter === filter.id ? "is-active" : ""} key={filter.id} onClick={() => actions.onFilterChange(filter.id)} type="button"><span>{filter.label}</span><b>{model.counts[filter.id]}</b></button>)}
-      </nav>
+      <div className="downloads-mode-title">Pakete</div>
+      <SlidingSelection activeKey={model.filter} aria-label="Downloadfilter" as="nav" axis="vertical">
+        {filters.map((filter) => <button className={model.filter === filter.id ? "is-active" : ""} data-sliding-selection-active={model.filter === filter.id} data-sliding-selection-item="true" key={filter.id} onClick={() => actions.onFilterChange(filter.id)} type="button"><span>{filter.label}</span><b>{model.counts[filter.id]}</b></button>)}
+      </SlidingSelection>
       <label className="downloads-provider-filter"><span>Service</span><select aria-label="Service filtern" onChange={(event) => actions.onProviderFilterChange(event.target.value)} value={model.providerFilter}><option value="all">Alle Services</option>{model.providerOptions.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select></label>
       <label className="downloads-sidebar-search"><span>Downloads durchsuchen</span><input className="downloads-search-input" onChange={(event) => actions.onQueryChange(event.target.value)} placeholder="Paket, Datei oder Service" type="search" value={model.query} /></label>
       <div className="downloads-sidebar-actions">
         <button onClick={actions.onToggleAllPackages} type="button">Alle ein-/ausklappen</button>
         <button disabled={model.empty} onClick={actions.onClearAll} type="button">Liste leeren</button>
-        <label><input checked={model.clipboardWatcher} onChange={actions.onToggleClipboardWatcher} type="checkbox" />Zwischenablage überwachen</label>
       </div>
+      <label className="downloads-clipboard-toggle"><input checked={model.clipboardWatcher} onChange={actions.onToggleClipboardWatcher} type="checkbox" />Zwischenablage überwachen</label>
     </aside>
   );
 }
 
 export function DownloadsSidebarStatus({ model }: { model: DownloadsViewModel }): ReactElement {
+  const speed = model.status.speed.replace(/^Geschwindigkeit:\s*/i, "");
+  const eta = model.status.eta.replace(/^ETA:\s*/i, "");
   const entries = [
-    ["Pakete", String(model.status.packages)],
-    ["Links", String(model.status.links)],
-    ["Sitzung", model.status.session],
-    ["Gesamt", model.status.total],
-    ["Hoster", String(model.status.hosters)],
-    ["Geschwindigkeit", model.status.speed],
-    ["ETA", model.status.eta]
+    { label: "Pakete", metric: "packages", numericValue: model.status.packages, value: String(model.status.packages) },
+    { label: "Links", metric: "links", numericValue: model.status.links, value: String(model.status.links) },
+    { label: "Sitzung", metric: "session", numericValue: model.status.sessionBytes, value: model.status.session },
+    { label: "Gesamt", metric: "total", numericValue: model.status.totalBytes, value: model.status.total },
+    { label: "Hoster", metric: "hosters", numericValue: model.status.hosters, value: String(model.status.hosters) }
   ];
-  return <section className="downloads-sidebar-status" data-visual-region="downloads-sidebar-status" aria-label="Downloadstatus">{entries.map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}</section>;
+  return <section className="downloads-sidebar-status" data-visual-region="downloads-sidebar-status" aria-label="Downloadstatus">{entries.map((entry) => <div key={entry.metric}><span>{entry.label}</span><RollingMetricValue numericValue={entry.numericValue} value={entry.value} /></div>)}<div><span>Geschwindigkeit</span><strong data-status-metric="speed">{speed}</strong></div><div><span>ETA</span><strong data-status-metric="eta">{eta}</strong></div></section>;
 }
 
 export function DownloadsToolbar({ actions, model }: { actions: DownloadsViewActions; model: DownloadsViewModel }): ReactElement {

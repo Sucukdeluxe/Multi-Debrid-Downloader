@@ -12,6 +12,7 @@ import {
   type AccountWorkspaceViewModel
 } from "./AccountWorkspace";
 import { SettingsForm, type SettingsFormActions } from "./SettingsForm";
+import { SlidingSelection } from "../../ui/SlidingSelection";
 import "./settings.css";
 
 export type SettingsViewRegion = "all" | "sidebar" | "content";
@@ -42,17 +43,19 @@ export function SettingsSidebar({ model, actions }: SettingsViewProps): ReactEle
       <div className="settings-sidebar-heading">
         <strong>Einstellungen</strong>
       </div>
-      <div className="settings-sidebar-list">
+      <SlidingSelection activeKey={model.section} axis="vertical" className="settings-sidebar-list">
         {SETTINGS_SECTIONS.map((section) => (
           <button
             aria-current={model.section === section.id ? "page" : undefined}
             className={`settings-sidebar-item${model.section === section.id ? " is-active" : ""}`}
+            data-sliding-selection-active={model.section === section.id}
+            data-sliding-selection-item="true"
             key={section.id}
             onClick={() => actions.onSectionChange(section.id)}
             type="button"
           >{section.label}</button>
         ))}
-      </div>
+      </SlidingSelection>
     </nav>
   );
 }

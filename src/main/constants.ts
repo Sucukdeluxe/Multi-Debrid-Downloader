@@ -43,6 +43,7 @@ export const ONLINE_BACKUP_API_URL = "https://downloader.24-music.de/backup-api"
 export function defaultSettings(): AppSettings {
   const baseDir = path.join(os.homedir(), "Desktop", "Multi-Debrid-Downloader");
   return {
+    language: "en",
     token: "",
     realDebridUseWebLogin: false,
     megaLogin: "",
@@ -120,7 +121,8 @@ export function defaultSettings(): AppSettings {
     totalCompletedFilesAllTime: 0,
     totalRuntimeAllTimeMs: 0,
     bandwidthSchedules: [],
-    columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"],
+    columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed", "availability"],
+    columnOrderVersion: 3,
     extractCpuPriority: "high",
     autoExtractWhenStopped: true,
     disabledProviders: [],

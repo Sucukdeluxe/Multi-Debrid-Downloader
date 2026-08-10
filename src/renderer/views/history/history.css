@@ -67,8 +67,8 @@
 }
 
 .history-filter.is-active {
-  background: var(--ui-active);
-  border-color: var(--ui-border);
+  background: transparent;
+  border-color: transparent;
   color: var(--ui-text);
 }
 
@@ -149,6 +149,14 @@
   text-transform: uppercase;
 }
 
+.history-table-header-row > span {
+  text-align: center;
+}
+
+.history-table-header-row > span:nth-child(2) {
+  text-align: left;
+}
+
 .history-table-header-row > span,
 .history-row > span {
   min-width: 0;
@@ -213,7 +221,14 @@
 }
 
 .history-row-action button {
-  width: 36px;
+  background: var(--ui-input);
+  border: 1px solid var(--ui-border);
+  border-radius: 5px;
+  color: var(--ui-text);
+  height: 30px;
+  min-height: 30px;
+  padding: 0;
+  width: 30px;
 }
 
 .history-expand:hover,
@@ -244,9 +259,9 @@
 }
 
 .history-status-deleted {
-  background: color-mix(in srgb, var(--ui-warning) 15%, transparent);
-  border-color: color-mix(in srgb, var(--ui-warning) 60%, var(--ui-border));
-  color: var(--ui-warning);
+  background: color-mix(in srgb, var(--ui-danger) 15%, transparent);
+  border-color: color-mix(in srgb, var(--ui-danger) 60%, var(--ui-border));
+  color: var(--ui-danger);
 }
 
 .history-status-failed {

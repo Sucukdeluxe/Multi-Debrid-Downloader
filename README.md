@@ -1,367 +1,204 @@
-# Multi Debrid Downloader
+# Multi-Debrid Downloader
 
-Desktop downloader for Windows with package-based queue management, multi-provider fallback, automatic extraction, auto-rename, provider statistics, and built-in updates.
+Fast package-based downloading for Windows with multiple debrid services, automatic fallback, link availability checks, extraction, queue recovery, history, statistics, and built-in updates.
 
-![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6)
-![Electron](https://img.shields.io/badge/Electron-31.x-47848F)
-![React](https://img.shields.io/badge/React-18.x-149ECA)
-![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
-![License](https://img.shields.io/badge/license-MIT-green)
+[![Latest release](https://img.shields.io/github/v/release/Sucukdeluxe/multi-debrid-downloader?display_name=tag)](https://github.com/Sucukdeluxe/multi-debrid-downloader/releases/latest)
+[![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6)](https://github.com/Sucukdeluxe/multi-debrid-downloader/releases/latest)
+[![Electron](https://img.shields.io/badge/Electron-31-47848F)](https://www.electronjs.org/)
+[![License](https://img.shields.io/badge/license-MIT-2ea44f)](LICENSE)
 
-## Changelog
+![Multi-Debrid Downloader download queue](docs/images/multi-debrid-downloader.png)
 
-### 2.0.12
+## Overview
 
-- Prevent static headings, labels, hints, and card text from being selected throughout Settings.
-- Keep editable fields and text areas selectable for normal copy and paste.
+Multi-Debrid Downloader combines a desktop download queue with provider routing, package management, automatic extraction, and persistent recovery. Add direct hoster links, organize them into packages, choose your debrid accounts, and let the application handle retries, fallback, progress, cleanup, and history.
 
-### 2.0.11
+The interface is available in English and German. New installations start in English, and the language can be changed immediately without restarting the application.
 
-- Keep Account Overview and Usage Rules inside the same fixed layout frame.
-- Prevent sizing and scroll-mode changes when switching between the account tabs.
+## Download
 
-### 2.0.10
+The latest Windows release is available on the [GitHub Releases page](https://github.com/Sucukdeluxe/multi-debrid-downloader/releases/latest).
 
-- Add locally bundled provider logos throughout account management.
-- Reorder the account table to Hoster, Status, Download Traffic Remaining, Username, Expiry Date, and Password / Access.
-- Increase account-row and status text sizes while keeping the table compact.
-- Show full account usernames while continuing to protect passwords and API keys.
-- Replace the provider-wide edit form with a compact editor for the selected account or API key.
-- Preserve sibling accounts, usage counters, limits, and status metadata during account-specific edits.
-
-### 2.0.9
-
-- Rebuild the Accounts view as a viewport-filling compact table with flat rows and bottom-aligned actions.
-- Separate account usage rules from the overview so rotation and routing controls no longer reduce the visible account list.
-- Redesign the account dialog with one-line provider rows, an immediate default selection, compact credential fields, and split cancel/save actions.
-- Add a global account enable/disable control while preserving unrelated provider state.
-
-### 2.0.8
-
-- Add a compact account-management table with traffic, status, expiry, username, and credential columns.
-- Add account actions through right-click and the row action menu.
-- Support quick edit, status checks, enable/disable, and removal without expanding the full account form.
-
-### 2.0.7
-
-- Improve account filter readability in dark and light themes.
-
-### 2.0.6
-
-- Keeps the download speed history alive when switching between tabs.
-- Adds API and Web-Login filters to the account picker.
-- Uses clearer Web-Login account labels and validates supported credentials before saving.
-
-## Why this tool?
-
-- Package-based workflow with progress, extraction, history, and clean post-processing.
-- Multiple debrid accounts in one app, including provider order, automatic fallback, and per-hoster routing.
-- Built for large queues with session persistence, retries, reconnect handling, resume support, and integrity checks.
-- Includes an in-app updater for releases published on GitHub.
-
-## Supported providers
-
-- AllDebrid API
-- AllDebrid Web via browser login
-- BestDebrid API
-- BestDebrid Web via cookie import
-- Debrid-Link with multi-key support
-- DDownload login
-- 1fichier API
-- LinkSnappy login
-- Mega-Debrid API
-- Mega-Debrid Web
-- Real-Debrid
-
-## Core features
-
-### Queue and package handling
-
-- Package-based queue with item status, retries, ETA, speed, provider, and account label.
-- Start, pause, stop, cancel, reset, rename, and delete for packages and items.
-- Ctrl+Click multi-select and bulk actions.
-- Queue backup import/export as JSON.
-- Context-menu export for selected packages or selected items as structured TXT re-import files.
-- Duplicate handling when adding links: keep, skip, or overwrite.
-- Optional start scheduling for a specific time.
-- Session recovery after restart with optional auto-resume.
-- Optional auto-sorting by progress.
-
-### Link collection
-
-- Paste links directly into the collector.
-- Import `.txt` export files that preserve package names and optional per-file names.
-- Clipboard watcher with automatic link detection.
-- `.dlc` import via file picker and drag-and-drop.
-- Drag-and-drop of plain links, `.txt` export files, and supported container files.
-
-### Provider routing and fallback
-
-- Configurable provider order with primary, secondary, and tertiary fallback.
-- Optional automatic provider fallback on unrestrict/download failures.
-- Per-hoster routing override, so specific hosters can always use a specific provider.
-- Providers can be disabled without deleting stored account data.
-- Daily traffic limits per provider.
-- Debrid-Link per-key daily limits and per-key daily usage tracking.
-
-### Accounts and provider tools
-
-- Central Accounts view with account type, status, info, access data, and actions.
-- BestDebrid cookie import directly from a Netscape cookies file.
-- AllDebrid browser-login flow and in-app Rapidgator host status display.
-- Debrid-Link multi-key management with optional detailed line-by-line key display.
-- Debrid-Link API-key statistics popup with per-key Rapidgator traffic quota, link quota, reset, activate/deactivate, and click-to-copy masked keys.
-
-### Download engine
-
-- Parallel downloads with resumable transfers when supported.
-- Reconnect handling with configurable wait time.
-- Circuit-breaker style cooldown and retry handling for provider issues.
-- Global speed limit or per-download speed limit mode.
-- Bandwidth schedules with time windows and speed caps.
-- Live bandwidth chart and session statistics.
-- Persistent all-time download counter.
-
-### Extraction and post-processing
-
-- Automatic extraction after download.
-- Extraction can continue even when the session is stopped or after app restart.
-- Hybrid download + extract workflow.
-- Extraction backend using native tools by default, with JVM sidecar support available.
-- Supports common archive formats including RAR, ZIP, and 7z.
-- Nested extraction for archives found inside extracted output.
-- Conflict handling: overwrite, skip, rename, or ask.
-- Disk-space validation before extraction.
-- Package-scoped password reuse for multi-archive sets.
-- Optional cleanup of downloaded archives after extraction.
-- Optional cleanup of link artifacts and sample files after extraction.
-- Optional flat MKV collection folder after package completion.
-
-### Auto-rename and media cleanup
-
-- Auto-rename for extracted scene-style files based on folder/source naming.
-- Multi-episode token parsing.
-- Handles compact episode tokens like `s02e01` directly attached to the title.
-- Optional skip of already extracted packages on start.
-
-### Integrity, history, and backup
-
-- Optional integrity verification with `CRC32`, `MD5`, and `SHA1`.
-- Download history with package details, duration, size, provider, and target folder.
-- Backup export/import for restoring app state.
-- Persistent config, session, and history files in the Electron `userData` directory.
-
-### UI and desktop integration
-
-- Downloads, history, statistics, and settings tabs.
-- Progress bars for packages and single items.
-- Hoster/provider display showing both source and effective debrid account.
-- Minimize-to-tray support.
-- Dark/light theme setting.
-- Long path support on Windows.
-- Default startup window size of `1920x1080`.
-
-## Installation
-
-### Prebuilt releases
-
-1. Download the latest installer or portable build from the releases page.
-2. Start the app.
-3. Add your provider credentials in `Settings > Accounts`.
-
-Releases: [GitHub Releases](https://github.com/Sucukdeluxe/multi-debrid-downloader/releases)
-
-### Build from source
-
-Requirements:
-
-- Node.js `20+`
-- npm
-- Windows `10/11`
-- Java Runtime `8+` for the optional JVM extraction backend
-- Optional native extraction tools: 7-Zip / WinRAR / UnRAR
-
-```bash
-npm install
-npm run dev
-```
-
-## NPM scripts
-
-| Command | Description |
+| Package | Recommended for |
 | --- | --- |
-| `npm run dev` | Starts Vite, tsup watchers, and Electron in development mode |
-| `npm run build` | Builds main and renderer bundles |
-| `npm run start` | Starts the built app in production mode |
-| `npm test` | Runs Vitest unit tests |
-| `npm run self-check` | Runs integrated self-checks |
-| `npm run verify:release -- --verify-archives --seven-zip <path-to-7z.exe>` | Verifies metadata, unpacked redistribution files, and the nested Setup/Portable payloads |
-| `npm run release:win` | Builds Windows installer and portable EXE |
+| `Real-Debrid-Downloader-Setup-<version>.exe` | Normal installation with Start menu and optional desktop shortcut |
+| `Real-Debrid-Downloader-<version>-portable.exe` | Portable use without installation |
+| `SHA256SUMS.txt` | Verifying downloaded files |
 
-## Typical workflow
+Windows 10 or Windows 11 is required. Release executables are currently unsigned, so Windows may show a SmartScreen warning on first launch.
 
-1. Add one or more provider accounts in `Settings > Accounts`.
-2. Configure provider order, fallback, and optional hoster routing.
-3. Paste links or import `.dlc` files.
-4. Adjust package names, target folders, extraction, and cleanup settings if needed.
-5. Start the queue and monitor downloads, extraction, and provider status.
-6. Review history and statistics after completion.
+## Highlights
+
+- Dense package queue with expandable file rows, search, filters, bulk selection, Shift range selection, and keyboard clearing with Escape.
+- RapidGator availability and file-size discovery before a download starts.
+- Package totals calculated from known link sizes and updated while links are checked.
+- Multi-account provider routing with configurable priority, hoster overrides, traffic limits, and automatic fallback.
+- Resumable parallel downloads, retries, reconnect handling, schedules, bandwidth limits, and live speed history.
+- Automatic extraction with nested archives, password reuse, conflict handling, disk-space checks, and optional cleanup.
+- Persistent sessions, history, all-time statistics, queue backup import/export, and recovery after restart.
+- English and German interface with localized dialogs, statuses, menus, settings, and update information.
+- Built-in GitHub update checks with release changelogs and installer download support.
+
+## Supported services
+
+| Service | Access modes |
+| --- | --- |
+| Real-Debrid | API token |
+| AllDebrid | API token, browser login |
+| BestDebrid | API token, cookie import |
+| Debrid-Link | Multiple API keys |
+| Mega-Debrid | API, web login |
+| LinkSnappy | Account login |
+| DDownload | Account login |
+| 1fichier | API key |
+
+Provider availability and supported hosters can change independently of the application. A valid account for at least one configured service is required for debrid downloads.
+
+## Download queue
+
+The Downloads workspace is optimized for large queues:
+
+- Compact package and file rows with progress, downloaded size, total size, hoster, service, priority, status, speed, and availability.
+- RapidGator and DDownload hoster icons with full names in tooltips.
+- Online counters for packages and clear online, partial, checking, and offline states.
+- Drag-reorderable columns with a smooth full-column preview and persisted layout.
+- Green progress indicators, animated package expansion, and clear selected-row highlighting.
+- Context menus for package and file actions without redundant activation controls.
+- Start, pause, stop, schedule, reorder, rename, remove, enable, disable, reset, and retry actions.
+- Animated summary values for packages, links, session bytes, queue size, and hoster count.
+
+## Link collector
+
+- Paste one or many supported links into collections before adding them to the queue.
+- Import structured text exports, JSON queue backups, and DLC containers.
+- Drop plain links or supported files directly into the application.
+- Monitor the clipboard with an immediate, persistent toggle.
+- Preserve package and optional file names when exporting and re-importing selected links.
+
+## Accounts and routing
+
+- Manage several accounts or API keys for the same provider.
+- Enable or disable individual accounts without deleting their saved data.
+- Check account status, remaining traffic, username, expiry, and access type.
+- Configure primary, secondary, and tertiary provider fallback.
+- Route individual hosters through a specific provider.
+- Apply daily provider limits and per-key Debrid-Link limits.
+- Keep passwords, API keys, cookies, and tokens masked in the interface.
+
+## Download engine
+
+- Parallel downloads with configurable concurrency.
+- Resume support when the source and provider allow ranged requests.
+- Automatic retries with cooldown and reconnect handling.
+- Global or per-download speed limits and time-based bandwidth schedules.
+- Package speed, ETA, progress, and live bandwidth statistics.
+- Duplicate handling with keep, skip, or overwrite choices.
+- Optional scheduled queue start and automatic resume after restart.
+
+## Extraction and cleanup
+
+- Automatic RAR, ZIP, and 7z extraction after download.
+- Nested archive extraction and package-scoped password reuse.
+- Conflict policies for overwrite, skip, rename, or confirmation.
+- Disk-space validation before extraction.
+- Optional archive, link-artifact, and sample-file cleanup.
+- Optional flat MKV collection after a package completes.
+- Extraction recovery after restart and optional extraction while downloads are stopped.
+
+## History and statistics
+
+- Filterable history with completed, failed, removed, and active outcomes.
+- Package details including provider, target folder, size, duration, and completion state.
+- Session, daily, seven-day, 30-day, and all-time statistics.
+- Persistent all-time counters and bandwidth history.
+- Localized status colors and consistent table actions.
+
+## Settings and updates
+
+- Immediate English/German language switching.
+- Dark, light, and system theme options.
+- Configurable download folder, queue behavior, history retention, notifications, extraction, cleanup, and bandwidth.
+- GitHub update checks with localized release notes and download actions.
+- Backup export/import for settings and optional queue data.
+- Optional minimize-to-tray and desktop notifications.
+
+## Getting started
+
+1. Download the installer or portable executable from [Releases](https://github.com/Sucukdeluxe/multi-debrid-downloader/releases/latest).
+2. Open **Settings → Accounts** and add at least one supported debrid account.
+3. Configure provider order and optional hoster routing under **Usage rules**.
+4. Add links from **Downloads** or prepare collections in **Link collector**.
+5. Review package names, destination, extraction, and cleanup settings.
+6. Start the queue.
 
 ## Link export format
 
-Selected packages or items can be exported from the context menu as a structured text file. Re-importing that file restores the original package grouping, even if it only contains a subset of items from a larger package.
+Selected packages or files can be exported as structured text and imported again without losing package grouping.
 
-Example:
-
-```txt
+```text
 # rd-link-export: 1
-# package: Dave Staffel 1
-# file: Dave.S01E01.rar
-https://example.com/e01
-# file: Dave.S01E02.rar
-https://example.com/e02
+# package: Example Series S01
+# file: Example.Series.S01E01.part1.rar
+https://example.com/file-1
+# file: Example.Series.S01E01.part2.rar
+https://example.com/file-2
 ```
 
-Supported import sources:
+## Build from source
 
-- collector text input
-- `Datei importieren`
-- drag-and-drop of `.txt` and `.json`
+Requirements:
 
-The optional `# file:` marker preserves the original item name so the imported subset can be rebuilt with the same package name and per-item filename hints.
+- Node.js 20 or newer
+- npm
+- Windows 10 or Windows 11 for release packaging
+- Optional Java Runtime 8 or newer for the JVM extraction backend
+
+```powershell
+npm ci
+npm test
+npm run dev
+```
+
+Create the Windows installer and portable executable:
+
+```powershell
+npm run release:win
+```
+
+Useful commands:
+
+| Command | Description |
+| --- | --- |
+| `npm run dev` | Start the main-process watcher, Vite renderer, and Electron |
+| `npm test` | Run client and backup API tests |
+| `npm run self-check` | Run the integrated application self-check |
+| `npm run build` | Build the main and renderer bundles |
+| `npm run release:win` | Build the Windows installer and portable executable |
+| `npm run verify:release` | Verify release metadata and packaged redistribution files |
 
 ## Project structure
 
-- `src/main` - Electron main process, download engine, provider clients, updater, storage
-- `src/preload` - secure IPC bridge
-- `src/renderer` - React UI
-- `src/shared` - shared types and IPC contracts
-- `tests` - unit and integration-style tests
-- `resources/extractor-jvm` - optional JVM extraction runtime
-- `scripts` - release and build helpers
-
-## Data and logs
-
-Runtime files are stored in Electron's `userData` directory, including:
-
-- `rd_downloader_config.json`
-- `rd_session_state.json`
-- `rd_history.json`
-- `rd_downloader.log`
-- `audit.log`
-- `rename.log`
-- `debug_support_manifest.json`
-- `trace.log`
-- `trace_config.json`
-- `session-logs/session_*.txt`
-- `package-logs/package_*.txt`
-- `item-logs/item_*.txt`
-
-`audit.log`, `rename.log`, and `trace.log` are rotated automatically. The current file is kept plus one `.old` backup, and outdated backups are purged automatically.
-
-### Remote debug server
-
-For headless or server-style troubleshooting, the app can expose a small authenticated HTTP debug API with live status and log tails.
-
-Enable it by creating these files in the same runtime folder that contains `rd_downloader.log`:
-
-- `debug_token.txt`
-  Example: a long random token such as `rd-debug-please-change-me`
-- `debug_port.txt`
-  Example: `9868`
-- `debug_host.txt` (optional)
-  Default is `127.0.0.1`. Set `0.0.0.0` only if you really want remote access and protect it with firewall, VPN, or reverse proxy.
-
-After startup, the app also writes `debug_support_manifest.json` into the same runtime folder. This file lists all available endpoints, the authentication method, related runtime files, and the requirements for remote access.
-
-If you want extra support detail during a flaky or hard-to-reproduce issue, the app also maintains a `trace.log` plus `trace_config.json`. You can enable or disable the support trace from the app menu or remotely via the debug API. By default, the support trace now auto-disables again after 2 hours so it does not stay enabled forever by accident.
-
-The app menu under `Help` also includes a `Check debug setup` action. It verifies the current host/port/token/support-manifest/trace setup locally and now also reports free disk space, current support-log sizes, and an estimated support-bundle size.
-
-Available endpoints after restart:
-
-- `GET /health`
-- `GET /meta`
-- `GET /debug/setup`
-- `GET /self-check`
-- `GET /host/diagnostics`
-- `GET /status`
-- `GET /settings`
-- `GET /accounts`
-- `GET /stats`
-- `GET /history?limit=50&status=completed`
-- `GET /packages?package=Release&includeItems=1`
-- `GET /items?status=downloading&package=Release`
-- `GET /session?package=Release`
-- `GET /log?lines=100&grep=keyword`
-- `GET /logs/main?lines=100&grep=keyword`
-- `GET /logs/audit?lines=100&grep=keyword`
-- `GET /logs/rename?lines=100&grep=keyword`
-- `GET /logs/trace?lines=100&grep=keyword`
-- `GET /logs/session?lines=100&grep=keyword`
-- `GET /logs/package?package=Release&lines=100&grep=keyword`
-- `GET /logs/item?item=episode.part2.rar&lines=100&grep=keyword`
-- `GET /trace/config?enable=1&note=support&durationMinutes=120`
-- `GET /support/bundle`
-- `GET /diagnostics?package=Release&lines=150`
-
-Authentication works with either:
-
-- header: `Authorization: Bearer <token>`
-- query param: `?token=<token>`
-
-Example from PowerShell:
-
-```powershell
-Invoke-RestMethod "http://SERVER:9868/diagnostics?token=YOUR_TOKEN&package=Release"
-Invoke-RestMethod "http://SERVER:9868/settings?token=YOUR_TOKEN"
-Invoke-RestMethod "http://SERVER:9868/accounts?token=YOUR_TOKEN"
-Invoke-RestMethod "http://SERVER:9868/stats?token=YOUR_TOKEN"
-Invoke-RestMethod "http://SERVER:9868/history?token=YOUR_TOKEN&limit=20"
-Invoke-RestMethod "http://SERVER:9868/debug/setup?token=YOUR_TOKEN"
-Invoke-RestMethod "http://SERVER:9868/self-check?token=YOUR_TOKEN"
-Invoke-RestMethod "http://SERVER:9868/logs/audit?token=YOUR_TOKEN&lines=200"
-Invoke-RestMethod "http://SERVER:9868/logs/rename?token=YOUR_TOKEN&lines=200"
-Invoke-RestMethod "http://SERVER:9868/logs/trace?token=YOUR_TOKEN&lines=200"
-Invoke-RestMethod "http://SERVER:9868/trace/config?token=YOUR_TOKEN&enable=1&note=support&durationMinutes=120"
-Invoke-RestMethod "http://SERVER:9868/logs/package?token=YOUR_TOKEN&package=Release&lines=200"
-Invoke-RestMethod "http://SERVER:9868/logs/item?token=YOUR_TOKEN&item=episode.part2.rar&lines=200"
-Invoke-RestMethod "http://SERVER:9868/host/diagnostics?token=YOUR_TOKEN"
-Invoke-WebRequest "http://SERVER:9868/support/bundle?token=YOUR_TOKEN" -OutFile ".\\rd-support-bundle.zip"
+```text
+src/main                 Electron main process and download engine
+src/preload              Secure IPC bridge
+src/renderer             React interface
+src/shared               Shared types and contracts
+resources/extractor-jvm  Optional extraction runtime
+services/backup-api      Backup API service
+scripts                  Build and release verification tools
+tests                    Unit and integration tests
 ```
 
-This makes it easy to share one URL plus token during support, so current package status, session state, history, redacted account/settings state, audit actions, rename/MKV move traces, trace data, package/session/item logs, host-side Windows crash hints, disk space, support-log volume, support-bundle size estimates, and even a full ZIP support bundle can be inspected remotely.
+## Data, privacy, and diagnostics
 
-## Troubleshooting
+Configuration, credentials, queue state, history, and logs are stored locally in Electron's `userData` directory. Secrets are not included in public source or release archives. Provider credentials are only sent to the configured provider endpoints required for account and download operations.
 
-- Provider does not work: verify credentials, enabled state, provider order, and daily limits.
-- Debrid-Link quota looks wrong: open the API-key statistics popup and check the Rapidgator quota for the affected key.
-- Extraction fails: verify passwords and installed extraction tools. The native backend is the default; JVM extraction is optional.
-- Downloads stall: check active speed limits, bandwidth schedules, reconnect settings, and provider health.
-- Accounts table looks misaligned on one machine: use `Reset columns` in the Accounts view to clear the locally stored column widths.
+The application can generate support diagnostics and expose an optional authenticated local debug API. Remote access is disabled by default. Do not expose diagnostic endpoints publicly without a firewall, VPN, or reverse proxy, and always use a strong unique token.
 
-## Changelog
+## Updates and changelog
 
-Detailed release history is published on [GitHub Releases](https://github.com/Sucukdeluxe/multi-debrid-downloader/releases).
-
-### 2.0.5
-
-- Move the default download, extraction, and video collection directories to the desktop under `Multi-Debrid-Downloader`.
-- Migrate untouched legacy default directories from `Downloads\RealDebrid` to the new desktop location.
-
-### 2.0.4
-
-- Rename the online backup action from "create" to "export" for clearer wording.
-
-### 2.0.3
-
-- Keep online backup keys on a single line in the export and import dialog.
-- Widen the online backup dialog on larger windows while keeping it responsive on smaller screens.
+See [CHANGELOG.md](CHANGELOG.md) for the complete release history. The application also displays the current GitHub release notes when an update is available.
 
 ## License
 
-The project is licensed under the MIT License. See `LICENSE`.
-
-Bundled JVM extractor licenses and redistribution notices are available in `resources/extractor-jvm`.
-
-Bundled provider icon notices are available in `THIRD_PARTY_NOTICES.md`.
+Multi-Debrid Downloader is released under the [MIT License](LICENSE). Third-party notices are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -7,6 +7,7 @@ import {
   type ReactElement,
   type UIEvent
 } from "react";
+import { SlidingSelection } from "../../ui/SlidingSelection";
 import {
   DataTable,
   DataTableBody,
@@ -430,10 +431,12 @@ export function AccountWorkspace({ model, actions }: AccountWorkspaceProps): Rea
           </label>
         ) : null}
       </header>
-      <div aria-label="Accountverwaltung" className="settings-account-tabs" role="tablist">
+      <SlidingSelection activeKey={model.activePanel} aria-label="Accountverwaltung" axis="horizontal" className="settings-account-tabs" role="tablist">
         <button
           aria-controls="settings-account-overview"
           aria-selected={model.activePanel === "overview"}
+          data-sliding-selection-active={model.activePanel === "overview"}
+          data-sliding-selection-item="true"
           id="settings-account-overview-tab"
           onClick={() => actions.onPanelChange("overview")}
           role="tab"
@@ -442,12 +445,14 @@ export function AccountWorkspace({ model, actions }: AccountWorkspaceProps): Rea
         <button
           aria-controls="settings-account-rules"
           aria-selected={model.activePanel === "rules"}
+          data-sliding-selection-active={model.activePanel === "rules"}
+          data-sliding-selection-item="true"
           id="settings-account-rules-tab"
           onClick={() => actions.onPanelChange("rules")}
           role="tab"
           type="button"
         >Verwendungsregeln</button>
-      </div>
+      </SlidingSelection>
       <div
         aria-labelledby="settings-account-overview-tab"
         className="settings-account-panel"

@@ -14,6 +14,7 @@ import {
 import {
   CollectorInputDialog,
   CollectorContent,
+  CollectorSidebar,
   CollectorToolbar,
   CollectorView,
   type CollectorViewActions
@@ -141,6 +142,18 @@ describe("collector model", () => {
 });
 
 describe("CollectorView", () => {
+  it("marks collections for one measured vertical selection indicator", () => {
+    const model = buildCollectorViewModel([
+      { id: "tab-a", name: "Sammlung A", text: "https://example.test/a" },
+      { id: "tab-b", name: "Sammlung B", text: "https://example.test/b" }
+    ], "tab-b", "", false, []);
+    const html = renderToStaticMarkup(<CollectorSidebar actions={createActions()} model={model} />);
+
+    expect(html).toContain("ui-sliding-selection ui-sliding-selection-vertical");
+    expect(html.match(/data-sliding-selection-item="true"/g)).toHaveLength(2);
+    expect(html.match(/data-sliding-selection-active="true"/g)).toHaveLength(1);
+  });
+
   it("keeps empty, busy and error states inside the same table body", () => {
     const empty = renderToStaticMarkup(
       <CollectorView

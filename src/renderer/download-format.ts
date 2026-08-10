@@ -1,4 +1,5 @@
 import type { AudioStripSummary, DebridProvider } from "../shared/types";
+import { hosterIconSources } from "./hoster-icons";
 
 export const providerLabels: Record<DebridProvider, string> = {
   realdebrid: "Real-Debrid",
@@ -46,6 +47,13 @@ export function extractHoster(url: string): string {
   } catch {
     return "";
   }
+}
+
+export function formatHosterLabel(hoster: string): { compact: string; title: string; iconSrc?: string } {
+  const normalized = hoster.trim().toLowerCase();
+  if (normalized === "rapidgator") return { compact: "RG", title: "RapidGator", iconSrc: hosterIconSources.rapidgator };
+  if (normalized === "ddownload") return { compact: "DD", title: "DDownload", iconSrc: hosterIconSources.ddownload };
+  return { compact: hoster, title: hoster };
 }
 
 export function formatAudioStripSummary(summary: AudioStripSummary): { text: string; tooltip: string; attention: boolean } {

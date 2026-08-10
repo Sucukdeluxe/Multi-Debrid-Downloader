@@ -27,6 +27,7 @@ export type DebridProvider =
   | "linksnappy";
 export type DebridFallbackProvider = DebridProvider | "none";
 export type AppTheme = "dark" | "light";
+export type AppLanguage = "en" | "de";
 export type PackagePriority = "high" | "normal" | "low";
 export type ExtractCpuPriority = "high" | "middle" | "low";
 export type HistoryRetentionMode = "never" | "session" | "permanent";
@@ -67,6 +68,7 @@ export interface DebridAccountStatus {
 }
 
 export interface AppSettings {
+  language: AppLanguage;
   token: string;
   realDebridUseWebLogin: boolean;
   megaLogin: string;
@@ -145,6 +147,7 @@ export interface AppSettings {
   totalRuntimeAllTimeMs: number;
   bandwidthSchedules: BandwidthScheduleEntry[];
   columnOrder: string[];
+  columnOrderVersion?: number;
   extractCpuPriority: ExtractCpuPriority;
   autoExtractWhenStopped: boolean;
   disabledProviders: DebridProvider[];

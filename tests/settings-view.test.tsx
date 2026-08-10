@@ -17,6 +17,7 @@ import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import {
   ACCOUNT_COLUMNS,
   SETTINGS_SECTIONS,
+  buildSettingsFormViewModel,
   buildAccountRowId,
   buildTargetedAccountCheck,
   filterAccountAddOptions,
@@ -411,6 +412,35 @@ describe("settings model", () => {
 });
 
 describe("settings views", () => {
+  it("marks settings sections for one measured vertical selection indicator", () => {
+    const html = renderToStaticMarkup(<SettingsSidebar actions={viewActions()} model={viewModel()} />);
+
+    expect(html).toContain("ui-sliding-selection ui-sliding-selection-vertical");
+    expect(html.match(/data-sliding-selection-item="true"/g)).toHaveLength(SETTINGS_SECTIONS.length);
+    expect(html.match(/data-sliding-selection-active="true"/g)).toHaveLength(1);
+  });
+
+  it("offers English and German as a live language setting", () => {
+    const form = buildSettingsFormViewModel({
+      settings: defaultSettings(),
+      section: "allgemein",
+      speedLimitInput: "0",
+      scheduleSpeedInputs: {}
+    });
+    const language = form.groups.flatMap((group) => group.fields).find((field) => field.id === "language");
+
+    expect(language).toEqual({
+      id: "language",
+      kind: "select",
+      label: "Sprache",
+      value: "en",
+      options: [
+        { value: "en", label: "English" },
+        { value: "de", label: "Deutsch" }
+      ]
+    });
+  });
+
   it("renders one real sidebar marker and all sections", () => {
     const html = renderToStaticMarkup(<SettingsSidebar actions={viewActions()} model={viewModel()} />);
     expect(count(html, "data-visual-region=\"settings-sidebar\"")).toBe(1);
@@ -459,6 +489,14 @@ describe("settings views", () => {
 });
 
 describe("account workspace", () => {
+  it("marks account panels for one measured horizontal selection indicator", () => {
+    const html = renderToStaticMarkup(<AccountWorkspace actions={workspaceActions()} model={workspaceModel()} />);
+
+    expect(html).toContain("ui-sliding-selection ui-sliding-selection-horizontal");
+    expect(html.match(/data-sliding-selection-item="true"/g)).toHaveLength(2);
+    expect(html.match(/data-sliding-selection-active="true"/g)).toHaveLength(1);
+  });
+
   it("renders the exact columns, one table marker, full usernames and no raw credentials", () => {
     const html = renderToStaticMarkup(<AccountWorkspace actions={workspaceActions()} model={workspaceModel()} />);
     const positions = ACCOUNT_COLUMNS.map((column) => html.indexOf(column));
@@ -621,6 +659,7 @@ describe("settings geometry", () => {
     expect(css).toMatch(/\.settings-switch\s*{[^}]*width:\s*40px;[^}]*height:\s*20px;/s);
     expect(css).toMatch(/\.settings-account-table-header\s*{[^}]*height:\s*41px;/s);
     expect(css).toMatch(/\.settings-account-table-header\s*{[^}]*overflow:\s*hidden;/s);
+    expect(css).toMatch(/\.settings-account-table-grid\s*{[^}]*color:\s*var\(--ui-text\);/s);
     expect(css).toMatch(/\.settings-account-row\s*{[^}]*height:\s*48px;/s);
     expect(css).toMatch(/\.settings-account-table-body\s*{[^}]*overflow:\s*auto;/s);
     expect(accountWorkspaceSource).toContain("onScroll={syncAccountTableScroll}");

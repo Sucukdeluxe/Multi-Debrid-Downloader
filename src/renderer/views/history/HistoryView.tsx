@@ -7,6 +7,7 @@ import {
   DataTableHeader
 } from "../../ui/DataTable";
 import { Toolbar, ToolbarGroup, ToolbarSearch } from "../../ui/Toolbar";
+import { SlidingSelection } from "../../ui/SlidingSelection";
 import type { HistoryFilter, HistoryRow, HistoryViewModel } from "./history-model";
 import "./history.css";
 
@@ -60,11 +61,13 @@ export function HistorySidebar({ model, actions }: HistoryViewProps): ReactEleme
   return (
     <div aria-label="Verlaufsfilter" className="history-sidebar" data-visual-region="history-sidebar">
       <strong className="history-sidebar-heading">Verlauf</strong>
-      <div className="history-filter-list">
+      <SlidingSelection activeKey={model.filter} axis="vertical" className="history-filter-list">
         {filterItems.map((item) => (
           <button
             aria-current={model.filter === item.id ? "page" : undefined}
             className={`history-filter${model.filter === item.id ? " is-active" : ""}`}
+            data-sliding-selection-active={model.filter === item.id}
+            data-sliding-selection-item="true"
             key={item.id}
             onClick={() => actions.onFilterChange(item.id)}
             type="button"
@@ -73,7 +76,7 @@ export function HistorySidebar({ model, actions }: HistoryViewProps): ReactEleme
             <span>{model.counts[item.id]}</span>
           </button>
         ))}
-      </div>
+      </SlidingSelection>
       <button
         className="history-sidebar-clear"
         disabled={model.totalCount === 0 || model.loading}
@@ -194,11 +197,12 @@ export function HistoryContent({ model, actions }: HistoryViewProps): ReactEleme
                       <button
                         aria-label={`Aktionen für ${row.name}`}
                         onClick={(event) => {
+                          event.stopPropagation();
                           const rect = event.currentTarget.getBoundingClientRect();
                           actions.onContextMenu(row.id, rect.right, rect.bottom);
                         }}
                         type="button"
-                      >•••</button>
+                      >⋮</button>
                     </span>
                   </div>
                   {isExpanded ? <HistoryRowDetails row={row} /> : null}

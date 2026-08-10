@@ -135,10 +135,10 @@ function migrateLegacyDefaultDirectories(settings: AppSettings, defaults: AppSet
   };
 }
 
-const DEFAULT_COLUMN_ORDER = ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"];
+const DEFAULT_COLUMN_ORDER = ["name", "size", "progress", "hoster", "account", "prio", "status", "speed", "availability"];
 const ALL_VALID_COLUMNS = new Set([...DEFAULT_COLUMN_ORDER, "added"]);
 
-function normalizeColumnOrder(raw: unknown): string[] {
+function normalizeColumnOrder(raw: unknown, version: unknown): string[] {
   if (!Array.isArray(raw) || raw.length === 0) {
     return [...DEFAULT_COLUMN_ORDER];
   }
@@ -153,6 +153,10 @@ function normalizeColumnOrder(raw: unknown): string[] {
   }
   if (!seen.has("name")) {
     result.unshift("name");
+  }
+  if (version !== 3 && !seen.has("availability")) {
+    const speedIndex = result.indexOf("speed");
+    result.splice(speedIndex >= 0 ? speedIndex + 1 : result.length, 0, "availability");
   }
   return result;
 }
@@ -421,6 +425,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
   );
   const debridLinkDisabledKeyIds = normalizeStringList(settings.debridLinkDisabledKeyIds, debridLinkApiKeyIds);
   const normalized: AppSettings = {
+    language: settings.language === "de" ? "de" : "en",
     token: asText(settings.token),
     realDebridUseWebLogin: Boolean(settings.realDebridUseWebLogin),
     megaLogin,
@@ -506,7 +511,8 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     totalRuntimeAllTimeMs: typeof settings.totalRuntimeAllTimeMs === "number" && settings.totalRuntimeAllTimeMs >= 0 ? settings.totalRuntimeAllTimeMs : defaults.totalRuntimeAllTimeMs,
     theme: VALID_THEMES.has(settings.theme) ? settings.theme : defaults.theme,
     bandwidthSchedules: normalizeBandwidthSchedules(settings.bandwidthSchedules),
-    columnOrder: normalizeColumnOrder(settings.columnOrder),
+    columnOrder: normalizeColumnOrder(settings.columnOrder, settings.columnOrderVersion),
+    columnOrderVersion: 3,
     extractCpuPriority: settings.extractCpuPriority,
     autoExtractWhenStopped: settings.autoExtractWhenStopped !== undefined ? Boolean(settings.autoExtractWhenStopped) : defaults.autoExtractWhenStopped,
     disabledProviders: normalizeDisabledProviders(settings.disabledProviders),
@@ -677,9 +683,12 @@ function migrateLegacyMegaEnableFlags(parsed: AppSettings): AppSettings {
 function readSettingsFile(filePath: string): AppSettings | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as AppSettings;
+    const migratedLanguage = (parsed as Partial<AppSettings>).language === undefined ? "de" : parsed.language;
     const merged = normalizeSettings({
       ...defaultSettings(),
-      ...migrateLegacyMegaEnableFlags(parsed)
+      ...migrateLegacyMegaEnableFlags(parsed),
+      language: migratedLanguage,
+      columnOrderVersion: parsed.columnOrderVersion
     });
     return sanitizeCredentialPersistence(merged);
   } catch (error) {

@@ -113,7 +113,7 @@ export function UpdateExperience({
               {releaseNotes.trim() ? (
                 <details className="md-update-release-notes">
                   <summary>Changelog anzeigen</summary>
-                  <pre>{releaseNotes}</pre>
+                  <pre data-i18n-ignore="true">{releaseNotes}</pre>
                 </details>
               ) : null}
             </>

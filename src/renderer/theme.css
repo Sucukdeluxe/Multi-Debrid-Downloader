@@ -11,9 +11,10 @@
   --ui-text: #FFFFFF;
   --ui-text-secondary: #EAEDF3;
   --ui-text-muted: #919191;
-  --ui-primary: #BAD0FC;
-  --ui-primary-hover: #8AA5DC;
-  --ui-accent: #3886FF;
+  --ui-primary: #D6D6D6;
+  --ui-primary-hover: #E6E6E6;
+  --ui-accent: #4A4A4A;
+  --ui-success: #4ADE80;
   --ui-warning: #F1C786;
   --ui-danger: #F06464;
   --ui-error-action-text: #181A1F;
@@ -34,9 +35,10 @@
   --ui-text: #181A1F;
   --ui-text-secondary: #343842;
   --ui-text-muted: #667085;
-  --ui-primary: #A9C2F3;
-  --ui-primary-hover: #8AA5DC;
-  --ui-accent: #256FDB;
+  --ui-primary: #3A3A3A;
+  --ui-primary-hover: #202020;
+  --ui-accent: #5E5E5E;
+  --ui-success: #1E9E55;
   --ui-warning: #E8B85D;
   --ui-danger: #D94747;
   --ui-error-action-text: #181A1F;

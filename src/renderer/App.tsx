@@ -1,4 +1,5 @@
 import { DragEvent, ReactElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
 import { getMegaDebridAccountId, parseMegaDebridAccounts, serializeMegaDebridAccounts, maskMegaDebridLogin } from "../shared/mega-debrid-accounts";
 import type {
@@ -36,13 +37,14 @@ import {
   getProviderUsageDayKey
 } from "../shared/provider-daily-limits";
 import { reorderPackageOrderByDrop, sortPackageOrderByName, sortPackagesForDisplay } from "./package-order";
-import { pruneSelection } from "./selection";
+import { pruneSelection, shouldClearDownloadSelection, shouldClearDownloadSelectionOnEscape } from "./selection";
 import { buildBulkAccountEnabledState, buildConfiguredProviderOrder, getAccountDialogSelectableOptions, matchesAccountModeFilter, pruneAccountRowSelection, resolveAccountUsername, resolveVisibleAccountKind } from "./account-ui";
 import type { AccountModeFilter } from "./account-ui";
 import { applyAccountEdit, buildAccountEditCheckSettings, createAccountEditState, getAccountEditExpectedStatusId, removeAccountTarget, validateAccountEdit, validateAccountEditStatuses } from "./account-edit";
 import type { AccountEditState, AccountEditTarget, AccountKind, AccountService, SingleAccountKind } from "./account-edit";
 import { ACCOUNT_SERVICE_ICONS } from "./account-service-icons";
 import { DOWNLOAD_SPEED_MAX_SAMPLES, updateDownloadSpeedHistory } from "./download-speed-state";
+import { createUiLocalizer, normalizeLanguage } from "./i18n";
 import type { DownloadSpeedHistoryState } from "./download-speed-state";
 import { extractHoster, formatDateTime, formatSpeedMbps, humanSize, providerLabels } from "./download-format";
 import { AppShell } from "./shell/AppShell";
@@ -88,8 +90,9 @@ import {
   StatisticsSidebarStatus,
   type StatisticsViewActions
 } from "./views/statistics/StatisticsView";
-import { buildDownloadsViewModel, type DownloadDisplayMode, type DownloadSidebarFilter } from "./views/downloads/downloads-model";
+import { buildDownloadsViewModel, getDownloadQueueTotalBytes, type DownloadDisplayMode, type DownloadSidebarFilter } from "./views/downloads/downloads-model";
 import { downloadColumnDefinitions, type DownloadSortColumn } from "./views/downloads/DownloadsTable";
+import { beginDownloadColumnDrag, clearDownloadColumnDrag, settleDownloadColumnDrag, updateDownloadColumnDrag, type DownloadColumnDragSession } from "./views/downloads/column-drag";
 import {
   DownloadsContent,
   DownloadsFooter,
@@ -1025,7 +1028,7 @@ const emptyStats = (): DownloadStats => ({
 
 const emptySnapshot = (): UiSnapshot => ({
   settings: {
-    token: "", realDebridUseWebLogin: false, megaLogin: "", megaPassword: "", megaCredentials: "", megaDebridApiEnabled: false, megaDebridWebEnabled: false, megaDebridPreferApi: true, bestToken: "", bestDebridUseWebLogin: false, allDebridToken: "", allDebridUseWebLogin: false, ddownloadLogin: "", ddownloadPassword: "", oneFichierApiKey: "", debridLinkApiKeys: "", linkSnappyLogin: "", linkSnappyPassword: "",
+    language: "en", token: "", realDebridUseWebLogin: false, megaLogin: "", megaPassword: "", megaCredentials: "", megaDebridApiEnabled: false, megaDebridWebEnabled: false, megaDebridPreferApi: true, bestToken: "", bestDebridUseWebLogin: false, allDebridToken: "", allDebridUseWebLogin: false, ddownloadLogin: "", ddownloadPassword: "", oneFichierApiKey: "", debridLinkApiKeys: "", linkSnappyLogin: "", linkSnappyPassword: "",
     debridLinkDisabledKeyIds: [],
     archivePasswordList: "",
     rememberToken: true, providerOrder: [], providerPrimary: "realdebrid", providerSecondary: "none",
@@ -1041,7 +1044,8 @@ const emptySnapshot = (): UiSnapshot => ({
     notifyUrl: "", notifyMention: "", notifyOnPackageCompleted: false, notifyOnPackageFailed: false, notifyOnRunFinished: false,
     accountListShowDetailedDebridLinkKeys: false,
     bandwidthSchedules: [], totalDownloadedAllTime: 0, totalCompletedFilesAllTime: 0, totalRuntimeAllTimeMs: 0,
-    columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"],
+    columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed", "availability"],
+    columnOrderVersion: 3,
     autoExtractWhenStopped: true,
     disabledProviders: [],
     hosterRouting: {},
@@ -1647,8 +1651,8 @@ function computePackageProgress(pkg: PackageEntry | undefined, items: Record<str
   return totalSize > 0 ? totalDown / totalSize : 0;
 }
 
-const DEFAULT_COLUMN_ORDER = ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"];
-const ALL_COLUMN_KEYS = ["name", "size", "progress", "hoster", "account", "prio", "status", "speed", "added"];
+const DEFAULT_COLUMN_ORDER = ["name", "size", "progress", "hoster", "account", "prio", "status", "speed", "availability"];
+const ALL_COLUMN_KEYS = ["name", "size", "progress", "hoster", "account", "prio", "status", "speed", "availability", "added"];
 const COLUMN_DEFS = downloadColumnDefinitions;
 
 function sameStringArray(a: string[], b: string[]): boolean {
@@ -1743,6 +1747,11 @@ export function App(): ReactElement {
   const updateCheckGenerationRef = useRef(0);
   const settingsDirtyRef = useRef(false);
   const settingsDraftRevisionRef = useRef(0);
+
+  useEffect(() => {
+    const localizer = createUiLocalizer(document, normalizeLanguage(settingsDraft.language));
+    return () => localizer.disconnect();
+  }, [settingsDraft.language]);
   const panelDirtyRevisionRef = useRef(0);
   const latestStateRef = useRef<UiSnapshot | null>(null);
   const masterSnapshotRef = useRef<UiSnapshot | null>(null);
@@ -1831,8 +1840,13 @@ export function App(): ReactElement {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleteConfirm, setDeleteConfirm] = useState<{ ids: Set<string>; dontAsk: boolean } | null>(null);
   const [columnOrder, setColumnOrder] = useState<string[]>(() => DEFAULT_COLUMN_ORDER);
-  const [dragColId, setDragColId] = useState<string | null>(null);
-  const [dropTargetCol, setDropTargetCol] = useState<string | null>(null);
+  const columnDragSessionRef = useRef<DownloadColumnDragSession | null>(null);
+  const columnDragSettleTimerRef = useRef<number | null>(null);
+  const suppressColumnSortRef = useRef(false);
+  useEffect(() => () => {
+    if (columnDragSettleTimerRef.current !== null) window.clearTimeout(columnDragSettleTimerRef.current);
+    if (columnDragSessionRef.current) clearDownloadColumnDrag(columnDragSessionRef.current);
+  }, []);
   const [colHeaderCtx, setColHeaderCtx] = useState<{ x: number; y: number } | null>(null);
   const colHeaderCtxRef = useRef<HTMLDivElement>(null);
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
@@ -4490,7 +4504,8 @@ export function App(): ReactElement {
     const onKey = (e: globalThis.KeyboardEvent): void => {
       if (e.key === "Escape") {
         const target = e.target as HTMLElement;
-        if (target.tagName !== "INPUT" && target.tagName !== "TEXTAREA") {
+        const inputType = target.tagName === "INPUT" ? (target as HTMLInputElement).type : "";
+        if (shouldClearDownloadSelectionOnEscape(target.tagName, inputType)) {
           if (document.querySelector(".ctx-menu") || document.querySelector(".modal-backdrop")) return;
           if (tabRef.current === "downloads") setSelectedIds(new Set());
           else if (tabRef.current === "history") setSelectedHistoryIds(new Set());
@@ -4505,7 +4520,7 @@ export function App(): ReactElement {
     };
     const onDown = (e: MouseEvent): void => {
       const target = e.target as HTMLElement;
-      if (target.closest(".package-card") || target.closest(".ctx-menu") || target.closest(".modal-backdrop") || target.closest(".modal-card")) return;
+      if (!shouldClearDownloadSelection(target)) return;
       setSelectedIds(new Set());
     };
     window.addEventListener("keydown", onKey);
@@ -4896,6 +4911,34 @@ export function App(): ReactElement {
     });
   }, [askConfirmPrompt, performQuickAction]);
 
+  const setClipboardWatcherActive = useCallback((active: boolean): void => {
+    const update = (current: UiSnapshot): UiSnapshot => ({
+      ...current,
+      clipboardActive: active,
+      settings: { ...current.settings, clipboardWatch: active }
+    });
+    const next = update(snapshotRef.current);
+    snapshotRef.current = next;
+    masterSnapshotRef.current = masterSnapshotRef.current ? update(masterSnapshotRef.current) : next;
+    if (latestStateRef.current) {
+      latestStateRef.current = update(latestStateRef.current);
+    }
+    setSnapshot(next);
+    setSettingsDraft((current) => ({ ...current, clipboardWatch: active }));
+  }, []);
+
+  const toggleClipboardWatcher = useCallback((): void => {
+    const previous = snapshotRef.current.clipboardActive;
+    const next = !previous;
+    setClipboardWatcherActive(next);
+    void window.rd.toggleClipboard()
+      .then(setClipboardWatcherActive)
+      .catch((error) => {
+        setClipboardWatcherActive(previous);
+        showToast(`Zwischenablage konnte nicht umgeschaltet werden: ${String(error)}`, 2600);
+      });
+  }, [setClipboardWatcherActive, showToast]);
+
   const activateDownloadSchedule = useCallback((): void => {
     if (!scheduleTimeInput) return;
     const [hours, minutes] = scheduleTimeInput.split(":").map(Number);
@@ -4918,6 +4961,7 @@ export function App(): ReactElement {
   }, [downloadsViewCore.actionableSelectedIds, executeDeleteSelection, settingsDraft.confirmDeleteSelection]);
 
   const downloadPackageSpeeds = useMemo(() => Object.fromEntries(packageSpeedMap), [packageSpeedMap]);
+  const downloadQueueTotalBytes = useMemo(() => getDownloadQueueTotalBytes(Object.values(snapshot.session.items)), [snapshot.session.items]);
   const downloadsViewModel = useMemo<DownloadsViewModel>(() => ({
     ...downloadsViewCore,
     running: snapshot.session.running,
@@ -4944,12 +4988,14 @@ export function App(): ReactElement {
       packages: snapshot.stats.totalPackages,
       links: Object.keys(snapshot.session.items).length,
       session: humanSize(snapshot.stats.totalDownloaded),
-      total: humanSize(snapshot.stats.totalDownloadedAllTime),
+      sessionBytes: snapshot.stats.totalDownloaded,
+      total: humanSize(downloadQueueTotalBytes),
+      totalBytes: downloadQueueTotalBytes,
       hosters: providerStats.length,
       speed: snapshot.speedText,
       eta: snapshot.etaText
     }
-  }), [actionBusy, columnOrder, downloadPackageSpeeds, downloadsSortColumn, downloadsSortDescending, downloadsViewCore, editingName, editingPackageId, gridTemplate, providerStats.length, scheduleCountdown, schedulePickerOpen, scheduleTimeInput, snapshot.canPause, snapshot.canStart, snapshot.canStop, snapshot.clipboardActive, snapshot.etaText, snapshot.reconnectSeconds, snapshot.session.items, snapshot.session.paused, snapshot.session.reconnectReason, snapshot.session.running, snapshot.settings.scheduledStartEpochMs, snapshot.speedText, snapshot.stats.totalDownloaded, snapshot.stats.totalDownloadedAllTime, snapshot.stats.totalPackages]);
+  }), [actionBusy, columnOrder, downloadPackageSpeeds, downloadQueueTotalBytes, downloadsSortColumn, downloadsSortDescending, downloadsViewCore, editingName, editingPackageId, gridTemplate, providerStats.length, scheduleCountdown, schedulePickerOpen, scheduleTimeInput, snapshot.canPause, snapshot.canStart, snapshot.canStop, snapshot.clipboardActive, snapshot.etaText, snapshot.reconnectSeconds, snapshot.session.items, snapshot.session.paused, snapshot.session.reconnectReason, snapshot.session.running, snapshot.settings.scheduledStartEpochMs, snapshot.speedText, snapshot.stats.totalDownloaded, snapshot.stats.totalPackages]);
 
   const downloadsActions: DownloadsViewActions = {
     onDisplayModeChange: setDownloadDisplayMode,
@@ -4988,7 +5034,7 @@ export function App(): ReactElement {
       if (entry) onPackageStartEdit(entry.id, entry.name);
     },
     onRemoveSelection: removeActionableDownloads,
-    onToggleClipboardWatcher: () => { void performQuickAction(() => window.rd.toggleClipboard()); },
+    onToggleClipboardWatcher: toggleClipboardWatcher,
     onClearAll: clearDownloadQueue,
     onToggleAllPackages: () => {
       const targetState = !allPackagesCollapsed;
@@ -5022,7 +5068,6 @@ export function App(): ReactElement {
     onToggleSelection: onSelectId,
     onSelectionMouseDown: onSelectMouseDown,
     onSelectionMouseEnter: onSelectMouseEnter,
-    onTogglePackage: onPackageToggle,
     onTogglePackageCollapse: onPackageToggleCollapse,
     onStartPackageRename: onPackageStartEdit,
     onPackageRenameChange: setEditingName,
@@ -5042,35 +5087,53 @@ export function App(): ReactElement {
       const item = snapshot.session.items[id];
       onPackageContextMenu(packageId ?? item?.packageId ?? id, item?.id, x, y);
     },
-    onSortColumn: sortDownloadsByColumn,
-    onColumnDragStart: (column, event) => {
-      event.dataTransfer.effectAllowed = "move";
-      setDragColId(column);
+    onSortColumn: (column) => {
+      if (suppressColumnSortRef.current) return;
+      sortDownloadsByColumn(column);
     },
-    onColumnDragOver: (column, event) => {
-      if (dragColId && dragColId !== column) {
-        event.preventDefault();
-        setDropTargetCol(column);
+    onColumnPointerDown: (column, event) => {
+      if (columnDragSettleTimerRef.current !== null) {
+        window.clearTimeout(columnDragSettleTimerRef.current);
+        columnDragSettleTimerRef.current = null;
       }
+      if (columnDragSessionRef.current) clearDownloadColumnDrag(columnDragSessionRef.current);
+      columnDragSessionRef.current = beginDownloadColumnDrag(event.currentTarget, column, event.pointerId, event.clientX);
     },
-    onColumnDragLeave: () => setDropTargetCol(null),
-    onColumnDrop: (column, event) => {
-      event.preventDefault();
-      setDropTargetCol(null);
-      if (!dragColId || dragColId === column) return;
-      const next = [...columnOrder];
-      const fromIndex = next.indexOf(dragColId);
-      const toIndex = next.indexOf(column);
-      if (fromIndex < 0 || toIndex < 0) return;
-      next.splice(fromIndex, 1);
-      next.splice(toIndex, 0, dragColId);
-      setColumnOrder(next);
-      setDragColId(null);
-      void window.rd.updateSettings({ columnOrder: next }).catch(() => {});
+    onColumnPointerMove: (_column, event) => {
+      const session = columnDragSessionRef.current;
+      if (!session || session.pointerId !== event.pointerId) return;
+      if (updateDownloadColumnDrag(session, event.clientX)) event.preventDefault();
     },
-    onColumnDragEnd: () => {
-      setDragColId(null);
-      setDropTargetCol(null);
+    onColumnPointerUp: (_column, event) => {
+      const session = columnDragSessionRef.current;
+      if (!session || session.pointerId !== event.pointerId) return;
+      const next = settleDownloadColumnDrag(session, false);
+      if (!next) {
+        columnDragSessionRef.current = null;
+        return;
+      }
+      suppressColumnSortRef.current = true;
+      window.setTimeout(() => { suppressColumnSortRef.current = false; }, 0);
+      const changed = next.join("|") !== session.measurements.map((measurement) => measurement.id).join("|");
+      columnDragSettleTimerRef.current = window.setTimeout(() => {
+        if (changed) {
+          flushSync(() => setColumnOrder(next));
+          void window.rd.updateSettings({ columnOrder: next }).catch(() => {});
+        }
+        clearDownloadColumnDrag(session);
+        if (columnDragSessionRef.current === session) columnDragSessionRef.current = null;
+        columnDragSettleTimerRef.current = null;
+      }, 220);
+    },
+    onColumnPointerCancel: (_column, event) => {
+      const session = columnDragSessionRef.current;
+      if (!session || session.pointerId !== event.pointerId) return;
+      settleDownloadColumnDrag(session, true);
+      columnDragSettleTimerRef.current = window.setTimeout(() => {
+        clearDownloadColumnDrag(session);
+        if (columnDragSessionRef.current === session) columnDragSessionRef.current = null;
+        columnDragSettleTimerRef.current = null;
+      }, 220);
     },
     onColumnContextMenu: (_column, x, y) => setColHeaderCtx({ x, y })
   };
@@ -5617,14 +5680,15 @@ export function App(): ReactElement {
       <nav aria-label="Anwendungsmenü" className="md-application-menu-tree">
         <div className="menu-bar-item">
           <button
+            aria-expanded={openMenu === "datei"}
+            aria-haspopup="menu"
             className={`menu-bar-trigger${openMenu === "datei" ? " open" : ""}`}
             onClick={() => setOpenMenu(openMenu === "datei" ? null : "datei")}
             onMouseEnter={() => { if (openMenu && openMenu !== "datei") { setOpenMenu("datei"); setOpenSubmenu(null); } }}
           >
             Datei
           </button>
-          {openMenu === "datei" && (
-            <div className="menu-dropdown">
+          <div aria-hidden={openMenu !== "datei"} className={`menu-dropdown${openMenu === "datei" ? " is-open" : ""}`}>
               <button className="menu-dropdown-item" onClick={() => { closeMenus(); setTab("collector"); }}>
                 <span>Text mit Links analysieren</span>
                 <span className="shortcut">Strg+L</span>
@@ -5662,19 +5726,19 @@ export function App(): ReactElement {
                 <span>Beenden</span>
                 <span className="shortcut">Strg+Q</span>
               </button>
-            </div>
-          )}
+          </div>
         </div>
         <div className="menu-bar-item">
           <button
+            aria-expanded={openMenu === "einstellungen"}
+            aria-haspopup="menu"
             className={`menu-bar-trigger${openMenu === "einstellungen" ? " open" : ""}`}
             onClick={() => setOpenMenu(openMenu === "einstellungen" ? null : "einstellungen")}
             onMouseEnter={() => { if (openMenu && openMenu !== "einstellungen") { setOpenMenu("einstellungen"); setOpenSubmenu(null); } }}
           >
             Einstellungen
           </button>
-          {openMenu === "einstellungen" && (
-            <div className="menu-dropdown">
+          <div aria-hidden={openMenu !== "einstellungen"} className={`menu-dropdown${openMenu === "einstellungen" ? " is-open" : ""}`}>
               <button className="menu-dropdown-item" onClick={() => { closeMenus(); setTab("settings"); }}>
                 <span>Einstellungen</span>
                 <span className="shortcut">Strg+P</span>
@@ -5772,19 +5836,19 @@ export function App(): ReactElement {
                 </div>
                 <span className="menu-speed-unit">MB/s</span>
               </div>
-            </div>
-          )}
+          </div>
         </div>
         <div className="menu-bar-item">
           <button
+            aria-expanded={openMenu === "hilfe"}
+            aria-haspopup="menu"
             className={`menu-bar-trigger${openMenu === "hilfe" ? " open" : ""}`}
             onClick={() => setOpenMenu(openMenu === "hilfe" ? null : "hilfe")}
             onMouseEnter={() => { if (openMenu && openMenu !== "hilfe") { setOpenMenu("hilfe"); setOpenSubmenu(null); } }}
           >
             Hilfe
           </button>
-          {openMenu === "hilfe" && (
-            <div className="menu-dropdown">
+          <div aria-hidden={openMenu !== "hilfe"} className={`menu-dropdown${openMenu === "hilfe" ? " is-open" : ""}`}>
               <div
                 className="menu-submenu"
                 onMouseEnter={() => setOpenSubmenu("hilfe-log")}
@@ -5836,8 +5900,7 @@ export function App(): ReactElement {
               <button className="menu-dropdown-item" onClick={() => { closeMenus(); void onCheckUpdates(); }}>
                 <span>Suche Aktualisierungen</span>
               </button>
-            </div>
-          )}
+          </div>
         </div>
       </nav>
             <div className="md-avatar-anchor">

@@ -1697,12 +1697,22 @@ async function resolveRapidgatorFilename(link: string, signal?: AbortSignal): Pr
 export interface RapidgatorCheckResult {
   online: boolean;
   fileName: string;
-  fileSize: string | null;
+  fileSizeBytes: number | null;
 }
 
 const RG_FILE_ID_RE = /\/file\/([a-z0-9]{32}|\d+)/i;
 const RG_FILE_NOT_FOUND_RE = />\s*404\s*File not found/i;
 const RG_FILESIZE_RE = /File\s*size:\s*<strong>([^<>"]+)<\/strong>/i;
+
+export function parseRapidgatorFileSize(value: string | null | undefined): number | null {
+  const match = String(value ?? "").trim().match(/^([\d.,]+)\s*(B|KB|KIB|MB|MIB|GB|GIB|TB|TIB)$/i);
+  if (!match) return null;
+  const amount = Number(match[1].replace(/,/g, "."));
+  if (!Number.isFinite(amount) || amount < 0) return null;
+  const powers: Record<string, number> = { B: 0, KB: 1, KIB: 1, MB: 2, MIB: 2, GB: 3, GIB: 3, TB: 4, TIB: 4 };
+  const bytes = Math.round(amount * (1024 ** powers[match[2].toUpperCase()]));
+  return Number.isSafeInteger(bytes) ? bytes : null;
+}
 
 export async function checkRapidgatorOnline(
   link: string,
@@ -1728,46 +1738,6 @@ export async function checkRapidgatorOnline(
       if (signal?.aborted) throw new Error("aborted:debrid");
 
       const response = await fetch(link, {
-        method: "HEAD",
-        redirect: "follow",
-        headers,
-        signal: withTimeoutSignal(signal, 15000)
-      });
-
-      if (response.status === 404) {
-        return { online: false, fileName: "", fileSize: null };
-      }
-
-      if (response.ok) {
-        const finalUrl = response.url || link;
-        if (!finalUrl.includes(fileId)) {
-          return { online: false, fileName: "", fileSize: null };
-        }
-        const fileName = filenameFromRapidgatorUrlPath(link);
-        return { online: true, fileName, fileSize: null };
-      }
-
-      if (shouldRetryStatus(response.status) && attempt <= REQUEST_RETRIES) {
-        await sleepWithSignal(retryDelayForResponse(response, attempt), signal);
-        continue;
-      }
-
-      break;
-    } catch (error) {
-      const errorText = compactErrorText(error);
-      if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) throw error;
-      if (attempt > REQUEST_RETRIES || !isRetryableErrorText(errorText)) {
-        break;
-      }
-      await sleepWithSignal(retryDelay(attempt), signal);
-    }
-  }
-
-  for (let attempt = 1; attempt <= REQUEST_RETRIES + 1; attempt += 1) {
-    try {
-      if (signal?.aborted) throw new Error("aborted:debrid");
-
-      const response = await fetch(link, {
         method: "GET",
         redirect: "follow",
         headers,
@@ -1776,7 +1746,7 @@ export async function checkRapidgatorOnline(
 
       if (response.status === 404) {
         try { await response.body?.cancel(); } catch {  }
-        return { online: false, fileName: "", fileSize: null };
+        return { online: false, fileName: "", fileSizeBytes: null };
       }
 
       if (!response.ok) {
@@ -1791,20 +1761,20 @@ export async function checkRapidgatorOnline(
       const finalUrl = response.url || link;
       if (!finalUrl.includes(fileId)) {
         try { await response.body?.cancel(); } catch {  }
-        return { online: false, fileName: "", fileSize: null };
+        return { online: false, fileName: "", fileSizeBytes: null };
       }
 
       const html = await readResponseTextLimited(response, RAPIDGATOR_SCAN_MAX_BYTES, signal);
 
       if (RG_FILE_NOT_FOUND_RE.test(html)) {
-        return { online: false, fileName: "", fileSize: null };
+        return { online: false, fileName: "", fileSizeBytes: null };
       }
 
       const fileName = extractRapidgatorFilenameFromHtml(html) || filenameFromRapidgatorUrlPath(link);
       const sizeMatch = html.match(RG_FILESIZE_RE);
-      const fileSize = sizeMatch ? sizeMatch[1].trim() : null;
+      const fileSizeBytes = parseRapidgatorFileSize(sizeMatch?.[1]);
 
-      return { online: true, fileName, fileSize };
+      return { online: true, fileName, fileSizeBytes };
     } catch (error) {
       const errorText = compactErrorText(error);
       if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) throw error;

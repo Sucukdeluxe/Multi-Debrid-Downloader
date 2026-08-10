@@ -6,7 +6,7 @@ import crypto from "node:crypto";
 import { EventEmitter, once } from "node:events";
 import AdmZip from "adm-zip";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DownloadManager, buildAutoRenameBaseNameFromFoldersWithOptions, extractArchiveNameFromExtractorLogMessage, getAuthoritativeRealDebridTotal, resolveArchiveItemsFromList } from "../src/main/download-manager";
+import { DownloadManager, buildAutoRenameBaseNameFromFoldersWithOptions, extractArchiveNameFromExtractorLogMessage, getAuthoritativeRealDebridTotal, resolveArchiveItemsFromList, runWithLimitedConcurrency } from "../src/main/download-manager";
 import { planDownloadCompletion, validateDownloadedFileCompletion } from "../src/main/download-completion";
 import { defaultSettings } from "../src/main/constants";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
@@ -21,6 +21,25 @@ import { UnrestrictedLink } from "../src/main/realdebrid";
 
 const tempDirs: string[] = [];
 const originalFetch = globalThis.fetch;
+
+describe("runWithLimitedConcurrency", () => {
+  it("processes the full batch without exceeding the configured worker count", async () => {
+    let active = 0;
+    let peak = 0;
+    const completed: number[] = [];
+
+    await runWithLimitedConcurrency([1, 2, 3, 4, 5, 6], 3, async (value) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      completed.push(value);
+      active -= 1;
+    });
+
+    expect(peak).toBe(3);
+    expect(completed.sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+});
 
 describe("extractArchiveNameFromExtractorLogMessage", () => {
   it("detects archive names from extractor log variants", () => {
@@ -166,6 +185,28 @@ afterEach(async () => {
 });
 
 describe("download manager", () => {
+  it("stores RapidGator metadata before a download starts", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(root, "state")));
+    manager.addPackages([{ name: "metadata", links: ["https://rapidgator.net/file/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] }]);
+    const snapshot = manager.getSnapshot();
+    const itemId = snapshot.session.packages[snapshot.session.packageOrder[0]].itemIds[0];
+    const internal = manager as unknown as {
+      session: typeof snapshot.session;
+      applyRapidgatorCheckResult: (item: typeof snapshot.session.items[string], result: { online: boolean; fileName: string; fileSizeBytes: number | null }) => void;
+    };
+
+    internal.applyRapidgatorCheckResult(internal.session.items[itemId], {
+      online: true,
+      fileName: "episode.part01.rar",
+      fileSizeBytes: 1_610_612_736
+    });
+
+    expect(internal.session.items[itemId].totalBytes).toBe(1_610_612_736);
+    expect(internal.session.items[itemId].status).toBe("queued");
+  });
+
   it("applies an imported settings snapshot without touching queued items or filesystem workflows", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-settings-import-"));
     tempDirs.push(root);

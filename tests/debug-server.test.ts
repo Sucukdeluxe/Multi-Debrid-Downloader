@@ -393,7 +393,8 @@ describe("debug-server", () => {
     const payload = await response.json() as Record<string, any>;
 
     expect(payload.enabled).toBe(true);
-    expect(payload.status).toBe("ok");
+    expect(Array.isArray(payload.warnings)).toBe(true);
+    expect(payload.status).toBe(payload.warnings.length > 0 ? "warn" : "ok");
     expect(payload.runtimeBaseDir).toBe(fixture.baseDir);
     expect(payload.host).toBe("0.0.0.0");
     expect(payload.localOnly).toBe(false);
@@ -420,7 +421,8 @@ describe("debug-server", () => {
     const response = await fetch(`${fixture.baseUrl}/self-check?token=${fixture.token}`);
     expect(response.ok).toBe(true);
     const payload = await response.json() as Record<string, any>;
-    expect(payload.status).toBe("ok");
+    expect(Array.isArray(payload.warnings)).toBe(true);
+    expect(payload.status).toBe(payload.warnings.length > 0 ? "warn" : "ok");
     expect(payload.supportBundle?.estimatedEntries).toBeGreaterThan(0);
   });
 

@@ -58,6 +58,7 @@ function createSettings(): AppSettings {
     realDebridUseWebLogin: false,
     megaLogin,
     megaPassword: "visual-password",
+    language: "de",
     megaCredentials: `${megaLogin}:visual-password`,
     megaDebridApiEnabled: true,
     megaDebridWebEnabled: true,
@@ -139,7 +140,8 @@ function createSettings(): AppSettings {
         enabled: true
       }
     ],
-    columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"],
+    columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed", "availability"],
+    columnOrderVersion: 3,
     extractCpuPriority: "middle",
     autoExtractWhenStopped: true,
     disabledProviders: ["onefichier"],

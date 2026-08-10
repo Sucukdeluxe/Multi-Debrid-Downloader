@@ -15,6 +15,7 @@ import {
 } from "../src/renderer/views/history/history-model";
 import {
   HistoryContent,
+  HistorySidebar,
   HistoryToolbar,
   HistoryView,
   type HistoryViewActions
@@ -204,6 +205,15 @@ describe("history model", () => {
 });
 
 describe("HistoryView", () => {
+  it("marks history filters for one measured vertical selection indicator", () => {
+    const model = buildHistoryViewModel(entries, "week", "", [], [], false, "", now);
+    const html = renderToStaticMarkup(<HistorySidebar actions={createActions()} model={model} />);
+
+    expect(html).toContain("ui-sliding-selection ui-sliding-selection-vertical");
+    expect(html.match(/data-sliding-selection-item="true"/g)).toHaveLength(7);
+    expect(html.match(/data-sliding-selection-active="true"/g)).toHaveLength(1);
+  });
+
   it("keeps the header and rows inside the same internal horizontal scroll context", () => {
     const html = renderToStaticMarkup(
       <HistoryView
@@ -275,6 +285,20 @@ describe("HistoryView", () => {
     expect(html).toContain("Gelöscht");
     expect(html).toContain("Fehlgeschlagen");
     expect(html).not.toMatch(/>Start<|>Pause<|>Stop<|Priorität/);
+  });
+
+  it("matches the download action control and centers every header except package and file", () => {
+    const content = HistoryContent({
+      actions: createActions(),
+      model: buildHistoryViewModel(entries.slice(0, 1), "all", "", [], [], false, "", now)
+    });
+    const actionCell = findElement(content, (element) => element.props.className === "history-row-action");
+    const styles = readFileSync(new URL("../src/renderer/views/history/history.css", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+
+    expect(actionCell.props.children.props.children).toBe("⋮");
+    expect(styles).toMatch(/\.history-row-action button\s*\{[^}]*background:\s*var\(--ui-input\);[^}]*border:\s*1px solid var\(--ui-border\);[^}]*height:\s*30px;[^}]*width:\s*30px;/s);
+    expect(styles).toMatch(/\.history-table-header-row > span\s*\{[^}]*text-align:\s*center;/s);
+    expect(styles).toMatch(/\.history-table-header-row > span:nth-child\(2\)\s*\{[^}]*text-align:\s*left;/s);
   });
 
   it("renders each visual marker once, occupied main rows separately from closed detail rows and an honest footer", () => {
@@ -393,6 +417,18 @@ describe("HistoryView", () => {
 });
 
 describe("visual history states", () => {
+  it("keeps the selected category visible immediately while only its geometry glides", () => {
+    const styles = readFileSync(new URL("../src/renderer/styles.css", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+    const selection = readFileSync(new URL("../src/renderer/ui/SlidingSelection.tsx", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+    const selectionStyles = styles.slice(styles.indexOf(".ui-sliding-selection"), styles.indexOf("html,"));
+
+    expect(selectionStyles).toMatch(/\.ui-sliding-selection::before\s*\{[^}]*opacity:\s*1;/s);
+    expect(selectionStyles).not.toContain(".ui-sliding-selection.has-sliding-selection::before");
+    expect(selectionStyles).not.toMatch(/transition(?:-property)?:[^;]*opacity/);
+    expect(selection).not.toContain("classList.add(\"has-sliding-selection\")");
+    expect(selection).not.toContain("classList.remove(\"has-sliding-selection\")");
+  });
+
   it("re-arms the real App mounted gate before every StrictMode lifecycle setup can start async work", () => {
     const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8").replaceAll("\r\n", "\n");
     const firstRequest = source.indexOf("window.rd.getVersion()");

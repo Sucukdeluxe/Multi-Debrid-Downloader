@@ -11,6 +11,8 @@ import { APP_NAME } from "./constants";
 import { extractHttpLinksFromText } from "./utils";
 import { cleanupStaleSubstDrives, shutdownDaemon } from "./extractor";
 import { revealHistoryEntry } from "./history-reveal";
+import { DEV_SERVER_URL } from "./dev-server-url";
+import { resolveAppIconPath } from "./app-icon";
 
 function validateString(value: unknown, name: string): string {
   if (typeof value !== "string") {
@@ -115,7 +117,7 @@ function createWindow(): BrowserWindow {
     minHeight: 760,
     backgroundColor: "#070b14",
     title: `${APP_NAME} - v${controller.getVersion()}`,
-    icon: path.join(app.getAppPath(), "assets", "app_icon.ico"),
+    icon: resolveAppIconPath(app.isPackaged, app.getAppPath(), process.resourcesPath),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -140,7 +142,7 @@ function createWindow(): BrowserWindow {
   window.setAutoHideMenuBar(true);
 
   if (isDevMode()) {
-    void window.loadURL("http://localhost:5173");
+    void window.loadURL(DEV_SERVER_URL);
   } else {
     void window.loadFile(path.join(app.getAppPath(), "build", "renderer", "index.html"));
   }
@@ -212,7 +214,7 @@ function createTray(): void {
   if (tray) {
     return;
   }
-  const iconPath = path.join(app.getAppPath(), "assets", "app_icon.ico");
+  const iconPath = resolveAppIconPath(app.isPackaged, app.getAppPath(), process.resourcesPath);
   try {
     tray = new Tray(iconPath);
   } catch (error) {

@@ -4,7 +4,7 @@ import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
 import { isMegaDebridTransientResolveFailure } from "../src/shared/mega-debrid-errors";
-import { classifyMegaDebridAccountFailureForTests, clearMegaDebridEmptyResponseStreak, DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, getDebridLinkKeyCooldownStateForTests, getDebridLinkKeyRuntimeStateForTests, getMegaDebridAccountCooldownState, getProviderRuntimeSnapshot, leadProviderChainWith, MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART, MEGA_DEBRID_STICKY_LINKS, normalizeResolvedFilename, primeMegaDebridRuntimeCooldownForTests, primeMegaDebridUntilRestartForTests, recordMegaDebridEmptyResponseStreak, resetDebridLinkRuntimeStateForTests, resetMegaDebridRuntimeStateForTests } from "../src/main/debrid";
+import { checkRapidgatorOnline, classifyMegaDebridAccountFailureForTests, clearMegaDebridEmptyResponseStreak, DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, getDebridLinkKeyCooldownStateForTests, getDebridLinkKeyRuntimeStateForTests, getMegaDebridAccountCooldownState, getProviderRuntimeSnapshot, leadProviderChainWith, MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART, MEGA_DEBRID_STICKY_LINKS, normalizeResolvedFilename, parseRapidgatorFileSize, primeMegaDebridRuntimeCooldownForTests, primeMegaDebridUntilRestartForTests, recordMegaDebridEmptyResponseStreak, resetDebridLinkRuntimeStateForTests, resetMegaDebridRuntimeStateForTests } from "../src/main/debrid";
 
 const originalFetch = globalThis.fetch;
 
@@ -2746,6 +2746,38 @@ describe("normalizeResolvedFilename", () => {
   it("handles combined transforms", () => {
     expect(normalizeResolvedFilename("Download file Show.S01E01.part01.rar - Rapidgator"))
       .toBe("Show.S01E01.part01.rar");
+  });
+});
+
+describe("parseRapidgatorFileSize", () => {
+  it("converts hoster size labels to bytes", () => {
+    expect(parseRapidgatorFileSize("1.50 GB")).toBe(1_610_612_736);
+    expect(parseRapidgatorFileSize("658,25 MB")).toBe(690_225_152);
+    expect(parseRapidgatorFileSize("1024 B")).toBe(1024);
+  });
+
+  it("rejects missing and malformed values", () => {
+    expect(parseRapidgatorFileSize(null)).toBeNull();
+    expect(parseRapidgatorFileSize("unknown")).toBeNull();
+  });
+});
+
+describe("checkRapidgatorOnline", () => {
+  it("loads metadata directly without waiting for a separate HEAD request", async () => {
+    const methods: string[] = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      methods.push(String(init?.method || "GET"));
+      return new Response('<html><title>episode.part01.rar</title><div>File size: <strong>1.50 GB</strong></div></html>', { status: 200 });
+    }) as typeof fetch;
+
+    const result = await checkRapidgatorOnline("https://rapidgator.net/file/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+    expect(methods).toEqual(["GET"]);
+    expect(result).toEqual({
+      online: true,
+      fileName: "episode.part01.rar",
+      fileSizeBytes: 1_610_612_736
+    });
   });
 });
 

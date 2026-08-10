@@ -75,6 +75,14 @@ export function buildDownloadSidebarCounts(items: Iterable<DownloadItem>): Downl
   return counts;
 }
 
+export function getDownloadQueueTotalBytes(items: Iterable<DownloadItem>): number {
+  let total = 0;
+  for (const item of items) {
+    total += item.totalBytes || item.downloadedBytes || 0;
+  }
+  return total;
+}
+
 function isExtracted(item: DownloadItem): boolean {
   return item.fullStatus.trim().toLocaleLowerCase("de-DE").startsWith("entpackt");
 }

@@ -7,6 +7,7 @@ import {
 } from "../../ui/DataTable";
 import { Dialog } from "../../ui/Dialog";
 import { Toolbar, ToolbarGroup, ToolbarSearch } from "../../ui/Toolbar";
+import { SlidingSelection } from "../../ui/SlidingSelection";
 import type { CollectorViewModel } from "./collector-model";
 import "./collector.css";
 
@@ -48,9 +49,9 @@ export function CollectorSidebar({ model, actions }: CollectorViewProps): ReactE
         <strong>Sammlungen</strong>
         <span>{model.tabs.length}</span>
       </div>
-      <div className="collector-sidebar-list">
+      <SlidingSelection activeKey={model.activeTabId} axis="vertical" className="collector-sidebar-list">
         {model.tabs.map((tab) => (
-          <div className={`collector-sidebar-item${tab.id === model.activeTabId ? " is-active" : ""}`} key={tab.id}>
+          <div className={`collector-sidebar-item${tab.id === model.activeTabId ? " is-active" : ""}`} data-sliding-selection-active={tab.id === model.activeTabId} data-sliding-selection-item="true" key={tab.id}>
             <button
               aria-current={tab.id === model.activeTabId ? "page" : undefined}
               className="collector-sidebar-select"
@@ -70,7 +71,7 @@ export function CollectorSidebar({ model, actions }: CollectorViewProps): ReactE
             ) : null}
           </div>
         ))}
-      </div>
+      </SlidingSelection>
       <button className="collector-sidebar-add" onClick={actions.onTabAdd} type="button">Neue Sammlung</button>
     </div>
   );

@@ -46,8 +46,8 @@
 }
 
 .statistics-range-active {
-  border-color: var(--ui-border);
-  background: var(--ui-active);
+  border-color: transparent;
+  background: transparent;
   color: var(--ui-text);
 }
 

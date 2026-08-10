@@ -1,10 +1,11 @@
-import { memo, type DragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactElement } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactElement } from "react";
 import type { DownloadItem } from "../../../shared/types";
 import {
   compactProviderLabels,
   extractHoster,
   formatAudioStripSummary,
   formatDateTime,
+  formatHosterLabel,
   formatSpeedMbps,
   humanSize,
   providerLabels
@@ -13,24 +14,77 @@ import type { DownloadPackageRow } from "./downloads-model";
 
 export type DownloadSortColumn = "name" | "size" | "hoster" | "progress";
 
+const DOWNLOAD_SELECTION_COLUMN_WIDTH = "36px";
+const DOWNLOAD_ACTION_COLUMN_WIDTH = "60px";
+const useRendererLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+
+type HosterLabel = ReturnType<typeof formatHosterLabel>;
+
+function HosterLabelContent({ label }: { label: HosterLabel }): ReactElement {
+  const [iconFailed, setIconFailed] = useState(false);
+  if (label.iconSrc && !iconFailed) return <img alt="" className="downloads-hoster-icon" data-hoster={label.title.toLowerCase()} onError={() => setIconFailed(true)} src={label.iconSrc} />;
+  return <span>{label.compact}</span>;
+}
+
+function HosterLabels({ labels }: { labels: HosterLabel[] }): ReactElement {
+  return (
+    <span className="downloads-cell downloads-hoster-cell" title={labels.map((label) => label.title).join(", ")}>
+      {labels.map((label) => <HosterLabelContent key={label.title} label={label} />)}
+    </span>
+  );
+}
+
+function downloadGridTemplate(gridTemplate: string): string {
+  return `${DOWNLOAD_SELECTION_COLUMN_WIDTH} ${gridTemplate} ${DOWNLOAD_ACTION_COLUMN_WIDTH}`;
+}
+
 export const downloadColumnDefinitions: Record<string, { label: string; width: string; sortable?: DownloadSortColumn }> = {
-  name: { label: "Name", width: "minmax(0, 0.92fr)", sortable: "name" },
-  size: { label: "Geladen / Größe", width: "160px", sortable: "size" },
-  progress: { label: "Fortschritt", width: "80px", sortable: "progress" },
-  hoster: { label: "Hoster", width: "110px", sortable: "hoster" },
-  account: { label: "Service", width: "132px" },
-  prio: { label: "Priorität", width: "70px" },
-  status: { label: "Status", width: "160px" },
-  speed: { label: "Geschwindigkeit", width: "90px" },
-  added: { label: "Hinzugefügt am", width: "155px" }
+  name: { label: "Name", width: "minmax(290px, 2.3fr)", sortable: "name" },
+  size: { label: "Geladen / Größe", width: "minmax(140px, 1.1fr)", sortable: "size" },
+  progress: { label: "Fortschritt", width: "minmax(105px, 0.85fr)", sortable: "progress" },
+  hoster: { label: "Hoster", width: "minmax(90px, 0.85fr)", sortable: "hoster" },
+  account: { label: "Service", width: "minmax(90px, 0.85fr)" },
+  prio: { label: "Priorität", width: "minmax(85px, 0.8fr)" },
+  status: { label: "Status", width: "minmax(90px, 0.85fr)" },
+  speed: { label: "Geschwindigkeit", width: "minmax(120px, 1fr)" },
+  availability: { label: "Verfügbarkeit", width: "minmax(110px, 1fr)" },
+  added: { label: "Hinzugefügt am", width: "minmax(135px, 1fr)" }
 };
+
+export type AvailabilityState = "online" | "partial" | "offline" | "checking";
+
+export function getAvailabilitySummary(items: DownloadItem[]): { online: number; total: number; state: AvailabilityState } {
+  const total = items.length;
+  const online = items.filter((item) => item.onlineStatus === "online").length;
+  const offline = items.filter((item) => item.onlineStatus === "offline").length;
+  if (total > 0 && online === total) return { online, total, state: "online" };
+  if (total > 0 && offline === total) return { online, total, state: "offline" };
+  if (total > 0 && online + offline === total) return { online, total, state: "partial" };
+  return { online, total, state: "checking" };
+}
+
+function Availability({ online, total, state, text }: { online: number; total: number; state: AvailabilityState; text?: string }): ReactElement {
+  const symbol = state === "online" ? "✓" : state === "offline" ? "×" : "●";
+  const label = text ?? `${online}/${total} online`;
+  if (text) {
+    return <span aria-label={label} className={`downloads-cell downloads-availability is-${state}`} title={label}><span aria-hidden="true" className="downloads-availability-symbol">{symbol}</span><span className="downloads-availability-label">{text}</span></span>;
+  }
+  return (
+    <span aria-label={label} className={`downloads-cell downloads-availability has-counts is-${state}`} title={label}>
+      <span aria-hidden="true" className="downloads-availability-symbol">{symbol}</span>
+      <span className="downloads-availability-count is-online-count">{online}</span>
+      <span aria-hidden="true" className="downloads-availability-separator">/</span>
+      <span className="downloads-availability-count is-total-count">{total}</span>
+      <span className="downloads-availability-label">online</span>
+    </span>
+  );
+}
 
 export interface DownloadsTableActions {
   onSetVisibleSelection: (ids: string[], selected: boolean) => void;
   onToggleSelection: (id: string, ctrlKey: boolean, shiftKey: boolean) => void;
   onSelectionMouseDown: (id: string, event: ReactMouseEvent) => void;
   onSelectionMouseEnter: (id: string) => void;
-  onTogglePackage: (packageId: string) => void;
   onTogglePackageCollapse: (packageId: string) => void;
   onStartPackageRename: (packageId: string, packageName: string) => void;
   onPackageRenameChange: (name: string) => void;
@@ -41,11 +95,10 @@ export interface DownloadsTableActions {
   onMovePackageDown: (packageId: string) => void;
   onRemoveItem: (itemId: string) => void;
   onOpenContextMenu: (id: string, x: number, y: number, packageId?: string) => void;
-  onColumnDragStart: (column: string, event: DragEvent<HTMLDivElement>) => void;
-  onColumnDragOver: (column: string, event: DragEvent<HTMLDivElement>) => void;
-  onColumnDragLeave: () => void;
-  onColumnDrop: (column: string, event: DragEvent<HTMLDivElement>) => void;
-  onColumnDragEnd: () => void;
+  onColumnPointerDown: (column: string, event: ReactPointerEvent<HTMLDivElement>) => void;
+  onColumnPointerMove: (column: string, event: ReactPointerEvent<HTMLDivElement>) => void;
+  onColumnPointerUp: (column: string, event: ReactPointerEvent<HTMLDivElement>) => void;
+  onColumnPointerCancel: (column: string, event: ReactPointerEvent<HTMLDivElement>) => void;
   onColumnContextMenu: (column: string, x: number, y: number) => void;
   onSortColumn: (column: DownloadSortColumn) => void;
 }
@@ -85,12 +138,18 @@ function itemCell(item: DownloadItem, column: string, sessionRunning: boolean): 
   }
   if (column === "hoster") {
     const hoster = extractHoster(item.url);
-    return <span className="downloads-cell" title={hoster}>{hoster}</span>;
+    const label = formatHosterLabel(hoster);
+    return <HosterLabels labels={[label]} />;
   }
   if (column === "account") return <span className="downloads-cell">{item.providerLabel || (item.provider ? providerLabels[item.provider] : "")}</span>;
   if (column === "prio") return <span className="downloads-cell" />;
   if (column === "status") return <span className="downloads-cell" title={statusTitle}>{displayStatus}</span>;
   if (column === "speed") return <span className="downloads-cell">{item.speedBps > 0 ? formatSpeedMbps(item.speedBps) : ""}</span>;
+  if (column === "availability") {
+    const state = item.onlineStatus === "online" ? "online" : item.onlineStatus === "offline" ? "offline" : "checking";
+    const text = state === "online" ? "Online" : state === "offline" ? "Offline" : item.onlineStatus === "checking" ? "Prüfung" : "Ungeprüft";
+    return <Availability online={state === "online" ? 1 : 0} total={1} state={state} text={text} />;
+  }
   if (column === "added") return <span className="downloads-cell">{formatDateTime(item.createdAt)}</span>;
   return null;
 }
@@ -110,7 +169,7 @@ export function ItemRowContent({ item, selected, sessionRunning = true, columnOr
       className={`downloads-item-row${selected ? " is-selected" : ""}`}
       data-download-row-id={item.id}
       role="row"
-      style={{ gridTemplateColumns: `36px ${gridTemplate} 44px` }}
+      style={{ gridTemplateColumns: downloadGridTemplate(gridTemplate) }}
       onClick={(event) => {
         event.stopPropagation();
         actions.onToggleSelection(item.id, event.ctrlKey || event.metaKey, event.shiftKey);
@@ -126,8 +185,8 @@ export function ItemRowContent({ item, selected, sessionRunning = true, columnOr
         actions.onOpenContextMenu(item.id, event.clientX, event.clientY, item.packageId);
       }}
     >
-      <span className="downloads-selection-cell" role="cell"><input aria-label={`${item.fileName} auswählen`} checked={selected} onChange={() => actions.onToggleSelection(item.id, true, false)} onClick={(event) => event.stopPropagation()} type="checkbox" /></span>
-      {columnOrder.map((column) => <span className="downloads-cell-slot" key={column} role="cell">{itemCell(item, column, sessionRunning)}</span>)}
+      <span className="downloads-selection-cell" role="cell"><input aria-label={`${item.fileName} auswählen`} checked={selected} onChange={() => {}} onClick={(event) => { event.stopPropagation(); actions.onToggleSelection(item.id, true, event.shiftKey); }} type="checkbox" /></span>
+      {columnOrder.map((column) => <span className="downloads-cell-slot" data-download-column={column} key={column} role="cell">{itemCell(item, column, sessionRunning)}</span>)}
       <span className="downloads-action-cell" role="cell"><button aria-label={`${item.fileName} Aktionen`} onClick={(event) => { event.stopPropagation(); actions.onOpenContextMenu(item.id, event.clientX, event.clientY, item.packageId); }} type="button">⋮</button></span>
     </div>
   );
@@ -162,6 +221,71 @@ export function areItemRowPropsEqual(previous: ItemRowProps, next: ItemRowProps)
 }
 
 export const ItemRow = memo(ItemRowContent, areItemRowPropsEqual);
+
+interface PackageItemsTransitionProps {
+  actions: DownloadsTableActions;
+  collapsed: boolean;
+  columnOrder: readonly string[];
+  gridTemplate: string;
+  items: DownloadItem[];
+  selectedIds: ReadonlySet<string>;
+  sessionRunning: boolean;
+}
+
+function PackageItemsTransition({ actions, collapsed, columnOrder, gridTemplate, items, selectedIds, sessionRunning }: PackageItemsTransitionProps): ReactElement | null {
+  const [renderItems, setRenderItems] = useState(!collapsed);
+  const animationRef = useRef<Animation | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const innerRef = useRef<HTMLDivElement>(null);
+  const initialRenderRef = useRef(true);
+
+  useRendererLayoutEffect(() => {
+    if (initialRenderRef.current) {
+      initialRenderRef.current = false;
+      return;
+    }
+    if (!renderItems) {
+      if (!collapsed) setRenderItems(true);
+      return;
+    }
+    const container = containerRef.current;
+    const inner = innerRef.current;
+    if (!container || !inner) return;
+    animationRef.current?.cancel();
+    const targetHeight = inner.scrollHeight;
+    const animation = collapsed
+      ? container.animate([{ height: `${targetHeight}px`, opacity: 1 }, { height: "0px", opacity: 0 }], { duration: 300, easing: "cubic-bezier(0.22, 1, 0.36, 1)", fill: "forwards" })
+      : container.animate([{ height: "0px", opacity: 0 }, { height: `${targetHeight}px`, opacity: 1 }], { duration: 300, easing: "cubic-bezier(0.22, 1, 0.36, 1)", fill: "forwards" });
+    animationRef.current = animation;
+    animation.onfinish = () => {
+      if (animationRef.current !== animation) return;
+      animationRef.current = null;
+      if (collapsed) {
+        setRenderItems(false);
+      } else {
+        animation.cancel();
+      }
+    };
+    return () => {
+      animation.onfinish = null;
+      animation.cancel();
+      if (animationRef.current === animation) animationRef.current = null;
+    };
+  }, [collapsed, renderItems]);
+
+  if (!renderItems) return null;
+  return (
+    <div
+      aria-hidden={collapsed}
+      className={`downloads-package-items ${collapsed ? "is-collapsed" : "is-expanded"}`}
+      ref={containerRef}
+    >
+      <div className="downloads-package-items-inner" ref={innerRef}>
+        {items.map((item) => <ItemRow actions={actions} columnOrder={columnOrder} gridTemplate={gridTemplate} item={item} key={item.id} selected={selectedIds.has(item.id)} sessionRunning={sessionRunning} />)}
+      </div>
+    </div>
+  );
+}
 
 function packageProgress(row: DownloadPackageRow): { done: number; failed: number; cancelled: number; total: number; value: number } {
   let done = 0;
@@ -204,7 +328,6 @@ function packageCell(row: DownloadPackageRow, column: string, packageSpeedBps: n
     return (
       <span className="downloads-cell downloads-name-cell">
         <button aria-label={row.collapsed ? `${entry.name} ausklappen` : `${entry.name} einklappen`} className="downloads-collapse-button" onClick={(event) => { event.stopPropagation(); actions.onTogglePackageCollapse(entry.id); }} type="button">{row.collapsed ? "+" : "−"}</button>
-        <input aria-label={`${entry.name} aktivieren`} checked={entry.enabled} onChange={() => actions.onTogglePackage(entry.id)} onClick={(event) => event.stopPropagation()} type="checkbox" />
         {editing
           ? <input autoFocus className="downloads-rename-input" value={editingName} onBlur={() => finishRename(editingName)} onChange={(event) => actions.onPackageRenameChange(event.target.value)} onKeyDown={(event: ReactKeyboardEvent<HTMLInputElement>) => {
             if (event.key === "Enter") {
@@ -228,8 +351,8 @@ function packageCell(row: DownloadPackageRow, column: string, packageSpeedBps: n
   }
   if (column === "progress") return <span className="downloads-cell downloads-progress-cell"><span className="downloads-meter"><span style={{ width: `${stats.value}%` }} /><b>{stats.value}%</b></span></span>;
   if (column === "hoster") {
-    const value = [...new Set(row.items.map((item) => extractHoster(item.url)).filter(Boolean))].join(", ");
-    return <span className="downloads-cell" title={value}>{value}</span>;
+    const labels = [...new Set(row.items.map((item) => extractHoster(item.url)).filter(Boolean))].map(formatHosterLabel);
+    return <HosterLabels labels={labels} />;
   }
   if (column === "account") {
     const value = compactProviderLabels(row.items.map((item) => item.providerLabel || (item.provider ? providerLabels[item.provider] : "")).filter(Boolean));
@@ -241,6 +364,10 @@ function packageCell(row: DownloadPackageRow, column: string, packageSpeedBps: n
     return <span className="downloads-cell" title={audio?.tooltip}>{stats.done}/{stats.total}{stats.failed > 0 ? ` · ${stats.failed} Fehler` : ""}{stats.cancelled > 0 ? ` · ${stats.cancelled} abgebrochen` : ""}{entry.postProcessLabel ? ` · ${entry.postProcessLabel}` : ""}{audio ? ` · ${audio.text}` : ""}</span>;
   }
   if (column === "speed") return <span className="downloads-cell">{packageSpeedBps > 0 ? formatSpeedMbps(packageSpeedBps) : ""}</span>;
+  if (column === "availability") {
+    const availability = getAvailabilitySummary(row.items);
+    return <Availability {...availability} />;
+  }
   if (column === "added") return <span className="downloads-cell">{formatDateTime(entry.createdAt)}</span>;
   return null;
 }
@@ -272,7 +399,7 @@ export function PackageCardContent({ row, selectedIds, editing, editingName, pac
   };
   return (
     <article
-      className={`package-card downloads-package-card${entry.enabled ? "" : " is-disabled"}${selectedIds.has(entry.id) ? " is-selected" : ""}`}
+      className={`downloads-package-card${entry.enabled ? "" : " is-disabled"}${selectedIds.has(entry.id) ? " is-selected" : ""}`}
       data-download-package-id={entry.id}
       draggable={draggable}
       onContextMenu={(event) => {
@@ -289,7 +416,7 @@ export function PackageCardContent({ row, selectedIds, editing, editingName, pac
         className="downloads-package-row"
         data-download-row-id={entry.id}
         role="row"
-        style={{ gridTemplateColumns: `36px ${gridTemplate} 44px` }}
+        style={{ gridTemplateColumns: downloadGridTemplate(gridTemplate) }}
         onClick={(event) => {
           const target = event.target as HTMLElement;
           if (event.ctrlKey || event.metaKey || event.shiftKey) {
@@ -302,11 +429,11 @@ export function PackageCardContent({ row, selectedIds, editing, editingName, pac
         onMouseDown={(event) => actions.onSelectionMouseDown(entry.id, event)}
         onMouseEnter={() => actions.onSelectionMouseEnter(entry.id)}
       >
-        <span className="downloads-selection-cell" role="cell"><input aria-label={`${entry.name} auswählen`} checked={selectedIds.has(entry.id)} onChange={() => actions.onToggleSelection(entry.id, true, false)} onClick={(event) => event.stopPropagation()} type="checkbox" /></span>
-        {columnOrder.map((column) => <span className="downloads-cell-slot" key={column} role="cell">{packageCell(row, column, packageSpeedBps, editing, editingName, actions, finishRename)}</span>)}
+        <span className="downloads-selection-cell" role="cell"><input aria-label={`${entry.name} auswählen`} checked={selectedIds.has(entry.id)} onChange={() => {}} onClick={(event) => { event.stopPropagation(); actions.onToggleSelection(entry.id, true, event.shiftKey); }} type="checkbox" /></span>
+        {columnOrder.map((column) => <span className="downloads-cell-slot" data-download-column={column} key={column} role="cell">{packageCell(row, column, packageSpeedBps, editing, editingName, actions, finishRename)}</span>)}
         <span className="downloads-action-cell" role="cell"><button aria-label={`${entry.name} Aktionen`} onClick={(event) => { event.stopPropagation(); actions.onOpenContextMenu(entry.id, event.clientX, event.clientY, entry.id); }} type="button">⋮</button></span>
       </div>
-      {!row.collapsed && row.items.map((item) => <ItemRow actions={actions} columnOrder={columnOrder} gridTemplate={gridTemplate} item={item} key={item.id} selected={selectedIds.has(item.id)} sessionRunning={sessionRunning} />)}
+      <PackageItemsTransition actions={actions} collapsed={row.collapsed} columnOrder={columnOrder} gridTemplate={gridTemplate} items={row.items} selectedIds={selectedIds} sessionRunning={sessionRunning} />
     </article>
   );
 }
@@ -345,7 +472,7 @@ export interface DownloadsTableHeaderProps {
 
 export function DownloadsTableHeader({ actions, columnOrder, gridTemplate, sortColumn, sortDirection, selectedCount, visibleIds }: DownloadsTableHeaderProps): ReactElement {
   return (
-    <div className="downloads-table-header" role="row" style={{ gridTemplateColumns: `36px ${gridTemplate} 44px` }}>
+    <div className="downloads-table-header" role="row" style={{ gridTemplateColumns: downloadGridTemplate(gridTemplate) }}>
       <span className="downloads-selection-cell" role="columnheader"><input aria-label="Alle sichtbaren Downloads auswählen" checked={visibleIds.length > 0 && selectedCount === visibleIds.length} onChange={(event) => actions.onSetVisibleSelection(visibleIds, event.target.checked)} type="checkbox" /></span>
       {columnOrder.map((column) => {
         const definition = downloadColumnDefinitions[column];
@@ -353,14 +480,20 @@ export function DownloadsTableHeader({ actions, columnOrder, gridTemplate, sortC
         return (
           <div
             className="downloads-column-header"
-            draggable
+            data-download-column={column}
             key={column}
             onContextMenu={(event) => { event.preventDefault(); actions.onColumnContextMenu(column, event.clientX, event.clientY); }}
-            onDragEnd={actions.onColumnDragEnd}
-            onDragLeave={actions.onColumnDragLeave}
-            onDragOver={(event) => actions.onColumnDragOver(column, event)}
-            onDragStart={(event) => actions.onColumnDragStart(column, event)}
-            onDrop={(event) => actions.onColumnDrop(column, event)}
+            onPointerCancel={(event) => actions.onColumnPointerCancel(column, event)}
+            onPointerDown={(event) => {
+              if (event.button !== 0 || !event.isPrimary) return;
+              event.currentTarget.setPointerCapture(event.pointerId);
+              actions.onColumnPointerDown(column, event);
+            }}
+            onPointerMove={(event) => actions.onColumnPointerMove(column, event)}
+            onPointerUp={(event) => {
+              if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+              actions.onColumnPointerUp(column, event);
+            }}
             role="columnheader"
           >
             {definition.sortable

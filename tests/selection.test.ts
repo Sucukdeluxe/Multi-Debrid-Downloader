@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pruneSelection } from "../src/renderer/selection";
+import { pruneSelection, shouldClearDownloadSelection, shouldClearDownloadSelectionOnEscape } from "../src/renderer/selection";
 import type { SessionState } from "../src/shared/types";
 
 function session(packageIds: string[], itemIds: string[]): Pick<SessionState, "packages" | "items"> {
@@ -40,5 +40,25 @@ describe("pruneSelection", () => {
     const next = pruneSelection(sel, session(["p1", "p2"], ["i1", "i2"]));
     expect([...next].sort()).toEqual(["i1", "p1", "p2"]);
     expect(next).toBe(sel); // unchanged → same instance
+  });
+});
+
+describe("download selection clearing", () => {
+  const target = (...classes: string[]): Pick<Element, "closest"> => ({
+    closest: (selector: string) => selector.split(",").some((entry: string) => classes.includes(entry.trim().slice(1))) ? {} as Element : null
+  });
+
+  it("preserves selection while header, package and file selection controls handle their own click", () => {
+    expect(shouldClearDownloadSelection(target("downloads-selection-cell"))).toBe(false);
+    expect(shouldClearDownloadSelection(target("downloads-package-card"))).toBe(false);
+    expect(shouldClearDownloadSelection(target("downloads-item-row"))).toBe(false);
+    expect(shouldClearDownloadSelection(target("unrelated-surface"))).toBe(true);
+  });
+
+  it("clears checkbox-focused selection on Escape but preserves text editing", () => {
+    expect(shouldClearDownloadSelectionOnEscape("INPUT", "checkbox")).toBe(true);
+    expect(shouldClearDownloadSelectionOnEscape("DIV")).toBe(true);
+    expect(shouldClearDownloadSelectionOnEscape("INPUT", "text")).toBe(false);
+    expect(shouldClearDownloadSelectionOnEscape("TEXTAREA")).toBe(false);
   });
 });
