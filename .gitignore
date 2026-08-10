@@ -1,4 +1,12 @@
 node_modules/
+.worktrees/
+.claude/
+.codex/
+.superpowers/
+docs/superpowers/
+tasks/
+AGENTS.md
+CLAUDE.md
 build/
 dist/
 release/

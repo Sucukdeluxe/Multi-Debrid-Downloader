@@ -71,6 +71,7 @@ export const IPC_CHANNELS = {
   GET_HISTORY: "history:get",
   CLEAR_HISTORY: "history:clear",
   REMOVE_HISTORY_ENTRY: "history:remove-entry",
+  REVEAL_HISTORY_ENTRY: "history:reveal-entry",
   SET_PACKAGE_PRIORITY: "queue:set-package-priority",
   SKIP_ITEMS: "queue:skip-items",
   RESET_ITEMS: "queue:reset-items",

@@ -10,6 +10,7 @@ import { sendNotification } from "./notify";
 import { APP_NAME } from "./constants";
 import { extractHttpLinksFromText } from "./utils";
 import { cleanupStaleSubstDrives, shutdownDaemon } from "./extractor";
+import { revealHistoryEntry } from "./history-reveal";
 
 function validateString(value: unknown, name: string): string {
   if (typeof value !== "string") {
@@ -509,6 +510,13 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.REMOVE_HISTORY_ENTRY, (_event: IpcMainInvokeEvent, entryId: string) => {
     validateString(entryId, "entryId");
     return controller.removeHistoryEntry(entryId);
+  });
+  ipcMain.handle(IPC_CHANNELS.REVEAL_HISTORY_ENTRY, (_event: IpcMainInvokeEvent, entryId: unknown) => {
+    return revealHistoryEntry({ entryId }, {
+      loadHistory: () => controller.getHistory(),
+      stat: (directory) => fs.promises.stat(directory),
+      openPath: (directory) => shell.openPath(directory)
+    });
   });
   ipcMain.handle(IPC_CHANNELS.EXPORT_QUEUE, async () => {
     const options = {

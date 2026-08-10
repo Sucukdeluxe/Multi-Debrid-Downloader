@@ -9,6 +9,7 @@ import type {
   DuplicatePolicy,
   EnableRemoteDiagnosticsInput,
   HistoryEntry,
+  HistoryRevealResult,
   PackagePriority,
   RemoteDiagnosticsInfo,
   RendererErrorReport,
@@ -92,6 +93,7 @@ export interface ElectronApi {
   getHistory: () => Promise<HistoryEntry[]>;
   clearHistory: () => Promise<void>;
   removeHistoryEntry: (entryId: string) => Promise<void>;
+  revealHistoryEntry: (entryId: string) => Promise<HistoryRevealResult>;
   setPackagePriority: (packageId: string, priority: PackagePriority) => Promise<void>;
   skipItems: (itemIds: string[]) => Promise<void>;
   resetItems: (itemIds: string[]) => Promise<void>;

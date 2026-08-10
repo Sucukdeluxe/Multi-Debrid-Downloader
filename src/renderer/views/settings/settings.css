@@ -1,0 +1,876 @@
+.settings-view {
+  display: grid;
+  grid-template-columns: 270px minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.settings-sidebar {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-right: 1px solid var(--ui-border);
+  background: var(--ui-surface);
+}
+
+.settings-sidebar-heading {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  padding: 0 8px;
+  color: var(--ui-text-secondary);
+  font-size: 13px;
+}
+
+.settings-sidebar-list {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+}
+
+.settings-sidebar-item {
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ui-text-secondary);
+  font: inherit;
+  text-align: left;
+}
+
+.settings-sidebar-item:hover {
+  background: var(--ui-hover);
+  color: var(--ui-text);
+}
+
+.settings-sidebar-item.is-active {
+  border-color: var(--ui-border);
+  background: var(--ui-active);
+  color: var(--ui-text);
+}
+
+.settings-content {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 20px;
+  padding: 24px;
+  overflow-y: auto;
+  background: var(--ui-canvas);
+}
+
+.md-runtime-view-content > .settings-content {
+  height: 100%;
+  padding: 24px;
+}
+
+.settings-static {
+  user-select: none;
+}
+
+.settings-content :where(input, textarea, [contenteditable="true"], .settings-copyable) {
+  user-select: text;
+}
+
+.settings-content-header {
+  display: flex;
+  min-width: 0;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.settings-content-header > div {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.settings-content-header h1,
+.settings-form-heading h2,
+.settings-account-heading h2,
+.settings-form-group h3,
+.settings-rule-section h3 {
+  margin: 0;
+  color: var(--ui-text);
+}
+
+.settings-content-header h1 {
+  font-size: 22px;
+  line-height: 30px;
+}
+
+.settings-save-state {
+  color: var(--ui-text-muted);
+  font-size: 12px;
+}
+
+.settings-save-state.is-dirty,
+.settings-save-state.is-saving {
+  color: var(--ui-warning);
+}
+
+.settings-save-state.is-error {
+  color: var(--ui-danger);
+}
+
+.settings-content-body {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  align-items: flex-start;
+}
+
+.settings-content-body.is-accounts {
+  align-items: stretch;
+}
+
+.settings-form-column {
+  width: 500px;
+  max-width: 100%;
+}
+
+.settings-form-heading {
+  margin-bottom: 24px;
+}
+
+.settings-form-heading h2,
+.settings-account-heading h2 {
+  font-size: 20px;
+  line-height: 28px;
+}
+
+.settings-form-heading p,
+.settings-account-heading p,
+.settings-form-group > header p,
+.settings-rule-section > p {
+  margin: 4px 0 0;
+  color: var(--ui-text-muted);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.settings-form-group {
+  padding: 22px 0;
+  border-top: 1px solid var(--ui-border);
+}
+
+.settings-form-group:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.settings-form-group h3,
+.settings-rule-section h3 {
+  font-size: 15px;
+  line-height: 22px;
+}
+
+.settings-form-fields {
+  display: grid;
+  gap: 18px;
+  margin-top: 16px;
+}
+
+.settings-field {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.settings-field > label,
+.settings-field > legend,
+.settings-account-dialog-field > span,
+.settings-switch-label {
+  color: var(--ui-text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.settings-control {
+  width: 100%;
+  height: 44px;
+  min-width: 0;
+  padding: 0 12px;
+  border: 1px solid var(--ui-border);
+  border-radius: 6px;
+  outline: 0;
+  background: var(--ui-input);
+  color: var(--ui-text);
+  color-scheme: inherit;
+  font: inherit;
+}
+
+.settings-control:focus-visible,
+.settings-button:focus-visible,
+.settings-switch:focus-visible,
+.settings-theme-option:focus-visible,
+.settings-sidebar-item:focus-visible,
+.settings-account-tabs button:focus-visible,
+.settings-account-row:focus-visible,
+.settings-account-action-button:focus-visible,
+.settings-account-picker-row:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 2px;
+}
+
+.settings-control:disabled,
+.settings-button:disabled,
+.settings-switch:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.settings-textarea {
+  height: auto;
+  min-height: 108px;
+  padding: 10px 12px;
+  line-height: 1.45;
+  resize: vertical;
+}
+
+.settings-control-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.settings-field-help {
+  color: var(--ui-text-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.settings-switch-field,
+.settings-action-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.settings-switch-field > div,
+.settings-action-field > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.settings-switch {
+  position: relative;
+  width: 40px;
+  height: 20px;
+  flex: 0 0 40px;
+  padding: 0;
+  border: 1px solid var(--ui-border);
+  border-radius: 10px;
+  background: var(--ui-input);
+}
+
+.settings-switch > span {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--ui-text-muted);
+  transition: transform 120ms ease, background 120ms ease;
+}
+
+.settings-switch.is-on {
+  border-color: var(--ui-accent);
+  background: var(--ui-accent);
+}
+
+.settings-switch.is-on > span {
+  background: #FFFFFF;
+  transform: translateX(20px);
+}
+
+.settings-theme-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.settings-theme-option {
+  display: grid;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid var(--ui-border);
+  border-radius: 6px;
+  background: var(--ui-input);
+  color: var(--ui-text-secondary);
+  font: inherit;
+  text-align: left;
+}
+
+.settings-theme-option.is-active {
+  border-color: var(--ui-accent);
+  color: var(--ui-text);
+}
+
+.settings-theme-preview {
+  position: relative;
+  display: block;
+  height: 42px;
+  overflow: hidden;
+  border: 1px solid var(--ui-border);
+  border-radius: 4px;
+}
+
+.settings-theme-preview::after {
+  position: absolute;
+  top: 7px;
+  left: 8px;
+  width: 58%;
+  height: 4px;
+  border-radius: 2px;
+  background: #9AA1AD;
+  box-shadow: 0 9px 0 #737B88, 0 18px 0 #737B88;
+  content: "";
+}
+
+.settings-theme-preview.is-light {
+  background: #F3F4F6;
+}
+
+.settings-theme-preview.is-dark {
+  background: #1C1D20;
+}
+
+.settings-theme-preview.is-system {
+  background: #F3F4F6;
+}
+
+.settings-theme-preview.is-system::before {
+  position: absolute;
+  inset: 0 0 0 50%;
+  background: #1C1D20;
+  content: "";
+}
+
+.settings-button {
+  height: 36px;
+  padding: 0 13px;
+  border: 1px solid var(--ui-border);
+  border-radius: 6px;
+  color: var(--ui-text-secondary);
+  font: inherit;
+  white-space: nowrap;
+}
+
+.settings-button-secondary {
+  background: var(--ui-modal-secondary);
+}
+
+.settings-button-primary {
+  border-color: var(--ui-primary);
+  background: var(--ui-primary);
+  color: #181A1F;
+}
+
+.settings-button-danger {
+  border-color: color-mix(in srgb, var(--ui-danger) 70%, var(--ui-border));
+  background: transparent;
+  color: var(--ui-danger);
+}
+
+.settings-button:hover:not(:disabled),
+.settings-account-tabs button:hover,
+.settings-account-action-button:hover:not(:disabled) {
+  background: var(--ui-hover);
+  color: var(--ui-text);
+}
+
+.settings-button-primary:hover:not(:disabled) {
+  background: var(--ui-primary-hover);
+  color: #181A1F;
+}
+
+.settings-account-workspace {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  gap: 14px;
+}
+
+.settings-account-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.settings-account-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--ui-border);
+}
+
+.settings-account-tabs button {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--ui-text-muted);
+  font: inherit;
+}
+
+.settings-account-tabs button[aria-selected="true"] {
+  border-bottom-color: var(--ui-accent);
+  color: var(--ui-text);
+}
+
+.settings-account-panel {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.settings-account-panel[hidden] {
+  display: none;
+}
+
+.settings-account-table {
+  min-height: 280px;
+}
+
+.settings-account-table-header {
+  height: 41px;
+  overflow: hidden;
+}
+
+.settings-account-table-grid,
+.settings-account-row {
+  display: grid;
+  grid-template-columns: 42px minmax(170px, 1.1fr) minmax(150px, 0.9fr) minmax(190px, 1.2fr) minmax(190px, 1.15fr) minmax(130px, 0.8fr) minmax(145px, 0.85fr) 44px;
+  min-width: 1110px;
+  align-items: center;
+}
+
+.settings-account-table-grid {
+  height: 41px;
+  color: var(--ui-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.settings-account-table-grid > span,
+.settings-account-row > span {
+  min-width: 0;
+  padding: 0 11px;
+}
+
+.settings-account-table-body {
+  overflow: auto;
+}
+
+.settings-account-row {
+  position: relative;
+  height: 48px;
+  border-bottom: 1px solid var(--ui-border);
+  color: var(--ui-text-secondary);
+  font-size: 14px;
+}
+
+.settings-account-row::before {
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  left: 0;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  background: var(--ui-accent);
+  content: "";
+  opacity: 0;
+}
+
+.settings-account-row:hover {
+  background: var(--ui-hover);
+}
+
+.settings-account-row.is-selected {
+  background: var(--ui-active);
+}
+
+.settings-account-row.is-selected::before {
+  opacity: 1;
+}
+
+.settings-account-row.is-disabled {
+  color: var(--ui-text-muted);
+  opacity: 0.72;
+}
+
+.settings-account-column-enable,
+.settings-account-column-actions {
+  display: grid;
+  place-items: center;
+}
+
+.settings-account-hoster {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.settings-account-hoster img {
+  flex: 0 0 20px;
+  object-fit: contain;
+}
+
+.settings-account-hoster > span {
+  display: grid;
+  min-width: 0;
+}
+
+.settings-account-hoster strong,
+.settings-account-hoster small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-account-hoster small {
+  color: var(--ui-text-muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.settings-account-status-badge {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  color: var(--ui-text-secondary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-account-status-badge::before {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: var(--ui-text-muted);
+  content: "";
+}
+
+.settings-account-status-badge.is-ok::before {
+  background: var(--ui-primary);
+}
+
+.settings-account-status-badge.is-free::before,
+.settings-account-status-badge.is-unknown::before {
+  background: var(--ui-warning);
+}
+
+.settings-account-status-badge.is-invalid::before {
+  background: var(--ui-danger);
+}
+
+.settings-account-status-badge.is-disabled::before {
+  background: var(--ui-text-muted);
+}
+
+.settings-account-traffic,
+.settings-account-expires,
+.settings-account-credential {
+  color: var(--ui-text-muted);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-account-username {
+  overflow: hidden;
+  color: var(--ui-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-account-action-button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ui-text-secondary);
+  font-size: 20px;
+}
+
+.settings-account-local-actions {
+  display: flex;
+  min-height: 52px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid var(--ui-border);
+  color: var(--ui-text-muted);
+  font-size: 12px;
+}
+
+.settings-account-local-actions > div {
+  display: flex;
+  gap: 8px;
+}
+
+.settings-account-table-error .ui-data-table-empty-title,
+.settings-account-dialog-error {
+  color: var(--ui-danger);
+}
+
+.settings-account-rules {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  gap: 22px;
+  overflow-y: auto;
+}
+
+.settings-rule-section {
+  display: grid;
+  gap: 12px;
+  padding-bottom: 22px;
+  border-bottom: 1px solid var(--ui-border);
+}
+
+.settings-provider-order,
+.settings-routing-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settings-provider-order li,
+.settings-routing-list li,
+.settings-rotation-event {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 10px;
+  border: 1px solid var(--ui-border);
+  border-radius: 6px;
+  background: var(--ui-input);
+  color: var(--ui-text-secondary);
+}
+
+.settings-provider-order-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.settings-provider-order-actions button {
+  width: 30px;
+  height: 28px;
+  border: 1px solid var(--ui-border);
+  border-radius: 5px;
+  background: var(--ui-modal-secondary);
+  color: var(--ui-text-secondary);
+}
+
+.settings-rule-toggle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--ui-text-secondary);
+  font-size: 13px;
+}
+
+.settings-rule-empty {
+  color: var(--ui-text-muted);
+  font-size: 13px;
+}
+
+.settings-rotation-event {
+  align-items: flex-start;
+  flex-direction: column;
+}
+
+.settings-rotation-event span {
+  color: var(--ui-text-muted);
+  font-size: 12px;
+}
+
+.settings-account-dialog-body {
+  display: grid;
+  gap: 16px;
+  min-height: 0;
+}
+
+.settings-account-picker-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 128px;
+  gap: 8px;
+}
+
+.settings-account-picker {
+  display: grid;
+  max-height: 430px;
+  min-height: 0;
+  gap: 6px;
+  overflow-y: auto;
+}
+
+.settings-account-picker-entry {
+  display: grid;
+  gap: 10px;
+}
+
+.settings-account-picker-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 150px;
+  gap: 12px;
+  width: 100%;
+  min-height: 52px;
+  padding: 8px 10px;
+  border: 1px solid var(--ui-border);
+  border-radius: 6px;
+  background: var(--ui-input);
+  color: var(--ui-text-secondary);
+  font: inherit;
+  text-align: left;
+}
+
+.settings-account-picker-row.is-selected {
+  border-color: var(--ui-accent);
+  background: var(--ui-active);
+}
+
+.settings-account-picker-row > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.settings-account-picker-row small {
+  overflow: hidden;
+  color: var(--ui-text-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-account-picker-empty {
+  padding: 24px;
+  color: var(--ui-text-muted);
+  text-align: center;
+}
+
+.settings-account-dialog-fields {
+  display: grid;
+  gap: 14px;
+  padding: 2px 10px 14px;
+}
+
+.settings-account-dialog-field {
+  display: grid;
+  gap: 7px;
+}
+
+.settings-account-dialog-textarea {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.settings-account-dialog-error {
+  margin: 0;
+  font-size: 13px;
+}
+
+.settings-account-dialog-actions {
+  justify-content: flex-start;
+}
+
+.settings-account-dialog-action-spacer {
+  flex: 1 1 auto;
+}
+
+.settings-account-edit-identity {
+  display: grid;
+  gap: 4px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--ui-border);
+}
+
+.settings-account-edit-identity span {
+  color: var(--ui-text-muted);
+  font-size: 12px;
+}
+
+.settings-account-edit-identity strong {
+  color: var(--ui-text);
+  overflow-wrap: anywhere;
+}
+
+.settings-account-edit-enabled {
+  min-height: 30px;
+}
+
+@media (max-width: 1366px) {
+  .settings-view {
+    grid-template-columns: 56px minmax(0, 1fr);
+  }
+
+  .settings-sidebar {
+    overflow: hidden;
+  }
+
+  .settings-content {
+    padding: 20px;
+  }
+
+  .settings-account-table-grid,
+  .settings-account-row {
+    grid-template-columns: 40px 160px 140px 180px 180px 120px 140px 42px;
+    min-width: 1002px;
+  }
+}
+
+@media (max-width: 1120px) {
+  .settings-content {
+    padding: 16px;
+  }
+
+  .settings-theme-options,
+  .settings-account-picker-controls,
+  .settings-account-picker-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

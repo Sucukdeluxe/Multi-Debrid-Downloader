@@ -1,0 +1,585 @@
+import {
+  cloneElement,
+  type ChangeEvent,
+  type DragEvent,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactElement,
+  type UIEvent
+} from "react";
+import {
+  DataTable,
+  DataTableBody,
+  DataTableEmpty,
+  DataTableHeader
+} from "../../ui/DataTable";
+import { Dialog } from "../../ui/Dialog";
+import {
+  ACCOUNT_COLUMNS,
+  type AccountAddFilter,
+  type AccountAddOption,
+  type AccountRowViewModel
+} from "./settings-model";
+
+export type AccountWorkspacePanel = "overview" | "rules";
+
+export interface AccountRulesViewModel {
+  providerOrder: readonly string[];
+  routing: readonly string[];
+  autoFallback: boolean;
+  rememberCredentials?: boolean;
+  rotationEvents?: readonly { id: string; title: string; detail: string }[];
+  routingEntries?: readonly {
+    hosterId: string;
+    hosterLabel: string;
+    provider: string;
+    providers: readonly { value: string; label: string }[];
+  }[];
+  availableRoutingHosters?: readonly { value: string; label: string }[];
+}
+
+export interface AccountWorkspaceViewModel {
+  activePanel: AccountWorkspacePanel;
+  rows: readonly AccountRowViewModel[];
+  selectedIds: readonly string[];
+  busy: boolean;
+  error?: string;
+  allEnabled?: boolean;
+  statusSort?: "none" | "desc" | "asc";
+  rules: AccountRulesViewModel;
+}
+
+export interface AccountWorkspaceActions {
+  onPanelChange: (panel: AccountWorkspacePanel) => void;
+  onSelect: (rowId: string) => void;
+  onToggleEnabled: (rowId: string) => void;
+  onEdit: (rowId: string) => void;
+  onContextMenu: (rowId: string, x: number, y: number) => void;
+  onAdd: () => void;
+  onRemoveSelected: () => void;
+  onCheckAll: () => void;
+  onSetAllEnabled?: (enabled: boolean) => void;
+  onStatusSort?: () => void;
+  onMoveProvider?: (index: number, direction: -1 | 1) => void;
+  onProviderDragStart?: (event: DragEvent<HTMLElement>, index: number) => void;
+  onProviderDragOver?: (event: DragEvent<HTMLElement>, index: number) => void;
+  onProviderDrop?: (event: DragEvent<HTMLElement>, index: number) => void;
+  onProviderDragEnd?: () => void;
+  onToggleAutoFallback?: (enabled: boolean) => void;
+  onToggleRememberCredentials?: (enabled: boolean) => void;
+  onRoutingProviderChange?: (hosterId: string, provider: string) => void;
+  onRoutingRemove?: (hosterId: string) => void;
+  onRoutingAdd?: (hosterId: string) => void;
+}
+
+export interface AccountWorkspaceProps {
+  model: AccountWorkspaceViewModel;
+  actions: AccountWorkspaceActions;
+}
+
+export interface AccountDialogField {
+  id: string;
+  label: string;
+  type: "text" | "password" | "number" | "textarea";
+  value: string;
+  placeholder?: string;
+  help?: string;
+}
+
+export interface AccountAddDialogModel {
+  open: boolean;
+  query: string;
+  filter: AccountAddFilter;
+  options: readonly AccountAddOption[];
+  selectedOptionId: string | null;
+  fields: readonly AccountDialogField[];
+  error: string;
+  busy: boolean;
+}
+
+export interface AccountAddDialogActions {
+  onQueryChange: (value: string) => void;
+  onFilterChange: (filter: AccountAddFilter) => void;
+  onOptionSelect: (optionId: string) => void;
+  onFieldChange: (fieldId: string, value: string) => void;
+  onClose: () => void;
+  onSubmit: () => void;
+}
+
+export interface AccountEditDialogModel {
+  open: boolean;
+  hoster: string;
+  mode: string;
+  identity: string;
+  enabled: boolean;
+  fields: readonly AccountDialogField[];
+  error: string;
+  busy: boolean;
+}
+
+export interface AccountEditDialogActions {
+  onFieldChange: (fieldId: string, value: string) => void;
+  onClose: () => void;
+  onCheck: () => void;
+  onSave: () => void;
+  onRemove: () => void;
+  onToggleEnabled: () => void;
+}
+
+function AccountDialogFields({
+  fields,
+  onChange
+}: {
+  fields: readonly AccountDialogField[];
+  onChange: (fieldId: string, value: string) => void;
+}): ReactElement {
+  return (
+    <div className="settings-account-dialog-fields">
+      {fields.map((field) => (
+        <label className="settings-account-dialog-field" key={field.id}>
+          <span>{field.label}</span>
+          {field.type === "textarea" ? (
+            <textarea
+              className="settings-control settings-account-dialog-textarea"
+              onChange={(event) => onChange(field.id, event.target.value)}
+              placeholder={field.placeholder}
+              rows={4}
+              value={field.value}
+            />
+          ) : (
+            <input
+              autoComplete={field.type === "password" ? "off" : undefined}
+              className="settings-control"
+              inputMode={field.type === "number" ? "decimal" : undefined}
+              onChange={(event) => onChange(field.id, event.target.value)}
+              placeholder={field.placeholder}
+              type={field.type}
+              value={field.value}
+            />
+          )}
+          {field.help ? <span className="settings-field-help">{field.help}</span> : null}
+        </label>
+      ))}
+    </div>
+  );
+}
+
+function AccountRow({
+  row,
+  selected,
+  busy,
+  actions
+}: {
+  row: AccountRowViewModel;
+  selected: boolean;
+  busy: boolean;
+  actions: AccountWorkspaceActions;
+}): ReactElement {
+  const selectRow = (): void => actions.onSelect(row.id);
+  const onClick = (): void => selectRow();
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
+    if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) {
+      return;
+    }
+    event.preventDefault();
+    selectRow();
+  };
+  const openContextMenu = (event: MouseEvent<HTMLElement>): void => {
+    event.preventDefault();
+    event.stopPropagation();
+    actions.onContextMenu(row.id, event.clientX, event.clientY);
+  };
+  return (
+    <div
+      aria-selected={selected}
+      className={`settings-account-row${selected ? " is-selected" : ""}${row.problem ? " has-problem" : ""}${!row.enabled ? " is-disabled" : ""}`}
+      onClick={onClick}
+      onContextMenu={openContextMenu}
+      onDoubleClick={() => actions.onEdit(row.id)}
+      onKeyDown={onKeyDown}
+      role="row"
+      tabIndex={0}
+    >
+      <span className="settings-account-column-enable" role="cell">
+        <input
+          aria-label={`${row.hoster} ${row.enabled ? "deaktivieren" : "aktivieren"}`}
+          checked={row.enabled}
+          disabled={busy}
+          onChange={() => actions.onToggleEnabled(row.id)}
+          onClick={(event) => event.stopPropagation()}
+          type="checkbox"
+        />
+      </span>
+      <span className="settings-account-hoster" role="cell" title={`${row.hoster} · ${row.mode}`}>
+        <img alt="" aria-hidden="true" draggable={false} height="20" src={row.icon} width="20" />
+        <span>
+          <strong>{row.hoster}</strong>
+          <small>{row.mode}</small>
+        </span>
+      </span>
+      <span className="settings-account-status" role="cell">
+        <span className={`settings-account-status-badge is-${row.status.tone}`}>{row.status.text}</span>
+      </span>
+      <span className="settings-account-traffic" role="cell">{row.traffic}</span>
+      <span className="settings-account-username settings-copyable" role="cell" title={row.username}>{row.username}</span>
+      <span className="settings-account-expires" role="cell">{row.expires}</span>
+      <span className="settings-account-credential" role="cell">{row.credential}</span>
+      <span className="settings-account-column-actions" role="cell">
+        <button
+          aria-label={`${row.hoster} Aktionen`}
+          className="settings-account-action-button"
+          disabled={busy}
+          onClick={(event) => {
+            event.stopPropagation();
+            const rect = event.currentTarget.getBoundingClientRect();
+            actions.onContextMenu(row.id, rect.right, rect.bottom);
+          }}
+          type="button"
+        >⋯</button>
+      </span>
+    </div>
+  );
+}
+
+function syncAccountTableScroll(event: UIEvent<HTMLDivElement>): void {
+  const header = event.currentTarget.parentElement?.querySelector<HTMLElement>(".settings-account-table-header");
+  if (header) {
+    header.scrollLeft = event.currentTarget.scrollLeft;
+  }
+}
+
+function AccountOverview({ model, actions }: AccountWorkspaceProps): ReactElement {
+  const selectedIds = new Set(model.selectedIds);
+  return (
+    <>
+      <DataTable className="settings-account-table" label="Accounts">
+        <DataTableHeader className="settings-account-table-header">
+          <div className="settings-account-table-grid" role="row">
+            <span aria-label="Aktiviert" className="settings-account-column-enable" role="columnheader" />
+            {ACCOUNT_COLUMNS.map((column) => (
+              <span key={column} role="columnheader">
+                {column === "Status" && actions.onStatusSort ? (
+                  <button className="settings-account-sort" onClick={actions.onStatusSort} type="button">
+                    {column}{model.statusSort === "desc" ? " ▼" : model.statusSort === "asc" ? " ▲" : ""}
+                  </button>
+                ) : column}
+              </span>
+            ))}
+            <span aria-label="Aktionen" className="settings-account-column-actions" role="columnheader" />
+          </div>
+        </DataTableHeader>
+        <DataTableBody className="settings-account-table-body" data-visual-region="accounts-table-body" onScroll={syncAccountTableScroll}>
+          {model.busy && model.rows.length === 0 ? (
+            <DataTableEmpty description="Die Accountdaten werden aktualisiert." title="Accounts werden geladen" />
+          ) : model.error ? (
+            <DataTableEmpty className="settings-account-table-error" description="Die gespeicherten Accounts bleiben unverändert." title={model.error} />
+          ) : model.rows.length === 0 ? (
+            <DataTableEmpty description="Füge einen Account hinzu, um Downloads über einen Anbieter zu starten." title="Noch keine Accounts" />
+          ) : model.rows.map((row) => cloneElement(
+            AccountRow({ actions, busy: model.busy, row, selected: selectedIds.has(row.id) }),
+            { key: row.id }
+          ))}
+        </DataTableBody>
+      </DataTable>
+      <div className="settings-account-local-actions">
+        <div>
+          <button className="settings-button settings-button-secondary" disabled={model.busy} onClick={actions.onAdd} type="button">＋ Hinzufügen</button>
+          <button className="settings-button settings-button-secondary" disabled={model.busy || model.selectedIds.length === 0} onClick={actions.onRemoveSelected} type="button">− Entfernen</button>
+          <button className="settings-button settings-button-secondary" disabled={model.busy} onClick={actions.onCheckAll} type="button">↻ Aktualisieren</button>
+        </div>
+        <span>{model.rows.length} {model.rows.length === 1 ? "Account" : "Accounts"}</span>
+      </div>
+    </>
+  );
+}
+
+function AccountRules({ model, actions }: AccountWorkspaceProps): ReactElement {
+  return (
+    <div className="settings-account-rules">
+      <section className="settings-rule-section">
+        <h3>Provider-Reihenfolge</h3>
+        <p>Lege fest, in welcher Reihenfolge verfügbare Provider verwendet werden.</p>
+        {model.rules.providerOrder.length === 0 ? (
+          <span className="settings-rule-empty">Keine Provider konfiguriert.</span>
+        ) : (
+          <ol className="settings-provider-order">
+            {model.rules.providerOrder.map((provider, index) => (
+              <li
+                draggable={Boolean(actions.onProviderDragStart)}
+                key={`${provider}-${index}`}
+                onDragEnd={actions.onProviderDragEnd}
+                onDragOver={(event) => actions.onProviderDragOver?.(event, index)}
+                onDragStart={(event) => actions.onProviderDragStart?.(event, index)}
+                onDrop={(event) => actions.onProviderDrop?.(event, index)}
+              >
+                <span>{provider}</span>
+                {actions.onMoveProvider ? (
+                  <span className="settings-provider-order-actions">
+                    <button aria-label={`${provider} nach oben`} disabled={index === 0} onClick={() => actions.onMoveProvider?.(index, -1)} type="button">↑</button>
+                    <button aria-label={`${provider} nach unten`} disabled={index === model.rules.providerOrder.length - 1} onClick={() => actions.onMoveProvider?.(index, 1)} type="button">↓</button>
+                  </span>
+                ) : null}
+              </li>
+            ))}
+          </ol>
+        )}
+        <label className="settings-rule-toggle">
+          <input
+            checked={model.rules.autoFallback}
+            disabled={!actions.onToggleAutoFallback}
+            onChange={(event) => actions.onToggleAutoFallback?.(event.target.checked)}
+            type="checkbox"
+          />
+          <span>Automatischer Fallback</span>
+        </label>
+        {typeof model.rules.rememberCredentials === "boolean" ? (
+          <label className="settings-rule-toggle">
+            <input
+              checked={model.rules.rememberCredentials}
+              disabled={!actions.onToggleRememberCredentials}
+              onChange={(event) => actions.onToggleRememberCredentials?.(event.target.checked)}
+              type="checkbox"
+            />
+            <span>Zugangsdaten lokal speichern</span>
+          </label>
+        ) : null}
+      </section>
+      <section className="settings-rule-section">
+        <h3>Hoster-Routing</h3>
+        <p>Eigene Zuordnungen überschreiben für den jeweiligen Hoster die Standardreihenfolge.</p>
+        {model.rules.routingEntries ? (
+          <>
+            {model.rules.routingEntries.length === 0 ? <span className="settings-rule-empty">Keine eigenen Zuordnungen.</span> : (
+              <div className="settings-routing-editor">
+                {model.rules.routingEntries.map((entry) => (
+                  <div className="settings-routing-editor-row" key={entry.hosterId}>
+                    <span>{entry.hosterLabel}</span>
+                    <select
+                      aria-label={`Provider für ${entry.hosterLabel}`}
+                      className="settings-control"
+                      onChange={(event) => actions.onRoutingProviderChange?.(entry.hosterId, event.target.value)}
+                      value={entry.provider}
+                    >
+                      {entry.providers.map((provider) => <option key={provider.value} value={provider.value}>{provider.label}</option>)}
+                    </select>
+                    <button aria-label={`${entry.hosterLabel} Zuordnung entfernen`} className="settings-button settings-button-danger" onClick={() => actions.onRoutingRemove?.(entry.hosterId)} type="button">Entfernen</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {model.rules.availableRoutingHosters ? (
+              <select
+                aria-label="Hoster-Routing hinzufügen"
+                className="settings-control settings-routing-add"
+                onChange={(event) => {
+                  if (event.target.value) {
+                    actions.onRoutingAdd?.(event.target.value);
+                  }
+                  event.target.value = "";
+                }}
+                value=""
+              >
+                <option disabled value="">Hoster hinzufügen…</option>
+                {model.rules.availableRoutingHosters.map((hoster) => <option key={hoster.value} value={hoster.value}>{hoster.label}</option>)}
+                <option value="__custom">Eigener Hoster…</option>
+              </select>
+            ) : null}
+          </>
+        ) : model.rules.routing.length === 0 ? (
+          <span className="settings-rule-empty">Keine eigenen Zuordnungen.</span>
+        ) : (
+          <ul className="settings-routing-list">
+            {model.rules.routing.map((route, index) => <li className="settings-copyable" key={`${route}-${index}`}>{route}</li>)}
+          </ul>
+        )}
+      </section>
+      {model.rules.rotationEvents ? (
+        <section className="settings-rule-section">
+          <h3>Rotations-Verlauf</h3>
+          {model.rules.rotationEvents.length === 0 ? (
+            <span className="settings-rule-empty">Noch keine Rotations-Ereignisse.</span>
+          ) : model.rules.rotationEvents.map((event) => (
+            <div className="settings-rotation-event" key={event.id}>
+              <strong>{event.title}</strong>
+              <span>{event.detail}</span>
+            </div>
+          ))}
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+export function AccountWorkspace({ model, actions }: AccountWorkspaceProps): ReactElement {
+  return (
+    <div className="settings-account-workspace">
+      <header className="settings-account-heading">
+        <div>
+          <h2>Accountverwaltung</h2>
+          <p>Accounts hinzufügen, prüfen und verwalten.</p>
+        </div>
+        {typeof model.allEnabled === "boolean" && actions.onSetAllEnabled ? (
+          <label className="settings-rule-toggle settings-account-all-enabled">
+            <input
+              checked={model.allEnabled}
+              disabled={model.busy || model.rows.length === 0}
+              onChange={(event) => actions.onSetAllEnabled?.(event.target.checked)}
+              type="checkbox"
+            />
+            <span>Accounts zum Herunterladen verwenden</span>
+          </label>
+        ) : null}
+      </header>
+      <div aria-label="Accountverwaltung" className="settings-account-tabs" role="tablist">
+        <button
+          aria-controls="settings-account-overview"
+          aria-selected={model.activePanel === "overview"}
+          id="settings-account-overview-tab"
+          onClick={() => actions.onPanelChange("overview")}
+          role="tab"
+          type="button"
+        >Übersicht</button>
+        <button
+          aria-controls="settings-account-rules"
+          aria-selected={model.activePanel === "rules"}
+          id="settings-account-rules-tab"
+          onClick={() => actions.onPanelChange("rules")}
+          role="tab"
+          type="button"
+        >Verwendungsregeln</button>
+      </div>
+      <div
+        aria-labelledby="settings-account-overview-tab"
+        className="settings-account-panel"
+        hidden={model.activePanel !== "overview"}
+        id="settings-account-overview"
+        role="tabpanel"
+      >
+        {AccountOverview({ actions, model })}
+      </div>
+      <div
+        aria-labelledby="settings-account-rules-tab"
+        className="settings-account-panel"
+        hidden={model.activePanel !== "rules"}
+        id="settings-account-rules"
+        role="tabpanel"
+      >
+        {AccountRules({ actions, model })}
+      </div>
+    </div>
+  );
+}
+
+export function AccountAddDialog({
+  model,
+  actions
+}: {
+  model: AccountAddDialogModel;
+  actions: AccountAddDialogActions;
+}): ReactElement | null {
+  const onFilterChange = (event: ChangeEvent<HTMLSelectElement>): void => {
+    actions.onFilterChange(event.target.value as AccountAddFilter);
+  };
+  return (
+    <Dialog
+      actions={(
+        <>
+          <button className="settings-button settings-button-secondary" disabled={model.busy} onClick={actions.onClose} type="button">Abbrechen</button>
+          <button className="settings-button settings-button-primary" disabled={model.busy || !model.selectedOptionId} onClick={actions.onSubmit} type="button">Prüfen und speichern</button>
+        </>
+      )}
+      actionsClassName="settings-account-dialog-actions"
+      bodyClassName="settings-account-dialog-body"
+      description="Wähle einen Dienst und trage die passenden Zugangsdaten ein."
+      onClose={actions.onClose}
+      open={model.open}
+      size="account"
+      title="Account hinzufügen"
+    >
+      <div className="settings-account-picker-controls">
+        <input
+          aria-label="Accounts durchsuchen"
+          className="settings-control"
+          onChange={(event) => actions.onQueryChange(event.target.value)}
+          placeholder="Dienst oder Zugangstyp suchen"
+          type="search"
+          value={model.query}
+        />
+        <select aria-label="Account-Typ filtern" className="settings-control" onChange={onFilterChange} value={model.filter}>
+          <option value="all">Alle</option>
+          <option value="api">API</option>
+          <option value="web">Web</option>
+        </select>
+      </div>
+      <div aria-label="Verfügbare Account-Typen" className="settings-account-picker" role="listbox">
+        {model.options.length === 0 ? (
+          <span className="settings-account-picker-empty">Keine passenden Account-Typen.</span>
+        ) : model.options.map((option) => {
+          const selected = option.id === model.selectedOptionId;
+          return (
+            <div className="settings-account-picker-entry" key={option.id}>
+              <button
+                aria-selected={selected}
+                className={`settings-account-picker-row${selected ? " is-selected" : ""}`}
+                onClick={() => actions.onOptionSelect(option.id)}
+                role="option"
+                type="button"
+              >
+                <span>
+                  <strong>{option.title}</strong>
+                  <small>{option.description}</small>
+                </span>
+                <span>
+                  <strong>{option.mode}</strong>
+                  <small>{option.functionLabel}</small>
+                </span>
+              </button>
+              {selected ? <AccountDialogFields fields={model.fields} onChange={actions.onFieldChange} /> : null}
+            </div>
+          );
+        })}
+      </div>
+      {model.error ? <p className="settings-account-dialog-error" role="alert">{model.error}</p> : null}
+    </Dialog>
+  );
+}
+
+export function AccountEditDialog({
+  model,
+  actions
+}: {
+  model: AccountEditDialogModel;
+  actions: AccountEditDialogActions;
+}): ReactElement | null {
+  return (
+    <Dialog
+      actions={(
+        <>
+          <button className="settings-button settings-button-danger" disabled={model.busy} onClick={actions.onRemove} type="button">Entfernen</button>
+          <span className="settings-account-dialog-action-spacer" />
+          <button className="settings-button settings-button-secondary" disabled={model.busy} onClick={actions.onClose} type="button">Abbrechen</button>
+          <button className="settings-button settings-button-secondary" disabled={model.busy} onClick={actions.onCheck} type="button">Prüfen</button>
+          <button className="settings-button settings-button-primary" disabled={model.busy} onClick={actions.onSave} type="button">Speichern</button>
+        </>
+      )}
+      actionsClassName="settings-account-dialog-actions"
+      bodyClassName="settings-account-dialog-body"
+      description="Bearbeite ausschließlich den ausgewählten Account."
+      onClose={actions.onClose}
+      open={model.open}
+      size="account"
+      title="Account bearbeiten"
+    >
+      <div className="settings-account-edit-identity">
+        <span>{model.hoster} · {model.mode}</span>
+        <strong className="settings-copyable">{model.identity}</strong>
+      </div>
+      <label className="settings-rule-toggle settings-account-edit-enabled">
+        <input checked={model.enabled} disabled={model.busy} onChange={actions.onToggleEnabled} type="checkbox" />
+        <span>Account aktiviert</span>
+      </label>
+      <AccountDialogFields fields={model.fields} onChange={actions.onFieldChange} />
+      {model.error ? <p className="settings-account-dialog-error" role="alert">{model.error}</p> : null}
+    </Dialog>
+  );
+}

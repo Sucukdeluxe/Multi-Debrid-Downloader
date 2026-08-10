@@ -1,0 +1,254 @@
+import type { DebridProvider, HistoryEntry } from "../../../shared/types";
+
+export type HistoryFilter = "all" | "today" | "week" | "older" | "completed" | "deleted" | "failed";
+export type HistoryViewStatus = HistoryEntry["status"] | "failed";
+export type HistoryViewEntry = Omit<HistoryEntry, "status"> & { status: HistoryViewStatus };
+
+export interface HistoryRow extends HistoryViewEntry {
+  hoster: string;
+  providerLabel: string;
+  startAt: number;
+  sizeLabel: string;
+  startedLabel: string;
+  completedLabel: string;
+  durationLabel: string;
+  averageSpeedLabel: string;
+  statusLabel: string;
+}
+
+export interface HistoryFilterCounts {
+  all: number;
+  today: number;
+  week: number;
+  older: number;
+  completed: number;
+  deleted: number;
+  failed: number;
+}
+
+export interface HistoryViewModel {
+  rows: HistoryRow[];
+  filter: HistoryFilter;
+  query: string;
+  selectedIds: string[];
+  expandedIds: string[];
+  counts: HistoryFilterCounts;
+  loading: boolean;
+  error: string;
+  totalCount: number;
+}
+
+const providerLabels: Record<DebridProvider, string> = {
+  realdebrid: "Real-Debrid",
+  megadebrid: "Mega-Debrid",
+  "megadebrid-api": "Mega-Debrid API",
+  "megadebrid-web": "Mega-Debrid Web",
+  bestdebrid: "BestDebrid",
+  alldebrid: "AllDebrid",
+  ddownload: "DDownload",
+  onefichier: "1Fichier",
+  debridlink: "Debrid-Link",
+  linksnappy: "LinkSnappy"
+};
+
+const statusLabels: Record<HistoryViewStatus, string> = {
+  completed: "Abgeschlossen",
+  deleted: "Gelöscht",
+  failed: "Fehlgeschlagen"
+};
+
+const numberFormatter = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 1 });
+const dateFormatter = new Intl.DateTimeFormat("de-DE", {
+  day: "2-digit",
+  month: "2-digit",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit"
+});
+
+function formatBytes(bytes: number): string {
+  const safe = Math.max(0, Number.isFinite(bytes) ? bytes : 0);
+  if (safe < 1024) {
+    return `${Math.round(safe)} B`;
+  }
+  const units = ["KB", "MB", "GB", "TB", "PB"];
+  let value = safe / 1024;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${numberFormatter.format(value)} ${units[unitIndex]}`;
+}
+
+function formatDuration(durationSeconds: number): string {
+  const total = Math.max(0, Math.floor(Number.isFinite(durationSeconds) ? durationSeconds : 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function localDayStart(timestamp: number): number {
+  const date = new Date(timestamp);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
+function matchesTemporalFilter(entry: HistoryViewEntry, filter: HistoryFilter, now: number): boolean {
+  if (filter === "completed" || filter === "deleted" || filter === "failed") {
+    return entry.status === filter;
+  }
+  if (filter === "all") {
+    return true;
+  }
+  const todayStart = localDayStart(now);
+  const tomorrowStartDate = new Date(todayStart);
+  tomorrowStartDate.setDate(tomorrowStartDate.getDate() + 1);
+  const tomorrowStart = tomorrowStartDate.getTime();
+  const weekStartDate = new Date(todayStart);
+  weekStartDate.setDate(weekStartDate.getDate() - 6);
+  const weekStart = weekStartDate.getTime();
+  if (filter === "today") {
+    return entry.completedAt >= todayStart && entry.completedAt < tomorrowStart;
+  }
+  if (filter === "week") {
+    return entry.completedAt >= weekStart && entry.completedAt < todayStart;
+  }
+  return entry.completedAt < weekStart;
+}
+
+function normalizeSearch(value: string): string {
+  return value.trim().toLocaleLowerCase("de-DE");
+}
+
+export function deriveHistoryHoster(urls: string[] | undefined): string {
+  const hostnames: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of urls ?? []) {
+    try {
+      const url = new URL(raw);
+      if (url.protocol !== "http:" && url.protocol !== "https:") {
+        continue;
+      }
+      const hostname = url.hostname.toLocaleLowerCase("de-DE");
+      if (!hostname || seen.has(hostname)) {
+        continue;
+      }
+      seen.add(hostname);
+      hostnames.push(hostname);
+    } catch {
+      continue;
+    }
+  }
+  return hostnames.length > 0 ? hostnames.join(", ") : "—";
+}
+
+export function deriveHistoryStartAt(entry: Pick<HistoryViewEntry, "completedAt" | "durationSeconds">): number {
+  const completedAt = Math.max(0, Number.isFinite(entry.completedAt) ? entry.completedAt : 0);
+  const durationMs = Math.max(0, Number.isFinite(entry.durationSeconds) ? entry.durationSeconds : 0) * 1000;
+  return Math.max(0, completedAt - durationMs);
+}
+
+function toHistoryRow(entry: HistoryViewEntry): HistoryRow {
+  const hoster = deriveHistoryHoster(entry.urls);
+  const providerLabel = entry.provider ? providerLabels[entry.provider] : "—";
+  const startAt = deriveHistoryStartAt(entry);
+  const durationSeconds = Math.max(0, entry.durationSeconds || 0);
+  const averageBytesPerSecond = durationSeconds > 0 ? entry.downloadedBytes / durationSeconds : 0;
+  return {
+    ...entry,
+    hoster,
+    providerLabel,
+    startAt,
+    sizeLabel: `${formatBytes(entry.downloadedBytes)} / ${formatBytes(entry.totalBytes)}`,
+    startedLabel: dateFormatter.format(new Date(startAt)),
+    completedLabel: dateFormatter.format(new Date(Math.max(0, entry.completedAt))),
+    durationLabel: formatDuration(durationSeconds),
+    averageSpeedLabel: durationSeconds > 0 ? `${formatBytes(averageBytesPerSecond)}/s` : "—",
+    statusLabel: statusLabels[entry.status]
+  };
+}
+
+export function filterHistoryRows(
+  entries: HistoryViewEntry[],
+  filter: HistoryFilter,
+  query: string,
+  now = Date.now()
+): HistoryRow[] {
+  const normalizedQuery = normalizeSearch(query);
+  return entries
+    .filter((entry) => matchesTemporalFilter(entry, filter, now))
+    .map(toHistoryRow)
+    .filter((row) => {
+      if (!normalizedQuery) {
+        return true;
+      }
+      const searchable = [
+        row.name,
+        row.outputDir,
+        row.hoster,
+        row.providerLabel,
+        ...(row.urls ?? [])
+      ].join("\n").toLocaleLowerCase("de-DE");
+      return searchable.includes(normalizedQuery);
+    });
+}
+
+function countHistoryFilters(entries: HistoryViewEntry[], now: number): HistoryFilterCounts {
+  return {
+    all: entries.length,
+    today: entries.filter((entry) => matchesTemporalFilter(entry, "today", now)).length,
+    week: entries.filter((entry) => matchesTemporalFilter(entry, "week", now)).length,
+    older: entries.filter((entry) => matchesTemporalFilter(entry, "older", now)).length,
+    completed: entries.filter((entry) => entry.status === "completed").length,
+    deleted: entries.filter((entry) => entry.status === "deleted").length,
+    failed: entries.filter((entry) => entry.status === "failed").length
+  };
+}
+
+export function buildHistoryViewModel(
+  entries: HistoryViewEntry[],
+  filter: HistoryFilter,
+  query: string,
+  selectedIds: Iterable<string>,
+  expandedIds: Iterable<string>,
+  loading: boolean,
+  error: string,
+  now = Date.now()
+): HistoryViewModel {
+  const rows = filterHistoryRows(entries, filter, query, now);
+  const visibleIds = new Set(rows.map((row) => row.id));
+  return {
+    rows,
+    filter,
+    query,
+    selectedIds: [...selectedIds].filter((id) => visibleIds.has(id)),
+    expandedIds: [...expandedIds],
+    counts: countHistoryFilters(entries, now),
+    loading,
+    error,
+    totalCount: entries.length
+  };
+}
+
+export function pruneHistoryIds(current: Set<string>, availableIds: Iterable<string>): Set<string> {
+  if (current.size === 0) {
+    return current;
+  }
+  const available = new Set(availableIds);
+  const next = new Set<string>();
+  for (const id of current) {
+    if (available.has(id)) {
+      next.add(id);
+    }
+  }
+  return next.size === current.size ? current : next;
+}
+
+export function selectVisibleHistoryIds(visibleIds: Iterable<string>): Set<string> {
+  return new Set(visibleIds);
+}

@@ -2,6 +2,7 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { ErrorBoundary } from "./error-boundary";
+import "./theme.css";
 import "./styles.css";
 
 // Forward otherwise-silent renderer failures (uncaught errors, unhandled promise

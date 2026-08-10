@@ -529,6 +529,17 @@ export interface HistoryState {
   maxEntries: number;
 }
 
+export type HistoryRevealFailureReason =
+  | "entry-not-found"
+  | "invalid-output-dir"
+  | "output-dir-missing"
+  | "output-dir-not-directory"
+  | "open-failed";
+
+export type HistoryRevealResult =
+  | { ok: true }
+  | { ok: false; reason: HistoryRevealFailureReason };
+
 export interface RendererErrorReport {
   kind: "error" | "unhandledrejection" | "react";
   message: string;

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Visual Driver Test</title>
+    <style>
+      * {
+        transition: none !important;
+      }
+      body {
+        font-family: sans-serif;
+        margin: 24px;
+      }
+      nav,
+      main,
+      [role="dialog"],
+      [role="menu"],
+      [role="tooltip"] {
+        display: flex;
+        gap: 12px;
+        padding: 12px;
+      }
+      main,
+      [role="dialog"],
+      [role="menu"],
+      [role="tooltip"] {
+        flex-direction: column;
+      }
+      [role="dialog"] {
+        position: fixed;
+        inset: 80px;
+        z-index: 30;
+        background: white;
+        border: 1px solid black;
+      }
+      [role="menu"] {
+        position: fixed;
+        top: 80px;
+        right: 24px;
+        z-index: 40;
+        background: white;
+        border: 1px solid black;
+      }
+      [role="tooltip"] {
+        position: fixed;
+        top: 140px;
+        right: 24px;
+        z-index: 50;
+        background: black;
+        color: white;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/driver-test.tsx"></script>
+  </body>
+</html>

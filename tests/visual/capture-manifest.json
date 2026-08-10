@@ -1,0 +1,414 @@
+[
+  {
+    "name": "app-navigation-current",
+    "scenario": "dense",
+    "viewport": { "width": 2560, "height": 1369 },
+    "activeView": "history",
+    "interactions": [],
+    "assertions": [
+      { "type": "active-view", "value": "history" }
+    ]
+  },
+  {
+    "name": "downloads-dense",
+    "scenario": "dense",
+    "viewport": { "width": 2560, "height": 1369 },
+    "activeView": "downloads",
+    "interactions": [],
+    "assertions": [
+      { "type": "active-view", "value": "downloads" },
+      { "type": "minimum-row-count", "region": "downloads-table-body", "value": 1 },
+      { "type": "visible", "region": "downloads-sidebar-status" },
+      { "type": "visible", "region": "downloads-pagination" }
+    ]
+  },
+  {
+    "name": "collector-dense",
+    "scenario": "dense",
+    "viewport": { "width": 2560, "height": 1369 },
+    "activeView": "collector",
+    "interactions": [
+      { "type": "click", "role": "button", "name": "Links hinzufügen" },
+      { "type": "fill", "role": "textbox", "name": "Links", "value": "https://example.test/a\nhttps://example.test/b" },
+      { "type": "click", "role": "button", "name": "Übernehmen" }
+    ],
+    "assertions": [
+      { "type": "active-view", "value": "collector" },
+      { "type": "minimum-row-count", "region": "collector-table-body", "value": 2 },
+      { "type": "absent", "region": "collector-empty-state" }
+    ]
+  },
+  {
+    "name": "settings-dense",
+    "scenario": "dense",
+    "viewport": { "width": 2560, "height": 1369 },
+    "activeView": "settings",
+    "interactions": [
+      { "type": "click", "role": "button", "name": "Accounts" }
+    ],
+    "assertions": [
+      { "type": "active-view", "value": "settings" },
+      { "type": "minimum-row-count", "region": "accounts-table-body", "value": 1 },
+      { "type": "visible", "region": "settings-sidebar" }
+    ]
+  },
+  {
+    "name": "history-dense",
+    "scenario": "dense",
+    "viewport": { "width": 2560, "height": 1369 },
+    "activeView": "history",
+    "interactions": [],
+    "assertions": [
+      { "type": "active-view", "value": "history" },
+      { "type": "minimum-row-count", "region": "history-table-body", "value": 1 },
+      { "type": "visible", "region": "history-pagination" }
+    ]
+  },
+  {
+    "name": "statistics-dense",
+    "scenario": "dense",
+    "viewport": { "width": 2560, "height": 1369 },
+    "activeView": "statistics",
+    "interactions": [],
+    "assertions": [
+      { "type": "active-view", "value": "statistics" },
+      { "type": "nonempty", "region": "statistics-kpis" },
+      { "type": "visible", "region": "statistics-chart" }
+    ]
+  },
+  {
+    "name": "avatar-menu",
+    "scenario": "dense",
+    "viewport": { "width": 2560, "height": 1369 },
+    "activeView": "settings",
+    "interactions": [
+      { "type": "click", "role": "button", "name": "Kontomenü" }
+    ],
+    "assertions": [
+      { "type": "active-view", "value": "settings" },
+      { "type": "visible", "role": "menu", "name": "Kontomenü" },
+      { "type": "nonempty", "role": "menu", "name": "Kontomenü" }
+    ]
+  },
+  {
+    "name": "avatar-update-tooltip",
+    "scenario": "update",
+    "viewport": { "width": 2560, "height": 1369 },
+    "activeView": "settings",
+    "interactions": [
+      { "type": "click", "role": "button", "name": "Später" },
+      { "type": "wait-absent", "role": "dialog", "name": "Update installieren" },
+      { "type": "click", "role": "button", "name": "Kontomenü" },
+      { "type": "hover", "role": "button", "name": "Update verfügbar" }
+    ],
+    "assertions": [
+      { "type": "absent", "role": "dialog", "name": "Update installieren" },
+      { "type": "visible", "role": "button", "name": "Update verfügbar" },
+      { "type": "visible", "role": "menu", "name": "Kontomenü" },
+      { "type": "visible", "role": "tooltip", "name": "Update verfügbar" },
+      { "type": "layer-above", "role": "tooltip", "name": "Update verfügbar", "referenceRole": "menu", "referenceName": "Kontomenü" }
+    ]
+  },
+  {
+    "name": "context-downloads",
+    "scenario": "dense",
+    "viewport": { "width": 2560, "height": 1369 },
+    "activeView": "downloads",
+    "interactions": [],
+    "assertions": [
+      { "type": "active-view", "value": "downloads" },
+      { "type": "visible", "region": "downloads-sidebar" },
+      { "type": "visible", "region": "downloads-toolbar" },
+      { "type": "visible", "region": "downloads-pagination" }
+    ]
+  },
+  {
+    "name": "context-collector",
+    "scenario": "dense",
+    "viewport": { "width": 2560, "height": 1369 },
+    "activeView": "collector",
+    "interactions": [],
+    "assertions": [
+      { "type": "active-view", "value": "collector" },
+      { "type": "visible", "region": "collector-sidebar" },
+      { "type": "visible", "region": "collector-toolbar" },
+      { "type": "absent", "region": "downloads-toolbar" }
+    ]
+  },
+  {
+    "name": "context-settings",
+    "scenario": "dense",
+    "viewport": { "width": 2560, "height": 1369 },
+    "activeView": "settings",
+    "interactions": [],
+    "assertions": [
+      { "type": "active-view", "value": "settings" },
+      { "type": "visible", "region": "settings-sidebar" },
+      { "type": "absent", "region": "table-pagination" }
+    ]
+  },
+  {
+    "name": "context-history",
+    "scenario": "dense",
+    "viewport": { "width": 2560, "height": 1369 },
+    "activeView": "history",
+    "interactions": [],
+    "assertions": [
+      { "type": "active-view", "value": "history" },
+      { "type": "visible", "region": "history-sidebar" },
+      { "type": "visible", "region": "history-toolbar" },
+      { "type": "visible", "region": "history-pagination" }
+    ]
+  },
+  {
+    "name": "context-statistics",
+    "scenario": "dense",
+    "viewport": { "width": 2560, "height": 1369 },
+    "activeView": "statistics",
+    "interactions": [],
+    "assertions": [
+      { "type": "active-view", "value": "statistics" },
+      { "type": "visible", "region": "statistics-sidebar" },
+      { "type": "absent", "region": "downloads-toolbar" }
+    ]
+  },
+  {
+    "name": "info-closed",
+    "scenario": "dense",
+    "viewport": { "width": 2560, "height": 1369 },
+    "activeView": "downloads",
+    "interactions": [],
+    "assertions": [
+      { "type": "visible", "role": "button", "name": "Informationen" },
+      { "type": "absent", "role": "region", "name": "Informationen zu Downloads" }
+    ]
+  },
+  {
+    "name": "info-open",
+    "scenario": "dense",
+    "viewport": { "width": 2560, "height": 1369 },
+    "activeView": "downloads",
+    "interactions": [
+      { "type": "click", "role": "button", "name": "Informationen" }
+    ],
+    "assertions": [
+      { "type": "visible", "role": "region", "name": "Informationen zu Downloads" },
+      { "type": "nonempty", "role": "region", "name": "Informationen zu Downloads" }
+    ]
+  },
+  {
+    "name": "info-absent",
+    "scenario": "empty",
+    "viewport": { "width": 2560, "height": 1369 },
+    "activeView": "settings",
+    "interactions": [],
+    "assertions": [
+      { "type": "active-view", "value": "settings" },
+      { "type": "absent", "role": "button", "name": "Informationen" }
+    ]
+  },
+  {
+    "name": "responsive-downloads-1920",
+    "scenario": "dense",
+    "viewport": { "width": 1920, "height": 1080 },
+    "activeView": "downloads",
+    "interactions": [],
+    "assertions": [
+      { "type": "active-view", "value": "downloads" },
+      { "type": "minimum-row-count", "region": "downloads-table-body", "value": 1 },
+      { "type": "visible", "region": "downloads-sidebar-status" },
+      { "type": "visible", "region": "downloads-pagination" }
+    ]
+  },
+  {
+    "name": "responsive-collector-1366",
+    "scenario": "dense",
+    "viewport": { "width": 1366, "height": 768 },
+    "activeView": "collector",
+    "interactions": [
+      { "type": "click", "role": "button", "name": "Links hinzufügen" },
+      { "type": "fill", "role": "textbox", "name": "Links", "value": "https://example.test/a\nhttps://example.test/b" },
+      { "type": "click", "role": "button", "name": "Übernehmen" }
+    ],
+    "assertions": [
+      { "type": "active-view", "value": "collector" },
+      { "type": "minimum-row-count", "region": "collector-table-body", "value": 2 },
+      { "type": "absent", "region": "collector-empty-state" }
+    ]
+  },
+  {
+    "name": "responsive-settings-1120",
+    "scenario": "dense",
+    "viewport": { "width": 1120, "height": 760 },
+    "activeView": "settings",
+    "interactions": [
+      { "type": "click", "role": "button", "name": "Seitenleiste ausklappen" },
+      { "type": "click", "role": "button", "name": "Accounts" }
+    ],
+    "assertions": [
+      { "type": "active-view", "value": "settings" },
+      { "type": "minimum-row-count", "region": "accounts-table-body", "value": 1 },
+      { "type": "visible", "region": "settings-sidebar" },
+      { "type": "absent", "region": "table-pagination" }
+    ]
+  },
+  {
+    "name": "responsive-downloads-1366",
+    "scenario": "dense",
+    "viewport": { "width": 1366, "height": 768 },
+    "activeView": "downloads",
+    "interactions": [],
+    "assertions": [
+      { "type": "active-view", "value": "downloads" },
+      { "type": "minimum-row-count", "region": "downloads-table-body", "value": 1 },
+      { "type": "visible", "region": "downloads-pagination" }
+    ]
+  },
+  {
+    "name": "responsive-downloads-1120",
+    "scenario": "dense",
+    "viewport": { "width": 1120, "height": 760 },
+    "activeView": "downloads",
+    "interactions": [],
+    "assertions": [
+      { "type": "active-view", "value": "downloads" },
+      { "type": "minimum-row-count", "region": "downloads-table-body", "value": 1 },
+      { "type": "visible", "region": "downloads-pagination" }
+    ]
+  },
+  {
+    "name": "responsive-collector-1920",
+    "scenario": "dense",
+    "viewport": { "width": 1920, "height": 1080 },
+    "activeView": "collector",
+    "interactions": [
+      { "type": "click", "role": "button", "name": "Links hinzufügen" },
+      { "type": "fill", "role": "textbox", "name": "Links", "value": "https://example.test/a\nhttps://example.test/b" },
+      { "type": "click", "role": "button", "name": "Übernehmen" }
+    ],
+    "assertions": [
+      { "type": "active-view", "value": "collector" },
+      { "type": "minimum-row-count", "region": "collector-table-body", "value": 2 },
+      { "type": "absent", "region": "collector-empty-state" }
+    ]
+  },
+  {
+    "name": "responsive-collector-1120",
+    "scenario": "dense",
+    "viewport": { "width": 1120, "height": 760 },
+    "activeView": "collector",
+    "interactions": [
+      { "type": "click", "role": "button", "name": "Links hinzufügen" },
+      { "type": "fill", "role": "textbox", "name": "Links", "value": "https://example.test/a\nhttps://example.test/b" },
+      { "type": "click", "role": "button", "name": "Übernehmen" }
+    ],
+    "assertions": [
+      { "type": "active-view", "value": "collector" },
+      { "type": "minimum-row-count", "region": "collector-table-body", "value": 2 },
+      { "type": "absent", "region": "collector-empty-state" }
+    ]
+  },
+  {
+    "name": "responsive-settings-1920",
+    "scenario": "dense",
+    "viewport": { "width": 1920, "height": 1080 },
+    "activeView": "settings",
+    "interactions": [
+      { "type": "click", "role": "button", "name": "Accounts" }
+    ],
+    "assertions": [
+      { "type": "active-view", "value": "settings" },
+      { "type": "minimum-row-count", "region": "accounts-table-body", "value": 1 },
+      { "type": "visible", "region": "settings-sidebar" },
+      { "type": "absent", "region": "table-pagination" }
+    ]
+  },
+  {
+    "name": "responsive-settings-1366",
+    "scenario": "dense",
+    "viewport": { "width": 1366, "height": 768 },
+    "activeView": "settings",
+    "interactions": [
+      { "type": "click", "role": "button", "name": "Seitenleiste ausklappen" },
+      { "type": "click", "role": "button", "name": "Accounts" }
+    ],
+    "assertions": [
+      { "type": "active-view", "value": "settings" },
+      { "type": "minimum-row-count", "region": "accounts-table-body", "value": 1 },
+      { "type": "visible", "region": "settings-sidebar" },
+      { "type": "absent", "region": "table-pagination" }
+    ]
+  },
+  {
+    "name": "responsive-history-1920",
+    "scenario": "dense",
+    "viewport": { "width": 1920, "height": 1080 },
+    "activeView": "history",
+    "interactions": [],
+    "assertions": [
+      { "type": "active-view", "value": "history" },
+      { "type": "minimum-row-count", "region": "history-table-body", "value": 1 },
+      { "type": "visible", "region": "history-pagination" }
+    ]
+  },
+  {
+    "name": "responsive-history-1366",
+    "scenario": "dense",
+    "viewport": { "width": 1366, "height": 768 },
+    "activeView": "history",
+    "interactions": [],
+    "assertions": [
+      { "type": "active-view", "value": "history" },
+      { "type": "minimum-row-count", "region": "history-table-body", "value": 1 },
+      { "type": "visible", "region": "history-pagination" }
+    ]
+  },
+  {
+    "name": "responsive-history-1120",
+    "scenario": "dense",
+    "viewport": { "width": 1120, "height": 760 },
+    "activeView": "history",
+    "interactions": [],
+    "assertions": [
+      { "type": "active-view", "value": "history" },
+      { "type": "minimum-row-count", "region": "history-table-body", "value": 1 },
+      { "type": "visible", "region": "history-pagination" }
+    ]
+  },
+  {
+    "name": "responsive-statistics-1920",
+    "scenario": "dense",
+    "viewport": { "width": 1920, "height": 1080 },
+    "activeView": "statistics",
+    "interactions": [],
+    "assertions": [
+      { "type": "active-view", "value": "statistics" },
+      { "type": "nonempty", "region": "statistics-kpis" },
+      { "type": "visible", "region": "statistics-chart" }
+    ]
+  },
+  {
+    "name": "responsive-statistics-1366",
+    "scenario": "dense",
+    "viewport": { "width": 1366, "height": 768 },
+    "activeView": "statistics",
+    "interactions": [],
+    "assertions": [
+      { "type": "active-view", "value": "statistics" },
+      { "type": "nonempty", "region": "statistics-kpis" },
+      { "type": "visible", "region": "statistics-chart" }
+    ]
+  },
+  {
+    "name": "responsive-statistics-1120",
+    "scenario": "dense",
+    "viewport": { "width": 1120, "height": 760 },
+    "activeView": "statistics",
+    "interactions": [],
+    "assertions": [
+      { "type": "active-view", "value": "statistics" },
+      { "type": "nonempty", "region": "statistics-kpis" },
+      { "type": "visible", "region": "statistics-chart" }
+    ]
+  }
+]

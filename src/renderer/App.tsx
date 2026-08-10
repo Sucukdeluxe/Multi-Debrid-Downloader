@@ -1,11 +1,10 @@
-import { DragEvent, KeyboardEvent as ReactKeyboardEvent, ReactElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { DragEvent, ReactElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
 import { getMegaDebridAccountId, parseMegaDebridAccounts, serializeMegaDebridAccounts, maskMegaDebridLogin } from "../shared/mega-debrid-accounts";
 import type {
   AllDebridHostInfo,
   AppSettings,
   AppTheme,
-  AudioStripSummary,
   BandwidthScheduleEntry,
   DebugSetupCheckResult,
   DebridFallbackProvider,
@@ -38,21 +37,153 @@ import {
 } from "../shared/provider-daily-limits";
 import { reorderPackageOrderByDrop, sortPackageOrderByName, sortPackagesForDisplay } from "./package-order";
 import { pruneSelection } from "./selection";
-import { buildBulkAccountEnabledState, buildConfiguredProviderOrder, getAccountDialogSelectableOptions, isAccountRowSelectionKey, matchesAccountModeFilter, pruneAccountRowSelection, resolveAccountUsername, resolveVisibleAccountKind } from "./account-ui";
+import { buildBulkAccountEnabledState, buildConfiguredProviderOrder, getAccountDialogSelectableOptions, matchesAccountModeFilter, pruneAccountRowSelection, resolveAccountUsername, resolveVisibleAccountKind } from "./account-ui";
 import type { AccountModeFilter } from "./account-ui";
 import { applyAccountEdit, buildAccountEditCheckSettings, createAccountEditState, getAccountEditExpectedStatusId, removeAccountTarget, validateAccountEdit, validateAccountEditStatuses } from "./account-edit";
 import type { AccountEditState, AccountEditTarget, AccountKind, AccountService, SingleAccountKind } from "./account-edit";
 import { ACCOUNT_SERVICE_ICONS } from "./account-service-icons";
 import { DOWNLOAD_SPEED_MAX_SAMPLES, updateDownloadSpeedHistory } from "./download-speed-state";
 import type { DownloadSpeedHistoryState } from "./download-speed-state";
+import { extractHoster, formatDateTime, formatSpeedMbps, humanSize, providerLabels } from "./download-format";
+import { AppShell } from "./shell/AppShell";
+import { AvatarMenu } from "./shell/AvatarMenu";
+import { OverlayHost } from "./shell/OverlayHost";
+import { UpdateExperience } from "./shell/UpdateExperience";
+import type { MainView } from "./shell/shell-model";
+import { ContextMenu } from "./ui/ContextMenu";
+import { Dialog } from "./ui/Dialog";
+import { Icon } from "./ui/Icon";
+import { Toast } from "./ui/Toast";
+import {
+  buildCollectorViewModel,
+  type CollectorSourceTab
+} from "./views/collector/collector-model";
+import {
+  CollectorContent,
+  CollectorInputDialog,
+  CollectorSidebar,
+  CollectorToolbar,
+  type CollectorViewActions
+} from "./views/collector/CollectorView";
+import {
+  buildHistoryViewModel,
+  pruneHistoryIds,
+  selectVisibleHistoryIds,
+  type HistoryFilter
+} from "./views/history/history-model";
+import {
+  HistoryContent,
+  HistoryFooter,
+  HistorySidebar,
+  HistoryToolbar,
+  type HistoryViewActions
+} from "./views/history/HistoryView";
+import {
+  buildStatisticsViewModel,
+  type StatisticsRange
+} from "./views/statistics/statistics-model";
+import {
+  StatisticsContent,
+  StatisticsSidebar,
+  StatisticsSidebarStatus,
+  type StatisticsViewActions
+} from "./views/statistics/StatisticsView";
+import { buildDownloadsViewModel, type DownloadDisplayMode, type DownloadSidebarFilter } from "./views/downloads/downloads-model";
+import { downloadColumnDefinitions, type DownloadSortColumn } from "./views/downloads/DownloadsTable";
+import {
+  DownloadsContent,
+  DownloadsFooter,
+  DownloadsSidebar,
+  DownloadsSidebarStatus,
+  DownloadsToolbar,
+  type DownloadsViewActions,
+  type DownloadsViewModel
+} from "./views/downloads/DownloadsView";
+import {
+  buildAccountRowId,
+  buildSettingsFormViewModel,
+  buildTargetedAccountCheck,
+  projectAccountRows,
+  sortAccountRows,
+  type AccountAddOption,
+  type AccountRowSource,
+  type SettingsFormViewModel,
+  type SettingsSaveState,
+  type SettingsSection
+} from "./views/settings/settings-model";
+import {
+  AccountAddDialog,
+  AccountEditDialog,
+  type AccountDialogField,
+  type AccountWorkspaceActions,
+  type AccountWorkspaceViewModel
+} from "./views/settings/AccountWorkspace";
+import {
+  SettingsContent,
+  SettingsSidebar,
+  type SettingsViewActions,
+  type SettingsViewModel
+} from "./views/settings/SettingsView";
 
-type Tab = "collector" | "downloads" | "history" | "statistics" | "settings";
-type SettingsSubTab = "allgemein" | "accounts" | "entpacken" | "geschwindigkeit" | "bereinigung" | "updates";
+type Tab = MainView;
 
-interface CollectorTab {
-  id: string;
-  name: string;
-  text: string;
+type CollectorTab = CollectorSourceTab;
+
+interface CollectorInputState {
+  tabId: string;
+  tabName: string;
+  baseText: string;
+  draft: string;
+}
+export function mergeCollectorDraftText(baseText: string, currentText: string, draft: string): string {
+  if (currentText === baseText) {
+    return draft;
+  }
+  const appended = currentText.startsWith(baseText) ? currentText.slice(baseText.length) : currentText;
+  if (!appended) {
+    return draft;
+  }
+  const normalizedAppend = appended.replace(/^\r?\n/, "");
+  if (!draft) {
+    return normalizedAppend;
+  }
+  if (!normalizedAppend) {
+    return draft;
+  }
+  return `${draft}${draft.endsWith("\n") ? "" : "\n"}${normalizedAppend}`;
+}
+
+export function planCollectorTabRemoval(
+  tabs: CollectorTab[],
+  activeTabId: string,
+  removedTabId: string
+): { tabs: CollectorTab[]; activeTabId: string } {
+  if (tabs.length <= 1) {
+    return { tabs, activeTabId };
+  }
+  const removedIndex = tabs.findIndex((tab) => tab.id === removedTabId);
+  if (removedIndex < 0) {
+    return {
+      tabs,
+      activeTabId: tabs.some((tab) => tab.id === activeTabId) ? activeTabId : (tabs[0]?.id ?? "")
+    };
+  }
+  const nextTabs = tabs.filter((tab) => tab.id !== removedTabId);
+  const nextActiveTabId = activeTabId === removedTabId
+    ? (nextTabs[Math.max(0, removedIndex - 1)]?.id ?? nextTabs[0]?.id ?? "")
+    : (nextTabs.some((tab) => tab.id === activeTabId) ? activeTabId : (nextTabs[0]?.id ?? ""));
+  return { tabs: nextTabs, activeTabId: nextActiveTabId };
+}
+
+export function planCollectorTextReplacement(
+  tabs: CollectorTab[],
+  tabId: string,
+  text: string
+): { tabs: CollectorTab[]; selectedIds: string[] } {
+  return {
+    tabs: tabs.map((tab) => tab.id === tabId ? { ...tab, text } : tab),
+    selectedIds: []
+  };
 }
 
 interface StartConflictPromptState {
@@ -177,11 +308,32 @@ interface AccountTableRow {
 interface AccountContextMenuState {
   x: number;
   y: number;
-  row: AccountTableRow;
+  rowId: string;
 }
 
-function AccountServiceLogo({ service, className }: { service: AccountService; className: string }): ReactElement {
-  return <img className={className} src={ACCOUNT_SERVICE_ICONS[service]} alt="" aria-hidden="true" draggable={false} />;
+type SettingsThemeChoice = AppTheme | "system";
+
+function settingsValueEqual(left: unknown, right: unknown): boolean {
+  return Object.is(left, right) || JSON.stringify(left) === JSON.stringify(right);
+}
+
+export function mergeConcurrentSpecificSettings(
+  base: AppSettings,
+  requested: AppSettings,
+  persisted: AppSettings,
+  current: AppSettings
+): AppSettings {
+  const merged = { ...current } as Record<string, unknown>;
+  for (const key of Object.keys(requested) as Array<keyof AppSettings>) {
+    if (!settingsValueEqual(base[key], requested[key]) && settingsValueEqual(base[key], current[key])) {
+      merged[key] = persisted[key];
+    }
+  }
+  return merged as unknown as AppSettings;
+}
+
+export function resolveSettingsThemeChoice(choice: SettingsThemeChoice, prefersLight: boolean): AppTheme {
+  return choice === "system" ? (prefersLight ? "light" : "dark") : choice;
 }
 
 function getAccountQuickActionMeta(kind: AccountKind): { label: string; action: AccountQuickAction } | null {
@@ -678,11 +830,11 @@ function createAccountDialogState(mode: "create" | "edit", kind: AccountKind | n
         mode,
         kind,
         service,
-        token: settings.debridLinkApiKeys || "",
+        token: mode === "create" ? "" : settings.debridLinkApiKeys || "",
         login: "",
         password: "",
         dailyLimitGb,
-        keyDailyLimitGbById: buildDebridLinkKeyLimitInputs(settings.debridLinkApiKeys || "", undefined, settings),
+        keyDailyLimitGbById: mode === "create" ? {} : buildDebridLinkKeyLimitInputs(settings.debridLinkApiKeys || "", undefined, settings),
         ...baseMega
       };
     case "linksnappy-login":
@@ -871,24 +1023,6 @@ const emptyStats = (): DownloadStats => ({
   runtimeMeasuredAt: 0
 });
 
-type StatsSectionItem = {
-  key: string;
-  eyebrow: string;
-  label: string;
-  value: string;
-  compactValue?: boolean;
-  danger?: boolean;
-  clickable?: boolean;
-  title?: string;
-  onClick?: () => void;
-};
-
-type StatsSection = {
-  key: string;
-  title: string;
-  items: StatsSectionItem[];
-};
-
 const emptySnapshot = (): UiSnapshot => ({
   settings: {
     token: "", realDebridUseWebLogin: false, megaLogin: "", megaPassword: "", megaCredentials: "", megaDebridApiEnabled: false, megaDebridWebEnabled: false, megaDebridPreferApi: true, bestToken: "", bestDebridUseWebLogin: false, allDebridToken: "", allDebridUseWebLogin: false, ddownloadLogin: "", ddownloadPassword: "", oneFichierApiKey: "", debridLinkApiKeys: "", linkSnappyLogin: "", linkSnappyPassword: "",
@@ -946,19 +1080,6 @@ const historyRetentionLabels: Record<AppSettings["historyRetentionMode"], string
 
 const AUTO_RENDER_PACKAGE_LIMIT = 260;
 
-const providerLabels: Record<DebridProvider, string> = {
-  realdebrid: "Real-Debrid",
-  megadebrid: "Mega-Debrid",
-  "megadebrid-api": "Mega-Debrid API",
-  "megadebrid-web": "Mega-Debrid Web",
-  bestdebrid: "BestDebrid",
-  alldebrid: "AllDebrid",
-  ddownload: "DDownload",
-  onefichier: "1Fichier",
-  debridlink: "Debrid-Link",
-  linksnappy: "LinkSnappy"
-};
-
 const KNOWN_HOSTERS: { id: string; label: string }[] = [
   { id: "rapidgator", label: "Rapidgator" },
   { id: "uploaded", label: "Uploaded" },
@@ -998,138 +1119,6 @@ function providerLabelWithMode(provider: DebridProvider, settings: AppSettings):
   if (!kind) return base;
   const opt = ACCOUNT_OPTIONS.find((o) => o.kind === kind);
   return opt?.modeLabel ? `${base} (${opt.modeLabel})` : base;
-}
-
-function compactProviderLabels(labels: string[]): string {
-  const unique = [...new Set(labels)];
-  const groups = new Map<string, string[]>();
-  for (const label of unique) {
-    const m = label.match(/^(.+?)\s*\((.+)\)$/);
-    if (m) {
-      const arr = groups.get(m[1]) || [];
-      arr.push(m[2]);
-      groups.set(m[1], arr);
-    } else {
-      groups.set(label, []);
-    }
-  }
-  return [...groups.entries()].map(([base, details]) =>
-    details.length === 0 ? base : `${base} (${details.join(" + ")})`
-  ).join(", ");
-}
-
-function formatDateTime(ts: number): string {
-  if (!ts) return "";
-  const d = new Date(ts);
-  const dd = String(d.getDate()).padStart(2, "0");
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const yyyy = d.getFullYear();
-  const hh = String(d.getHours()).padStart(2, "0");
-  const min = String(d.getMinutes()).padStart(2, "0");
-  return `${dd}.${mm}.${yyyy} - ${hh}:${min}`;
-}
-
-function extractHoster(url: string): string {
-  try {
-    const host = new URL(url).hostname.replace(/^www\./, "");
-    const parts = host.split(".");
-    return parts.length >= 2 ? parts[parts.length - 2] : host;
-  } catch { return ""; }
-}
-
-function formatAudioStripSummary(summary: AudioStripSummary): { text: string; tooltip: string; attention: boolean } {
-  const parts: string[] = [];
-  const ok = summary.remuxed + summary.keptSingle;
-  if (ok > 0) parts.push(`${ok} OK`);
-  if (summary.skippedNoGerman > 0) parts.push(`${summary.skippedNoGerman} ohne DE-Tag`);
-  if (summary.skippedNoTool > 0) parts.push("ffmpeg fehlt");
-  if (summary.failed > 0) parts.push(`${summary.failed} Fehler`);
-  const tooltip = summary.files
-    .map((f) => `${f.name}: ${f.action} (${f.reason}${f.languages ? `, Spuren: ${f.languages}` : ""})`)
-    .join("\n");
-  return {
-    text: `Tonspur: ${parts.join(" · ") || "—"}`,
-    tooltip,
-    attention: summary.skippedNoGerman > 0 || summary.skippedNoTool > 0 || summary.failed > 0
-  };
-}
-
-const settingsSubTabs: { key: SettingsSubTab; label: string }[] = [
-  { key: "allgemein", label: "Allgemein" },
-  { key: "accounts", label: "Accounts" },
-  { key: "entpacken", label: "Entpacken" },
-  { key: "geschwindigkeit", label: "Geschwindigkeit" },
-  { key: "bereinigung", label: "Bereinigung" },
-  { key: "updates", label: "Updates" },
-];
-
-function formatSpeedMbps(speedBps: number): string {
-  const mbps = Math.max(0, speedBps || 0) / (1024 * 1024);
-  return `${mbps.toFixed(2)} MB/s`;
-}
-
-function humanSize(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes < 0) {
-    return "0 B";
-  }
-  if (bytes < 1024) { return `${bytes} B`; }
-  if (bytes < 1024 * 1024) { return `${(bytes / 1024).toFixed(1)} KB`; }
-  if (bytes < 1024 * 1024 * 1024) { return `${(bytes / (1024 * 1024)).toFixed(2)} MB`; }
-  if (bytes < 1024 * 1024 * 1024 * 1024) { return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`; }
-  return `${(bytes / (1024 * 1024 * 1024 * 1024)).toFixed(3)} TB`;
-}
-
-function formatRuntimeDuration(durationMs: number): string {
-  const totalSeconds = Math.max(0, Math.floor((durationMs || 0) / 1000));
-  const minuteSeconds = 60;
-  const hourSeconds = 60 * minuteSeconds;
-  const daySeconds = 24 * hourSeconds;
-  const weekSeconds = 7 * daySeconds;
-  const monthSeconds = 30 * daySeconds;
-
-  const formatUnit = (value: number, singular: string, plural: string, padTo = 0): string => {
-    const normalized = Math.max(0, Math.floor(value));
-    const text = padTo > 0 ? String(normalized).padStart(padTo, "0") : String(normalized);
-    return `${text} ${normalized === 1 ? singular : plural}`;
-  };
-
-  if (totalSeconds < hourSeconds) {
-    const minutes = Math.floor(totalSeconds / minuteSeconds);
-    const seconds = totalSeconds % minuteSeconds;
-    return `${formatUnit(minutes, "Minute", "Minuten")}, ${formatUnit(seconds, "Sekunde", "Sekunden", 2)}`;
-  }
-
-  if (totalSeconds < daySeconds) {
-    const hours = Math.floor(totalSeconds / hourSeconds);
-    const minutes = Math.floor((totalSeconds % hourSeconds) / minuteSeconds);
-    return `${formatUnit(hours, "Stunde", "Stunden")}, ${formatUnit(minutes, "Minute", "Minuten", 2)}`;
-  }
-
-  if (totalSeconds < weekSeconds) {
-    const days = Math.floor(totalSeconds / daySeconds);
-    const hours = Math.floor((totalSeconds % daySeconds) / hourSeconds);
-    const minutes = Math.floor((totalSeconds % hourSeconds) / minuteSeconds);
-    return `${formatUnit(days, "Tag", "Tage")}, ${formatUnit(hours, "Stunde", "Stunden")}, ${formatUnit(minutes, "Minute", "Minuten")}`;
-  }
-
-  if (totalSeconds < monthSeconds) {
-    const weeks = Math.floor(totalSeconds / weekSeconds);
-    const days = Math.floor((totalSeconds % weekSeconds) / daySeconds);
-    const hours = Math.floor((totalSeconds % daySeconds) / hourSeconds);
-    const minutes = Math.floor((totalSeconds % hourSeconds) / minuteSeconds);
-    return `${formatUnit(weeks, "Woche", "Wochen")}, ${formatUnit(days, "Tag", "Tage")}, ${formatUnit(hours, "Stunde", "Stunden")}, ${formatUnit(minutes, "Minute", "Minuten")}`;
-  }
-
-  const months = Math.floor(totalSeconds / monthSeconds);
-  const weeks = Math.floor((totalSeconds % monthSeconds) / weekSeconds);
-  const days = Math.floor((totalSeconds % weekSeconds) / daySeconds);
-  const hours = Math.floor((totalSeconds % daySeconds) / hourSeconds);
-  const minutes = Math.floor((totalSeconds % hourSeconds) / minuteSeconds);
-  return `${formatUnit(months, "Monat", "Monate")}, ${formatUnit(weeks, "Woche", "Wochen")}, ${formatUnit(days, "Tag", "Tage")}, ${formatUnit(hours, "Stunde", "Stunden")}, ${formatUnit(minutes, "Minute", "Minuten")}`;
-}
-
-function formatHistoryDuration(durationSeconds: number): string {
-  return formatRuntimeDuration(Math.max(0, durationSeconds || 0) * 1000);
 }
 
 function formatAllDebridSourceLabel(source: AllDebridHostInfo["source"]): string {
@@ -1304,29 +1293,16 @@ function getDebridLinkKeyStatusDisplay(
   };
 }
 
-function splitStatValue(value: string): { num: string; unit: string; idle: boolean } {
-  const v = (value ?? "").trim();
-  if (v === "" || v === "--" || v === "—") return { num: "—", unit: "", idle: true };
-  const match = v.match(/^(-?[\d.,]+)\s*(.*)$/);
-  if (!match) return { num: v, unit: "", idle: false };
-  const num = match[1];
-  const unit = (match[2] || "").trim();
-  const idle = /^0([.,]0+)?$/.test(num);
-  return { num, unit, idle };
-}
-
-function StatValueView({ value, compact, danger }: { value: string; compact?: boolean; danger?: boolean }): ReactElement {
-  const { num, unit, idle } = splitStatValue(value);
-  const cls = `stat-value${compact ? " stat-value-compact" : ""}${danger ? " danger" : ""}${idle ? " stat-idle" : ""}`;
-  if (compact) {
-    return <span className={cls}>{idle ? "—" : value}</span>;
-  }
-  return (
-    <span className={cls}>
-      <span className="stat-num">{num}</span>
-      {unit ? <span className="stat-unit">{unit}</span> : null}
-    </span>
-  );
+export function readBandwidthChartPalette(
+  readProperty: (property: string) => string,
+  fontFamily: string
+): { grid: string; text: string; accent: string; fontFamily: string } {
+  return {
+    grid: readProperty("--ui-border").trim(),
+    text: readProperty("--ui-text-muted").trim(),
+    accent: readProperty("--ui-accent").trim(),
+    fontFamily: fontFamily.trim()
+  };
 }
 
 interface BandwidthChartProps {
@@ -1362,11 +1338,12 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused, sp
 
     ctx.clearRect(0, 0, width, height);
 
-    const isDark = document.documentElement.getAttribute("data-theme") !== "light";
-    const gridColor = isDark ? "rgba(35, 57, 84, 0.5)" : "rgba(199, 213, 234, 0.5)";
-    const textColor = isDark ? "#90a4bf" : "#4e6482";
-    const accentColor = isDark ? "#f2942d" : "#c2701a";
-    const fillColor = isDark ? "rgba(242, 148, 45, 0.15)" : "rgba(194, 112, 26, 0.15)";
+    const rootStyle = getComputedStyle(document.documentElement);
+    const bodyStyle = getComputedStyle(document.body);
+    const palette = readBandwidthChartPalette(
+      (property) => rootStyle.getPropertyValue(property),
+      bodyStyle.fontFamily || rootStyle.fontFamily
+    );
 
     const history = speedHistoryRef.current;
     const now = Date.now();
@@ -1380,7 +1357,7 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused, sp
     maxSpeed = Math.max(maxSpeed, 1024 * 1024);
     const niceMax = Math.pow(2, Math.ceil(Math.log2(maxSpeed)));
 
-    ctx.font = "11px 'Manrope', sans-serif";
+    ctx.font = `11px ${palette.fontFamily}`;
     let maxLabelWidth = 0;
     for (let i = 0; i <= 5; i += 1) {
       const speedVal = niceMax * (1 - i / 5);
@@ -1391,7 +1368,7 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused, sp
     const chartWidth = width - padding.left - padding.right;
     const chartHeight = height - padding.top - padding.bottom;
 
-    ctx.strokeStyle = gridColor;
+    ctx.strokeStyle = palette.grid;
     ctx.lineWidth = 1;
     for (let i = 0; i <= 5; i += 1) {
       const y = padding.top + (chartHeight / 5) * i;
@@ -1401,8 +1378,8 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused, sp
       ctx.stroke();
     }
 
-    ctx.fillStyle = textColor;
-    ctx.font = "11px 'Manrope', sans-serif";
+    ctx.fillStyle = palette.text;
+    ctx.font = `11px ${palette.fontFamily}`;
     ctx.textAlign = "right";
     ctx.textBaseline = "middle";
 
@@ -1419,8 +1396,8 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused, sp
     ctx.fillText("0s", width - padding.right, height - padding.bottom + 8);
 
     if (history.length < 2) {
-      ctx.fillStyle = textColor;
-      ctx.font = "13px 'Manrope', sans-serif";
+      ctx.fillStyle = palette.text;
+      ctx.font = `13px ${palette.fontFamily}`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText(running ? (paused ? "Pausiert" : "Sammle Daten...") : "Download starten für Statistiken", width / 2, height / 2);
@@ -1442,22 +1419,25 @@ const BandwidthChart = memo(function BandwidthChart({ items, running, paused, sp
     ctx.lineTo(points[points.length - 1].x, padding.top + chartHeight);
     ctx.lineTo(points[0].x, padding.top + chartHeight);
     ctx.closePath();
-    ctx.fillStyle = fillColor;
+    ctx.save();
+    ctx.globalAlpha = 0.15;
+    ctx.fillStyle = palette.accent;
     ctx.fill();
+    ctx.restore();
 
     ctx.beginPath();
     ctx.moveTo(points[0].x, points[0].y);
     for (let i = 1; i < points.length; i += 1) {
       ctx.lineTo(points[i].x, points[i].y);
     }
-    ctx.strokeStyle = accentColor;
+    ctx.strokeStyle = palette.accent;
     ctx.lineWidth = 2;
     ctx.stroke();
 
     const lastPoint = points[points.length - 1];
     ctx.beginPath();
     ctx.arc(lastPoint.x, lastPoint.y, 4, 0, Math.PI * 2);
-    ctx.fillStyle = accentColor;
+    ctx.fillStyle = palette.accent;
     ctx.fill();
   }, [running, paused]);
 
@@ -1667,21 +1647,9 @@ function computePackageProgress(pkg: PackageEntry | undefined, items: Record<str
   return totalSize > 0 ? totalDown / totalSize : 0;
 }
 
-type PkgSortColumn = "name" | "size" | "hoster" | "progress";
-
 const DEFAULT_COLUMN_ORDER = ["name", "size", "progress", "hoster", "account", "prio", "status", "speed"];
 const ALL_COLUMN_KEYS = ["name", "size", "progress", "hoster", "account", "prio", "status", "speed", "added"];
-const COLUMN_DEFS: Record<string, { label: string; width: string; sortable?: PkgSortColumn }> = {
-  name:     { label: "Name",            width: "minmax(0, 0.92fr)", sortable: "name" },
-  size:     { label: "Geladen / Größe", width: "160px", sortable: "size" },
-  progress: { label: "Fortschritt",     width: "80px",  sortable: "progress" },
-  hoster:   { label: "Hoster",          width: "110px", sortable: "hoster" },
-  account:  { label: "Service",         width: "132px" },
-  prio:     { label: "Priorität",       width: "70px" },
-  status:   { label: "Status",          width: "160px" },
-  speed:    { label: "Geschwindigkeit", width: "90px" },
-  added:    { label: "Hinzugefügt am",  width: "155px" },
-};
+const COLUMN_DEFS = downloadColumnDefinitions;
 
 function sameStringArray(a: string[], b: string[]): boolean {
   if (a.length !== b.length) {
@@ -1734,20 +1702,45 @@ function formatUpdateInstallProgress(progress: UpdateInstallProgress): string {
   return `Update-Fehler: ${progress.message}`;
 }
 
+export function shouldApplyUpdateCheckResult(
+  completedGeneration: number,
+  currentGeneration: number
+): boolean {
+  return completedGeneration === currentGeneration;
+}
+
+export async function runLatestUpdateCheck(
+  generationRef: { current: number },
+  check: () => Promise<UpdateCheckResult>,
+  apply: (result: UpdateCheckResult, generation: number) => Promise<void> | void
+): Promise<void> {
+  const generation = ++generationRef.current;
+  const result = await check();
+  if (!shouldApplyUpdateCheckResult(generation, generationRef.current)) {
+    return;
+  }
+  await apply(result, generation);
+}
+
 export function App(): ReactElement {
   const [snapshot, setSnapshot] = useState<UiSnapshot>(emptySnapshot);
   const [appVersion, setAppVersion] = useState("");
   const [tab, setTab] = useState<Tab>("downloads");
   const [statusToast, setStatusToast] = useState("");
+  const [availableUpdate, setAvailableUpdate] = useState<UpdateCheckResult | null>(null);
+  const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
   const [updateInstallProgress, setUpdateInstallProgress] = useState<UpdateInstallProgress | null>(null);
   const [settingsDraft, setSettingsDraft] = useState<AppSettings>(emptySnapshot().settings);
+  const [settingsThemeChoice, setSettingsThemeChoice] = useState<SettingsThemeChoice>(emptySnapshot().settings.theme);
   const [speedLimitInput, setSpeedLimitInput] = useState(() => formatMbpsInputFromKbps(emptySnapshot().settings.speedLimitKbps));
   const [scheduleSpeedInputs, setScheduleSpeedInputs] = useState<Record<string, string>>({});
   const [settingsDirty, setSettingsDirty] = useState(false);
+  const [settingsSaveState, setSettingsSaveState] = useState<SettingsSaveState>("clean");
   const [schedulePickerOpen, setSchedulePickerOpen] = useState(false);
   const [scheduleTimeInput, setScheduleTimeInput] = useState("");
   const [scheduleCountdown, setScheduleCountdown] = useState("");
   const [runtimeNow, setRuntimeNow] = useState(() => Date.now());
+  const updateCheckGenerationRef = useRef(0);
   const settingsDirtyRef = useRef(false);
   const settingsDraftRevisionRef = useRef(0);
   const panelDirtyRevisionRef = useRef(0);
@@ -1771,6 +1764,10 @@ export function App(): ReactElement {
     { id: `tab-${nextCollectorId++}`, name: "Tab 1", text: "" }
   ]);
   const [activeCollectorTab, setActiveCollectorTab] = useState(collectorTabs[0].id);
+  const [collectorQuery, setCollectorQuery] = useState("");
+  const [selectedCollectorRowIds, setSelectedCollectorRowIds] = useState<Set<string>>(() => new Set());
+  const [collectorError, setCollectorError] = useState("");
+  const [collectorInput, setCollectorInput] = useState<CollectorInputState | null>(null);
   const collectorTabsRef = useRef<CollectorTab[]>(collectorTabs);
   const activeCollectorTabRef = useRef(activeCollectorTab);
   const activeTabRef = useRef<Tab>(tab);
@@ -1781,7 +1778,10 @@ export function App(): ReactElement {
   const draggedPackageIdRef = useRef<string | null>(null);
   const [collapsedPackages, setCollapsedPackages] = useState<Record<string, boolean>>({});
   const [downloadSearch, setDownloadSearch] = useState("");
-  const [downloadsSortColumn, setDownloadsSortColumn] = useState<PkgSortColumn>("name");
+  const [downloadDisplayMode, setDownloadDisplayMode] = useState<DownloadDisplayMode>("packages");
+  const [downloadFilter, setDownloadFilter] = useState<DownloadSidebarFilter>("all");
+  const [downloadProviderFilter, setDownloadProviderFilter] = useState("all");
+  const [downloadsSortColumn, setDownloadsSortColumn] = useState<DownloadSortColumn>("name");
   const [downloadsSortDescending, setDownloadsSortDescending] = useState(false);
   const [showAllPackages, setShowAllPackages] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
@@ -1794,7 +1794,9 @@ export function App(): ReactElement {
   const dragOverRef = useRef(false);
   const dragDepthRef = useRef(0);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
-  const [settingsSubTab, setSettingsSubTab] = useState<SettingsSubTab>("allgemein");
+  const [avatarMenuOpen, setAvatarMenuOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [settingsSubTab, setSettingsSubTab] = useState<SettingsSection>("allgemein");
   const [accountManagementTab, setAccountManagementTab] = useState<"overview" | "rules">("overview");
   const [selectedAccountRowKey, setSelectedAccountRowKey] = useState<string | null>(null);
   const [openSubmenu, setOpenSubmenu] = useState<string | null>(null);
@@ -1833,33 +1835,23 @@ export function App(): ReactElement {
   const [dropTargetCol, setDropTargetCol] = useState<string | null>(null);
   const [colHeaderCtx, setColHeaderCtx] = useState<{ x: number; y: number } | null>(null);
   const colHeaderCtxRef = useRef<HTMLDivElement>(null);
-  const colHeaderBarRef = useRef<HTMLDivElement>(null);
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
   const historyEntriesRef = useRef<HistoryEntry[]>([]);
-  const [historyCollapsed, setHistoryCollapsed] = useState<Record<string, boolean>>({});
+  const [historyExpandedIds, setHistoryExpandedIds] = useState<Set<string>>(() => new Set());
   const [selectedHistoryIds, setSelectedHistoryIds] = useState<Set<string>>(new Set());
+  const [historyFilter, setHistoryFilter] = useState<HistoryFilter>("all");
+  const [historyQuery, setHistoryQuery] = useState("");
+  const [statisticsRange, setStatisticsRange] = useState<StatisticsRange>("session");
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState("");
   const [historyCtxMenu, setHistoryCtxMenu] = useState<{ x: number; y: number; entryId: string } | null>(null);
   const historyCtxMenuRef = useRef<HTMLDivElement>(null);
+  const historyLoadGenerationRef = useRef(0);
+  const historyVisibleIdsRef = useRef<string[]>([]);
   const [allDebridHostInfo, setAllDebridHostInfo] = useState<AllDebridHostInfo | null>(null);
   const [allDebridHostLoading, setAllDebridHostLoading] = useState(false);
   const allDebridHostRequestRef = useRef(0);
   const debridLinkHostLimitsRequestRef = useRef(0);
-  useEffect(() => {
-    if (tab !== "history") return;
-    const loadHistory = async (): Promise<void> => {
-      try {
-        const entries = await window.rd.getHistory();
-        if (mountedRef.current && entries) {
-          setHistoryEntries(entries);
-        }
-      } catch (err) {
-        console.error("Failed to load history:", err);
-      }
-    };
-    void loadHistory();
-  }, [tab]);
-
-  useEffect(() => { historyEntriesRef.current = historyEntries; }, [historyEntries]);
 
   const columnOrderKey = useMemo(
     () => (snapshot.settings.columnOrder || []).join("|"),
@@ -1872,7 +1864,30 @@ export function App(): ReactElement {
     }
   }, [columnOrderKey]);
 
-  const currentCollectorTab = collectorTabs.find((t) => t.id === activeCollectorTab) ?? collectorTabs[0];
+  const collectorViewModel = useMemo(() => buildCollectorViewModel(
+    collectorTabs,
+    activeCollectorTab,
+    collectorQuery,
+    actionBusy,
+    [...selectedCollectorRowIds],
+    collectorError
+  ), [actionBusy, activeCollectorTab, collectorError, collectorQuery, collectorTabs, selectedCollectorRowIds]);
+
+  const historyViewModel = useMemo(() => buildHistoryViewModel(
+    historyEntries,
+    historyFilter,
+    historyQuery,
+    selectedHistoryIds,
+    historyExpandedIds,
+    historyLoading,
+    historyError,
+    runtimeNow
+  ), [historyEntries, historyError, historyExpandedIds, historyFilter, historyLoading, historyQuery, runtimeNow, selectedHistoryIds]);
+  historyVisibleIdsRef.current = historyViewModel.rows.map((entry) => entry.id);
+  const statisticsViewModel = useMemo(
+    () => buildStatisticsViewModel(snapshot, statisticsRange, runtimeNow),
+    [runtimeNow, snapshot, statisticsRange]
+  );
 
   useEffect(() => {
     activeCollectorTabRef.current = activeCollectorTab;
@@ -1948,6 +1963,47 @@ export function App(): ReactElement {
       toastTimerRef.current = null;
     }, timeoutMs);
   }, []);
+
+  const applyHistoryEntries = useCallback((entries: HistoryEntry[]): void => {
+    const availableIds = entries.map((entry) => entry.id);
+    const availableSet = new Set(availableIds);
+    historyEntriesRef.current = entries;
+    setHistoryEntries(entries);
+    setSelectedHistoryIds((current) => pruneHistoryIds(current, availableIds));
+    setHistoryExpandedIds((current) => pruneHistoryIds(current, availableIds));
+    setHistoryCtxMenu((current) => current && availableSet.has(current.entryId) ? current : null);
+  }, []);
+
+  const loadHistoryEntries = useCallback(async (): Promise<void> => {
+    const generation = ++historyLoadGenerationRef.current;
+    setHistoryLoading(true);
+    setHistoryError("");
+    try {
+      const entries = await window.rd.getHistory();
+      if (!mountedRef.current || generation !== historyLoadGenerationRef.current) {
+        return;
+      }
+      applyHistoryEntries(entries);
+    } catch {
+      if (mountedRef.current && generation === historyLoadGenerationRef.current) {
+        setHistoryError("Verlauf konnte nicht geladen werden");
+      }
+    } finally {
+      if (mountedRef.current && generation === historyLoadGenerationRef.current) {
+        setHistoryLoading(false);
+      }
+    }
+  }, [applyHistoryEntries]);
+
+  useEffect(() => {
+    if (tab !== "history") {
+      return;
+    }
+    void loadHistoryEntries();
+    return () => {
+      historyLoadGenerationRef.current += 1;
+    };
+  }, [loadHistoryEntries, tab]);
 
   const loadAllDebridHostInfo = useCallback(async (silent = false): Promise<void> => {
     const requestId = allDebridHostRequestRef.current + 1;
@@ -2032,6 +2088,7 @@ export function App(): ReactElement {
   }, [appVersion]);
 
   useEffect(() => {
+    mountedRef.current = true;
     let unsubscribe: (() => void) | null = null;
     let unsubClipboard: (() => void) | null = null;
     let unsubUpdateInstallProgress: (() => void) | null = null;
@@ -2054,14 +2111,15 @@ export function App(): ReactElement {
       settingsDirtyRef.current = false;
       panelDirtyRevisionRef.current = 0;
       setSettingsDirty(false);
+      setSettingsSaveState("clean");
+      setSettingsThemeChoice(state.settings.theme);
       applyTheme(state.settings.theme);
       if (state.settings.autoUpdateCheck) {
-        void window.rd.checkUpdates().then((result) => {
-          if (!mountedRef.current) {
-            return;
-          }
-          void handleUpdateResult(result, "startup");
-        }).catch(() => undefined);
+        void runLatestUpdateCheck(
+          updateCheckGenerationRef,
+          () => window.rd.checkUpdates(),
+          (result, generation) => handleUpdateResult(result, "startup", generation)
+        ).catch(() => undefined);
       }
     }).catch((error) => {
       showToast(`Snapshot konnte nicht geladen werden: ${String(error)}`, 2800);
@@ -2166,51 +2224,24 @@ export function App(): ReactElement {
 
   const downloadsTabActive = tab === "downloads";
   const deferredDownloadSearch = useDeferredValue(downloadSearch);
-  const downloadSearchQuery = deferredDownloadSearch.trim().toLowerCase();
-  const downloadSearchActive = downloadSearchQuery.length > 0;
   const gridTemplate = useMemo(() => columnOrder.map((col) => COLUMN_DEFS[col]?.width ?? "100px").join(" "), [columnOrder]);
   const totalPackageCount = snapshot.session.packageOrder.length;
-  const shouldLimitPackageRendering = downloadsTabActive
-    && snapshot.session.running
-    && !downloadSearchActive
-    && totalPackageCount > AUTO_RENDER_PACKAGE_LIMIT
-    && !showAllPackages;
-
-  const packageIdsForView = useMemo(() => {
-    if (!downloadsTabActive) {
-      return [] as string[];
-    }
-    if (downloadSearchActive) {
-      return snapshot.session.packageOrder;
-    }
-    if (shouldLimitPackageRendering) {
-      return snapshot.session.packageOrder.slice(0, AUTO_RENDER_PACKAGE_LIMIT);
-    }
-    return snapshot.session.packageOrder;
-  }, [downloadsTabActive, downloadSearchActive, shouldLimitPackageRendering, snapshot.session.packageOrder]);
 
   const packageOrderKey = useMemo(() => {
     if (!downloadsTabActive) {
       return "";
     }
-    return packageIdsForView.join("|");
-  }, [downloadsTabActive, packageIdsForView]);
+    return snapshot.session.packageOrder.join("|");
+  }, [downloadsTabActive, snapshot.session.packageOrder]);
 
   const packages = useMemo(() => {
     if (!downloadsTabActive) {
       return [] as PackageEntry[];
     }
-
-    if (downloadSearchActive) {
-      return snapshot.session.packageOrder
-        .map((id: string) => snapshot.session.packages[id])
-        .filter((pkg): pkg is PackageEntry => Boolean(pkg) && pkg.name.toLowerCase().includes(downloadSearchQuery));
-    }
-
-    return packageIdsForView
+    return snapshot.session.packageOrder
       .map((id) => snapshot.session.packages[id])
       .filter((pkg): pkg is PackageEntry => Boolean(pkg));
-  }, [downloadsTabActive, downloadSearchActive, downloadSearchQuery, packageIdsForView, snapshot.session.packageOrder, snapshot.session.packages]);
+  }, [downloadsTabActive, packageOrderKey, snapshot.session.packageOrder, snapshot.session.packages]);
 
   const packagePosition = useMemo(() => {
     if (!downloadsTabActive) {
@@ -2222,20 +2253,6 @@ export function App(): ReactElement {
     });
     return map;
   }, [downloadsTabActive, snapshot.session.packageOrder]);
-
-  const itemsByPackage = useMemo(() => {
-    if (!downloadsTabActive) {
-      return new Map<string, DownloadItem[]>();
-    }
-    const map = new Map<string, DownloadItem[]>();
-    for (const pkg of packages) {
-      const items = pkg.itemIds
-        .map((id) => snapshot.session.items[id])
-        .filter(Boolean) as DownloadItem[];
-      map.set(pkg.id, items);
-    }
-    return map;
-  }, [downloadsTabActive, packageOrderKey, packages, snapshot.session.items]);
 
   useEffect(() => {
     if (!downloadsTabActive) {
@@ -2273,9 +2290,6 @@ export function App(): ReactElement {
     setSelectedIds((prev) => pruneSelection(prev, snapshot.session));
   }, [snapshot.session.packages, snapshot.session.items]);
 
-  const hiddenPackageCount = shouldLimitPackageRendering
-    ? Math.max(0, totalPackageCount - packages.length)
-    : 0;
   const sortRelevantItems = (snapshot.session.running && settingsDraft.autoSortPackagesByProgress && packages.length > 1)
     ? snapshot.session.items
     : null;
@@ -2290,6 +2304,21 @@ export function App(): ReactElement {
       true
     );
   }, [packages, sortRelevantItems]);
+
+  const downloadsViewCore = useMemo(() => buildDownloadsViewModel({
+    packageOrder: visiblePackages.map((entry) => entry.id),
+    packages: snapshot.session.packages,
+    items: snapshot.session.items,
+    displayMode: downloadDisplayMode,
+    filter: downloadFilter,
+    providerFilter: downloadProviderFilter,
+    query: deferredDownloadSearch,
+    collapsedPackageIds: Object.entries(collapsedPackages).filter(([, value]) => value).map(([id]) => id),
+    selectedIds,
+    hideExtractedItems: snapshot.settings.hideExtractedItems,
+    showAllPackages: showAllPackages || !snapshot.session.running,
+    renderLimit: AUTO_RENDER_PACKAGE_LIMIT
+  }), [collapsedPackages, deferredDownloadSearch, downloadDisplayMode, downloadFilter, downloadProviderFilter, selectedIds, showAllPackages, snapshot.session.items, snapshot.session.packages, snapshot.session.running, snapshot.settings.hideExtractedItems, visiblePackages]);
 
   const hasSavedAllDebridAccount = Boolean(snapshot.settings.allDebridUseWebLogin || snapshot.settings.allDebridToken.trim());
   const allDebridSettingsDirty = snapshot.settings.allDebridUseWebLogin !== settingsDraft.allDebridUseWebLogin
@@ -2366,6 +2395,7 @@ export function App(): ReactElement {
     panelDirtyRevisionRef.current += 1;
     settingsDirtyRef.current = true;
     setSettingsDirty(true);
+    setSettingsSaveState("dirty");
     setSettingsDraft((prev) => ({
       ...prev,
       providerOrder: newOrder,
@@ -2375,14 +2405,14 @@ export function App(): ReactElement {
     }));
   }, []);
 
-  const onProviderDragStart = useCallback((event: DragEvent<HTMLDivElement>, provider: DebridProvider): void => {
+  const onProviderDragStart = useCallback((event: DragEvent<HTMLElement>, provider: DebridProvider): void => {
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", provider);
     setDraggedProvider(provider);
     setProviderDropTarget(provider);
   }, []);
 
-  const onProviderDragOver = useCallback((event: DragEvent<HTMLDivElement>, provider: DebridProvider): void => {
+  const onProviderDragOver = useCallback((event: DragEvent<HTMLElement>, provider: DebridProvider): void => {
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
     if (providerDropTarget !== provider) {
@@ -2390,7 +2420,7 @@ export function App(): ReactElement {
     }
   }, [providerDropTarget]);
 
-  const onProviderDrop = useCallback((event: DragEvent<HTMLDivElement>, provider: DebridProvider): void => {
+  const onProviderDrop = useCallback((event: DragEvent<HTMLElement>, provider: DebridProvider): void => {
     event.preventDefault();
     if (!draggedProvider || draggedProvider === provider) {
       return;
@@ -2632,119 +2662,14 @@ export function App(): ReactElement {
   const [accountStatusSort, setAccountStatusSort] = useState<"none" | "desc" | "asc">("none");
   const cycleAccountStatusSort = (): void => setAccountStatusSort((s) => (s === "none" ? "desc" : s === "desc" ? "asc" : "none"));
 
-  const sortedAccountRows = useMemo(() => {
-    if (accountStatusSort === "none") return accountRows;
-    const statuses = snapshot.settings?.debridAccountStatuses || {};
-    const now = Date.now();
-    const remainingMs = (row: (typeof accountRows)[number]): number => {
-      const status = row.accountId ? statuses[row.accountId] : null;
-      return status && status.premiumUntilMs && status.premiumUntilMs > now ? status.premiumUntilMs - now : -1;
-    };
-    return [...accountRows].sort((a, b) => {
-      const remainingA = remainingMs(a);
-      const remainingB = remainingMs(b);
-      if (remainingA > 0 && remainingB > 0) return accountStatusSort === "desc" ? remainingB - remainingA : remainingA - remainingB;
-      if (remainingA > 0) return -1;
-      if (remainingB > 0) return 1;
-      return 0;
-    });
-  }, [accountRows, accountStatusSort, snapshot.settings]);
-
   useEffect(() => {
     setSelectedAccountRowKey((current) => pruneAccountRowSelection(current, accountRows.map((row) => row.rowKey)));
   }, [accountRows]);
-
-  const renderAccountRow = (row: AccountTableRow): ReactElement => {
-    const st = row.accountId ? (snapshot.settings?.debridAccountStatuses?.[row.accountId] ?? null) : null;
-    const checking = row.accountId ? megaCheckingIds.has(row.accountId) : false;
-    let statusCls = "none";
-    let statusText = "—";
-    if (row.disabled) { statusCls = "disabled"; statusText = "Deaktiviert"; }
-    else if (!row.checkable) {
-      statusCls = row.entry.statusLabel === "Aktiviert" ? "unknown" : "ok";
-      statusText = row.entry.statusLabel === "Aktiviert" ? "Aktiv" : row.entry.statusLabel;
-    }
-    else if (checking) { statusCls = "unknown"; statusText = "Prüfe…"; }
-    else if (!st) { statusCls = "unknown"; statusText = "Noch nicht geprüft"; }
-    else if (!st.valid) { statusCls = "invalid"; statusText = st.message || "Login ungültig"; }
-    else if (!st.isPremium) { statusCls = "free"; statusText = "Free Account"; }
-    else { statusCls = "ok"; statusText = st.message || "Premium Account"; }
-    const isProblem = statusCls === "invalid";
-    const username = resolveAccountUsername(row.username, st?.email);
-    const usernameTitle = username;
-    const expiry = st && st.premiumUntilMs && st.premiumUntilMs > 0 ? new Date(st.premiumUntilMs).toLocaleDateString("de-DE") : "—";
-    const traffic = row.dailyLimitBytes > 0
-      ? `${humanSize(row.dailyRemainingBytes)} von ${humanSize(row.dailyLimitBytes)} übrig`
-      : "Unbeschränkt";
-    return (
-      <div
-        key={row.rowKey}
-        className={`acct2-row${row.disabled ? " acct2-disabled" : ""}${isProblem ? " acct2-problem" : ""}${selectedAccountRowKey === row.rowKey ? " selected" : ""}`}
-        role="row"
-        tabIndex={0}
-        aria-selected={selectedAccountRowKey === row.rowKey}
-        onClick={() => setSelectedAccountRowKey(row.rowKey)}
-        onKeyDown={(event) => {
-          if (isAccountRowSelectionKey(event.key, event.target === event.currentTarget)) {
-            event.preventDefault();
-            setSelectedAccountRowKey(row.rowKey);
-          }
-        }}
-        onDoubleClick={() => openEditAccountDialog(row)}
-        onContextMenu={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          setAccountContextMenu({ x: event.clientX, y: event.clientY, row });
-        }}
-      >
-        <span className="acct2-c-check">
-          <input
-            type="checkbox"
-            checked={!row.disabled}
-            disabled={actionBusy}
-            title={row.disabled ? "Account aktivieren" : "Account deaktivieren (bleibt gespeichert)"}
-            aria-label={`${row.hosterLabel} ${row.modeLabel} ${row.disabled ? "aktivieren" : "deaktivieren"}`}
-            onChange={() => {
-              if (row.toggleKind === "mega" && row.megaLogin) { void onToggleMegaAccountEnabled(row.megaLogin, row.disabled); }
-              else if (row.toggleKind === "dl" && row.dlKey) { void onToggleDebridLinkApiKeyEnabled(row.entry, row.dlKey); }
-              else { void onToggleAccountEnabled(row.entry); }
-            }}
-          />
-        </span>
-        <span className="acct2-hoster" title={`${row.hosterLabel} · ${row.modeLabel}`}>
-          <AccountServiceLogo service={row.entry.service} className="acct2-service-icon" />
-          <strong>{row.hosterLabel}</strong>
-          <span className="acct2-mode">{row.modeLabel}</span>
-        </span>
-        <span className="acct2-status">
-          {statusCls === "none"
-            ? <span className="acct2-nostatus" title="Für diesen Anbieter gibt es keine Status-Prüfung">—</span>
-            : <span className={`account-validity-badge ${statusCls}`}>{statusText}</span>}
-        </span>
-        <span className="acct2-traffic">{traffic}</span>
-        <span className="acct2-user" title={usernameTitle}>{username}</span>
-        <span className="acct2-expiry">{expiry}</span>
-        <span className="acct2-credential" title="Passwörter und API-Schlüssel bleiben geschützt">{row.credentialLabel}</span>
-        <span className="acct2-c-actions">
-          <button
-            className="btn btn-sm acct2-menu-button"
-            disabled={actionBusy}
-            title="Account-Aktionen"
-            aria-label={`${row.hosterLabel} Account-Aktionen`}
-            onClick={(event) => {
-              event.stopPropagation();
-              const rect = event.currentTarget.getBoundingClientRect();
-              setAccountContextMenu({ x: rect.right, y: rect.bottom, row });
-            }}
-          >
-            ⋯
-          </button>
-        </span>
-      </div>
-    );
-  };
   const availableAccountOptions = useMemo(() => (
-    ACCOUNT_OPTIONS.filter((option) => !configuredAccountServices.has(option.service))
+    ACCOUNT_OPTIONS.filter((option) => option.kind === "megadebrid-api"
+      || option.kind === "megadebrid-web"
+      || option.kind === "debridlink-api"
+      || !configuredAccountServices.has(option.service))
   ), [configuredAccountServices]);
   const accountEditOption = accountEditDialog ? findAccountOption(accountEditDialog.target.kind) : null;
   const accountEditRow = accountEditDialog ? accountRows.find((row) => row.rowKey === accountEditDialog.target.rowKey) ?? null : null;
@@ -2765,7 +2690,10 @@ export function App(): ReactElement {
   const accountDialogSearchQuery = accountDialogSearch.trim().toLowerCase();
   const filteredAccountDialogOptions = useMemo(() => (
     accountDialogSelectableOptions.filter((option) => {
-      if (!matchesAccountModeFilter(option, accountDialogModeFilter)) {
+      const matchesMode = accountDialogModeFilter === "all"
+        || (accountDialogModeFilter === "api" && option.modeLabel === "API")
+        || (accountDialogModeFilter === "web" && (option.modeLabel.startsWith("Web") || option.kind === "ddownload-login" || option.kind === "linksnappy-login"));
+      if (!matchesMode) {
         return false;
       }
       if (!accountDialogSearchQuery) {
@@ -2781,8 +2709,12 @@ export function App(): ReactElement {
       return haystack.includes(accountDialogSearchQuery);
     })
   ), [accountDialogModeFilter, accountDialogSearchQuery, accountDialogSelectableOptions]);
-  const handleUpdateResult = async (result: UpdateCheckResult, source: "manual" | "startup"): Promise<void> => {
-    if (!mountedRef.current) {
+  const handleUpdateResult = async (
+    result: UpdateCheckResult,
+    source: "manual" | "startup",
+    generation: number
+  ): Promise<void> => {
+    if (!mountedRef.current || !shouldApplyUpdateCheckResult(generation, updateCheckGenerationRef.current)) {
       return;
     }
     if (result.error) {
@@ -2790,6 +2722,8 @@ export function App(): ReactElement {
       return;
     }
     if (!result.updateAvailable) {
+      setAvailableUpdate(null);
+      setUpdateDialogOpen(false);
       setUpdateInstallProgress(null);
       if (source === "manual") { showToast(`Kein Update verfügbar (v${result.currentVersion})`, 2000); }
       return;
@@ -2807,16 +2741,19 @@ export function App(): ReactElement {
         .replace(/\n{3,}/g, "\n\n")
         .trim();
     }
-    const approved = await askConfirmPrompt({
-      title: "Update verfügbar",
-      message: `${result.latestTag} (aktuell v${result.currentVersion})\n\nJetzt automatisch herunterladen und installieren?`,
-      confirmLabel: "Jetzt installieren",
-      details: changelogText || undefined
+    setAvailableUpdate({
+      ...result,
+      releaseNotes: changelogText
     });
-    if (!mountedRef.current) {
+    setUpdateInstallProgress(null);
+    setUpdateDialogOpen(true);
+  };
+
+  const installUpdate = async (): Promise<void> => {
+    if (!availableUpdate) {
       return;
     }
-    if (!approved) { showToast(`Update verfügbar: ${result.latestTag}`, 2600); return; }
+    setUpdateDialogOpen(true);
     setUpdateInstallProgress({
       stage: "starting",
       percent: 0,
@@ -2824,27 +2761,52 @@ export function App(): ReactElement {
       totalBytes: null,
       message: "Update wird vorbereitet"
     });
-    const install = await window.rd.installUpdate();
-    if (!mountedRef.current) {
-      return;
+    try {
+      const install = await window.rd.installUpdate();
+      if (!mountedRef.current) {
+        return;
+      }
+      if (install.started) {
+        showToast("Stilles Update gestartet - App wird neu gestartet", 2600);
+        return;
+      }
+      setUpdateInstallProgress({
+        stage: "error",
+        percent: null,
+        downloadedBytes: 0,
+        totalBytes: null,
+        message: install.message
+      });
+      showToast(`Auto-Update fehlgeschlagen: ${install.message}`, 3200);
+    } catch (error) {
+      if (!mountedRef.current) {
+        return;
+      }
+      const message = String(error);
+      setUpdateInstallProgress({
+        stage: "error",
+        percent: null,
+        downloadedBytes: 0,
+        totalBytes: null,
+        message
+      });
+      showToast(`Auto-Update fehlgeschlagen: ${message}`, 3200);
     }
-    if (install.started) { showToast("Stilles Update gestartet - App wird neu gestartet", 2600); return; }
-    setUpdateInstallProgress({
-      stage: "error",
-      percent: null,
-      downloadedBytes: 0,
-      totalBytes: null,
-      message: install.message
-    });
-    showToast(`Auto-Update fehlgeschlagen: ${install.message}`, 3200);
   };
 
   const onSaveSettings = async (): Promise<void> => {
+    if (actionBusyRef.current) {
+      return;
+    }
+    const revisionAtStart = settingsDraftRevisionRef.current;
+    setSettingsSaveState("saving");
     await performQuickAction(async () => {
       const result = await persistDraftSettings();
       applyTheme(result.theme);
+      setSettingsSaveState(settingsDraftRevisionRef.current === revisionAtStart ? "saved" : "dirty");
       showToast("Einstellungen gespeichert", 1800);
     }, (error) => {
+      setSettingsSaveState("error");
       showToast(`Einstellungen konnten nicht gespeichert werden: ${String(error)}`, 2800);
     });
   };
@@ -2888,6 +2850,8 @@ export function App(): ReactElement {
     settingsDirtyRef.current = false;
     panelDirtyRevisionRef.current = 0;
     setSettingsDirty(false);
+    setSettingsSaveState("clean");
+    setSettingsThemeChoice((current) => current === "system" ? current : result.theme);
     applyTheme(result.theme);
   };
 
@@ -2911,12 +2875,21 @@ export function App(): ReactElement {
   };
 
   const persistSpecificSettings = async (nextDraft: AppSettings): Promise<AppSettings> => {
+    const revisionAtStart = settingsDraftRevisionRef.current;
+    const draftAtStart = settingsDraft;
     const normalizedDraft = {
       ...nextDraft,
       ...normalizeProviderSelectionForSettings(nextDraft)
     };
     const result = await window.rd.updateSettings(normalizedDraft);
-    applyPersistedSettings(result);
+    if (settingsDraftRevisionRef.current === revisionAtStart) {
+      applyPersistedSettings(result);
+    } else {
+      setSettingsDraft((current) => mergeConcurrentSpecificSettings(draftAtStart, normalizedDraft, result, current));
+      settingsDirtyRef.current = true;
+      setSettingsDirty(true);
+      setSettingsSaveState("dirty");
+    }
     return result;
   };
 
@@ -2994,26 +2967,7 @@ export function App(): ReactElement {
   };
 
   const updateAccountDialogKind = useCallback((kind: AccountKind): void => {
-    setAccountDialog((prev) => {
-      const next = createAccountDialogState(prev?.mode ?? "create", kind, settingsDraft);
-      if (!prev) {
-        return next;
-      }
-      if (findAccountOption(kind).needsToken) {
-        next.token = prev.token;
-      }
-      if (findAccountOption(kind).needsCredentials) {
-        next.login = prev.login;
-        next.password = prev.password;
-      }
-      if (kind === "megadebrid-api" || kind === "megadebrid-web") {
-        next.megaAccounts = prev.megaAccounts;
-        next.megaNewLogin = prev.megaNewLogin;
-        next.megaNewPassword = prev.megaNewPassword;
-      }
-      next.dailyLimitGb = prev.dailyLimitGb;
-      return next;
-    });
+    setAccountDialog((prev) => createAccountDialogState(prev?.mode ?? "create", kind, settingsDraft));
   }, [settingsDraft]);
 
   useEffect(() => {
@@ -3031,7 +2985,7 @@ export function App(): ReactElement {
       updateAccountDialogKind(visibleKind);
       return;
     }
-    setAccountDialog((current) => current ? { ...current, kind: null } : current);
+    setAccountDialog((current) => current ? createAccountDialogState(current.mode, null, settingsDraft) : current);
   }, [accountDialog?.kind, filteredAccountDialogOptions, updateAccountDialogKind]);
 
   const closeAccountDialog = useCallback((): void => {
@@ -3080,27 +3034,78 @@ export function App(): ReactElement {
     if (!accountDialog) {
       return;
     }
-    const validationError = validateAccountDialog(accountDialog);
+    let dialogSnapshot = accountDialog;
+    let newIdentityId: string | null = null;
+    let newMegaCredentials: { login: string; password: string } | null = null;
+    let newDebridLinkToken = "";
+    if (dialogSnapshot.mode === "create" && (dialogSnapshot.kind === "megadebrid-api" || dialogSnapshot.kind === "megadebrid-web")) {
+      const login = dialogSnapshot.megaNewLogin.trim();
+      const password = dialogSnapshot.megaNewPassword;
+      if (!login || !password) {
+        showToast("Mega-Debrid: Bitte Login und Passwort eintragen.", 2800);
+        return;
+      }
+      if (dialogSnapshot.megaAccounts.some((account) => account.login.trim().toLowerCase() === login.toLowerCase())) {
+        showToast("Dieser Mega-Debrid-Account ist bereits vorhanden.", 2800);
+        return;
+      }
+      newIdentityId = getMegaDebridAccountId(login);
+      newMegaCredentials = { login, password };
+      dialogSnapshot = {
+        ...dialogSnapshot,
+        megaAccounts: [...dialogSnapshot.megaAccounts, newMegaCredentials],
+        megaNewLogin: "",
+        megaNewPassword: ""
+      };
+    }
+    if (dialogSnapshot.mode === "create" && dialogSnapshot.kind === "debridlink-api") {
+      const newKeys = parseDebridLinkApiKeys(dialogSnapshot.token);
+      if (newKeys.length !== 1) {
+        showToast("Debrid-Link: Bitte genau einen API-Key eintragen.", 2800);
+        return;
+      }
+      const existingKeys = parseDebridLinkApiKeys(settingsDraft.debridLinkApiKeys || "");
+      if (existingKeys.some((key) => key.id === newKeys[0].id)) {
+        showToast("Dieser Debrid-Link-Key ist bereits vorhanden.", 2800);
+        return;
+      }
+      newIdentityId = newKeys[0].id;
+      newDebridLinkToken = newKeys[0].token;
+      dialogSnapshot = {
+        ...dialogSnapshot,
+        token: [...existingKeys.map((key) => key.token), newKeys[0].token].join("\n"),
+        keyDailyLimitGbById: {
+          ...buildDebridLinkKeyLimitInputs(settingsDraft.debridLinkApiKeys || "", undefined, settingsDraft),
+          [newKeys[0].id]: accountDialog.dailyLimitGb
+        }
+      };
+    }
+    const validationError = validateAccountDialog(dialogSnapshot);
     if (validationError) {
       showToast(validationError, 2800);
       return;
     }
-    const dialogSnapshot = accountDialog;
     const selectedOption = dialogSnapshot.kind ? findAccountOption(dialogSnapshot.kind) : null;
     await performQuickAction(async () => {
       const nextDraft = applyAccountDialogToSettings(settingsDraft, dialogSnapshot);
-      const requiresCredentialCheck = selectedOption?.kind === "megadebrid-api"
-        || selectedOption?.kind === "megadebrid-web"
-        || selectedOption?.kind === "debridlink-api";
-      if (requiresCredentialCheck) {
-        const statuses = await window.rd.checkDebridAccounts(nextDraft);
-        const invalidStatuses = statuses.filter((status) => !status.valid);
-        if (invalidStatuses.length > 0) {
-          const details = invalidStatuses
-            .map((status) => status.message || "Zugangsdaten ungültig")
-            .join(" | ");
-          showToast(`Prüfung fehlgeschlagen: ${details}`, 4200);
-          return;
+      const targetedOption = selectedOption && newIdentityId ? {
+        service: selectedOption.service === "megadebrid-web" ? "megadebrid-api" : selectedOption.service
+      } as Pick<AccountAddOption, "service"> : null;
+      const targetedCheck = targetedOption && newIdentityId ? buildTargetedAccountCheck(targetedOption, newIdentityId) : null;
+      if (targetedCheck) {
+        const checkSettings = targetedCheck.service === "megadebrid-api" && newMegaCredentials
+          ? {
+              ...nextDraft,
+              megaCredentials: serializeMegaDebridAccounts([newMegaCredentials]),
+              megaLogin: newMegaCredentials.login,
+              megaPassword: newMegaCredentials.password,
+              debridLinkApiKeys: ""
+            }
+          : { ...nextDraft, megaCredentials: "", megaLogin: "", megaPassword: "", debridLinkApiKeys: newDebridLinkToken };
+        const statuses = await window.rd.checkDebridAccounts(checkSettings, true, targetedCheck.expectedStatusId);
+        const status = statuses.length === 1 && statuses[0].accountId === targetedCheck.expectedStatusId ? statuses[0] : null;
+        if (!status || !status.valid) {
+          throw new Error(status?.message || "Die Prüfung hat nicht genau den neuen Account bestätigt.");
         }
       }
       await persistSpecificSettings(nextDraft);
@@ -3328,14 +3333,13 @@ export function App(): ReactElement {
   };
 
   const onCheckUpdates = async (): Promise<void> => {
-    let updateResult: UpdateCheckResult | null = null;
-    await performQuickAction(async () => {
-      setUpdateInstallProgress(null);
-      updateResult = await window.rd.checkUpdates();
-    }, (error) => {
+    await performQuickAction(() => runLatestUpdateCheck(
+      updateCheckGenerationRef,
+      () => window.rd.checkUpdates(),
+      (result, generation) => handleUpdateResult(result, "manual", generation)
+    ), (error) => {
       showToast(`Update-Check fehlgeschlagen: ${String(error)}`, 2800);
     });
-    if (updateResult) await handleUpdateResult(updateResult, "manual");
   };
 
   const persistDraftSettings = async (): Promise<AppSettings> => {
@@ -3394,6 +3398,139 @@ export function App(): ReactElement {
       pumpConfirmQueue();
     });
   }, [pumpConfirmQueue]);
+
+  const restoreHistoryEntries = useCallback(async (entryIds: string[]): Promise<void> => {
+    const requested = new Set(entryIds);
+    const entries = historyEntriesRef.current.filter((entry) => requested.has(entry.id));
+    const urls = entries.flatMap((entry) => entry.urls ?? []);
+    if (urls.length === 0) {
+      showToast("Keine gespeicherten Links vorhanden");
+      return;
+    }
+    try {
+      const result = await window.rd.addLinks({
+        rawText: urls.join("\n"),
+        packageName: entries.length === 1 ? entries[0].name : "Verlaufsauswahl"
+      });
+      showToast(result.addedLinks > 0 ? `${result.addedLinks} Link(s) zur Queue hinzugefügt` : "Keine Links hinzugefügt");
+    } catch {
+      showToast("Fehler beim Hinzufügen");
+    }
+  }, [showToast]);
+
+  const removeHistoryEntries = useCallback(async (entryIds: string[]): Promise<void> => {
+    const requested = new Set(entryIds);
+    const ids = historyEntriesRef.current.filter((entry) => requested.has(entry.id)).map((entry) => entry.id);
+    if (ids.length === 0) {
+      return;
+    }
+    const confirmed = await askConfirmPrompt({
+      title: ids.length === 1 ? "Verlaufseintrag entfernen" : "Verlaufseinträge entfernen",
+      message: ids.length === 1 ? "Diesen Eintrag aus dem Verlauf entfernen?" : `${ids.length} Einträge aus dem Verlauf entfernen?`,
+      confirmLabel: "Entfernen",
+      danger: true
+    });
+    if (!confirmed) {
+      return;
+    }
+    const results = await Promise.allSettled(ids.map((id) => window.rd.removeHistoryEntry(id)));
+    if (results.some((result) => result.status === "rejected")) {
+      showToast("Einige Verlaufseinträge konnten nicht entfernt werden");
+      await loadHistoryEntries();
+      return;
+    }
+    const removed = new Set(ids);
+    applyHistoryEntries(historyEntriesRef.current.filter((entry) => !removed.has(entry.id)));
+    showToast(ids.length === 1 ? "Verlaufseintrag entfernt" : `${ids.length} Verlaufseinträge entfernt`);
+  }, [applyHistoryEntries, askConfirmPrompt, loadHistoryEntries, showToast]);
+
+  const clearHistoryEntries = useCallback(async (): Promise<void> => {
+    if (historyEntriesRef.current.length === 0) {
+      return;
+    }
+    const confirmed = await askConfirmPrompt({
+      title: "Verlauf leeren",
+      message: "Wirklich alle Einträge aus dem Verlauf entfernen?",
+      confirmLabel: "Verlauf leeren",
+      danger: true
+    });
+    if (!confirmed) {
+      return;
+    }
+    try {
+      await window.rd.clearHistory();
+      applyHistoryEntries([]);
+      showToast("Verlauf geleert");
+    } catch {
+      showToast("Verlauf konnte nicht geleert werden");
+      await loadHistoryEntries();
+    }
+  }, [applyHistoryEntries, askConfirmPrompt, loadHistoryEntries, showToast]);
+
+  const revealHistoryEntry = useCallback(async (entryId: string): Promise<void> => {
+    try {
+      const result = await window.rd.revealHistoryEntry(entryId);
+      if (result.ok) {
+        showToast("Zielordner geöffnet");
+        return;
+      }
+      const messages = {
+        "entry-not-found": "Verlaufseintrag wurde nicht gefunden",
+        "invalid-output-dir": "Der gespeicherte Zielordner ist ungültig",
+        "output-dir-missing": "Der gespeicherte Zielordner existiert nicht mehr",
+        "output-dir-not-directory": "Das gespeicherte Ziel ist kein Ordner",
+        "open-failed": "Zielordner konnte nicht geöffnet werden"
+      } as const;
+      showToast(messages[result.reason]);
+    } catch {
+      showToast("Zielordner konnte nicht geöffnet werden");
+    }
+  }, [showToast]);
+
+  const historyActions = useMemo<HistoryViewActions>(() => ({
+    onFilterChange: setHistoryFilter,
+    onQueryChange: setHistoryQuery,
+    onToggleSelection: (entryId) => {
+      setSelectedHistoryIds((current) => {
+        const next = new Set(current);
+        if (next.has(entryId)) {
+          next.delete(entryId);
+        } else {
+          next.add(entryId);
+        }
+        return next;
+      });
+    },
+    onToggleSelectAll: (visibleIds) => {
+      setSelectedHistoryIds((current) => {
+        const allSelected = visibleIds.length > 0 && visibleIds.every((id) => current.has(id));
+        return allSelected ? new Set() : selectVisibleHistoryIds(visibleIds);
+      });
+    },
+    onToggleExpansion: (entryId) => {
+      setHistoryExpandedIds((current) => {
+        const next = new Set(current);
+        if (next.has(entryId)) {
+          next.delete(entryId);
+        } else {
+          next.add(entryId);
+        }
+        return next;
+      });
+    },
+    onRestore: (entryIds) => { void restoreHistoryEntries(entryIds); },
+    onReveal: (entryId) => { void revealHistoryEntry(entryId); },
+    onRemove: (entryIds) => { void removeHistoryEntries(entryIds); },
+    onClearSelection: () => setSelectedHistoryIds(new Set()),
+    onClearHistory: () => { void clearHistoryEntries(); },
+    onContextMenu: (entryId, x, y) => {
+      setSelectedHistoryIds((current) => {
+        const visibleSelection = pruneHistoryIds(current, historyVisibleIdsRef.current);
+        return visibleSelection.has(entryId) ? visibleSelection : new Set([entryId]);
+      });
+      setHistoryCtxMenu({ entryId, x, y });
+    }
+  }), [clearHistoryEntries, removeHistoryEntries, restoreHistoryEntries, revealHistoryEntry]);
 
   const onStartDownloads = async (): Promise<void> => {
     await performQuickAction(async () => {
@@ -3457,6 +3594,7 @@ export function App(): ReactElement {
   };
 
   const onAddLinks = async (): Promise<void> => {
+    setCollectorError("");
     await performQuickAction(async () => {
       const activeId = activeCollectorTabRef.current;
       const active = collectorTabsRef.current.find((t) => t.id === activeId) ?? collectorTabsRef.current[0];
@@ -3466,17 +3604,20 @@ export function App(): ReactElement {
       const result = await window.rd.addLinks({ rawText, packageName: persisted.packageName });
       if (result.addedLinks > 0) {
         showToast(`${result.addedPackages} Paket(e), ${result.addedLinks} Link(s) hinzugefügt`);
-        setCollectorTabs((prev) => prev.map((t) => t.id === activeId ? { ...t, text: "" } : t));
+        setCollectorTabs((prev) => planCollectorTextReplacement(prev, activeId, "").tabs);
+        setSelectedCollectorRowIds(new Set());
         if (snapshotRef.current.settings.collapseNewPackages) { await collapseNewPackages(existingIds); }
       } else {
         showToast("Keine gültigen Links gefunden");
       }
     }, (error) => {
+      setCollectorError(`Fehler beim Hinzufügen: ${String(error)}`);
       showToast(`Fehler beim Hinzufügen: ${String(error)}`, 2600);
     });
   };
 
   const onImportDlc = async (): Promise<void> => {
+    setCollectorError("");
     await performQuickAction(async () => {
       const files = await window.rd.pickContainers();
       if (files.length === 0) { return; }
@@ -3487,9 +3628,11 @@ export function App(): ReactElement {
         showToast(`DLC importiert: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
         if (snapshotRef.current.settings.collapseNewPackages) { await collapseNewPackages(existingIds); }
       } else {
+        setCollectorError("Keine gültigen Links in den DLC-Dateien gefunden");
         showToast("Keine gültigen Links in den DLC-Dateien gefunden", 3000);
       }
     }, (error) => {
+      setCollectorError(`Fehler beim DLC-Import: ${String(error)}`);
       showToast(`Fehler beim DLC-Import: ${String(error)}`, 2600);
     });
   };
@@ -3533,6 +3676,7 @@ export function App(): ReactElement {
     const importFiles = files.filter((f) => /\.(json|txt)$/i.test(f.name));
     const droppedText = event.dataTransfer.getData("text/plain") || event.dataTransfer.getData("text/uri-list") || "";
     if (dlc.length > 0) {
+      setCollectorError("");
       await performQuickAction(async () => {
         await persistDraftSettings();
         const existingIds = new Set(Object.keys(snapshotRef.current.session.packages));
@@ -3541,12 +3685,15 @@ export function App(): ReactElement {
           showToast(`Drag-and-Drop: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
           if (snapshotRef.current.settings.collapseNewPackages) { await collapseNewPackages(existingIds); }
         } else {
+          setCollectorError("Keine gültigen Links in den DLC-Dateien gefunden");
           showToast("Keine gültigen Links in den DLC-Dateien gefunden", 3000);
         }
       }, (error) => {
+        setCollectorError(`Fehler bei Drag-and-Drop: ${String(error)}`);
         showToast(`Fehler bei Drag-and-Drop: ${String(error)}`, 2600);
       });
     } else if (importFiles.length > 0) {
+      setCollectorError("");
       await performQuickAction(async () => {
         await persistDraftSettings();
         const existingIds = new Set(Object.keys(snapshotRef.current.session.packages));
@@ -3562,9 +3709,11 @@ export function App(): ReactElement {
           showToast(`Importiert: ${addedPackages} Paket(e), ${addedLinks} Link(s)`);
           if (snapshotRef.current.settings.collapseNewPackages) { await collapseNewPackages(existingIds); }
         } else {
+          setCollectorError("Keine gültigen Links in den Import-Dateien gefunden");
           showToast("Keine gültigen Links in den Import-Dateien gefunden", 3000);
         }
       }, (error) => {
+        setCollectorError(`Fehler bei Drag-and-Drop: ${String(error)}`);
         showToast(`Fehler bei Drag-and-Drop: ${String(error)}`, 2600);
       });
     } else if (droppedText.trim()) {
@@ -3592,6 +3741,7 @@ export function App(): ReactElement {
       return;
     }
 
+    setCollectorError("");
     actionBusyRef.current = true;
     setActionBusy(true);
 
@@ -3628,9 +3778,11 @@ export function App(): ReactElement {
           showToast(`Importiert: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
           if (snapshotRef.current.settings.collapseNewPackages) { await collapseNewPackages(existingIds); }
         } else {
+          setCollectorError("Keine gültigen Links in der Datei gefunden");
           showToast("Keine gültigen Links in der Datei gefunden", 3000);
         }
       }, (error) => {
+        setCollectorError(`Import fehlgeschlagen: ${String(error)}`);
         showToast(`Import fehlgeschlagen: ${String(error)}`, 2600);
       });
     };
@@ -3646,6 +3798,7 @@ export function App(): ReactElement {
     panelDirtyRevisionRef.current += 1;
     settingsDirtyRef.current = true;
     setSettingsDirty(true);
+    setSettingsSaveState("dirty");
     setSettingsDraft((prev) => ({ ...prev, [key]: value }));
   };
   const setText = (key: keyof AppSettings, value: string): void => {
@@ -3653,6 +3806,7 @@ export function App(): ReactElement {
     panelDirtyRevisionRef.current += 1;
     settingsDirtyRef.current = true;
     setSettingsDirty(true);
+    setSettingsSaveState("dirty");
     setSettingsDraft((prev) => ({ ...prev, [key]: value }));
   };
   const setNum = (key: keyof AppSettings, value: number): void => {
@@ -3660,6 +3814,7 @@ export function App(): ReactElement {
     panelDirtyRevisionRef.current += 1;
     settingsDirtyRef.current = true;
     setSettingsDirty(true);
+    setSettingsSaveState("dirty");
     setSettingsDraft((prev) => ({ ...prev, [key]: value }));
   };
   const setSpeedLimitMbps = (value: number): void => {
@@ -3668,6 +3823,7 @@ export function App(): ReactElement {
     panelDirtyRevisionRef.current += 1;
     settingsDirtyRef.current = true;
     setSettingsDirty(true);
+    setSettingsSaveState("dirty");
     setSettingsDraft((prev) => ({ ...prev, speedLimitKbps: Math.floor(mbps * 1024) }));
   };
 
@@ -3767,21 +3923,90 @@ export function App(): ReactElement {
       return [...prev, { id, name, text: "" }];
     });
     setActiveCollectorTab(id);
+    setSelectedCollectorRowIds(new Set());
+    setCollectorError("");
   };
 
   const removeCollectorTab = (id: string): void => {
-    let fallbackId = "";
+    const removal = planCollectorTabRemoval(
+      collectorTabsRef.current,
+      activeCollectorTabRef.current,
+      id
+    );
+    if (removal.tabs === collectorTabsRef.current) {
+      return;
+    }
+    collectorTabsRef.current = removal.tabs;
+    activeCollectorTabRef.current = removal.activeTabId;
+    setCollectorTabs(removal.tabs);
+    setActiveCollectorTab(removal.activeTabId);
+    setSelectedCollectorRowIds(new Set());
+    setCollectorError("");
+  };
+
+  const openCollectorInput = (): void => {
+    const activeId = activeCollectorTabRef.current;
+    const active = collectorTabsRef.current.find((entry) => entry.id === activeId) ?? collectorTabsRef.current[0];
+    if (!active) {
+      return;
+    }
+    setCollectorError("");
+    setCollectorInput({
+      tabId: active.id,
+      tabName: active.name,
+      baseText: active.text,
+      draft: active.text
+    });
+  };
+
+  const commitCollectorInput = (): void => {
+    if (!collectorInput) {
+      return;
+    }
+    const input = collectorInput;
     setCollectorTabs((prev) => {
-      if (prev.length <= 1) return prev;
-      const index = prev.findIndex((tabEntry) => tabEntry.id === id);
-      if (index < 0) return prev;
-      const next = prev.filter((tabEntry) => tabEntry.id !== id);
-      if (activeCollectorTabRef.current === id) {
-        fallbackId = next[Math.max(0, index - 1)]?.id ?? next[0]?.id ?? "";
+      const currentText = prev.find((entry) => entry.id === input.tabId)?.text ?? input.baseText;
+      const text = mergeCollectorDraftText(input.baseText, currentText, input.draft);
+      return planCollectorTextReplacement(prev, input.tabId, text).tabs;
+    });
+    setSelectedCollectorRowIds(new Set());
+    setCollectorInput(null);
+    setCollectorError("");
+  };
+
+  const toggleCollectorRowSelection = (rowId: string): void => {
+    setSelectedCollectorRowIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowId)) {
+        next.delete(rowId);
+      } else {
+        next.add(rowId);
       }
       return next;
     });
-    if (fallbackId) setActiveCollectorTab(fallbackId);
+  };
+
+  const removeSelectedCollectorRows = (): void => {
+    if (selectedCollectorRowIds.size === 0) {
+      return;
+    }
+    const activeId = activeCollectorTabRef.current;
+    const indexes = new Set<number>();
+    for (const rowId of selectedCollectorRowIds) {
+      const separator = rowId.lastIndexOf(":");
+      if (separator <= 0 || rowId.slice(0, separator) !== activeId) {
+        continue;
+      }
+      const index = Number(rowId.slice(separator + 1));
+      if (Number.isInteger(index) && index >= 0) {
+        indexes.add(index);
+      }
+    }
+    setCollectorTabs((prev) => prev.map((entry) => entry.id === activeId
+      ? { ...entry, text: entry.text.split(/\r?\n/).filter((_line, index) => !indexes.has(index)).join("\n") }
+      : entry));
+    setSelectedCollectorRowIds(new Set());
+    setCollectorError("");
   };
 
   const onPackageDragStart = useCallback((packageId: string) => {
@@ -3871,9 +4096,9 @@ export function App(): ReactElement {
     movePackage(packageId, "down");
   }, [movePackage]);
 
-  const moveSelectedPackages = useCallback((direction: "up" | "down") => {
+  const moveSelectedPackages = useCallback((direction: "up" | "down", ids: Iterable<string> = selectedIds) => {
     const currentOrder = packageOrderRef.current;
-    const selPkgs = new Set([...selectedIds].filter((id) => snapshot.session.packages[id]));
+    const selPkgs = new Set([...ids].filter((id) => snapshot.session.packages[id]));
     if (selPkgs.size === 0) return;
     const order = [...currentOrder];
     if (direction === "up") {
@@ -4052,21 +4277,9 @@ export function App(): ReactElement {
   const dragAnchorRef = useRef<string | null>(null);
   const dragDidMoveRef = useRef(false);
   const lastClickedIdRef = useRef<string | null>(null);
+  const dragMouseUpRef = useRef<(() => void) | null>(null);
 
-  const visibleOrderIds = useMemo(() => {
-    const ids: string[] = [];
-    for (const pkg of visiblePackages) {
-      ids.push(pkg.id);
-      if (!(collapsedPackages[pkg.id] ?? false)) {
-        const items = itemsByPackage.get(pkg.id) ?? [];
-        for (const item of items) {
-          if (snapshot.settings.hideExtractedItems && item.fullStatus?.startsWith("Entpackt")) continue;
-          ids.push(item.id);
-        }
-      }
-    }
-    return ids;
-  }, [visiblePackages, collapsedPackages, itemsByPackage, snapshot.settings.hideExtractedItems]);
+  const visibleOrderIds = downloadsViewCore.visibleRowIds;
 
   // Keep a ref of the currently VISIBLE ids so the (deps-[]) Ctrl+A keyboard
   // handler can select exactly what the user sees — not the whole unfiltered map.
@@ -4105,6 +4318,9 @@ export function App(): ReactElement {
   const onSelectMouseDown = useCallback((id: string, e: React.MouseEvent): void => {
     if (!e.ctrlKey || e.button !== 0) return;
     e.preventDefault();
+    if (dragMouseUpRef.current) {
+      window.removeEventListener("mouseup", dragMouseUpRef.current);
+    }
     dragSelectRef.current = true;
     dragAnchorRef.current = id;
     dragDidMoveRef.current = false;
@@ -4113,8 +4329,19 @@ export function App(): ReactElement {
       dragAnchorRef.current = null;
       dragDidMoveRef.current = false;
       window.removeEventListener("mouseup", onUp);
+      if (dragMouseUpRef.current === onUp) {
+        dragMouseUpRef.current = null;
+      }
     };
+    dragMouseUpRef.current = onUp;
     window.addEventListener("mouseup", onUp);
+  }, []);
+
+  useEffect(() => () => {
+    if (dragMouseUpRef.current) {
+      window.removeEventListener("mouseup", dragMouseUpRef.current);
+      dragMouseUpRef.current = null;
+    }
   }, []);
 
   const onSelectMouseEnter = useCallback((id: string): void => {
@@ -4201,6 +4428,7 @@ export function App(): ReactElement {
     panelDirtyRevisionRef.current += 1;
     settingsDirtyRef.current = true;
     setSettingsDirty(true);
+    setSettingsSaveState("dirty");
     setSettingsDraft((prev) => ({
       ...prev,
       bandwidthSchedules: [...(prev.bandwidthSchedules ?? []), { id: createScheduleId(), startHour: 0, endHour: 8, speedLimitKbps: 0, enabled: true }]
@@ -4211,6 +4439,7 @@ export function App(): ReactElement {
     panelDirtyRevisionRef.current += 1;
     settingsDirtyRef.current = true;
     setSettingsDirty(true);
+    setSettingsSaveState("dirty");
     setSettingsDraft((prev) => ({
       ...prev,
       bandwidthSchedules: (prev.bandwidthSchedules ?? []).filter((_, i) => i !== idx)
@@ -4221,6 +4450,7 @@ export function App(): ReactElement {
     panelDirtyRevisionRef.current += 1;
     settingsDirtyRef.current = true;
     setSettingsDirty(true);
+    setSettingsSaveState("dirty");
     setSettingsDraft((prev) => ({
       ...prev,
       bandwidthSchedules: (prev.bandwidthSchedules ?? []).map((s, i) => i === idx ? { ...s, [field]: value } : s)
@@ -4235,100 +4465,6 @@ export function App(): ReactElement {
     setOpenMenu(null);
     setOpenSubmenu(null);
   };
-
-  useEffect(() => {
-    if (!contextMenu) { return; }
-    const close = (): void => setContextMenu(null);
-    window.addEventListener("click", close);
-    window.addEventListener("contextmenu", close);
-    return () => {
-      window.removeEventListener("click", close);
-      window.removeEventListener("contextmenu", close);
-    };
-  }, [contextMenu]);
-
-  useEffect(() => {
-    if (!accountContextMenu) { return; }
-    const close = (): void => setAccountContextMenu(null);
-    window.addEventListener("click", close);
-    window.addEventListener("contextmenu", close);
-    return () => {
-      window.removeEventListener("click", close);
-      window.removeEventListener("contextmenu", close);
-    };
-  }, [accountContextMenu]);
-
-  useLayoutEffect(() => {
-    if (!contextMenu || !ctxMenuRef.current) return;
-    const el = ctxMenuRef.current;
-    const rect = el.getBoundingClientRect();
-    if (rect.bottom > window.innerHeight) {
-      el.style.top = `${Math.max(0, contextMenu.y - rect.height)}px`;
-    }
-    if (rect.right > window.innerWidth) {
-      el.style.left = `${Math.max(0, contextMenu.x - rect.width)}px`;
-    }
-  }, [contextMenu]);
-
-  useLayoutEffect(() => {
-    if (!accountContextMenu || !accountContextMenuRef.current) return;
-    const el = accountContextMenuRef.current;
-    const rect = el.getBoundingClientRect();
-    if (rect.bottom > window.innerHeight) {
-      el.style.top = `${Math.max(0, accountContextMenu.y - rect.height)}px`;
-    }
-    if (rect.right > window.innerWidth) {
-      el.style.left = `${Math.max(0, accountContextMenu.x - rect.width)}px`;
-    }
-  }, [accountContextMenu]);
-
-  useEffect(() => {
-    if (!colHeaderCtx) return;
-    const close = (e: MouseEvent): void => {
-      if (colHeaderCtxRef.current && colHeaderCtxRef.current.contains(e.target as Node)) return;
-      if (colHeaderBarRef.current && colHeaderBarRef.current.contains(e.target as Node)) return;
-      setColHeaderCtx(null);
-    };
-    window.addEventListener("mousedown", close);
-    return () => {
-      window.removeEventListener("mousedown", close);
-    };
-  }, [colHeaderCtx]);
-
-  useLayoutEffect(() => {
-    if (!colHeaderCtx || !colHeaderCtxRef.current) return;
-    const el = colHeaderCtxRef.current;
-    const rect = el.getBoundingClientRect();
-    if (rect.bottom > window.innerHeight) {
-      el.style.top = `${Math.max(0, colHeaderCtx.y - rect.height)}px`;
-    }
-    if (rect.right > window.innerWidth) {
-      el.style.left = `${Math.max(0, colHeaderCtx.x - rect.width)}px`;
-    }
-  }, [colHeaderCtx]);
-
-  useEffect(() => {
-    if (!historyCtxMenu) return;
-    const close = (): void => setHistoryCtxMenu(null);
-    window.addEventListener("click", close);
-    window.addEventListener("contextmenu", close);
-    return () => {
-      window.removeEventListener("click", close);
-      window.removeEventListener("contextmenu", close);
-    };
-  }, [historyCtxMenu]);
-
-  useLayoutEffect(() => {
-    if (!historyCtxMenu || !historyCtxMenuRef.current) return;
-    const el = historyCtxMenuRef.current;
-    const rect = el.getBoundingClientRect();
-    if (rect.bottom > window.innerHeight) {
-      el.style.top = `${Math.max(0, historyCtxMenu.y - rect.height)}px`;
-    }
-    if (rect.right > window.innerWidth) {
-      el.style.left = `${Math.max(0, historyCtxMenu.x - rect.width)}px`;
-    }
-  }, [historyCtxMenu]);
 
   const executeDeleteSelection = useCallback((ids: Set<string>): void => {
     const current = snapshotRef.current;
@@ -4682,7 +4818,7 @@ export function App(): ReactElement {
             setSelectedIds(new Set(visibleOrderIdsRef.current));
           } else if (tabRef.current === "history") {
             e.preventDefault();
-            setSelectedHistoryIds(new Set(historyEntriesRef.current.map(e => e.id)));
+            setSelectedHistoryIds(selectVisibleHistoryIds(historyVisibleIdsRef.current));
           }
           return;
         }
@@ -4696,7 +4832,7 @@ export function App(): ReactElement {
     if (!openMenu) { return; }
     const handler = (e: MouseEvent): void => {
       const target = e.target as HTMLElement;
-      if (!target.closest(".menu-bar")) {
+      if (!target.closest(".md-application-menu-tree")) {
         setOpenMenu(null);
         setOpenSubmenu(null);
       }
@@ -4713,20 +4849,6 @@ export function App(): ReactElement {
     return map;
   }, [snapshot.packageSpeedBps]);
 
-  const itemStatusCounts = useMemo(() => {
-    const counts = { downloading: 0, queued: 0, failed: 0 };
-    for (const item of Object.values(snapshot.session.items)) {
-      if (item.status === "downloading") {
-        counts.downloading += 1;
-      } else if (item.status === "queued" || item.status === "reconnect_wait") {
-        counts.queued += 1;
-      } else if (item.status === "failed") {
-        counts.failed += 1;
-      }
-    }
-    return counts;
-  }, [snapshot.session.items]);
-
   const providerStats = useMemo(() => {
     const stats: Record<string, { total: number; completed: number; failed: number; bytes: number }> = {};
     for (const item of Object.values(snapshot.session.items)) {
@@ -4742,61 +4864,682 @@ export function App(): ReactElement {
     return Object.entries(stats);
   }, [snapshot.session.items]);
 
-  const runtimeOffsetMs = snapshot.stats.runtimeMeasuredAt > 0
-    ? Math.max(0, runtimeNow - snapshot.stats.runtimeMeasuredAt)
-    : 0;
-  const liveSessionRuntimeMs = Math.max(0, (snapshot.stats.sessionRuntimeMs || 0) + runtimeOffsetMs);
-  const liveTotalRuntimeMs = Math.max(0, (snapshot.stats.totalRuntimeMs || 0) + runtimeOffsetMs);
-  const etaSeparatorIndex = snapshot.etaText.includes(": ") ? snapshot.etaText.indexOf(": ") : -1;
-  const etaValue = etaSeparatorIndex >= 0
-    ? snapshot.etaText.slice(etaSeparatorIndex + 2)
-    : "--";
-  const resetFailedDownloads = (): void => {
-    if (itemStatusCounts.failed === 0) return;
-    const failedIds = Object.values(snapshot.session.items)
-      .filter((it) => it.status === "failed")
-      .map((it) => it.id);
-    void window.rd.resetItems(failedIds).catch(() => {});
-  };
-  const statsSections: StatsSection[] = [
-    {
-      key: "live",
-      title: "Aktuell",
-      items: [
-        { key: "speed", eyebrow: "Live", label: "Geschwindigkeit", value: snapshot.speedText.replace("Geschwindigkeit: ", "") },
-        { key: "eta", eyebrow: "Live", label: "Restzeit", value: etaValue, compactValue: true },
-        { key: "active", eyebrow: "Queue", label: "Aktive Downloads", value: String(itemStatusCounts.downloading) },
-        { key: "queued", eyebrow: "Queue", label: "In Warteschlange", value: String(itemStatusCounts.queued) },
-        {
-          key: "failed",
-          eyebrow: "Status",
-          label: "Fehlerhaft",
-          value: String(itemStatusCounts.failed),
-          danger: itemStatusCounts.failed > 0,
-          clickable: itemStatusCounts.failed > 0,
-          title: itemStatusCounts.failed > 0 ? "Klicken zum Zurücksetzen aller fehlerhaften Downloads" : undefined,
-          onClick: resetFailedDownloads
-        },
-        { key: "packages", eyebrow: "Queue", label: "Pakete", value: String(snapshot.stats.totalPackages) }
-      ]
-    },
-    {
-      key: "summary",
-      title: "Bilanz",
-      items: [
-        { key: "downloaded-session", eyebrow: "Session", label: "Heruntergeladen", value: humanSize(snapshot.stats.totalDownloaded) },
-        { key: "downloaded-total", eyebrow: "Gesamt", label: "Heruntergeladen", value: humanSize(snapshot.stats.totalDownloadedAllTime) },
-        { key: "runtime-session", eyebrow: "Session", label: "Laufzeit", value: formatRuntimeDuration(liveSessionRuntimeMs), compactValue: true },
-        { key: "runtime-total", eyebrow: "Gesamt", label: "Laufzeit", value: formatRuntimeDuration(liveTotalRuntimeMs), compactValue: true },
-        { key: "files-session", eyebrow: "Session", label: "Fertige Dateien", value: String(snapshot.stats.totalFilesSession) },
-        { key: "files-total", eyebrow: "Gesamt", label: "Fertige Dateien", value: String(snapshot.stats.totalFilesAllTime) }
-      ]
+  const sortDownloadsByColumn = useCallback((column: DownloadSortColumn): void => {
+    const nextDescending = downloadsSortColumn === column ? !downloadsSortDescending : false;
+    setDownloadsSortColumn(column);
+    setDownloadsSortDescending(nextDescending);
+    const baseOrder = packageOrderRef.current.length > 0 ? packageOrderRef.current : snapshot.session.packageOrder;
+    const sorted = column === "progress"
+      ? sortPackageOrderByProgress(baseOrder, snapshot.session.packages, snapshot.session.items, nextDescending)
+      : column === "size"
+        ? sortPackageOrderBySize(baseOrder, snapshot.session.packages, snapshot.session.items, nextDescending)
+        : column === "hoster"
+          ? sortPackageOrderByHoster(baseOrder, snapshot.session.packages, snapshot.session.items, nextDescending)
+          : sortPackageOrderByName(baseOrder, snapshot.session.packages, nextDescending);
+    pendingPackageOrderRef.current = [...sorted];
+    pendingPackageOrderAtRef.current = Date.now();
+    packageOrderRef.current = sorted;
+    setSnapshot((current) => ({ ...current, session: { ...current.session, packageOrder: [...sorted] } }));
+    void window.rd.reorderPackages(sorted).catch((error) => {
+      pendingPackageOrderRef.current = null;
+      pendingPackageOrderAtRef.current = 0;
+      packageOrderRef.current = serverPackageOrderRef.current;
+      setSnapshot((current) => ({ ...current, session: { ...current.session, packageOrder: serverPackageOrderRef.current } }));
+      showToast(`Sortierung fehlgeschlagen: ${String(error)}`, 2400);
+    });
+  }, [downloadsSortColumn, downloadsSortDescending, showToast, snapshot.session.items, snapshot.session.packageOrder, snapshot.session.packages]);
+
+  const clearDownloadQueue = useCallback((): void => {
+    void performQuickAction(async () => {
+      const confirmed = await askConfirmPrompt({ title: "Queue löschen", message: "Wirklich alle Einträge aus der Queue löschen?", confirmLabel: "Alles löschen", danger: true });
+      if (confirmed) await window.rd.clearAll();
+    });
+  }, [askConfirmPrompt, performQuickAction]);
+
+  const activateDownloadSchedule = useCallback((): void => {
+    if (!scheduleTimeInput) return;
+    const [hours, minutes] = scheduleTimeInput.split(":").map(Number);
+    const now = new Date();
+    const target = new Date(now);
+    target.setHours(hours, minutes, 0, 0);
+    if (target.getTime() <= now.getTime()) target.setDate(target.getDate() + 1);
+    void window.rd.updateSettings({ scheduledStartEpochMs: target.getTime() }).catch(() => {});
+    setSchedulePickerOpen(false);
+  }, [scheduleTimeInput]);
+
+  const removeActionableDownloads = useCallback((): void => {
+    const ids = new Set(downloadsViewCore.actionableSelectedIds);
+    if (ids.size === 0) return;
+    if (settingsDraft.confirmDeleteSelection) {
+      setDeleteConfirm({ ids, dontAsk: false });
+    } else {
+      executeDeleteSelection(ids);
     }
-  ];
+  }, [downloadsViewCore.actionableSelectedIds, executeDeleteSelection, settingsDraft.confirmDeleteSelection]);
+
+  const downloadPackageSpeeds = useMemo(() => Object.fromEntries(packageSpeedMap), [packageSpeedMap]);
+  const downloadsViewModel = useMemo<DownloadsViewModel>(() => ({
+    ...downloadsViewCore,
+    running: snapshot.session.running,
+    paused: snapshot.session.paused,
+    canStart: snapshot.canStart,
+    canPause: snapshot.canPause,
+    canStop: snapshot.canStop,
+    actionBusy,
+    reconnectSeconds: snapshot.reconnectSeconds,
+    reconnectReason: snapshot.session.reconnectReason,
+    clipboardWatcher: snapshot.clipboardActive,
+    scheduleActive: snapshot.settings.scheduledStartEpochMs > 0,
+    scheduleOpen: schedulePickerOpen,
+    scheduleTime: scheduleTimeInput,
+    scheduleLabel: scheduleCountdown || (snapshot.settings.scheduledStartEpochMs > 0 ? new Date(snapshot.settings.scheduledStartEpochMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""),
+    packageSpeedBps: downloadPackageSpeeds,
+    editingPackageId,
+    editingName,
+    columnOrder,
+    gridTemplate,
+    sortColumn: downloadsSortColumn,
+    sortDirection: downloadsSortDescending ? "desc" : "asc",
+    status: {
+      packages: snapshot.stats.totalPackages,
+      links: Object.keys(snapshot.session.items).length,
+      session: humanSize(snapshot.stats.totalDownloaded),
+      total: humanSize(snapshot.stats.totalDownloadedAllTime),
+      hosters: providerStats.length,
+      speed: snapshot.speedText,
+      eta: snapshot.etaText
+    }
+  }), [actionBusy, columnOrder, downloadPackageSpeeds, downloadsSortColumn, downloadsSortDescending, downloadsViewCore, editingName, editingPackageId, gridTemplate, providerStats.length, scheduleCountdown, schedulePickerOpen, scheduleTimeInput, snapshot.canPause, snapshot.canStart, snapshot.canStop, snapshot.clipboardActive, snapshot.etaText, snapshot.reconnectSeconds, snapshot.session.items, snapshot.session.paused, snapshot.session.reconnectReason, snapshot.session.running, snapshot.settings.scheduledStartEpochMs, snapshot.speedText, snapshot.stats.totalDownloaded, snapshot.stats.totalDownloadedAllTime, snapshot.stats.totalPackages]);
+
+  const downloadsActions: DownloadsViewActions = {
+    onDisplayModeChange: setDownloadDisplayMode,
+    onFilterChange: setDownloadFilter,
+    onProviderFilterChange: setDownloadProviderFilter,
+    onQueryChange: setDownloadSearch,
+    onAddLinks: () => {
+      setTab("collector");
+      openCollectorInput();
+    },
+    onStartDownloads: () => {
+      if (snapshot.session.paused) {
+        setSnapshot((current) => ({ ...current, session: { ...current.session, paused: false } }));
+        void window.rd.togglePause().catch(() => {});
+      } else {
+        void onStartDownloads();
+      }
+    },
+    onPauseDownloads: () => {
+      setSnapshot((current) => ({ ...current, session: { ...current.session, paused: true } }));
+      void window.rd.togglePause().catch(() => {});
+    },
+    onStopDownloads: () => { void performQuickAction(() => window.rd.stop()); },
+    onToggleSchedule: () => {
+      setSchedulePickerOpen((current) => !current);
+      setScheduleTimeInput("");
+    },
+    onScheduleTimeChange: setScheduleTimeInput,
+    onActivateSchedule: activateDownloadSchedule,
+    onCancelSchedule: () => { void window.rd.updateSettings({ scheduledStartEpochMs: 0 }).catch(() => {}); },
+    onMoveSelectionUp: () => moveSelectedPackages("up", downloadsViewCore.actionableSelectedIds),
+    onMoveSelectionDown: () => moveSelectedPackages("down", downloadsViewCore.actionableSelectedIds),
+    onRenameSelection: () => {
+      const packageId = downloadsViewCore.actionableSelectedPackageIds[0];
+      const entry = packageId ? snapshot.session.packages[packageId] : null;
+      if (entry) onPackageStartEdit(entry.id, entry.name);
+    },
+    onRemoveSelection: removeActionableDownloads,
+    onToggleClipboardWatcher: () => { void performQuickAction(() => window.rd.toggleClipboard()); },
+    onClearAll: clearDownloadQueue,
+    onToggleAllPackages: () => {
+      const targetState = !allPackagesCollapsed;
+      setCollapsedPackages((current) => {
+        const next = { ...current };
+        for (const entry of packages) {
+          next[entry.id] = targetState;
+          if (targetState) manualCollapsedPkgsRef.current.add(entry.id);
+          else {
+            manualCollapsedPkgsRef.current.delete(entry.id);
+            autoExpandedPkgsRef.current.delete(entry.id);
+          }
+        }
+        return next;
+      });
+    },
+    onShowAllPackages: () => setShowAllPackages(true),
+    onPackageDragStart,
+    onPackageDrop,
+    onPackageDragEnd,
+    onSetVisibleSelection: (ids, selected) => {
+      setSelectedIds((current) => {
+        const next = new Set(current);
+        for (const id of ids) {
+          if (selected) next.add(id);
+          else next.delete(id);
+        }
+        return next;
+      });
+    },
+    onToggleSelection: onSelectId,
+    onSelectionMouseDown: onSelectMouseDown,
+    onSelectionMouseEnter: onSelectMouseEnter,
+    onTogglePackage: onPackageToggle,
+    onTogglePackageCollapse: onPackageToggleCollapse,
+    onStartPackageRename: onPackageStartEdit,
+    onPackageRenameChange: setEditingName,
+    onCommitPackageRename: (packageId, value) => {
+      const currentName = snapshot.session.packages[packageId]?.name ?? "";
+      onPackageFinishEdit(packageId, currentName, value);
+    },
+    onCancelPackageRename: () => {
+      setEditingPackageId(null);
+      setEditingName("");
+    },
+    onCancelPackage: onPackageCancel,
+    onMovePackageUp: onPackageMoveUp,
+    onMovePackageDown: onPackageMoveDown,
+    onRemoveItem: onPackageRemoveItem,
+    onOpenContextMenu: (id, x, y, packageId) => {
+      const item = snapshot.session.items[id];
+      onPackageContextMenu(packageId ?? item?.packageId ?? id, item?.id, x, y);
+    },
+    onSortColumn: sortDownloadsByColumn,
+    onColumnDragStart: (column, event) => {
+      event.dataTransfer.effectAllowed = "move";
+      setDragColId(column);
+    },
+    onColumnDragOver: (column, event) => {
+      if (dragColId && dragColId !== column) {
+        event.preventDefault();
+        setDropTargetCol(column);
+      }
+    },
+    onColumnDragLeave: () => setDropTargetCol(null),
+    onColumnDrop: (column, event) => {
+      event.preventDefault();
+      setDropTargetCol(null);
+      if (!dragColId || dragColId === column) return;
+      const next = [...columnOrder];
+      const fromIndex = next.indexOf(dragColId);
+      const toIndex = next.indexOf(column);
+      if (fromIndex < 0 || toIndex < 0) return;
+      next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, dragColId);
+      setColumnOrder(next);
+      setDragColId(null);
+      void window.rd.updateSettings({ columnOrder: next }).catch(() => {});
+    },
+    onColumnDragEnd: () => {
+      setDragColId(null);
+      setDropTargetCol(null);
+    },
+    onColumnContextMenu: (_column, x, y) => setColHeaderCtx({ x, y })
+  };
+
+  const statisticsActions: StatisticsViewActions = {
+    onRangeChange: setStatisticsRange,
+    onResetSession: () => {
+      void window.rd.resetSessionStats().then(() => {
+        showToast("Session-Statistik zurückgesetzt", 1800);
+      }).catch((error) => {
+        showToast(`Session-Reset fehlgeschlagen: ${String(error)}`, 2400);
+      });
+    },
+    onResetAll: () => {
+      void window.rd.resetDownloadStats().then(() => {
+        showToast("Gesamt-Downloadstatistik zurückgesetzt", 1800);
+      }).catch((error) => {
+        showToast(`Download-Reset fehlgeschlagen: ${String(error)}`, 2400);
+      });
+    },
+    onResetErrors: () => {
+      const failedIds = Object.values(snapshot.session.items)
+        .filter((item) => item.status === "failed")
+        .map((item) => item.id);
+      if (failedIds.length === 0) {
+        return;
+      }
+      void window.rd.resetItems(failedIds).catch(() => {});
+    }
+  };
+  const collectorActions: CollectorViewActions = {
+    onTabSelect: (tabId) => {
+      activeCollectorTabRef.current = tabId;
+      setActiveCollectorTab(tabId);
+      setSelectedCollectorRowIds(new Set());
+      setCollectorError("");
+    },
+    onTabAdd: addCollectorTab,
+    onTabRemove: removeCollectorTab,
+    onOpenInput: openCollectorInput,
+    onImportDlc: () => { void onImportDlc(); },
+    onImportFile: () => { void onImportQueue(); },
+    onExportQueue: () => { void onExportQueue(); },
+    onSubmit: () => { void onAddLinks(); },
+    onQueryChange: setCollectorQuery,
+    onSelectionChange: toggleCollectorRowSelection,
+    onRemoveSelected: removeSelectedCollectorRows
+  };
+
+  const settingsFormModel = useMemo<SettingsFormViewModel>(() => buildSettingsFormViewModel({
+    settings: settingsDraft,
+    section: settingsSubTab,
+    speedLimitInput,
+    scheduleSpeedInputs,
+    themeChoice: settingsThemeChoice
+  }), [scheduleSpeedInputs, settingsDraft, settingsSubTab, settingsThemeChoice, speedLimitInput]);
+
+  const accountRowViewId = (row: AccountTableRow): string => buildAccountRowId(
+    row.entry.service,
+    row.modeLabel,
+    row.accountId || row.rowKey
+  );
+  const accountRowBindings = useMemo(() => new Map(accountRows.map((row) => [accountRowViewId(row), row])), [accountRows]);
+  const activeAccountContextRow = accountContextMenu
+    ? accountRowBindings.get(accountContextMenu.rowId) ?? null
+    : null;
+  const accountSources = useMemo<AccountRowSource[]>(() => accountRows.map((row) => {
+    const checkedStatus = row.accountId ? snapshot.settings.debridAccountStatuses?.[row.accountId] : undefined;
+    const checking = Boolean(row.accountId && megaCheckingIds.has(row.accountId));
+    const state: AccountRowSource["status"]["state"] = row.disabled
+      ? "disabled"
+      : checking
+        ? "checking"
+        : !checkedStatus
+          ? "unchecked"
+          : checkedStatus && !checkedStatus.valid
+            ? "invalid"
+            : checkedStatus && !checkedStatus.isPremium
+              ? "free"
+              : "premium";
+    return {
+      identityId: row.accountId || row.rowKey,
+      service: row.entry.service,
+      hoster: row.hosterLabel,
+      mode: row.modeLabel,
+      icon: ACCOUNT_SERVICE_ICONS[row.entry.service],
+      enabled: !row.disabled,
+      status: {
+        state,
+        message: checkedStatus?.message || row.entry.statusLabel,
+        premiumUntilMs: checkedStatus?.premiumUntilMs ?? null,
+        email: checkedStatus?.email
+      },
+      dailyLimitBytes: row.dailyLimitBytes,
+      dailyUsageBytes: row.dailyUsedBytes,
+      username: row.username,
+      credentialKind: row.credentialLabel.includes("API") ? "api-key" : row.credentialLabel.includes("•") ? "password" : "protected",
+      canCheck: row.checkable
+    };
+  }), [accountRows, megaCheckingIds, snapshot.settings.debridAccountStatuses]);
+  const selectedAccountViewId = useMemo(() => {
+    const selectedRow = selectedAccountRowKey ? accountRows.find((row) => row.rowKey === selectedAccountRowKey) : null;
+    return selectedRow ? accountRowViewId(selectedRow) : null;
+  }, [accountRows, selectedAccountRowKey]);
+  const projectedAccountRows = useMemo(() => projectAccountRows(
+    accountSources,
+    selectedAccountViewId ? [selectedAccountViewId] : [],
+    runtimeNow
+  ), [accountSources, runtimeNow, selectedAccountViewId]);
+  const visibleAccountRows = useMemo(() => accountStatusSort === "none"
+    ? projectedAccountRows
+    : sortAccountRows(projectedAccountRows, accountStatusSort), [accountStatusSort, projectedAccountRows]);
+  const routingEntries = useMemo(() => Object.entries(settingsDraft.hosterRouting || {}).sort(([left], [right]) => left.localeCompare(right)), [settingsDraft.hosterRouting]);
+  const usedRoutingHosters = useMemo(() => new Set(routingEntries.map(([hosterId]) => hosterId)), [routingEntries]);
+  const routingProviderOptions = useMemo(() => configuredProviders.map((provider) => ({
+    value: provider,
+    label: providerLabelWithMode(provider, settingsDraft)
+  })), [configuredProviders, settingsDraft]);
+  const accountWorkspaceModel: AccountWorkspaceViewModel = {
+    activePanel: accountManagementTab,
+    rows: visibleAccountRows,
+    selectedIds: selectedAccountViewId ? [selectedAccountViewId] : [],
+    busy: actionBusy || accountCheckBusy,
+    allEnabled: accountRows.length > 0 && accountRows.some((row) => !row.disabled),
+    statusSort: accountStatusSort,
+    rules: {
+      providerOrder: activeProviderOrder.map((provider) => providerLabelWithMode(provider, settingsDraft)),
+      routing: routingEntries.map(([hosterId, provider]) => `${KNOWN_HOSTERS.find((hoster) => hoster.id === hosterId)?.label || hosterId} → ${providerLabelWithMode(provider, settingsDraft)}`),
+      autoFallback: settingsDraft.autoProviderFallback,
+      rememberCredentials: settingsDraft.rememberToken,
+      rotationEvents: (snapshot.rotationEvents || []).map((event) => ({
+        id: event.id,
+        title: `${event.provider} · ${event.accountLabel}`,
+        detail: `${new Date(event.at).toLocaleTimeString()} · ${rotationEventText(event)}${event.reason ? ` (${event.reason})` : ""}`
+      })),
+      routingEntries: routingEntries.map(([hosterId, provider]) => ({
+        hosterId,
+        hosterLabel: KNOWN_HOSTERS.find((hoster) => hoster.id === hosterId)?.label || hosterId,
+        provider,
+        providers: routingProviderOptions
+      })),
+      availableRoutingHosters: KNOWN_HOSTERS
+        .filter((hoster) => !usedRoutingHosters.has(hoster.id))
+        .map((hoster) => ({ value: hoster.id, label: hoster.label }))
+    }
+  };
+
+  const setHosterRouting = (hosterRouting: Record<string, DebridProvider>): void => {
+    settingsDraftRevisionRef.current += 1;
+    panelDirtyRevisionRef.current += 1;
+    settingsDirtyRef.current = true;
+    setSettingsDirty(true);
+    setSettingsSaveState("dirty");
+    setSettingsDraft((current) => ({ ...current, hosterRouting }));
+  };
+  const accountWorkspaceActions: AccountWorkspaceActions = {
+    onPanelChange: setAccountManagementTab,
+    onSelect: (rowId) => setSelectedAccountRowKey(accountRowBindings.get(rowId)?.rowKey ?? null),
+    onToggleEnabled: (rowId) => {
+      const row = accountRowBindings.get(rowId);
+      if (row) toggleAccountTableRow(row);
+    },
+    onEdit: (rowId) => {
+      const row = accountRowBindings.get(rowId);
+      if (row) openEditAccountDialog(row);
+    },
+    onContextMenu: (rowId, x, y) => {
+      const row = accountRowBindings.get(rowId);
+      if (row) setAccountContextMenu({ x, y, rowId });
+    },
+    onAdd: openCreateAccountDialog,
+    onRemoveSelected: () => {
+      const row = selectedAccountViewId ? accountRowBindings.get(selectedAccountViewId) : null;
+      if (row) removeAccountTableRow(row);
+    },
+    onCheckAll: () => { void checkAllAccounts(); },
+    onSetAllEnabled: (enabled) => { void setAllAccountsEnabled(enabled); },
+    onStatusSort: cycleAccountStatusSort,
+    onMoveProvider: (index, direction) => {
+      const target = index + direction;
+      if (target < 0 || target >= activeProviderOrder.length) return;
+      const next = [...activeProviderOrder];
+      [next[index], next[target]] = [next[target], next[index]];
+      setProviderOrder(next);
+    },
+    onProviderDragStart: (event, index) => {
+      const provider = activeProviderOrder[index];
+      if (provider) onProviderDragStart(event, provider);
+    },
+    onProviderDragOver: (event, index) => {
+      const provider = activeProviderOrder[index];
+      if (provider) onProviderDragOver(event, provider);
+    },
+    onProviderDrop: (event, index) => {
+      const provider = activeProviderOrder[index];
+      if (provider) onProviderDrop(event, provider);
+    },
+    onProviderDragEnd,
+    onToggleAutoFallback: (enabled) => setBool("autoProviderFallback", enabled),
+    onToggleRememberCredentials: (enabled) => setBool("rememberToken", enabled),
+    onRoutingProviderChange: (hosterId, provider) => setHosterRouting({
+      ...(settingsDraft.hosterRouting || {}),
+      [hosterId]: provider as DebridProvider
+    }),
+    onRoutingRemove: (hosterId) => {
+      const next = { ...(settingsDraft.hosterRouting || {}) };
+      delete next[hosterId];
+      setHosterRouting(next);
+    },
+    onRoutingAdd: (hosterId) => {
+      const resolvedHosterId = hosterId === "__custom"
+        ? (window.prompt("Hoster-Domain eingeben:") || "").trim().toLowerCase().replace(/^www\./, "").split(".")[0]
+        : hosterId;
+      if (!resolvedHosterId || settingsDraft.hosterRouting?.[resolvedHosterId] || !configuredProviders[0]) return;
+      setHosterRouting({ ...(settingsDraft.hosterRouting || {}), [resolvedHosterId]: configuredProviders[0] });
+    }
+  };
+
+  const settingsFormActions: SettingsViewActions["form"] = {
+    onChange: (fieldId, value) => {
+      const scheduleMatch = /^schedule:(\d+):(startHour|endHour|enabled|speedLimitMbps)$/.exec(fieldId);
+      if (scheduleMatch) {
+        const index = Number(scheduleMatch[1]);
+        const field = scheduleMatch[2];
+        if (field === "speedLimitMbps") {
+          const schedule = schedules[index];
+          if (schedule) {
+            const key = schedule.id || `schedule-${index}`;
+            setScheduleSpeedInputs((current) => ({ ...current, [key]: String(value) }));
+          }
+        } else if (field === "enabled") {
+          updateSchedule(index, "enabled", Boolean(value));
+        } else {
+          const parsed = Number(value);
+          if (Number.isFinite(parsed)) updateSchedule(index, field as "startHour" | "endHour", Math.max(0, Math.min(23, parsed)));
+        }
+        return;
+      }
+      if (fieldId === "speedLimitInput") {
+        setSpeedLimitInput(String(value));
+        return;
+      }
+      if (fieldId === "theme") {
+        const choice = value as SettingsThemeChoice;
+        const next = resolveSettingsThemeChoice(choice, window.matchMedia("(prefers-color-scheme: light)").matches);
+        setSettingsThemeChoice(choice);
+        setText("theme", next);
+        applyTheme(next);
+        return;
+      }
+      if (typeof value === "boolean") {
+        setBool(fieldId as keyof AppSettings, value);
+        return;
+      }
+      const numericLimits: Partial<Record<keyof AppSettings, [number, number, number]>> = {
+        maxParallel: [1, 50, 1],
+        retryLimit: [0, 99, 0],
+        historyMaxEntries: [50, 100000, 500],
+        historyMaxAgeDays: [0, 3650, 0],
+        maxParallelExtract: [1, 8, 2],
+        reconnectWaitSeconds: [10, 600, 45]
+      };
+      const bounds = numericLimits[fieldId as keyof AppSettings];
+      if (bounds) {
+        const parsed = Number(value);
+        setNum(fieldId as keyof AppSettings, Math.max(bounds[0], Math.min(bounds[1], Number.isFinite(parsed) ? parsed : bounds[2])));
+      } else {
+        setText(fieldId as keyof AppSettings, String(value));
+      }
+    },
+    onCommit: (fieldId, value) => {
+      const scheduleMatch = /^schedule:(\d+):speedLimitMbps$/.exec(fieldId);
+      if (scheduleMatch) {
+        const index = Number(scheduleMatch[1]);
+        const parsed = parseMbpsInput(value);
+        const schedule = schedules[index];
+        if (!schedule) return;
+        const key = schedule.id || `schedule-${index}`;
+        if (parsed === null) {
+          setScheduleSpeedInputs((current) => ({ ...current, [key]: formatMbpsInputFromKbps(schedule.speedLimitKbps) }));
+          return;
+        }
+        const nextKbps = Math.floor(parsed * 1024);
+        setScheduleSpeedInputs((current) => ({ ...current, [key]: formatMbpsInputFromKbps(nextKbps) }));
+        updateSchedule(index, "speedLimitKbps", nextKbps);
+        return;
+      }
+      if (fieldId === "speedLimitInput") {
+        const parsed = parseMbpsInput(value);
+        if (parsed === null) {
+          setSpeedLimitInput(formatMbpsInputFromKbps(settingsDraft.speedLimitKbps));
+          return;
+        }
+        setSpeedLimitMbps(parsed);
+        setSpeedLimitInput(formatMbpsInputFromKbps(Math.floor(parsed * 1024)));
+      }
+    },
+    onAction: (fieldId) => {
+      if (fieldId === "schedule:add") {
+        addSchedule();
+        return;
+      }
+      const removeScheduleMatch = /^schedule:(\d+):remove$/.exec(fieldId);
+      if (removeScheduleMatch) {
+        removeSchedule(Number(removeScheduleMatch[1]));
+        return;
+      }
+      if (fieldId === "update:check") {
+        void onCheckUpdates();
+        return;
+      }
+      if (fieldId === "notifyUrl") {
+        void performQuickAction(async () => {
+          const ok = await window.rd.testNotification(settingsDraft.notifyUrl, settingsDraft.notifyMention);
+          showToast(ok ? "Test-Nachricht gesendet" : "Test fehlgeschlagen", ok ? 2400 : 3600);
+        });
+        return;
+      }
+      const targetKey = fieldId === "outputDir" ? "outputDir" : fieldId === "extractDir" ? "extractDir" : fieldId === "mkvLibraryDir" ? "mkvLibraryDir" : null;
+      if (targetKey) {
+        void performQuickAction(async () => {
+          const path = await window.rd.pickFolder();
+          if (path) setText(targetKey, path);
+        });
+      }
+    }
+  };
+  const settingsViewModel: SettingsViewModel = {
+    section: settingsSubTab,
+    saveState: settingsDirty && settingsSaveState === "clean" ? "dirty" : settingsSaveState,
+    form: settingsFormModel,
+    accounts: accountWorkspaceModel
+  };
+  const settingsViewActions: SettingsViewActions = {
+    onSectionChange: setSettingsSubTab,
+    onSave: () => { void onSaveSettings(); },
+    form: settingsFormActions,
+    accounts: accountWorkspaceActions
+  };
+
+  const accountAddOptions: AccountAddOption[] = filteredAccountDialogOptions.map((option) => ({
+    id: option.kind,
+    service: option.service,
+    title: option.serviceLabel,
+    mode: option.modeLabel,
+    description: option.pickerDescription,
+    functionLabel: getAccountPickerFunctionLabel(option),
+    filter: option.modeLabel === "API" ? "api" : "web",
+    multi: option.kind === "megadebrid-api" || option.kind === "megadebrid-web" || option.kind === "debridlink-api",
+    icon: ACCOUNT_SERVICE_ICONS[option.service]
+  }));
+  const accountAddFields: AccountDialogField[] = accountDialog && accountDialogOption ? [
+    ...((accountDialog.kind === "megadebrid-api" || accountDialog.kind === "megadebrid-web") ? [
+      { id: "megaNewLogin", label: "Login / E-Mail", type: "text" as const, value: accountDialog.megaNewLogin },
+      { id: "megaNewPassword", label: "Passwort", type: "password" as const, value: accountDialog.megaNewPassword }
+    ] : accountDialogOption.needsCredentials ? [
+      { id: "login", label: "Login / E-Mail", type: "text" as const, value: accountDialog.login },
+      { id: "password", label: "Passwort", type: "password" as const, value: accountDialog.password }
+    ] : []),
+    ...(accountDialogOption.needsToken ? [
+      { id: "token", label: accountDialog.kind === "debridlink-api" ? "API-Key" : "Token / API-Key", type: "password" as const, value: accountDialog.token }
+    ] : []),
+    {
+      id: "dailyLimitGb",
+      label: "Tageslimit (GB, optional)",
+      type: "number" as const,
+      value: accountDialog.dailyLimitGb,
+      placeholder: "Kein Limit",
+      help: "Der Zähler wird täglich um 00:00 Uhr zurückgesetzt."
+    }
+  ] : [];
+  const accountAddDialog = (
+    <AccountAddDialog
+      actions={{
+        onQueryChange: setAccountDialogSearch,
+        onFilterChange: setAccountDialogModeFilter,
+        onOptionSelect: (optionId) => updateAccountDialogKind(optionId as AccountKind),
+        onFieldChange: (fieldId, value) => setAccountDialog((current) => current ? { ...current, [fieldId]: value } : current),
+        onClose: closeAccountDialog,
+        onSubmit: () => {
+          const quickAction = accountDialog?.kind ? getAccountQuickActionMeta(accountDialog.kind)?.action : undefined;
+          void onSaveAccountDialog(quickAction);
+        }
+      }}
+      model={{
+        open: Boolean(accountDialog),
+        query: accountDialogSearch,
+        filter: accountDialogModeFilter,
+        options: accountAddOptions,
+        selectedOptionId: accountDialog?.kind ?? null,
+        fields: accountAddFields,
+        error: "",
+        busy: actionBusy
+      }}
+    />
+  );
+  const accountEditFields: AccountDialogField[] = accountEditDialog && accountEditOption ? [
+    ...((accountEditDialog.target.type === "mega" || accountEditOption.needsCredentials) ? [
+      { id: "login", label: "Login / E-Mail", type: "text" as const, value: accountEditDialog.login },
+      { id: "password", label: "Passwort", type: "password" as const, value: accountEditDialog.password }
+    ] : []),
+    ...((accountEditDialog.target.type === "debridlink" || accountEditOption.needsToken) ? [
+      { id: "token", label: accountEditDialog.target.type === "debridlink" ? "API-Key" : "Token / API-Key", type: "password" as const, value: accountEditDialog.token }
+    ] : []),
+    {
+      id: "dailyLimitGb",
+      label: "Tageslimit (GB, optional)",
+      type: "number" as const,
+      value: accountEditDialog.dailyLimitGb,
+      placeholder: "Kein Limit"
+    }
+  ] : [];
+  const checkAccountEditDialog = (): void => {
+    if (!accountEditDialog) return;
+    const validationError = validateAccountEdit(accountEditDialog, settingsDraft);
+    if (validationError) {
+      showToast(validationError, 2800);
+      return;
+    }
+    const editSnapshot = accountEditDialog;
+    void performQuickAction(async () => {
+      if (editSnapshot.target.type === "mega" || editSnapshot.target.type === "debridlink") {
+        const checkSettings = buildAccountEditCheckSettings(applyAccountEdit(settingsDraft, editSnapshot), editSnapshot);
+        const statuses = await window.rd.checkDebridAccounts(checkSettings, true, getAccountEditExpectedStatusId(editSnapshot) || undefined);
+        const statusError = validateAccountEditStatuses(editSnapshot, statuses);
+        if (statusError) throw new Error(statusError);
+        showToast("Account erfolgreich geprüft", 2200);
+        return;
+      }
+      const quickAction = getAccountQuickActionMeta(editSnapshot.target.kind);
+      if (quickAction) {
+        await runAccountQuickAction(quickAction.action);
+      } else {
+        showToast("Für diesen Dienst ist keine direkte Statusprüfung verfügbar.", 2800);
+      }
+    }, (error) => showToast(`Prüfung fehlgeschlagen: ${String(error)}`, 3200));
+  };
+  const accountEditDialogView = accountEditDialog && accountEditOption ? (
+    <AccountEditDialog
+      actions={{
+        onFieldChange: (fieldId, value) => setAccountEditDialog((current) => current ? { ...current, [fieldId]: value } : current),
+        onClose: closeAccountEditDialog,
+        onCheck: checkAccountEditDialog,
+        onSave: () => { void onSaveAccountEditDialog(); },
+        onRemove: () => {
+          const row = accountEditRow;
+          closeAccountEditDialog();
+          if (row) removeAccountTableRow(row);
+        },
+        onToggleEnabled: () => {
+          if (accountEditRow) toggleAccountTableRow(accountEditRow);
+        }
+      }}
+      model={{
+        open: true,
+        hoster: accountEditOption.serviceLabel,
+        mode: accountEditOption.modeLabel,
+        identity: resolveAccountUsername(accountEditRow?.username || accountEditDialog.login, accountEditStatus?.email),
+        enabled: !accountEditRow?.disabled,
+        fields: accountEditFields,
+        error: "",
+        busy: actionBusy
+      }}
+    />
+  ) : null;
 
   return (
     <div
-      className={`app-shell${dragOver ? " drag-over" : ""}${tab === "settings" ? " settings-active" : ""}`}
+      className={`md-runtime-root${dragOver ? " drag-over" : ""}${tab === "settings" ? " settings-active" : ""}`}
       onDragEnter={(event) => {
         event.preventDefault();
         if (draggedPackageIdRef.current) { return; }
@@ -4822,7 +5565,56 @@ export function App(): ReactElement {
       }}
       onDrop={onDrop}
     >
-      <nav className="menu-bar">
+      <AppShell
+        activeView={tab}
+        contextInfo={tab === "downloads" ? (
+          <div>
+            Paket- und Linkstatus werden laufend aktualisiert. Auswahl, Reihenfolge und aktive Filter bleiben beim Ansichtswechsel erhalten.
+          </div>
+        ) : tab === "collector" ? (
+          <div>
+            Rohzeilen bleiben lokal in der gewählten Sammlung, bis sie über „An Downloads übergeben“ an die Queue gesendet werden. Strg+L öffnet den Linksammler, Strg+O lädt DLC-Dateien.
+          </div>
+        ) : tab === "history" ? (
+          <div>
+            Abgeschlossene und gelöschte Pakete bleiben hier durchsuchbar. Details zeigen Zielordner, Provider und gespeicherte Linkadressen.
+          </div>
+        ) : tab === "statistics" ? (
+          <div>
+            {statisticsViewModel.message} Für sieben und 30 Tage bleiben Kennzahlen leer, solange keine historischen Buckets gespeichert werden.
+          </div>
+        ) : null}
+        footer={tab === "downloads" ? <DownloadsFooter actions={downloadsActions} model={downloadsViewModel} /> : tab === "history" ? <HistoryFooter model={historyViewModel} /> : null}
+        headerActions={(
+          <>
+            <DownloadSpeedSparkline
+              items={snapshot.session.items}
+              running={snapshot.session.running}
+              paused={snapshot.session.paused}
+              speedStateRef={speedSparklineStateRef}
+              hidden={tab !== "downloads"}
+            />
+            <UpdateExperience
+              available={Boolean(availableUpdate)}
+              currentVersion={availableUpdate?.currentVersion ?? appVersion}
+              latestTag={availableUpdate?.latestTag ?? ""}
+              onClose={() => {
+                setUpdateDialogOpen(false);
+                setUpdateInstallProgress(null);
+              }}
+              onInstall={() => { void installUpdate(); }}
+              onLater={() => setUpdateDialogOpen(false)}
+              onOpen={() => setUpdateDialogOpen(true)}
+              open={updateDialogOpen || updateInstallProgress !== null}
+              progress={updateInstallProgress ? {
+                percent: updateInstallProgress.percent,
+                text: formatUpdateInstallProgress(updateInstallProgress)
+              } : 0}
+              releaseNotes={availableUpdate?.releaseNotes ?? ""}
+              renderDialog={false}
+              state={updateInstallProgress?.stage ?? "prompt"}
+            />
+      <nav aria-label="Anwendungsmenü" className="md-application-menu-tree">
         <div className="menu-bar-item">
           <button
             className={`menu-bar-trigger${openMenu === "datei" ? " open" : ""}`}
@@ -5048,1133 +5840,96 @@ export function App(): ReactElement {
           )}
         </div>
       </nav>
-
-      <section className="control-strip">
-        <div className="buttons buttons-left">
-          <button
-            className="ctrl-icon-btn ctrl-play"
-            title={snapshot.session.paused ? "Fortsetzen" : "Start"}
-            disabled={actionBusy || (!snapshot.canStart && !snapshot.session.paused)}
-            onClick={() => {
-              if (snapshot.session.paused) {
-                setSnapshot((prev) => ({ ...prev, session: { ...prev.session, paused: false } }));
-                void window.rd.togglePause().catch(() => {});
-              } else {
-                void onStartDownloads();
-              }
-            }}
-          >
-            <svg viewBox="0 0 24 24" width="18" height="18"><polygon points="6,3 20,12 6,21" fill="currentColor" /></svg>
-          </button>
-          <button
-            className={`ctrl-icon-btn ctrl-pause${snapshot.session.paused ? " paused" : ""}`}
-            title="Pause"
-            disabled={!snapshot.canPause || snapshot.session.paused}
-            onClick={() => {
-              setSnapshot((prev) => ({ ...prev, session: { ...prev.session, paused: true } }));
-              void window.rd.togglePause().catch(() => {});
-            }}
-          >
-            <svg viewBox="0 0 24 24" width="18" height="18"><rect x="5" y="3" width="4.5" height="18" rx="1" fill="currentColor" /><rect x="14.5" y="3" width="4.5" height="18" rx="1" fill="currentColor" /></svg>
-          </button>
-          <button
-            className="ctrl-icon-btn ctrl-stop"
-            title="Stop"
-            disabled={actionBusy || !snapshot.canStop}
-            onClick={() => { void performQuickAction(() => window.rd.stop()); }}
-          >
-            <svg viewBox="0 0 24 24" width="18" height="18"><rect x="4" y="4" width="16" height="16" rx="2" fill="currentColor" /></svg>
-          </button>
-          <div className="ctrl-separator" />
-          <div className="schedule-ctrl">
-            {(snapshot.settings.scheduledStartEpochMs || 0) > 0 ? (
-              <div className="schedule-active">
-                <span className="schedule-badge" title="Geplanter Start">â° {scheduleCountdown || new Date(snapshot.settings.scheduledStartEpochMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-                <button className="schedule-cancel" title="Geplanten Start abbrechen" onClick={() => { void window.rd.updateSettings({ scheduledStartEpochMs: 0 }).catch(() => {}); }}>{"\u2715"}</button>
-              </div>
-            ) : (
+            <div className="md-avatar-anchor">
               <button
-                className={`ctrl-icon-btn schedule-btn${schedulePickerOpen ? " active" : ""}`}
-                title="Download-Start planen"
-                onClick={() => { setSchedulePickerOpen((v) => !v); setScheduleTimeInput(""); }}
+                aria-expanded={avatarMenuOpen}
+                aria-haspopup="menu"
+                aria-label="Kontomenü"
+                className="md-avatar-trigger"
+                onClick={() => setAvatarMenuOpen((open) => !open)}
+                title="Kontomenü"
+                type="button"
               >
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="9"/><polyline points="12,6 12,12 16,14"/></svg>
+                <Icon name="account" size={18} />
               </button>
-            )}
-            {schedulePickerOpen && (snapshot.settings.scheduledStartEpochMs || 0) === 0 && (
-              <div className="schedule-picker">
-                <span className="schedule-picker-label">Starten um</span>
-                <input
-                  type="time"
-                  className="schedule-time-input"
-                  value={scheduleTimeInput}
-                  onChange={(e) => setScheduleTimeInput(e.target.value)}
-                />
-                <button className="btn btn-sm btn-primary" onClick={() => {
-                  if (!scheduleTimeInput) return;
-                  const [hStr, mStr] = scheduleTimeInput.split(":");
-                  const now = new Date();
-                  const target = new Date(now);
-                  target.setHours(Number(hStr), Number(mStr), 0, 0);
-                  if (target.getTime() <= now.getTime()) target.setDate(target.getDate() + 1);
-                  void window.rd.updateSettings({ scheduledStartEpochMs: target.getTime() }).catch(() => {});
-                  setSchedulePickerOpen(false);
-                }}>Aktivieren</button>
-              </div>
-            )}
-          </div>
-          <div className="ctrl-separator" />
-          <button
-            className="ctrl-icon-btn ctrl-move"
-            title="Ausgewählte nach oben"
-            disabled={tab !== "downloads" || [...selectedIds].filter((id) => snapshot.session.packages[id]).length === 0}
-            onClick={() => moveSelectedPackages("up")}
-          >
-            <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 4l-7 7h4.5v9h5v-9H19z" fill="currentColor" /></svg>
-          </button>
-          <button
-            className="ctrl-icon-btn ctrl-move"
-            title="Ausgewählte nach unten"
-            disabled={tab !== "downloads" || [...selectedIds].filter((id) => snapshot.session.packages[id]).length === 0}
-            onClick={() => moveSelectedPackages("down")}
-          >
-            <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 20l7-7h-4.5V4h-5v9H5z" fill="currentColor" /></svg>
-          </button>
-        </div>
-        {snapshot.reconnectSeconds > 0 && tab !== "downloads" && (
-          <div className="reconnect-badge" style={{ marginLeft: "auto" }}>Reconnect: {snapshot.reconnectSeconds}s</div>
-        )}
-      </section>
-
-      <nav className="tabs">
-        <button className={tab === "downloads" ? "tab active" : "tab"} onClick={() => setTab("downloads")}>Downloads</button>
-        <button className={tab === "collector" ? "tab active" : "tab"} onClick={() => setTab("collector")}>Linksammler</button>
-        <button className={tab === "settings" ? "tab active" : "tab"} onClick={() => setTab("settings")}>Einstellungen</button>
-        <button className={tab === "history" ? "tab active" : "tab"} onClick={() => setTab("history")}>Verlauf</button>
-        <button className={tab === "statistics" ? "tab active" : "tab"} onClick={() => setTab("statistics")}>Statistiken</button>
-        <div className="tab-actions">
-          <DownloadSpeedSparkline
-            items={snapshot.session.items}
-            running={snapshot.session.running}
-            paused={snapshot.session.paused}
-            speedStateRef={speedSparklineStateRef}
-            hidden={tab !== "downloads"}
-          />
-          {tab === "downloads" && (
-            <input
-              className="search-input tab-search"
-              type="search"
-              value={downloadSearch}
-              onChange={(event) => setDownloadSearch(event.target.value)}
-              placeholder="Pakete durchsuchen..."
-            />
-          )}
-        </div>
-      </nav>
-
-      <main className="tab-content">
-        {tab === "collector" && (
-          <section className="grid-two collector-view">
-            <article className="card wide">
-              <div className="collector-header">
-                <h3>Linksammler</h3>
-                <div className="link-actions">
-                  <button className="btn" disabled={actionBusy} onClick={onImportDlc}>DLC import</button>
-                  <button className="btn" disabled={actionBusy} onClick={onExportQueue}>Queue Export</button>
-                  <button className="btn" disabled={actionBusy} onClick={onImportQueue}>Datei Import</button>
-                  <button className="btn accent" disabled={actionBusy} onClick={onAddLinks}>Zur Queue hinzufügen</button>
-                </div>
-              </div>
-              <div className="collector-tabs">
-                {collectorTabs.map((ct) => (
-                  <div key={ct.id} className={`collector-tab${ct.id === activeCollectorTab ? " active" : ""}`}>
-                    <button onClick={() => setActiveCollectorTab(ct.id)}>{ct.name}</button>
-                    {collectorTabs.length > 1 && <button className="close-tab" onClick={() => removeCollectorTab(ct.id)}>x</button>}
-                  </div>
-                ))}
-                <button className="btn add-tab" onClick={addCollectorTab}>+</button>
-              </div>
-              <textarea
-                value={currentCollectorTab.text}
-                onChange={(e) => setCollectorTabs((prev) => prev.map((t) => t.id === currentCollectorTab.id ? { ...t, text: e.target.value } : t))}
-                onDragOver={(e) => e.preventDefault()}
-                placeholder={"# package: Release-Name\n# file: Folge 01.rar\nhttps://...\nhttps://...\n\nLinks, .dlc oder Export-Dateien hier ablegen"}
+              <AvatarMenu
+                accountLabel={appVersion ? `Version ${appVersion}` : "Lokale Anwendung"}
+                actions={[
+                  { id: "settings", label: "Einstellungen", onSelect: () => setTab("settings") },
+                  { id: "quit", label: "Beenden", danger: true, onSelect: onMenuQuit }
+                ]}
+                onClose={() => setAvatarMenuOpen(false)}
+                open={avatarMenuOpen}
               />
-            </article>
-          </section>
-        )}
-
-        {tab === "downloads" && (
-          <section className="downloads-view">
-            {snapshot.reconnectSeconds > 0 && (
-              <div className="reconnect-banner">
-                Reconnect aktiv: {snapshot.reconnectSeconds}s verbleibend
-                {snapshot.session.reconnectReason && <span> ({snapshot.session.reconnectReason})</span>}
-              </div>
-            )}
-            {}
-            <div ref={colHeaderBarRef} className="pkg-column-header" style={{ gridTemplateColumns: gridTemplate }} onContextMenu={(e) => { e.preventDefault(); setColHeaderCtx({ x: e.clientX, y: e.clientY }); }}>
-              {columnOrder.map((col) => {
-                const def = COLUMN_DEFS[col];
-                if (!def) return null;
-                const sortCol = def.sortable;
-                const isActive = sortCol ? downloadsSortColumn === sortCol : false;
-                return (
-                  <span
-                    key={col}
-                    className={`pkg-col pkg-col-${col}${sortCol ? " sortable" : ""}${isActive ? " sort-active" : ""}${dragColId === col ? " pkg-col-dragging" : ""}${dropTargetCol === col ? " pkg-col-drop-target" : ""}`}
-                    draggable
-                    onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; setDragColId(col); }}
-                    onDragOver={(e) => { if (dragColId && dragColId !== col) { e.preventDefault(); setDropTargetCol(col); } }}
-                    onDragLeave={() => { if (dropTargetCol === col) setDropTargetCol(null); }}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      setDropTargetCol(null);
-                      if (!dragColId || dragColId === col) return;
-                      const newOrder = [...columnOrder];
-                      const fromIdx = newOrder.indexOf(dragColId);
-                      const toIdx = newOrder.indexOf(col);
-                      if (fromIdx < 0 || toIdx < 0) return;
-                      newOrder.splice(fromIdx, 1);
-                      newOrder.splice(toIdx, 0, dragColId);
-                      setColumnOrder(newOrder);
-                      setDragColId(null);
-                      void window.rd.updateSettings({ columnOrder: newOrder }).catch(() => {});
-                    }}
-                    onDragEnd={() => { setDragColId(null); setDropTargetCol(null); }}
-                    onClick={sortCol ? () => {
-                      const nextDesc = isActive ? !downloadsSortDescending : false;
-                      setDownloadsSortColumn(sortCol);
-                      setDownloadsSortDescending(nextDesc);
-                      const baseOrder = packageOrderRef.current.length > 0 ? packageOrderRef.current : snapshot.session.packageOrder;
-                      let sorted: string[];
-                      if (sortCol === "progress") {
-                        sorted = sortPackageOrderByProgress(baseOrder, snapshot.session.packages, snapshot.session.items, nextDesc);
-                      } else if (sortCol === "size") {
-                        sorted = sortPackageOrderBySize(baseOrder, snapshot.session.packages, snapshot.session.items, nextDesc);
-                      } else if (sortCol === "hoster") {
-                        sorted = sortPackageOrderByHoster(baseOrder, snapshot.session.packages, snapshot.session.items, nextDesc);
-                      } else {
-                        sorted = sortPackageOrderByName(baseOrder, snapshot.session.packages, nextDesc);
-                      }
-                      pendingPackageOrderRef.current = [...sorted];
-                      pendingPackageOrderAtRef.current = Date.now();
-                      packageOrderRef.current = sorted;
-                      setSnapshot((prev) => {
-                        if (!prev) return prev;
-                        return { ...prev, session: { ...prev.session, packageOrder: [...sorted] } };
-                      });
-                      void window.rd.reorderPackages(sorted).catch((error) => {
-                        pendingPackageOrderRef.current = null;
-                        pendingPackageOrderAtRef.current = 0;
-                        packageOrderRef.current = serverPackageOrderRef.current;
-                        setSnapshot((prev) => {
-                          if (!prev) return prev;
-                          return { ...prev, session: { ...prev.session, packageOrder: serverPackageOrderRef.current } };
-                        });
-                        showToast(`Sortierung fehlgeschlagen: ${String(error)}`, 2400);
-                      });
-                    } : undefined}
-                  >
-                    {def.label} {isActive ? (downloadsSortDescending ? "\u25BC" : "\u25B2") : ""}
-                  </span>
-                );
-              })}
             </div>
-            {totalPackageCount === 0 && <div className="empty">Noch keine Pakete in der Queue.</div>}
-            {totalPackageCount > 0 && packages.length === 0 && <div className="empty">Keine Pakete passend zur Suche.</div>}
-            {hiddenPackageCount > 0 && (
-              <div className="reconnect-banner">
-                Performance-Modus aktiv: {hiddenPackageCount} Paket(e) sind temporar ausgeblendet.
-                <button className="btn" onClick={() => setShowAllPackages(true)}>Alle trotzdem anzeigen</button>
-              </div>
-            )}
-            {visiblePackages.map((pkg, idx) => (
-              <PackageCard
-                key={pkg.id}
-                pkg={pkg}
-                items={itemsByPackage.get(pkg.id) ?? []}
-                packageSpeed={packageSpeedMap.get(pkg.id) ?? 0}
-                stripeVariant={idx % 2 === 0 ? "a" : "b"}
-                isFirst={idx === 0}
-                isLast={idx === visiblePackages.length - 1}
-                isEditing={editingPackageId === pkg.id}
-                editingName={editingName}
-                collapsed={collapsedPackages[pkg.id] ?? false}
-                hideExtractedItems={snapshot.settings.hideExtractedItems}
-                sessionRunning={snapshot.session.running}
-                selectedIds={selectedIds}
-                columnOrder={columnOrder}
-                gridTemplate={gridTemplate}
-                onSelect={onSelectId}
-                onSelectMouseDown={onSelectMouseDown}
-                onSelectMouseEnter={onSelectMouseEnter}
-                onStartEdit={onPackageStartEdit}
-                onFinishEdit={onPackageFinishEdit}
-                onEditChange={setEditingName}
-                onToggleCollapse={onPackageToggleCollapse}
-                onCancel={onPackageCancel}
-                onMoveUp={onPackageMoveUp}
-                onMoveDown={onPackageMoveDown}
-                onToggle={onPackageToggle}
-                onRemoveItem={onPackageRemoveItem}
-                onContextMenu={onPackageContextMenu}
-                onDragStart={onPackageDragStart}
-                onDrop={onPackageDrop}
-                onDragEnd={onPackageDragEnd}
-              />
-            ))}
-          </section>
+          </>
         )}
+        onSidebarCollapsedChange={setSidebarCollapsed}
+        onViewChange={setTab}
+        sidebar={tab === "downloads" ? (
+          <DownloadsSidebar actions={downloadsActions} model={downloadsViewModel} />
+        ) : tab === "collector" ? (
+          <CollectorSidebar actions={collectorActions} model={collectorViewModel} />
+        ) : tab === "history" ? (
+          <HistorySidebar actions={historyActions} model={historyViewModel} />
+        ) : tab === "statistics" ? (
+          <StatisticsSidebar actions={statisticsActions} model={statisticsViewModel} />
+        ) : tab === "settings" ? (
+          <SettingsSidebar actions={settingsViewActions} model={settingsViewModel} />
+        ) : null}
+        sidebarCollapsed={sidebarCollapsed}
+        sidebarStatus={tab === "downloads" ? (
+          <DownloadsSidebarStatus model={downloadsViewModel} />
+        ) : tab === "collector" ? (
+          <>
+            <span>Sammlungen: {collectorViewModel.tabs.length}</span>
+            <span>Links: {collectorViewModel.tabs.reduce((sum, entry) => sum + entry.linkCount, 0)}</span>
+            <span>Zwischenablage: {snapshot.clipboardActive ? "An" : "Aus"}</span>
+          </>
+        ) : tab === "history" ? (
+          <>
+            <span>Einträge: {historyViewModel.totalCount}</span>
+            <span>Sichtbar: {historyViewModel.rows.length}</span>
+            <span>Ausgewählt: {historyViewModel.selectedIds.length}</span>
+          </>
+        ) : tab === "statistics" ? (
+          <StatisticsSidebarStatus model={statisticsViewModel} />
+        ) : null}
+        toolbar={tab === "downloads" ? (
+          <DownloadsToolbar actions={downloadsActions} model={downloadsViewModel} />
+        ) : tab === "collector" ? (
+          <CollectorToolbar actions={collectorActions} model={collectorViewModel} />
+        ) : tab === "history" ? (
+          <HistoryToolbar actions={historyActions} model={historyViewModel} />
+        ) : null}
+      >
+      <main className="md-runtime-view-content">
+        {tab === "collector" && (
+          <CollectorContent actions={collectorActions} model={collectorViewModel} />
+        )}
+
+        {tab === "downloads" && <DownloadsContent actions={downloadsActions} model={downloadsViewModel} />}
 
         {tab === "history" && (
-          <section className="history-view">
-            <div className="history-toolbar">
-              <span className="history-count">
-                {selectedHistoryIds.size > 0
-                  ? `${selectedHistoryIds.size} von ${historyEntries.length} ausgewählt`
-                  : `${historyEntries.length} Paket${historyEntries.length !== 1 ? "e" : ""} im Verlauf`}
-              </span>
-              <div className="history-toolbar-actions">
-                {selectedHistoryIds.size > 0 && (
-                <button className="btn danger" onClick={() => {
-                  const idSet = new Set(selectedHistoryIds);
-                  void Promise.all([...idSet].map(id => window.rd.removeHistoryEntry(id))).then(() => {
-                    setHistoryEntries((prev) => prev.filter((e) => !idSet.has(e.id)));
-                    setSelectedHistoryIds(new Set());
-                  }).catch(() => {
-                    void window.rd.getHistory().then((entries) => { setHistoryEntries(entries); setSelectedHistoryIds(new Set()); }).catch(() => {});
-                  });
-                }}>Ausgewählte entfernen ({selectedHistoryIds.size})</button>
-                )}
-                {historyEntries.length > 0 && (
-                <button className="btn danger" onClick={() => { void window.rd.clearHistory().then(() => { setHistoryEntries([]); setSelectedHistoryIds(new Set()); }).catch(() => {}); }}>Verlauf leeren</button>
-                )}
-              </div>
-            </div>
-            {historyEntries.length === 0 && <div className="empty">Noch keine abgeschlossenen Pakete im Verlauf.</div>}
-            {historyEntries.map((entry) => {
-              const collapsed = historyCollapsed[entry.id] ?? true;
-              const isSelected = selectedHistoryIds.has(entry.id);
-              return (
-                <article
-                  key={entry.id}
-                  className={`package-card history-card${isSelected ? " pkg-selected" : ""}`}
-                  onClick={(e) => {
-                    if (e.ctrlKey) {
-                      e.preventDefault();
-                      setSelectedHistoryIds((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(entry.id)) next.delete(entry.id); else next.add(entry.id);
-                        return next;
-                      });
-                    }
-                  }}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setSelectedHistoryIds((prev) => prev.has(entry.id) ? prev : new Set([entry.id]));
-                    setHistoryCtxMenu({ x: e.clientX, y: e.clientY, entryId: entry.id });
-                  }}
-                >
-                  <header onClick={(e) => { if (e.ctrlKey) return; setHistoryCollapsed((prev) => ({ ...prev, [entry.id]: !collapsed })); }} style={{ cursor: "pointer" }}>
-                    <div className="pkg-columns" style={{ gridTemplateColumns: gridTemplate }}>
-                      {columnOrder.map((col) => {
-                        switch (col) {
-                          case "name": return (
-                            <div key={col} className="pkg-col pkg-col-name">
-                              <button className="pkg-toggle" title={collapsed ? "Ausklappen" : "Einklappen"}>{collapsed ? "+" : "\u2212"}</button>
-                              <h4>{entry.name}</h4>
-                            </div>
-                          );
-                          case "size": return (
-                            <span key={col} className="pkg-col pkg-col-size">{(() => {
-                              const pct = entry.totalBytes > 0 ? Math.min(100, Math.round((entry.downloadedBytes / entry.totalBytes) * 100)) : 0;
-                              const label = `${humanSize(entry.downloadedBytes)} / ${humanSize(entry.totalBytes)}`;
-                              return entry.totalBytes > 0 ? (
-                                <span className="progress-size">
-                                  <span className="progress-size-bar" style={{ width: `${pct}%` }} />
-                                  <span className="progress-size-text">{label}</span>
-                                  <span className="progress-size-text-filled" style={{ clipPath: `inset(0 ${100 - pct}% 0 0)` }}>{label}</span>
-                                </span>
-                              ) : "";
-                            })()}</span>
-                          );
-                          case "progress": return <span key={col} className="pkg-col pkg-col-progress">{entry.status === "completed" ? "100%" : ""}</span>;
-                          case "hoster": return <span key={col} className="pkg-col pkg-col-hoster"></span>;
-                          case "account": return <span key={col} className="pkg-col pkg-col-account">{entry.provider ? providerLabels[entry.provider] : ""}</span>;
-                          case "prio": return <span key={col} className="pkg-col pkg-col-prio"></span>;
-                          case "status": return <span key={col} className="pkg-col pkg-col-status">{entry.status === "completed" ? "Abgeschlossen" : "Gelöscht"}</span>;
-                          case "speed": return <span key={col} className="pkg-col pkg-col-speed"></span>;
-                          case "added": return <span key={col} className="pkg-col pkg-col-added">{formatDateTime(entry.completedAt)}</span>;
-                          default: return null;
-                        }
-                      })}
-                    </div>
-                  </header>
-                  <div className="progress"><div className="progress-dl" style={{ width: entry.status === "completed" ? "100%" : "0%" }} /></div>
-                  {!collapsed && (
-                    <div className="history-details">
-                      <div className="history-detail-grid">
-                        <span className="history-label">Abgeschlossen am</span>
-                        <span>{new Date(entry.completedAt).toLocaleString("de-DE")}</span>
-                        <span className="history-label">Dateien</span>
-                        <span>{entry.fileCount} Datei{entry.fileCount !== 1 ? "en" : ""}</span>
-                        <span className="history-label">Gesamtgröße</span>
-                        <span>{humanSize(entry.totalBytes)}</span>
-                        <span className="history-label">Heruntergeladen</span>
-                        <span>{humanSize(entry.downloadedBytes)}</span>
-                        <span className="history-label">Dauer</span>
-                        <span>{formatHistoryDuration(entry.durationSeconds)}</span>
-                        <span className="history-label">Durchschnitt</span>
-                        <span>{entry.durationSeconds > 0 ? formatSpeedMbps(Math.round(entry.downloadedBytes / entry.durationSeconds)) : ""}</span>
-                        <span className="history-label">Provider</span>
-                        <span>{entry.provider ? providerLabels[entry.provider] : ""}</span>
-                        <span className="history-label">Zielordner</span>
-                        <span className="history-path" title={entry.outputDir}>{entry.outputDir || ""}</span>
-                        <span className="history-label">Status</span>
-                        <span>{entry.status === "completed" ? "Abgeschlossen" : "Gelöscht"}</span>
-                      </div>
-                      <div className="history-actions">
-                        <button className="btn" onClick={() => { void window.rd.removeHistoryEntry(entry.id).then(() => { setHistoryEntries((prev) => prev.filter((e) => e.id !== entry.id)); setSelectedHistoryIds((prev) => { const n = new Set(prev); n.delete(entry.id); return n; }); }).catch(() => {}); }}>Eintrag entfernen</button>
-                      </div>
-                    </div>
-                  )}
-                </article>
-              );
-            })}
-          </section>
+          <HistoryContent actions={historyActions} model={historyViewModel} />
         )}
 
         {tab === "statistics" && (
-          <section className="statistics-view">
-            <article className="card stats-overview">
-              <h3>Session-Übersicht</h3>
-              <div className="stats-actions">
-                <button className="btn btn-sm" onClick={() => {
-                  void window.rd.resetSessionStats().then(() => {
-                    showToast("Session-Statistik zurückgesetzt", 1800);
-                  }).catch((error) => {
-                    showToast(`Session-Reset fehlgeschlagen: ${String(error)}`, 2400);
-                  });
-                }}>Session zurücksetzen</button>
-                <button className="btn btn-sm" onClick={() => {
-                  void window.rd.resetDownloadStats().then(() => {
-                    showToast("Gesamt-Downloadstatistik zurückgesetzt", 1800);
-                  }).catch((error) => {
-                    showToast(`Download-Reset fehlgeschlagen: ${String(error)}`, 2400);
-                  });
-                }}>Heruntergeladen zurücksetzen</button>
-              </div>
-              <div className="stats-sections">
-                {statsSections.map((section) => (
-                  <section key={section.key} className="stats-section">
-                    <div className="stats-section-title">{section.title}</div>
-                    <div className="stats-grid">
-                      {section.items.map((item) => item.onClick ? (
-                        <button
-                          key={item.key}
-                          type="button"
-                          className={`stat-item stat-button${item.clickable ? " stat-item-clickable" : ""}`}
-                          title={item.title}
-                          onClick={item.onClick}
-                        >
-                          <span className="stat-top">
-                            <span className="stat-eyebrow">{item.eyebrow}</span>
-                            <span className="stat-label">{item.label}</span>
-                          </span>
-                          <StatValueView value={item.value} compact={item.compactValue} danger={item.danger} />
-                        </button>
-                      ) : (
-                        <div key={item.key} className="stat-item">
-                          <span className="stat-top">
-                            <span className="stat-eyebrow">{item.eyebrow}</span>
-                            <span className="stat-label">{item.label}</span>
-                          </span>
-                          <StatValueView value={item.value} compact={item.compactValue} />
-                        </div>
-                      ))}
-                    </div>
-                  </section>
-                ))}
-                {false && (<>
-                <div className="stat-item">
-                  <span className="stat-label">Laufzeit (Session)</span>
-                  <span className="stat-value">{formatRuntimeDuration(liveSessionRuntimeMs)}</span>
-                </div>
-                <div className="stat-item">
-                  <span className="stat-label">Laufzeit (Gesamt)</span>
-                  <span className="stat-value">{formatRuntimeDuration(liveTotalRuntimeMs)}</span>
-                </div>
-                <div className="stat-item">
-                  <span className="stat-label">Fertige Dateien (Gesamt)</span>
-                  <span className="stat-value">{snapshot.stats.totalFilesAllTime}</span>
-                </div>
-                <div className="stat-item">
-                  <span className="stat-label">Fertige Dateien (Session)</span>
-                  <span className="stat-value">{snapshot.stats.totalFilesSession}</span>
-                </div>
-                <div className="stat-item">
-                  <span className="stat-label">Pakete</span>
-                  <span className="stat-value">{snapshot.stats.totalPackages}</span>
-                </div>
-                <div className="stat-item">
-                  <span className="stat-label">Aktive Downloads</span>
-                  <span className="stat-value">{itemStatusCounts.downloading}</span>
-                </div>
-                <div className="stat-item">
-                  <span className="stat-label">In Warteschlange</span>
-                  <span className="stat-value">{itemStatusCounts.queued}</span>
-                </div>
-                <div
-                  className={`stat-item${itemStatusCounts.failed > 0 ? " stat-item-clickable" : ""}`}
-                  title={itemStatusCounts.failed > 0 ? "Klicken zum Zurücksetzen aller fehlerhaften Downloads" : undefined}
-                  onClick={() => {
-                    if (itemStatusCounts.failed === 0) return;
-                    const failedIds = Object.values(snapshot.session.items)
-                      .filter((it) => it.status === "failed")
-                      .map((it) => it.id);
-                    void window.rd.resetItems(failedIds).catch(() => {});
-                  }}
-                >
-                  <span className="stat-label">Fehlerhaft</span>
-                  <span className="stat-value danger">{itemStatusCounts.failed}</span>
-                </div>
-                <div className="stat-item">
-                  <span className="stat-label">{snapshot.etaText.includes(": ") ? snapshot.etaText.slice(0, snapshot.etaText.indexOf(": ")) : snapshot.etaText}</span>
-                  <span className="stat-value">{snapshot.etaText.includes(": ") ? snapshot.etaText.slice(snapshot.etaText.indexOf(": ") + 2) : "--"}</span>
-                </div>
-                </>)}
-              </div>
-            </article>
-
-            <article className="card stats-chart-card">
-              <h3>Bandbreitenverlauf</h3>
-              <BandwidthChart items={snapshot.session.items} running={snapshot.session.running} paused={snapshot.session.paused} speedHistoryRef={speedHistoryRef} />
-            </article>
-
-            <article className="card stats-provider-card">
-              <h3>Hoster-Statistik</h3>
-              <div className="provider-stats">
-                {providerStats.map(([provider, stats]) => (
-                  <div key={provider} className="provider-stat-item">
-                    <span className="provider-name">{provider === "unknown" ? "Unbekannt" : provider}</span>
-                    <div className="provider-bars">
-                      <div className="provider-bar">
-                        <div className="bar-fill completed" style={{ width: `${stats.total > 0 ? (stats.completed / stats.total) * 100 : 0}%` }} />
-                      </div>
-                    </div>
-                    <span className="provider-detail">
-                      {stats.completed}/{stats.total} fertig | {humanSize(stats.bytes)}
-                      {stats.failed > 0 && <span className="danger"> | {stats.failed} Fehler</span>}
-                    </span>
-                  </div>
-                ))}
-                {Object.keys(snapshot.session.items).length === 0 && (
-                  <div className="empty-provider">Noch keine Downloads vorhanden.</div>
-                )}
-              </div>
-            </article>
-          </section>
+          <StatisticsContent
+            actions={statisticsActions}
+            chart={<BandwidthChart items={snapshot.session.items} running={snapshot.session.running} paused={snapshot.session.paused} speedHistoryRef={speedHistoryRef} />}
+            model={statisticsViewModel}
+          />
         )}
 
-        {tab === "settings" && (
-          <section className="settings-shell">
-            <article className="card settings-toolbar">
-              <div className="settings-toolbar-copy">
-                <h3>Einstellungen</h3>
-                <span>Kompakt, schnell auffindbar und direkt speicherbar.</span>
-              </div>
-              <div className="settings-toolbar-actions-wrap">
-                <div className="settings-toolbar-actions">
-                  <button className="btn accent" disabled={actionBusy} onClick={onSaveSettings}>Einstellungen speichern</button>
-                </div>
-              </div>
-            </article>
+        {tab === "settings" && <SettingsContent actions={settingsViewActions} model={settingsViewModel} />}
 
-            <div className="settings-body">
-              <nav className="settings-sidebar">
-                {settingsSubTabs.map((st) => (
-                  <button key={st.key} className={`settings-sidebar-tab${settingsSubTab === st.key ? " active" : ""}`} onClick={() => setSettingsSubTab(st.key)}>{st.label}</button>
-                ))}
-              </nav>
-              <div className={`settings-content${settingsSubTab === "accounts" ? " settings-content-accounts" : ""}`} key={settingsSubTab}>
-                {settingsSubTab === "allgemein" && (
-                  <div className="settings-section card">
-                    <h3>Allgemein</h3>
-                    <div className="settings-section-intro">Grundeinstellungen für Speicherort, Download-Verhalten, Verlauf, Oberfläche und Benachrichtigungen.</div>
-
-                    <h4 className="settings-subhead first">Speicherort</h4>
-                    <label>Download-Ordner</label>
-                    <div className="input-row">
-                      <input value={settingsDraft.outputDir} onChange={(e) => setText("outputDir", e.target.value)} />
-                      <button className="btn" onClick={() => { void performQuickAction(async () => { const s = await window.rd.pickFolder(); if (s) { setText("outputDir", s); } }); }}>Wählen</button>
-                    </div>
-                    <div className="setting-hint">Zielordner für alle heruntergeladenen Dateien.</div>
-                    <label>Paketname (optional)</label>
-                    <input value={settingsDraft.packageName} onChange={(e) => setText("packageName", e.target.value)} />
-                    <div className="setting-hint">Voreingestellter Name für neue Pakete; leer = automatisch aus den Links.</div>
-
-                    <h4 className="settings-subhead">Download-Verhalten</h4>
-                    <div className="field-grid two">
-                      <div><label>Max. gleichzeitige Downloads</label><input type="number" min={1} max={50} value={settingsDraft.maxParallel} onChange={(e) => setNum("maxParallel", Math.max(1, Math.min(50, Number(e.target.value) || 1)))} /><div className="setting-hint">Gleichzeitige Downloads (1-50); höher lastet Leitung und Hoster-Slots stärker aus.</div></div>
-                      <div><label>Automatische Wiederholungen</label><input type="number" min={0} max={99} value={settingsDraft.retryLimit} onChange={(e) => setNum("retryLimit", Math.max(0, Math.min(99, Number(e.target.value) || 0)))} /><div className="setting-hint">Wiederholungen pro Datei bei Fehlern; 0 = unbegrenzt weiterversuchen.</div></div>
-                    </div>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoResumeOnStart} onChange={(e) => setBool("autoResumeOnStart", e.target.checked)} /> Beim Start automatisch fortsetzen</label>
-                    <div className="setting-hint">Unterbrochene Downloads beim Programmstart automatisch fortsetzen.</div>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.clipboardWatch} onChange={(e) => setBool("clipboardWatch", e.target.checked)} /> Zwischenablage überwachen</label>
-                    <div className="setting-hint">Kopierte Links werden automatisch erkannt und zur Liste hinzugefügt.</div>
-
-                    <h4 className="settings-subhead">Verlauf</h4>
-                    <label>Verlauf speichern</label>
-                    <select value={settingsDraft.historyRetentionMode} onChange={(e) => setText("historyRetentionMode", e.target.value)}>
-                      {Object.entries(historyRetentionLabels).map(([key, label]) => (
-                        <option key={key} value={key}>{label}</option>
-                      ))}
-                    </select>
-                    <div className="setting-hint">Nie / nur Sitzung / dauerhaft; die Grenzen unten wirken nur bei „Dauerhaft".</div>
-                    <div className="field-grid two">
-                      <div><label>Maximale Verlauf-Einträge</label><input type="number" min={50} max={100000} value={settingsDraft.historyMaxEntries} disabled={settingsDraft.historyRetentionMode !== "permanent"} onChange={(e) => setNum("historyMaxEntries", Math.max(50, Math.min(100000, Number(e.target.value) || 500)))} /><div className="setting-hint">Obergrenze (Standard 500); älteste Einträge fallen darüber hinaus weg.</div></div>
-                      <div><label>Einträge löschen älter als (Tage)</label><input type="number" min={0} max={3650} value={settingsDraft.historyMaxAgeDays} disabled={settingsDraft.historyRetentionMode !== "permanent"} onChange={(e) => setNum("historyMaxAgeDays", Math.max(0, Math.min(3650, Number(e.target.value) || 0)))} /><div className="setting-hint">Löscht Einträge älter als X Tage; 0 = aus. Nur bei „Dauerhaft" aktiv.</div></div>
-                    </div>
-
-                    <h4 className="settings-subhead">Oberfläche & Bedienung</h4>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.collapseNewPackages} onChange={(e) => setBool("collapseNewPackages", e.target.checked)} /> Neue Pakete eingeklappt zeigen</label>
-                    <div className="setting-hint">Neue Pakete starten zugeklappt; hält lange Listen übersichtlich.</div>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoSortPackagesByProgress} onChange={(e) => setBool("autoSortPackagesByProgress", e.target.checked)} /> Nach Fortschritt sortieren</label>
-                    <div className="setting-hint">Laufende Pakete automatisch nach Fortschritt ordnen statt nach Reihenfolge.</div>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.minimizeToTray} onChange={(e) => setBool("minimizeToTray", e.target.checked)} /> In den Infobereich minimieren</label>
-                    <div className="setting-hint">Legt das Fenster in den Tray statt zu beenden; läuft im Hintergrund weiter.</div>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.confirmDeleteSelection} onChange={(e) => setBool("confirmDeleteSelection", e.target.checked)} /> Vor dem Löschen nachfragen</label>
-                    <div className="setting-hint">Sicherheitsabfrage vor dem Entfernen ausgewählter Einträge.</div>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.backupIncludeDownloads} onChange={(e) => setBool("backupIncludeDownloads", e.target.checked)} /> Download-Liste mitsichern</label>
-                    <div className="setting-hint">Sicherung enthält auch die Download-Liste; Standard: nur Einstellungen.</div>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.backupIncludeRemoteDiagnostics} onChange={(e) => setBool("backupIncludeRemoteDiagnostics", e.target.checked)} /> Ferndiagnose-Einstellungen mitsichern</label>
-                    <div className="setting-hint">Allowlist, Port und Freigabemodus (lokal/Netzwerk) reisen mit. Verbindungs-Token und eigene Adresse bleiben pro Server – nach dem Import einmal „Aktivieren" drücken.</div>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.theme === "light"} onChange={(e) => {
-                      const next = e.target.checked ? "light" : "dark";
-                      settingsDraftRevisionRef.current += 1;
-                      panelDirtyRevisionRef.current += 1;
-                      settingsDirtyRef.current = true;
-                      setSettingsDirty(true);
-                      setSettingsDraft((prev) => ({ ...prev, theme: next as AppTheme }));
-                      applyTheme(next as AppTheme);
-                    }} /> Heller Modus</label>
-                    <div className="setting-hint">Schaltet die Oberfläche von Dunkel auf Hell um.</div>
-
-                    <h4 className="settings-subhead">Discord-Benachrichtigungen</h4>
-                    <label>Webhook-Adresse (Discord)</label>
-                    <div className="input-row">
-                      <input value={settingsDraft.notifyUrl} placeholder="https://discord.com/api/webhooks/..." onChange={(e) => setText("notifyUrl", e.target.value)} />
-                      <button className="btn" disabled={actionBusy || !settingsDraft.notifyUrl.trim()} onClick={() => {
-                        void performQuickAction(async () => {
-                          const ok = await window.rd.testNotification(settingsDraft.notifyUrl, settingsDraft.notifyMention);
-                          if (ok) {
-                            showToast(settingsDirty ? "Test-Nachricht gesendet — Einstellungen jetzt noch speichern!" : "Test-Nachricht gesendet — schau in Discord", 4800);
-                          } else {
-                            showToast("Test fehlgeschlagen — Webhook-URL prüfen (Details unter Hilfe → Letzte Fehler)", 4200);
-                          }
-                        }, (error) => {
-                          showToast(`Test fehlgeschlagen: ${String(error)}`, 3600);
-                        });
-                      }}>Testen</button>
-                    </div>
-                    <div className="setting-hint">Discord-Webhook für Meldungen; per „Testen"-Button prüfbar. Leer = aus. In Discord: Servereinstellungen → Integrationen → Webhooks → Neuer Webhook → URL kopieren.</div>
-                    <label>Discord-Erwähnung (optional)</label>
-                    <input value={settingsDraft.notifyMention} placeholder="Deine User-ID, @everyone oder @here" onChange={(e) => setText("notifyMention", e.target.value)} />
-                    <div className="setting-hint">Wird jeder Meldung vorangestellt (User-ID, @everyone, @here), damit Discord pingt.</div>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.notifyOnPackageCompleted} onChange={(e) => setBool("notifyOnPackageCompleted", e.target.checked)} /> Melden, wenn ein Paket fertig ist</label>
-                    <div className="setting-hint">Sendet eine Meldung, sobald ein Paket vollständig geladen wurde.</div>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.notifyOnPackageFailed} onChange={(e) => setBool("notifyOnPackageFailed", e.target.checked)} /> Melden, wenn ein Paket fehlschlägt</label>
-                    <div className="setting-hint">Sendet eine Meldung, wenn ein Paket endgültig fehlschlägt.</div>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.notifyOnRunFinished} onChange={(e) => setBool("notifyOnRunFinished", e.target.checked)} /> Melden, wenn alles fertig ist</label>
-                    <div className="setting-hint">Sendet eine Meldung, wenn die ganze Warteschlange abgearbeitet ist.</div>
-                  </div>
-                )}
-                {settingsSubTab === "accounts" && (
-                  <div className="account-settings-layout">
-                    <div className="account-management-heading">
-                      <div>
-                        <h3>Accountverwaltung</h3>
-                        <div className="hint">Hier kannst Du Deine Accounts hinzufügen, prüfen und verwalten.</div>
-                      </div>
-                      <label className="account-use-toggle"><input type="checkbox" checked={accountRows.some((row) => !row.disabled)} disabled={actionBusy || accountRows.length === 0} onChange={(event) => { void setAllAccountsEnabled(event.target.checked); }} /> Accounts zum Herunterladen verwenden</label>
-                    </div>
-
-                    <div className="account-management-tabs" role="tablist" aria-label="Accountverwaltung">
-                      <button className={accountManagementTab === "overview" ? "active" : ""} onClick={() => setAccountManagementTab("overview")} role="tab" aria-selected={accountManagementTab === "overview"}>Übersicht</button>
-                      <button className={accountManagementTab === "rules" ? "active" : ""} onClick={() => setAccountManagementTab("rules")} role="tab" aria-selected={accountManagementTab === "rules"}>Verwendungsregeln</button>
-                    </div>
-
-                    <div className="account-overview-panel" hidden={accountManagementTab !== "overview"}>
-                      <div className="acct2-table" role="table" aria-label="Accounts">
-                        <div className="acct2-head" role="row">
-                          <span className="acct2-c-check" role="columnheader" aria-label="Aktiviert" />
-                          <span role="columnheader">Hoster</span>
-                          <span role="columnheader"><button type="button" className="acct2-sortable" title="Nach Premium-Restlaufzeit sortieren" onClick={cycleAccountStatusSort}>Status{accountStatusSort === "desc" ? " ▼" : accountStatusSort === "asc" ? " ▲" : ""}</button></span>
-                          <span role="columnheader">Download-Traffic übrig</span>
-                          <span role="columnheader">Benutzername</span>
-                          <span role="columnheader">Verfallsdatum</span>
-                          <span role="columnheader">Passwort / Zugang</span>
-                          <span className="acct2-c-actions" role="columnheader" aria-label="Aktionen" />
-                        </div>
-                        <div className="acct2-body" role="rowgroup">
-                          {accountRows.length === 0 ? (
-                            <div className="acct2-empty">Noch keine Accounts vorhanden.</div>
-                          ) : sortedAccountRows.map((row) => renderAccountRow(row))}
-                        </div>
-                      </div>
-                      <div className="account-table-actions">
-                        <button className="btn btn-sm" disabled={actionBusy || availableAccountOptions.length === 0} onClick={openCreateAccountDialog}>＋ Hinzufügen</button>
-                        <button className="btn btn-sm" disabled={actionBusy || !selectedAccountRowKey} onClick={() => {
-                          const selectedRow = accountRows.find((row) => row.rowKey === selectedAccountRowKey);
-                          if (selectedRow) removeAccountTableRow(selectedRow);
-                        }}>－ Entfernen</button>
-                        <button className="btn btn-sm" disabled={actionBusy || accountCheckBusy} onClick={() => { void checkAllAccounts(); }}>{accountCheckBusy ? "Prüfe…" : "↻ Aktualisieren"}</button>
-                        <span>{accountRows.length} {accountRows.length === 1 ? "Account" : "Accounts"}</span>
-                      </div>
-                    </div>
-
-                    <div className="account-rules-panel" hidden={accountManagementTab !== "rules"}>
-                    <div className="settings-section card account-rule-section">
-                      <div className="account-board-header">
-                        <div>
-                          <h3>Rotations-Verlauf</h3>
-                          <div className="hint">Zeigt, welcher Account/Key zuletzt für die Link-Umwandlung versucht wurde und warum gewechselt wurde.</div>
-                        </div>
-                      </div>
-                      <div className="rotation-panel">
-                        {(!snapshot?.rotationEvents || snapshot.rotationEvents.length === 0) ? (
-                          <div className="rotation-empty">Noch keine Rotations-Ereignisse. Sobald ein Account/Key bei der Link-Umwandlung fehlschlägt oder gewechselt wird, erscheint es hier.</div>
-                        ) : (
-                          snapshot.rotationEvents.map((ev) => (
-                            <div key={ev.id} className={`rotation-event ${ev.level}`}>
-                              <span className="rotation-time">{new Date(ev.at).toLocaleTimeString()}</span>
-                              <span className="rotation-body">
-                                <strong>{ev.provider} · {ev.accountLabel}</strong>{" "}
-                                {rotationEventText(ev)}
-                                {ev.reason ? <span className="rotation-reason"> ({ev.reason})</span> : null}
-                              </span>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="settings-section card account-rule-section">
-                      <h3>Hoster-Reihenfolge</h3>
-                      <div className="hint">
-                        Lege fest, in welcher Reihenfolge die Debrid-Accounts für Links genutzt werden.
-                        Der erste Eintrag ist der Hauptaccount. Direkt-Hoster (1Fichier, DDownload) laufen separat und erscheinen nicht hier.
-                      </div>
-                      {activeProviderOrder.length === 0 && (
-                        <div className="account-empty-state compact">
-                          <strong>Keine Debrid-Reihenfolge verfügbar</strong>
-                          <span>Füge mindestens einen Debrid-Account hinzu, dann kannst Du die Reihenfolge festlegen.</span>
-                        </div>
-                      )}
-                      {activeProviderOrder.length > 0 && (
-                        <div className="provider-order-list">
-                          {activeProviderOrder.map((provider, idx) => (
-                            <div
-                              key={provider}
-                              className={`provider-order-row${draggedProvider === provider ? " dragging" : ""}${providerDropTarget === provider && draggedProvider !== provider ? " drag-target" : ""}`}
-                              draggable
-                              onDragStart={(event) => onProviderDragStart(event, provider)}
-                              onDragOver={(event) => onProviderDragOver(event, provider)}
-                              onDrop={(event) => onProviderDrop(event, provider)}
-                              onDragEnd={onProviderDragEnd}
-                            >
-                              <span className="provider-order-num">{idx + 1}.</span>
-                              <span className="provider-order-label">{providerLabelWithMode(provider, settingsDraft)}</span>
-                              <div className="provider-order-actions">
-                                <button
-                                  className="btn btn-sm"
-                                  disabled={idx === 0}
-                                  onClick={() => {
-                                    const next = [...activeProviderOrder];
-                                    [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
-                                    setProviderOrder(next);
-                                  }}
-                                  title="Nach oben"
-                                >{"\u25B2"}</button>
-                                <button
-                                  className="btn btn-sm"
-                                  disabled={idx === activeProviderOrder.length - 1}
-                                  onClick={() => {
-                                    const next = [...activeProviderOrder];
-                                    [next[idx + 1], next[idx]] = [next[idx], next[idx + 1]];
-                                    setProviderOrder(next);
-                                  }}
-                                  title="Nach unten"
-                                >{"\u25BC"}</button>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoProviderFallback} onChange={(e) => setBool("autoProviderFallback", e.target.checked)} /> Bei Fehlern oder Fair-Use automatisch zum nächsten Provider wechseln</label>
-                      <label className="toggle-line"><input type="checkbox" checked={settingsDraft.rememberToken} onChange={(e) => setBool("rememberToken", e.target.checked)} /> Zugangsdaten lokal speichern</label>
-                    </div>
-
-                    {configuredProviders.length >= 1 && (
-                    <div className="settings-section card account-rule-section">
-                      <h3>Hoster-Zuordnung</h3>
-                      <div className="hint">Lege fest, welcher Debrid-Provider sich um welchen Filehoster kümmert. Nicht zugeordnete Hoster nutzen die Standard-Reihenfolge oben.</div>
-                      {(() => {
-                        const routing: Record<string, DebridProvider> = settingsDraft.hosterRouting || {};
-                        const routingEntries = Object.entries(routing).sort(([a], [b]) => a.localeCompare(b));
-                        const usedHosters = new Set(routingEntries.map(([h]) => h));
-                        const availableHosters = KNOWN_HOSTERS.filter((h) => !usedHosters.has(h.id));
-
-                        const setRouting = (newRouting: Record<string, DebridProvider>) => {
-                          settingsDraftRevisionRef.current += 1;
-                          panelDirtyRevisionRef.current += 1;
-                          settingsDirtyRef.current = true;
-                          setSettingsDirty(true);
-                          setSettingsDraft((prev) => ({ ...prev, hosterRouting: newRouting }));
-                        };
-
-                        const addEntry = (hosterId: string) => {
-                          if (!hosterId || routing[hosterId]) return;
-                          setRouting({ ...routing, [hosterId]: configuredProviders[0] });
-                        };
-
-                        const removeEntry = (hosterId: string) => {
-                          const copy = { ...routing };
-                          delete copy[hosterId];
-                          setRouting(copy);
-                        };
-
-                        const changeProvider = (hosterId: string, provider: DebridProvider) => {
-                          setRouting({ ...routing, [hosterId]: provider });
-                        };
-
-                        return (
-                          <>
-                            {routingEntries.length > 0 && (
-                              <div className="hoster-routing-table">
-                                <div className="hoster-routing-header">
-                                  <span>Filehoster</span>
-                                  <span>Zuständiger Provider</span>
-                                  <span></span>
-                                </div>
-                                {routingEntries.map(([hosterId, provider]) => {
-                                  const hosterLabel = KNOWN_HOSTERS.find((h) => h.id === hosterId)?.label || hosterId;
-                                  return (
-                                    <div key={hosterId} className="hoster-routing-row">
-                                      <span className="hoster-routing-label">{hosterLabel}</span>
-                                      <select value={provider} onChange={(e) => changeProvider(hosterId, e.target.value as DebridProvider)}>
-                                        {configuredProviders.map((p) => (
-                                          <option key={p} value={p}>{providerLabelWithMode(p, settingsDraft)}</option>
-                                        ))}
-                                      </select>
-                                      <button className="btn btn-sm btn-danger" onClick={() => removeEntry(hosterId)} title="Zuordnung entfernen">&times;</button>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            )}
-                            {routingEntries.length === 0 && (
-                              <div className="hint" style={{ fontStyle: "italic", opacity: 0.7 }}>Noch keine Zuordnungen. Alle Hoster nutzen die Standard-Reihenfolge.</div>
-                            )}
-                            <div className="hoster-routing-add">
-                              <select
-                                value=""
-                                onChange={(e) => {
-                                  const val = e.target.value;
-                                  if (val === "__custom") {
-                                    const name = window.prompt("Hoster-Domain eingeben (z.B. rapidgator, turbobit):");
-                                    const clean = (name || "").trim().toLowerCase().replace(/^www\./, "").split(".")[0];
-                                    if (clean) addEntry(clean);
-                                  } else {
-                                    addEntry(val);
-                                  }
-                                  e.target.value = "";
-                                }}
-                              >
-                                <option value="" disabled>Hoster hinzufügen...</option>
-                                {availableHosters.map((h) => (
-                                  <option key={h.id} value={h.id}>{h.label}</option>
-                                ))}
-                                <option value="" disabled>â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€</option>
-                                <option value="__custom">Eigener Hoster...</option>
-                              </select>
-                            </div>
-                          </>
-                        );
-                      })()}
-                    </div>
-                    )}
-                    </div>
-
-                    <div hidden>
-                  <div className="settings-section card">
-                    <h3>Accounts</h3>
-                    <label>Real-Debrid API Token</label>
-                    <input type="password" value={settingsDraft.token} onChange={(e) => setText("token", e.target.value)} />
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.realDebridUseWebLogin} onChange={(e) => setBool("realDebridUseWebLogin", e.target.checked)} /> Real-Debrid per Web-Login statt API-Token verwenden</label>
-                    {settingsDraft.realDebridUseWebLogin && (
-                      <>
-                        <div className="hint">Beim ersten Link oder über den Button unten öffnet sich ein Real-Debrid-Browserfenster. Der Login läuft dort manuell über die Website.</div>
-                        <button className="btn" disabled={actionBusy} onClick={() => { void onOpenRealDebridLogin(); }}>Real-Debrid Web-Login öffnen</button>
-                      </>
-                    )}
-                    <label>Mega-Debrid Accounts (Login:Passwort pro Zeile)</label>
-                    <textarea rows={3} value={settingsDraft.megaCredentials || ""} onChange={(e) => setText("megaCredentials", e.target.value)} style={{ fontFamily: "monospace", resize: "vertical" }} placeholder={"user@example.com:passwort"} />
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.megaDebridPreferApi} onChange={(e) => setBool("megaDebridPreferApi", e.target.checked)} /> Mega-Debrid bevorzugt über API (schneller, Fallback auf Web)</label>
-                    <label>BestDebrid API Token</label>
-                    <input type="password" value={settingsDraft.bestToken} onChange={(e) => setText("bestToken", e.target.value)} />
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.bestDebridUseWebLogin} onChange={(e) => setBool("bestDebridUseWebLogin", e.target.checked)} /> BestDebrid per Cookie-Import statt API-Token verwenden</label>
-                    {settingsDraft.bestDebridUseWebLogin && (
-                      <>
-                        <div className="hint">Exportiere deine BestDebrid-Cookies als Netscape-Textdatei (z.B. mit der Browser-Extension &quot;Get cookies.txt LOCALLY&quot;) und importiere sie hier.</div>
-                        <button className="btn" disabled={actionBusy} onClick={() => { void onImportBestDebridCookies(); }}>BestDebrid Cookies importieren</button>
-                      </>
-                    )}
-                    <label>AllDebrid API Key</label>
-                    <input type="password" value={settingsDraft.allDebridToken} onChange={(e) => setText("allDebridToken", e.target.value)} />
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.allDebridUseWebLogin} onChange={(e) => setBool("allDebridUseWebLogin", e.target.checked)} /> AllDebrid per Web-Login statt API-Key verwenden</label>
-                    {settingsDraft.allDebridUseWebLogin && (
-                      <>
-                        <div className="hint">Beim ersten Link oder über den Button unten öffnet sich ein echtes AllDebrid-Browserfenster. Der Login läuft dort manuell, damit reCAPTCHA sauber funktioniert.</div>
-                        <button className="btn" disabled={actionBusy} onClick={() => { void onOpenAllDebridLogin(); }}>AllDebrid Web-Login öffnen</button>
-                      </>
-                    )}
-                    <div style={{ marginTop: 12, padding: 14, borderRadius: 14, border: "1px solid rgba(83, 168, 255, 0.22)", background: "rgba(10, 20, 35, 0.32)" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-                        <strong>AllDebrid Rapidgator Status</strong>
-                        <button className="btn" disabled={allDebridHostLoading || !hasSavedAllDebridAccount} onClick={() => { void loadAllDebridHostInfo(false); }}>
-                          {allDebridHostLoading ? "Lade..." : "Status aktualisieren"}
-                        </button>
-                      </div>
-                      {!hasSavedAllDebridAccount && (
-                        <div className="hint" style={{ marginTop: 10 }}>Nach dem Speichern eines AllDebrid-Accounts wird hier der Rapidgator-Status angezeigt.</div>
-                      )}
-                      {hasSavedAllDebridAccount && !allDebridHostInfo && !allDebridHostLoading && (
-                        <div className="hint" style={{ marginTop: 10 }}>Noch keine Host-Information geladen.</div>
-                      )}
-                      {hasSavedAllDebridAccount && allDebridHostLoading && !allDebridHostInfo && (
-                        <div className="hint" style={{ marginTop: 10 }}>Rapidgator-Status wird geladen...</div>
-                      )}
-                      {allDebridHostInfo && (
-                        <>
-                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginTop: 12 }}>
-                            <div>
-                              <div className="hint" style={{ margin: 0 }}>Status</div>
-                              <div>{allDebridHostInfo.statusLabel}</div>
-                            </div>
-                            <div>
-                              <div className="hint" style={{ margin: 0 }}>Quelle</div>
-                              <div>{formatAllDebridSourceLabel(allDebridHostInfo.source)}</div>
-                            </div>
-                            <div>
-                              <div className="hint" style={{ margin: 0 }}>Letztes Update</div>
-                              <div>{formatAllDebridTimestamp(allDebridHostInfo)}</div>
-                            </div>
-                            <div>
-                              <div className="hint" style={{ margin: 0 }}>Quota</div>
-                              <div>{formatAllDebridQuota(allDebridHostInfo)}</div>
-                            </div>
-                            <div>
-                              <div className="hint" style={{ margin: 0 }}>Simultan-Downloads</div>
-                              <div>{formatAllDebridSimuLimit(allDebridHostInfo)}</div>
-                            </div>
-                          </div>
-                          {allDebridHostInfo.note && (
-                            <div className="hint" style={{ marginTop: 10 }}>{allDebridHostInfo.note}</div>
-                          )}
-                        </>
-                      )}
-                      {allDebridSettingsDirty && hasSavedAllDebridAccount && (
-                        <div className="hint" style={{ marginTop: 10 }}>Status basiert auf den zuletzt gespeicherten AllDebrid-Einstellungen.</div>
-                      )}
-                    </div>
-                    <label>DDownload Login</label>
-                    <input value={settingsDraft.ddownloadLogin || ""} onChange={(e) => setText("ddownloadLogin", e.target.value)} />
-                    <label>DDownload Passwort</label>
-                    <input type="password" value={settingsDraft.ddownloadPassword || ""} onChange={(e) => setText("ddownloadPassword", e.target.value)} />
-                    <label>1Fichier API Key</label>
-                    <input type="password" value={settingsDraft.oneFichierApiKey || ""} onChange={(e) => setText("oneFichierApiKey", e.target.value)} />
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.rememberToken} onChange={(e) => setBool("rememberToken", e.target.checked)} /> Zugangsdaten lokal speichern</label>
-                  </div>
-                    </div>
-                  </div>
-                )}
-                {settingsSubTab === "entpacken" && (
-                  <div className="settings-section card">
-                    <h3>Entpacken</h3>
-                    <div className="settings-section-intro">Wann und wie Archive entpackt werden, dazu Tonspur, Ablageform und Leistung.</div>
-
-                    <h4 className="settings-subhead first">Ziel & Ablauf</h4>
-                    <label>Entpacken nach</label>
-                    <div className="input-row">
-                      <input value={settingsDraft.extractDir} onChange={(e) => setText("extractDir", e.target.value)} />
-                      <button className="btn" onClick={() => { void performQuickAction(async () => { const s = await window.rd.pickFolder(); if (s) { setText("extractDir", s); } }); }}>Wählen</button>
-                    </div>
-                    <div className="setting-hint">Zielordner für die entpackten Dateien.</div>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoExtract} onChange={(e) => setBool("autoExtract", e.target.checked)} /> Automatisch entpacken</label>
-                    <div className="setting-hint">Entpackt Archive automatisch, sobald das Paket vollständig geladen ist.</div>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoSkipExtracted} onChange={(e) => setBool("autoSkipExtracted", e.target.checked)} /> Bereits Entpacktes überspringen</label>
-                    <div className="setting-hint">Überspringt beim Start Archive, deren Inhalt schon vorhanden ist.</div>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.hideExtractedItems} onChange={(e) => setBool("hideExtractedItems", e.target.checked)} /> Entpackte Einträge ausblenden</label>
-                    <div className="setting-hint">Blendet fertig entpackte Einträge aus der Paketliste aus.</div>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoExtractWhenStopped} onChange={(e) => setBool("autoExtractWhenStopped", e.target.checked)} /> Entpacken auch ohne laufende Sitzung</label>
-                    <div className="setting-hint">Entpackt offene Archive auch bei Stopp oder Programmstart ohne laufende Sitzung.</div>
-
-                    <h4 className="settings-subhead">Deutsche Tonspur</h4>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.keepGermanAudioOnly} onChange={(e) => setBool("keepGermanAudioOnly", e.target.checked)} /> Nur deutsche Tonspur behalten</label>
-                    <div className="setting-hint">Reduziert .DL.-Videos auf die deutsche Spur; benötigt ffmpeg.</div>
-                    <label>Welche Tonspur behalten</label>
-                    <select value={settingsDraft.germanAudioMode} disabled={!settingsDraft.keepGermanAudioOnly} onChange={(e) => setText("germanAudioMode", e.target.value)}>
-                      <option value="tag">Deutsche Spur per Sprach-Tag (empfohlen)</option>
-                      <option value="first">Immer erste Tonspur (wie Script)</option>
-                    </select>
-                    <div className="setting-hint">Deutsche Spur per Sprach-Kennung (empfohlen) oder erste Spur; nur aktiv wenn oben an.</div>
-
-                    <h4 className="settings-subhead">Ablageform</h4>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoRename4sf4sj} onChange={(e) => setBool("autoRename4sf4sj", e.target.checked)} /> Automatisch umbenennen (Beta)</label>
-                    <div className="setting-hint">Benennt kryptische 4sf/4sj-Dateinamen automatisch um (experimentell).</div>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.createExtractSubfolder} onChange={(e) => setBool("createExtractSubfolder", e.target.checked)} /> In Paket-Unterordner ablegen</label>
-                    <div className="setting-hint">Legt entpackte Dateien je Paket in einen eigenen Unterordner.</div>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.collectMkvToLibrary} onChange={(e) => setBool("collectMkvToLibrary", e.target.checked)} /> Videos in Sammelordner verschieben</label>
-                    <div className="setting-hint">Verschiebt fertige Videos nach Paketabschluss in einen zentralen Ordner.</div>
-                    <label>Video-Sammelordner</label>
-                    <div className="input-row">
-                      <input value={settingsDraft.mkvLibraryDir} onChange={(e) => setText("mkvLibraryDir", e.target.value)} disabled={!settingsDraft.collectMkvToLibrary} />
-                      <button className="btn" disabled={!settingsDraft.collectMkvToLibrary} onClick={() => { void performQuickAction(async () => { const s = await window.rd.pickFolder(); if (s) { setText("mkvLibraryDir", s); } }); }}>Wählen</button>
-                    </div>
-                    <div className="setting-hint">Zielordner für gesammelte Videos; nur aktiv wenn Sammeln eingeschaltet ist.</div>
-
-                    <h4 className="settings-subhead">Leistung</h4>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.hybridExtract} onChange={(e) => setBool("hybridExtract", e.target.checked)} /> Hybrid-Entpacken</label>
-                    <div className="setting-hint">Entpackt schon während des Downloads weiter; spart Zeit, kostet mehr I/O.</div>
-                    <div className="field-grid two">
-                      <div><label>Gleichzeitige Entpackungen</label><input type="number" min={1} max={8} value={settingsDraft.maxParallelExtract} onChange={(e) => setNum("maxParallelExtract", Math.max(1, Math.min(8, Number(e.target.value) || 2)))} /><div className="setting-hint">Parallele Entpackvorgänge (1-8); höher braucht mehr CPU und Datenträger.</div></div>
-                      <div><label>CPU-Priorität beim Entpacken</label><select value={settingsDraft.extractCpuPriority} onChange={(e) => setText("extractCpuPriority", e.target.value)}>
-                        <option value="high">Hoch (80% CPU)</option>
-                        <option value="middle">Mittel (50% CPU)</option>
-                        <option value="low">Niedrig (25% CPU)</option>
-                      </select><div className="setting-hint">CPU-Anteil beim Entpacken: Hoch 80%, Mittel 50%, Niedrig 25%.</div></div>
-                    </div>
-
-                    <h4 className="settings-subhead">Passwörter</h4>
-                    <label>Passwortliste für Archive</label>
-                    <textarea className="password-list" value={settingsDraft.archivePasswordList} onChange={(e) => setText("archivePasswordList", e.target.value)} placeholder={"serienfans.org\nserienjunkies.org\nmein-passwort"} />
-                    <div className="setting-hint">Ein Passwort pro Zeile; wird der Reihe nach an geschützten Archiven probiert.</div>
-                  </div>
-                )}
-                {settingsSubTab === "geschwindigkeit" && (
-                  <div className="settings-section card">
-                    <h3>Geschwindigkeit</h3>
-                    <div className="settings-section-intro">Tempo begrenzen, Verhalten bei Abbrüchen und zeitgesteuerte Bandbreitenregeln.</div>
-
-                    <h4 className="settings-subhead first">Tempo-Begrenzung</h4>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.speedLimitEnabled} onChange={(e) => setBool("speedLimitEnabled", e.target.checked)} /> Geschwindigkeit begrenzen</label>
-                    <div className="setting-hint">Schaltet die Drosselung ein; die Felder unten wirken nur dann.</div>
-                    <div className="field-grid two">
-                      <div>
-                        <label>Höchstgeschwindigkeit (MB/s)</label>
-                        <input type="number" min={0} step={0.1} value={speedLimitInput} onChange={(event) => setSpeedLimitInput(event.target.value)} onBlur={(event) => { const parsed = parseMbpsInput(event.target.value); if (parsed === null) { setSpeedLimitInput(formatMbpsInputFromKbps(settingsDraft.speedLimitKbps)); return; } setSpeedLimitMbps(parsed); setSpeedLimitInput(formatMbpsInputFromKbps(Math.floor(parsed * 1024))); }} disabled={!settingsDraft.speedLimitEnabled} />
-                        <div className="setting-hint">Maximales Tempo in MB/s; 0 = unbegrenzt.</div>
-                      </div>
-                      <div>
-                        <label>Limit gilt für</label>
-                        <select value={settingsDraft.speedLimitMode} onChange={(e) => setText("speedLimitMode", e.target.value)} disabled={!settingsDraft.speedLimitEnabled}>
-                          <option value="global">Global</option>
-                          <option value="per_download">Pro Download</option>
-                        </select>
-                        <div className="setting-hint">Global = Summe aller Downloads, Pro Download = je Download getrennt.</div>
-                      </div>
-                    </div>
-
-                    <h4 className="settings-subhead">Verbindung</h4>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoReconnect} onChange={(e) => setBool("autoReconnect", e.target.checked)} /> Automatisch neu verbinden</label>
-                    <div className="setting-hint">Verbindet bei Abbruch automatisch neu, statt den Download zu beenden.</div>
-                    <div><label>Wartezeit vor neuem Versuch (Sek.)</label><input type="number" min={10} max={600} value={settingsDraft.reconnectWaitSeconds} onChange={(e) => setNum("reconnectWaitSeconds", Math.max(10, Math.min(600, Number(e.target.value) || 45)))} /><div className="setting-hint">Wartezeit vor dem nächsten Verbindungsversuch (10-600 Sek.).</div></div>
-
-                    <h4 className="settings-subhead">Bandbreitenplanung</h4>
-                    <div className="setting-hint">Pro Zeitfenster (Start-/End-Stunde) ein eigenes Limit, je Regel aktivierbar.</div>
-                    {schedules.map((s, i) => {
-                      const scheduleKey = s.id || `schedule-${i}`;
-                      const speedInput = scheduleSpeedInputs[scheduleKey] ?? formatMbpsInputFromKbps(s.speedLimitKbps);
-                      return (
-                        <div key={scheduleKey} className="schedule-row">
-                          <input type="number" min={0} max={23} value={s.startHour} onChange={(e) => { const v = Number(e.target.value); if (!Number.isNaN(v)) updateSchedule(i, "startHour", Math.max(0, Math.min(23, v))); }} title="Von (Stunde)" />
-                          <span>-</span>
-                          <input type="number" min={0} max={23} value={s.endHour} onChange={(e) => { const v = Number(e.target.value); if (!Number.isNaN(v)) updateSchedule(i, "endHour", Math.max(0, Math.min(23, v))); }} title="Bis (Stunde)" />
-                          <span>Uhr</span>
-                          <input type="number" min={0} step={0.1} value={speedInput} onChange={(event) => { setScheduleSpeedInputs((prev) => ({ ...prev, [scheduleKey]: event.target.value })); }} onBlur={(event) => { const parsed = parseMbpsInput(event.target.value); if (parsed === null) { setScheduleSpeedInputs((prev) => ({ ...prev, [scheduleKey]: formatMbpsInputFromKbps(s.speedLimitKbps) })); return; } const nextKbps = Math.floor(parsed * 1024); setScheduleSpeedInputs((prev) => ({ ...prev, [scheduleKey]: formatMbpsInputFromKbps(nextKbps) })); updateSchedule(i, "speedLimitKbps", nextKbps); }} title="MB/s (0=unbegrenzt)" />
-                          <span>MB/s</span>
-                          <input type="checkbox" checked={s.enabled} onChange={(e) => updateSchedule(i, "enabled", e.target.checked)} />
-                          <button className="btn danger" onClick={() => removeSchedule(i)}>X</button>
-                        </div>
-                      );
-                    })}
-                    <button className="btn" onClick={addSchedule}>Zeitregel hinzufügen</button>
-                  </div>
-                )}
-                {settingsSubTab === "bereinigung" && (
-                  <div className="settings-section card">
-                    <h3>Bereinigung</h3>
-                    <div className="settings-section-intro">Integritätsprüfung sowie Aufräumen nach dem Entpacken und bei fertigen Downloads.</div>
-
-                    <h4 className="settings-subhead first">Prüfung</h4>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.enableIntegrityCheck} onChange={(e) => setBool("enableIntegrityCheck", e.target.checked)} /> Dateien auf Fehler prüfen</label>
-                    <div className="setting-hint">Prüft Prüfsummen (SFV/CRC/MD5/SHA1), um defekte Dateien zu erkennen.</div>
-
-                    <h4 className="settings-subhead">Nach dem Entpacken</h4>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.removeLinkFilesAfterExtract} onChange={(e) => setBool("removeLinkFilesAfterExtract", e.target.checked)} /> Link-Dateien danach entfernen</label>
-                    <div className="setting-hint">Löscht übrig gebliebene Link-Dateien nach erfolgreichem Entpacken.</div>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.removeSamplesAfterExtract} onChange={(e) => setBool("removeSamplesAfterExtract", e.target.checked)} /> Vorschau-Dateien danach entfernen</label>
-                    <div className="setting-hint">Löscht kleine Sample-Videos nach erfolgreichem Entpacken.</div>
-                    <label>Archive nach dem Entpacken</label>
-                    <select value={settingsDraft.cleanupMode} onChange={(e) => setText("cleanupMode", e.target.value)}>
-                      <option value="none">keine Archive löschen</option>
-                      <option value="trash">Archive in Papierkorb</option>
-                      <option value="delete">Archive löschen</option>
-                    </select>
-                    <div className="setting-hint">Mit Archiven nach Erfolg: behalten, in den Papierkorb oder löschen.</div>
-
-                    <h4 className="settings-subhead">Fertige Downloads & Konflikte</h4>
-                    <label>Fertige Downloads aus der Liste</label>
-                    <select value={settingsDraft.completedCleanupPolicy} onChange={(e) => setText("completedCleanupPolicy", e.target.value)}>
-                      {Object.entries(cleanupLabels).map(([key, label]) => (<option key={key} value={key}>{label}</option>))}
-                    </select>
-                    <div className="setting-hint">Wann erledigte Einträge verschwinden: nie, sofort, beim Start oder nach dem Paket.</div>
-                    <label>Bei gleichnamigen Dateien</label>
-                    <select value={settingsDraft.extractConflictMode} onChange={(e) => setText("extractConflictMode", e.target.value)}>
-                      <option value="overwrite">überschreiben</option>
-                      <option value="skip">überspringen</option>
-                      <option value="rename">umbenennen</option>
-                      <option value="ask">nachfragen</option>
-                    </select>
-                    <div className="setting-hint">Bei vorhandener Zieldatei: überschreiben, überspringen, umbenennen oder nachfragen.</div>
-                  </div>
-                )}
-                {settingsSubTab === "updates" && (
-                  <div className="settings-section card">
-                    <h3>Updates</h3>
-                    <div className="settings-section-intro">Quelle und Zeitpunkt der Update-Prüfung.</div>
-
-                    <h4 className="settings-subhead first">Aktualisierung</h4>
-                    <label className="toggle-line"><input type="checkbox" checked={settingsDraft.autoUpdateCheck} onChange={(e) => setBool("autoUpdateCheck", e.target.checked)} /> Beim Start nach Updates suchen</label>
-                    <div className="setting-hint">Prüft beim Programmstart automatisch, ob eine neue Version verfügbar ist.</div>
-                    <label>Update-Quelle</label>
-                    <input value={settingsDraft.updateRepo} onChange={(e) => setText("updateRepo", e.target.value)} />
-                    <div className="setting-hint">Quelle für die Update-Prüfung (Benutzer/Repo). Im Zweifel unverändert lassen.</div>
-                  </div>
-                )}
-              </div>
-            </div>
-          </section>
-        )}
       </main>
+      </AppShell>
 
-      {confirmPrompt && (
-        <div className="modal-backdrop" onClick={() => closeConfirmPrompt(false)}>
-          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
-            <h3>{confirmPrompt.title}</h3>
+      <OverlayHost
+        confirm={confirmPrompt ? (
+          <Dialog actions={null} danger={confirmPrompt.danger} onClose={() => closeConfirmPrompt(false)} open title={confirmPrompt.title}>
             <p style={{ whiteSpace: "pre-line" }}>{confirmPrompt.message}</p>
             {confirmPrompt.details && (
               <details className="modal-details">
@@ -6191,14 +5946,21 @@ export function App(): ReactElement {
                 {confirmPrompt.confirmLabel}
               </button>
             </div>
-          </div>
-        </div>
-      )}
+          </Dialog>
+        ) : null}
 
-      {onlineBackupDialog && (
-        <div className="modal-backdrop" onClick={() => { if (!onlineBackupDialog.busy) setOnlineBackupDialog(null); }}>
-          <div className="modal-card online-backup-modal" onClick={(event) => event.stopPropagation()}>
-            <h3>{onlineBackupDialog.mode === "export" ? "Online-Schlüssel" : "Online-Schlüssel importieren"}</h3>
+        onlineBackup={onlineBackupDialog ? (
+          <Dialog
+            actions={null}
+            className="online-backup-modal"
+            closable={!onlineBackupDialog.busy}
+            onClose={() => setOnlineBackupDialog(null)}
+            open
+            restoreFocusFallback={() => document.querySelector<HTMLButtonElement>(".md-application-menu-tree .menu-bar-trigger")}
+            restoreFocusTarget={typeof document !== "undefined" && document.activeElement instanceof HTMLElement ? document.activeElement : null}
+            size="wide"
+            title={onlineBackupDialog.mode === "export" ? "Online-Schlüssel" : "Online-Schlüssel importieren"}
+          >
             <p>
               {onlineBackupDialog.mode === "export"
                 ? "Dieser Schlüssel stellt deine Einstellungen inklusive gespeicherter Zugangsdaten wieder her. Bewahre ihn wie ein Passwort auf."
@@ -6227,14 +5989,11 @@ export function App(): ReactElement {
               {onlineBackupDialog.mode === "export" && onlineBackupDialog.key && <button className="btn primary" onClick={() => { void onCopyOnlineBackupKey(); }}>Kopieren</button>}
               {onlineBackupDialog.mode === "import" && <button className="btn primary" onClick={() => { void onImportOnlineBackup(); }} disabled={onlineBackupDialog.busy || !onlineBackupDialog.key.trim()}>{onlineBackupDialog.busy ? "Wird geladen …" : "Importieren"}</button>}
             </div>
-          </div>
-        </div>
-      )}
+          </Dialog>
+        ) : null}
 
-      {remoteDiagOpen && (
-        <div className="modal-backdrop" onClick={() => setRemoteDiagOpen(false)}>
-          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
-            <h3>Ferndiagnose</h3>
+        diagnostics={remoteDiagOpen ? (
+          <Dialog actions={null} onClose={() => setRemoteDiagOpen(false)} open title="Ferndiagnose">
             <p>Ermöglicht einer vertrauenswürdigen Support-Stelle den geschützten Lesezugriff auf Status, Logs und Fehler. Der Verbindungscode enthält das Zugriffstoken und ist wie ein Passwort zu behandeln.</p>
             <div className="rd-status-line">
               <span className={`rd-dot${remoteDiag?.status.running ? " on" : ""}`} />
@@ -6318,11 +6077,10 @@ export function App(): ReactElement {
                 {remoteDiag?.status.running ? "Aktualisieren" : "Aktivieren"}
               </button>
             </div>
-          </div>
-        </div>
-      )}
+          </Dialog>
+        ) : null}
 
-      {deleteConfirm && (() => {
+        deleteConfirmation={deleteConfirm ? (() => {
         const itemCount = [...deleteConfirm.ids].filter((id) => snapshot.session.items[id]).length;
         const pkgCount = [...deleteConfirm.ids].filter((id) => snapshot.session.packages[id]).length;
         const removedItemIds = new Set<string>();
@@ -6336,9 +6094,7 @@ export function App(): ReactElement {
         if (pkgCount > 0) parts.push(`${pkgCount} Paket(e)`);
         if (itemCount > 0) parts.push(`${itemCount} Link(s)`);
         return (
-          <div className="modal-backdrop" onClick={() => setDeleteConfirm(null)}>
-            <div className="modal-card" onClick={(e) => e.stopPropagation()}>
-              <h3>Bist Du Dir sicher?</h3>
+          <Dialog actions={null} danger onClose={() => setDeleteConfirm(null)} open title="Bist Du Dir sicher?">
               <p>Möchtest Du wirklich diese Aufräumaktion(en) durchführen?<br />Ausgewählte Links löschen</p>
               <p><strong>Zu erledigende Aufgaben:</strong><br />{parts.join(" + ")} löschen ? {totalRemaining} Link(s) verbleiben!</p>
               <label className="toggle-line">
@@ -6356,15 +6112,12 @@ export function App(): ReactElement {
                   setDeleteConfirm(null);
                 }}>Fortfahren</button>
               </div>
-            </div>
-          </div>
+          </Dialog>
         );
-      })()}
+        })() : null}
 
-      {startConflictPrompt && (
-        <div className="modal-backdrop" onClick={() => closeStartConflictPrompt(null)}>
-          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
-            <h3>Paket bereits entpackt</h3>
+        conflict={startConflictPrompt ? (
+          <Dialog actions={null} onClose={() => closeStartConflictPrompt(null)} open title="Paket bereits entpackt">
             <p>
               <strong>{startConflictPrompt.entry.packageName}</strong> ist im Ziel bereits vorhanden.
             </p>
@@ -6396,508 +6149,59 @@ export function App(): ReactElement {
                 überschreiben
               </button>
             </div>
-          </div>
-        </div>
-      )}
+          </Dialog>
+        ) : null}
 
-      {accountEditDialog && accountEditOption && (
-        <div className="modal-backdrop" onClick={closeAccountEditDialog}>
-          <div className="modal-card account-edit-modal" role="dialog" aria-modal="true" aria-labelledby="account-edit-dialog-title" onClick={(event) => event.stopPropagation()}>
-            <div className="account-edit-header">
-              <AccountServiceLogo service={accountEditOption.service} className="account-edit-logo" />
-              <div>
-                <h3 id="account-edit-dialog-title">Account bearbeiten</h3>
-                <span>{accountEditOption.serviceLabel} · {accountEditOption.modeLabel}</span>
-              </div>
-            </div>
-
-            <div className="account-edit-summary">
-              <div>
-                <span>Benutzername</span>
-                <strong>{resolveAccountUsername(accountEditRow?.username || accountEditDialog.login, accountEditStatus?.email)}</strong>
-              </div>
-              <div>
-                <span>Status</span>
-                <strong>{accountEditRow?.disabled
-                  ? "Deaktiviert"
-                  : accountEditStatus
-                    ? accountEditStatus.valid
-                      ? accountEditStatus.isPremium ? accountEditStatus.message || "Premium Account" : "Free Account"
-                      : accountEditStatus.message || "Ungültig"
-                    : accountEditRow?.entry.statusLabel || "Noch nicht geprüft"}</strong>
-              </div>
-            </div>
-
-            <div className="account-edit-fields">
-              {(accountEditDialog.target.type === "mega" || accountEditOption.needsCredentials) && (
-                <div className="field-grid two">
-                  <div>
-                    <label htmlFor="account-edit-login">Login / E-Mail</label>
-                    <input id="account-edit-login" autoComplete="username" value={accountEditDialog.login} onChange={(event) => setAccountEditDialog((prev) => prev ? { ...prev, login: event.target.value } : prev)} />
-                  </div>
-                  <div>
-                    <label htmlFor="account-edit-password">Passwort</label>
-                    <input id="account-edit-password" type="password" autoComplete="current-password" value={accountEditDialog.password} onChange={(event) => setAccountEditDialog((prev) => prev ? { ...prev, password: event.target.value } : prev)} />
-                  </div>
-                </div>
-              )}
-
-              {(accountEditDialog.target.type === "debridlink" || (accountEditOption.needsToken && accountEditDialog.target.type === "single")) && (
-                <div>
-                  <label htmlFor="account-edit-token">{accountEditDialog.target.type === "debridlink" ? "API-Key" : "Token / API-Key"}</label>
-                  <input id="account-edit-token" type="password" autoComplete="off" value={accountEditDialog.token} onChange={(event) => setAccountEditDialog((prev) => prev ? { ...prev, token: event.target.value } : prev)} />
-                </div>
-              )}
-
-              <div>
-                <label htmlFor="account-edit-daily-limit">Tageslimit (GB, optional)</label>
-                <input id="account-edit-daily-limit" inputMode="decimal" placeholder="z.B. 250" value={accountEditDialog.dailyLimitGb} onChange={(event) => setAccountEditDialog((prev) => prev ? { ...prev, dailyLimitGb: event.target.value } : prev)} />
-                <div className="account-edit-note">Leer oder 0 bedeutet unbegrenzt. Der Zähler wird täglich um 00:00 Uhr zurückgesetzt.</div>
-              </div>
-
-              {!accountEditOption.needsCredentials && !accountEditOption.needsToken && accountEditDialog.target.type === "single" && (
-                <div className="account-edit-note prominent">Dieser Account verwendet den gespeicherten Browser- oder Cookie-Login.</div>
-              )}
-
-              {accountEditQuickAction && (
-                <button className="btn account-edit-quick-action" disabled={actionBusy} onClick={() => { void runAccountQuickAction(accountEditQuickAction.action); }}>
-                  {accountEditQuickAction.label === "Cookies" ? "Cookies importieren" : accountEditQuickAction.label === "Login" ? "Login öffnen" : "Status prüfen"}
-                </button>
-              )}
-            </div>
-
-            <div className="modal-actions account-edit-actions">
-              <button className="btn" onClick={closeAccountEditDialog}>Abbrechen</button>
-              <button className="btn accent" disabled={actionBusy} onClick={() => { void onSaveAccountEditDialog(); }}>Prüfen und speichern</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {accountDialog && (
-        <div className="modal-backdrop" onClick={closeAccountDialog}>
-          <div className="modal-card account-modal" role="dialog" aria-modal="true" aria-labelledby="account-dialog-title" onClick={(event) => event.stopPropagation()}>
-            <div className="account-modal-header">
-              <h3 id="account-dialog-title">{accountDialog.mode === "edit" ? "Account bearbeiten" : "Neuen Account hinzufügen"}</h3>
-            </div>
-
-            <div className="account-modal-body">
-              <div className="account-dialog-step account-modal-provider-list">
-                <div className="account-dialog-step-label">1. Wähle einen Hoster aus</div>
-                <div className="account-picker-toolbar">
-                  <select
-                    className="account-picker-filter"
-                    aria-label="Account-Typ filtern"
-                    value={accountDialogModeFilter}
-                    onChange={(event) => setAccountDialogModeFilter(event.target.value as AccountModeFilter)}
-                  >
-                    <option value="all">Alle anzeigen</option>
-                    <option value="api">Nur API</option>
-                    <option value="web">Nur Web-Login</option>
-                  </select>
-                  <input
-                    className="account-picker-search"
-                    autoFocus
-                    placeholder="Dienst oder Typ suchen"
-                    value={accountDialogSearch}
-                    onChange={(event) => setAccountDialogSearch(event.target.value)}
-                  />
-                </div>
-                <div className="account-picker-table">
-                  <div className="account-picker-head">
-                    <span>Account</span>
-                    <span>Typ / Funktion</span>
-                  </div>
-                  {filteredAccountDialogOptions.length === 0 && (
-                    <div className="account-empty-state compact">
-                      <strong>Kein passender Account-Typ gefunden</strong>
-                      <span>
-                        {accountDialogSelectableOptions.length === 0
-                          ? "Alle verfügbaren Typen sind bereits vorhanden."
-                          : "Passe den Suchbegriff an oder waehle einen Eintrag aus der Liste."}
-                      </span>
-                    </div>
-                  )}
-                  {filteredAccountDialogOptions.map((option) => (
-                    <button
-                      key={option.kind}
-                      className={`account-picker-row${accountDialog.kind === option.kind ? " active" : ""}`}
-                      onClick={() => updateAccountDialogKind(option.kind)}
-                    >
-                      <span className="account-picker-domain"><AccountServiceLogo service={option.service} className="account-picker-icon" /><strong>{option.title}</strong></span>
-                      <span className="account-picker-function">{getAccountPickerFunctionLabel(option)}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="account-dialog-step account-modal-credentials">
-                <div className="account-dialog-step-label">
-                  {accountDialogOption ? `2. Gib Deine ${accountDialogOption.serviceLabel}-Zugangsdaten ein` : "2. Zugangsdaten eingeben"}
-                </div>
-
-                {!accountDialogOption && (
-                  <div className="account-empty-state compact">
-                    <strong>Oben zuerst einen Account-Typ wählen</strong>
-                    <span>Danach erscheinen hier direkt die passenden Felder für Login, Passwort oder API-Token.</span>
-                  </div>
-                )}
-
-                {accountDialogOption && (
-                  <>
-                    <div className="account-modal-fields">
-                      {(accountDialogOption.service === "megadebrid-api" || accountDialogOption.service === "megadebrid-web") && (
-                        <div>
-                          <label>Account hinzufügen</label>
-                          <div className="field-grid two" style={{ marginBottom: 8 }}>
-                            <div>
-                              <input
-                                placeholder="Login / E-Mail"
-                                value={accountDialog.megaNewLogin}
-                                onChange={(event) => setAccountDialog((prev) => prev ? { ...prev, megaNewLogin: event.target.value } : prev)}
-                              />
-                            </div>
-                            <div>
-                              <input
-                                type="password"
-                                placeholder="Passwort"
-                                value={accountDialog.megaNewPassword}
-                                onChange={(event) => setAccountDialog((prev) => prev ? { ...prev, megaNewPassword: event.target.value } : prev)}
-                              />
-                            </div>
-                          </div>
-                          <button
-                            className="btn"
-                            disabled={!accountDialog.megaNewLogin.trim() || !accountDialog.megaNewPassword.trim()}
-                            onClick={() => {
-                              const login = accountDialog.megaNewLogin.trim();
-                              const password = accountDialog.megaNewPassword.trim();
-                              if (!login || !password) return;
-                              const exists = accountDialog.megaAccounts.some((a) => a.login.trim().toLowerCase() === login.toLowerCase());
-                              setAccountDialog((prev) => {
-                                if (!prev || !prev.megaNewLogin.trim() || !prev.megaNewPassword.trim()) return prev;
-                                if (prev.megaAccounts.some((a) => a.login.trim().toLowerCase() === login.toLowerCase())) return prev;
-                                const nextAccounts = [...prev.megaAccounts, { login, password }];
-                                return { ...prev, megaAccounts: nextAccounts, megaNewLogin: "", megaNewPassword: "", token: serializeMegaDebridAccounts(nextAccounts) };
-                              });
-                              if (!exists) {
-                                void runMegaAccountCheck(login, password);
-                              }
-                            }}
-                          >
-                            Hinzufügen
-                          </button>
-                          {accountDialog.megaAccounts.length > 0 && (
-                            <div style={{ marginTop: 12 }}>
-                              <label>Konfigurierte Accounts ({accountDialog.megaAccounts.length})</label>
-                              <div className="account-dl-key-limit-list">
-                                {accountDialog.megaAccounts.map((account, index) => {
-                                  const accId = getMegaDebridAccountId(account.login);
-                                  const accDisabled = (accountDialog.megaDisabledIds || []).includes(accId);
-                                  return (
-                                  <div key={index} className={`account-dl-key-limit-row${accDisabled ? " disabled" : ""}`}>
-                                    <div className="account-dl-key-meta">
-                                      <strong>Account {index + 1}</strong>
-                                      <span>{maskMegaDebridLogin(account.login)}</span>
-                                      {accDisabled && <span className="account-validity-badge invalid" title="Dieser Account wird beim Download übersprungen, bleibt aber gespeichert.">Deaktiviert</span>}
-                                      {megaCheckingIds.has(accId)
-                                        ? <span className="account-validity-badge unknown" title="Account wird gerade geprüft…">Prüfe…</span>
-                                        : (() => {
-                                        const st = snapshot?.settings?.debridAccountStatuses?.[accId];
-                                        if (!st) return <span className="account-validity-badge unknown" title="Noch nicht geprüft – auf „Alle prüfen“ klicken">Noch nicht geprüft</span>;
-                                        const checkedAgo = formatCheckedAgo(st.checkedAt);
-                                        const tip = `${st.message}${st.email ? ` · ${st.email}` : ""} · geprüft ${checkedAgo}`;
-                                        if (!st.valid) return <span className="account-validity-badge invalid" title={tip}>Login ungültig</span>;
-                                        if (!st.isPremium) return <span className="account-validity-badge free" title={tip}>Login OK · kein Premium</span>;
-                                        return <span className="account-validity-badge ok" title={tip}>{st.message}</span>;
-                                      })()}
-                                    </div>
-                                    <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                                      <button
-                                        className={accDisabled ? "btn success" : "btn"}
-                                        title={accDisabled ? "Account wieder aktivieren" : "Account temporär deaktivieren — wird beim Download übersprungen, aber nicht gelöscht"}
-                                        onClick={() => setAccountDialog((prev) => {
-                                          if (!prev) return prev;
-                                          const cur = prev.megaDisabledIds || [];
-                                          const nextDisabled = cur.includes(accId)
-                                            ? cur.filter((id) => id !== accId)
-                                            : [...cur, accId];
-                                          return { ...prev, megaDisabledIds: nextDisabled };
-                                        })}
-                                      >
-                                        {accDisabled ? "Aktivieren" : "Deaktivieren"}
-                                      </button>
-                                      <button
-                                        className="btn danger"
-                                        onClick={() => setAccountDialog((prev) => {
-                                          if (!prev) return prev;
-                                          const nextAccounts = prev.megaAccounts.filter((_, i) => i !== index);
-                                          return { ...prev, megaAccounts: nextAccounts, megaDisabledIds: (prev.megaDisabledIds || []).filter((id) => id !== accId), token: serializeMegaDebridAccounts(nextAccounts) };
-                                        })}
-                                      >
-                                        Entfernen
-                                      </button>
-                                    </div>
-                                  </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      {accountDialogOption.needsToken && accountDialogOption.service !== "megadebrid-api" && accountDialogOption.service !== "megadebrid-web" && (
-                        <div>
-                          <label>{accountDialogOption.service === "alldebrid" || accountDialogOption.service === "onefichier" || accountDialogOption.service === "debridlink" ? "API-Key(s)" : "Token"}</label>
-                          {accountDialogOption.service === "debridlink" ? (
-                            <textarea
-                              rows={4}
-                              placeholder="Ein API-Key pro Zeile"
-                              value={accountDialog.token}
-                              onChange={(event) => setAccountDialog((prev) => prev ? {
-                                ...prev,
-                                token: event.target.value,
-                                keyDailyLimitGbById: buildDebridLinkKeyLimitInputs(event.target.value, prev.keyDailyLimitGbById, settingsDraft)
-                              } : prev)}
-                              style={{ fontFamily: "monospace", resize: "vertical" }}
-                            />
-                          ) : (
-                            <input type="password" value={accountDialog.token} onChange={(event) => setAccountDialog((prev) => prev ? { ...prev, token: event.target.value } : prev)} />
-                          )}
-                        </div>
-                      )}
-
-                      {accountDialogOption.needsCredentials && (
-                        <div className="field-grid two">
-                          <div>
-                            <label>Login / E-Mail</label>
-                            <input value={accountDialog.login} onChange={(event) => setAccountDialog((prev) => prev ? { ...prev, login: event.target.value } : prev)} />
-                          </div>
-                          <div>
-                            <label>Passwort</label>
-                            <input type="password" value={accountDialog.password} onChange={(event) => setAccountDialog((prev) => prev ? { ...prev, password: event.target.value } : prev)} />
-                          </div>
-                        </div>
-                      )}
-
-                      <div>
-                        <label>Tageslimit (GB, optional)</label>
-                        <input
-                          inputMode="decimal"
-                          placeholder="z.B. 250"
-                          value={accountDialog.dailyLimitGb}
-                          onChange={(event) => setAccountDialog((prev) => prev ? { ...prev, dailyLimitGb: event.target.value } : prev)}
-                        />
-                        <div className="account-modal-note account-daily-limit-note">Ab 00:00 wird der Zähler automatisch zurückgesetzt. Wenn das Limit erreicht ist, nutzt die App den nächsten Hoster aus der Reihenfolge.</div>
-                      </div>
-
-                      {accountDialog.kind === "debridlink-api" && parseDebridLinkApiKeys(accountDialog.token).length > 0 && (
-                        <div>
-                          <label>API-Key Limits (GB, optional pro Key)</label>
-                          <div className="account-dl-key-limit-list">
-                            {parseDebridLinkApiKeys(accountDialog.token).map((key) => (
-                              <div key={key.id} className="account-dl-key-limit-row">
-                                <div className="account-dl-key-meta">
-                                  <strong>{key.label}</strong>
-                                  <span>{key.masked}</span>
-                                  {(() => {
-                                    const st = snapshot?.settings?.debridAccountStatuses?.[key.id];
-                                    if (!st) return <span className="account-validity-badge unknown" title="Noch nicht geprüft – auf „Alle prüfen“ klicken">Noch nicht geprüft</span>;
-                                    const tip = `${st.message}${st.email ? ` · ${st.email}` : ""} · geprüft ${formatCheckedAgo(st.checkedAt)}`;
-                                    if (!st.valid) return <span className="account-validity-badge invalid" title={tip}>Key ungültig</span>;
-                                    if (!st.isPremium) return <span className="account-validity-badge free" title={tip}>Key OK · kein Premium</span>;
-                                    return <span className="account-validity-badge ok" title={tip}>{st.message}</span>;
-                                  })()}
-                                </div>
-                                <input
-                                  inputMode="decimal"
-                                  placeholder="Kein Limit"
-                                  value={accountDialog.keyDailyLimitGbById[key.id] || ""}
-                                  onChange={(event) => setAccountDialog((prev) => prev ? {
-                                    ...prev,
-                                    keyDailyLimitGbById: {
-                                      ...prev.keyDailyLimitGbById,
-                                      [key.id]: event.target.value
-                                    }
-                                  } : prev)}
-                                />
-                              </div>
-                            ))}
-                          </div>
-                          <div className="account-modal-note">Leer lassen = unbegrenzt. Die Limits gelten pro API-Key und werden täglich um 00:00 zurückgesetzt.</div>
-                        </div>
-                      )}
-
-                      {accountDialog.kind === "realdebrid-web" && (
-                        <div className="account-modal-note">Nach dem Speichern kannst Du direkt das Browserfenster für den Web-Login öffnen.</div>
-                      )}
-                      {accountDialog.kind === "bestdebrid-web" && (
-                        <div className="account-modal-note">Der Web-Account arbeitet über einen Cookies.txt-Import aus dem Browser.</div>
-                      )}
-                      {accountDialog.kind === "alldebrid-web" && (
-                        <div className="account-modal-note">Der Web-Login nutzt ein echtes Browserfenster, damit reCAPTCHA sauber läuft.</div>
-                      )}
-                      {accountDialog.kind === "megadebrid-api" && (
-                        <div className="account-modal-note">Mehrere Accounts werden rotierend genutzt. Dieser Account nutzt nur die Mega-Debrid API. Kein Web-Fallback.</div>
-                      )}
-                      {accountDialog.kind === "megadebrid-web" && (
-                        <div className="account-modal-note">Mehrere Accounts werden rotierend genutzt. Dieser Account nutzt nur Mega-Debrid Web. Kein API-Fallback.</div>
-                      )}
-
-                      {accountDialogOption.service === "alldebrid" && allDebridHostInfo && (
-                        <div className="account-status-grid">
-                          <div>
-                            <span className="hint">Rapidgator-Status</span>
-                            <strong>{allDebridHostInfo.statusLabel}</strong>
-                          </div>
-                          <div>
-                            <span className="hint">Quelle</span>
-                            <strong>{formatAllDebridSourceLabel(allDebridHostInfo.source)}</strong>
-                          </div>
-                          <div>
-                            <span className="hint">Quota</span>
-                            <strong>{formatAllDebridQuota(allDebridHostInfo)}</strong>
-                          </div>
-                          <div>
-                            <span className="hint">Simultan</span>
-                            <strong>{formatAllDebridSimuLimit(allDebridHostInfo)}</strong>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="modal-actions account-modal-actions">
-                      <button className="btn" onClick={closeAccountDialog}>Abbrechen</button>
-                      {accountDialog.kind === "realdebrid-web" && (
-                        <button className="btn" disabled={actionBusy} onClick={() => { void onSaveAccountDialog("realdebrid-login"); }}>
-                          Speichern + Login
-                        </button>
-                      )}
-                      {accountDialog.kind === "bestdebrid-web" && (
-                        <button className="btn" disabled={actionBusy} onClick={() => { void onSaveAccountDialog("bestdebrid-cookies"); }}>
-                          Speichern + Cookies
-                        </button>
-                      )}
-                      {accountDialog.kind === "alldebrid-web" && (
-                        <button className="btn" disabled={actionBusy} onClick={() => { void onSaveAccountDialog("alldebrid-login"); }}>
-                          Speichern + Login
-                        </button>
-                      )}
-                      <button className="btn accent" disabled={actionBusy || !accountDialog.kind} onClick={() => { void onSaveAccountDialog(); }}>
-                        Prüfen und speichern
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <footer className="status-bar">
-        {totalPackageCount > 0 && (
-          <button className="btn footer-btn" title={allPackagesCollapsed ? "Alle Pakete in der Liste ausklappen und Details anzeigen" : "Alle Pakete in der Liste einklappen und nur die Kopfzeilen anzeigen"} onClick={() => {
-            setCollapsedPackages((prev) => {
-              const next: Record<string, boolean> = { ...prev };
-              const targetState = !allPackagesCollapsed;
-              for (const pkg of packages) {
-                next[pkg.id] = targetState;
-                if (targetState) {
-                  manualCollapsedPkgsRef.current.add(pkg.id);
-                } else {
-                  manualCollapsedPkgsRef.current.delete(pkg.id);
-                  autoExpandedPkgsRef.current.delete(pkg.id);
-                }
-              }
-              return next;
-            });
-          }}>{allPackagesCollapsed ? "Ausklappen" : "Einklappen"}</button>
-        )}
-        {totalPackageCount > 0 && (
-          <button className="btn footer-btn" title="Alle Pakete und Links aus der Download-Queue entfernen" disabled={actionBusy} onClick={() => {
-            void performQuickAction(async () => {
-              const confirmed = await askConfirmPrompt({ title: "Queue löschen", message: "Wirklich alle Einträge aus der Queue löschen?", confirmLabel: "Alles löschen", danger: true });
-              if (!confirmed) return;
-              await window.rd.clearAll();
-            });
-          }}>Leeren</button>
-        )}
-        {snapshot.clipboardActive && (
-          <button className="btn footer-btn btn-active" title="Zwischenablage-Überwachung ist aktiv ? kopierte Links werden automatisch erkannt und zur Queue hinzugefügt. Zum Deaktivieren: Einstellungen ? Zwischenablage überwachen" disabled={actionBusy} onClick={() => { void performQuickAction(() => window.rd.toggleClipboard()); }}>
-            Clipboard: An
-          </button>
-        )}
-        <span className="footer-spacer" />
-        <span>Pakete: {snapshot.stats.totalPackages}</span>
-        <span>Links: {Object.keys(snapshot.session.items).length}</span>
-        <span>Session: {humanSize(snapshot.stats.totalDownloaded)}</span>
-        <span>Gesamt: {humanSize(snapshot.stats.totalDownloadedAllTime)}</span>
-        <span>Hoster: {providerStats.length}</span>
-        <span>{snapshot.speedText}</span>
-        <span>{snapshot.etaText}</span>
-      </footer>
-
-      {updateInstallProgress && (
-        <div className={`update-popup update-popup-${updateInstallProgress.stage}`}>
-          <div className="update-popup-header">
-            <span className="update-popup-title">Update</span>
-            {(updateInstallProgress.stage === "done" || updateInstallProgress.stage === "error") && (
-              <button className="update-popup-close" onClick={() => setUpdateInstallProgress(null)} title="Schließen">&times;</button>
-            )}
-          </div>
-          <div className="update-popup-message">{formatUpdateInstallProgress(updateInstallProgress)}</div>
-          {updateInstallProgress.stage === "downloading" && updateInstallProgress.percent !== null && (
-            <div className="update-popup-bar-track">
-              <div className="update-popup-bar-fill" style={{ width: `${updateInstallProgress.percent}%` }} />
-            </div>
-          )}
-        </div>
-      )}
-      {statusToast && <div className="toast">{statusToast}</div>}
-      {dragOver && <div className="drop-overlay">Links, .dlc oder Export-Dateien hier ablegen</div>}
-      {accountContextMenu && (
-        <div
+        accountEdit={accountEditDialogView}
+        accountCreate={accountAddDialog}
+        toast={<Toast message={statusToast} />}
+        dropOverlay={dragOver ? <div className="drop-overlay md-drop-overlay">Links, .dlc oder Export-Dateien hier ablegen</div> : null}
+        accountContextMenu={accountContextMenu && activeAccountContextRow ? (
+        <ContextMenu
+          ariaLabel="Accountaktionen"
+          className="account-context-menu"
+          onClose={() => setAccountContextMenu(null)}
+          open
           ref={accountContextMenuRef}
-          className="ctx-menu account-context-menu"
-          style={{ left: accountContextMenu.x, top: accountContextMenu.y }}
-          onClick={(event) => event.stopPropagation()}
+          x={accountContextMenu.x}
+          y={accountContextMenu.y}
         >
           <div className="account-context-heading">
-            <strong>{accountContextMenu.row.hosterLabel}</strong>
-            <span>{accountContextMenu.row.modeLabel} · {accountContextMenu.row.username}</span>
+            <strong>{activeAccountContextRow.hosterLabel}</strong>
+            <span>{activeAccountContextRow.modeLabel} · {activeAccountContextRow.username}</span>
           </div>
           <div className="ctx-menu-sep" />
-          <button className="ctx-menu-item" onClick={() => { const row = accountContextMenu.row; setAccountContextMenu(null); openEditAccountDialog(row); }}>
+          <button className="ctx-menu-item" onClick={() => { setAccountContextMenu(null); openEditAccountDialog(activeAccountContextRow); }}>
             Bearbeiten
           </button>
-          <button className="ctx-menu-item" onClick={() => checkAccountTableRow(accountContextMenu.row)}>
+          <button className="ctx-menu-item" onClick={() => checkAccountTableRow(activeAccountContextRow)}>
             Account prüfen
           </button>
-          {getAccountQuickActionMeta(accountContextMenu.row.entry.kind) && (
-            <button className="ctx-menu-item" onClick={() => { const row = accountContextMenu.row; setAccountContextMenu(null); void onAccountRowQuickAction(row.entry); }}>
-              {getAccountQuickActionMeta(accountContextMenu.row.entry.kind)?.label}
+          {getAccountQuickActionMeta(activeAccountContextRow.entry.kind) && (
+            <button className="ctx-menu-item" onClick={() => { setAccountContextMenu(null); void onAccountRowQuickAction(activeAccountContextRow.entry); }}>
+              {getAccountQuickActionMeta(activeAccountContextRow.entry.kind)?.label}
             </button>
           )}
-          <button className="ctx-menu-item" onClick={() => toggleAccountTableRow(accountContextMenu.row)}>
-            {accountContextMenu.row.disabled ? "Account aktivieren" : "Account deaktivieren"}
+          <button className="ctx-menu-item" onClick={() => toggleAccountTableRow(activeAccountContextRow)}>
+            {activeAccountContextRow.disabled ? "Account aktivieren" : "Account deaktivieren"}
           </button>
           <div className="ctx-menu-sep" />
-          <button className="ctx-menu-item ctx-danger" onClick={() => removeAccountTableRow(accountContextMenu.row)}>
+          <button className="ctx-menu-item ctx-danger" onClick={() => removeAccountTableRow(activeAccountContextRow)}>
             Account entfernen
           </button>
-        </div>
-      )}
-      {contextMenu && (() => {
-        const multi = selectedIds.size > 1;
-        const selectedPackageIds = [...selectedIds].filter((id) => snapshot.session.packages[id]);
-        const selectedItemIds = [...selectedIds].filter((id) => snapshot.session.items[id]);
+        </ContextMenu>
+        ) : null}
+        downloadContextMenu={contextMenu ? (() => {
+        const actionableSelectedIds = downloadsViewCore.actionableSelectedIds;
+        const multi = actionableSelectedIds.length > 1;
+        const selectedPackageIds = actionableSelectedIds.filter((id) => snapshot.session.packages[id]);
+        const selectedItemIds = actionableSelectedIds.filter((id) => snapshot.session.items[id]);
         const hasPackages = selectedPackageIds.length > 0;
         const startableStatuses = new Set(["queued", "cancelled", "reconnect_wait"]);
-        const hasStartableItems = [...selectedIds].some((id) => { const it = snapshot.session.items[id]; return it && startableStatuses.has(it.status); });
+        const hasStartableItems = actionableSelectedIds.some((id) => { const it = snapshot.session.items[id]; return it && startableStatuses.has(it.status); });
         const hasItems = selectedItemIds.length > 0;
         return (
-        <div ref={ctxMenuRef} className="ctx-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(e) => e.stopPropagation()}>
+        <ContextMenu ariaLabel="Downloadaktionen" onClose={() => setContextMenu(null)} open ref={ctxMenuRef} x={contextMenu.x} y={contextMenu.y}>
           {(hasPackages || hasStartableItems) && (
             <button className="ctx-menu-item" onClick={() => {
               const pkgIds = selectedPackageIds;
@@ -6905,9 +6209,9 @@ export function App(): ReactElement {
               if (pkgIds.length > 0) void window.rd.startPackages(pkgIds).catch(() => {});
               if (itemIds.length > 0) void window.rd.startItems(itemIds).catch(() => {});
               setContextMenu(null);
-            }}>Ausgewählte Downloads starten{multi ? ` (${selectedIds.size})` : ""}</button>
+            }}>Ausgewählte Downloads starten{multi ? ` (${actionableSelectedIds.length})` : ""}</button>
           )}
-          <button className="ctx-menu-item" onClick={() => { void window.rd.start().catch(() => {}); setContextMenu(null); }}>Alle Downloads starten</button>
+          <button className="ctx-menu-item" onClick={() => { downloadsActions.onStartDownloads(); setContextMenu(null); }}>Alle Downloads starten</button>
           <div className="ctx-menu-sep" />
           <button className="ctx-menu-item" onClick={() => showLinksPopup(contextMenu.packageId, contextMenu.itemId)}>Linkadressen anzeigen</button>
           {hasPackages && !contextMenu.itemId && (
@@ -6942,10 +6246,10 @@ export function App(): ReactElement {
           <div className="ctx-menu-sep" />
           {hasPackages && !contextMenu.itemId && (
             <button className="ctx-menu-item" onClick={() => {
-              for (const id of selectedIds) { if (snapshot.session.packages[id]) onPackageToggle(id); }
+              for (const id of actionableSelectedIds) { if (snapshot.session.packages[id]) onPackageToggle(id); }
               setContextMenu(null);
             }}>
-              {multi ? `Alle ${selectedIds.size} umschalten` : (snapshot.session.packages[contextMenu.packageId]?.enabled ? "Deaktivieren" : "Aktivieren")}
+              {multi ? `Alle ${actionableSelectedIds.length} umschalten` : (snapshot.session.packages[contextMenu.packageId]?.enabled ? "Deaktivieren" : "Aktivieren")}
             </button>
           )}
           {!multi && contextMenu.itemId && (
@@ -6990,8 +6294,8 @@ export function App(): ReactElement {
           {hasPackages && !contextMenu.itemId && (<>
             <div className="ctx-menu-sep" />
             <div className="ctx-menu-sub">
-              <button className="ctx-menu-item">Priorität &gt;</button>
-              <div className="ctx-menu-sub-items">
+              <button aria-expanded="false" aria-haspopup="menu" className="ctx-menu-item">Priorität &gt;</button>
+              <div aria-label="Priorität" className="ctx-menu-sub-items" role="menu">
                 {(["high", "normal", "low"] as const).map((p) => {
                   const label = p === "high" ? "Hoch" : p === "low" ? "Niedrig" : "Standard";
                   const pkgIds = selectedPackageIds;
@@ -7015,11 +6319,18 @@ export function App(): ReactElement {
               else { executeDeleteSelection(ids); }
             }}>{multi ? `Ausgewählte entfernen (${selectedPackageIds.length})` : "Paket entfernen"}</button>
           )}
-        </div>
+        </ContextMenu>
         );
-      })()}
-      {colHeaderCtx && (
-        <div ref={colHeaderCtxRef} className="ctx-menu" style={{ left: colHeaderCtx.x, top: colHeaderCtx.y }} onClick={(e) => e.stopPropagation()}>
+        })() : null}
+        columnContextMenu={colHeaderCtx ? (
+        <ContextMenu
+          ariaLabel="Spaltenauswahl"
+          onClose={() => setColHeaderCtx(null)}
+          open
+          ref={colHeaderCtxRef}
+          x={colHeaderCtx.x}
+          y={colHeaderCtx.y}
+        >
           {ALL_COLUMN_KEYS.map((col) => {
             const def = COLUMN_DEFS[col];
             if (!def) return null;
@@ -7055,37 +6366,33 @@ export function App(): ReactElement {
               </button>
             );
           })}
-        </div>
-      )}
-      {historyCtxMenu && (() => {
-        const multi = selectedHistoryIds.size > 1;
-        const contextEntry = historyEntries.find(e => e.id === historyCtxMenu.entryId);
+        </ContextMenu>
+        ) : null}
+        historyContextMenu={historyCtxMenu ? (() => {
+        const selectedEntryIds = [...pruneHistoryIds(selectedHistoryIds, historyVisibleIdsRef.current)];
+        const multi = selectedEntryIds.length > 1;
+        const contextEntry = historyEntriesRef.current.find(e => e.id === historyCtxMenu.entryId);
         const hasUrls = (contextEntry?.urls?.length ?? 0) > 0;
-        const removeSelected = (): void => {
-          const idSet = new Set(selectedHistoryIds);
-          void Promise.all([...idSet].map(id => window.rd.removeHistoryEntry(id))).then(() => {
-            setHistoryEntries((prev) => prev.filter((e) => !idSet.has(e.id)));
-            setSelectedHistoryIds(new Set());
-          }).catch(() => {
-            void window.rd.getHistory().then((entries) => { setHistoryEntries(entries); setSelectedHistoryIds(new Set()); }).catch(() => {});
-          });
-          setHistoryCtxMenu(null);
-        };
         return (
-          <div ref={historyCtxMenuRef} className="ctx-menu" style={{ left: historyCtxMenu.x, top: historyCtxMenu.y }} onClick={(e) => e.stopPropagation()}>
-            <button className="ctx-menu-item ctx-danger" onClick={removeSelected}>
-              {multi ? `Ausgewählte entfernen (${selectedHistoryIds.size})` : "Eintrag entfernen"}
+          <ContextMenu ariaLabel="Verlaufsaktionen" onClose={() => setHistoryCtxMenu(null)} open ref={historyCtxMenuRef} x={historyCtxMenu.x} y={historyCtxMenu.y}>
+            <button className="ctx-menu-item ctx-danger" onClick={() => {
+              setHistoryCtxMenu(null);
+              void removeHistoryEntries(selectedEntryIds);
+            }}>
+              {multi ? `Ausgewählte entfernen (${selectedEntryIds.length})` : "Eintrag entfernen"}
             </button>
+            {!multi && contextEntry ? (
+              <button className="ctx-menu-item" onClick={() => {
+                setHistoryCtxMenu(null);
+                void revealHistoryEntry(contextEntry.id);
+              }}>Im Ordner zeigen</button>
+            ) : null}
             {hasUrls && !multi && (
               <>
                 <div className="ctx-menu-sep" />
                 <button className="ctx-menu-item" onClick={() => {
-                  const rawText = contextEntry!.urls!.join("\n");
-                  void window.rd.addLinks({ rawText, packageName: contextEntry!.name }).then((result) => {
-                    if (result.addedLinks > 0) showToast(`${result.addedLinks} Link(s) zur Queue hinzugefügt`);
-                    else showToast("Keine Links hinzugefügt");
-                  }).catch(() => showToast("Fehler beim Hinzufügen"));
                   setHistoryCtxMenu(null);
+                  void restoreHistoryEntries([contextEntry!.id]);
                 }}>Erneut herunterladen</button>
                 <button className="ctx-menu-item" onClick={() => {
                   const urls = contextEntry!.urls!;
@@ -7097,13 +6404,13 @@ export function App(): ReactElement {
             )}
             <div className="ctx-menu-sep" />
             <button className="ctx-menu-item ctx-danger" onClick={() => {
-              void window.rd.clearHistory().then(() => { setHistoryEntries([]); setSelectedHistoryIds(new Set()); }).catch(() => {});
               setHistoryCtxMenu(null);
+              void clearHistoryEntries();
             }}>Verlauf leeren</button>
-          </div>
+          </ContextMenu>
         );
-      })()}
-      {keyStatsPopup && (() => {
+        })() : null}
+        keyStats={keyStatsPopup ? (() => {
         const entry = configuredAccounts.find((a) => a.service === keyStatsPopup);
         if (!entry || entry.debridLinkKeys.length === 0) return null;
         const totalUsed = entry.debridLinkKeys.reduce((s, k) => s + k.dailyUsedBytes, 0);
@@ -7117,11 +6424,9 @@ export function App(): ReactElement {
         const cooldownCount = keyDiagnostics.filter((info) => info.state === "cooldown" || info.state === "quota" || info.state === "rate_limit").length;
         const hostStatusLabel = keyDiagnostics.find((info) => info.hostState !== "unknown")?.hostStateLabel || "";
         return (
-          <div className="modal-backdrop" onClick={() => setKeyStatsPopup(null)}>
-            <div className="modal-card key-stats-popup" onClick={(e) => e.stopPropagation()}>
+          <Dialog actions={null} className="key-stats-popup" onClose={() => setKeyStatsPopup(null)} open showCloseButton size="wide" title="API-Key Statistik">
               <div className="key-stats-popup-header">
                 <div>
-                  <h3>API-Key Statistik</h3>
                   <p className="key-stats-summary">
                     {entry.debridLinkKeys.length} Keys &middot; Heute: {humanSize(totalUsed)}
                     {limitedCount > 0 && <span className="key-stats-warn"> &middot; {limitedCount} am Limit</span>}
@@ -7133,7 +6438,6 @@ export function App(): ReactElement {
                     {debridLinkHostLimitsError && <span className="key-stats-warn"> &middot; API-Quota konnte nicht geladen werden</span>}
                   </p>
                 </div>
-                <button className="update-popup-close" onClick={() => setKeyStatsPopup(null)}>&times;</button>
               </div>
               <div className="account-subkey-table">
                 <div className="account-subkey-table-head">
@@ -7195,14 +6499,23 @@ export function App(): ReactElement {
               <div className="modal-actions">
                 <button className="btn" onClick={() => setKeyStatsPopup(null)}>Schließen</button>
               </div>
-            </div>
-          </div>
+          </Dialog>
         );
-      })()}
-      {linkPopup && (
-        <div className="modal-backdrop" onClick={() => setLinkPopup(null)}>
-          <div className="modal-card link-popup" onClick={(e) => e.stopPropagation()}>
-            <h3>Linkadressen anzeigen</h3>
+        })() : null}
+        linkPopup={(
+          <>
+            {collectorInput ? (
+              <CollectorInputDialog
+                onChange={(draft) => setCollectorInput((prev) => prev ? { ...prev, draft } : prev)}
+                onClose={() => setCollectorInput(null)}
+                onCommit={commitCollectorInput}
+                open
+                tabName={collectorInput.tabName}
+                value={collectorInput.draft}
+              />
+            ) : null}
+            {linkPopup ? (
+          <Dialog actions={null} className="link-popup" onClose={() => setLinkPopup(null)} open size="wide" title="Linkadressen anzeigen">
             <p>{linkPopup.title}</p>
             <div className="link-popup-list">
               {linkPopup.links.map((link, i) => (
@@ -7227,406 +6540,33 @@ export function App(): ReactElement {
               )}
               <button className="btn" onClick={() => setLinkPopup(null)}>Schließen</button>
             </div>
-          </div>
-        </div>
-      )}
+          </Dialog>
+            ) : null}
+          </>
+        )}
+        update={(
+          <UpdateExperience
+            available={Boolean(availableUpdate)}
+            currentVersion={availableUpdate?.currentVersion ?? appVersion}
+            latestTag={availableUpdate?.latestTag ?? ""}
+            onClose={() => {
+              setUpdateDialogOpen(false);
+              setUpdateInstallProgress(null);
+            }}
+            onInstall={() => { void installUpdate(); }}
+            onLater={() => setUpdateDialogOpen(false)}
+            onOpen={() => setUpdateDialogOpen(true)}
+            open={updateDialogOpen || updateInstallProgress !== null}
+            progress={updateInstallProgress ? {
+              percent: updateInstallProgress.percent,
+              text: formatUpdateInstallProgress(updateInstallProgress)
+            } : 0}
+            releaseNotes={availableUpdate?.releaseNotes ?? ""}
+            renderTrigger={false}
+            state={updateInstallProgress?.stage ?? "prompt"}
+          />
+        )}
+      />
     </div>
   );
 }
-
-function computeDisplayedItemStatus(item: DownloadItem, sessionRunning: boolean): string {
-  const statusText = String(item.fullStatus || "").trim();
-  if (statusText === "Wartet") return "";
-  if (sessionRunning) return statusText;
-  if (item.status !== "queued" && item.status !== "reconnect_wait") return statusText;
-  if (statusText === "Paket gestoppt") return statusText;
-  if (/^Entpacken\b/i.test(statusText) || /^Entpackt\b/i.test(statusText) || /^Entpack-Fehler\b/i.test(statusText) || /^Fertig\b/i.test(statusText)) {
-    return statusText;
-  }
-  return "";
-}
-
-interface ItemRowProps {
-  item: DownloadItem;
-  packageId: string;
-  isSelected: boolean;
-  sessionRunning: boolean;
-  columnOrder: string[];
-  gridTemplate: string;
-  onSelect: (id: string, ctrlKey: boolean, shiftKey: boolean) => void;
-  onSelectMouseDown: (id: string, e: React.MouseEvent) => void;
-  onSelectMouseEnter: (id: string) => void;
-  onContextMenu: (packageId: string, itemId: string | undefined, x: number, y: number) => void;
-}
-
-const ItemRow = memo(function ItemRow({ item, packageId, isSelected, sessionRunning, columnOrder, gridTemplate, onSelect, onSelectMouseDown, onSelectMouseEnter, onContextMenu }: ItemRowProps): ReactElement {
-  const handleClick = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation();
-    onSelect(item.id, e.ctrlKey, e.shiftKey);
-  }, [item.id, onSelect]);
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation();
-    onSelectMouseDown(item.id, e);
-  }, [item.id, onSelectMouseDown]);
-  const handleMouseEnter = useCallback(() => {
-    onSelectMouseEnter(item.id);
-  }, [item.id, onSelectMouseEnter]);
-  const handleContextMenu = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    onContextMenu(packageId, item.id, e.clientX, e.clientY);
-  }, [packageId, item.id, onContextMenu]);
-  const formattedCreatedAt = useMemo(() => formatDateTime(item.createdAt), [item.createdAt]);
-  const displayStatus = useMemo(() => computeDisplayedItemStatus(item, sessionRunning), [item, sessionRunning]);
-  const retrySuffix = item.retries > 0 ? ` (R${item.retries})` : "";
-  const lastErrorText = String(item.lastError || "").trim();
-  const statusTitle = displayStatus
-    ? (lastErrorText && lastErrorText !== displayStatus && !displayStatus.includes(lastErrorText)
-        ? `${displayStatus}${retrySuffix}\n${lastErrorText}`
-        : `${displayStatus}${retrySuffix}`)
-    : lastErrorText;
-
-  return (
-    <div
-      className={`item-row${isSelected ? " item-selected" : ""}`}
-      style={{ gridTemplateColumns: gridTemplate }}
-      onClick={handleClick}
-      onMouseDown={handleMouseDown}
-      onMouseEnter={handleMouseEnter}
-      onContextMenu={handleContextMenu}
-    >
-      {columnOrder.map((col) => {
-        switch (col) {
-          case "name": return (
-            <span key={col} className="pkg-col pkg-col-name item-indent" title={item.fileName}>
-              <span
-                className={item.onlineStatus ? `link-status-dot ${item.onlineStatus}` : "link-status-dot link-status-dot-empty"}
-                title={item.onlineStatus === "online" ? "Online" : item.onlineStatus === "offline" ? "Offline" : item.onlineStatus === "checking" ? "Wird geprüft..." : undefined}
-              />
-              {item.fileName}
-            </span>
-          );
-          case "size": {
-            const total = item.totalBytes || item.downloadedBytes || 0;
-            const dl = item.downloadedBytes || 0;
-            const pct = total > 0 ? Math.min(100, Math.round((dl / total) * 100)) : 0;
-            const label = `${humanSize(dl)} / ${humanSize(total)}`;
-            return (
-              <span key={col} className="pkg-col pkg-col-size">
-                {total > 0 ? (
-                  <span className="progress-size progress-size-small">
-                    <span className="progress-size-bar" style={{ width: `${pct}%` }} />
-                    <span className="progress-size-text">{label}</span>
-                    <span className="progress-size-text-filled" style={{ clipPath: `inset(0 ${100 - pct}% 0 0)` }}>{label}</span>
-                  </span>
-                ) : ""}
-              </span>
-            );
-          }
-          case "progress": return (
-            <span key={col} className="pkg-col pkg-col-progress">
-              {(item.totalBytes || 0) > 0 ? (
-                <span className="progress-inline progress-inline-small">
-                  <span className="progress-inline-bar" style={{ width: `${item.progressPercent}%` }} />
-                  <span className="progress-inline-text">{item.progressPercent}%</span>
-                  <span className="progress-inline-text-filled" style={{ clipPath: `inset(0 ${100 - (item.progressPercent || 0)}% 0 0)` }}>{item.progressPercent}%</span>
-                </span>
-              ) : ""}
-            </span>
-          );
-          case "hoster": { const h = extractHoster(item.url) || ""; return <span key={col} className="pkg-col pkg-col-hoster" title={h}>{h}</span>; }
-          case "account": return <span key={col} className="pkg-col pkg-col-account">{item.providerLabel || (item.provider ? providerLabels[item.provider] : "")}</span>;
-          case "prio": return <span key={col} className="pkg-col pkg-col-prio"></span>;
-          case "status": return (
-            <span key={col} className="pkg-col pkg-col-status" title={statusTitle}>
-              {displayStatus}
-            </span>
-          );
-          case "speed": return <span key={col} className="pkg-col pkg-col-speed">{item.speedBps > 0 ? formatSpeedMbps(item.speedBps) : ""}</span>;
-          case "added": return <span key={col} className="pkg-col pkg-col-added">{formattedCreatedAt}</span>;
-          default: return null;
-        }
-      })}
-    </div>
-  );
-}, (prev, next) => {
-  if (prev.item !== next.item) {
-    const a = prev.item;
-    const b = next.item;
-    if (a.id !== b.id
-      || a.updatedAt !== b.updatedAt
-      || a.status !== b.status
-      || a.fileName !== b.fileName
-      || a.url !== b.url
-      || a.provider !== b.provider
-      || a.providerLabel !== b.providerLabel
-      || a.fullStatus !== b.fullStatus
-      || a.onlineStatus !== b.onlineStatus
-      || a.progressPercent !== b.progressPercent
-      || a.speedBps !== b.speedBps
-      || a.downloadedBytes !== b.downloadedBytes
-      || a.totalBytes !== b.totalBytes
-      || a.retries !== b.retries
-      || a.createdAt !== b.createdAt) {
-      return false;
-    }
-  }
-  if (prev.packageId !== next.packageId) return false;
-  if (prev.isSelected !== next.isSelected) return false;
-  if (prev.sessionRunning !== next.sessionRunning) return false;
-  if (prev.columnOrder !== next.columnOrder) return false;
-  if (prev.gridTemplate !== next.gridTemplate) return false;
-  if (prev.onSelect !== next.onSelect) return false;
-  if (prev.onSelectMouseDown !== next.onSelectMouseDown) return false;
-  if (prev.onSelectMouseEnter !== next.onSelectMouseEnter) return false;
-  if (prev.onContextMenu !== next.onContextMenu) return false;
-  return true;
-});
-
-interface PackageCardProps {
-  pkg: PackageEntry;
-  items: DownloadItem[];
-  packageSpeed: number;
-  stripeVariant: "a" | "b";
-  isFirst: boolean;
-  isLast: boolean;
-  isEditing: boolean;
-  editingName: string;
-  collapsed: boolean;
-  hideExtractedItems: boolean;
-  sessionRunning: boolean;
-  selectedIds: Set<string>;
-  columnOrder: string[];
-  gridTemplate: string;
-  onSelect: (id: string, ctrlKey: boolean, shiftKey: boolean) => void;
-  onSelectMouseDown: (id: string, e: React.MouseEvent) => void;
-  onSelectMouseEnter: (id: string) => void;
-  onStartEdit: (packageId: string, packageName: string) => void;
-  onFinishEdit: (packageId: string, currentName: string, nextName: string) => void;
-  onEditChange: (name: string) => void;
-  onToggleCollapse: (packageId: string) => void;
-  onCancel: (packageId: string) => void;
-  onMoveUp: (packageId: string) => void;
-  onMoveDown: (packageId: string) => void;
-  onToggle: (packageId: string) => void;
-  onRemoveItem: (itemId: string) => void;
-  onContextMenu: (packageId: string, itemId: string | undefined, x: number, y: number) => void;
-  onDragStart: (packageId: string) => void;
-  onDrop: (packageId: string) => void;
-  onDragEnd: () => void;
-}
-
-const PackageCard = memo(function PackageCard({ pkg, items, packageSpeed, stripeVariant, isFirst, isLast, isEditing, editingName, collapsed, hideExtractedItems, sessionRunning, selectedIds, columnOrder, gridTemplate, onSelect, onSelectMouseDown, onSelectMouseEnter, onStartEdit, onFinishEdit, onEditChange, onToggleCollapse, onCancel, onMoveUp, onMoveDown, onToggle, onRemoveItem, onContextMenu, onDragStart, onDrop, onDragEnd }: PackageCardProps): ReactElement {
-  const stats = useMemo(() => {
-    let done = 0;
-    let failed = 0;
-    let cancelled = 0;
-    let extracted = 0;
-    let extracting = false;
-    let activeProgress = 0;
-    let extractingProgress = 0;
-    for (const item of items) {
-      if (item.status === "completed") done += 1;
-      else if (item.status === "failed") failed += 1;
-      else if (item.status === "cancelled") cancelled += 1;
-      const fs = item.fullStatus || "";
-      if (fs.startsWith("Entpackt")) {
-        extracted += 1;
-      } else if (fs.startsWith("Entpacken")) {
-        extracting = true;
-        const m = fs.match(/^Entpacken\s+(\d+)%/);
-        if (m) extractingProgress += Number(m[1]) / 100;
-      }
-      if (item.status === "downloading" || (item.status === "queued" && (item.progressPercent || 0) > 0)) {
-        activeProgress += (item.progressPercent || 0) / 100;
-      }
-    }
-    const total = Math.max(1, items.length);
-    const allDownloaded = done + failed + cancelled >= total;
-    const allExtracted = extracted >= total;
-    const useExtractSplit = extracting || pkg.status === "extracting" || (allDownloaded && !allExtracted && done > 0 && extracted > 0 && failed === 0 && cancelled === 0);
-    const dlProgress = Math.min(useExtractSplit ? 50 : 100, Math.floor(((done + activeProgress) / total) * (useExtractSplit ? 50 : 100)));
-    const exProgress = Math.min(50, Math.floor(((extracted + extractingProgress) / total) * 50));
-    const combinedProgress = Math.min(100, useExtractSplit ? dlProgress + exProgress : dlProgress);
-    return { done, failed, cancelled, extracted, extracting, total, useExtractSplit, dlProgress, exProgress, combinedProgress };
-  }, [items, pkg.status]);
-  const { done, failed, cancelled, extracted, extracting, total, useExtractSplit, dlProgress, exProgress, combinedProgress } = stats;
-
-  const onKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>): void => {
-    if (e.key === "Enter") { onFinishEdit(pkg.id, pkg.name, editingName); }
-    if (e.key === "Escape") { onFinishEdit(pkg.id, pkg.name, pkg.name); }
-  };
-
-  return (
-    <article
-      className={`package-card queue-package-card pkg-stripe-${stripeVariant}${pkg.enabled ? "" : " disabled-pkg"}${selectedIds.has(pkg.id) ? " pkg-selected" : ""}`}
-      draggable
-      onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onContextMenu(pkg.id, undefined, e.clientX, e.clientY); }}
-      onClick={(e) => { if (e.ctrlKey || e.shiftKey) onSelect(pkg.id, e.ctrlKey, e.shiftKey); }}
-      onMouseDown={(e) => onSelectMouseDown(pkg.id, e)}
-      onMouseEnter={() => onSelectMouseEnter(pkg.id)}
-      onDragStart={(event) => { event.stopPropagation(); onDragStart(pkg.id); }}
-      onDragOver={(event) => { event.preventDefault(); event.stopPropagation(); }}
-      onDrop={(event) => { event.preventDefault(); event.stopPropagation(); onDrop(pkg.id); }}
-      onDragEnd={(event) => { event.stopPropagation(); onDragEnd(); }}
-    >
-      <header onClick={(e) => {
-        if (e.ctrlKey) return;
-        const tag = (e.target as HTMLElement).tagName;
-        if (tag === "BUTTON" || tag === "INPUT" || tag === "SELECT") return;
-        onToggleCollapse(pkg.id);
-      }} style={{ cursor: "pointer" }}>
-        <div className="pkg-columns" style={{ gridTemplateColumns: gridTemplate }}>
-          {columnOrder.map((col) => {
-            switch (col) {
-              case "name": return (
-                <div key={col} className="pkg-col pkg-col-name">
-                  <button className="pkg-toggle" onClick={() => onToggleCollapse(pkg.id)} title={collapsed ? "Ausklappen" : "Einklappen"}>{collapsed ? "+" : "\u2212"}</button>
-                  <input type="checkbox" checked={pkg.enabled} onChange={() => onToggle(pkg.id)} title={pkg.enabled ? "Paket aktiv" : "Paket deaktiviert"} />
-                  {isEditing ? (
-                    <input className="rename-input" value={editingName} onChange={(e) => onEditChange(e.target.value)} onBlur={() => onFinishEdit(pkg.id, pkg.name, editingName)} onKeyDown={onKeyDown} autoFocus />
-                  ) : (
-                    <h4 onClick={(e) => { e.stopPropagation(); onStartEdit(pkg.id, pkg.name); }} title="Klicken zum Umbenennen">{pkg.name}</h4>
-                  )}
-                </div>
-              );
-              case "size": return (
-                <span key={col} className="pkg-col pkg-col-size">{(() => {
-                  const totalBytes = items.reduce((sum, item) => sum + (item.totalBytes || item.downloadedBytes || 0), 0);
-                  const dlBytes = items.reduce((sum, item) => sum + (item.downloadedBytes || 0), 0);
-                  const pct = totalBytes > 0 ? Math.min(100, Math.round((dlBytes / totalBytes) * 100)) : 0;
-                  const label = `${humanSize(dlBytes)} / ${humanSize(totalBytes)}`;
-                  return totalBytes > 0 ? (
-                    <span className="progress-size">
-                      <span className="progress-size-bar" style={{ width: `${pct}%` }} />
-                      <span className="progress-size-text">{label}</span>
-                      <span className="progress-size-text-filled" style={{ clipPath: `inset(0 ${100 - pct}% 0 0)` }}>{label}</span>
-                    </span>
-                  ) : "";
-                })()}</span>
-              );
-              case "progress": return (
-                <span key={col} className="pkg-col pkg-col-progress">
-                  <span className="progress-inline">
-                    <span className="progress-inline-bar" style={{ width: `${combinedProgress}%` }} />
-                    <span className="progress-inline-text">{combinedProgress}%</span>
-                    <span className="progress-inline-text-filled" style={{ clipPath: `inset(0 ${100 - combinedProgress}% 0 0)` }}>{combinedProgress}%</span>
-                  </span>
-                </span>
-              );
-              case "hoster": {
-                const hosterText = [...new Set(items.map((item) => extractHoster(item.url)).filter(Boolean))].join(", ");
-                return <span key={col} className="pkg-col pkg-col-hoster" title={hosterText}>{hosterText}</span>;
-              }
-              case "account": {
-                const accountText = compactProviderLabels(items.map((item) => item.providerLabel || (item.provider ? providerLabels[item.provider] : "")).filter(Boolean));
-                return <span key={col} className="pkg-col pkg-col-account" title={accountText}>{accountText}</span>;
-              }
-              case "prio": return (
-                <span key={col} className={`pkg-col pkg-col-prio${pkg.priority === "high" ? " prio-high" : pkg.priority === "low" ? " prio-low" : ""}`}>{pkg.priority === "high" ? "Hoch" : pkg.priority === "low" ? "Niedrig" : ""}</span>
-              );
-              case "status": {
-                const audioStrip = pkg.audioStripSummary ? formatAudioStripSummary(pkg.audioStripSummary) : null;
-                return (
-                  <span key={col} className="pkg-col pkg-col-status">[{done}/{total}{done === total && total > 0 ? " - Done" : ""}{failed > 0 ? ` | ${failed} Fehler` : ""}{cancelled > 0 ? ` | ${cancelled} abgebr.` : ""}]{pkg.postProcessLabel ? ` - ${pkg.postProcessLabel}` : ""}{audioStrip ? <span className={`pkg-audio-strip${audioStrip.attention ? " pkg-audio-strip-warn" : ""}`} title={audioStrip.tooltip}>{` · ${audioStrip.text}`}</span> : null}</span>
-                );
-              }
-              case "speed": return (
-                <span key={col} className="pkg-col pkg-col-speed">{packageSpeed > 0 ? formatSpeedMbps(packageSpeed) : ""}</span>
-              );
-              case "added": return (
-                <span key={col} className="pkg-col pkg-col-added">{formatDateTime(pkg.createdAt)}</span>
-              );
-              default: return null;
-            }
-          })}
-        </div>
-      </header>
-      <div className="progress">
-        <div className="progress-dl" style={{ width: `${dlProgress}%` }} />
-        {useExtractSplit && <div className="progress-ex" style={{ width: `${exProgress}%` }} />}
-      </div>
-      {!collapsed && items.filter((item) => !hideExtractedItems || !item.fullStatus?.startsWith("Entpackt")).map((item) => (
-        <ItemRow
-          key={item.id}
-          item={item}
-          packageId={pkg.id}
-          isSelected={selectedIds.has(item.id)}
-          sessionRunning={sessionRunning}
-          columnOrder={columnOrder}
-          gridTemplate={gridTemplate}
-          onSelect={onSelect}
-          onSelectMouseDown={onSelectMouseDown}
-          onSelectMouseEnter={onSelectMouseEnter}
-          onContextMenu={onContextMenu}
-        />
-      ))}
-    </article>
-  );
-}, (prev, next) => {
-  if (prev.pkg.id !== next.pkg.id) {
-    return false;
-  }
-  if (prev.pkg.updatedAt !== next.pkg.updatedAt
-    || prev.pkg.status !== next.pkg.status
-    || prev.pkg.enabled !== next.pkg.enabled
-    || prev.pkg.name !== next.pkg.name
-    || prev.pkg.priority !== next.pkg.priority
-    || prev.pkg.createdAt !== next.pkg.createdAt) {
-    return false;
-  }
-  if (prev.packageSpeed !== next.packageSpeed
-    || prev.isFirst !== next.isFirst
-    || prev.isLast !== next.isLast
-    || prev.isEditing !== next.isEditing
-    || prev.collapsed !== next.collapsed
-    || prev.hideExtractedItems !== next.hideExtractedItems
-    || prev.columnOrder !== next.columnOrder
-    || prev.gridTemplate !== next.gridTemplate) {
-    return false;
-  }
-  if (prev.selectedIds !== next.selectedIds) {
-    for (const itemId of next.pkg.itemIds) {
-      if (prev.selectedIds.has(itemId) !== next.selectedIds.has(itemId)) {
-        return false;
-      }
-    }
-  }
-  if ((prev.isEditing || next.isEditing) && prev.editingName !== next.editingName) {
-    return false;
-  }
-  if (prev.pkg.itemIds.length !== next.pkg.itemIds.length) {
-    return false;
-  }
-  for (let index = 0; index < prev.pkg.itemIds.length; index += 1) {
-    if (prev.pkg.itemIds[index] !== next.pkg.itemIds[index]) {
-      return false;
-    }
-  }
-  if (prev.items.length !== next.items.length) {
-    return false;
-  }
-  for (let index = 0; index < prev.items.length; index += 1) {
-    const a = prev.items[index];
-    const b = next.items[index];
-    if (!a || !b) {
-      return false;
-    }
-    if (a.id !== b.id
-      || a.updatedAt !== b.updatedAt
-      || a.url !== b.url
-      || a.status !== b.status
-      || a.fileName !== b.fileName
-      || a.progressPercent !== b.progressPercent
-      || a.speedBps !== b.speedBps
-      || a.retries !== b.retries
-      || a.provider !== b.provider
-      || a.fullStatus !== b.fullStatus
-      || a.onlineStatus !== b.onlineStatus
-      || a.downloadedBytes !== b.downloadedBytes
-      || a.totalBytes !== b.totalBytes) {
-      return false;
-    }
-  }
-  return true;
-});
