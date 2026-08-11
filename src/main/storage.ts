@@ -944,6 +944,30 @@ function settingsPayload(settings: AppSettings): string {
   return JSON.stringify(protectPersistedSettings(normalizeSettings(settings)), safeJsonReplacer, 2);
 }
 
+interface SettingsSavePayloads {
+  primary: string;
+  backup: string;
+}
+
+function credentialFreeSettingsPayload(settings: AppSettings): string {
+  return settingsPayload({ ...settings, rememberToken: false });
+}
+
+function createSettingsSavePayloads(paths: StoragePaths, settings: AppSettings): SettingsSavePayloads {
+  const previous = readSettingsFile(paths.configFile);
+  const backup = previous
+    ? settingsPayload({ ...previous.settings, rememberToken: settings.rememberToken })
+    : credentialFreeSettingsPayload(settings);
+  return {
+    primary: settingsPayload(settings),
+    backup
+  };
+}
+
+function captureSettings(settings: AppSettings): AppSettings {
+  return JSON.parse(JSON.stringify(normalizeSettings(settings))) as AppSettings;
+}
+
 function writeSettingsFileAtomically(filePath: string, payload: string): void {
   const tempPath = `${filePath}.tmp`;
   try {
@@ -1052,45 +1076,42 @@ function readSessionFile(filePath: string): SessionState | null {
 export function saveSettings(paths: StoragePaths, settings: AppSettings): void {
   syncSettingsSaveGeneration += 1;
   ensureBaseDir(paths.baseDir);
-  const payload = settingsPayload(settings);
-  if (fs.existsSync(paths.configFile)) {
-    writeSettingsFileAtomically(`${paths.configFile}.bak`, payload);
-  }
-  writeSettingsFileAtomically(paths.configFile, payload);
+  const payloads = createSettingsSavePayloads(paths, settings);
+  writeSettingsFileAtomically(`${paths.configFile}.bak`, payloads.backup);
+  writeSettingsFileAtomically(paths.configFile, payloads.primary);
 }
 
 let asyncSettingsSaveRunning = false;
-let asyncSettingsSaveQueued: { paths: StoragePaths; payload: string; generation: number } | null = null;
+let asyncSettingsSaveQueued: { paths: StoragePaths; settings: AppSettings; generation: number } | null = null;
 let syncSettingsSaveGeneration = 0;
 
-async function writeSettingsPayload(paths: StoragePaths, payload: string, generation: number): Promise<void> {
+async function writeSettingsPayload(paths: StoragePaths, settings: AppSettings, generation: number): Promise<void> {
   await fs.promises.mkdir(paths.baseDir, { recursive: true });
+  const payloads = createSettingsSavePayloads(paths, settings);
   const tempPath = `${paths.configFile}.settings.tmp`;
-  await fsp.writeFile(tempPath, payload, "utf8");
+  await fsp.writeFile(tempPath, payloads.primary, "utf8");
   if (generation < syncSettingsSaveGeneration) {
     await fsp.rm(tempPath, { force: true }).catch(() => {});
     return;
   }
-  if (fs.existsSync(paths.configFile)) {
-    const backupTempPath = `${paths.configFile}.bak.settings.tmp`;
-    await fsp.writeFile(backupTempPath, payload, "utf8");
-    if (generation < syncSettingsSaveGeneration) {
-      await Promise.all([
-        fsp.rm(tempPath, { force: true }).catch(() => {}),
-        fsp.rm(backupTempPath, { force: true }).catch(() => {})
-      ]);
-      return;
-    }
-    try {
-      await fsp.rename(backupTempPath, `${paths.configFile}.bak`);
-    } catch (renameError: unknown) {
-      if (renameError && typeof renameError === "object" && "code" in renameError && (renameError as NodeJS.ErrnoException).code === "EXDEV") {
-        await fsp.copyFile(backupTempPath, `${paths.configFile}.bak`);
-        await fsp.rm(backupTempPath, { force: true }).catch(() => {});
-      } else {
-        await fsp.rm(backupTempPath, { force: true }).catch(() => {});
-        throw renameError;
-      }
+  const backupTempPath = `${paths.configFile}.bak.settings.tmp`;
+  await fsp.writeFile(backupTempPath, payloads.backup, "utf8");
+  if (generation < syncSettingsSaveGeneration) {
+    await Promise.all([
+      fsp.rm(tempPath, { force: true }).catch(() => {}),
+      fsp.rm(backupTempPath, { force: true }).catch(() => {})
+    ]);
+    return;
+  }
+  try {
+    await fsp.rename(backupTempPath, `${paths.configFile}.bak`);
+  } catch (renameError: unknown) {
+    if (renameError && typeof renameError === "object" && "code" in renameError && (renameError as NodeJS.ErrnoException).code === "EXDEV") {
+      await fsp.copyFile(backupTempPath, `${paths.configFile}.bak`);
+      await fsp.rm(backupTempPath, { force: true }).catch(() => {});
+    } else {
+      await fsp.rm(backupTempPath, { force: true }).catch(() => {});
+      throw renameError;
     }
   }
   try {
@@ -1110,14 +1131,14 @@ async function writeSettingsPayload(paths: StoragePaths, payload: string, genera
   }
 }
 
-async function saveSettingsPayloadAsync(paths: StoragePaths, payload: string, generation: number): Promise<void> {
+async function saveSettingsPayloadAsync(paths: StoragePaths, settings: AppSettings, generation: number): Promise<void> {
   if (asyncSettingsSaveRunning) {
-    asyncSettingsSaveQueued = { paths, payload, generation };
+    asyncSettingsSaveQueued = { paths, settings, generation };
     return;
   }
   asyncSettingsSaveRunning = true;
   try {
-    await writeSettingsPayload(paths, payload, generation);
+    await writeSettingsPayload(paths, settings, generation);
   } catch (error) {
     logger.error(`Async Settings-Save fehlgeschlagen: ${String(error)}`);
   } finally {
@@ -1125,15 +1146,14 @@ async function saveSettingsPayloadAsync(paths: StoragePaths, payload: string, ge
     if (asyncSettingsSaveQueued) {
       const queued = asyncSettingsSaveQueued;
       asyncSettingsSaveQueued = null;
-      void saveSettingsPayloadAsync(queued.paths, queued.payload, queued.generation);
+      void saveSettingsPayloadAsync(queued.paths, queued.settings, queued.generation);
     }
   }
 }
 
 export async function saveSettingsAsync(paths: StoragePaths, settings: AppSettings): Promise<void> {
   const generation = syncSettingsSaveGeneration;
-  const payload = settingsPayload(settings);
-  await saveSettingsPayloadAsync(paths, payload, generation);
+  await saveSettingsPayloadAsync(paths, captureSettings(settings), generation);
 }
 
 export function emptySession(): SessionState {

@@ -11,6 +11,15 @@ import { configureCredentialProtector } from "../src/main/credential-protection"
 import { addHistoryEntryForRetention, createStoragePaths, emptySession, loadHistory, loadHistoryForRetention, loadSession, loadSettings, normalizeLoadedSession, normalizeSettings, resetHistoryForRetention, saveHistory, saveSession, saveSessionAsync, saveSettings, saveSettingsAsync } from "../src/main/storage";
 
 const tempDirs: string[] = [];
+type SettingsSaveMode = "sync" | "async";
+
+async function saveSettingsInMode(mode: SettingsSaveMode, paths: ReturnType<typeof createStoragePaths>, settings: AppSettings): Promise<void> {
+  if (mode === "sync") {
+    saveSettings(paths, settings);
+  } else {
+    await saveSettingsAsync(paths, settings);
+  }
+}
 
 beforeEach(() => {
   configureCredentialProtector({
@@ -195,6 +204,32 @@ describe("settings storage", () => {
     expect(loaded.allDebridToken).toBe("all-token");
   });
 
+  it.each(["sync", "async"] as const)("preserves the previous recoverable settings state during a %s save", async (mode) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const previousToken = "previous-value-for-recovery";
+    const previous = {
+      ...defaultSettings(),
+      packageName: "previous-package-name",
+      token: previousToken
+    };
+    saveSettings(paths, previous);
+
+    await saveSettingsInMode(mode, paths, {
+      ...previous,
+      packageName: "current-package-name",
+      token: "current-value"
+    });
+
+    const backupText = fs.readFileSync(`${paths.configFile}.bak`, "utf8");
+    expect(backupText).not.toContain(previousToken);
+    fs.writeFileSync(paths.configFile, "{broken-current-config", "utf8");
+    const recovered = loadSettings(paths);
+    expect(recovered.packageName).toBe("previous-package-name");
+    expect(recovered.token).toBe(previousToken);
+  });
+
   it.each(["sync", "async"] as const)("clears previously stored credentials from the backup when remembering is disabled during a %s save", async (mode) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
     tempDirs.push(dir);
@@ -202,21 +237,21 @@ describe("settings storage", () => {
     const remembered = {
       ...defaultSettings(),
       rememberToken: true,
-      token: "stored-value-before-clear"
+      token: "stored-value-before-clear",
+      packageName: "previous-package-name"
     };
     saveSettings(paths, remembered);
 
-    const cleared = { ...remembered, rememberToken: false };
-    if (mode === "sync") {
-      saveSettings(paths, cleared);
-    } else {
-      await saveSettingsAsync(paths, cleared);
-    }
+    const cleared = { ...remembered, rememberToken: false, packageName: "current-package-name" };
+    await saveSettingsInMode(mode, paths, cleared);
 
     const primary = JSON.parse(fs.readFileSync(paths.configFile, "utf8")) as Record<string, unknown>;
     const backup = JSON.parse(fs.readFileSync(`${paths.configFile}.bak`, "utf8")) as Record<string, unknown>;
     expect(primary.token).toBe("");
     expect(backup.token).toBe("");
+    expect(primary.packageName).toBe("current-package-name");
+    expect(backup.packageName).toBe("previous-package-name");
+    expect(backup.rememberToken).toBe(false);
   });
 
   it.each(["sync", "async"] as const)("clears previously stored credentials from the backup when encryption is unavailable during a %s save", async (mode) => {
@@ -235,16 +270,43 @@ describe("settings storage", () => {
       decryptString: () => ""
     });
 
-    if (mode === "sync") {
-      saveSettings(paths, remembered);
-    } else {
-      await saveSettingsAsync(paths, remembered);
-    }
+    await saveSettingsInMode(mode, paths, remembered);
 
     const primary = JSON.parse(fs.readFileSync(paths.configFile, "utf8")) as Record<string, unknown>;
     const backup = JSON.parse(fs.readFileSync(`${paths.configFile}.bak`, "utf8")) as Record<string, unknown>;
     expect(primary.token).toBe("");
     expect(backup.token).toBe("");
+  });
+
+  it.each([
+    ["sync", "absent"],
+    ["async", "absent"],
+    ["sync", "corrupt"],
+    ["async", "corrupt"]
+  ] as const)("uses a credential-free current fallback for a %s save with a %s prior primary", async (mode, priorState) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    if (priorState === "corrupt") {
+      fs.writeFileSync(paths.configFile, "{broken-prior-config", "utf8");
+    }
+    const currentToken = "current-value-for-safe-fallback";
+
+    await saveSettingsInMode(mode, paths, {
+      ...defaultSettings(),
+      rememberToken: true,
+      packageName: "current-package-name",
+      token: currentToken
+    });
+
+    expect(fs.existsSync(`${paths.configFile}.bak`)).toBe(true);
+    const backupText = fs.readFileSync(`${paths.configFile}.bak`, "utf8");
+    const backup = JSON.parse(backupText) as Record<string, unknown>;
+    expect(backup.packageName).toBe("current-package-name");
+    expect(backup.rememberToken).toBe(false);
+    expect(backup.token).toBe("");
+    expect(backupText).not.toContain(currentToken);
+    expect(loadSettings(paths).token).toBe(currentToken);
   });
 
   it("migrates remembered plaintext provider values without retaining plaintext in config backups", () => {
