@@ -13,6 +13,9 @@ describe("desktop shell", () => {
 
     expect(source).not.toMatch(/<span[^>]*className="[^"]*link-popup-click/);
     expect(source.match(/<button[^>]*className="[^"]*link-popup-click[^>]*type="button"/g)).toHaveLength(3);
+    expect(source).not.toContain("navigator.clipboard.writeText(key.token)");
+    expect(source).toContain("navigator.clipboard.writeText(key.masked)");
+    expect(source).toContain("Maskierte Kennung kopiert");
   });
 
   it("confirms before removing a collector tab", () => {

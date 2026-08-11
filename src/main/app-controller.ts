@@ -35,6 +35,7 @@ import { parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
 import { getMegaDebridAccountsForMode } from "../shared/mega-debrid-accounts";
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
 import { applyAccountCommand } from "./account-commands";
+import { collectAccountStatusRedactionValues, sanitizeDebridAccountStatus, sanitizeDebridAccountStatuses } from "./account-status-sanitizer";
 import { createRendererState } from "./renderer-state";
 import { parseCollectorInput } from "./link-parser";
 import { configureLogger, getLogFilePath, logger } from "./logger";
@@ -484,6 +485,7 @@ export class AppController {
   public async executeAccountCommand(command: AccountCommand): Promise<AccountCommandResult> {
     const applied = applyAccountCommand(this.settings, command);
     let checkedStatus: DebridAccountStatus | null = null;
+    const redactions = collectAccountStatusRedactionValues(applied.settings, command);
     if (command.action !== "delete" && applied.response.accountId && (command.kind === "megadebrid-api" || command.kind === "megadebrid-web")) {
       const mode = command.kind === "megadebrid-web" ? "web" : "api";
       const account = getMegaDebridAccountsForMode(applied.settings, mode).find((entry) => entry.id === applied.response.accountId);
@@ -495,10 +497,11 @@ export class AppController {
       if (!key) throw new Error("Account-Payload ist ungültig");
       checkedStatus = await checkDebridLinkKey(key);
     }
+    if (checkedStatus) {
+      checkedStatus = sanitizeDebridAccountStatus(checkedStatus, redactions);
+    }
     if (checkedStatus && !checkedStatus.valid) {
-      const submittedSecret = "secret" in command ? command.secret : undefined;
-      const safeMessage = submittedSecret ? checkedStatus.message.split(submittedSecret).join("[geschützt]") : checkedStatus.message;
-      throw new Error(safeMessage || "Zugangsdaten ungültig");
+      throw new Error(checkedStatus.message || "Zugangsdaten ungültig");
     }
     this.updateSettings(applied.settings);
     if (checkedStatus) this.manager.applyDebridAccountStatuses([checkedStatus]);
@@ -508,6 +511,7 @@ export class AppController {
   }
 
   public async checkAccountCredentials(input: AccountCredentialCheckInput): Promise<DebridAccountStatus> {
+    const redactions = collectAccountStatusRedactionValues(this.settings, input);
     if (input.kind === "megadebrid-api" || input.kind === "megadebrid-web") {
       const mode = input.kind === "megadebrid-web" ? "web" : "api";
       const account = input.identity?.trim() && input.secret
@@ -515,14 +519,14 @@ export class AppController {
         : getMegaDebridAccountsForMode(this.settings, mode).find((entry) => entry.id === input.accountId);
       if (!account) throw new Error("Account-Payload ist ungültig");
       const status = await checkMegaDebridAccount(account);
-      return { ...status, message: input.secret ? status.message.split(input.secret).join("[geschützt]") : status.message };
+      return sanitizeDebridAccountStatus(status, redactions);
     }
     const key = input.secret?.trim()
       ? parseDebridLinkApiKeys(input.secret)[0]
       : parseDebridLinkApiKeys(this.settings.debridLinkApiKeys).find((entry) => entry.id === input.accountId);
     if (!key) throw new Error("Account-Payload ist ungültig");
     const status = await checkDebridLinkKey(key);
-    return { ...status, message: input.secret ? status.message.split(input.secret).join("[geschützt]") : status.message };
+    return sanitizeDebridAccountStatus(status, redactions);
   }
 
   public resetProviderDailyUsage(provider: DebridProvider): AppSettings {
@@ -586,7 +590,10 @@ export class AppController {
   }
 
 public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
-    const statuses = await checkAllDebridAccounts(this.settings);
+    const statuses = sanitizeDebridAccountStatuses(
+      await checkAllDebridAccounts(this.settings),
+      collectAccountStatusRedactionValues(this.settings)
+    );
     this.manager.applyDebridAccountStatuses(statuses);
     this.audit("INFO", "Debrid-Accounts geprueft", {
       total: statuses.length,

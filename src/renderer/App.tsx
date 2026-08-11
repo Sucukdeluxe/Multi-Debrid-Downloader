@@ -6141,13 +6141,13 @@ export function App(): ReactElement {
                         <>
                     <span className="col-key">{ki + 1}</span>
                     <button
-                      aria-label={`${key.label} kopieren`}
+                      aria-label={`${key.label} maskierte Kennung kopieren`}
                       className="col-masked link-popup-click"
                       type="button"
-                      title={`${key.masked}\nKlicken zum Kopieren`}
+                      title={`${key.masked}\nMaskierte Kennung kopieren`}
                       onClick={() => {
-                        void navigator.clipboard.writeText(key.token)
-                          .then(() => showToast(`${key.label} kopiert`, 1800))
+                        void navigator.clipboard.writeText(key.masked)
+                          .then(() => showToast("Maskierte Kennung kopiert", 1800))
                           .catch(() => showToast("Kopieren fehlgeschlagen", 2200));
                       }}
                     >

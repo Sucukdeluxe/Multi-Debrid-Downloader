@@ -1,6 +1,7 @@
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
-import { getMegaDebridAccountsForMode, getMegaDebridDisabledAccountIdsForMode, parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
+import { getMegaDebridAccountsForMode, getMegaDebridDisabledAccountIdsForMode } from "../shared/mega-debrid-accounts";
 import type { AppSettings, DebridAccountStatus, DebridProvider, RendererAccount, RendererAccountKind, RendererSettings } from "../shared/types";
+import { collectAccountStatusRedactionValues, sanitizeDebridAccountStatus } from "./account-status-sanitizer";
 
 function maskValue(value: string, keepStart = 3, keepEnd = 3): string {
   const trimmed = value.trim();
@@ -13,45 +14,11 @@ function maskValue(value: string, keepStart = 3, keepEnd = 3): string {
   return `${trimmed.slice(0, keepStart)}${"*".repeat(Math.max(4, trimmed.length - keepStart - keepEnd))}${trimmed.slice(-keepEnd)}`;
 }
 
-function getSecrets(settings: AppSettings): string[] {
-  const megaSecrets = [settings.megaCredentials, settings.megaDebridApiCredentials, settings.megaDebridWebCredentials]
-    .flatMap((credentials) => parseMegaDebridAccounts(credentials, settings.megaPassword))
-    .map((account) => account.password);
-  const debridLinkSecrets = parseDebridLinkApiKeys(settings.debridLinkApiKeys).map((key) => key.token);
-  return [...new Set([
-    settings.token,
-    settings.megaPassword,
-    settings.megaCredentials,
-    settings.megaDebridApiCredentials,
-    settings.megaDebridWebCredentials,
-    ...megaSecrets,
-    settings.bestToken,
-    settings.allDebridToken,
-    settings.ddownloadPassword,
-    settings.oneFichierApiKey,
-    settings.debridLinkApiKeys,
-    ...debridLinkSecrets,
-    settings.linkSnappyPassword,
-    settings.archivePasswordList,
-    settings.notifyUrl
-  ].map((value) => value.trim()).filter(Boolean))].sort((left, right) => right.length - left.length);
-}
-
-function redact(value: string, secrets: readonly string[]): string {
-  return secrets.reduce((result, secret) => result.split(secret).join("[geschützt]"), value);
-}
-
-function safeStatus(status: DebridAccountStatus | undefined, secrets: readonly string[]): DebridAccountStatus | null {
+function safeStatus(status: DebridAccountStatus | undefined, redactions: readonly string[]): DebridAccountStatus | null {
   if (!status) {
     return null;
   }
-  return {
-    ...status,
-    label: redact(status.label, secrets),
-    maskedLogin: redact(status.maskedLogin, secrets),
-    email: status.email ? redact(status.email, secrets) : undefined,
-    message: redact(status.message, secrets)
-  };
+  return sanitizeDebridAccountStatus(status, redactions);
 }
 
 function providerEnabled(settings: AppSettings, provider: DebridProvider): boolean {
@@ -83,7 +50,7 @@ function singleAccount(
 
 export function createRendererAccounts(settings: AppSettings): RendererAccount[] {
   const accounts: RendererAccount[] = [];
-  const secrets = getSecrets(settings);
+  const redactions = collectAccountStatusRedactionValues(settings);
   if (settings.realDebridUseWebLogin || settings.token.trim()) {
     accounts.push(singleAccount(
       settings,
@@ -111,7 +78,7 @@ export function createRendererAccounts(settings: AppSettings): RendererAccount[]
         dailyLimitBytes: settings.megaDebridAccountDailyLimitBytes[account.id] || 0,
         dailyUsageBytes: settings.megaDebridAccountDailyUsageBytes[account.id] || 0,
         totalUsageBytes: settings.megaDebridAccountTotalUsageBytes[account.id] || 0,
-        status: safeStatus(settings.debridAccountStatuses[account.id], secrets)
+        status: safeStatus(settings.debridAccountStatuses[account.id], redactions)
       });
     }
   }
@@ -153,7 +120,7 @@ export function createRendererAccounts(settings: AppSettings): RendererAccount[]
       dailyLimitBytes: settings.debridLinkApiKeyDailyLimitBytes[key.id] || 0,
       dailyUsageBytes: settings.debridLinkApiKeyDailyUsageBytes[key.id] || 0,
       totalUsageBytes: settings.debridLinkApiKeyTotalUsageBytes[key.id] || 0,
-      status: safeStatus(settings.debridAccountStatuses[key.id], secrets)
+      status: safeStatus(settings.debridAccountStatuses[key.id], redactions)
     });
   }
   if (settings.linkSnappyLogin.trim() && settings.linkSnappyPassword) {
@@ -164,6 +131,7 @@ export function createRendererAccounts(settings: AppSettings): RendererAccount[]
 
 export function createRendererSettings(settings: AppSettings): RendererSettings {
   const configuredProviders = [...new Set(createRendererAccounts(settings).map((account) => account.provider))];
+  const redactions = collectAccountStatusRedactionValues(settings);
   return {
     language: settings.language,
     realDebridUseWebLogin: settings.realDebridUseWebLogin,
@@ -250,7 +218,7 @@ export function createRendererSettings(settings: AppSettings): RendererSettings 
     megaDebridAccountDailyLimitBytes: { ...settings.megaDebridAccountDailyLimitBytes },
     megaDebridAccountDailyUsageBytes: { ...settings.megaDebridAccountDailyUsageBytes },
     megaDebridAccountTotalUsageBytes: { ...settings.megaDebridAccountTotalUsageBytes },
-    debridAccountStatuses: Object.fromEntries(Object.entries(settings.debridAccountStatuses).map(([id, status]) => [id, safeStatus(status, getSecrets(settings))])),
+    debridAccountStatuses: Object.fromEntries(Object.entries(settings.debridAccountStatuses).map(([id, status]) => [id, safeStatus(status, redactions)])),
     providerDailyUsageDay: settings.providerDailyUsageDay,
     scheduledStartEpochMs: settings.scheduledStartEpochMs
   } as RendererSettings;
