@@ -18,6 +18,7 @@ import {
   createMainWindowWebPreferences,
   createRemoteLoginWebPreferences,
   isAllowedHttpsUrl,
+  openAllowedExternalUrl,
   type HttpsHostRule
 } from "../src/main/browser-security";
 
@@ -51,6 +52,11 @@ function createWindow() {
       webContentsHandlers.get("will-navigate")?.(event, url);
       return event;
     },
+    redirect: (url: string) => {
+      const event = { preventDefault: vi.fn() };
+      webContentsHandlers.get("will-redirect")?.(event, url);
+      return event;
+    },
     openWindow: (url: string) => windowOpenHandler?.({ url }),
     requestPermission: (permission: string) => {
       const callback = vi.fn();
@@ -73,6 +79,8 @@ describe("browser-security", () => {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
       preload: "C:\\MDD\\preload.js"
     });
   });
@@ -110,6 +118,22 @@ describe("browser-security", () => {
 
     const allowed = harness.navigate("https://github.com/Sucukdeluxe/multi-debrid-downloader");
     const lookalike = harness.navigate("https://github.com.evil.example/Sucukdeluxe");
+
+    expect(allowed.preventDefault).toHaveBeenCalledTimes(1);
+    expect(lookalike.preventDefault).toHaveBeenCalledTimes(1);
+    expect(electron.openExternal).toHaveBeenCalledTimes(1);
+    expect(electron.openExternal).toHaveBeenCalledWith("https://github.com/Sucukdeluxe/multi-debrid-downloader");
+  });
+
+  it("applies the main-window navigation policy to redirects", () => {
+    const harness = createWindow();
+    applyMainWindowSecurity(harness.window, {
+      rendererUrl: "http://localhost:5180",
+      externalHosts: githubOnly
+    });
+
+    const allowed = harness.redirect("https://github.com/Sucukdeluxe/multi-debrid-downloader");
+    const lookalike = harness.redirect("https://github.com.evil.example/Sucukdeluxe");
 
     expect(allowed.preventDefault).toHaveBeenCalledTimes(1);
     expect(lookalike.preventDefault).toHaveBeenCalledTimes(1);
@@ -172,6 +196,29 @@ describe("browser-security", () => {
     expect(provider.preventDefault).not.toHaveBeenCalled();
     expect(subdomain.preventDefault).not.toHaveBeenCalled();
     expect(lookalike.preventDefault).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies the remote-login navigation policy to redirects", () => {
+    const harness = createWindow();
+    applyRemoteLoginSecurity(harness.window, {
+      providerHosts: realDebridProvider,
+      externalHosts: realDebridProvider
+    });
+
+    const provider = harness.redirect("https://real-debrid.com/apitoken");
+    const subdomain = harness.redirect("https://api.real-debrid.com/oauth");
+    const lookalike = harness.redirect("https://real-debrid.com.evil.example/login");
+
+    expect(provider.preventDefault).not.toHaveBeenCalled();
+    expect(subdomain.preventDefault).not.toHaveBeenCalled();
+    expect(lookalike.preventDefault).toHaveBeenCalledTimes(1);
+    expect(electron.openExternal).not.toHaveBeenCalled();
+  });
+
+  it("returns false when allowed external URLs cannot be opened", async () => {
+    electron.openExternal.mockRejectedValueOnce(new Error("shell rejected"));
+
+    await expect(openAllowedExternalUrl("https://github.com/Sucukdeluxe", githubOnly)).resolves.toBe(false);
   });
 
   it("matches HTTPS allowlists without includes-based hostname shortcuts", () => {

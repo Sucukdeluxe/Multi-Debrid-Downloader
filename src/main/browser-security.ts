@@ -11,10 +11,10 @@ type NavigationEvent = {
 
 type SecurityWindow = {
   webContents: {
-    on: (event: "will-navigate", listener: (event: NavigationEvent, url: string) => void) => unknown;
-    setWindowOpenHandler: (handler: (details: { url: string }) => { action: "deny" }) => unknown;
+    on: unknown;
+    setWindowOpenHandler: unknown;
     session: {
-      setPermissionRequestHandler: (handler: (webContents: unknown, permission: string, callback: (allowed: boolean) => void) => void) => unknown;
+      setPermissionRequestHandler: unknown;
     };
   };
 };
@@ -50,6 +50,8 @@ export function createMainWindowWebPreferences(preload: string): WebPreferences 
     contextIsolation: true,
     nodeIntegration: false,
     sandbox: true,
+    webSecurity: true,
+    allowRunningInsecureContent: false,
     preload
   };
 }
@@ -82,44 +84,59 @@ export function isAllowedHttpsUrl(rawUrl: string, hosts: readonly HttpsHostRule[
   });
 }
 
-export function openAllowedExternalUrl(rawUrl: string, hosts: readonly HttpsHostRule[]): boolean {
+export async function openAllowedExternalUrl(rawUrl: string, hosts: readonly HttpsHostRule[]): Promise<boolean> {
   if (!isAllowedHttpsUrl(rawUrl, hosts)) {
     return false;
   }
-  void shell.openExternal(new URL(rawUrl).toString());
-  return true;
+  try {
+    await shell.openExternal(new URL(rawUrl).toString());
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function applyMainWindowSecurity(window: SecurityWindow, options: MainWindowSecurityOptions): void {
   applyCommonSecurity(window, options.externalHosts);
-  window.webContents.on("will-navigate", (event, url) => {
+  const handleNavigation = (event: NavigationEvent, url: string): void => {
     if (isExpectedRendererUrl(url, options.rendererUrl)) {
       return;
     }
     event.preventDefault();
-    openAllowedExternalUrl(url, options.externalHosts);
-  });
+    void openAllowedExternalUrl(url, options.externalHosts);
+  };
+  onNavigation(window, "will-navigate", handleNavigation);
+  onNavigation(window, "will-redirect", handleNavigation);
 }
 
 export function applyRemoteLoginSecurity(window: SecurityWindow, options: RemoteLoginSecurityOptions): void {
   applyCommonSecurity(window, options.externalHosts);
-  window.webContents.on("will-navigate", (event, url) => {
+  const handleNavigation = (event: NavigationEvent, url: string): void => {
     if (isAllowedHttpsUrl(url, options.providerHosts)) {
       return;
     }
     event.preventDefault();
-    openAllowedExternalUrl(url, options.externalHosts);
-  });
+    void openAllowedExternalUrl(url, options.externalHosts);
+  };
+  onNavigation(window, "will-navigate", handleNavigation);
+  onNavigation(window, "will-redirect", handleNavigation);
 }
 
 function applyCommonSecurity(window: SecurityWindow, externalHosts: readonly HttpsHostRule[]): void {
-  window.webContents.setWindowOpenHandler((details) => {
-    openAllowedExternalUrl(details.url, externalHosts);
+  const setWindowOpenHandler = window.webContents.setWindowOpenHandler as (handler: (details: { url: string }) => { action: "deny" }) => unknown;
+  setWindowOpenHandler((details) => {
+    void openAllowedExternalUrl(details.url, externalHosts);
     return { action: "deny" };
   });
-  window.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => {
+  const setPermissionRequestHandler = window.webContents.session.setPermissionRequestHandler as (handler: (webContents: unknown, permission: string, callback: (allowed: boolean) => void) => void) => unknown;
+  setPermissionRequestHandler((_webContents, _permission, callback) => {
     callback(false);
   });
+}
+
+function onNavigation(window: SecurityWindow, event: "will-navigate" | "will-redirect", listener: (event: NavigationEvent, url: string) => void): void {
+  const on = window.webContents.on as (event: "will-navigate" | "will-redirect", listener: (event: NavigationEvent, url: string) => void) => unknown;
+  on(event, listener);
 }
 
 function isExpectedRendererUrl(rawUrl: string, expectedUrl: string): boolean {

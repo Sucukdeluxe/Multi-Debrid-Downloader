@@ -3,10 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const {
   mockFromPartition,
   mockSession,
+  mockFetch,
   mockBrowserWindowCtor,
   mockLoadURL,
   mockShow,
   mockFocus,
+  mockClose,
   mockSetWindowOpenHandler,
   mockSetPermissionRequestHandler
 } = vi.hoisted(() => {
@@ -59,10 +61,12 @@ const {
       clearStorageData,
       clearCache
     },
+    mockFetch: fetch,
     mockBrowserWindowCtor: BrowserWindowCtor,
     mockLoadURL: loadURL,
     mockShow: show,
     mockFocus: focus,
+    mockClose: browserWindow.close,
     mockSetWindowOpenHandler: setWindowOpenHandler,
     mockSetPermissionRequestHandler: setPermissionRequestHandler
   };
@@ -111,5 +115,59 @@ describe("alldebrid-web", () => {
     expect(mockLoadURL).toHaveBeenCalledWith("https://alldebrid.com/register/?from=de");
     expect(mockShow).toHaveBeenCalled();
     expect(mockFocus).toHaveBeenCalled();
+  });
+
+  it("uses an existing AllDebrid Web session to unrestrict without opening a login window", async () => {
+    mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+      link: "https://alldebrid.direct/session-file.bin",
+      filename: "session-file.bin",
+      filesize: 9876
+    }), { status: 200 }));
+    const fallback = new AllDebridWebFallback(() => true);
+
+    const result = await fallback.unrestrict("https://rapidgator.net/file/session");
+
+    expect(result).toEqual({
+      directUrl: "https://alldebrid.direct/session-file.bin",
+      fileName: "session-file.bin",
+      fileSize: 9876,
+      retriesUsed: 0
+    });
+    expect(mockBrowserWindowCtor).not.toHaveBeenCalled();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockFetch.mock.calls[0]?.[0]).toBe("https://alldebrid.com/service.php");
+    expect(mockFetch.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
+      method: "POST",
+      body: "link=https%3A%2F%2Frapidgator.net%2Ffile%2Fsession&nb=0&json=true&pw="
+    }));
+  });
+
+  it("opens the login window after login_required and retries generation with the same session partition", async () => {
+    mockFetch
+      .mockResolvedValueOnce(new Response("login", { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        link: "https://alldebrid.direct/retry-file.bin",
+        filename: "retry-file.bin",
+        filesize: 12345
+      }), { status: 200 }));
+    const fallback = new AllDebridWebFallback(() => true);
+
+    const result = await fallback.unrestrict("https://rapidgator.net/file/retry");
+
+    expect(result).toEqual({
+      directUrl: "https://alldebrid.direct/retry-file.bin",
+      fileName: "retry-file.bin",
+      fileSize: 12345,
+      retriesUsed: 0
+    });
+    expect(mockBrowserWindowCtor).toHaveBeenCalledTimes(1);
+    expect(mockLoadURL).toHaveBeenCalledWith("https://alldebrid.com/register/?from=de");
+    expect(mockShow).toHaveBeenCalled();
+    expect(mockFocus).toHaveBeenCalled();
+    expect(mockSetWindowOpenHandler).toHaveBeenCalledTimes(1);
+    expect(mockSetPermissionRequestHandler).toHaveBeenCalledTimes(1);
+    expect(mockClose).toHaveBeenCalledTimes(1);
+    expect(mockFromPartition).toHaveBeenCalledWith("persist:alldebrid-web");
+    expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 });
