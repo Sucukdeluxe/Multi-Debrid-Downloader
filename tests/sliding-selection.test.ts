@@ -1,6 +1,34 @@
 import { describe, expect, it } from "vitest";
 
 describe("sliding selection scheduling", () => {
+  it("re-arms transitions when a StrictMode effect cleanup cancels the first frame", async () => {
+    const selectionModule = await import("../src/renderer/ui/SlidingSelection");
+    const schedule = Reflect.get(selectionModule, "scheduleSelectionTransitions");
+
+    expect(schedule).toBeTypeOf("function");
+
+    let transitionsEnabled = false;
+    let nextFrame = 0;
+    const pending = new Map<number, FrameRequestCallback>();
+    const requestFrame = (callback: FrameRequestCallback): number => {
+      nextFrame += 1;
+      pending.set(nextFrame, callback);
+      return nextFrame;
+    };
+    const cancelFrame = (frame: number): void => {
+      pending.delete(frame);
+    };
+
+    const firstFrame = schedule(false, 0, () => { transitionsEnabled = true; }, requestFrame, cancelFrame);
+    cancelFrame(firstFrame);
+    const secondFrame = schedule(false, 0, () => { transitionsEnabled = true; }, requestFrame, cancelFrame);
+
+    expect(transitionsEnabled).toBe(false);
+    expect(pending.has(firstFrame)).toBe(false);
+    pending.get(secondFrame)?.(0);
+    expect(transitionsEnabled).toBe(true);
+  });
+
   it("applies the first mounted selection before scheduling later movements", async () => {
     const selectionModule = await import("../src/renderer/ui/SlidingSelection");
     const schedule = Reflect.get(selectionModule, "scheduleSelectionLayout");

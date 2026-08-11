@@ -2,6 +2,18 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.19] - 2026-08-11
+
+### Interface fixes
+
+- Restored smooth sidebar selection movement in development builds when React StrictMode restarts layout effects.
+- Kept the active sidebar entry visible immediately while the shared selection marker moves to its new position.
+- Disabled the service filter when fewer than two concrete services are available, preventing an empty or redundant dropdown from opening.
+
+### Reliability and testing
+
+- Added regression coverage for StrictMode transition initialization and service-filter availability states.
+
 ## [2.0.18] - 2026-08-11
 
 ### Downloads and status handling

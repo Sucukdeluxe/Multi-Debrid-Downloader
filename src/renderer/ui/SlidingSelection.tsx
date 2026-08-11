@@ -25,9 +25,22 @@ export function scheduleSelectionLayout(
   return requestFrame(apply);
 }
 
+export function scheduleSelectionTransitions(
+  enabled: boolean,
+  frame: number,
+  enable: () => void,
+  requestFrame: (callback: FrameRequestCallback) => number = requestAnimationFrame,
+  cancelFrame: (frame: number) => void = cancelAnimationFrame
+): number {
+  if (enabled) return frame;
+  if (frame) cancelFrame(frame);
+  return requestFrame(enable);
+}
+
 export function SlidingSelection({ activeKey, as = "div", axis, children, className = "", ...attributes }: SlidingSelectionProps): ReactElement {
   const ref = useRef<HTMLElement>(null);
   const hasPositionRef = useRef(false);
+  const transitionsEnabledRef = useRef(false);
 
   useSelectionLayoutEffect(() => {
     const element = ref.current;
@@ -50,11 +63,12 @@ export function SlidingSelection({ activeKey, as = "div", axis, children, classN
       hasPositionRef.current = true;
     };
     const sync = (): void => {
-      if (!hasPositionRef.current) {
-        transitionFrame = scheduleSelectionLayout(false, transitionFrame, applyLayout, requestAnimationFrame, cancelAnimationFrame, () => {
-          if (hasPositionRef.current) {
-            element.style.setProperty("--ui-sliding-selection-duration", "420ms");
-          }
+      if (!hasPositionRef.current || !transitionsEnabledRef.current) {
+        applyLayout();
+        transitionFrame = scheduleSelectionTransitions(transitionsEnabledRef.current, transitionFrame, () => {
+          if (!hasPositionRef.current) return;
+          transitionsEnabledRef.current = true;
+          element.style.setProperty("--ui-sliding-selection-duration", "420ms");
         });
         return;
       }

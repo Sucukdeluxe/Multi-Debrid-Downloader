@@ -486,6 +486,16 @@ describe("downloads view", () => {
     expect(html.match(/data-sliding-selection-active="true"/g)).toHaveLength(1);
   });
 
+  it("disables the service filter until more than one concrete service is available", () => {
+    const none = renderToStaticMarkup(<DownloadsSidebar actions={createActions()} model={withRuntime(createInput(), { providerOptions: [] })} />);
+    const one = renderToStaticMarkup(<DownloadsSidebar actions={createActions()} model={withRuntime(createInput(), { providerOptions: [{ id: "rapidgator", label: "RapidGator" }] })} />);
+    const multiple = renderToStaticMarkup(<DownloadsSidebar actions={createActions()} model={withRuntime(createInput(), { providerOptions: [{ id: "rapidgator", label: "RapidGator" }, { id: "ddownload", label: "DDownload" }] })} />);
+
+    expect(none).toMatch(/<select[^>]*aria-label="Service filtern"[^>]*disabled=""/);
+    expect(one).toMatch(/<select[^>]*aria-label="Service filtern"[^>]*disabled=""/);
+    expect(multiple).not.toMatch(/<select[^>]*aria-label="Service filtern"[^>]*disabled=""/);
+  });
+
   it("shows only the package mode while the file mode remains hidden", () => {
     const html = renderToStaticMarkup(<DownloadsSidebar actions={createActions()} model={withRuntime(createInput())} />);
     const css = fs.readFileSync(path.join(process.cwd(), "src/renderer/views/downloads/downloads.css"), "utf8");
