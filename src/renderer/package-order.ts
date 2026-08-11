@@ -1,13 +1,4 @@
-import type { DownloadItem, DownloadStatus, PackageEntry } from "../shared/types";
-
-const ACTIVE_PACKAGE_STATUSES = new Set<DownloadStatus>(["downloading", "validating", "integrity_check", "extracting"]);
-
-function isPackageActive(pkg: PackageEntry, itemsById: Record<string, DownloadItem>): boolean {
-  return pkg.itemIds.some((id) => {
-    const item = itemsById[id];
-    return item != null && ACTIVE_PACKAGE_STATUSES.has(item.status);
-  });
-}
+import type { PackageEntry } from "../shared/types";
 
 export function reorderPackageOrderByDrop(order: string[], draggedPackageId: string, targetPackageId: string): string[] {
   const fromIndex = order.indexOf(draggedPackageId);
@@ -33,36 +24,6 @@ export function sortPackageOrderByName(order: string[], packages: Record<string,
   return sorted;
 }
 
-export function sortPackagesForDisplay(
-  packages: PackageEntry[],
-  itemsById: Record<string, DownloadItem>,
-  running: boolean,
-  autoSortPackagesByProgress: boolean
-): PackageEntry[] {
-  if (!running || !autoSortPackagesByProgress || packages.length <= 1) {
-    return packages;
-  }
-
-  const active = packages
-    .map((pkg, index) => ({ pkg, index }))
-    .filter(({ pkg }) => isPackageActive(pkg, itemsById))
-    .sort((left, right) => {
-      const leftStartedAt = left.pkg.downloadStartedAt || 0;
-      const rightStartedAt = right.pkg.downloadStartedAt || 0;
-      if (leftStartedAt > 0 && rightStartedAt > 0 && leftStartedAt !== rightStartedAt) {
-        return leftStartedAt - rightStartedAt;
-      }
-      if (leftStartedAt > 0 && rightStartedAt <= 0) return -1;
-      if (leftStartedAt <= 0 && rightStartedAt > 0) return 1;
-      return left.index - right.index;
-    })
-    .map(({ pkg }) => pkg);
-  const activeSet = new Set(active.map((pkg) => pkg.id));
-  const rest = packages.filter((pkg) => !activeSet.has(pkg.id));
-
-  if (active.length === 0) {
-    return packages;
-  }
-
-  return [...active, ...rest];
+export function preservePackageOrderForDisplay(packages: PackageEntry[]): PackageEntry[] {
+  return packages;
 }

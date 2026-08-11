@@ -118,7 +118,7 @@ export function DownloadsToolbar({ actions, model }: { actions: DownloadsViewAct
   const onePackage = model.actionableSelectedPackageIds.length === 1 && model.actionableSelectedIds.length === 1;
   return (
     <div className="downloads-toolbar" data-visual-region="downloads-toolbar">
-      <button disabled={model.actionBusy || (!model.canStart && !model.paused)} onClick={actions.onStartDownloads} type="button">Start</button>
+      <button disabled={model.actionBusy || !model.canStart} onClick={actions.onStartDownloads} type="button">Start</button>
       <button disabled={!model.canPause || model.paused} onClick={actions.onPauseDownloads} type="button">Pause</button>
       <button disabled={!model.canStop || model.actionBusy} onClick={actions.onStopDownloads} type="button">Stop</button>
       {model.scheduleActive

@@ -6,7 +6,7 @@ import crypto from "node:crypto";
 import { EventEmitter, once } from "node:events";
 import AdmZip from "adm-zip";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DownloadManager, buildAutoRenameBaseNameFromFoldersWithOptions, extractArchiveNameFromExtractorLogMessage, getAuthoritativeRealDebridTotal, resolveArchiveItemsFromList, runWithLimitedConcurrency } from "../src/main/download-manager";
+import { DownloadManager, buildAutoRenameBaseNameFromFoldersWithOptions, extractArchiveNameFromExtractorLogMessage, getAuthoritativeRealDebridTotal, getDiskWriteWaitReason, resolveArchiveItemsFromList, runWithLimitedConcurrency } from "../src/main/download-manager";
 import { planDownloadCompletion, validateDownloadedFileCompletion } from "../src/main/download-completion";
 import { defaultSettings } from "../src/main/constants";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
@@ -39,6 +39,235 @@ describe("runWithLimitedConcurrency", () => {
 
     expect(peak).toBe(3);
     expect(completed.sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+});
+
+describe("disk write recovery", () => {
+  it("classifies retryable disk write stalls without treating permission errors as temporary", () => {
+    expect(getDiskWriteWaitReason(Object.assign(new Error("write ENOSPC"), { code: "ENOSPC" }))).toMatch(/Festplatte voll/);
+    expect(getDiskWriteWaitReason(new Error("write_drain_timeout"))).toMatch(/Festplatte/);
+    expect(getDiskWriteWaitReason(Object.assign(new Error("write EACCES"), { code: "EACCES" }))).toBeNull();
+  });
+
+  it("parks a disk-full download for automatic retry without consuming its retry budget", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-disk-recovery-"));
+    tempDirs.push(root);
+    const session = emptySession();
+    const packageId = "disk-recovery-package";
+    const itemId = "disk-recovery-item";
+    const outputDir = path.join(root, "downloads", "disk-recovery");
+    const extractDir = path.join(root, "extract", "disk-recovery");
+    const createdAt = Date.now();
+    session.running = true;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "disk-recovery",
+      outputDir,
+      extractDir,
+      status: "downloading",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://rapidgator.net/file/disk-recovery",
+      provider: "realdebrid",
+      status: "downloading",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 0,
+      totalBytes: 1024,
+      progressPercent: 0,
+      fileName: "disk-recovery.bin",
+      targetPath: "",
+      resumable: true,
+      attempts: 0,
+      lastError: "",
+      fullStatus: "Download läuft",
+      createdAt,
+      updatedAt: createdAt
+    };
+    const manager = new DownloadManager(
+      { ...defaultSettings(), token: "rd-token", outputDir: path.join(root, "downloads"), extractDir: path.join(root, "extract"), autoExtract: false },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+    const active = { itemId, packageId, abortController: new AbortController(), abortReason: "none", resumable: true, nonResumableCounted: false, blockedOnDiskWrite: false, blockedOnDiskSince: 0 };
+    (manager as any).activeTasks.set(itemId, active);
+    (manager as any).debridService.unrestrictLink = async () => ({
+      fileName: "disk-recovery.bin",
+      directUrl: "https://dummy/disk-recovery",
+      fileSize: 1024,
+      retriesUsed: 0,
+      provider: "realdebrid",
+      providerLabel: "Real-Debrid"
+    });
+    (manager as any).downloadToFile = async () => {
+      throw Object.assign(new Error("write ENOSPC"), { code: "ENOSPC" });
+    };
+
+    const before = Date.now();
+    await (manager as any).processItem(active);
+
+    expect(session.items[itemId]).toEqual(expect.objectContaining({
+      status: "queued",
+      retries: 0,
+      speedBps: 0,
+      fullStatus: "Warte auf Festplatte"
+    }));
+    expect((manager as any).retryAfterByItem.get(itemId)).toBeGreaterThan(before);
+    expect(session.packages[packageId].status).toBe("queued");
+  });
+
+  it("marks a fully downloaded package as failed when post-processing failed", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-status-"));
+    tempDirs.push(root);
+    const session = emptySession();
+    const packageId = "extract-status-package";
+    const itemId = "extract-status-item";
+    const createdAt = Date.now();
+    const outputDir = path.join(root, "downloads");
+    const targetPath = path.join(outputDir, "extract-status.part1.rar");
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.writeFileSync(targetPath, Buffer.alloc(1024, 1));
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "extract-status",
+      outputDir,
+      extractDir: path.join(root, "extract"),
+      status: "completed",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://rapidgator.net/file/extract-status",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 1024,
+      totalBytes: 1024,
+      progressPercent: 100,
+      fileName: "extract-status.part1.rar",
+      targetPath,
+      resumable: true,
+      attempts: 1,
+      lastError: "Kein Speicherplatz",
+      fullStatus: "Entpack-Fehler [extract-status.part1.rar]: Kein Speicherplatz",
+      createdAt,
+      updatedAt: createdAt
+    };
+    const manager = new DownloadManager(defaultSettings(), session, createStoragePaths(path.join(root, "state")));
+
+    (manager as any).refreshPackageStatus(session.packages[packageId]);
+
+    expect(session.packages[packageId].status).toBe("failed");
+  });
+});
+
+describe("download start account gate", () => {
+  it("disables every start path when no usable account is active", async () => {
+    const createManager = () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-start-account-gate-"));
+      tempDirs.push(root);
+      const manager = new DownloadManager(
+        { ...defaultSettings(), outputDir: path.join(root, "downloads"), extractDir: path.join(root, "extract") },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+      manager.addPackages([{ name: "account-gate", links: ["https://rapidgator.net/file/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] }]);
+      const snapshot = manager.getSnapshot();
+      const packageId = snapshot.session.packageOrder[0];
+      const itemId = snapshot.session.packages[packageId].itemIds[0];
+      return { manager, packageId, itemId };
+    };
+
+    const starts = [
+      ({ manager }: ReturnType<typeof createManager>) => manager.start(),
+      ({ manager, packageId }: ReturnType<typeof createManager>) => manager.startPackages([packageId]),
+      ({ manager, itemId }: ReturnType<typeof createManager>) => manager.startItems([itemId])
+    ];
+
+    for (const start of starts) {
+      const context = createManager();
+      expect(context.manager.getSnapshot().canStart).toBe(false);
+      try {
+        await expect(start(context)).rejects.toThrow("Kein aktiver Download-Account verfügbar");
+        expect(context.manager.getSnapshot().session.running).toBe(false);
+      } finally {
+        context.manager.stop();
+      }
+    }
+  });
+
+  it("treats disabled providers and disabled Mega-Debrid accounts as unavailable", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-disabled-account-gate-"));
+    tempDirs.push(root);
+    const megaLogin = "disabled@example.test";
+    const disabledMegaId = getMegaDebridAccountId(megaLogin);
+    const disabledProviderManager = new DownloadManager(
+      { ...defaultSettings(), token: "rd-token", disabledProviders: ["realdebrid"] },
+      emptySession(),
+      createStoragePaths(path.join(root, "provider"))
+    );
+    const disabledMegaManager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        megaDebridApiCredentials: `${megaLogin}:secret`,
+        megaDebridApiEnabled: true,
+        megaDebridApiDisabledAccountIds: [disabledMegaId],
+        providerOrder: ["megadebrid-api"]
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "mega"))
+    );
+
+    expect(disabledProviderManager.getSnapshot().canStart).toBe(false);
+    expect(disabledMegaManager.getSnapshot().canStart).toBe(false);
+  });
+
+  it("allows start when an active account is available", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-active-account-gate-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager(
+      { ...defaultSettings(), token: "rd-token" },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    expect(manager.getSnapshot().canStart).toBe(true);
+
+    manager.setSettings({ ...defaultSettings(), outputDir: manager.getSettings().outputDir });
+
+    expect(manager.getSnapshot().canStart).toBe(false);
+  });
+
+  it("blocks resume when the last active account is unavailable", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-resume-account-gate-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager(
+      defaultSettings(),
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+    const session = (manager as any).session;
+    session.running = true;
+    session.paused = true;
+
+    expect(manager.getSnapshot().canStart).toBe(false);
+    expect(() => manager.togglePause()).toThrow("Kein aktiver Download-Account verfügbar");
+    expect(manager.getSnapshot().session.paused).toBe(true);
   });
 });
 
@@ -2762,7 +2991,7 @@ describe("download manager", () => {
     await manager.stop();
   });
 
-  it("fails fast when Debrid-Link has no active api key left", async () => {
+  it("blocks start when Debrid-Link has no active api key left", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
     const keys = parseDebridLinkApiKeys("dl-key-one\ndl-key-two");
@@ -2796,18 +3025,13 @@ describe("download manager", () => {
     );
 
     manager.addPackages([{ name: "debridlink-no-key", links: ["https://rapidgator.net/file/no-active-key.part1.rar.html"] }]);
-    await manager.start();
-    await waitFor(() => {
-      const item = Object.values(manager.getSnapshot().session.items)[0];
-      return Boolean(item && item.status === "failed");
-    }, 12000);
+    expect(manager.getSnapshot().canStart).toBe(false);
+    await expect(manager.start()).rejects.toThrow("Kein aktiver Download-Account verfügbar");
 
     const item = Object.values(manager.getSnapshot().session.items)[0];
-    expect(item?.status).toBe("failed");
-    expect(item?.fullStatus || "").toContain("Debrid-Link");
+    expect(manager.getSnapshot().session.running).toBe(false);
+    expect(item?.status).toBe("queued");
     expect(item?.retries).toBe(0);
-
-    await manager.stop();
   });
 
   it("recovers from repeated resume underflow by restarting from zero", async () => {
@@ -12582,7 +12806,7 @@ describe("download manager", () => {
     expect(internal.settings.debridLinkApiKeyTotalUsageBytes[secondKey.id]).toBe(2048);
   });
 
-  it("does not hang when rapid stop, disable provider, start", async () => {
+  it("does not hang when rapid stop is followed by disabling the last provider", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
     const binary = Buffer.alloc(256 * 1024, 7);
@@ -12665,10 +12889,13 @@ describe("download manager", () => {
         disabledProviders: ["realdebrid"]
       });
 
-      const startPromise = manager.start();
       const timeout = new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 8000));
-      const result = await Promise.race([startPromise.then(() => "ok" as const), timeout]);
-      expect(result).toBe("ok");
+      const result = await Promise.race([
+        manager.start().then(() => "started" as const, (error) => String(error)),
+        timeout
+      ]);
+      expect(result).toContain("Kein aktiver Download-Account verfügbar");
+      expect(manager.getSnapshot().session.running).toBe(false);
     } finally {
       server.close();
       await once(server, "close");

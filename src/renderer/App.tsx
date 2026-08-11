@@ -36,7 +36,7 @@ import {
   getProviderDailyUsageBytes,
   getProviderUsageDayKey
 } from "../shared/provider-daily-limits";
-import { sortPackageOrderByName, sortPackagesForDisplay } from "./package-order";
+import { preservePackageOrderForDisplay, sortPackageOrderByName } from "./package-order";
 import { pruneSelection, shouldClearDownloadSelection, shouldClearDownloadSelectionOnEscape } from "./selection";
 import { buildBulkAccountEnabledState, buildConfiguredProviderOrder, getAccountDialogSelectableOptions, matchesAccountModeFilter, pruneAccountRowSelection, resolveAccountUsername, resolveVisibleAccountKind } from "./account-ui";
 import type { AccountModeFilter } from "./account-ui";
@@ -1100,7 +1100,7 @@ const emptySnapshot = (): UiSnapshot => ({
     autoReconnect: false, reconnectWaitSeconds: 45, completedCleanupPolicy: "never",
     maxParallel: 4, maxParallelExtract: 2, extractCpuPriority: "high", retryLimit: 0, speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
     updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, minimizeToTray: false,
-    theme: "dark", collapseNewPackages: true, historyRetentionMode: "permanent", historyMaxEntries: 500, historyMaxAgeDays: 0, autoSortPackagesByProgress: true, autoSkipExtracted: false, hideExtractedItems: true, confirmDeleteSelection: true, backupIncludeDownloads: false, backupIncludeRemoteDiagnostics: false,
+    theme: "dark", collapseNewPackages: true, historyRetentionMode: "permanent", historyMaxEntries: 500, historyMaxAgeDays: 0, autoSortPackagesByProgress: false, autoSkipExtracted: false, hideExtractedItems: true, confirmDeleteSelection: true, backupIncludeDownloads: false, backupIncludeRemoteDiagnostics: false,
     notifyUrl: "", notifyMention: "", notifyOnPackageCompleted: false, notifyOnPackageFailed: false, notifyOnRunFinished: false,
     accountListShowDetailedDebridLinkKeys: false,
     bandwidthSchedules: [], totalDownloadedAllTime: 0, totalCompletedFilesAllTime: 0, totalRuntimeAllTimeMs: 0,
@@ -1131,7 +1131,7 @@ const emptySnapshot = (): UiSnapshot => ({
     paused: false, running: false, updatedAt: Date.now()
   },
   summary: null, stats: emptyStats(), speedText: "Geschwindigkeit: 0 B/s", etaText: "ETA: --",
-  canStart: true, canStop: false, canPause: false, clipboardActive: false, reconnectSeconds: 0, packageSpeedBps: {}
+  canStart: false, canStop: false, canPause: false, clipboardActive: false, reconnectSeconds: 0, packageSpeedBps: {}
 });
 
 const cleanupLabels: Record<string, string> = {
@@ -2340,20 +2340,9 @@ export function App(): ReactElement {
     setSelectedIds((prev) => pruneSelection(prev, snapshot.session));
   }, [snapshot.session.packages, snapshot.session.items]);
 
-  const sortRelevantItems = (snapshot.session.running && settingsDraft.autoSortPackagesByProgress && packages.length > 1)
-    ? snapshot.session.items
-    : null;
   const visiblePackages = useMemo(() => {
-    if (!sortRelevantItems) {
-      return packages;
-    }
-    return sortPackagesForDisplay(
-      packages,
-      sortRelevantItems,
-      true,
-      true
-    );
-  }, [packages, sortRelevantItems]);
+    return preservePackageOrderForDisplay(packages);
+  }, [packages]);
 
   const downloadsViewCore = useMemo(() => buildDownloadsViewModel({
     packageOrder: visiblePackages.map((entry) => entry.id),

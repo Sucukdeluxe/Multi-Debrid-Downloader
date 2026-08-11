@@ -636,7 +636,7 @@ describe("downloads view", () => {
     expect(renderToStaticMarkup(toolbar)).not.toContain("Reconnect");
   });
 
-  it("keeps start available for resume and pause independent from unrelated action busy state", () => {
+  it("blocks resume without a usable account and keeps pause independent from unrelated action busy state", () => {
     const pausedToolbar = DownloadsToolbar({
       actions: createActions(),
       model: withRuntime(createInput(), { paused: true, canStart: false, canPause: true })
@@ -646,7 +646,7 @@ describe("downloads view", () => {
       model: withRuntime(createInput(), { paused: false, canPause: true, actionBusy: true })
     });
 
-    expect(findButton(pausedToolbar, "Start").props.disabled).toBe(false);
+    expect(findButton(pausedToolbar, "Start").props.disabled).toBe(true);
     expect(findButton(pausedToolbar, "Pause").props.disabled).toBe(true);
     expect(findButton(busyToolbar, "Pause").props.disabled).toBe(false);
   });
@@ -1256,6 +1256,65 @@ describe("download table row contracts", () => {
     expect(html.match(/>Entpack-Fehler<\/span>/g)).toHaveLength(2);
     expect(html).toContain('title="Entpack-Fehler [release.part1.rar]: Unerwartetes Dateiende');
     expect(html).toContain('Mega-Debrid API: Kein Server verfügbar');
+  });
+
+  it("removes redundant service suffixes from runtime statuses", () => {
+    expect(compactDownloadStatus("Starte... (Mega-Debrid Web)")).toBe("Starte...");
+    expect(compactDownloadStatus("Warte auf Daten (Mega-Debrid Web)")).toBe("Warte auf Daten");
+    expect(compactDownloadStatus("Warte auf Festplatte (Mega-Debrid Web)")).toBe("Warte auf Festplatte");
+  });
+
+  it("prioritizes disk waits and extraction errors in package status", () => {
+    const diskPackage = pkg("disk-package", "Disk package", ["disk-item", "active-item"]);
+    const diskHtml = renderToStaticMarkup(PackageCardContent({
+      actions: createActions(),
+      columnOrder: ["status"],
+      editing: false,
+      editingName: "",
+      gridTemplate: "220px",
+      packageSpeedBps: 1_000,
+      row: {
+        package: diskPackage,
+        items: [
+          item("disk-item", diskPackage.id, "downloading", { fullStatus: "Warte auf Festplatte (Mega-Debrid Web)" }),
+          item("active-item", diskPackage.id, "downloading", { fullStatus: "Download läuft (Mega-Debrid Web)" })
+        ],
+        allItems: [
+          item("disk-item", diskPackage.id, "downloading", { fullStatus: "Warte auf Festplatte (Mega-Debrid Web)" }),
+          item("active-item", diskPackage.id, "downloading", { fullStatus: "Download läuft (Mega-Debrid Web)" })
+        ],
+        collapsed: true
+      },
+      selectedIds: new Set<string>(),
+      selectedVersion: 0
+    }));
+    expect(diskHtml).toMatch(/>Warte auf Festplatte<\/span>/);
+
+    const errorPackage = { ...pkg("error-package", "Error package", ["error-a", "error-b"]), status: "completed" as const };
+    const errorHtml = renderToStaticMarkup(PackageCardContent({
+      actions: createActions(),
+      columnOrder: ["status"],
+      editing: false,
+      editingName: "",
+      gridTemplate: "220px",
+      packageSpeedBps: 0,
+      row: {
+        package: errorPackage,
+        items: [
+          item("error-a", errorPackage.id, "completed", { fullStatus: "Entpack-Fehler [release.part1.rar]: Kein Speicherplatz" }),
+          item("error-b", errorPackage.id, "completed", { fullStatus: "Entpackt - Done" })
+        ],
+        allItems: [
+          item("error-a", errorPackage.id, "completed", { fullStatus: "Entpack-Fehler [release.part1.rar]: Kein Speicherplatz" }),
+          item("error-b", errorPackage.id, "completed", { fullStatus: "Entpackt - Done" })
+        ],
+        collapsed: true
+      },
+      selectedIds: new Set<string>(),
+      selectedVersion: 0
+    }));
+    expect(errorHtml).toMatch(/>Entpack-Fehler<\/span>/);
+    expect(errorHtml).not.toMatch(/>2\/2<\/span>/);
   });
 
   it("shows only the operation in an actively downloading package status", () => {

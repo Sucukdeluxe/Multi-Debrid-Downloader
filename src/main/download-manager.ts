@@ -88,6 +88,18 @@ type ActiveTask = {
   blockedOnDiskSince?: number;
 };
 
+const DOWNLOAD_ACCOUNT_PROVIDERS: readonly DebridProvider[] = [
+  "realdebrid",
+  "megadebrid-api",
+  "megadebrid-web",
+  "bestdebrid",
+  "alldebrid",
+  "ddownload",
+  "onefichier",
+  "debridlink",
+  "linksnappy"
+];
+
 type PackageItemDiskState = {
   diskPath: string | null;
   exists: boolean;
@@ -1700,6 +1712,19 @@ function retryDelayWithJitter(attempt: number, baseMs: number): number {
   return Math.floor(jitter);
 }
 
+export function getDiskWriteWaitReason(error: unknown): string | null {
+  const text = compactErrorText(error).replace(/^Error:\s*/i, "");
+  const marked = text.match(/^disk_write_wait:(.+)$/i);
+  if (marked?.[1]) {
+    return marked[1].trim();
+  }
+  if (/write_drain_timeout/i.test(text)) {
+    return "Festplatte reagiert nicht auf Schreibzugriffe";
+  }
+  const reason = classifyDiskError(error);
+  return reason && /\((?:ENOSPC|EDQUOT|EBUSY)\)/.test(reason) ? reason : null;
+}
+
 export async function runWithLimitedConcurrency<T>(items: readonly T[], concurrency: number, worker: (item: T) => Promise<void>): Promise<void> {
   const workerCount = Math.min(items.length, Math.max(1, Math.floor(concurrency)));
   let nextIndex = 0;
@@ -2485,7 +2510,7 @@ export class DownloadManager extends EventEmitter {
       stats: this.getStats(now),
       speedText: `Geschwindigkeit: ${humanSize(Math.max(0, Math.floor(speedBps)))}/s`,
       etaText: paused || !this.session.running ? "ETA: --" : `ETA: ${formatEta(eta)}`,
-      canStart: !this.session.running,
+      canStart: (!this.session.running || paused) && this.hasUsableDownloadAccount(),
       canStop: this.session.running,
       canPause: this.session.running,
       clipboardActive: this.settings.clipboardWatch,
@@ -5522,6 +5547,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   public async startPackages(packageIds: string[]): Promise<void> {
+    this.ensureUsableDownloadAccount();
     const targetSet = new Set(packageIds);
 
     for (const pkgId of targetSet) {
@@ -5616,6 +5642,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   public async startItems(itemIds: string[]): Promise<void> {
+    this.ensureUsableDownloadAccount();
     const targetSet = new Set(itemIds);
 
     const affectedPackageIds = new Set<string>();
@@ -5724,6 +5751,7 @@ export class DownloadManager extends EventEmitter {
     if (this.session.running) {
       return;
     }
+    this.ensureUsableDownloadAccount();
     this.schedulerGeneration += 1;
 
     this.session.running = true;
@@ -6027,6 +6055,9 @@ export class DownloadManager extends EventEmitter {
       return false;
     }
     const wasPaused = this.session.paused;
+    if (wasPaused) {
+      this.ensureUsableDownloadAccount();
+    }
     this.session.paused = !this.session.paused;
 
     if (!wasPaused && this.session.paused) {
@@ -8081,11 +8112,11 @@ export class DownloadManager extends EventEmitter {
       return Boolean(this.settings.realDebridUseWebLogin || this.settings.token.trim());
     }
     if (effectiveProvider === "megadebrid-api") {
-      const hasMegaCreds = getMegaDebridAccountsForMode(this.settings, "api").length > 0;
+      const hasMegaCreds = getAvailableMegaDebridAccounts(this.settings, "api").length > 0;
       return Boolean(hasMegaCreds && (resolveMegaDebridProvider(this.settings, "megadebrid") === "megadebrid-api" || this.settings.megaDebridApiEnabled));
     }
     if (effectiveProvider === "megadebrid-web") {
-      const hasMegaCreds = getMegaDebridAccountsForMode(this.settings, "web").length > 0;
+      const hasMegaCreds = getAvailableMegaDebridAccounts(this.settings, "web").length > 0;
       return Boolean(hasMegaCreds && (resolveMegaDebridProvider(this.settings, "megadebrid") === "megadebrid-web" || this.settings.megaDebridWebEnabled));
     }
     if (effectiveProvider === "bestdebrid") {
@@ -8108,6 +8139,16 @@ export class DownloadManager extends EventEmitter {
       return Boolean(this.settings.linkSnappyLogin.trim() && this.settings.linkSnappyPassword.trim());
     }
     return false;
+  }
+
+  private hasUsableDownloadAccount(): boolean {
+    return DOWNLOAD_ACCOUNT_PROVIDERS.some((provider) => this.isProviderConfigured(provider));
+  }
+
+  private ensureUsableDownloadAccount(): void {
+    if (!this.hasUsableDownloadAccount()) {
+      throw new Error("Kein aktiver Download-Account verfügbar");
+    }
   }
 
   private getProviderOrder(): DebridProvider[] {
@@ -9180,8 +9221,7 @@ export class DownloadManager extends EventEmitter {
         item.totalBytes = mergeKnownTotalBytes(item.totalBytes, unrestricted.fileSize);
         item.status = "downloading";
         const pLabel = unrestricted.providerLabel;
-        const statusLabel = providerLabel(unrestricted.provider) || pLabel;
-        item.fullStatus = `Starte... (${statusLabel})`;
+        item.fullStatus = "Starte...";
         item.updatedAt = nowMs();
         this.emitState();
         logger.info(`Download Start: ${item.fileName} (${humanSize(unrestricted.fileSize || 0)}) via ${pLabel}, pkg=${pkg.name}`);
@@ -9211,7 +9251,7 @@ export class DownloadManager extends EventEmitter {
           });
           if (item.status !== "downloading") {
             item.status = "downloading";
-            item.fullStatus = `Download läuft (${statusLabel})`;
+            item.fullStatus = "Download läuft";
             item.updatedAt = nowMs();
             this.emitState();
           }
@@ -9512,6 +9552,14 @@ export class DownloadManager extends EventEmitter {
         } else {
           const errorText = compactErrorText(error);
           if (this.tryFinalizeItemFromDisk(pkg, item, "Error-Recovery", errorText)) {
+            return;
+          }
+          const diskWaitReason = getDiskWriteWaitReason(error);
+          if (diskWaitReason) {
+            this.queueRetry(item, active, 2000, "Warte auf Festplatte");
+            item.lastError = diskWaitReason;
+            this.persistSoon();
+            this.emitState();
             return;
           }
           this.logPackageForItem(item, "WARN", "Download-Fehlerpfad erreicht", {
@@ -9888,9 +9936,8 @@ export class DownloadManager extends EventEmitter {
     targetPath: string,
     knownTotal: number | null,
     skipTlsVerify?: boolean,
-    pLabel?: string
+    _pLabel?: string
   ): Promise<{ resumable: boolean }> {
-    const label = providerLabel(this.session.items[active.itemId]?.provider) || pLabel || "Debrid";
     const item = this.session.items[active.itemId];
     if (!item) {
       throw new Error("Download-Item fehlt");
@@ -10347,7 +10394,7 @@ export class DownloadManager extends EventEmitter {
               if (diskBusyStatusVisible(nowTick) && nowTick - lastDiskBusyEmitAt >= 1200) {
                 item.status = "downloading";
                 item.speedBps = 0;
-                item.fullStatus = `Warte auf Festplatte (${label})`;
+                item.fullStatus = "Warte auf Festplatte";
                 item.updatedAt = nowTick;
                 this.emitState();
                 lastDiskBusyEmitAt = nowTick;
@@ -10457,7 +10504,7 @@ export class DownloadManager extends EventEmitter {
               if (diskBusyStatusVisible(nowTick) && nowTick - lastIdleEmitAt >= idlePulseMs) {
                 item.status = "downloading";
                 item.speedBps = 0;
-                item.fullStatus = `Warte auf Festplatte (${label})`;
+                item.fullStatus = "Warte auf Festplatte";
                 item.updatedAt = nowTick;
                 this.emitState();
                 lastIdleEmitAt = nowTick;
@@ -10473,7 +10520,7 @@ export class DownloadManager extends EventEmitter {
             }
             item.status = "downloading";
             item.speedBps = 0;
-            item.fullStatus = `Warte auf Daten (${label})`;
+            item.fullStatus = "Warte auf Daten";
             if (nowTick - lastIdleEmitAt >= idlePulseMs) {
               item.updatedAt = nowTick;
               this.emitState();
@@ -10579,7 +10626,7 @@ export class DownloadManager extends EventEmitter {
                   if (nowTick - lastDiskBusyEmitAt >= 1200) {
                     item.status = "downloading";
                     item.speedBps = 0;
-                    item.fullStatus = `Warte auf Festplatte (${label})`;
+                    item.fullStatus = "Warte auf Festplatte";
                     item.updatedAt = nowTick;
                     this.emitState();
                     lastDiskBusyEmitAt = nowTick;
@@ -10631,10 +10678,10 @@ export class DownloadManager extends EventEmitter {
               const diskBusy = diskBusyStatusVisible(nowMs());
               if (diskBusy) {
                 item.speedBps = 0;
-                item.fullStatus = `Warte auf Festplatte (${label})`;
+                item.fullStatus = "Warte auf Festplatte";
               } else {
                 item.speedBps = Math.max(0, Math.floor(speed));
-                item.fullStatus = `Download läuft (${label})`;
+                item.fullStatus = "Download läuft";
               }
               const progressNow = nowMs();
               const currentPercent = item.totalBytes ? Math.max(0, Math.min(100, Math.floor((written / item.totalBytes) * 100))) : 0;
@@ -10856,6 +10903,10 @@ export class DownloadManager extends EventEmitter {
           // Surface the concrete OS cause (disk full, permission, ...) prominently
           // instead of leaving only a generic write/stream error in the log.
           logger.error(`Schreibfehler beim Download: ${diskCause} - ${item.fileName} (ziel=${effectiveTargetPath})`);
+        }
+        const diskWaitReason = getDiskWriteWaitReason(error);
+        if (diskWaitReason) {
+          throw new Error(`disk_write_wait:${diskWaitReason}`);
         }
         if (
           normalizedLastError.startsWith("range_ignored_on_resume:")
@@ -11111,6 +11162,7 @@ export class DownloadManager extends EventEmitter {
     let success = 0;
     let failed = 0;
     let cancelled = 0;
+    let extractFailed = 0;
     let total = 0;
     for (const itemId of pkg.itemIds) {
       const item = this.session.items[itemId];
@@ -11121,6 +11173,9 @@ export class DownloadManager extends EventEmitter {
       const s = item.status;
       if (s === "completed") {
         success += 1;
+        if (isExtractErrorLabel(item.fullStatus || "")) {
+          extractFailed += 1;
+        }
       } else if (s === "failed") {
         failed += 1;
       } else if (s === "cancelled") {
@@ -11140,7 +11195,7 @@ export class DownloadManager extends EventEmitter {
     }
 
     const prevStatus = pkg.status;
-    if (failed > 0) {
+    if (failed > 0 || extractFailed > 0) {
       pkg.status = "failed";
     } else if (cancelled > 0) {
       pkg.status = success > 0 ? "completed" : "cancelled";
@@ -11154,7 +11209,7 @@ export class DownloadManager extends EventEmitter {
     // That includes mixed packages (success > 0): the dedup set prevents a
     // double-fire if post-processing does run later.
     if (pkg.status === "failed" && prevStatus !== "failed") {
-      this.notifyPackageOutcome(pkg, "failed", `${failed} von ${total} Datei(en) fehlgeschlagen`);
+      this.notifyPackageOutcome(pkg, "failed", `${failed + extractFailed} von ${total} Datei(en) fehlgeschlagen`);
       if (success > 0) {
         const items = pkg.itemIds.map((id) => this.session.items[id]).filter(Boolean) as DownloadItem[];
         this.recordPackageHistory(pkg.id, pkg, items);

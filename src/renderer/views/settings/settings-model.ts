@@ -507,7 +507,6 @@ export function buildSettingsFormViewModel({
         title: "Oberfläche und Bedienung",
         fields: [
           { id: "collapseNewPackages", kind: "switch", label: "Neue Pakete eingeklappt zeigen", value: settings.collapseNewPackages },
-          { id: "autoSortPackagesByProgress", kind: "switch", label: "Nach Fortschritt sortieren", value: settings.autoSortPackagesByProgress },
           { id: "minimizeToTray", kind: "switch", label: "In den Infobereich minimieren", value: settings.minimizeToTray },
           { id: "confirmDeleteSelection", kind: "switch", label: "Vor dem Löschen nachfragen", value: settings.confirmDeleteSelection },
           { id: "backupIncludeDownloads", kind: "switch", label: "Download-Liste mitsichern", value: settings.backupIncludeDownloads },

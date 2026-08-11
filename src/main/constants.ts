@@ -108,7 +108,7 @@ export function defaultSettings(): AppSettings {
     historyMaxEntries: 500,
     historyMaxAgeDays: 0,
     accountListShowDetailedDebridLinkKeys: false,
-    autoSortPackagesByProgress: true,
+    autoSortPackagesByProgress: false,
     autoSkipExtracted: false,
     hideExtractedItems: true,
     confirmDeleteSelection: true,

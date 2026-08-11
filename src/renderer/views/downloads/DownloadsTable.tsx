@@ -134,6 +134,8 @@ function progress(value: number): number {
 
 export function compactDownloadStatus(value: string): string {
   const status = value.trim();
+  const runtimeWait = status.match(/^(Starte\.\.\.|Starting\.\.\.|Warte auf Daten|Waiting for data|Warte auf Festplatte|Waiting for disk)(?:\s+\([^)]*\))?$/i);
+  if (runtimeWait) return runtimeWait[1];
   if (/Link wird umgewandelt/i.test(status)) return "Umwandeln";
   if (/Download läuft\b/i.test(status)) return "Download läuft";
   if (/Download running\b/i.test(status)) return "Download running";
@@ -448,12 +450,17 @@ function packageCell(row: DownloadPackageRow, column: string, packageSpeedBps: n
     const postProcessLabel = entry.status === "extracting" && /(?:^|[\\/])[^\\/]+\.(?:rar|zip|7z|tar|gz|bz2|xz)(?:\.\d+)?$/i.test(rawPostProcessLabel)
       ? "Entpacken - Ausstehend"
       : compactDownloadStatus(rawPostProcessLabel);
-    const details = `${stats.done}/${stats.total}${stats.failed > 0 ? ` · ${stats.failed} Fehler` : ""}${stats.cancelled > 0 ? ` · ${stats.cancelled} abgebrochen` : ""}${postProcessLabel ? ` · ${postProcessLabel}` : ""}${audio ? ` · ${audio.text}` : ""}`;
+    const extractFailure = row.allItems.find((item) => /^Entpack-Fehler\b/i.test(item.fullStatus || ""));
+    const waitsForDisk = row.allItems.some((item) => compactDownloadStatus(item.fullStatus || "") === "Warte auf Festplatte");
+    const details = `${stats.done}/${stats.total}${stats.failed > 0 ? ` · ${stats.failed} Fehler` : ""}${stats.cancelled > 0 ? ` · ${stats.cancelled} abgebrochen` : ""}${postProcessLabel ? ` · ${postProcessLabel}` : ""}${extractFailure ? " · Entpack-Fehler" : ""}${audio ? ` · ${audio.text}` : ""}`;
     const downloading = entry.status === "downloading" || entry.status === "validating" || row.items.some((item) => item.status === "downloading" || item.status === "validating");
     const status = postProcessLabel && (/Entpacken\s+\d+%/i.test(postProcessLabel) || entry.status === "extracting")
       ? postProcessLabel
-      : downloading ? "Download läuft" : details;
-    const title = audio?.tooltip ? `${details}\n${audio.tooltip}` : details;
+      : extractFailure ? "Entpack-Fehler"
+        : waitsForDisk ? "Warte auf Festplatte"
+          : downloading ? "Download läuft" : details;
+    const statusDetails = extractFailure ? `${details}\n${extractFailure.fullStatus}` : details;
+    const title = audio?.tooltip ? `${statusDetails}\n${audio.tooltip}` : statusDetails;
     return <DownloadStatusCell status={status} title={title} />;
   }
   if (column === "speed") return <span className="downloads-cell">{packageSpeedBps > 0 ? formatSpeedMbps(packageSpeedBps) : ""}</span>;

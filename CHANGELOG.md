@@ -2,6 +2,28 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.24] - 2026-08-11
+
+### Download queue
+
+- Kept every package in its existing visible queue position when downloads start, finish, pause, retry, or change status.
+- Removed status-driven package grouping and the obsolete automatic progress-sorting setting.
+- Blocked start, package start, item start, and resume actions when no active usable download account is available.
+- Kept the initial Start action disabled until the main process confirms that an eligible account is active.
+
+### Disk and extraction recovery
+
+- Added a dedicated disk-wait recovery path for full, quota-limited, temporarily busy, and stalled write targets.
+- Retried disk-blocked downloads automatically after storage becomes writable without consuming the normal download retry budget.
+- Prioritized `Waiting for disk` at package level when one or more files are blocked by storage.
+- Reported completed downloads with extraction failures as failed packages instead of showing a misleading completed file count.
+- Removed redundant provider names from start, download, data-wait, and disk-wait status labels while preserving diagnostic details.
+
+### Reliability and testing
+
+- Added regression coverage for unavailable and disabled accounts, resume protection, disk-write recovery, retry accounting, package-level disk waits, extraction failures, compact runtime statuses, and stable queue ordering.
+- Verified the complete client suite, TypeScript compilation, production build, release metadata, archive contents, and application self-check.
+
 ## [2.0.23] - 2026-08-11
 
 ### Update experience
