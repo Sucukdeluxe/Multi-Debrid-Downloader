@@ -71,6 +71,7 @@ import { logDesktopRename, verifyRename, verifyRenameAsync, type RenameVerificat
 import { StoragePaths, saveSession, saveSessionAsync, saveSettings, saveSettingsAsync } from "./storage";
 import { compactErrorText, ensureDirPath, filenameFromUrl, formatEta, humanSize, looksLikeOpaqueFilename, nowMs, sanitizeFilename, sleep } from "./utils";
 import { mergeKnownTotalBytes } from "./download-size";
+import { createRendererState } from "./renderer-state";
 
 type ActiveTask = {
   itemId: string;
@@ -404,19 +405,6 @@ function cloneSession(session: SessionState): SessionState {
     packageOrder: [...session.packageOrder],
     packages: { ...session.packages },
     items: { ...session.items }
-  };
-}
-
-function cloneSettings(settings: AppSettings): AppSettings {
-  return {
-    ...settings,
-    bandwidthSchedules: (settings.bandwidthSchedules || []).map((entry) => ({ ...entry })),
-    providerDailyLimitBytes: { ...(settings.providerDailyLimitBytes || {}) },
-    providerDailyUsageBytes: { ...(settings.providerDailyUsageBytes || {}) },
-    providerTotalUsageBytes: { ...(settings.providerTotalUsageBytes || {}) },
-    debridLinkApiKeyDailyLimitBytes: { ...(settings.debridLinkApiKeyDailyLimitBytes || {}) },
-    debridLinkApiKeyDailyUsageBytes: { ...(settings.debridLinkApiKeyDailyUsageBytes || {}) },
-    debridLinkApiKeyTotalUsageBytes: { ...(settings.debridLinkApiKeyTotalUsageBytes || {}) }
   };
 }
 
@@ -1782,7 +1770,7 @@ export class DownloadManager extends EventEmitter {
 
   private statsCacheAt = 0;
 
-  private settingsSnapshotCache: AppSettings | null = null;
+  private settingsSnapshotCache: ReturnType<typeof createRendererState> | null = null;
   private settingsSnapshotCacheAt = 0;
   private invalidateSettingsSnapshotCache(): void {
     this.settingsSnapshotCache = null;
@@ -2490,12 +2478,12 @@ export class DownloadManager extends EventEmitter {
     const reconnectMs = Math.max(0, this.session.reconnectUntil - now);
 
     const snapshotSession = cloneSession(this.session);
-    let snapshotSettings: AppSettings;
+    let rendererState: ReturnType<typeof createRendererState>;
     if (this.settingsSnapshotCache && now - this.settingsSnapshotCacheAt < 400) {
-      snapshotSettings = this.settingsSnapshotCache;
+      rendererState = this.settingsSnapshotCache;
     } else {
-      snapshotSettings = cloneSettings(this.settings);
-      this.settingsSnapshotCache = snapshotSettings;
+      rendererState = createRendererState(this.settings);
+      this.settingsSnapshotCache = rendererState;
       this.settingsSnapshotCacheAt = now;
     }
     const snapshotSummary = this.summary
@@ -2504,7 +2492,8 @@ export class DownloadManager extends EventEmitter {
 
     return {
       rotationEvents: getRecentRotationEvents(40),
-      settings: snapshotSettings,
+      settings: rendererState.settings,
+      accounts: rendererState.accounts,
       session: snapshotSession,
       summary: snapshotSummary,
       stats: this.getStats(now),

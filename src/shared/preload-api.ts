@@ -1,7 +1,12 @@
 import type {
   AddLinksPayload,
+  AccountCommandResult,
+  AccountCredentialCheckInput,
+  AccountCreateCommand,
+  AccountDeleteCommand,
+  AccountReplaceCommand,
+  AccountUpdateSecretCommand,
   AllDebridHostInfo,
-  AppSettings,
   DebridAccountStatus,
   DebugSetupCheckResult,
   DebridLinkHostLimitInfo,
@@ -12,6 +17,8 @@ import type {
   HistoryRevealResult,
   PackagePriority,
   RemoteDiagnosticsInfo,
+  RendererSettings,
+  RendererSettingsUpdate,
   RendererErrorReport,
   SessionStats,
   StartConflictEntry,
@@ -29,9 +36,13 @@ export interface ElectronApi {
   checkUpdates: () => Promise<UpdateCheckResult>;
   installUpdate: () => Promise<UpdateInstallResult>;
   openExternal: (url: string) => Promise<boolean>;
-  updateSettings: (settings: Partial<AppSettings>) => Promise<AppSettings>;
-  resetProviderDailyUsage: (provider: DebridProvider) => Promise<AppSettings>;
-  resetDebridLinkApiKeyDailyUsage: (keyId: string) => Promise<AppSettings>;
+  updateSettings: (settings: RendererSettingsUpdate) => Promise<RendererSettings>;
+  resetProviderDailyUsage: (provider: DebridProvider) => Promise<RendererSettings>;
+  resetDebridLinkApiKeyDailyUsage: (keyId: string) => Promise<RendererSettings>;
+  createAccount: (command: AccountCreateCommand) => Promise<AccountCommandResult>;
+  replaceAccount: (command: AccountReplaceCommand) => Promise<AccountCommandResult>;
+  updateAccountSecret: (command: AccountUpdateSecretCommand) => Promise<AccountCommandResult>;
+  deleteAccount: (command: AccountDeleteCommand) => Promise<AccountCommandResult>;
   addLinks: (payload: AddLinksPayload) => Promise<{ addedPackages: number; addedLinks: number; invalidCount: number }>;
   addContainers: (filePaths: string[]) => Promise<{ addedPackages: number; addedLinks: number }>;
   getStartConflicts: () => Promise<StartConflictEntry[]>;
@@ -87,8 +98,8 @@ export interface ElectronApi {
   importBestDebridCookies: () => Promise<number>;
   getAllDebridHostInfo: () => Promise<AllDebridHostInfo>;
   getDebridLinkHostLimits: () => Promise<DebridLinkHostLimitInfo[]>;
-  checkDebridAccounts: (settings?: AppSettings, persistValidOverride?: boolean, expectedAccountId?: string) => Promise<DebridAccountStatus[]>;
-  checkMegaDebridAccount: (login: string, password: string) => Promise<DebridAccountStatus | null>;
+  checkDebridAccounts: () => Promise<DebridAccountStatus[]>;
+  checkAccountCredentials: (input: AccountCredentialCheckInput) => Promise<DebridAccountStatus>;
   retryExtraction: (packageId: string) => Promise<void>;
   extractNow: (packageId: string) => Promise<void>;
   resetPackage: (packageId: string) => Promise<void>;

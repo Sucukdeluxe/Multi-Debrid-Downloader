@@ -1,8 +1,6 @@
 import React, { type ReactElement } from "react";
 import { describe, expect, it } from "vitest";
 import { App } from "../src/renderer/App";
-import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
-import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import type { ElectronApi } from "../src/shared/preload-api";
 import * as visualFixtures from "./visual/fixtures";
 import * as visualMain from "./visual/main";
@@ -136,11 +134,12 @@ describe("visual fixtures", () => {
   it("aligns dense account table values with credential-derived account IDs", async () => {
     const dense = createVisualFixture("dense");
     const settings = dense.snapshot.settings;
-    const megaAccountId = getMegaDebridAccountId(settings.megaLogin);
-    const debridLinkKeys = parseDebridLinkApiKeys(settings.debridLinkApiKeys);
+    const megaAccount = dense.snapshot.accounts.find((account) => account.kind === "megadebrid-api");
+    const debridLinkKeys = dense.snapshot.accounts.filter((account) => account.kind === "debridlink-api");
+    const megaAccountId = megaAccount?.accountId || "";
 
     expect(megaAccountId).toBe("mda_2f92guyzhdf6j");
-    expect(debridLinkKeys.map((entry) => entry.id)).toEqual([
+    expect(debridLinkKeys.map((entry) => entry.accountId)).toEqual([
       "dlk_1ix5qlyx6mtm1",
       "dlk_1ix5pfvlg4nkg"
     ]);
@@ -152,23 +151,23 @@ describe("visual fixtures", () => {
     );
 
     for (const entry of debridLinkKeys) {
-      expect(settings.debridAccountStatuses[entry.id]?.valid).toBe(true);
-      expect(settings.debridLinkApiKeyDailyLimitBytes[entry.id]).toBeGreaterThan(0);
-      expect(settings.debridLinkApiKeyDailyUsageBytes[entry.id]).toBeGreaterThan(0);
-      expect(settings.debridLinkApiKeyDailyUsageBytes[entry.id]).toBeLessThan(
-        settings.debridLinkApiKeyDailyLimitBytes[entry.id]
+      expect(settings.debridAccountStatuses[entry.accountId]?.valid).toBe(true);
+      expect(settings.debridLinkApiKeyDailyLimitBytes[entry.accountId]).toBeGreaterThan(0);
+      expect(settings.debridLinkApiKeyDailyUsageBytes[entry.accountId]).toBeGreaterThan(0);
+      expect(settings.debridLinkApiKeyDailyUsageBytes[entry.accountId]).toBeLessThan(
+        settings.debridLinkApiKeyDailyLimitBytes[entry.accountId]
       );
-      expect(settings.debridLinkApiKeyTotalUsageBytes[entry.id]).toBeGreaterThan(
-        settings.debridLinkApiKeyDailyUsageBytes[entry.id]
+      expect(settings.debridLinkApiKeyTotalUsageBytes[entry.accountId]).toBeGreaterThan(
+        settings.debridLinkApiKeyDailyUsageBytes[entry.accountId]
       );
     }
 
     const debridLinkItem = Object.values(dense.snapshot.session.items).find(
       (item) => item.provider === "debridlink"
     );
-    expect(debridLinkItem?.providerAccountId).toBe(debridLinkKeys[0].id);
+    expect(debridLinkItem?.providerAccountId).toBe(debridLinkKeys[0].accountId);
     const hostLimits = await createVisualElectronApi(dense).getDebridLinkHostLimits();
-    expect(hostLimits[0]?.keyId).toBe(debridLinkKeys[0].id);
+    expect(hostLimits[0]?.keyId).toBe(debridLinkKeys[0].accountId);
   });
 
   it("stores every mutable bridge state inside the visual fixture", async () => {

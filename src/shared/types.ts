@@ -171,6 +171,175 @@ export interface AppSettings {
   scheduledStartEpochMs: number;
 }
 
+export type RendererAccountKind =
+  | "realdebrid-api"
+  | "realdebrid-web"
+  | "megadebrid-api"
+  | "megadebrid-web"
+  | "bestdebrid-api"
+  | "bestdebrid-web"
+  | "alldebrid-api"
+  | "alldebrid-web"
+  | "ddownload-login"
+  | "onefichier-api"
+  | "debridlink-api"
+  | "linksnappy-login";
+
+export interface RendererAccount {
+  accountId: string;
+  kind: RendererAccountKind;
+  provider: DebridProvider;
+  identity: string;
+  maskedIdentity: string;
+  hasSecret: boolean;
+  enabled: boolean;
+  dailyLimitBytes: number;
+  dailyUsageBytes: number;
+  totalUsageBytes: number;
+  status: DebridAccountStatus | null;
+}
+
+export interface RendererSettings {
+  language: AppLanguage;
+  realDebridUseWebLogin: boolean;
+  megaDebridApiEnabled: boolean;
+  megaDebridWebEnabled: boolean;
+  megaDebridPreferApi: boolean;
+  bestDebridUseWebLogin: boolean;
+  allDebridUseWebLogin: boolean;
+  debridLinkDisabledKeyIds: string[];
+  rememberToken: boolean;
+  configuredProviders: DebridProvider[];
+  providerOrder: readonly DebridProvider[];
+  providerPrimary: DebridProvider;
+  providerSecondary: DebridFallbackProvider;
+  providerTertiary: DebridFallbackProvider;
+  autoProviderFallback: boolean;
+  outputDir: string;
+  packageName: string;
+  autoExtract: boolean;
+  autoRename4sf4sj: boolean;
+  keepGermanAudioOnly: boolean;
+  germanAudioMode: "tag" | "first";
+  extractDir: string;
+  collectMkvToLibrary: boolean;
+  mkvLibraryDir: string;
+  createExtractSubfolder: boolean;
+  hybridExtract: boolean;
+  cleanupMode: CleanupMode;
+  extractConflictMode: ConflictMode;
+  removeLinkFilesAfterExtract: boolean;
+  removeSamplesAfterExtract: boolean;
+  enableIntegrityCheck: boolean;
+  autoResumeOnStart: boolean;
+  autoReconnect: boolean;
+  reconnectWaitSeconds: number;
+  completedCleanupPolicy: FinishedCleanupPolicy;
+  maxParallel: number;
+  maxParallelExtract: number;
+  retryLimit: number;
+  speedLimitEnabled: boolean;
+  speedLimitKbps: number;
+  speedLimitMode: SpeedMode;
+  updateRepo: string;
+  autoUpdateCheck: boolean;
+  clipboardWatch: boolean;
+  minimizeToTray: boolean;
+  theme: AppTheme;
+  collapseNewPackages: boolean;
+  historyRetentionMode: HistoryRetentionMode;
+  historyMaxEntries: number;
+  historyMaxAgeDays: number;
+  accountListShowDetailedDebridLinkKeys: boolean;
+  autoSortPackagesByProgress: boolean;
+  autoSkipExtracted: boolean;
+  hideExtractedItems: boolean;
+  confirmDeleteSelection: boolean;
+  backupIncludeDownloads: boolean;
+  backupIncludeRemoteDiagnostics: boolean;
+  archivePasswordListConfigured: boolean;
+  notifyUrlConfigured: boolean;
+  notifyMention: string;
+  notifyOnPackageCompleted: boolean;
+  notifyOnPackageFailed: boolean;
+  notifyOnRunFinished: boolean;
+  totalDownloadedAllTime: number;
+  totalCompletedFilesAllTime: number;
+  totalRuntimeAllTimeMs: number;
+  bandwidthSchedules: BandwidthScheduleEntry[];
+  columnOrder: string[];
+  columnOrderVersion?: number;
+  extractCpuPriority: ExtractCpuPriority;
+  autoExtractWhenStopped: boolean;
+  disabledProviders: DebridProvider[];
+  hosterRouting: Record<string, DebridProvider>;
+  providerDailyLimitBytes: Partial<Record<DebridProvider, number>>;
+  providerDailyUsageBytes: Partial<Record<DebridProvider, number>>;
+  providerTotalUsageBytes: Partial<Record<DebridProvider, number>>;
+  debridLinkApiKeyDailyLimitBytes: Record<string, number>;
+  debridLinkApiKeyDailyUsageBytes: Record<string, number>;
+  debridLinkApiKeyTotalUsageBytes: Record<string, number>;
+  megaDebridDisabledAccountIds: string[];
+  megaDebridApiDisabledAccountIds: string[];
+  megaDebridWebDisabledAccountIds: string[];
+  megaDebridAccountDailyLimitBytes: Record<string, number>;
+  megaDebridAccountDailyUsageBytes: Record<string, number>;
+  megaDebridAccountTotalUsageBytes: Record<string, number>;
+  debridAccountStatuses: Record<string, DebridAccountStatus>;
+  providerDailyUsageDay: string;
+  scheduledStartEpochMs: number;
+}
+
+export type RendererSettingsUpdate = Partial<RendererSettings> & {
+  archivePasswordList?: string;
+  notifyUrl?: string;
+};
+
+export interface AccountCreateCommand {
+  action: "create";
+  kind: RendererAccountKind;
+  identity?: string;
+  secret?: string;
+  dailyLimitBytes?: number;
+}
+
+export interface AccountReplaceCommand {
+  action: "replace";
+  kind: RendererAccountKind;
+  accountId: string;
+  identity?: string;
+  secret?: string;
+  dailyLimitBytes?: number;
+}
+
+export interface AccountUpdateSecretCommand {
+  action: "update-secret";
+  kind: RendererAccountKind;
+  accountId: string;
+  secret: string;
+}
+
+export interface AccountDeleteCommand {
+  action: "delete";
+  kind: RendererAccountKind;
+  accountId: string;
+}
+
+export type AccountCommand = AccountCreateCommand | AccountReplaceCommand | AccountUpdateSecretCommand | AccountDeleteCommand;
+
+export interface AccountCommandResult {
+  accountId: string | null;
+  settings: RendererSettings;
+  accounts: RendererAccount[];
+}
+
+export interface AccountCredentialCheckInput {
+  kind: "megadebrid-api" | "megadebrid-web" | "debridlink-api";
+  accountId?: string;
+  identity?: string;
+  secret?: string;
+}
+
 export interface DownloadItem {
   id: string;
   packageId: string;
@@ -288,7 +457,8 @@ export interface RotationEvent {
 }
 
 export interface UiSnapshot {
-  settings: AppSettings;
+  settings: RendererSettings;
+  accounts: RendererAccount[];
   session: SessionState;
   summary: DownloadSummary | null;
   stats: DownloadStats;

@@ -1,6 +1,5 @@
 import type { ElectronApi } from "../../src/shared/preload-api";
-import type { AppSettings, HistoryEntry } from "../../src/shared/types";
-import { parseDebridLinkApiKeys } from "../../src/shared/debrid-link-keys";
+import type { HistoryEntry, RendererSettings, RendererSettingsUpdate } from "../../src/shared/types";
 import type { VisualFixture } from "./fixtures";
 
 const stableNoopUnsubscribe = (): void => {};
@@ -15,8 +14,9 @@ export function createVisualElectronApi(
 ): ElectronApi {
   const historyState = new URLSearchParams(search).get("history-state");
   let historyRequestCount = 0;
-  const updateSettings = (settings: Partial<AppSettings>): AppSettings => {
-    Object.assign(fixture.snapshot.settings, settings);
+  const updateSettings = (settings: RendererSettingsUpdate): RendererSettings => {
+    const { archivePasswordList: _archivePasswordList, notifyUrl: _notifyUrl, ...safe } = settings;
+    Object.assign(fixture.snapshot.settings, safe);
     return clone(fixture.snapshot.settings);
   };
 
@@ -35,6 +35,10 @@ export function createVisualElectronApi(
       fixture.snapshot.settings.debridLinkApiKeyDailyUsageBytes[keyId] = 0;
       return clone(fixture.snapshot.settings);
     },
+    createAccount: async () => ({ accountId: null, settings: clone(fixture.snapshot.settings), accounts: clone(fixture.snapshot.accounts) }),
+    replaceAccount: async () => ({ accountId: null, settings: clone(fixture.snapshot.settings), accounts: clone(fixture.snapshot.accounts) }),
+    updateAccountSecret: async () => ({ accountId: null, settings: clone(fixture.snapshot.settings), accounts: clone(fixture.snapshot.accounts) }),
+    deleteAccount: async () => ({ accountId: null, settings: clone(fixture.snapshot.settings), accounts: clone(fixture.snapshot.accounts) }),
     addLinks: async () => ({ addedPackages: 0, addedLinks: 0, invalidCount: 0 }),
     addContainers: async () => ({ addedPackages: 0, addedLinks: 0 }),
     getStartConflicts: async () => [],
@@ -291,10 +295,11 @@ export function createVisualElectronApi(
       note: "Visual host status"
     }),
     getDebridLinkHostLimits: async () => {
-      const primaryKey = parseDebridLinkApiKeys(fixture.snapshot.settings.debridLinkApiKeys)[0];
+      const primaryKey = fixture.snapshot.accounts.find((account) => account.kind === "debridlink-api");
+      if (!primaryKey) return [];
       return [{
-        keyId: primaryKey.id,
-        keyLabel: primaryKey.label,
+        keyId: primaryKey.accountId,
+        keyLabel: "Key 1",
         host: "ddownload.com",
         fetchedAt: 1786312800000,
         trafficCurrentBytes: 53687091200,
@@ -314,12 +319,17 @@ export function createVisualElectronApi(
       }];
     },
     checkDebridAccounts: async () => clone(Object.values(fixture.snapshot.settings.debridAccountStatuses)),
-    checkMegaDebridAccount: async () => {
-      const status = Object.values(fixture.snapshot.settings.debridAccountStatuses).find(
-        (entry) => entry.provider === "megadebrid"
-      );
-      return status ? clone(status) : null;
-    },
+    checkAccountCredentials: async (input) => clone(fixture.snapshot.accounts.find((account) => account.accountId === input.accountId)?.status || {
+      accountId: input.accountId || "visual-account",
+      provider: input.kind === "debridlink-api" ? "debridlink" : "megadebrid",
+      label: "Visual Account",
+      maskedLogin: "vi***al",
+      valid: true,
+      isPremium: true,
+      premiumUntilMs: null,
+      message: "Premium aktiv",
+      checkedAt: 1786312800000
+    }),
     retryExtraction: async (packageId) => {
       const entry = fixture.snapshot.session.packages[packageId];
       if (entry) {

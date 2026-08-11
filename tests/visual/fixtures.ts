@@ -8,6 +8,7 @@ import type {
 } from "../../src/shared/types";
 import { parseDebridLinkApiKeys } from "../../src/shared/debrid-link-keys";
 import { getMegaDebridAccountId } from "../../src/shared/mega-debrid-accounts";
+import { createRendererState } from "../../src/main/renderer-state";
 
 export const VISUAL_SCENARIOS = ["empty", "dense", "update"] as const;
 
@@ -229,8 +230,9 @@ function createSettings(): AppSettings {
 }
 
 function createEmptySnapshot(): UiSnapshot {
+  const renderer = createRendererState(createSettings());
   return {
-    settings: createSettings(),
+    ...renderer,
     session: {
       version: 1,
       packageOrder: [],
@@ -276,7 +278,7 @@ function createEmptySnapshot(): UiSnapshot {
 
 function createDenseSnapshot(): UiSnapshot {
   const snapshot = createEmptySnapshot();
-  const debridLinkKeys = parseDebridLinkApiKeys(snapshot.settings.debridLinkApiKeys);
+  const debridLinkKeys = snapshot.accounts.filter((account) => account.kind === "debridlink-api");
   snapshot.session = {
     version: 1,
     packageOrder: ["visual-package-active", "visual-package-complete", "visual-package-failed"],
@@ -359,7 +361,7 @@ function createDenseSnapshot(): UiSnapshot {
         url: "https://ddownload.com/visual-active-2",
         provider: "debridlink",
         providerLabel: "Debrid-Link",
-        providerAccountId: debridLinkKeys[0].id,
+        providerAccountId: debridLinkKeys[0].accountId,
         providerAccountLabel: "Debrid-Link Key 1",
         status: "queued",
         retries: 0,

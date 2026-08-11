@@ -6,6 +6,9 @@ import {
   AddLinksPayload,
   AllDebridHostInfo,
   AppSettings,
+  AccountCommand,
+  AccountCommandResult,
+  AccountCredentialCheckInput,
   DebridAccountStatus,
   DebridProvider,
   DuplicatePolicy,
@@ -27,8 +30,12 @@ import { importDlcContainers } from "./container";
 import { APP_VERSION, ONLINE_BACKUP_API_URL } from "./constants";
 import { DownloadManager } from "./download-manager";
 import { fetchAllDebridHostInfo, fetchDebridLinkHostLimits } from "./debrid";
-import { checkAllDebridAccounts, checkMegaDebridAccount } from "./account-check";
+import { checkAllDebridAccounts, checkDebridLinkKey, checkMegaDebridAccount } from "./account-check";
 import { parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
+import { getMegaDebridAccountsForMode } from "../shared/mega-debrid-accounts";
+import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
+import { applyAccountCommand } from "./account-commands";
+import { createRendererState } from "./renderer-state";
 import { parseCollectorInput } from "./link-parser";
 import { configureLogger, getLogFilePath, logger } from "./logger";
 import { AllDebridWebFallback } from "./all-debrid-web";
@@ -59,7 +66,6 @@ import { getTraceConfig, getTraceLogPath, initTraceLog, logTraceEvent, setTraceE
 import type { DebugSetupCheckResult, SupportTraceConfig } from "../shared/types";
 import { createOnlineBackup, downloadOnlineBackup, uploadOnlineBackup } from "./online-backup";
 import { overlayLiveUsageCounters } from "./settings-live-overlay";
-import { canPersistExpectedAccountStatus } from "./account-status-persistence";
 
 function sanitizeSettingsPatch(partial: Partial<AppSettings>): Partial<AppSettings> {
   const entries = Object.entries(partial || {}).filter(([, value]) => value !== undefined);
@@ -475,6 +481,50 @@ export class AppController {
     return this.settings;
   }
 
+  public async executeAccountCommand(command: AccountCommand): Promise<AccountCommandResult> {
+    const applied = applyAccountCommand(this.settings, command);
+    let checkedStatus: DebridAccountStatus | null = null;
+    if (command.action !== "delete" && applied.response.accountId && (command.kind === "megadebrid-api" || command.kind === "megadebrid-web")) {
+      const mode = command.kind === "megadebrid-web" ? "web" : "api";
+      const account = getMegaDebridAccountsForMode(applied.settings, mode).find((entry) => entry.id === applied.response.accountId);
+      if (!account) throw new Error("Account-Payload ist ungültig");
+      checkedStatus = await checkMegaDebridAccount(account);
+    }
+    if (command.action !== "delete" && applied.response.accountId && command.kind === "debridlink-api") {
+      const key = parseDebridLinkApiKeys(applied.settings.debridLinkApiKeys).find((entry) => entry.id === applied.response.accountId);
+      if (!key) throw new Error("Account-Payload ist ungültig");
+      checkedStatus = await checkDebridLinkKey(key);
+    }
+    if (checkedStatus && !checkedStatus.valid) {
+      const submittedSecret = "secret" in command ? command.secret : undefined;
+      const safeMessage = submittedSecret ? checkedStatus.message.split(submittedSecret).join("[geschützt]") : checkedStatus.message;
+      throw new Error(safeMessage || "Zugangsdaten ungültig");
+    }
+    this.updateSettings(applied.settings);
+    if (checkedStatus) this.manager.applyDebridAccountStatuses([checkedStatus]);
+    const state = createRendererState(this.settings);
+    this.audit("INFO", "Account aktualisiert", { action: command.action, kind: command.kind, accountId: applied.response.accountId });
+    return { ...applied.response, ...state };
+  }
+
+  public async checkAccountCredentials(input: AccountCredentialCheckInput): Promise<DebridAccountStatus> {
+    if (input.kind === "megadebrid-api" || input.kind === "megadebrid-web") {
+      const mode = input.kind === "megadebrid-web" ? "web" : "api";
+      const account = input.identity?.trim() && input.secret
+        ? parseMegaDebridAccounts(`${input.identity.trim()}:${input.secret}`)[0]
+        : getMegaDebridAccountsForMode(this.settings, mode).find((entry) => entry.id === input.accountId);
+      if (!account) throw new Error("Account-Payload ist ungültig");
+      const status = await checkMegaDebridAccount(account);
+      return { ...status, message: input.secret ? status.message.split(input.secret).join("[geschützt]") : status.message };
+    }
+    const key = input.secret?.trim()
+      ? parseDebridLinkApiKeys(input.secret)[0]
+      : parseDebridLinkApiKeys(this.settings.debridLinkApiKeys).find((entry) => entry.id === input.accountId);
+    if (!key) throw new Error("Account-Payload ist ungültig");
+    const status = await checkDebridLinkKey(key);
+    return { ...status, message: input.secret ? status.message.split(input.secret).join("[geschützt]") : status.message };
+  }
+
   public resetProviderDailyUsage(provider: DebridProvider): AppSettings {
     const liveSettings = this.manager.getSettings();
     const nextSettings = normalizeSettings({
@@ -535,30 +585,15 @@ export class AppController {
     return fetchDebridLinkHostLimits(this.settings.debridLinkApiKeys, host);
   }
 
-public async checkDebridAccounts(settingsOverride?: AppSettings, persistValidOverride = false, expectedAccountId?: string): Promise<DebridAccountStatus[]> {
-    const statuses = await checkAllDebridAccounts(settingsOverride ? normalizeSettings(settingsOverride) : this.settings);
-    if (!settingsOverride || (persistValidOverride && canPersistExpectedAccountStatus(statuses, expectedAccountId))) {
-      this.manager.applyDebridAccountStatuses(statuses);
-    }
-    if (!settingsOverride) {
-      this.audit("INFO", "Debrid-Accounts geprueft", {
-        total: statuses.length,
-        valid: statuses.filter((s) => s.valid).length,
-        premium: statuses.filter((s) => s.isPremium).length
-      });
-    }
+public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
+    const statuses = await checkAllDebridAccounts(this.settings);
+    this.manager.applyDebridAccountStatuses(statuses);
+    this.audit("INFO", "Debrid-Accounts geprueft", {
+      total: statuses.length,
+      valid: statuses.filter((s) => s.valid).length,
+      premium: statuses.filter((s) => s.isPremium).length
+    });
     return statuses;
-  }
-
-  public async checkSingleMegaDebridAccount(login: string, password: string): Promise<DebridAccountStatus | null> {
-    const entry = parseMegaDebridAccounts(`${login.trim()}:${password.trim()}`)[0];
-    if (!entry) {
-      return null;
-    }
-    const status = await checkMegaDebridAccount(entry);
-    this.manager.applyDebridAccountStatuses([status]);
-    this.audit("INFO", "Mega-Debrid-Account einzeln geprueft", { valid: status.valid, premium: status.isPremium });
-    return status;
   }
   public async checkUpdates(): Promise<UpdateCheckResult> {
     const result = await checkGitHubUpdate(this.settings.updateRepo);

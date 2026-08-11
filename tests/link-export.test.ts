@@ -6,6 +6,7 @@ import type { UiSnapshot } from "../src/shared/types";
 function buildSnapshot(): UiSnapshot {
   return {
     settings: {} as UiSnapshot["settings"],
+    accounts: [],
     session: {
       version: 1,
       packageOrder: ["pkg-1", "pkg-2"],

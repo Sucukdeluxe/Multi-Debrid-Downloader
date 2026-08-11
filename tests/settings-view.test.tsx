@@ -3,12 +3,9 @@ import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { defaultSettings } from "../src/main/constants";
+import { createRendererSettings, createRendererState } from "../src/main/renderer-state";
 import { buildAccountAddFields, createAccountDialogState } from "../src/renderer/App";
-import {
-  applyAccountEdit,
-  createAccountEditState,
-  type AccountEditTarget
-} from "../src/renderer/account-edit";
+import { buildAccountReplaceCommand, createAccountEditState, type AccountEditTarget } from "../src/renderer/account-edit";
 import {
   buildBulkAccountEnabledState,
   buildConfiguredProviderOrder
@@ -416,7 +413,6 @@ describe("settings model", () => {
     const login = "member@example.test";
     const oldId = getMegaDebridAccountId(login);
     const newLogin = "renamed@example.test";
-    const newId = getMegaDebridAccountId(newLogin);
     const exactLimit = Math.floor(10.05 * GIB);
     const settings = {
       ...defaultSettings(),
@@ -435,17 +431,17 @@ describe("settings model", () => {
       service: "megadebrid-api",
       accountId: oldId
     };
-    const unchanged = applyAccountEdit(settings, createAccountEditState(target, settings));
-    const renamed = applyAccountEdit(settings, {
-      ...createAccountEditState(target, settings),
+    const renderer = createRendererState(settings);
+    const unchanged = buildAccountReplaceCommand(createAccountEditState(target, renderer.accounts));
+    const renamed = buildAccountReplaceCommand({
+      ...createAccountEditState(target, renderer.accounts),
       login: newLogin
     });
 
-    expect(unchanged.megaDebridAccountDailyLimitBytes[oldId]).toBe(exactLimit);
-    expect(renamed.megaDebridDisabledAccountIds).toEqual([newId]);
-    expect(renamed.megaDebridAccountDailyLimitBytes[newId]).toBe(exactLimit);
-    expect(renamed.megaDebridAccountDailyUsageBytes[newId]).toBeUndefined();
-    expect(renamed.megaDebridAccountTotalUsageBytes[newId]).toBeUndefined();
+    expect(unchanged.dailyLimitBytes).toBe(exactLimit);
+    expect(unchanged.secret).toBe("");
+    expect(renamed.identity).toBe(newLogin);
+    expect(renamed.secret).toBe("");
   });
 });
 
@@ -468,7 +464,7 @@ describe("settings views", () => {
 
   it("offers animated language and bounded history retention choices", () => {
     const form = buildSettingsFormViewModel({
-      settings: defaultSettings(),
+      settings: { ...createRendererSettings(defaultSettings()), archivePasswordList: "", notifyUrl: "" },
       section: "allgemein",
       speedLimitInput: "0",
       scheduleSpeedInputs: {}
@@ -912,9 +908,10 @@ describe("settings App integration", () => {
       megaCredentials: "first@example.test:first-secret\nsecond@example.test:second-secret",
       debridLinkApiKeys: "existing-debrid-link-key"
     };
-    const megaDialog = createAccountDialogState("create", "megadebrid-api", settings);
+    const rendererSettings = createRendererSettings(settings);
+    const megaDialog = createAccountDialogState("create", "megadebrid-api", rendererSettings);
     const megaFields = buildAccountAddFields(megaDialog);
-    const debridLinkFields = buildAccountAddFields(createAccountDialogState("create", "debridlink-api", settings));
+    const debridLinkFields = buildAccountAddFields(createAccountDialogState("create", "debridlink-api", rendererSettings));
 
     expect(megaDialog.megaNewLogin).toBe("");
     expect(megaDialog.megaNewPassword).toBe("");

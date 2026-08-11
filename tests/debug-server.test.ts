@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { once } from "node:events";
 import AdmZip from "adm-zip";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/main/windows-host-diagnostics", () => ({
   getWindowsHostDiagnostics: () => ({
@@ -41,6 +41,8 @@ vi.mock("../src/main/windows-host-diagnostics", () => ({
 }));
 
 import { defaultSettings } from "../src/main/constants";
+import { configureCredentialProtector } from "../src/main/credential-protection";
+import { createRendererState } from "../src/main/renderer-state";
 import { getAuditLogPath, initAuditLog, logAuditEvent, shutdownAuditLog } from "../src/main/audit-log";
 import { startDebugServer, stopDebugServer } from "../src/main/debug-server";
 import { ensureItemLog, initItemLogs, shutdownItemLogs } from "../src/main/item-log";
@@ -70,6 +72,14 @@ const forbiddenSupportMarkers = [
   ["M", "C", "P"].join(""),
   ["K", "I"].join("")
 ];
+
+beforeEach(() => {
+  configureCredentialProtector({
+    isEncryptionAvailable: () => true,
+    encryptString: (value) => Buffer.from(value, "utf8").reverse(),
+    decryptString: (value) => Buffer.from(value).reverse().toString("utf8")
+  });
+});
 
 async function getFreePort(): Promise<number> {
   const probe = http.createServer();
@@ -106,8 +116,9 @@ function buildSnapshot(baseDir: string): UiSnapshot {
     extractDir: path.join(baseDir, "extract")
   };
 
+  const renderer = createRendererState(settings);
   return {
-    settings,
+    ...renderer,
     session: {
       version: 1,
       packageOrder: ["pkg-1"],
@@ -221,7 +232,9 @@ async function createFixture() {
   const debridLinkKeyIds = getDebridLinkApiKeyIds(debridLinkApiKeys);
 
   saveSettings(storagePaths, {
-    ...snapshot.settings,
+    ...defaultSettings(),
+    outputDir: snapshot.settings.outputDir,
+    extractDir: snapshot.settings.extractDir,
     token: "rd-secret-token",
     realDebridUseWebLogin: true,
     debridLinkApiKeys,

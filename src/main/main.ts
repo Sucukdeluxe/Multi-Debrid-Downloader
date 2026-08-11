@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, IpcMainInvokeEvent, Menu, safeStorage, shell, Tray } from "electron";
-import { AddLinksPayload, AppSettings, DebridProvider, EnableRemoteDiagnosticsInput, UpdateInstallProgress } from "../shared/types";
+import { AddLinksPayload, AppSettings, DebridProvider, EnableRemoteDiagnosticsInput, RendererSettingsUpdate, UpdateInstallProgress } from "../shared/types";
 import { AppController } from "./app-controller";
 import { IPC_CHANNELS } from "../shared/ipc";
 import { getLogFilePath, logger } from "./logger";
@@ -15,6 +15,9 @@ import { DEV_SERVER_URL } from "./dev-server-url";
 import { resolveAppIconPath } from "./app-icon";
 import { configureCredentialProtector } from "./credential-protection";
 import { isMdd2Backup } from "./backup-crypto";
+import { validateAccountCommand, validateAccountCredentialCheckInput } from "./account-commands";
+import { createRendererSettings } from "./renderer-state";
+import { validateRendererSettingsUpdate } from "./renderer-settings";
 
 function validateString(value: unknown, name: string): string {
   if (typeof value !== "string") {
@@ -358,27 +361,51 @@ function registerIpcHandlers(): void {
       return false;
     }
   });
-  ipcMain.handle(IPC_CHANNELS.UPDATE_SETTINGS, (_event: IpcMainInvokeEvent, partial: Partial<AppSettings>) => {
-    const validated = validatePlainObject(partial ?? {}, "partial");
+  ipcMain.handle(IPC_CHANNELS.UPDATE_SETTINGS, (_event: IpcMainInvokeEvent, partial: RendererSettingsUpdate) => {
+    const validated = validateRendererSettingsUpdate(partial ?? {}, controller.getSettings());
     const result = controller.updateSettings(validated as Partial<AppSettings>);
     updateClipboardWatcher();
     updateTray();
     armScheduledStart(result.scheduledStartEpochMs || 0, { startOnPast: true });
-    return result;
+    return createRendererSettings(result);
   });
   ipcMain.handle(IPC_CHANNELS.RESET_PROVIDER_DAILY_USAGE, (_event: IpcMainInvokeEvent, provider: string) => {
     const validatedProvider = validateString(provider, "provider") as DebridProvider;
     if (!RESETTABLE_PROVIDER_KEYS.has(validatedProvider)) {
       throw new Error("provider ist ungültig");
     }
-    return controller.resetProviderDailyUsage(validatedProvider);
+    return createRendererSettings(controller.resetProviderDailyUsage(validatedProvider));
   });
   ipcMain.handle(IPC_CHANNELS.RESET_DEBRID_LINK_API_KEY_DAILY_USAGE, (_event: IpcMainInvokeEvent, keyId: string) => {
     const validatedKeyId = validateString(keyId, "keyId").trim();
     if (!validatedKeyId) {
       throw new Error("keyId ist ungültig");
     }
-    return controller.resetDebridLinkApiKeyDailyUsage(validatedKeyId);
+    return createRendererSettings(controller.resetDebridLinkApiKeyDailyUsage(validatedKeyId));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.CREATE_ACCOUNT, (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
+    const command = validateAccountCommand(rawCommand);
+    if (command.action !== "create") throw new Error("Account-Payload ist ungültig");
+    return controller.executeAccountCommand(command);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.REPLACE_ACCOUNT, (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
+    const command = validateAccountCommand(rawCommand);
+    if (command.action !== "replace") throw new Error("Account-Payload ist ungültig");
+    return controller.executeAccountCommand(command);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.UPDATE_ACCOUNT_SECRET, (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
+    const command = validateAccountCommand(rawCommand);
+    if (command.action !== "update-secret") throw new Error("Account-Payload ist ungültig");
+    return controller.executeAccountCommand(command);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.DELETE_ACCOUNT, (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
+    const command = validateAccountCommand(rawCommand);
+    if (command.action !== "delete") throw new Error("Account-Payload ist ungültig");
+    return controller.executeAccountCommand(command);
   });
   ipcMain.handle(IPC_CHANNELS.ADD_LINKS, (_event: IpcMainInvokeEvent, payload: AddLinksPayload) => {
     validatePlainObject(payload ?? {}, "payload");
@@ -761,12 +788,12 @@ function registerIpcHandlers(): void {
     return controller.getDebridLinkHostLimits();
   });
 
-  ipcMain.handle(IPC_CHANNELS.CHECK_DEBRID_ACCOUNTS, async (_event, settings?: AppSettings, persistValidOverride = false, expectedAccountId?: string) => {
-    return controller.checkDebridAccounts(settings, persistValidOverride === true, expectedAccountId);
+  ipcMain.handle(IPC_CHANNELS.CHECK_DEBRID_ACCOUNTS, async () => {
+    return controller.checkDebridAccounts();
   });
 
-  ipcMain.handle(IPC_CHANNELS.CHECK_MEGA_DEBRID_ACCOUNT, async (_event, login: string, password: string) => {
-    return controller.checkSingleMegaDebridAccount(String(login || ""), String(password || ""));
+  ipcMain.handle(IPC_CHANNELS.CHECK_ACCOUNT_CREDENTIALS, async (_event, rawInput: unknown) => {
+    return controller.checkAccountCredentials(validateAccountCredentialCheckInput(rawInput));
   });
 
   ipcMain.handle(IPC_CHANNELS.SELECT_BACKUP_IMPORT, async () => {

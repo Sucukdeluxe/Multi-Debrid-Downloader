@@ -1,4 +1,4 @@
-import type { AppSettings } from "../../../shared/types";
+import type { RendererSettings } from "../../../shared/types";
 import type { AccountService } from "../../account-edit";
 import { ACCOUNT_SERVICE_ICONS } from "../../account-service-icons";
 
@@ -49,10 +49,10 @@ export function getSettingsSelectNavigationIndex(currentIndex: number, optionCou
 }
 
 export function resolveHistoryRetentionSelection(
-  currentMode: AppSettings["historyRetentionMode"],
+  currentMode: RendererSettings["historyRetentionMode"],
   currentMaxEntries: number,
   value: string
-): Pick<AppSettings, "historyRetentionMode" | "historyMaxEntries"> {
+): Pick<RendererSettings, "historyRetentionMode" | "historyMaxEntries"> {
   const preset = /^permanent-(100|250)$/.exec(value);
   if (preset) {
     return {
@@ -69,7 +69,7 @@ export function resolveHistoryRetentionSelection(
     };
   }
   return {
-    historyRetentionMode: value as AppSettings["historyRetentionMode"],
+    historyRetentionMode: value as RendererSettings["historyRetentionMode"],
     historyMaxEntries: currentMaxEntries
   };
 }
@@ -208,7 +208,7 @@ export interface SettingsFormViewModel {
 }
 
 export interface SettingsFormProjectionInput {
-  settings: AppSettings;
+  settings: RendererSettings & { archivePasswordList: string; notifyUrl: string };
   section: SettingsSection;
   speedLimitInput: string;
   scheduleSpeedInputs: Readonly<Record<string, string>>;
@@ -289,7 +289,7 @@ export function buildSettingsFormViewModel({
           id: "extract-passwords",
           title: "Passwörter",
           fields: [
-            { id: "archivePasswordList", kind: "textarea", label: "Passwortliste für Archive", value: settings.archivePasswordList, placeholder: "Ein Passwort pro Zeile" }
+            { id: "archivePasswordList", kind: "textarea", label: "Passwortliste für Archive", value: settings.archivePasswordList, placeholder: settings.archivePasswordListConfigured ? "Gespeichert; leer lassen zum Beibehalten" : "Ein Passwort pro Zeile" }
           ]
         }
       ]
@@ -528,7 +528,7 @@ export function buildSettingsFormViewModel({
         id: "general-notifications",
         title: "Discord-Benachrichtigungen",
         fields: [
-          { id: "notifyUrl", kind: "text", label: "Webhook-Adresse", value: settings.notifyUrl, placeholder: "https://discord.com/api/webhooks/…", actionLabel: "Testen" },
+          { id: "notifyUrl", kind: "text", label: "Webhook-Adresse", value: settings.notifyUrl, placeholder: settings.notifyUrlConfigured ? "Gespeichert; leer lassen zum Beibehalten" : "https://discord.com/api/webhooks/…", actionLabel: "Testen" },
           { id: "notifyMention", kind: "text", label: "Discord-Erwähnung (optional)", value: settings.notifyMention },
           { id: "notifyOnPackageCompleted", kind: "switch", label: "Melden, wenn ein Paket fertig ist", value: settings.notifyOnPackageCompleted },
           { id: "notifyOnPackageFailed", kind: "switch", label: "Melden, wenn ein Paket fehlschlägt", value: settings.notifyOnPackageFailed },
