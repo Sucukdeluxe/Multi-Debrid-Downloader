@@ -7,6 +7,7 @@ import { getMegaDebridAccountIds, mergeMegaDebridCredentialPools, parseMegaDebri
 import { AppSettings, AudioStripSummary, BandwidthScheduleEntry, DebridAccountStatus, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, HistoryEntry, HistoryRetentionMode, PackageEntry, PackagePriority, SessionState } from "../shared/types";
 import { getProviderUsageDayKey } from "../shared/provider-daily-limits";
 import { defaultSettings } from "./constants";
+import { needsPersistedSettingsRewrite, protectPersistedSettings, restorePersistedSettings } from "./credential-protection";
 import { logger } from "./logger";
 
 const VALID_PRIMARY_PROVIDERS = new Set(["realdebrid", "megadebrid-api", "megadebrid-web", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink", "linksnappy"]);
@@ -604,31 +605,6 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
   return normalized;
 }
 
-function sanitizeCredentialPersistence(settings: AppSettings): AppSettings {
-  if (settings.rememberToken) {
-    return settings;
-  }
-  return {
-    ...settings,
-    token: "",
-    realDebridUseWebLogin: settings.realDebridUseWebLogin,
-    megaLogin: "",
-    megaPassword: "",
-    megaCredentials: "",
-    megaDebridApiCredentials: "",
-    megaDebridWebCredentials: "",
-    bestToken: "",
-    bestDebridUseWebLogin: settings.bestDebridUseWebLogin,
-    allDebridToken: "",
-    ddownloadLogin: "",
-    ddownloadPassword: "",
-    oneFichierApiKey: "",
-    debridLinkApiKeys: "",
-    linkSnappyLogin: "",
-    linkSnappyPassword: ""
-  };
-}
-
 export interface StoragePaths {
   baseDir: string;
   configFile: string;
@@ -717,11 +693,18 @@ function migrateLegacyMegaEnableFlags(parsed: AppSettings): AppSettings {
   return { ...parsed, megaDebridApiEnabled: preferApi, megaDebridWebEnabled: !preferApi };
 }
 
-function readSettingsFile(filePath: string): AppSettings | null {
+interface LoadedSettingsFile {
+  settings: AppSettings;
+  needsCredentialRewrite: boolean;
+}
+
+function readSettingsFile(filePath: string): LoadedSettingsFile | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as AppSettings;
-    const migratedLanguage = (parsed as Partial<AppSettings>).language === undefined ? "de" : parsed.language;
-    const migrated = migrateLegacyMegaEnableFlags(parsed);
+    const needsCredentialRewrite = needsPersistedSettingsRewrite(parsed);
+    const restored = restorePersistedSettings(parsed);
+    const migratedLanguage = (restored as Partial<AppSettings>).language === undefined ? "de" : restored.language;
+    const migrated = migrateLegacyMegaEnableFlags(restored);
     const mergedInput = {
       ...defaultSettings(),
       ...migrated,
@@ -735,7 +718,7 @@ function readSettingsFile(filePath: string): AppSettings | null {
       delete (mergedInput as Partial<AppSettings>).megaDebridWebDisabledAccountIds;
     }
     const merged = normalizeSettings(mergedInput);
-    return sanitizeCredentialPersistence(merged);
+    return { settings: merged, needsCredentialRewrite };
   } catch (error) {
     const code = (error as NodeJS.ErrnoException)?.code || "";
     if (code === "ENOENT") {
@@ -922,21 +905,22 @@ export function loadSettings(paths: StoragePaths): AppSettings {
   }
   const loaded = readSettingsFile(paths.configFile);
   if (loaded) {
-    return loaded;
+    const backupFile = `${paths.configFile}.bak`;
+    const backupNeedsCredentialRewrite = fs.existsSync(backupFile)
+      ? needsSettingsFileCredentialRewrite(backupFile)
+      : false;
+    if (loaded.needsCredentialRewrite || backupNeedsCredentialRewrite) {
+      rewriteProtectedSettings(paths, loaded.settings);
+    }
+    return loaded.settings;
   }
 
   const backupFile = `${paths.configFile}.bak`;
   const backupLoaded = fs.existsSync(backupFile) ? readSettingsFile(backupFile) : null;
   if (backupLoaded) {
     logger.warn("Konfiguration defekt, Backup-Datei wird verwendet");
-    try {
-      const payload = JSON.stringify(backupLoaded, safeJsonReplacer, 2);
-      const tempPath = `${paths.configFile}.tmp`;
-      fs.writeFileSync(tempPath, payload, "utf8");
-      syncRenameWithExdevFallback(tempPath, paths.configFile);
-    } catch {
-    }
-    return backupLoaded;
+    rewriteProtectedSettings(paths, backupLoaded.settings);
+    return backupLoaded.settings;
   }
 
   logger.error("Konfiguration konnte nicht geladen werden (auch Backup fehlgeschlagen)");
@@ -953,6 +937,35 @@ function syncRenameWithExdevFallback(tempPath: string, targetPath: string): void
     } else {
       throw renameError;
     }
+  }
+}
+
+function settingsPayload(settings: AppSettings): string {
+  return JSON.stringify(protectPersistedSettings(normalizeSettings(settings)), safeJsonReplacer, 2);
+}
+
+function writeSettingsFileAtomically(filePath: string, payload: string): void {
+  const tempPath = `${filePath}.tmp`;
+  try {
+    fs.writeFileSync(tempPath, payload, "utf8");
+    syncRenameWithExdevFallback(tempPath, filePath);
+  } catch (error) {
+    try { fs.rmSync(tempPath, { force: true }); } catch { }
+    throw error;
+  }
+}
+
+function rewriteProtectedSettings(paths: StoragePaths, settings: AppSettings): void {
+  const payload = settingsPayload(settings);
+  writeSettingsFileAtomically(`${paths.configFile}.bak`, payload);
+  writeSettingsFileAtomically(paths.configFile, payload);
+}
+
+function needsSettingsFileCredentialRewrite(filePath: string): boolean {
+  try {
+    return needsPersistedSettingsRewrite(JSON.parse(fs.readFileSync(filePath, "utf8")) as AppSettings);
+  } catch {
+    return false;
   }
 }
 
@@ -1045,8 +1058,7 @@ export function saveSettings(paths: StoragePaths, settings: AppSettings): void {
     } catch {
     }
   }
-  const persisted = sanitizeCredentialPersistence(normalizeSettings(settings));
-  const payload = JSON.stringify(persisted, safeJsonReplacer, 2);
+  const payload = settingsPayload(settings);
   const tempPath = `${paths.configFile}.tmp`;
   try {
     fs.writeFileSync(tempPath, payload, "utf8");
@@ -1109,8 +1121,7 @@ async function saveSettingsPayloadAsync(paths: StoragePaths, payload: string, ge
 
 export async function saveSettingsAsync(paths: StoragePaths, settings: AppSettings): Promise<void> {
   const generation = syncSettingsSaveGeneration;
-  const persisted = sanitizeCredentialPersistence(normalizeSettings(settings));
-  const payload = JSON.stringify(persisted, safeJsonReplacer, 2);
+  const payload = settingsPayload(settings);
   await saveSettingsPayloadAsync(paths, payload, generation);
 }
 

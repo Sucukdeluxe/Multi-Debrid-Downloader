@@ -1,15 +1,24 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
 import { AppSettings } from "../src/shared/types";
 import { defaultSettings } from "../src/main/constants";
+import { configureCredentialProtector } from "../src/main/credential-protection";
 import { addHistoryEntryForRetention, createStoragePaths, emptySession, loadHistory, loadHistoryForRetention, loadSession, loadSettings, normalizeLoadedSession, normalizeSettings, resetHistoryForRetention, saveHistory, saveSession, saveSessionAsync, saveSettings } from "../src/main/storage";
 
 const tempDirs: string[] = [];
+
+beforeEach(() => {
+  configureCredentialProtector({
+    isEncryptionAvailable: () => true,
+    encryptString: (value) => Buffer.from(value, "utf8").reverse(),
+    decryptString: (value) => Buffer.from(value).reverse().toString("utf8")
+  });
+});
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
@@ -184,6 +193,28 @@ describe("settings storage", () => {
     expect(loaded.megaPassword).toBe("mega-pass");
     expect(loaded.bestToken).toBe("best-token");
     expect(loaded.allDebridToken).toBe("all-token");
+  });
+
+  it("migrates remembered plaintext provider values without retaining plaintext in config backups", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const value = "legacy-value-to-migrate";
+    fs.writeFileSync(paths.configFile, JSON.stringify({
+      ...defaultSettings(),
+      rememberToken: true,
+      token: value
+    }), "utf8");
+
+    const loaded = loadSettings(paths);
+    const config = fs.readFileSync(paths.configFile, "utf8");
+    const backup = fs.existsSync(`${paths.configFile}.bak`)
+      ? fs.readFileSync(`${paths.configFile}.bak`, "utf8")
+      : "";
+
+    expect(loaded.token).toBe(value);
+    expect(config).not.toContain(value);
+    expect(backup).not.toContain(value);
   });
 
   it("normalizes invalid enum and numeric values", () => {

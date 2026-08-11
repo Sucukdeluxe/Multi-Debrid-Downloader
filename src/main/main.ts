@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { app, BrowserWindow, clipboard, dialog, ipcMain, IpcMainInvokeEvent, Menu, shell, Tray } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, IpcMainInvokeEvent, Menu, safeStorage, shell, Tray } from "electron";
 import { AddLinksPayload, AppSettings, DebridProvider, EnableRemoteDiagnosticsInput, UpdateInstallProgress } from "../shared/types";
 import { AppController } from "./app-controller";
 import { IPC_CHANNELS } from "../shared/ipc";
@@ -13,6 +13,7 @@ import { cleanupStaleSubstDrives, shutdownDaemon } from "./extractor";
 import { revealHistoryEntry } from "./history-reveal";
 import { DEV_SERVER_URL } from "./dev-server-url";
 import { resolveAppIconPath } from "./app-icon";
+import { configureCredentialProtector } from "./credential-protection";
 
 function validateString(value: unknown, name: string): string {
   if (typeof value !== "string") {
@@ -73,7 +74,7 @@ let clipboardTimer: ReturnType<typeof setInterval> | null = null;
 let updateQuitTimer: ReturnType<typeof setTimeout> | null = null;
 let scheduledStartTimer: ReturnType<typeof setTimeout> | null = null;
 let lastClipboardText = "";
-const controller = new AppController();
+let controller: AppController;
 const CLIPBOARD_MAX_TEXT_CHARS = 50_000;
 
 function isDevMode(): boolean {
@@ -860,6 +861,8 @@ app.on("second-instance", () => {
 });
 
 app.whenReady().then(() => {
+  configureCredentialProtector(safeStorage);
+  controller = new AppController();
   cleanupStaleSubstDrives();
   registerIpcHandlers();
   mainWindow = createWindow();
@@ -893,9 +896,11 @@ app.on("before-quit", () => {
   stopClipboardWatcher();
   destroyTray();
   shutdownDaemon();
-  try {
-    controller.shutdown();
-  } catch (error) {
-    logger.error(`Fehler beim Shutdown: ${String(error)}`);
+  if (controller) {
+    try {
+      controller.shutdown();
+    } catch (error) {
+      logger.error(`Fehler beim Shutdown: ${String(error)}`);
+    }
   }
 });
