@@ -1052,21 +1052,11 @@ function readSessionFile(filePath: string): SessionState | null {
 export function saveSettings(paths: StoragePaths, settings: AppSettings): void {
   syncSettingsSaveGeneration += 1;
   ensureBaseDir(paths.baseDir);
-  if (fs.existsSync(paths.configFile)) {
-    try {
-      fs.copyFileSync(paths.configFile, `${paths.configFile}.bak`);
-    } catch {
-    }
-  }
   const payload = settingsPayload(settings);
-  const tempPath = `${paths.configFile}.tmp`;
-  try {
-    fs.writeFileSync(tempPath, payload, "utf8");
-    syncRenameWithExdevFallback(tempPath, paths.configFile);
-  } catch (error) {
-    try { fs.rmSync(tempPath, { force: true }); } catch {  }
-    throw error;
+  if (fs.existsSync(paths.configFile)) {
+    writeSettingsFileAtomically(`${paths.configFile}.bak`, payload);
   }
+  writeSettingsFileAtomically(paths.configFile, payload);
 }
 
 let asyncSettingsSaveRunning = false;
@@ -1075,12 +1065,33 @@ let syncSettingsSaveGeneration = 0;
 
 async function writeSettingsPayload(paths: StoragePaths, payload: string, generation: number): Promise<void> {
   await fs.promises.mkdir(paths.baseDir, { recursive: true });
-  await fsp.copyFile(paths.configFile, `${paths.configFile}.bak`).catch(() => {});
   const tempPath = `${paths.configFile}.settings.tmp`;
   await fsp.writeFile(tempPath, payload, "utf8");
   if (generation < syncSettingsSaveGeneration) {
     await fsp.rm(tempPath, { force: true }).catch(() => {});
     return;
+  }
+  if (fs.existsSync(paths.configFile)) {
+    const backupTempPath = `${paths.configFile}.bak.settings.tmp`;
+    await fsp.writeFile(backupTempPath, payload, "utf8");
+    if (generation < syncSettingsSaveGeneration) {
+      await Promise.all([
+        fsp.rm(tempPath, { force: true }).catch(() => {}),
+        fsp.rm(backupTempPath, { force: true }).catch(() => {})
+      ]);
+      return;
+    }
+    try {
+      await fsp.rename(backupTempPath, `${paths.configFile}.bak`);
+    } catch (renameError: unknown) {
+      if (renameError && typeof renameError === "object" && "code" in renameError && (renameError as NodeJS.ErrnoException).code === "EXDEV") {
+        await fsp.copyFile(backupTempPath, `${paths.configFile}.bak`);
+        await fsp.rm(backupTempPath, { force: true }).catch(() => {});
+      } else {
+        await fsp.rm(backupTempPath, { force: true }).catch(() => {});
+        throw renameError;
+      }
+    }
   }
   try {
     await fsp.rename(tempPath, paths.configFile);

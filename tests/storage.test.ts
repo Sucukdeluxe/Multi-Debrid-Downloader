@@ -8,7 +8,7 @@ import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
 import { AppSettings } from "../src/shared/types";
 import { defaultSettings } from "../src/main/constants";
 import { configureCredentialProtector } from "../src/main/credential-protection";
-import { addHistoryEntryForRetention, createStoragePaths, emptySession, loadHistory, loadHistoryForRetention, loadSession, loadSettings, normalizeLoadedSession, normalizeSettings, resetHistoryForRetention, saveHistory, saveSession, saveSessionAsync, saveSettings } from "../src/main/storage";
+import { addHistoryEntryForRetention, createStoragePaths, emptySession, loadHistory, loadHistoryForRetention, loadSession, loadSettings, normalizeLoadedSession, normalizeSettings, resetHistoryForRetention, saveHistory, saveSession, saveSessionAsync, saveSettings, saveSettingsAsync } from "../src/main/storage";
 
 const tempDirs: string[] = [];
 
@@ -193,6 +193,58 @@ describe("settings storage", () => {
     expect(loaded.megaPassword).toBe("mega-pass");
     expect(loaded.bestToken).toBe("best-token");
     expect(loaded.allDebridToken).toBe("all-token");
+  });
+
+  it.each(["sync", "async"] as const)("clears previously stored credentials from the backup when remembering is disabled during a %s save", async (mode) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const remembered = {
+      ...defaultSettings(),
+      rememberToken: true,
+      token: "stored-value-before-clear"
+    };
+    saveSettings(paths, remembered);
+
+    const cleared = { ...remembered, rememberToken: false };
+    if (mode === "sync") {
+      saveSettings(paths, cleared);
+    } else {
+      await saveSettingsAsync(paths, cleared);
+    }
+
+    const primary = JSON.parse(fs.readFileSync(paths.configFile, "utf8")) as Record<string, unknown>;
+    const backup = JSON.parse(fs.readFileSync(`${paths.configFile}.bak`, "utf8")) as Record<string, unknown>;
+    expect(primary.token).toBe("");
+    expect(backup.token).toBe("");
+  });
+
+  it.each(["sync", "async"] as const)("clears previously stored credentials from the backup when encryption is unavailable during a %s save", async (mode) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const remembered = {
+      ...defaultSettings(),
+      rememberToken: true,
+      token: "stored-value-before-unavailable"
+    };
+    saveSettings(paths, remembered);
+    configureCredentialProtector({
+      isEncryptionAvailable: () => false,
+      encryptString: () => Buffer.alloc(0),
+      decryptString: () => ""
+    });
+
+    if (mode === "sync") {
+      saveSettings(paths, remembered);
+    } else {
+      await saveSettingsAsync(paths, remembered);
+    }
+
+    const primary = JSON.parse(fs.readFileSync(paths.configFile, "utf8")) as Record<string, unknown>;
+    const backup = JSON.parse(fs.readFileSync(`${paths.configFile}.bak`, "utf8")) as Record<string, unknown>;
+    expect(primary.token).toBe("");
+    expect(backup.token).toBe("");
   });
 
   it("migrates remembered plaintext provider values without retaining plaintext in config backups", () => {

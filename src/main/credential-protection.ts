@@ -1,4 +1,5 @@
 import { AppSettings } from "../shared/types";
+import { logger } from "./logger";
 
 export interface CredentialProtector {
   isEncryptionAvailable(): boolean;
@@ -6,7 +7,6 @@ export interface CredentialProtector {
   decryptString(value: Buffer): string;
 }
 
-const PROTECTED_VALUE_PREFIX = "mdd-safe-storage:v1:";
 const MASKED_CREDENTIAL = "••••••••";
 const CREDENTIAL_KEYS = [
   "token",
@@ -24,6 +24,17 @@ const CREDENTIAL_KEYS = [
   "linkSnappyLogin",
   "linkSnappyPassword"
 ] as const satisfies readonly (keyof AppSettings)[];
+type CredentialKey = typeof CREDENTIAL_KEYS[number];
+
+interface PersistedCredentialEnvelope {
+  type: "safe-storage";
+  version: 1;
+  payload: string;
+}
+
+export type PersistedAppSettings = Omit<AppSettings, CredentialKey> & {
+  [K in CredentialKey]: string | PersistedCredentialEnvelope;
+};
 
 let credentialProtector: CredentialProtector = {
   isEncryptionAvailable: () => false,
@@ -39,12 +50,20 @@ function isEncryptionAvailable(): boolean {
   try {
     return credentialProtector.isEncryptionAvailable();
   } catch {
+    logger.warn("Credential-Verschlüsselungsverfügbarkeit konnte nicht ermittelt werden");
     return false;
   }
 }
 
-function isProtectedValue(value: string): boolean {
-  return value.startsWith(PROTECTED_VALUE_PREFIX);
+function isPersistedCredentialEnvelope(value: unknown): value is PersistedCredentialEnvelope {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const envelope = value as Partial<PersistedCredentialEnvelope>;
+  return envelope.type === "safe-storage"
+    && envelope.version === 1
+    && typeof envelope.payload === "string"
+    && envelope.payload.length > 0;
 }
 
 function clearCredentials(settings: AppSettings): AppSettings {
@@ -55,37 +74,46 @@ function clearCredentials(settings: AppSettings): AppSettings {
   return cleared;
 }
 
-export function protectPersistedSettings(settings: AppSettings): AppSettings {
+export function protectPersistedSettings(settings: AppSettings): PersistedAppSettings {
   if (settings.rememberToken === false || !isEncryptionAvailable()) {
     return clearCredentials(settings);
   }
 
-  const protectedSettings = { ...settings };
+  const protectedSettings = { ...settings } as PersistedAppSettings;
   for (const key of CREDENTIAL_KEYS) {
     const value = typeof settings[key] === "string" ? settings[key] : "";
-    if (!value || isProtectedValue(value)) {
+    if (!value) {
       protectedSettings[key] = value;
       continue;
     }
     try {
-      protectedSettings[key] = `${PROTECTED_VALUE_PREFIX}${credentialProtector.encryptString(value).toString("base64")}`;
+      protectedSettings[key] = {
+        type: "safe-storage",
+        version: 1,
+        payload: credentialProtector.encryptString(value).toString("base64")
+      };
     } catch {
       protectedSettings[key] = "";
+      logger.warn(`Credential-Verschlüsselung fehlgeschlagen: ${key}`);
     }
   }
   return protectedSettings;
 }
 
-export function restorePersistedSettings(settings: AppSettings): AppSettings {
+export function restorePersistedSettings(settings: AppSettings | PersistedAppSettings): AppSettings {
   if (settings.rememberToken === false) {
-    return clearCredentials(settings);
+    return clearCredentials(settings as AppSettings);
   }
 
-  const restored = { ...settings };
+  const restored = { ...settings } as AppSettings;
   for (const key of CREDENTIAL_KEYS) {
-    const value = typeof settings[key] === "string" ? settings[key] : "";
-    if (!isProtectedValue(value)) {
+    const value = settings[key];
+    if (typeof value === "string") {
       restored[key] = value;
+      continue;
+    }
+    if (!isPersistedCredentialEnvelope(value)) {
+      restored[key] = "";
       continue;
     }
     if (!isEncryptionAvailable()) {
@@ -93,23 +121,26 @@ export function restorePersistedSettings(settings: AppSettings): AppSettings {
       continue;
     }
     try {
-      restored[key] = credentialProtector.decryptString(Buffer.from(value.slice(PROTECTED_VALUE_PREFIX.length), "base64"));
+      restored[key] = credentialProtector.decryptString(Buffer.from(value.payload, "base64"));
     } catch {
       restored[key] = "";
+      logger.warn(`Credential-Entschlüsselung fehlgeschlagen: ${key}`);
     }
   }
   return restored;
 }
 
-export function needsPersistedSettingsRewrite(settings: AppSettings): boolean {
-  const values = CREDENTIAL_KEYS.map((key) => typeof settings[key] === "string" ? settings[key] : "").filter(Boolean);
+export function needsPersistedSettingsRewrite(settings: AppSettings | PersistedAppSettings): boolean {
+  const values = CREDENTIAL_KEYS.map((key) => settings[key]).filter((value) => {
+    return typeof value === "string" ? value.length > 0 : value !== null && value !== undefined;
+  });
   if (values.length === 0) {
     return false;
   }
   if (settings.rememberToken === false || !isEncryptionAvailable()) {
     return true;
   }
-  return values.some((value) => !isProtectedValue(value));
+  return values.some((value) => !isPersistedCredentialEnvelope(value));
 }
 
 export function projectSettingsForRenderer(settings: AppSettings): AppSettings {
