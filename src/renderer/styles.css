@@ -3144,10 +3144,17 @@ td {
 }
 
 .link-popup-click {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
   cursor: pointer;
+  font: inherit;
   border-radius: 4px;
   padding: 1px 3px;
   margin: -1px -3px;
+  min-width: 0;
+  text-align: left;
   transition: background 0.1s;
 }
 

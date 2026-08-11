@@ -2,6 +2,36 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.21] - 2026-08-11
+
+### Responsive interface
+
+- Refined Downloads, Link Collector, Settings, History, and Statistics layouts for 1920, 1366, and 1120 pixel window widths.
+- Kept the Downloads action column reachable in compact windows while preserving useful space for names, status, service, speed, and availability.
+- Moved the compact sidebar control into reserved header space so it no longer overlaps view content.
+- Wrapped Link Collector search and actions cleanly at narrow widths without creating global horizontal scrolling.
+- Reworked History pagination to keep the page size, information control, range, and navigation visible without overlap.
+
+### Interaction and accessibility
+
+- Added keyboard controls for moving Download columns and exposed sort state, mixed selection state, and active filters to assistive technology.
+- Added keyboard-complete custom selectors, theme choices, account tabs, loading announcements, error announcements, and empty-search feedback in Settings.
+- Added confirmation before removing collections or selected collection links, unique link-selection labels, and disabled empty collection submission.
+- Added confirmation before resetting session or all-time statistics and accessible labels for the live bandwidth chart.
+- Completed English localization for new pagination, account feedback, link-selection, and copy-control accessibility text.
+- Replaced clickable text-only copy targets with native buttons and improved focus, control-border, success, warning, and danger contrast in both themes.
+
+### Visual consistency
+
+- Changed the live header speed graph and Statistics bandwidth line to the shared success green.
+- Improved table-heading, progress, availability, account-status, and destructive-action contrast across all primary views.
+- Preserved full service and status details through labels and tooltips when compact layouts require ellipsis.
+
+### Reliability and testing
+
+- Added regression coverage for compact table visibility, keyboard column movement, destructive confirmations, History pagination, accessible copy actions, Settings control states, and the updated chart colors.
+- Expanded the visual verification matrix across every primary view at all supported audit widths.
+
 ## [2.0.20] - 2026-08-11
 
 ### Downloads and selection

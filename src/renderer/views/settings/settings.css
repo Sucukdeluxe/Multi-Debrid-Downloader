@@ -117,13 +117,18 @@
   font-size: 12px;
 }
 
+.settings-save-state.is-clean,
+.settings-save-state.is-saved {
+  color: var(--ui-success-text);
+}
+
 .settings-save-state.is-dirty,
 .settings-save-state.is-saving {
-  color: var(--ui-warning);
+  color: var(--ui-warning-text);
 }
 
 .settings-save-state.is-error {
-  color: var(--ui-danger);
+  color: var(--ui-danger-text);
 }
 
 .settings-content-body {
@@ -209,7 +214,7 @@
   height: 44px;
   min-width: 0;
   padding: 0 12px;
-  border: 1px solid var(--ui-border);
+  border: 1px solid var(--ui-control-border);
   border-radius: 6px;
   outline: 0;
   background: var(--ui-input);
@@ -231,7 +236,7 @@
   justify-content: space-between;
   gap: 12px;
   padding: 0 12px;
-  border: 1px solid var(--ui-border);
+  border: 1px solid var(--ui-control-border);
   border-radius: 6px;
   background: var(--ui-input);
   color: var(--ui-text);
@@ -312,7 +317,7 @@
 .settings-account-row:focus-visible,
 .settings-account-action-button:focus-visible,
 .settings-account-picker-row:focus-visible {
-  outline: 2px solid var(--ui-accent);
+  outline: 2px solid var(--ui-focus);
   outline-offset: 2px;
 }
 
@@ -470,13 +475,13 @@
 .settings-button-primary {
   border-color: var(--ui-primary);
   background: var(--ui-primary);
-  color: #181A1F;
+  color: var(--ui-primary-text);
 }
 
 .settings-button-danger {
   border-color: color-mix(in srgb, var(--ui-danger) 70%, var(--ui-border));
   background: transparent;
-  color: var(--ui-danger);
+  color: var(--ui-danger-text);
 }
 
 .settings-button:hover:not(:disabled),
@@ -488,7 +493,7 @@
 
 .settings-button-primary:hover:not(:disabled) {
   background: var(--ui-primary-hover);
-  color: #181A1F;
+  color: var(--ui-primary-text);
 }
 
 .settings-account-workspace {
@@ -677,13 +682,26 @@
   background: var(--ui-success);
 }
 
+.settings-account-status-badge.is-ok {
+  color: var(--ui-success-text);
+}
+
 .settings-account-status-badge.is-free::before,
 .settings-account-status-badge.is-unknown::before {
   background: var(--ui-warning);
 }
 
+.settings-account-status-badge.is-free,
+.settings-account-status-badge.is-unknown {
+  color: var(--ui-warning-text);
+}
+
 .settings-account-status-badge.is-invalid::before {
   background: var(--ui-danger);
+}
+
+.settings-account-status-badge.is-invalid {
+  color: var(--ui-danger-text);
 }
 
 .settings-account-status-badge.is-disabled::before {
@@ -746,7 +764,7 @@
 
 .settings-account-table-error .ui-data-table-empty-title,
 .settings-account-dialog-error {
-  color: var(--ui-danger);
+  color: var(--ui-danger-text);
 }
 
 .settings-account-rules {
@@ -879,6 +897,16 @@
   overflow-y: auto;
 }
 
+.settings-account-picker-empty {
+  display: grid;
+  min-height: 72px;
+  padding: 16px;
+  place-items: center;
+  color: var(--ui-text-muted);
+  font-size: 13px;
+  text-align: center;
+}
+
 .settings-account-picker-row {
   width: 100%;
   min-height: 36px;
@@ -903,6 +931,17 @@
 
 .settings-account-picker-row.is-selected {
   box-shadow: inset 3px 0 0 var(--ui-accent);
+}
+
+.settings-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  border: 0;
+  white-space: nowrap;
 }
 
 .settings-account-picker-service {

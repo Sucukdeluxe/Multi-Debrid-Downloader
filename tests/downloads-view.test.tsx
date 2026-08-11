@@ -43,11 +43,11 @@ const now = new Date(2026, 7, 10, 12, 0, 0, 0).getTime();
 
 describe("Downloadtabellen-Spalten", () => {
   it("verteilt die Breite mit ausreichend Platz für vollständige Überschriften", () => {
-    expect(downloadColumnDefinitions.name.width).toBe("minmax(290px, 2.3fr)");
-    expect(downloadColumnDefinitions.progress.width).toBe("minmax(105px, 0.85fr)");
-    expect(downloadColumnDefinitions.prio.width).toBe("minmax(85px, 0.8fr)");
-    expect(downloadColumnDefinitions.speed).toEqual(expect.objectContaining({ label: "Geschwindigkeit", width: "minmax(120px, 1fr)" }));
-    expect(downloadColumnDefinitions.availability).toEqual(expect.objectContaining({ label: "Verfügbarkeit", width: "minmax(110px, 1fr)" }));
+    expect(downloadColumnDefinitions.name.width).toBe("minmax(var(--downloads-name-min, 290px), 2.3fr)");
+    expect(downloadColumnDefinitions.progress.width).toBe("minmax(var(--downloads-progress-min, 105px), 0.85fr)");
+    expect(downloadColumnDefinitions.prio.width).toBe("minmax(var(--downloads-priority-min, 85px), 0.8fr)");
+    expect(downloadColumnDefinitions.speed).toEqual(expect.objectContaining({ label: "Geschwindigkeit", width: "minmax(var(--downloads-speed-min, 120px), 1fr)" }));
+    expect(downloadColumnDefinitions.availability).toEqual(expect.objectContaining({ label: "Verfügbarkeit", width: "minmax(var(--downloads-availability-min, 110px), 1fr)" }));
   });
 
   it("uses the normal text color for sortable and static column headers", () => {
@@ -484,6 +484,7 @@ describe("downloads view", () => {
     expect(html).toContain("ui-sliding-selection ui-sliding-selection-vertical");
     expect(html.match(/data-sliding-selection-item="true"/g)).toHaveLength(6);
     expect(html.match(/data-sliding-selection-active="true"/g)).toHaveLength(1);
+    expect(html.match(/aria-current="page"/g)).toHaveLength(1);
   });
 
   it("disables the service filter until more than one concrete service is available", () => {
@@ -668,7 +669,7 @@ describe("downloads view", () => {
     expect(html).toContain('class="downloads-package-items is-expanded"');
     expect(html).toContain('class="downloads-package-items-inner"');
     expect(css).toMatch(/\.downloads-table\s*\{[^}]*overflow-x:\s*auto;[^}]*scrollbar-gutter:\s*stable;/s);
-    expect(css).toMatch(/\.downloads-table-header,\s*\.downloads-table-body\s*\{[^}]*width:\s*100%;[^}]*min-width:\s*1191px;/s);
+    expect(css).toMatch(/\.downloads-table-header,\s*\.downloads-table-body\s*\{[^}]*width:\s*100%;[^}]*min-width:\s*var\(--downloads-table-min-width, 1191px\);/s);
     expect(css).not.toMatch(/min-width:\s*max-content;/);
     expect(css).toMatch(/\.downloads-table-header\s*\{[^}]*height:\s*41px;[^}]*position:\s*sticky;/s);
     expect(css).toMatch(/\.downloads-item-row,\s*\.downloads-package-row\s*\{[^}]*height:\s*40px;/s);
@@ -678,6 +679,7 @@ describe("downloads view", () => {
     expect(css).toMatch(/\.downloads-collapse-button\s*\{[^}]*box-sizing:\s*border-box;[^}]*flex:\s*0 0 30px;[^}]*width:\s*30px;[^}]*min-width:\s*30px;[^}]*max-width:\s*30px;/s);
     expect(css).toMatch(/\.downloads-cell-slot\s*\{[^}]*display:\s*flex;[^}]*justify-content:\s*center;/s);
     expect(css).toMatch(/\.downloads-cell-slot\s*>\s*\.downloads-cell\s*\{[^}]*justify-content:\s*center;[^}]*text-align:\s*center;/s);
+    expect(css).toMatch(/\.downloads-column-header\s*\{[^}]*justify-content:\s*center;[^}]*text-align:\s*center;/s);
     expect(css).toMatch(/\[data-download-column="name"\][^{]*\{[^}]*justify-content:\s*flex-start;[^}]*text-align:\s*left;/s);
     expect(css).toMatch(/\.downloads-package-items\s*\{[^}]*height:\s*auto;[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.downloads-package-items\.is-collapsed\s*\{[^}]*height:\s*0;[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s);
@@ -688,8 +690,10 @@ describe("downloads view", () => {
     expect(css).toMatch(/\.downloads-link-state\.online\s*\{[^}]*background:\s*var\(--ui-success\);/s);
     expect(css).toMatch(/\.downloads-status-cell\s*\{[^}]*container-type:\s*inline-size;/s);
     expect(css).toMatch(/\.downloads-service-cell\s*\{[^}]*container-type:\s*inline-size;/s);
-    expect(css).toMatch(/@container\s*\(max-width:\s*150px\)[\s\S]*\.downloads-status-full[^{]*\{[^}]*display:\s*none;[\s\S]*\.downloads-status-compact[^{]*\{[^}]*display:\s*inline;/s);
-    expect(css).toMatch(/@container\s*\(max-width:\s*150px\)[\s\S]*\.downloads-service-full[^{]*\{[^}]*display:\s*none;[\s\S]*\.downloads-service-compact[^{]*\{[^}]*display:\s*inline;/s);
+    expect(css).toMatch(/\.downloads-cell-slot\s*>\s*:is\(\.downloads-status-cell, \.downloads-service-cell\)\s*\{[^}]*justify-content:\s*flex-start;[^}]*text-align:\s*left;/s);
+    expect(css).toMatch(/:is\(\.downloads-status-full, \.downloads-status-compact, \.downloads-service-full, \.downloads-service-compact\)\s*\{[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s);
+    expect(css).toMatch(/@container\s*\(max-width:\s*150px\)[\s\S]*\.downloads-status-full[^{]*\{[^}]*display:\s*none;[\s\S]*\.downloads-status-compact[^{]*\{[^}]*display:\s*block;/s);
+    expect(css).toMatch(/@container\s*\(max-width:\s*150px\)[\s\S]*\.downloads-service-full[^{]*\{[^}]*display:\s*none;[\s\S]*\.downloads-service-compact[^{]*\{[^}]*display:\s*block;/s);
     expect(readFileSync(new URL("../src/renderer/views/downloads/DownloadsTable.tsx", import.meta.url), "utf8")).toMatch(/\.animate\(\[\{ height: "0px", opacity: 0 \}, \{ height: `\$\{targetHeight\}px`, opacity: 1 \}\]/);
     expect(css).toMatch(/\.downloads-footer\s*\{[^}]*height:\s*60px;[^}]*padding:\s*0 12px 0 60px;/s);
     expect(css).toMatch(/\.downloads-package-card\s*\{[^}]*border:\s*0;[^}]*border-bottom:\s*1px solid color-mix\(in srgb, var\(--ui-border\) 72%, transparent\);[^}]*padding:\s*0;/s);
@@ -720,10 +724,13 @@ describe("downloads view", () => {
     expect(source.match(/duration:\s*300/g)).toHaveLength(2);
   });
 
-  it("keeps the 1120px layout inside the single downloads table scroll owner", () => {
+  it("keeps the action column visible at 1366px and 1120px through the production wrapper contract", () => {
+    const html = renderToStaticMarkup(<DownloadsContent actions={createActions()} model={withRuntime(createInput())} />);
     const css = readFileSync(new URL("../src/renderer/views/downloads/downloads.css", import.meta.url), "utf8");
 
-    expect(css).toMatch(/@media \(max-width:\s*1120px\)/);
+    expect(html).toMatch(/^<main class="downloads-content">/);
+    expect(css).toMatch(/\.md-shell\.is-compact \.downloads-content,\s*\.md-shell\.is-minimum \.downloads-content\s*\{[^}]*--downloads-table-min-width:\s*1016px;[^}]*--downloads-name-min:\s*180px;[^}]*--downloads-status-min:\s*90px;/s);
+    expect(css).not.toMatch(/\.md-shell\.is-(?:compact|minimum) \.downloads-view/);
     expect(css).toMatch(/\.downloads-content\s*\{[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.downloads-table\s*\{[^}]*overflow-x:\s*auto;[^}]*overflow-y:\s*auto;/s);
   });
@@ -838,6 +845,9 @@ describe("download table row contracts", () => {
     expect(css).toMatch(/\.downloads-availability\.has-counts\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*16px 4ch 1ch 4ch auto;[^}]*font-variant-numeric:\s*tabular-nums;/s);
     expect(css).toMatch(/\.downloads-availability-count\.is-online-count\s*\{[^}]*text-align:\s*right;/s);
     expect(css).toMatch(/\.downloads-availability-count\.is-total-count\s*\{[^}]*text-align:\s*left;/s);
+    expect(css).toMatch(/\.downloads-availability\.is-online\s*\{[^}]*color:\s*var\(--ui-success-text\);/s);
+    expect(css).toMatch(/\.downloads-availability\.is-partial\s*\{[^}]*color:\s*var\(--ui-warning-text\);/s);
+    expect(css).toMatch(/\.downloads-availability\.is-offline\s*\{[^}]*color:\s*var\(--ui-danger-text\);/s);
   });
 
   it("preserves the package download and extraction phase split", () => {
@@ -936,10 +946,51 @@ describe("download table row contracts", () => {
       visibleIds: ["package-a", "active", "queued"]
     });
     const checkbox = findElement(header, (element) => element.type === "input");
+    const input = { indeterminate: false };
 
+    (checkbox as unknown as { ref: (element: typeof input) => void }).ref(input);
     checkbox.props.onChange({ target: { checked: true } });
 
+    expect(checkbox.props["aria-checked"]).toBe("mixed");
+    expect(input.indeterminate).toBe(true);
     expect(calls).toEqual([[['package-a', 'active', 'queued'], true]]);
+  });
+
+  it("announces sort state and exposes keyboard-operable column move controls", () => {
+    const calls: Array<[string, string, number]> = [];
+    const header = DownloadsTableHeader({
+      actions: createActions({
+        onColumnPointerDown: (column, event) => calls.push(["down", column, event.clientX]),
+        onColumnPointerMove: (column, event) => calls.push(["move", column, event.clientX]),
+        onColumnPointerUp: (column, event) => calls.push(["up", column, event.clientX])
+      }),
+      columnOrder: ["name", "size", "account"],
+      gridTemplate: "200px 100px 100px",
+      selectedCount: 0,
+      sortColumn: "name",
+      sortDirection: "desc",
+      visibleIds: ["package-a"]
+    });
+    const html = renderToStaticMarkup(header);
+    const moveLeft = findElement(header, (element) => element.type === "button" && element.props["aria-label"] === "Geladen / Größe nach links verschieben");
+    const previous = { getBoundingClientRect: () => ({ left: 100, width: 100 }), matches: () => true };
+    const current = {
+      getBoundingClientRect: () => ({ left: 200, width: 100 }),
+      previousElementSibling: previous,
+      nextElementSibling: null
+    };
+
+    moveLeft.props.onClick({ currentTarget: { closest: () => current }, stopPropagation: () => {} });
+
+    expect(html).toMatch(/aria-sort="descending"[^>]*data-download-column="name"/);
+    expect(html).toMatch(/aria-sort="none"[^>]*data-download-column="size"/);
+    expect(html).not.toMatch(/aria-sort="[^"]+"[^>]*data-download-column="account"/);
+    expect(moveLeft.props.type).toBe("button");
+    expect(calls).toEqual([
+      ["down", "size", 250],
+      ["move", "size", 149],
+      ["up", "size", 149]
+    ]);
   });
 
   it("includes package selection state in memo equality", () => {

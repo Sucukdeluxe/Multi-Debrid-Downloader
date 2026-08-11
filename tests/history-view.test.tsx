@@ -8,6 +8,8 @@ import {
   deriveHistoryHoster,
   deriveHistoryStartAt,
   filterHistoryRows,
+  HISTORY_PAGE_SIZE,
+  paginateHistoryRows,
   pruneHistoryIds,
   selectVisibleHistoryIds,
   type HistoryFilter,
@@ -15,9 +17,12 @@ import {
 } from "../src/renderer/views/history/history-model";
 import {
   HistoryContent,
+  HistoryContentPage,
+  HistoryPagination,
   HistorySidebar,
   HistoryToolbar,
   HistoryView,
+  historyPageStatusLabel,
   type HistoryViewActions
 } from "../src/renderer/views/history/HistoryView";
 import { createVisualFixture } from "./visual/fixtures";
@@ -179,6 +184,30 @@ describe("history model", () => {
     expect([...selectVisibleHistoryIds(visibleIds)]).toEqual(["week-edge", "week"]);
   });
 
+  it("splits large filtered results into stable pages and clamps invalid page requests", () => {
+    const template = filterHistoryRows([entry({ id: "template", name: "Vorlage" })], "all", "", now)[0];
+    const rows = Array.from({ length: 100_005 }, (_, index) => ({
+      ...template,
+      id: `row-${index + 1}`,
+      name: `Eintrag ${index + 1}`
+    }));
+
+    const first = paginateHistoryRows(rows, 1);
+    const last = paginateHistoryRows(rows, 2_000);
+
+    expect(HISTORY_PAGE_SIZE).toBe(100);
+    expect(first.rows).toHaveLength(100);
+    expect(first.rows[0].id).toBe("row-1");
+    expect(first.rows[99].id).toBe("row-100");
+    expect(first.page).toBe(1);
+    expect(first.totalPages).toBe(1_001);
+    expect(first.rangeLabel).toBe("1–100 von 100.005");
+    expect(last.rows).toHaveLength(5);
+    expect(last.rows[0].id).toBe("row-100001");
+    expect(last.page).toBe(1_001);
+    expect(last.rangeLabel).toBe("100.001–100.005 von 100.005");
+  });
+
   it("removes hidden selected ids from the filtered view model and every toolbar action", () => {
     const model = buildHistoryViewModel(entries, "deleted", "", ["today", "week"], [], false, "", now);
     const calls: Array<unknown> = [];
@@ -205,6 +234,83 @@ describe("history model", () => {
 });
 
 describe("HistoryView", () => {
+  it("builds the complete page status as one localizable text value", () => {
+    expect(historyPageStatusLabel({ page: 2, pageSize: 100, rangeLabel: "101–200 von 250", rows: [], totalItems: 250, totalPages: 3 }))
+      .toBe("Seite 2 von 3");
+  });
+
+  it("renders only one fixed-size page with accessible previous and next controls", () => {
+    const template = filterHistoryRows([entry({ id: "template", name: "Vorlage" })], "all", "", now)[0];
+    const model = {
+      ...buildHistoryViewModel([], "all", "", [], [], false, "", now),
+      rows: Array.from({ length: 205 }, (_, index) => ({
+        ...template,
+        id: `visible-${index + 1}`,
+        name: `Sichtbar ${index + 1}`
+      })),
+      totalCount: 205
+    };
+    const html = renderToStaticMarkup(<HistoryView actions={createActions()} model={model} />);
+
+    expect(html.match(/data-history-row-id=/g)).toHaveLength(100);
+    expect(html).toContain("aria-label=\"Verlaufsseiten\"");
+    expect(html).toContain(">Zurück<");
+    expect(html).toContain(">Vor<");
+    expect(html).toContain("100 pro Seite");
+    expect(html).toContain("1–100 von 205");
+    expect(html).toContain("Seite 1 von 3");
+  });
+
+  it("moves through pages with bounded previous and next actions", () => {
+    const template = filterHistoryRows([entry({ id: "template", name: "Vorlage" })], "all", "", now)[0];
+    const rows = Array.from({ length: 205 }, (_, index) => ({
+      ...template,
+      id: `visible-${index + 1}`,
+      name: `Sichtbar ${index + 1}`
+    }));
+    const calls: number[] = [];
+    const first = HistoryPagination({ page: paginateHistoryRows(rows, 1), onPageChange: (page) => calls.push(page) });
+    const middle = HistoryPagination({ page: paginateHistoryRows(rows, 2), onPageChange: (page) => calls.push(page) });
+    const last = HistoryPagination({ page: paginateHistoryRows(rows, 3), onPageChange: (page) => calls.push(page) });
+
+    expect(findButton(first, "Zurück").props.disabled).toBe(true);
+    expect(findButton(first, "Vor").props.disabled).toBe(false);
+    findButton(first, "Vor").props.onClick();
+    findButton(middle, "Zurück").props.onClick();
+    findButton(middle, "Vor").props.onClick();
+    expect(findButton(last, "Vor").props.disabled).toBe(true);
+    expect(calls).toEqual([2, 1, 3]);
+  });
+
+  it("keeps a visible page title in the main content when the filter sidebar is unavailable", () => {
+    const html = renderToStaticMarkup(
+      <HistoryContent actions={createActions()} model={buildHistoryViewModel(entries, "all", "", [], [], false, "", now)} />
+    );
+
+    expect(html).toContain('<h1 class="history-main-title">Verlauf</h1>');
+    expect(html.indexOf("history-main-title")).toBeLessThan(html.indexOf("history-table"));
+  });
+
+  it("keeps pagination text clear of the shell information button", () => {
+    const css = readFileSync(new URL("../src/renderer/views/history/history.css", import.meta.url), "utf8");
+
+    expect(css).toMatch(/\.history-pagination\s*\{[^}]*padding:\s*10px 14px 10px 60px;/s);
+  });
+
+  it("announces loading politely and errors immediately", () => {
+    const loading = renderToStaticMarkup(
+      <HistoryContent actions={createActions()} model={buildHistoryViewModel([], "all", "", [], [], true, "", now)} />
+    );
+    const error = renderToStaticMarkup(
+      <HistoryContent actions={createActions()} model={buildHistoryViewModel([], "all", "", [], [], false, "Verlauf konnte nicht geladen werden", now)} />
+    );
+
+    expect(loading).toMatch(/role="status"[^>]*aria-live="polite"[^>]*aria-atomic="true"/);
+    expect(loading).toContain("Verlauf wird geladen");
+    expect(error).toMatch(/role="alert"[^>]*aria-live="assertive"[^>]*aria-atomic="true"/);
+    expect(error).toContain("Verlauf konnte nicht geladen werden");
+  });
+
   it("marks history filters for one measured vertical selection indicator", () => {
     const model = buildHistoryViewModel(entries, "week", "", [], [], false, "", now);
     const html = renderToStaticMarkup(<HistorySidebar actions={createActions()} model={model} />);
@@ -288,9 +394,12 @@ describe("HistoryView", () => {
   });
 
   it("matches the download action control and centers every header except package and file", () => {
-    const content = HistoryContent({
+    const model = buildHistoryViewModel(entries.slice(0, 1), "all", "", [], [], false, "", now);
+    const content = HistoryContentPage({
       actions: createActions(),
-      model: buildHistoryViewModel(entries.slice(0, 1), "all", "", [], [], false, "", now)
+      model,
+      onPageChange: () => {},
+      page: paginateHistoryRows(model.rows, 1)
     });
     const actionCell = findElement(content, (element) => element.props.className === "history-row-action");
     const styles = readFileSync(new URL("../src/renderer/views/history/history.css", import.meta.url), "utf8").replaceAll("\r\n", "\n");
@@ -326,7 +435,7 @@ describe("HistoryView", () => {
       onContextMenu: (id, x, y) => calls.push(["context", id, x, y])
     });
     const model = buildHistoryViewModel(entries.slice(0, 2), "all", "", [], [], false, "", now);
-    const content = HistoryContent({ actions, model });
+    const content = HistoryContentPage({ actions, model, onPageChange: () => {}, page: paginateHistoryRows(model.rows, 1) });
 
     const selectAll = findElement(content, (element) => element.type === "input" && element.props["aria-label"] === "Alle sichtbaren Einträge auswählen");
     selectAll.props.onChange();
@@ -353,9 +462,12 @@ describe("HistoryView", () => {
   it("focuses the matching row action before opening a genuine row context menu", () => {
     const calls: Array<unknown> = [];
     const focusCalls: Array<unknown> = [];
-    const content = HistoryContent({
+    const model = buildHistoryViewModel(entries.slice(0, 1), "all", "", [], [], false, "", now);
+    const content = HistoryContentPage({
       actions: createActions({ onContextMenu: (id, x, y) => calls.push([id, x, y]) }),
-      model: buildHistoryViewModel(entries.slice(0, 1), "all", "", [], [], false, "", now)
+      model,
+      onPageChange: () => {},
+      page: paginateHistoryRows(model.rows, 1)
     });
     const row = findElement(content, (element) => element.props["data-history-row-id"] === "today");
 

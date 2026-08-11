@@ -53,7 +53,7 @@ const pairs = [
   ["Alle Einträge", "All entries"], ["Heute", "Today"], ["Letzte 7 Tage", "Last 7 days"], ["Älter", "Older"], ["Gelöscht", "Deleted"], ["Fehlgeschlagen", "Failed"],
   ["Dauer", "Duration"], ["Durchschnitt", "Average"], ["Zielordner", "Destination folder"], ["Verlaufsfilter", "History filters"], ["Verlauf leeren", "Clear history"], ["Verlaufsaktionen", "History actions"],
   ["Einträge", "Entries"], ["Erneut hinzufügen", "Add again"], ["Im Ordner zeigen", "Show in folder"], ["Auswahl löschen", "Clear selection"], ["Verlauf durchsuchen", "Search history"], ["Name, Pfad, Hoster oder Provider", "Name, path, hoster or provider"],
-  ["Verlaufstabelle", "History table"], ["Verlauf wird geladen", "Loading history"], ["Die gespeicherten Einträge werden geladen.", "Saved entries are being loaded."], ["Noch kein Verlauf", "No history yet"], ["Keine passenden Einträge", "No matching entries"],
+  ["Verlaufstabelle", "History table"], ["Verlaufsseiten", "History pages"], ["Vorherige Verlaufsseite", "Previous history page"], ["Nächste Verlaufsseite", "Next history page"], ["Zurück", "Back"], ["Vor", "Next"], ["Verlauf wird geladen", "Loading history"], ["Die gespeicherten Einträge werden geladen.", "Saved entries are being loaded."], ["Verlauf wird geladen. Die gespeicherten Einträge werden geladen.", "History is loading. Saved entries are being loaded."], ["Noch kein Verlauf", "No history yet"], ["Keine passenden Einträge", "No matching entries"],
   ["Abgeschlossene und gelöschte Pakete erscheinen hier.", "Completed and deleted packages appear here."], ["Passe Filter oder Suche an.", "Adjust the filter or search."], ["Öffne die Ansicht erneut, um es noch einmal zu versuchen.", "Open the view again to retry."],
   ["Alle sichtbaren Einträge auswählen", "Select all visible entries"], ["Details anzeigen", "Show details"], ["Details ausblenden", "Hide details"],
   ["Sichtbar:", "Visible:"], ["pro Seite", "per page"],
@@ -62,16 +62,16 @@ const pairs = [
   ["Keine Links gesammelt", "No links collected"], ["Keine passenden Links", "No matching links"], ["Füge Links oder Text ein, um sie zu sammeln.", "Paste links or text to collect them."], ["Links durchsuchen", "Search links"],
   ["Datenmenge", "Data volume"], ["Sitzungszähler", "Session counter"], ["Sieben Tage", "Seven days"], ["30 Tage", "30 days"], ["Zeitraum", "Period"], ["Erfolgreich", "Successful"],
   ["Sitzungszähler und Ergebnisse der aktuellen Queue werden angezeigt.", "Session counters and results for the current queue are shown."], ["Sitzung zurücksetzen", "Reset session"], ["Gesamt zurücksetzen", "Reset total"], ["Fehler zurücksetzen", "Reset errors"],
-  ["Bandbreitenverlauf", "Bandwidth history"], ["Provider", "Provider"], ["Daten", "Data"], ["Ergebnisse", "Results"],
+  ["Bandbreitenverlauf", "Bandwidth history"], ["Bandbreitenverlauf der letzten 60 Sekunden", "Bandwidth history for the last 60 seconds"], ["Provider", "Provider"], ["Daten", "Data"], ["Ergebnisse", "Results"],
   ["Nie", "Never"], ["Sofort", "Immediately"], ["Beim App-Start", "On app startup"], ["Sobald Paket fertig ist", "When package completes"], ["Überschreiben", "Overwrite"], ["Überspringen", "Skip"], ["Nachfragen", "Ask"],
   ["Abbrechen", "Cancel"], ["Speichern", "Save"], ["Schließen", "Close"], ["Löschen", "Delete"], ["Suchen", "Search"], ["Zurücksetzen", "Reset"], ["Testen", "Test"], ["Öffnen", "Open"],
   ["Noch keine Downloads", "No downloads yet"], ["Füge Links hinzu, um den ersten Download zu starten.", "Add links to start the first download."], ["Keine passenden Downloads", "No matching downloads"], ["Alle anzeigen", "Show all"],
   ["Neue Sammlung", "New collection"], ["Linksammler-Aktionen", "Link collector actions"], ["Links erfassen", "Capture links"], ["DLC importieren", "Import DLC"], ["Datei importieren", "Import file"],
-  ["Sammlung verarbeiten", "Process collection"], ["Queue exportieren", "Export queue"], ["An Downloads übergeben", "Send to downloads"], ["Auswahl entfernen", "Remove selection"], ["Gesammelte Links", "Collected links"],
+  ["Sammlung verarbeiten", "Process collection"], ["Queue exportieren", "Export queue"], ["An Downloads übergeben", "Send to downloads"], ["Auswahl entfernen", "Remove selection"], ["Ausgewählte Links löschen", "Delete selected links"], ["Links löschen", "Delete links"], ["Die ausgewählten Links werden aus der Sammlung entfernt. Dieser Schritt kann nicht rückgängig gemacht werden.", "The selected links will be removed from the collection. This action cannot be undone."], ["Gesammelte Links", "Collected links"],
   ["Auswahl", "Selection"], ["Links werden verarbeitet", "Processing links"], ["Die laufende Aktion wird abgeschlossen.", "The current action is being completed."], ["Die lokale Sammlung bleibt unverändert.", "The local collection remains unchanged."],
   ["Passe die Suche an oder lösche den Filter.", "Adjust the search or clear the filter."], ["Füge Links hinzu oder importiere eine vorhandene Liste.", "Add links or import an existing list."], ["Keine passenden Links", "No matching links"], ["Noch keine Links", "No links yet"],
   ["Link auswählen", "Select link"], ["Lokal", "Local"], ["Übernehmen", "Apply"], ["Eine URL oder Rohzeile pro Zeile", "One URL or raw line per line"],
-  ["Die Accountdaten werden aktualisiert.", "Account data is being updated."], ["Accounts werden geladen", "Loading accounts"], ["Die gespeicherten Accounts bleiben unverändert.", "Saved accounts remain unchanged."],
+  ["Die Accountdaten werden aktualisiert.", "Account data is being updated."], ["Accountdaten werden aktualisiert.", "Account data is being updated."], ["Accounts werden geladen", "Loading accounts"], ["Die gespeicherten Accounts bleiben unverändert.", "Saved accounts remain unchanged."], ["Keine passenden Dienste oder Zugangstypen gefunden.", "No matching services or access types found."],
   ["Füge einen Account hinzu, um Downloads über einen Anbieter zu starten.", "Add an account to start downloads through a provider."], ["Noch keine Accounts", "No accounts yet"], ["Keine Provider konfiguriert.", "No providers configured."],
   ["Keine eigenen Zuordnungen.", "No custom assignments."], ["Hoster-Routing hinzufügen", "Add hoster routing"], ["Hoster hinzufügen…", "Add hoster…"], ["Eigener Hoster…", "Custom hoster…"], ["Noch keine Rotations-Ereignisse.", "No rotation events yet."],
   ["Prüfen und speichern", "Check and save"], ["Wähle einen Dienst und trage die passenden Zugangsdaten ein.", "Choose a service and enter the matching credentials."], ["Accounts durchsuchen", "Search accounts"],
@@ -96,7 +96,8 @@ const pairs = [
   ["Sitzungszähler und Ergebnisse des zuletzt beendeten Laufs werden angezeigt.", "Session counters and results from the last completed run are shown."], ["Nicht verfügbar", "Unavailable"],
   ["Heute wurden noch keine Providerbytes erfasst.", "No provider bytes have been recorded today."], ["Noch keine gespeicherten Providerbytes vorhanden.", "No stored provider bytes available yet."],
   ["In der aktuellen Queue sind noch keine Providerwerte vorhanden.", "No provider values are available in the current queue yet."], ["Statistik-Zeitraum", "Statistics time range"], ["Statistik-Dashboard", "Statistics dashboard"],
-  ["Statistiken zurücksetzen", "Reset statistics"], ["Erfolgsquote", "Success rate"], ["Live aus der aktuellen Renderer-Sitzung", "Live from the current renderer session"],
+  ["Statistiken zurücksetzen", "Reset statistics"], ["Sitzungsstatistik zurücksetzen", "Reset session statistics"], ["Die Zähler, Downloadmenge und Geschwindigkeitsdaten der aktuellen Sitzung werden gelöscht. Dieser Schritt kann nicht rückgängig gemacht werden.", "The counters, download volume, and speed data for the current session will be deleted. This action cannot be undone."], ["Gesamtstatistik zurücksetzen", "Reset total statistics"], ["Alle dauerhaft gespeicherten Download- und Providerstatistiken werden gelöscht. Dieser Schritt kann nicht rückgängig gemacht werden.", "All permanently stored download and provider statistics will be deleted. This action cannot be undone."], ["Erfolgsquote", "Success rate"], ["Live aus der aktuellen Renderer-Sitzung", "Live from the current renderer session"],
+  ["Sammlung entfernen", "Remove collection"],
   ["Kontextmenü", "Context menu"], ["Die Oberfläche hat einen Fehler ausgelöst", "The interface encountered an error"],
   ["Die Anzeige wurde gestoppt, um Datenverlust zu vermeiden. Die laufenden Downloads im Hintergrund sind nicht betroffen. Der Fehler wurde ins Log geschrieben.", "The interface was stopped to prevent data loss. Downloads running in the background are not affected. The error was written to the log."],
   ["Oberfläche neu laden", "Reload interface"], ["Unbekannter Fehler", "Unknown error"],
@@ -216,7 +217,7 @@ function translateDynamic(value: string, language: AppLanguage): string {
   if (language === "en") {
     const update = value.match(/^(.+) ist verfügbar\. Installierte Version: (.+)\.$/);
     if (update) return `${update[1]} is available. Installed version: ${update[2]}.`;
-    const pagination = value.match(/^(\d+\s*[–-]\s*\d+) von (\d+)$/);
+    const pagination = value.match(/^([\d.,]+\s*[–-]\s*[\d.,]+) von ([\d.,]+)$/);
     if (pagination) return `${pagination[1]} of ${pagination[2]}`;
     const schedule = value.match(/^Zeitregel (\d+)$/);
     if (schedule) return `Schedule rule ${schedule[1]}`;
@@ -228,6 +229,8 @@ function translateDynamic(value: string, language: AppLanguage): string {
     if (labelledCount) return `${({ Einträge: "Entries", Sichtbar: "Visible", Ausgewählt: "Selected" } as const)[labelledCount[1] as "Einträge" | "Sichtbar" | "Ausgewählt"]}: ${labelledCount[2]}`;
     const perPage = value.match(/^(\d+) pro Seite$/);
     if (perPage) return `${perPage[1]} per page`;
+    const pageStatus = value.match(/^Seite ([\d.,\s]+) von ([\d.,\s]+)$/);
+    if (pageStatus) return `Page ${pageStatus[1]} of ${pageStatus[2]}`;
     const filter = value.match(/^(Alle|Aktiv|Wartend|Pausiert|Fertig|Fehler) (\d+)$/);
     if (filter) return `${deToEn.get(filter[1]) ?? filter[1]} ${filter[2]}`;
     const remaining = value.match(/^(.+) von (.+) übrig$/);
@@ -292,7 +295,9 @@ function translateDynamic(value: string, language: AppLanguage): string {
     if (warnings) return `${warnings[1]} errors, ${warnings[2]} warnings (latest ${warnings[3]})`;
     const capture = value.match(/^Links für (.+) lokal erfassen\.$/);
     if (capture) return `Capture links locally for ${capture[1]}.`;
-    const copy = value.match(/^(.+) Klicken zum Kopieren$/);
+    const collectorSelection = value.match(/^(.+) aus (.+), Zeile (\d+) auswählen$/);
+    if (collectorSelection) return `Select ${collectorSelection[1]} from ${collectorSelection[2]}, line ${collectorSelection[3]}`;
+    const copy = value.match(/^([\s\S]+?)\s+Klicken zum Kopieren$/);
     if (copy) return `Click to copy ${copy[1]}`;
     const cancelledPart = value.match(/^· (\d+) abgebrochen$/);
     if (cancelledPart) return `· ${cancelledPart[1]} cancelled`;
@@ -340,11 +345,21 @@ function translateDynamic(value: string, language: AppLanguage): string {
     if (toggleAll) return `Toggle all ${toggleAll[1]}`;
     const removeSelected = value.match(/^Ausgewählte entfernen \((\d+)\)$/);
     if (removeSelected) return `Remove selected (${removeSelected[1]})`;
+    const removeCollection = value.match(/^Soll die Sammlung (.+) mit (\d+) Link\(s\) wirklich entfernt werden\?$/);
+    if (removeCollection) return `Do you really want to remove collection ${removeCollection[1]} with ${removeCollection[2]} link(s)?`;
+    const removeEmptyCollection = value.match(/^Soll die leere Sammlung (.+) wirklich entfernt werden\?$/);
+    if (removeEmptyCollection) return `Do you really want to remove the empty collection ${removeEmptyCollection[1]}?`;
+    const copyTitle = value.match(/^([\s\S]+?)\s+Klicken zum Kopieren$/);
+    if (copyTitle) return `Click to copy ${copyTitle[1]}`;
+    const moveColumnDirection = value.match(/^(.+) nach (links|rechts) verschieben$/);
+    if (moveColumnDirection) return `Move ${deToEn.get(moveColumnDirection[1]) ?? moveColumnDirection[1]} ${moveColumnDirection[2] === "links" ? "left" : "right"}`;
+    const moveColumn = value.match(/^(.+) verschieben$/);
+    if (moveColumn) return `Move ${deToEn.get(moveColumn[1]) ?? moveColumn[1]}`;
     const copied = value.match(/^(.+) kopiert$/);
     if (copied) return `${copied[1]} copied`;
     const suffixes: Array<[RegExp, string]> = [
       [/^(.+) auswählen$/, "Select $1"], [/^(.+) einklappen$/, "Collapse $1"], [/^(.+) ausklappen$/, "Expand $1"],
-      [/^(.+) aktivieren$/, "Enable $1"], [/^(.+) deaktivieren$/, "Disable $1"], [/^(.+) Aktionen$/, "$1 actions"], [/^(.+) entfernen$/, "Remove $1"]
+      [/^(.+) aktivieren$/, "Enable $1"], [/^(.+) deaktivieren$/, "Disable $1"], [/^(.+) Aktionen$/, "$1 actions"], [/^(.+) entfernen$/, "Remove $1"], [/^(.+) kopieren$/, "Copy $1"]
     ];
     for (const [pattern, replacement] of suffixes) if (pattern.test(value)) return value.replace(pattern, replacement);
     return value
@@ -355,7 +370,7 @@ function translateDynamic(value: string, language: AppLanguage): string {
   } else {
     const update = value.match(/^(.+) is available\. Installed version: (.+)\.$/);
     if (update) return `${update[1]} ist verfügbar. Installierte Version: ${update[2]}.`;
-    const pagination = value.match(/^(\d+\s*[–-]\s*\d+) of (\d+)$/);
+    const pagination = value.match(/^([\d.,]+\s*[–-]\s*[\d.,]+) of ([\d.,]+)$/);
     if (pagination) return `${pagination[1]} von ${pagination[2]}`;
     const schedule = value.match(/^Schedule rule (\d+)$/);
     if (schedule) return `Zeitregel ${schedule[1]}`;
@@ -469,6 +484,18 @@ function translateDynamic(value: string, language: AppLanguage): string {
     if (historyQuestion) return `${historyQuestion[1]} Einträge aus dem Verlauf entfernen?`;
     const historyRemoved = value.match(/^(\d+) history entries removed$/);
     if (historyRemoved) return `${historyRemoved[1]} Verlaufseinträge entfernt`;
+    const removeCollection = value.match(/^Do you really want to remove collection (.+) with (\d+) link\(s\)\?$/);
+    if (removeCollection) return `Soll die Sammlung ${removeCollection[1]} mit ${removeCollection[2]} Link(s) wirklich entfernt werden?`;
+    const removeEmptyCollection = value.match(/^Do you really want to remove the empty collection (.+)\?$/);
+    if (removeEmptyCollection) return `Soll die leere Sammlung ${removeEmptyCollection[1]} wirklich entfernt werden?`;
+    const pageStatus = value.match(/^Page ([\d.,\s]+) of ([\d.,\s]+)$/);
+    if (pageStatus) return `Seite ${pageStatus[1]} von ${pageStatus[2]}`;
+    const collectorSelection = value.match(/^Select (.+) from (.+), line (\d+)$/);
+    if (collectorSelection) return `${collectorSelection[1]} aus ${collectorSelection[2]}, Zeile ${collectorSelection[3]} auswählen`;
+    const moveColumnDirection = value.match(/^Move (.+) (left|right)$/);
+    if (moveColumnDirection) return `${enToDe.get(moveColumnDirection[1]) ?? moveColumnDirection[1]} nach ${moveColumnDirection[2] === "left" ? "links" : "rechts"} verschieben`;
+    const moveColumn = value.match(/^Move (.+)$/);
+    if (moveColumn) return `${enToDe.get(moveColumn[1]) ?? moveColumn[1]} verschieben`;
     const packageCount = value.match(/^(\d+) package\(s\)$/);
     if (packageCount) return `${packageCount[1]} Paket(e)`;
     const linkCount = value.match(/^(\d+) link\(s\)$/);
@@ -483,7 +510,7 @@ function translateDynamic(value: string, language: AppLanguage): string {
     if (copied) return `${copied[1]} kopiert`;
     const suffixes: Array<[RegExp, string]> = [
       [/^Select (.+)$/, "$1 auswählen"], [/^Collapse (.+)$/, "$1 einklappen"], [/^Expand (.+)$/, "$1 ausklappen"],
-      [/^Enable (.+)$/, "$1 aktivieren"], [/^Disable (.+)$/, "$1 deaktivieren"], [/^(.+) actions$/, "$1 Aktionen"], [/^Remove (.+)$/, "$1 entfernen"]
+      [/^Enable (.+)$/, "$1 aktivieren"], [/^Disable (.+)$/, "$1 deaktivieren"], [/^(.+) actions$/, "$1 Aktionen"], [/^Remove (.+)$/, "$1 entfernen"], [/^Copy (.+)$/, "$1 kopieren"]
     ];
     for (const [pattern, replacement] of suffixes) if (pattern.test(value)) return value.replace(pattern, replacement);
     return value

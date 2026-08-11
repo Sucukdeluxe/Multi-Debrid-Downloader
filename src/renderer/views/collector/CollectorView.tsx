@@ -78,6 +78,7 @@ export function CollectorSidebar({ model, actions }: CollectorViewProps): ReactE
 }
 
 export function CollectorToolbar({ model, actions }: CollectorViewProps): ReactElement {
+  const activeTab = model.tabs.find((tab) => tab.id === model.activeTabId) ?? model.tabs[0];
   return (
     <Toolbar className="collector-toolbar" data-visual-region="collector-toolbar" label="Linksammler-Aktionen">
       <ToolbarGroup label="Links erfassen">
@@ -87,7 +88,7 @@ export function CollectorToolbar({ model, actions }: CollectorViewProps): ReactE
       </ToolbarGroup>
       <ToolbarGroup label="Sammlung verarbeiten">
         <button className="collector-action" disabled={model.busy} onClick={actions.onExportQueue} type="button">Queue exportieren</button>
-        <button className="collector-action" disabled={model.busy || model.tabs.length === 0} onClick={actions.onSubmit} type="button">An Downloads übergeben</button>
+        <button className="collector-action" disabled={model.busy || !activeTab || activeTab.linkCount === 0} onClick={actions.onSubmit} type="button">An Downloads übergeben</button>
         <button className="collector-action collector-action-danger" disabled={model.busy || model.selectedIds.length === 0} onClick={actions.onRemoveSelected} type="button">Auswahl entfernen</button>
       </ToolbarGroup>
       <ToolbarSearch
@@ -130,7 +131,7 @@ export function CollectorContent({ model, actions }: CollectorViewProps): ReactE
               <div className={`collector-row${selected.has(row.id) ? " is-selected" : ""}`} key={row.id} role="row">
                 <span className="collector-column-select" role="cell">
                   <input
-                    aria-label="Link auswählen"
+                    aria-label={`${row.value} aus ${row.tabName}, Zeile ${row.lineNumber} auswählen`}
                     checked={selected.has(row.id)}
                     onChange={() => actions.onSelectionChange(row.id)}
                     type="checkbox"

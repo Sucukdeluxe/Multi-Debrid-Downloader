@@ -1,14 +1,13 @@
-import type { ChangeEvent, MouseEvent, ReactElement } from "react";
+import { useEffect, useState, type ChangeEvent, type MouseEvent, type ReactElement } from "react";
 import {
   DataTable,
   DataTableBody,
   DataTableEmpty,
-  DataTableFooter,
   DataTableHeader
 } from "../../ui/DataTable";
 import { Toolbar, ToolbarGroup, ToolbarSearch } from "../../ui/Toolbar";
 import { SlidingSelection } from "../../ui/SlidingSelection";
-import type { HistoryFilter, HistoryRow, HistoryViewModel } from "./history-model";
+import { paginateHistoryRows, type HistoryFilter, type HistoryPage, type HistoryRow, type HistoryViewModel } from "./history-model";
 import "./history.css";
 
 export interface HistoryViewActions {
@@ -109,18 +108,65 @@ export function HistoryToolbar({ model, actions }: HistoryViewProps): ReactEleme
   );
 }
 
-export function HistoryContent({ model, actions }: HistoryViewProps): ReactElement {
+export function historyPageStatusLabel(page: HistoryPage): string {
+  return `Seite ${page.page} von ${page.totalPages}`;
+}
+
+export function HistoryPagination({
+  page,
+  onPageChange
+}: {
+  page: HistoryPage;
+  onPageChange: (page: number) => void;
+}): ReactElement {
+  return (
+    <nav aria-label="Verlaufsseiten" className="history-pagination" data-visual-region="history-pagination">
+      <span className="history-pagination-size">{page.pageSize} pro Seite</span>
+      <div className="history-pagination-controls">
+        <button
+          aria-label="Vorherige Verlaufsseite"
+          disabled={page.page <= 1}
+          onClick={() => onPageChange(page.page - 1)}
+          type="button"
+        >Zurück</button>
+        <span aria-atomic="true" aria-current="page" aria-live="polite" className="history-pagination-status">
+          <span>{page.rangeLabel}</span>
+          <span>{historyPageStatusLabel(page)}</span>
+        </span>
+        <button
+          aria-label="Nächste Verlaufsseite"
+          disabled={page.page >= page.totalPages}
+          onClick={() => onPageChange(page.page + 1)}
+          type="button"
+        >Vor</button>
+      </div>
+    </nav>
+  );
+}
+
+interface HistoryContentPageProps extends HistoryViewProps {
+  page: HistoryPage;
+  onPageChange: (page: number) => void;
+}
+
+export function HistoryContentPage({ model, actions, page, onPageChange }: HistoryContentPageProps): ReactElement {
   const selected = new Set(model.selectedIds);
   const expanded = new Set(model.expandedIds);
-  const visibleIds = model.rows.map((row) => row.id);
+  const visibleIds = page.rows.map((row) => row.id);
   const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selected.has(id));
   const showEmpty = !model.loading && !model.error && model.rows.length === 0;
   const emptyTitle = model.totalCount === 0 && !model.query && model.filter === "all"
     ? "Noch kein Verlauf"
     : "Keine passenden Einträge";
+  const announcement = model.loading
+    ? { role: "status" as const, live: "polite" as const, message: "Verlauf wird geladen. Die gespeicherten Einträge werden geladen." }
+    : model.error
+      ? { role: "alert" as const, live: "assertive" as const, message: `${model.error}. Öffne die Ansicht erneut, um es noch einmal zu versuchen.` }
+      : null;
 
   return (
     <section aria-label="Verlaufstabelle" className="history-content">
+      <h1 className="history-main-title">Verlauf</h1>
       <DataTable className="history-table" label="Verlauf">
         <DataTableHeader className="history-table-header">
           <div className="history-table-header-row" role="row">
@@ -150,7 +196,7 @@ export function HistoryContent({ model, actions }: HistoryViewProps): ReactEleme
           ) : showEmpty ? (
             <DataTableEmpty description={emptyTitle === "Noch kein Verlauf" ? "Abgeschlossene und gelöschte Pakete erscheinen hier." : "Passe Filter oder Suche an."} title={emptyTitle} />
           ) : (
-            model.rows.map((row) => {
+            page.rows.map((row) => {
               const isSelected = selected.has(row.id);
               const isExpanded = expanded.has(row.id);
               const onContextMenu = (event: MouseEvent<HTMLElement>): void => {
@@ -212,21 +258,40 @@ export function HistoryContent({ model, actions }: HistoryViewProps): ReactEleme
           )}
         </DataTableBody>
       </DataTable>
+      {announcement ? (
+        <div role={announcement.role} aria-live={announcement.live} aria-atomic="true" className="history-announcement">
+          {announcement.message}
+        </div>
+      ) : null}
+      <HistoryPagination onPageChange={onPageChange} page={page} />
     </section>
   );
 }
 
-export function HistoryFooter({ model }: Pick<HistoryViewProps, "model">): ReactElement {
-  const count = model.rows.length;
+function PaginatedHistoryContent({ model, actions }: HistoryViewProps): ReactElement {
+  const [requestedPage, setRequestedPage] = useState(1);
+  const page = paginateHistoryRows(model.rows, requestedPage);
+
+  useEffect(() => {
+    setRequestedPage((current) => current === page.page ? current : page.page);
+  }, [page.page]);
+
   return (
-    <DataTableFooter
-      className="history-pagination"
-      data-visual-region="history-pagination"
-      pageSize={count}
-      paginationVisible
-      rangeLabel={count === 0 ? "0 von 0" : `1–${count} von ${count}`}
+    <HistoryContentPage
+      actions={actions}
+      model={model}
+      onPageChange={setRequestedPage}
+      page={page}
     />
   );
+}
+
+export function HistoryContent({ model, actions }: HistoryViewProps): ReactElement {
+  return <PaginatedHistoryContent actions={actions} key={`${model.filter}\u0000${model.query}`} model={model} />;
+}
+
+export function HistoryFooter(_props: Pick<HistoryViewProps, "model">): null {
+  return null;
 }
 
 export function HistoryView({ model, actions }: HistoryViewProps): ReactElement {
@@ -236,7 +301,6 @@ export function HistoryView({ model, actions }: HistoryViewProps): ReactElement 
       <div className="history-view-main">
         <HistoryToolbar actions={actions} model={model} />
         <HistoryContent actions={actions} model={model} />
-        <HistoryFooter model={model} />
       </div>
     </div>
   );

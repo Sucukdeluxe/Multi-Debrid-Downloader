@@ -16,12 +16,31 @@ import {
 import { Dialog } from "../../ui/Dialog";
 import {
   ACCOUNT_COLUMNS,
+  getSettingsSelectNavigationIndex,
   type AccountAddFilter,
   type AccountAddOption,
   type AccountRowViewModel
 } from "./settings-model";
 
 export type AccountWorkspacePanel = "overview" | "rules";
+
+const ACCOUNT_WORKSPACE_PANELS: readonly { id: AccountWorkspacePanel; label: string }[] = [
+  { id: "overview", label: "Übersicht" },
+  { id: "rules", label: "Verwendungsregeln" }
+];
+
+function getAccountPanelNavigationIndex(currentIndex: number, key: string): number | null {
+  if (key === "ArrowRight") {
+    return getSettingsSelectNavigationIndex(currentIndex, ACCOUNT_WORKSPACE_PANELS.length, "ArrowDown");
+  }
+  if (key === "ArrowLeft") {
+    return getSettingsSelectNavigationIndex(currentIndex, ACCOUNT_WORKSPACE_PANELS.length, "ArrowUp");
+  }
+  if (key === "Home" || key === "End") {
+    return getSettingsSelectNavigationIndex(currentIndex, ACCOUNT_WORKSPACE_PANELS.length, key);
+  }
+  return null;
+}
 
 export interface AccountRulesViewModel {
   providerOrder: readonly string[];
@@ -253,7 +272,7 @@ function AccountOverview({ model, actions }: AccountWorkspaceProps): ReactElemen
   const selectedIds = new Set(model.selectedIds);
   return (
     <>
-      <DataTable className="settings-account-table" label="Accounts">
+      <DataTable aria-busy={model.busy} className="settings-account-table" label="Accounts">
         <DataTableHeader className="settings-account-table-header">
           <div className="settings-account-table-grid" role="row">
             <span aria-label="Aktiviert" className="settings-account-column-enable" role="columnheader" />
@@ -414,6 +433,8 @@ function AccountRules({ model, actions }: AccountWorkspaceProps): ReactElement {
 export function AccountWorkspace({ model, actions }: AccountWorkspaceProps): ReactElement {
   return (
     <div className="settings-account-workspace">
+      {model.busy ? <span aria-live="polite" className="settings-visually-hidden" role="status">Accountdaten werden aktualisiert.</span> : null}
+      {model.error ? <span className="settings-visually-hidden" role="alert">{model.error}</span> : null}
       <header className="settings-account-heading">
         <div>
           <h2>Accountverwaltung</h2>
@@ -431,27 +452,32 @@ export function AccountWorkspace({ model, actions }: AccountWorkspaceProps): Rea
           </label>
         ) : null}
       </header>
-      <SlidingSelection activeKey={model.activePanel} aria-label="Accountverwaltung" axis="horizontal" className="settings-account-tabs" role="tablist">
-        <button
-          aria-controls="settings-account-overview"
-          aria-selected={model.activePanel === "overview"}
-          data-sliding-selection-active={model.activePanel === "overview"}
-          data-sliding-selection-item="true"
-          id="settings-account-overview-tab"
-          onClick={() => actions.onPanelChange("overview")}
-          role="tab"
-          type="button"
-        >Übersicht</button>
-        <button
-          aria-controls="settings-account-rules"
-          aria-selected={model.activePanel === "rules"}
-          data-sliding-selection-active={model.activePanel === "rules"}
-          data-sliding-selection-item="true"
-          id="settings-account-rules-tab"
-          onClick={() => actions.onPanelChange("rules")}
-          role="tab"
-          type="button"
-        >Verwendungsregeln</button>
+      <SlidingSelection activeKey={model.activePanel} aria-label="Accountverwaltung" aria-orientation="horizontal" axis="horizontal" className="settings-account-tabs" role="tablist">
+        {ACCOUNT_WORKSPACE_PANELS.map((panel, index) => (
+          <button
+            aria-controls={`settings-account-${panel.id}`}
+            aria-selected={model.activePanel === panel.id}
+            data-sliding-selection-active={model.activePanel === panel.id}
+            data-sliding-selection-item="true"
+            id={`settings-account-${panel.id}-tab`}
+            key={panel.id}
+            onClick={() => actions.onPanelChange(panel.id)}
+            onKeyDown={(event) => {
+              const nextIndex = getAccountPanelNavigationIndex(index, event.key);
+              if (nextIndex === null) {
+                return;
+              }
+              event.preventDefault();
+              const tablist = event.currentTarget.closest('[role="tablist"]');
+              const tabs = tablist?.querySelectorAll<HTMLElement>('[role="tab"]');
+              tabs?.[nextIndex]?.focus();
+              actions.onPanelChange(ACCOUNT_WORKSPACE_PANELS[nextIndex].id);
+            }}
+            role="tab"
+            tabIndex={model.activePanel === panel.id ? 0 : -1}
+            type="button"
+          >{panel.label}</button>
+        ))}
       </SlidingSelection>
       <div
         aria-labelledby="settings-account-overview-tab"
@@ -502,6 +528,8 @@ export function AccountAddDialog({
       <div className="settings-account-picker-selector">
         <span>Dienst / Zugangstyp</span>
         <input
+          aria-controls={model.options.length === 0 ? "settings-account-picker-empty" : "settings-account-picker-results"}
+          aria-describedby={model.options.length === 0 ? "settings-account-picker-empty" : undefined}
           aria-label="Dienst oder Zugangstyp suchen"
           className="settings-control"
           onChange={(event) => actions.onQueryChange(event.target.value)}
@@ -515,8 +543,13 @@ export function AccountAddDialog({
           <span>Dienst</span>
           <span>Typ/Funktion</span>
         </div>
-        <div aria-label="Dienst / Zugangstyp" className="settings-account-picker-list" role="listbox">
-          {model.options.map((option) => (
+        {model.options.length === 0 ? (
+          <div aria-live="polite" className="settings-account-picker-empty" id="settings-account-picker-empty" role="status">
+            Keine passenden Dienste oder Zugangstypen gefunden.
+          </div>
+        ) : (
+          <div aria-label="Dienst / Zugangstyp" className="settings-account-picker-list" id="settings-account-picker-results" role="listbox">
+            {model.options.map((option) => (
             <button
               aria-selected={option.id === model.selectedOptionId}
               className={`settings-account-picker-row${option.id === model.selectedOptionId ? " is-selected" : ""}`}
@@ -532,8 +565,9 @@ export function AccountAddDialog({
               </span>
               <span>{option.functionLabel}</span>
             </button>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
       {selectedOption ? (
         <>

@@ -8,7 +8,7 @@
 
 .history-view-main {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) 60px;
+  grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
 }
 
@@ -110,18 +110,44 @@
 
 .history-action-danger:not(:disabled) {
   border-color: color-mix(in srgb, var(--ui-danger) 70%, var(--ui-border));
-  color: var(--ui-danger);
+  color: var(--ui-danger-text);
 }
 
 .history-content {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) 60px;
   height: 100%;
   min-height: 0;
   min-width: 0;
   overflow: hidden;
 }
 
+.history-main-title {
+  align-items: center;
+  border-bottom: 1px solid var(--ui-border);
+  color: var(--ui-text);
+  display: flex;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 24px;
+  margin: 0;
+  min-height: 44px;
+  padding: 10px 14px;
+}
+
+.history-announcement {
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
 .history-content .history-table {
   height: 100%;
+  min-height: 0;
   overflow: auto;
 }
 
@@ -255,19 +281,19 @@
 .history-status-completed {
   background: color-mix(in srgb, var(--ui-success) 16%, transparent);
   border-color: color-mix(in srgb, var(--ui-success) 60%, var(--ui-border));
-  color: var(--ui-success);
+  color: var(--ui-success-text);
 }
 
 .history-status-deleted {
   background: color-mix(in srgb, var(--ui-danger) 15%, transparent);
   border-color: color-mix(in srgb, var(--ui-danger) 60%, var(--ui-border));
-  color: var(--ui-danger);
+  color: var(--ui-danger-text);
 }
 
 .history-status-failed {
   background: color-mix(in srgb, var(--ui-danger) 15%, transparent);
   border-color: color-mix(in srgb, var(--ui-danger) 60%, var(--ui-border));
-  color: var(--ui-danger);
+  color: var(--ui-danger-text);
 }
 
 .history-row-size,
@@ -335,11 +361,56 @@
 }
 
 .history-table-error .ui-data-table-empty-title {
-  color: var(--ui-danger);
+  color: var(--ui-danger-text);
 }
 
 .history-pagination {
+  align-items: center;
+  border-top: 1px solid var(--ui-border);
+  box-sizing: border-box;
+  color: var(--ui-text-secondary);
+  display: flex;
+  gap: 16px;
   height: 60px;
+  justify-content: space-between;
+  padding: 10px 14px 10px 60px;
+}
+
+.history-pagination-size,
+.history-pagination-status {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.history-pagination-controls,
+.history-pagination-status {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+
+.history-pagination button {
+  background: var(--ui-input);
+  border: 1px solid var(--ui-border);
+  border-radius: 5px;
+  color: var(--ui-text);
+  font: inherit;
+  height: 32px;
+  min-width: 72px;
+  padding: 0 12px;
+}
+
+.history-pagination button:hover:not(:disabled) {
+  background: var(--ui-hover);
+}
+
+.history-pagination button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.md-shell-main:has(.history-content) > .md-shell-footer {
+  display: none;
 }
 
 @media (max-width: 1366px) {

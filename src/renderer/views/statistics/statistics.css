@@ -53,7 +53,7 @@
 
 .statistics-range:focus-visible,
 .statistics-reset:focus-visible {
-  outline: 2px solid var(--ui-accent);
+  outline: 2px solid var(--ui-focus);
   outline-offset: 2px;
 }
 
@@ -132,7 +132,7 @@
 }
 
 .statistics-reset-danger {
-  color: var(--ui-danger);
+  color: var(--ui-danger-text);
 }
 
 .statistics-reset:disabled {
@@ -178,7 +178,7 @@
 }
 
 .statistics-kpi-danger .statistics-kpi-value {
-  color: var(--ui-danger);
+  color: var(--ui-danger-text);
 }
 
 .statistics-kpi-source {
@@ -309,7 +309,7 @@
 }
 
 .statistics-provider-errors {
-  color: var(--ui-danger);
+  color: var(--ui-danger-text);
 }
 
 .statistics-provider-empty {

@@ -3,7 +3,7 @@ import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { DownloadItem, DownloadStatus, UiSnapshot } from "../src/shared/types";
-import { appendBandwidthSample, readBandwidthChartPalette } from "../src/renderer/App";
+import { appendBandwidthSample, readBandwidthChartPalette, readDownloadSpeedSparklinePalette } from "../src/renderer/App";
 import {
   buildStatisticsViewModel,
   type StatisticsMetric,
@@ -414,12 +414,32 @@ describe("bandwidth chart palette", () => {
     const dark = css.match(/:root,\s*:root\[data-theme="dark"\]\s*\{([\s\S]*?)\}/)?.[1];
     const light = css.match(/:root\[data-theme="light"\]\s*\{([\s\S]*?)\}/)?.[1];
 
-    expect(dark).toContain("--ui-speed-accent: #F2942D;");
+    expect(dark).toContain("--ui-speed-accent: #4ADE80;");
+    expect(dark).toContain("--ui-primary-text: #181A1F;");
+    expect(dark).toContain("--ui-focus: #9AB8E8;");
+    expect(dark).toContain("--ui-success-text: #4ADE80;");
+    expect(dark).toContain("--ui-warning-text: #F1C786;");
+    expect(dark).toContain("--ui-danger-text: #F06464;");
     expect(dark).toContain("--ui-progress-track-text: #FFFFFF;");
     expect(dark).toContain("--ui-progress-fill-text: #181A1F;");
-    expect(light).toContain("--ui-speed-accent: #C2701A;");
+    expect(light).toContain("--ui-speed-accent: #1E9E55;");
+    expect(light).toContain("--ui-primary-text: #FFFFFF;");
+    expect(light).toContain("--ui-focus: #24558D;");
+    expect(light).toContain("--ui-success-text: #137A3D;");
+    expect(light).toContain("--ui-warning-text: #7A4B00;");
+    expect(light).toContain("--ui-danger-text: #B4232F;");
     expect(light).toContain("--ui-progress-track-text: #181A1F;");
     expect(light).toContain("--ui-progress-fill-text: #181A1F;");
+  });
+
+  it("uses theme-aware primary text and visible focus colors", () => {
+    const theme = readFileSync(new URL("../src/renderer/theme.css", import.meta.url), "utf8");
+    const shell = readFileSync(new URL("../src/renderer/shell/shell.css", import.meta.url), "utf8");
+    const collector = readFileSync(new URL("../src/renderer/views/collector/collector.css", import.meta.url), "utf8");
+
+    expect(theme).toMatch(/:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--ui-focus\);/s);
+    expect(shell).toContain("color: var(--ui-primary-text);");
+    expect(collector.match(/color:\s*var\(--ui-primary-text\);/g)).toHaveLength(3);
   });
 
   it("requests only the semantic UI color properties and keeps the computed font family", () => {
@@ -442,5 +462,45 @@ describe("bandwidth chart palette", () => {
       accent: "rgb(242, 148, 45)",
       fontFamily: "Inter, Segoe UI, sans-serif"
     });
+  });
+
+  it("uses the semantic green speed accent for the header sparkline", () => {
+    const requested: string[] = [];
+    const palette = readDownloadSpeedSparklinePalette((property) => {
+      requested.push(property);
+      return property === "--ui-speed-accent" ? " rgb(74, 222, 128) " : "";
+    });
+
+    expect(requested).toEqual(["--ui-speed-accent"]);
+    expect(palette).toEqual({ accent: "rgb(74, 222, 128)" });
+  });
+
+  it("labels the live chart and slows redraws when reduced motion is requested", () => {
+    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
+    const chartBlock = source.slice(source.indexOf("const BandwidthChart"), source.indexOf("interface DownloadSpeedSparklineProps"));
+
+    expect(chartBlock).toContain('role="img"');
+    expect(chartBlock).toContain('aria-label="Bandbreitenverlauf der letzten 60 Sekunden"');
+    expect(chartBlock).toContain('window.matchMedia("(prefers-reduced-motion: reduce)")');
+    expect(chartBlock).toContain("reducedMotion ? 1000 : 250");
+  });
+
+  it("asks for confirmation before deleting all saved download statistics", () => {
+    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
+    const actions = source.slice(source.indexOf("const statisticsActions"), source.indexOf("const collectorActions"));
+
+    expect(actions).toContain("askConfirmPrompt");
+    expect(actions.indexOf("askConfirmPrompt")).toBeLessThan(actions.indexOf("resetDownloadStats"));
+    expect(actions).toContain('title: "Gesamtstatistik zurücksetzen"');
+  });
+
+  it("asks for confirmation before resetting session statistics", () => {
+    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
+    const actions = source.slice(source.indexOf("const statisticsActions"), source.indexOf("const collectorActions"));
+    const sessionReset = actions.slice(actions.indexOf("onResetSession"), actions.indexOf("onResetAll"));
+
+    expect(sessionReset).toContain("askConfirmPrompt");
+    expect(sessionReset.indexOf("askConfirmPrompt")).toBeLessThan(sessionReset.indexOf("resetSessionStats"));
+    expect(sessionReset).toContain('title: "Sitzungsstatistik zurücksetzen"');
   });
 });

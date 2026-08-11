@@ -8,6 +8,30 @@ import { buildMainNavigation } from "../src/renderer/shell/shell-model";
 import { getSnapshotRenderDelay } from "../src/renderer/App";
 
 describe("desktop shell", () => {
+  it("uses keyboard-focusable controls for every copy target", () => {
+    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
+
+    expect(source).not.toMatch(/<span[^>]*className="[^"]*link-popup-click/);
+    expect(source.match(/<button[^>]*className="[^"]*link-popup-click[^>]*type="button"/g)).toHaveLength(3);
+  });
+
+  it("confirms before removing a collector tab", () => {
+    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
+    const removal = source.slice(source.indexOf("const removeCollectorTab"), source.indexOf("const openCollectorInput"));
+
+    expect(removal).toContain("askConfirmPrompt");
+    expect(removal.indexOf("askConfirmPrompt")).toBeLessThan(removal.indexOf("planCollectorTabRemoval"));
+  });
+
+  it("confirms before removing selected collector links", () => {
+    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
+    const removal = source.slice(source.indexOf("const removeSelectedCollectorRows"), source.indexOf("const onPackageStartEdit"));
+
+    expect(removal).toContain("askConfirmPrompt");
+    expect(removal.indexOf("askConfirmPrompt")).toBeLessThan(removal.indexOf("setCollectorTabs"));
+    expect(removal).toContain('title: "Ausgewählte Links löschen"');
+  });
+
   it("does not stack renderer latency on the manager cadence for large active queues", () => {
     expect(getSnapshotRenderDelay(2_470, true, "downloads")).toBe(0);
     expect(getSnapshotRenderDelay(2_470, true, "statistics")).toBe(800);

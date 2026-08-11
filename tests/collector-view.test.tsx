@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -202,6 +203,54 @@ describe("CollectorView", () => {
     expect(html).not.toContain("aria-label=\"Seitennavigation\"");
   });
 
+  it("gives every row checkbox a unique accessible name with its link and collection", () => {
+    const content = CollectorContent({
+      actions: createActions(),
+      model: buildCollectorViewModel(populatedTabs, "tab-a", "", false, [])
+    });
+    const labels: string[] = [];
+    visitElements(content, (element) => {
+      if (element.type === "input" && element.props.type === "checkbox") {
+        labels.push(element.props["aria-label"]);
+      }
+    });
+
+    expect(labels).toEqual([
+      "https://example.test/a aus Sammlung A, Zeile 1 auswählen",
+      "https://example.test/b aus Sammlung A, Zeile 3 auswählen"
+    ]);
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  it("uses a high-contrast table heading token in both themes", () => {
+    const css = readFileSync(new URL("../src/renderer/views/collector/collector.css", import.meta.url), "utf8");
+
+    expect(css).toMatch(/\.collector-table-header-row\s*{[^}]*color:\s*var\(--ui-text-secondary\);/s);
+  });
+
+  it("uses the semantic danger text token for the removal action", () => {
+    const css = readFileSync(new URL("../src/renderer/views/collector/collector.css", import.meta.url), "utf8");
+
+    expect(css).toMatch(/\.collector-action-danger:not\(:disabled\)\s*{[^}]*color:\s*var\(--ui-danger-text\);/s);
+  });
+
+  it("disables queue submission only when the active collection has no links", () => {
+    const emptyActive = CollectorToolbar({
+      actions: createActions(),
+      model: buildCollectorViewModel([
+        { id: "tab-a", name: "Sammlung A", text: "" },
+        { id: "tab-b", name: "Sammlung B", text: "https://example.test/b" }
+      ], "tab-a", "", false, [])
+    });
+    const filteredActive = CollectorToolbar({
+      actions: createActions(),
+      model: buildCollectorViewModel(populatedTabs, "tab-a", "kein-treffer", false, [])
+    });
+
+    expect(findButton(emptyActive, "An Downloads übergeben").props.disabled).toBe(true);
+    expect(findButton(filteredActive, "An Downloads übergeben").props.disabled).toBe(false);
+  });
+
   it("separates local input, queue submission, search, selection and local removal callbacks", () => {
     let inputOpens = 0;
     let queueSubmits = 0;
@@ -235,7 +284,7 @@ describe("CollectorView", () => {
     search.props.onChange({ target: { value: "release" } });
     expect(query).toBe("release");
 
-    const checkbox = findElement(content, (element) => element.type === "input" && element.props["aria-label"] === "Link auswählen");
+    const checkbox = findElement(content, (element) => element.type === "input" && element.props.type === "checkbox");
     checkbox.props.onChange();
     findButton(toolbar, "Auswahl entfernen").props.onClick();
     expect(selected).toBe("tab-a:0");
@@ -266,5 +315,12 @@ describe("CollectorView", () => {
     findButton(dialog, "Übernehmen").props.onClick();
     expect(value).toBe("https://example.test/new");
     expect(commits).toBe(1);
+  });
+
+  it("moves the search field onto a separate compact row instead of overlapping actions", () => {
+    const css = readFileSync(new URL("../src/renderer/views/collector/collector.css", import.meta.url), "utf8");
+
+    expect(css).toMatch(/@media \(max-width: 1120px\)[\s\S]*\.collector-toolbar\s*\{[^}]*flex-wrap:\s*wrap;/s);
+    expect(css).toMatch(/@media \(max-width: 1120px\)[\s\S]*\.collector-toolbar \.ui-toolbar-search\s*\{[^}]*flex:\s*1 0 100%;[^}]*width:\s*100%;/s);
   });
 });

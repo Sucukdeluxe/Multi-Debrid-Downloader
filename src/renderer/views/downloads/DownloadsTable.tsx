@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactElement } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactElement } from "react";
 import type { DownloadItem } from "../../../shared/types";
 import {
   compactProviderLabels,
@@ -47,16 +47,16 @@ function isPackageRowDisclosureExcluded(target: EventTarget | null): boolean {
 }
 
 export const downloadColumnDefinitions: Record<string, { label: string; width: string; sortable?: DownloadSortColumn }> = {
-  name: { label: "Name", width: "minmax(290px, 2.3fr)", sortable: "name" },
-  size: { label: "Geladen / Größe", width: "minmax(140px, 1.1fr)", sortable: "size" },
-  progress: { label: "Fortschritt", width: "minmax(105px, 0.85fr)", sortable: "progress" },
-  hoster: { label: "Hoster", width: "minmax(90px, 0.85fr)", sortable: "hoster" },
-  account: { label: "Service", width: "minmax(90px, 0.85fr)" },
-  prio: { label: "Priorität", width: "minmax(85px, 0.8fr)" },
+  name: { label: "Name", width: "minmax(var(--downloads-name-min, 290px), 2.3fr)", sortable: "name" },
+  size: { label: "Geladen / Größe", width: "minmax(var(--downloads-size-min, 140px), 1.1fr)", sortable: "size" },
+  progress: { label: "Fortschritt", width: "minmax(var(--downloads-progress-min, 105px), 0.85fr)", sortable: "progress" },
+  hoster: { label: "Hoster", width: "minmax(var(--downloads-hoster-min, 90px), 0.85fr)", sortable: "hoster" },
+  account: { label: "Service", width: "minmax(var(--downloads-service-min, 90px), 0.85fr)" },
+  prio: { label: "Priorität", width: "minmax(var(--downloads-priority-min, 85px), 0.8fr)" },
   status: { label: "Status", width: "minmax(var(--downloads-status-min, 210px), 1.2fr)" },
-  speed: { label: "Geschwindigkeit", width: "minmax(120px, 1fr)" },
-  availability: { label: "Verfügbarkeit", width: "minmax(110px, 1fr)" },
-  added: { label: "Hinzugefügt am", width: "minmax(135px, 1fr)" }
+  speed: { label: "Geschwindigkeit", width: "minmax(var(--downloads-speed-min, 120px), 1fr)" },
+  availability: { label: "Verfügbarkeit", width: "minmax(var(--downloads-availability-min, 110px), 1fr)" },
+  added: { label: "Hinzugefügt am", width: "minmax(var(--downloads-added-min, 135px), 1fr)" }
 };
 
 export type AvailabilityState = "online" | "partial" | "offline" | "checking";
@@ -103,12 +103,19 @@ export interface DownloadsTableActions {
   onMovePackageDown: (packageId: string) => void;
   onRemoveItem: (itemId: string) => void;
   onOpenContextMenu: (id: string, x: number, y: number, packageId?: string) => void;
-  onColumnPointerDown: (column: string, event: ReactPointerEvent<HTMLDivElement>) => void;
-  onColumnPointerMove: (column: string, event: ReactPointerEvent<HTMLDivElement>) => void;
-  onColumnPointerUp: (column: string, event: ReactPointerEvent<HTMLDivElement>) => void;
-  onColumnPointerCancel: (column: string, event: ReactPointerEvent<HTMLDivElement>) => void;
+  onColumnPointerDown: (column: string, event: DownloadColumnPointerInput) => void;
+  onColumnPointerMove: (column: string, event: DownloadColumnPointerInput) => void;
+  onColumnPointerUp: (column: string, event: DownloadColumnPointerInput) => void;
+  onColumnPointerCancel: (column: string, event: DownloadColumnPointerInput) => void;
   onColumnContextMenu: (column: string, x: number, y: number) => void;
   onSortColumn: (column: DownloadSortColumn) => void;
+}
+
+export interface DownloadColumnPointerInput {
+  clientX: number;
+  currentTarget: HTMLDivElement;
+  pointerId: number;
+  preventDefault: () => void;
 }
 
 function displayedStatus(item: DownloadItem, sessionRunning: boolean): string {
@@ -548,15 +555,33 @@ export interface DownloadsTableHeaderProps {
   visibleIds: string[];
 }
 
+function moveColumnWithPointerActions(column: string, direction: -1 | 1, element: HTMLDivElement, actions: DownloadsTableActions): void {
+  const sibling = direction < 0 ? element.previousElementSibling : element.nextElementSibling;
+  if (!sibling?.matches(".downloads-column-header")) return;
+  const currentRect = element.getBoundingClientRect();
+  const siblingRect = sibling.getBoundingClientRect();
+  const startX = currentRect.left + currentRect.width / 2;
+  const clientX = siblingRect.left + siblingRect.width / 2 + direction;
+  const pointerId = -1;
+  const pointerEvent = (x: number): DownloadColumnPointerInput => ({ clientX: x, currentTarget: element, pointerId, preventDefault: () => {} });
+  actions.onColumnPointerDown(column, pointerEvent(startX));
+  actions.onColumnPointerMove(column, pointerEvent(clientX));
+  actions.onColumnPointerUp(column, pointerEvent(clientX));
+}
+
 export function DownloadsTableHeader({ actions, columnOrder, gridTemplate, sortColumn, sortDirection, selectedCount, visibleIds }: DownloadsTableHeaderProps): ReactElement {
+  const allSelected = visibleIds.length > 0 && selectedCount === visibleIds.length;
+  const mixedSelection = selectedCount > 0 && selectedCount < visibleIds.length;
   return (
     <div className="downloads-table-header" role="row" style={{ gridTemplateColumns: downloadGridTemplate(gridTemplate) }}>
-      <span className="downloads-selection-cell" role="columnheader"><input aria-label="Alle sichtbaren Downloads auswählen" checked={visibleIds.length > 0 && selectedCount === visibleIds.length} onChange={(event) => actions.onSetVisibleSelection(visibleIds, event.target.checked)} type="checkbox" /></span>
-      {columnOrder.map((column) => {
+      <span className="downloads-selection-cell" role="columnheader"><input aria-checked={mixedSelection ? "mixed" : allSelected} aria-label="Alle sichtbaren Downloads auswählen" checked={allSelected} onChange={(event) => actions.onSetVisibleSelection(visibleIds, event.target.checked)} ref={(input) => { if (input) input.indeterminate = mixedSelection; }} type="checkbox" /></span>
+      {columnOrder.map((column, index) => {
         const definition = downloadColumnDefinitions[column];
         if (!definition) return null;
+        const ariaSort = definition.sortable ? sortColumn === definition.sortable ? sortDirection === "asc" ? "ascending" : "descending" : "none" : undefined;
         return (
           <div
+            aria-sort={ariaSort}
             className="downloads-column-header"
             data-download-column={column}
             key={column}
@@ -575,8 +600,12 @@ export function DownloadsTableHeader({ actions, columnOrder, gridTemplate, sortC
             role="columnheader"
           >
             {definition.sortable
-              ? <button onClick={() => actions.onSortColumn(definition.sortable!)} type="button">{definition.label}{sortColumn === definition.sortable ? sortDirection === "asc" ? " ↑" : " ↓" : ""}</button>
-              : definition.label}
+              ? <button className="downloads-column-sort" onClick={() => actions.onSortColumn(definition.sortable!)} type="button">{definition.label}{sortColumn === definition.sortable ? sortDirection === "asc" ? " ↑" : " ↓" : ""}</button>
+              : <span className="downloads-column-label">{definition.label}</span>}
+            <span aria-label={`${definition.label} verschieben`} className="downloads-column-move-controls" onPointerDown={(event) => event.stopPropagation()} role="group">
+              {index > 0 ? <button aria-label={`${definition.label} nach links verschieben`} onClick={(event) => { event.stopPropagation(); const element = event.currentTarget.closest<HTMLDivElement>(".downloads-column-header"); if (element) moveColumnWithPointerActions(column, -1, element, actions); }} type="button">←</button> : null}
+              {index < columnOrder.length - 1 ? <button aria-label={`${definition.label} nach rechts verschieben`} onClick={(event) => { event.stopPropagation(); const element = event.currentTarget.closest<HTMLDivElement>(".downloads-column-header"); if (element) moveColumnWithPointerActions(column, 1, element, actions); }} type="button">→</button> : null}
+            </span>
           </div>
         );
       })}

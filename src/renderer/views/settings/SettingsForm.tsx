@@ -18,6 +18,46 @@ export interface SettingsFormProps {
   actions: SettingsFormActions;
 }
 
+export type SettingsSelectKeyboardAction =
+  | { type: "close" }
+  | { type: "focus"; index: number }
+  | null;
+
+export function getSettingsSelectKeyboardAction(
+  key: string,
+  currentIndex: number,
+  optionCount: number
+): SettingsSelectKeyboardAction {
+  if (key === "Escape") {
+    return { type: "close" };
+  }
+  if (key === "ArrowDown" || key === "ArrowUp" || key === "Home" || key === "End") {
+    return { type: "focus", index: getSettingsSelectNavigationIndex(currentIndex, optionCount, key) };
+  }
+  return null;
+}
+
+export function closeSettingsSelectAndRestoreFocus(
+  close: () => void,
+  trigger: Pick<HTMLButtonElement, "focus"> | null
+): void {
+  close();
+  trigger?.focus();
+}
+
+function getThemeNavigationIndex(currentIndex: number, optionCount: number, key: string): number | null {
+  if (key === "ArrowRight" || key === "ArrowDown") {
+    return getSettingsSelectNavigationIndex(currentIndex, optionCount, "ArrowDown");
+  }
+  if (key === "ArrowLeft" || key === "ArrowUp") {
+    return getSettingsSelectNavigationIndex(currentIndex, optionCount, "ArrowUp");
+  }
+  if (key === "Home" || key === "End") {
+    return getSettingsSelectNavigationIndex(currentIndex, optionCount, key);
+  }
+  return null;
+}
+
 function FieldHelp({ field }: { field: SettingsFieldViewModel }): ReactElement | null {
   return field.help ? <span className="settings-field-help" id={`${field.id}-help`}>{field.help}</span> : null;
 }
@@ -87,28 +127,27 @@ function SelectControl({ field, actions }: { field: SettingsSelectFieldViewModel
     requestAnimationFrame(() => optionRefs.current[nextIndex]?.focus());
   };
 
+  const closeAndRestoreFocus = (): void => {
+    closeSettingsSelectAndRestoreFocus(() => setOpen(false), triggerRef.current);
+  };
+
   useEffect(() => {
     if (!open) return;
     const close = (event: MouseEvent): void => {
       if (event.target instanceof Node && !rootRef.current?.contains(event.target)) setOpen(false);
     };
-    const onKeyDown = (event: globalThis.KeyboardEvent): void => {
-      if (event.key === "Escape") setOpen(false);
-    };
     window.addEventListener("mousedown", close);
-    window.addEventListener("keydown", onKeyDown);
     return () => {
       window.removeEventListener("mousedown", close);
-      window.removeEventListener("keydown", onKeyDown);
     };
   }, [open]);
 
   const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>): void => {
-    if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End") {
+    const action = getSettingsSelectKeyboardAction(event.key, selectedIndex, field.options.length);
+    if (action?.type === "focus") {
       event.preventDefault();
-      const nextIndex = getSettingsSelectNavigationIndex(selectedIndex, field.options.length, event.key);
       setOpen(true);
-      focusOption(nextIndex);
+      focusOption(action.index);
       return;
     }
     if (event.key === "Enter" || event.key === " ") {
@@ -119,17 +158,20 @@ function SelectControl({ field, actions }: { field: SettingsSelectFieldViewModel
   };
 
   const onOptionKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number): void => {
-    if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End") {
+    const action = getSettingsSelectKeyboardAction(event.key, index, field.options.length);
+    if (action?.type === "focus") {
       event.preventDefault();
-      const nextIndex = getSettingsSelectNavigationIndex(index, field.options.length, event.key);
-      focusOption(nextIndex);
+      focusOption(action.index);
+    }
+  };
+
+  const onSelectKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
+    if (!open || getSettingsSelectKeyboardAction(event.key, selectedIndex, field.options.length)?.type !== "close") {
       return;
     }
-    if (event.key === "Escape") {
-      event.preventDefault();
-      setOpen(false);
-      triggerRef.current?.focus();
-    }
+    event.preventDefault();
+    event.stopPropagation();
+    closeAndRestoreFocus();
   };
 
   const onBlur = (event: FocusEvent<HTMLDivElement>): void => {
@@ -139,7 +181,7 @@ function SelectControl({ field, actions }: { field: SettingsSelectFieldViewModel
   return (
     <div className="settings-field">
       <label id={`${field.id}-label`}>{field.label}</label>
-      <div className={`settings-select${open ? " is-open" : ""}${field.disabled ? " is-disabled" : ""}`} onBlur={onBlur} ref={rootRef}>
+      <div className={`settings-select${open ? " is-open" : ""}${field.disabled ? " is-disabled" : ""}`} onBlur={onBlur} onKeyDown={onSelectKeyDown} ref={rootRef}>
         <button
           aria-controls={`${field.id}-options`}
           aria-expanded={open}
@@ -165,11 +207,12 @@ function SelectControl({ field, actions }: { field: SettingsSelectFieldViewModel
               key={option.value}
               onClick={() => {
                 actions.onChange(field.id, option.value);
-                setOpen(false);
+                closeAndRestoreFocus();
               }}
               onKeyDown={(event) => onOptionKeyDown(event, index)}
               ref={(element) => { optionRefs.current[index] = element; }}
               role="option"
+              tabIndex={-1}
               type="button"
             >{option.label}</button>
           ))}
@@ -188,17 +231,30 @@ function SettingsField({ field, actions }: { field: SettingsFieldViewModel; acti
     return <SelectControl actions={actions} field={field} />;
   }
   if (field.kind === "theme") {
+    const selectedIndex = Math.max(0, field.options.findIndex((option) => option.value === field.value));
     return (
       <fieldset className="settings-field settings-theme-field" disabled={field.disabled}>
-        <legend>{field.label}</legend>
-        <div aria-describedby={field.help ? `${field.id}-help` : undefined} className="settings-theme-options" role="radiogroup">
-          {field.options.map((option) => (
+        <legend id={`${field.id}-label`}>{field.label}</legend>
+        <div aria-describedby={field.help ? `${field.id}-help` : undefined} aria-labelledby={`${field.id}-label`} className="settings-theme-options" role="radiogroup">
+          {field.options.map((option, index) => (
             <button
               aria-checked={field.value === option.value}
               className={`settings-theme-option${field.value === option.value ? " is-active" : ""}`}
               key={option.value}
               onClick={() => actions.onChange(field.id, option.value)}
+              onKeyDown={(event) => {
+                const nextIndex = getThemeNavigationIndex(index, field.options.length, event.key);
+                if (nextIndex === null) {
+                  return;
+                }
+                event.preventDefault();
+                const group = event.currentTarget.closest('[role="radiogroup"]');
+                const radios = group?.querySelectorAll<HTMLElement>('[role="radio"]');
+                radios?.[nextIndex]?.focus();
+                actions.onChange(field.id, field.options[nextIndex].value);
+              }}
               role="radio"
+              tabIndex={index === selectedIndex ? 0 : -1}
               type="button"
             >
               <span aria-hidden="true" className={`settings-theme-preview is-${option.value}`} />

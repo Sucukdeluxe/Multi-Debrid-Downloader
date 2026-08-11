@@ -132,7 +132,7 @@
 .md-shell-header-actions button:focus-visible,
 .md-shell-sidebar-toggle:focus-visible,
 .md-avatar-menu-action:focus-visible {
-  outline: 2px solid var(--ui-accent);
+  outline: 2px solid var(--ui-focus);
   outline-offset: 2px;
 }
 
@@ -165,7 +165,7 @@
   border: 0;
   border-radius: 6px;
   background: var(--ui-primary);
-  color: #0f0f0f;
+  color: var(--ui-primary-text);
   cursor: pointer;
   font-size: 14px;
   font-weight: 600;
@@ -180,7 +180,7 @@
 .md-update-trigger:focus-visible,
 .md-update-dialog button:focus-visible,
 .md-update-release-notes summary:focus-visible {
-  outline: 2px solid var(--ui-accent);
+  outline: 2px solid var(--ui-focus);
   outline-offset: 2px;
 }
 
@@ -510,13 +510,17 @@
 }
 
 .md-shell-sidebar.is-responsive-rail .md-shell-sidebar-toggle {
-  top: 12px;
+  top: -48px;
   right: auto;
   left: 11px;
   width: 32px;
   height: 32px;
   transform: none;
   opacity: 1;
+}
+
+.md-shell.has-collapsed-sidebar:is(.is-compact, .is-minimum) .md-shell-navigation {
+  padding-left: 44px;
 }
 
 .md-shell-sidebar:hover .md-shell-sidebar-toggle,
@@ -755,7 +759,7 @@
 
 .md-dialog :where(button, summary, input, select, textarea):focus-visible,
 .md-context-menu [role="menuitem"]:focus-visible {
-  outline: 2px solid var(--ui-accent);
+  outline: 2px solid var(--ui-focus);
   outline-offset: 2px;
 }
 
@@ -888,6 +892,10 @@
 
   .md-shell.is-minimum .md-shell-workspace {
     gap: 6px;
+  }
+
+  .md-shell.is-minimum .md-shell-sidebar.is-responsive-rail .md-shell-sidebar-toggle {
+    top: -46px;
   }
 
   .md-dialog-backdrop,

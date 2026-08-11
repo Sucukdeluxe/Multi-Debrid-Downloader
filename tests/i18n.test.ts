@@ -18,6 +18,8 @@ describe("renderer localization", () => {
     expect(translateUiText("v2.0.14 ist verfügbar. Installierte Version: 2.0.13.", "en"))
       .toBe("v2.0.14 is available. Installed version: 2.0.13.");
     expect(translateUiText("1–46 von 46", "en")).toBe("1–46 of 46");
+    expect(translateUiText("100.001–100.005 von 100.005", "en")).toBe("100.001–100.005 of 100.005");
+    expect(translateUiText("100.001–100.005 of 100.005", "de")).toBe("100.001–100.005 von 100.005");
   });
 
   it("translates the complete history surface including status values", () => {
@@ -52,6 +54,31 @@ describe("renderer localization", () => {
     expect(translateUiText("2 pro Seite", "en")).toBe("2 per page");
     expect(translateUiText("Sichtbar: ", "en")).toBe("Visible: ");
     expect(translateUiText(" pro Seite", "en")).toBe(" per page");
+    expect(translateUiText("Soll die Sammlung Tab 2 mit 5 Link(s) wirklich entfernt werden?", "en"))
+      .toBe("Do you really want to remove collection Tab 2 with 5 link(s)?");
+    expect(translateUiText("Soll die leere Sammlung Tab 2 wirklich entfernt werden?", "en"))
+      .toBe("Do you really want to remove the empty collection Tab 2?");
+    expect(translateUiText("Link kopieren", "en")).toBe("Copy Link");
+    expect(translateUiText("example.test Klicken zum Kopieren", "en")).toBe("Click to copy example.test");
+    expect(translateUiText("Geschwindigkeit verschieben", "en")).toBe("Move Speed");
+    expect(translateUiText("Geschwindigkeit nach links verschieben", "en")).toBe("Move Speed left");
+    expect(translateUiText("Move Speed right", "de")).toBe("Geschwindigkeit nach rechts verschieben");
+    expect(translateUiText("Verlaufsseiten", "en")).toBe("History pages");
+    expect(translateUiText("Vorherige Verlaufsseite", "en")).toBe("Previous history page");
+    expect(translateUiText("Nächste Verlaufsseite", "en")).toBe("Next history page");
+    expect(translateUiText("Zurück", "en")).toBe("Back");
+    expect(translateUiText("Vor", "en")).toBe("Next");
+    expect(translateUiText("Seite 2 von 7", "en")).toBe("Page 2 of 7");
+    expect(translateUiText("Page 2 of 7", "de")).toBe("Seite 2 von 7");
+    expect(translateUiText("Seite 1.000 von 2.500", "en")).toBe("Page 1.000 of 2.500");
+    expect(translateUiText("Accountdaten werden aktualisiert.", "en")).toBe("Account data is being updated.");
+    expect(translateUiText("Keine passenden Dienste oder Zugangstypen gefunden.", "en"))
+      .toBe("No matching services or access types found.");
+    expect(translateUiText("https://example.test/a aus Sammlung A, Zeile 3 auswählen", "en"))
+      .toBe("Select https://example.test/a from Sammlung A, line 3");
+    expect(translateUiText("Select https://example.test/a from Sammlung A, line 3", "de"))
+      .toBe("https://example.test/a aus Sammlung A, Zeile 3 auswählen");
+    expect(translateUiText("abc••••\nKlicken zum Kopieren", "en")).toBe("Click to copy abc••••");
   });
 
   it.each([

@@ -59,6 +59,14 @@ describe("responsive shell mode", () => {
     expect(css).toMatch(/\.md-shell-sidebar\.is-responsive-rail \.md-shell-sidebar-toggle\s*\{[^}]*width:\s*32px;[^}]*height:\s*32px;[^}]*opacity:\s*1;/s);
     expect(css).not.toMatch(/\.md-shell-sidebar\.is-responsive-rail \.md-shell-sidebar-scroll\s*\{[^}]*visibility:\s*visible;/s);
   });
+
+  it("keeps the responsive expand control in the header instead of covering view content", () => {
+    const css = readFileSync(new URL("../src/renderer/shell/shell.css", import.meta.url), "utf8");
+
+    expect(css).toMatch(/\.md-shell-sidebar\.is-responsive-rail \.md-shell-sidebar-toggle\s*\{[^}]*top:\s*-48px;/s);
+    expect(css).toMatch(/\.md-shell\.has-collapsed-sidebar:is\(\.is-compact, \.is-minimum\) \.md-shell-navigation\s*\{[^}]*padding-left:\s*44px;/s);
+    expect(css).toMatch(/@media \(max-width: 1120px\)[\s\S]*\.md-shell\.is-minimum \.md-shell-sidebar\.is-responsive-rail \.md-shell-sidebar-toggle\s*\{[^}]*top:\s*-46px;/s);
+  });
 });
 
 describe("focus restoration", () => {

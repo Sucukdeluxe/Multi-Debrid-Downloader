@@ -38,6 +38,17 @@ export interface HistoryViewModel {
   totalCount: number;
 }
 
+export interface HistoryPage {
+  rows: HistoryRow[];
+  page: number;
+  pageSize: number;
+  totalItems: number;
+  totalPages: number;
+  rangeLabel: string;
+}
+
+export const HISTORY_PAGE_SIZE = 100;
+
 const providerLabels: Record<DebridProvider, string> = {
   realdebrid: "Real-Debrid",
   megadebrid: "Mega-Debrid",
@@ -58,6 +69,7 @@ const statusLabels: Record<HistoryViewStatus, string> = {
 };
 
 const numberFormatter = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 1 });
+const integerFormatter = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 0 });
 const dateFormatter = new Intl.DateTimeFormat("de-DE", {
   day: "2-digit",
   month: "2-digit",
@@ -90,6 +102,27 @@ function formatDuration(durationSeconds: number): string {
     return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
   }
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+export function paginateHistoryRows(rows: HistoryRow[], requestedPage: number): HistoryPage {
+  const totalItems = rows.length;
+  const totalPages = Math.max(1, Math.ceil(totalItems / HISTORY_PAGE_SIZE));
+  const normalizedPage = Number.isFinite(requestedPage) ? Math.trunc(requestedPage) : 1;
+  const page = Math.min(totalPages, Math.max(1, normalizedPage));
+  const startIndex = (page - 1) * HISTORY_PAGE_SIZE;
+  const endIndex = Math.min(totalItems, startIndex + HISTORY_PAGE_SIZE);
+  const rangeLabel = totalItems === 0
+    ? "0 von 0"
+    : `${integerFormatter.format(startIndex + 1)}–${integerFormatter.format(endIndex)} von ${integerFormatter.format(totalItems)}`;
+
+  return {
+    rows: rows.slice(startIndex, endIndex),
+    page,
+    pageSize: HISTORY_PAGE_SIZE,
+    totalItems,
+    totalPages,
+    rangeLabel
+  };
 }
 
 function localDayStart(timestamp: number): number {

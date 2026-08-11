@@ -1317,6 +1317,14 @@ export function readBandwidthChartPalette(
   };
 }
 
+export function readDownloadSpeedSparklinePalette(
+  readProperty: (property: string) => string
+): { accent: string } {
+  return {
+    accent: readProperty("--ui-speed-accent").trim()
+  };
+}
+
 export function appendBandwidthSample(
   history: { time: number; speed: number }[],
   speed: number,
@@ -1467,9 +1475,10 @@ const BandwidthChart = memo(function BandwidthChart({ running, paused, speedHist
     if (!running || paused) {
       return;
     }
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const interval = setInterval(() => {
       drawChart();
-    }, 250);
+    }, reducedMotion ? 1000 : 250);
     return () => clearInterval(interval);
   }, [drawChart, running, paused]);
 
@@ -1494,7 +1503,9 @@ const BandwidthChart = memo(function BandwidthChart({ running, paused, speedHist
 
   return (
     <div ref={containerRef} className="bandwidth-chart-container">
-      <canvas ref={canvasRef} />
+      <canvas aria-label="Bandbreitenverlauf der letzten 60 Sekunden" ref={canvasRef} role="img">
+        Bandbreitenverlauf der letzten 60 Sekunden
+      </canvas>
     </div>
   );
 });
@@ -1528,9 +1539,8 @@ const DownloadSpeedSparkline = memo(function DownloadSpeedSparkline({ speedBps, 
       const hist = speedStateRef.current.history;
       if (hist.length < 2) return;
 
-      const isDark = document.documentElement.getAttribute("data-theme") !== "light";
-      const accent = isDark ? "#f2942d" : "#c2701a";
-      const fill = isDark ? "rgba(242, 148, 45, 0.16)" : "rgba(194, 112, 26, 0.16)";
+      const rootStyle = getComputedStyle(document.documentElement);
+      const palette = readDownloadSpeedSparklinePalette((property) => rootStyle.getPropertyValue(property));
 
       let maxV = 0;
       for (const v of hist) if (v > maxV) maxV = v;
@@ -1549,13 +1559,16 @@ const DownloadSpeedSparkline = memo(function DownloadSpeedSparkline({ speedBps, 
       ctx.lineTo(px(hist.length - 1), pad + h);
       ctx.lineTo(px(0), pad + h);
       ctx.closePath();
-      ctx.fillStyle = fill;
+      ctx.save();
+      ctx.globalAlpha = 0.16;
+      ctx.fillStyle = palette.accent;
       ctx.fill();
+      ctx.restore();
 
       ctx.beginPath();
       ctx.moveTo(px(0), py(hist[0]));
       for (let i = 1; i < hist.length; i += 1) ctx.lineTo(px(i), py(hist[i]));
-      ctx.strokeStyle = accent;
+      ctx.strokeStyle = palette.accent;
       ctx.lineWidth = 1.5;
       ctx.lineJoin = "round";
       ctx.stroke();
@@ -3883,20 +3896,37 @@ export function App(): ReactElement {
   };
 
   const removeCollectorTab = (id: string): void => {
-    const removal = planCollectorTabRemoval(
-      collectorTabsRef.current,
-      activeCollectorTabRef.current,
-      id
-    );
-    if (removal.tabs === collectorTabsRef.current) {
+    const tab = collectorTabsRef.current.find((entry) => entry.id === id);
+    if (!tab || collectorTabsRef.current.length <= 1) {
       return;
     }
-    collectorTabsRef.current = removal.tabs;
-    activeCollectorTabRef.current = removal.activeTabId;
-    setCollectorTabs(removal.tabs);
-    setActiveCollectorTab(removal.activeTabId);
-    setSelectedCollectorRowIds(new Set());
-    setCollectorError("");
+    const linkCount = tab.text.split(/\r?\n/).filter((line) => line.trim().length > 0).length;
+    void askConfirmPrompt({
+      title: "Sammlung entfernen",
+      message: linkCount > 0
+        ? `Soll die Sammlung ${tab.name} mit ${linkCount} Link(s) wirklich entfernt werden?`
+        : `Soll die leere Sammlung ${tab.name} wirklich entfernt werden?`,
+      confirmLabel: "Sammlung entfernen",
+      danger: true
+    }).then((confirmed) => {
+      if (!confirmed) {
+        return;
+      }
+      const removal = planCollectorTabRemoval(
+        collectorTabsRef.current,
+        activeCollectorTabRef.current,
+        id
+      );
+      if (removal.tabs === collectorTabsRef.current) {
+        return;
+      }
+      collectorTabsRef.current = removal.tabs;
+      activeCollectorTabRef.current = removal.activeTabId;
+      setCollectorTabs(removal.tabs);
+      setActiveCollectorTab(removal.activeTabId);
+      setSelectedCollectorRowIds(new Set());
+      setCollectorError("");
+    });
   };
 
   const openCollectorInput = (): void => {
@@ -3957,11 +3987,24 @@ export function App(): ReactElement {
         indexes.add(index);
       }
     }
-    setCollectorTabs((prev) => prev.map((entry) => entry.id === activeId
-      ? { ...entry, text: entry.text.split(/\r?\n/).filter((_line, index) => !indexes.has(index)).join("\n") }
-      : entry));
-    setSelectedCollectorRowIds(new Set());
-    setCollectorError("");
+    if (indexes.size === 0) {
+      return;
+    }
+    void askConfirmPrompt({
+      title: "Ausgewählte Links löschen",
+      message: "Die ausgewählten Links werden aus der Sammlung entfernt. Dieser Schritt kann nicht rückgängig gemacht werden.",
+      confirmLabel: "Links löschen",
+      danger: true
+    }).then((confirmed) => {
+      if (!confirmed) {
+        return;
+      }
+      setCollectorTabs((prev) => prev.map((entry) => entry.id === activeId
+        ? { ...entry, text: entry.text.split(/\r?\n/).filter((_line, index) => !indexes.has(index)).join("\n") }
+        : entry));
+      setSelectedCollectorRowIds(new Set());
+      setCollectorError("");
+    });
   };
 
   const onPackageStartEdit = useCallback((packageId: string, packageName: string): void => {
@@ -5067,17 +5110,37 @@ export function App(): ReactElement {
   const statisticsActions: StatisticsViewActions = {
     onRangeChange: setStatisticsRange,
     onResetSession: () => {
-      void window.rd.resetSessionStats().then(() => {
-        showToast("Session-Statistik zurückgesetzt", 1800);
-      }).catch((error) => {
-        showToast(`Session-Reset fehlgeschlagen: ${String(error)}`, 2400);
+      void askConfirmPrompt({
+        title: "Sitzungsstatistik zurücksetzen",
+        message: "Die Zähler, Downloadmenge und Geschwindigkeitsdaten der aktuellen Sitzung werden gelöscht. Dieser Schritt kann nicht rückgängig gemacht werden.",
+        confirmLabel: "Sitzung zurücksetzen",
+        danger: true
+      }).then((confirmed) => {
+        if (!confirmed) {
+          return;
+        }
+        return window.rd.resetSessionStats().then(() => {
+          showToast("Session-Statistik zurückgesetzt", 1800);
+        }).catch((error) => {
+          showToast(`Session-Reset fehlgeschlagen: ${String(error)}`, 2400);
+        });
       });
     },
     onResetAll: () => {
-      void window.rd.resetDownloadStats().then(() => {
-        showToast("Gesamt-Downloadstatistik zurückgesetzt", 1800);
-      }).catch((error) => {
-        showToast(`Download-Reset fehlgeschlagen: ${String(error)}`, 2400);
+      void askConfirmPrompt({
+        title: "Gesamtstatistik zurücksetzen",
+        message: "Alle dauerhaft gespeicherten Download- und Providerstatistiken werden gelöscht. Dieser Schritt kann nicht rückgängig gemacht werden.",
+        confirmLabel: "Gesamt zurücksetzen",
+        danger: true
+      }).then((confirmed) => {
+        if (!confirmed) {
+          return;
+        }
+        return window.rd.resetDownloadStats().then(() => {
+          showToast("Gesamt-Downloadstatistik zurückgesetzt", 1800);
+        }).catch((error) => {
+          showToast(`Download-Reset fehlgeschlagen: ${String(error)}`, 2400);
+        });
       });
     },
     onResetErrors: () => {
@@ -6457,8 +6520,10 @@ export function App(): ReactElement {
                       return (
                         <>
                     <span className="col-key">{ki + 1}</span>
-                    <span
+                    <button
+                      aria-label={`${key.label} kopieren`}
                       className="col-masked link-popup-click"
+                      type="button"
                       title={`${key.masked}\nKlicken zum Kopieren`}
                       onClick={() => {
                         void navigator.clipboard.writeText(key.token)
@@ -6467,7 +6532,7 @@ export function App(): ReactElement {
                       }}
                     >
                       {key.masked}
-                    </span>
+                    </button>
                     <span className="col-usage">{humanSize(key.dailyUsedBytes)}</span>
                     <span className="col-limit">{key.disabled ? "Deaktiviert" : key.dailyLimitBytes > 0 ? humanSize(key.dailyLimitBytes) : "Kein Limit"}</span>
                     <span className={`col-status status-pill status-pill-${statusDisplay.tone}`} title={statusDisplay.title}>{statusDisplay.label}</span>
@@ -6519,8 +6584,8 @@ export function App(): ReactElement {
             <div className="link-popup-list">
               {linkPopup.links.map((link, i) => (
                 <div key={i} className="link-popup-row">
-                  <span className="link-popup-name link-popup-click" title={`${link.name}\nKlicken zum Kopieren`} onClick={() => { void navigator.clipboard.writeText(link.name).then(() => showToast("Name kopiert")).catch(() => showToast("Kopieren fehlgeschlagen")); }}>{link.name}</span>
-                  <span className="link-popup-url link-popup-click" title={`${link.url}\nKlicken zum Kopieren`} onClick={() => { void navigator.clipboard.writeText(link.url).then(() => showToast("Link kopiert")).catch(() => showToast("Kopieren fehlgeschlagen")); }}>{link.url}</span>
+                  <button aria-label={`${link.name} kopieren`} className="link-popup-name link-popup-click" type="button" title={`${link.name}\nKlicken zum Kopieren`} onClick={() => { void navigator.clipboard.writeText(link.name).then(() => showToast("Name kopiert")).catch(() => showToast("Kopieren fehlgeschlagen")); }}>{link.name}</button>
+                  <button aria-label="Link kopieren" className="link-popup-url link-popup-click" type="button" title={`${link.url}\nKlicken zum Kopieren`} onClick={() => { void navigator.clipboard.writeText(link.url).then(() => showToast("Link kopiert")).catch(() => showToast("Kopieren fehlgeschlagen")); }}>{link.url}</button>
                 </div>
               ))}
             </div>

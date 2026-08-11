@@ -130,17 +130,17 @@
 .collector-action-primary {
   background: var(--ui-primary);
   border-color: var(--ui-primary);
-  color: #181A1F;
+  color: var(--ui-primary-text);
 }
 
 .collector-action-primary:hover:not(:disabled) {
   background: var(--ui-primary-hover);
-  color: #181A1F;
+  color: var(--ui-primary-text);
 }
 
 .collector-action-danger:not(:disabled) {
   border-color: color-mix(in srgb, var(--ui-danger) 70%, var(--ui-border));
-  color: var(--ui-danger);
+  color: var(--ui-danger-text);
 }
 
 .collector-action:disabled {
@@ -173,7 +173,7 @@
 }
 
 .collector-table-header-row {
-  color: var(--ui-text-muted);
+  color: var(--ui-text-secondary);
   font-size: 11px;
   font-weight: 700;
   height: 41px;
@@ -272,7 +272,7 @@
 .collector-dialog-primary {
   background: var(--ui-primary);
   border-color: var(--ui-primary);
-  color: #181A1F;
+  color: var(--ui-primary-text);
 }
 
 .collector-dialog-secondary {
@@ -301,6 +301,15 @@
 }
 
 @media (max-width: 1120px) {
+  .collector-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .collector-toolbar .ui-toolbar-search {
+    flex: 1 0 100%;
+    width: 100%;
+  }
+
   .collector-table-header-row,
   .collector-row {
     grid-template-columns: 44px minmax(108px, 0.7fr) minmax(250px, 2.2fr) 66px 82px;

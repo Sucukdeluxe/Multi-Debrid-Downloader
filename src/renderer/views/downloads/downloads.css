@@ -200,7 +200,7 @@
 .downloads-footer button,
 .downloads-action-cell button,
 .downloads-collapse-button,
-.downloads-column-header button {
+.downloads-column-sort {
   min-height: 36px;
   height: 36px;
   border: 1px solid var(--ui-border);
@@ -261,7 +261,7 @@
 .downloads-table-body {
   box-sizing: border-box;
   width: 100%;
-  min-width: 1191px;
+  min-width: var(--downloads-table-min-width, 1191px);
 }
 
 .downloads-table-header {
@@ -419,6 +419,11 @@
   text-align: left;
 }
 
+.downloads-cell-slot > :is(.downloads-status-cell, .downloads-service-cell) {
+  justify-content: flex-start;
+  text-align: left;
+}
+
 .downloads-cell,
 .downloads-name-cell {
   display: flex;
@@ -508,6 +513,7 @@
 }
 
 .downloads-column-header {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -565,7 +571,7 @@
   }
 }
 
-.downloads-column-header button {
+.downloads-column-sort {
   width: 100%;
   border: 0;
   padding: 0;
@@ -579,8 +585,48 @@
   text-align: left;
 }
 
-.downloads-column-header[data-download-column="name"] button {
+.downloads-column-header[data-download-column="name"] .downloads-column-sort {
   text-align: left;
+}
+
+.downloads-column-move-controls {
+  position: absolute;
+  inset: 50% 2px auto auto;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--ui-border);
+  border-radius: 4px;
+  opacity: 0;
+  background: var(--ui-table-header);
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--ui-text) 18%, transparent);
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.downloads-column-header:hover .downloads-column-move-controls,
+.downloads-column-header:focus-within .downloads-column-move-controls {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.downloads-column-move-controls button {
+  display: inline-flex;
+  width: 22px;
+  height: 24px;
+  min-height: 24px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 3px;
+  padding: 0;
+  color: var(--ui-text);
+  background: var(--ui-modal-secondary);
+}
+
+.downloads-column-move-controls button:hover,
+.downloads-column-move-controls button:focus-visible {
+  background: var(--ui-hover);
 }
 
 .downloads-link-state {
@@ -642,15 +688,15 @@
 }
 
 .downloads-availability.is-online {
-  color: var(--ui-success);
+  color: var(--ui-success-text);
 }
 
 .downloads-availability.is-partial {
-  color: var(--ui-warning);
+  color: var(--ui-warning-text);
 }
 
 .downloads-availability.is-offline {
-  color: var(--ui-danger);
+  color: var(--ui-danger-text);
 }
 
 .downloads-availability.is-checking {
@@ -712,14 +758,33 @@
   container-type: inline-size;
 }
 
+:is(.downloads-status-full, .downloads-status-compact, .downloads-service-full, .downloads-service-compact) {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .downloads-status-compact,
 .downloads-service-compact {
   display: none;
 }
 
-.md-shell.is-compact .downloads-view,
-.md-shell.is-minimum .downloads-view {
+.md-shell.is-compact .downloads-content,
+.md-shell.is-minimum .downloads-content {
+  --downloads-table-min-width: 1016px;
+  --downloads-name-min: 180px;
+  --downloads-size-min: 96px;
+  --downloads-progress-min: 78px;
+  --downloads-hoster-min: 62px;
+  --downloads-service-min: 78px;
+  --downloads-priority-min: 65px;
   --downloads-status-min: 90px;
+  --downloads-speed-min: 84px;
+  --downloads-availability-min: 82px;
+  --downloads-added-min: 105px;
 }
 
 @container (max-width: 150px) {
@@ -728,7 +793,7 @@
   }
 
   .downloads-status-compact {
-    display: inline;
+    display: block;
   }
 
   .downloads-service-full {
@@ -736,7 +801,7 @@
   }
 
   .downloads-service-compact {
-    display: inline;
+    display: block;
   }
 }
 

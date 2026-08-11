@@ -39,7 +39,11 @@ import {
   type AccountWorkspaceActions,
   type AccountWorkspaceViewModel
 } from "../src/renderer/views/settings/AccountWorkspace";
-import { SettingsForm } from "../src/renderer/views/settings/SettingsForm";
+import {
+  SettingsForm,
+  closeSettingsSelectAndRestoreFocus,
+  getSettingsSelectKeyboardAction
+} from "../src/renderer/views/settings/SettingsForm";
 import {
   SettingsContent,
   SettingsSidebar,
@@ -88,6 +92,32 @@ function findElement(node: ReactNode, predicate: (element: ReactElement) => bool
     throw new Error("Element not found");
   }
   return result;
+}
+
+function findElements(node: ReactNode, predicate: (element: ReactElement) => boolean): ReactElement[] {
+  const results: ReactElement[] = [];
+  visitElements(node, (element) => {
+    if (predicate(element)) {
+      results.push(element);
+    }
+  });
+  return results;
+}
+
+function compositeKeyboardTarget(count: number): {
+  elements: Array<{ closest: () => { querySelectorAll: () => unknown[] }; focus: () => void }>;
+  focused: () => number;
+} {
+  let focusedIndex = -1;
+  const elements: Array<{ closest: () => { querySelectorAll: () => unknown[] }; focus: () => void }> = [];
+  const container = { querySelectorAll: () => elements };
+  for (let index = 0; index < count; index += 1) {
+    elements.push({
+      closest: () => container,
+      focus: () => { focusedIndex = index; }
+    });
+  }
+  return { elements, focused: () => focusedIndex };
 }
 
 function count(haystack: string, needle: string): number {
@@ -419,6 +449,14 @@ describe("settings model", () => {
 });
 
 describe("settings views", () => {
+  it("uses a dedicated high-contrast border for form controls", () => {
+    const theme = readFileSync(new URL("../src/renderer/theme.css", import.meta.url), "utf8");
+    const css = readFileSync(new URL("../src/renderer/views/settings/settings.css", import.meta.url), "utf8");
+
+    expect(theme).toContain("--ui-control-border: #707070;");
+    expect(theme).toContain("--ui-control-border: #7B8491;");
+    expect(css.match(/border:\s*1px solid var\(--ui-control-border\);/g)?.length).toBeGreaterThanOrEqual(2);
+  });
   it("marks settings sections for one measured vertical selection indicator", () => {
     const html = renderToStaticMarkup(<SettingsSidebar actions={viewActions()} model={viewModel()} />);
 
@@ -479,9 +517,23 @@ describe("settings views", () => {
 
     const source = readFileSync(new URL("../src/renderer/views/settings/SettingsForm.tsx", import.meta.url), "utf8");
     expect(source).toContain("optionRefs.current[nextIndex]?.focus()");
-    expect(source).toContain('event.key === "Home"');
-    expect(source).toContain('event.key === "End"');
+    expect(getSettingsSelectKeyboardAction("Home", 1, 3)).toEqual({ type: "focus", index: 0 });
+    expect(getSettingsSelectKeyboardAction("End", 1, 3)).toEqual({ type: "focus", index: 2 });
     expect(source).toContain("onBlur={onBlur}");
+  });
+
+  it("closes settings selects with Escape and restores the trigger focus", () => {
+    const calls: string[] = [];
+
+    expect(getSettingsSelectKeyboardAction("Escape", 1, 3)).toEqual({ type: "close" });
+    expect(getSettingsSelectKeyboardAction("ArrowDown", 1, 3)).toEqual({ type: "focus", index: 2 });
+    expect(getSettingsSelectKeyboardAction("ArrowUp", 0, 3)).toEqual({ type: "focus", index: 2 });
+    closeSettingsSelectAndRestoreFocus(
+      () => calls.push("close"),
+      { focus: () => calls.push("focus") }
+    );
+
+    expect(calls).toEqual(["close", "focus"]);
   });
 
   it("clears a bounded history preset when permanent retention is selected", () => {
@@ -540,6 +592,40 @@ describe("settings views", () => {
     switchButton.props.onClick();
     expect(changed).toBe("autoUpdate");
   });
+
+  it("uses roving focus and complete arrow navigation for theme radios", () => {
+    const changes: string[] = [];
+    const tree = SettingsForm({
+      model: formModel(),
+      actions: {
+        onChange: (id, value) => changes.push(`${id}:${String(value)}`),
+        onAction: () => {}
+      }
+    });
+    const radios = findElements(tree, (element) => element.props.role === "radio");
+
+    expect(radios.map((radio) => radio.props.tabIndex)).toEqual([-1, 0, -1]);
+
+    for (const [key, sourceIndex, targetIndex, value] of [
+      ["ArrowRight", 1, 2, "system"],
+      ["ArrowDown", 1, 2, "system"],
+      ["ArrowLeft", 1, 0, "light"],
+      ["ArrowUp", 1, 0, "light"],
+      ["Home", 1, 0, "light"],
+      ["End", 1, 2, "system"]
+    ] as const) {
+      const target = compositeKeyboardTarget(radios.length);
+      let prevented = false;
+      radios[sourceIndex].props.onKeyDown({
+        key,
+        currentTarget: target.elements[sourceIndex],
+        preventDefault: () => { prevented = true; }
+      });
+      expect(prevented).toBe(true);
+      expect(target.focused()).toBe(targetIndex);
+      expect(changes.at(-1)).toBe(`theme:${value}`);
+    }
+  });
 });
 
 describe("account workspace", () => {
@@ -549,6 +635,64 @@ describe("account workspace", () => {
     expect(html).toContain("ui-sliding-selection ui-sliding-selection-horizontal");
     expect(html.match(/data-sliding-selection-item="true"/g)).toHaveLength(2);
     expect(html.match(/data-sliding-selection-active="true"/g)).toHaveLength(1);
+  });
+
+  it("uses roving focus and horizontal keyboard navigation for account tabs", () => {
+    const panels: string[] = [];
+    const tree = AccountWorkspace({
+      model: workspaceModel(),
+      actions: workspaceActions({ onPanelChange: (panel) => panels.push(panel) })
+    });
+    const tabs = findElements(tree, (element) => element.props.role === "tab");
+
+    expect(tabs.map((tab) => tab.props.tabIndex)).toEqual([0, -1]);
+
+    for (const [key, sourceIndex, targetIndex, panel] of [
+      ["ArrowRight", 0, 1, "rules"],
+      ["ArrowLeft", 0, 1, "rules"],
+      ["Home", 1, 0, "overview"],
+      ["End", 0, 1, "rules"]
+    ] as const) {
+      const target = compositeKeyboardTarget(tabs.length);
+      let prevented = false;
+      tabs[sourceIndex].props.onKeyDown({
+        key,
+        currentTarget: target.elements[sourceIndex],
+        preventDefault: () => { prevented = true; }
+      });
+      expect(prevented).toBe(true);
+      expect(target.focused()).toBe(targetIndex);
+      expect(panels.at(-1)).toBe(panel);
+    }
+
+    const rulesTree = AccountWorkspace({
+      model: { ...workspaceModel(), activePanel: "rules" },
+      actions: workspaceActions()
+    });
+    const rulesTabs = findElements(rulesTree, (element) => element.props.role === "tab");
+    expect(rulesTabs.map((tab) => tab.props.tabIndex)).toEqual([-1, 0]);
+  });
+
+  it("announces account loading and errors without hiding the existing table state", () => {
+    const loadingHtml = renderToStaticMarkup(
+      <AccountWorkspace
+        actions={workspaceActions()}
+        model={{ ...workspaceModel(), busy: true, rows: [], selectedIds: [] }}
+      />
+    );
+    const errorHtml = renderToStaticMarkup(
+      <AccountWorkspace
+        actions={workspaceActions()}
+        model={{ ...workspaceModel(), busy: false, error: "Accounts konnten nicht geladen werden", rows: [], selectedIds: [] }}
+      />
+    );
+
+    expect(loadingHtml).toContain('aria-busy="true"');
+    expect(loadingHtml).toContain('aria-live="polite"');
+    expect(loadingHtml).toContain('role="status"');
+    expect(loadingHtml).toContain("Accountdaten werden aktualisiert");
+    expect(errorHtml).toContain('role="alert"');
+    expect(errorHtml).toContain("Accounts konnten nicht geladen werden");
   });
 
   it("renders the exact columns, one table marker, full usernames and no raw credentials", () => {
@@ -717,6 +861,36 @@ describe("account workspace", () => {
     expect(selected).toEqual(["debridlink-api"]);
   });
 
+  it("shows an accessible empty result when account search has no matches", () => {
+    const html = renderToStaticMarkup(
+      <AccountAddDialog
+        actions={{
+          onQueryChange: () => {},
+          onFilterChange: () => {},
+          onOptionSelect: () => {},
+          onFieldChange: () => {},
+          onClose: () => {},
+          onSubmit: () => {}
+        }}
+        model={{
+          open: true,
+          query: "nicht vorhanden",
+          filter: "all",
+          options: [],
+          selectedOptionId: null,
+          fields: [],
+          error: "",
+          busy: false
+        }}
+      />
+    );
+
+    expect(html).toContain('aria-describedby="settings-account-picker-empty"');
+    expect(html).toContain('aria-live="polite"');
+    expect(html).toContain('role="status"');
+    expect(html).toContain("Keine passenden Dienste oder Zugangstypen gefunden");
+  });
+
   it("keeps stored usernames separate from provider email addresses", () => {
     const rows = projectAccountRows(accountSources(), [], NOW);
 
@@ -757,6 +931,17 @@ describe("settings App integration", () => {
 });
 
 describe("settings geometry", () => {
+  it("uses central focus and semantic status text tokens", () => {
+    expect(settingsCss).toMatch(/\.settings-theme-option:focus-visible,[^{]*\.settings-account-picker-row:focus-visible\s*{[^}]*outline:\s*2px solid var\(--ui-focus\);/s);
+    expect(settingsCss).toMatch(/\.settings-save-state\.is-clean,[^{]*\.settings-save-state\.is-saved\s*{[^}]*color:\s*var\(--ui-success-text\);/s);
+    expect(settingsCss).toMatch(/\.settings-save-state\.is-dirty,[^{]*\.settings-save-state\.is-saving\s*{[^}]*color:\s*var\(--ui-warning-text\);/s);
+    expect(settingsCss).toMatch(/\.settings-save-state\.is-error\s*{[^}]*color:\s*var\(--ui-danger-text\);/s);
+    expect(settingsCss).toMatch(/\.settings-account-status-badge\.is-ok\s*{[^}]*color:\s*var\(--ui-success-text\);/s);
+    expect(settingsCss).toMatch(/\.settings-account-status-badge\.is-free,[^{]*\.settings-account-status-badge\.is-unknown\s*{[^}]*color:\s*var\(--ui-warning-text\);/s);
+    expect(settingsCss).toMatch(/\.settings-account-status-badge\.is-invalid\s*{[^}]*color:\s*var\(--ui-danger-text\);/s);
+    expect(settingsCss).toMatch(/\.settings-account-table-error \.ui-data-table-empty-title,[^{]*\.settings-account-dialog-error\s*{[^}]*color:\s*var\(--ui-danger-text\);/s);
+  });
+
   it("keeps the specified form, table, switch, overflow and selection geometry", () => {
     const css = readFileSync(new URL("../src/renderer/views/settings/settings.css", import.meta.url), "utf8");
     expect(css).toMatch(/\.settings-content\s*{[^}]*padding:\s*24px;/s);
