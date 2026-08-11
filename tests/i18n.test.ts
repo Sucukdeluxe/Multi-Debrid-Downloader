@@ -22,6 +22,15 @@ describe("renderer localization", () => {
     expect(translateUiText("100.001–100.005 of 100.005", "de")).toBe("100.001–100.005 von 100.005");
   });
 
+  it.each([
+    ["Finalisieren - 0%", "Finalizing - 0%"],
+    ["Finalisieren - 50%", "Finalizing - 50%"],
+    ["Finalisieren - 100%", "Finalizing - 100%"]
+  ])("translates compact finalization progress %s in both directions", (german, english) => {
+    expect(translateUiText(german, "en")).toBe(english);
+    expect(translateUiText(english, "de")).toBe(german);
+  });
+
   it("translates the complete history surface including status values", () => {
     const translations = new Map([
       ["Alle Einträge", "All entries"],

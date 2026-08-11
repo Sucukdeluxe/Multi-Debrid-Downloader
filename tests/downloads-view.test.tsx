@@ -923,6 +923,51 @@ describe("download table row contracts", () => {
     expect(html).not.toContain(">release.part1.rar</span>");
   });
 
+  it.each([
+    ["package", "Finalisieren (1/2) · release.part1.rar", "Finalisieren - 50%"],
+    ["package", "Finalizing - 50% * release.part1.rar", "Finalizing - 50%"],
+    ["item", "Finalizing (3/4) · release.part1.rar", "Finalizing - 75%"],
+    ["item", "Finalisieren - 50% * release.part1.rar", "Finalisieren - 50%"]
+  ])("shows %s finalization status without archive details", (target, rawStatus, expectedStatus) => {
+    const html = target === "package"
+      ? renderToStaticMarkup(PackageCardContent({
+        actions: createActions(),
+        columnOrder: ["status"],
+        editing: false,
+        editingName: "",
+        gridTemplate: "220px",
+        packageSpeedBps: 0,
+        row: {
+          package: { ...pkg("finalization-package", "Finalization", ["finalization-item"]), postProcessLabel: rawStatus, status: "extracting" } as PackageEntry,
+          items: [item("finalization-item", "finalization-package", "completed")],
+          allItems: [item("finalization-item", "finalization-package", "completed")],
+          collapsed: true
+        },
+        selectedIds: new Set<string>(),
+        selectedVersion: 0
+      }))
+      : renderToStaticMarkup(ItemRowContent({
+        actions: createActions(),
+        columnOrder: ["status"],
+        gridTemplate: "220px",
+        item: item("finalization-item", "finalization-package", "completed", { fullStatus: rawStatus }),
+        selected: false
+      }));
+
+    expect(html).toContain(`aria-label="${expectedStatus}"`);
+    expect(html.match(new RegExp(`>${expectedStatus}</span>`, "g"))).toHaveLength(2);
+    expect(html).not.toContain(">release.part1.rar</span>");
+  });
+
+  it.each([
+    ["Finalisieren (3/2) · release.part1.rar", "Finalisieren - 100%"],
+    ["Finalizing (-1/2) · release.part1.rar", "Finalizing - 0%"],
+    ["Finalisieren (1/0) · release.part1.rar", "Finalisieren"],
+    ["Finalizing (invalid/2) · release.part1.rar", "Finalizing"]
+  ])("derives only finite finalization percentages", (rawStatus, expectedStatus) => {
+    expect(compactDownloadStatus(rawStatus)).toBe(expectedStatus);
+  });
+
   it("renders meter text in clipped track and fill layers", () => {
     const html = renderToStaticMarkup(ItemRowContent({
       actions: createActions(),

@@ -153,6 +153,20 @@ export function compactDownloadStatus(value: string): string {
   if (extracting) return `Entpacken - ${extracting[1]}%`;
   const extractingEnglish = status.match(/Extracting\s+(\d+)%/i);
   if (extractingEnglish) return `Extracting - ${extractingEnglish[1]}%`;
+  const finalizing = status.match(/^(Finalisieren|Finalizing)\b/i);
+  if (finalizing) {
+    const fraction = status.match(/\(([^)]*)\)/);
+    if (fraction) {
+      const [currentValue, totalValue] = fraction[1].split("/");
+      const current = Number(currentValue?.trim());
+      const total = Number(totalValue?.trim());
+      if (Number.isFinite(current) && Number.isFinite(total) && total > 0) return `${finalizing[1]} - ${progress((current / total) * 100)}%`;
+      return finalizing[1];
+    }
+    const percentage = status.match(/-\s*(-?\d+(?:\.\d+)?)%/);
+    if (percentage) return `${finalizing[1]} - ${progress(Number(percentage[1]))}%`;
+    return finalizing[1];
+  }
   return status;
 }
 
@@ -447,9 +461,10 @@ function packageCell(row: DownloadPackageRow, column: string, packageSpeedBps: n
   if (column === "status") {
     const audio = entry.audioStripSummary ? formatAudioStripSummary(entry.audioStripSummary) : null;
     const rawPostProcessLabel = entry.postProcessLabel?.trim() || "";
-    const postProcessLabel = entry.status === "extracting" && /(?:^|[\\/])[^\\/]+\.(?:rar|zip|7z|tar|gz|bz2|xz)(?:\.\d+)?$/i.test(rawPostProcessLabel)
+    const compactPostProcessLabel = compactDownloadStatus(rawPostProcessLabel);
+    const postProcessLabel = entry.status === "extracting" && compactPostProcessLabel === rawPostProcessLabel && /(?:^|[\\/])[^\\/]+\.(?:rar|zip|7z|tar|gz|bz2|xz)(?:\.\d+)?$/i.test(rawPostProcessLabel)
       ? "Entpacken - Ausstehend"
-      : compactDownloadStatus(rawPostProcessLabel);
+      : compactPostProcessLabel;
     const extractFailure = row.allItems.find((item) => /^Entpack-Fehler\b/i.test(item.fullStatus || ""));
     const waitsForDisk = row.allItems.some((item) => compactDownloadStatus(item.fullStatus || "") === "Warte auf Festplatte");
     const details = `${stats.done}/${stats.total}${stats.failed > 0 ? ` · ${stats.failed} Fehler` : ""}${stats.cancelled > 0 ? ` · ${stats.cancelled} abgebrochen` : ""}${postProcessLabel ? ` · ${postProcessLabel}` : ""}${extractFailure ? " · Entpack-Fehler" : ""}${audio ? ` · ${audio.text}` : ""}`;

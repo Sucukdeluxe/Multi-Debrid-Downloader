@@ -254,6 +254,8 @@ function translateDynamic(value: string, language: AppLanguage): string {
     if (result) return `${result[1]} completed${result[2].replace(/(\d+) Fehler/g, "$1 errors").replace(/(\d+) abgebrochen/g, "$1 cancelled")}`;
     const extracting = value.match(/^Entpacken (\d+%)$/);
     if (extracting) return `Extracting ${extracting[1]}`;
+    const finalizing = value.match(/^Finalisieren - (\d+%)$/);
+    if (finalizing) return `Finalizing - ${finalizing[1]}`;
     const checkedUntil = value.match(/^Account geprüft — (.+) bis (.+)$/);
     if (checkedUntil) return `Account checked — ${checkedUntil[1]} until ${checkedUntil[2]}`;
     const checked = value.match(/^Account geprüft — (.+)$/);
@@ -403,6 +405,8 @@ function translateDynamic(value: string, language: AppLanguage): string {
     if (result) return `${result[1]} fertig${result[2].replace(/(\d+) errors/g, "$1 Fehler").replace(/(\d+) cancelled/g, "$1 abgebrochen")}`;
     const extracting = value.match(/^Extracting (\d+%)$/);
     if (extracting) return `Entpacken ${extracting[1]}`;
+    const finalizing = value.match(/^Finalizing - (\d+%)$/);
+    if (finalizing) return `Finalisieren - ${finalizing[1]}`;
     const checkedUntil = value.match(/^Account checked — (.+) until (.+)$/);
     if (checkedUntil) return `Account geprüft — ${checkedUntil[1]} bis ${checkedUntil[2]}`;
     const credentialsFor = value.match(/^Credentials for (.+)$/);
