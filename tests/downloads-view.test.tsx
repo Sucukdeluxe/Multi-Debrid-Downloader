@@ -36,7 +36,12 @@ import {
   getPackageProgress,
   getPackageSizeProgress
 } from "../src/renderer/views/downloads/DownloadsTable";
-import { compactDownloadServiceLabel, normalizeDownloadServiceLabel } from "../src/renderer/download-format";
+import {
+  compactDownloadServiceLabel,
+  extractHoster,
+  formatHosterLabel,
+  normalizeDownloadServiceLabel
+} from "../src/renderer/download-format";
 import { getRollingMetricDirection } from "../src/renderer/ui/RollingMetricValue";
 
 const now = new Date(2026, 7, 10, 12, 0, 0, 0).getTime();
@@ -70,6 +75,13 @@ describe("Downloadtabellen-Spalten", () => {
     expect(css).toMatch(/\.downloads-table\.is-column-drag-active \[data-column-dragging="true"\]\s*\{[^}]*transition:\s*none;/s);
     expect(css).not.toMatch(/\.downloads-table\.is-column-drag-active \[data-column-dragging="true"\]\s*\{[^}]*background:/s);
     expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.downloads-table\.is-column-drag-active \[data-download-column\][^{]*\{[^}]*transition-duration:\s*220ms !important;/s);
+  });
+
+  it("changes package collapse state only through user actions", () => {
+    const source = fs.readFileSync(path.join(process.cwd(), "src/renderer/App.tsx"), "utf8");
+
+    expect(source).not.toContain("autoExpandedPkgsRef");
+    expect(source).not.toMatch(/isExtracting[\s\S]{0,800}setCollapsedPackages/);
   });
 });
 
@@ -175,10 +187,24 @@ describe("responsive Downloadstatus und Servicebezeichnungen", () => {
     expect(compactDownloadStatus("Entpacken 1% (1/1) · Tonspur: Deutsch")).toBe("Entpacken - 1%");
     expect(compactDownloadStatus("0/11 · Entpacken 53% (1/1) · scn2-httpv7-S01E102.rar")).toBe("Entpacken - 53%");
     expect(compactDownloadStatus("Extracting 53% (1/1) · archive.rar")).toBe("Extracting - 53%");
+    expect(compactDownloadStatus("Passwort knacken: 75% (3/4) · sau-geheim.part1.rar")).toBe("Passwort knacken: 75% (3/4)");
     expect(compactDownloadStatus("Passwort gefunden · archive.part1.rar")).toBe("Passwort gefunden");
     expect(compactDownloadStatus("Entpacken - Ausstehend · archive.part1.rar")).toBe("Entpacken - Ausstehend");
     expect(compactDownloadStatus("Entpack-Fehler [archive.part1.rar]: Unerwartetes Dateiende")).toBe("Entpack-Fehler");
     expect(compactDownloadStatus("Extraction error [archive.part1.rar]: Unexpected end of file")).toBe("Extraction error");
+  });
+
+  it("normalizes every supported RapidGator domain to one hoster identity", () => {
+    const hosters = [
+      extractHoster("https://rapidgator.net/file/one"),
+      extractHoster("https://rg.to/file/two"),
+      extractHoster("https://cdn.rg.to/file/three"),
+      extractHoster("https://rapidgator.asia/file/four")
+    ];
+
+    expect(hosters).toEqual(["rapidgator", "rapidgator", "rapidgator", "rapidgator"]);
+    expect(new Set(hosters).size).toBe(1);
+    expect(formatHosterLabel(hosters[1])).toEqual(expect.objectContaining({ compact: "RG", title: "RapidGator", iconSrc: expect.any(String) }));
   });
 
   it("removes duplicated access-mode wording from service labels", () => {
@@ -690,7 +716,7 @@ describe("downloads view", () => {
     expect(css).toMatch(/\.downloads-link-state\.online\s*\{[^}]*background:\s*var\(--ui-success\);/s);
     expect(css).toMatch(/\.downloads-status-cell\s*\{[^}]*container-type:\s*inline-size;/s);
     expect(css).toMatch(/\.downloads-service-cell\s*\{[^}]*container-type:\s*inline-size;/s);
-    expect(css).toMatch(/\.downloads-cell-slot\s*>\s*:is\(\.downloads-status-cell, \.downloads-service-cell\)\s*\{[^}]*justify-content:\s*flex-start;[^}]*text-align:\s*left;/s);
+    expect(css).toMatch(/\.downloads-cell-slot\s*>\s*:is\(\.downloads-status-cell, \.downloads-service-cell\)\s*\{[^}]*justify-content:\s*center;[^}]*text-align:\s*center;/s);
     expect(css).toMatch(/:is\(\.downloads-status-full, \.downloads-status-compact, \.downloads-service-full, \.downloads-service-compact\)\s*\{[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s);
     expect(css).toMatch(/@container\s*\(max-width:\s*150px\)[\s\S]*\.downloads-status-full[^{]*\{[^}]*display:\s*none;[\s\S]*\.downloads-status-compact[^{]*\{[^}]*display:\s*block;/s);
     expect(css).toMatch(/@container\s*\(max-width:\s*150px\)[\s\S]*\.downloads-service-full[^{]*\{[^}]*display:\s*none;[\s\S]*\.downloads-service-compact[^{]*\{[^}]*display:\s*block;/s);

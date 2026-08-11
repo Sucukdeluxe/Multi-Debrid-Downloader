@@ -126,7 +126,7 @@ function combineSignals(primary: AbortSignal, secondary?: AbortSignal): AbortSig
   return AbortSignal.any([primary, secondary]);
 }
 
-async function readJsonBody(response: Response, timeoutMs: number): Promise<Record<string, unknown> | null> {
+async function readJsonValue(response: Response, timeoutMs: number): Promise<unknown> {
   let timer: NodeJS.Timeout | null = null;
   const timeoutPromise = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
@@ -136,15 +136,25 @@ async function readJsonBody(response: Response, timeoutMs: number): Promise<Reco
   });
 
   try {
-    const data = await Promise.race([
+    return await Promise.race([
       response.json().catch(() => null) as Promise<unknown>,
       timeoutPromise,
     ]);
-    if (!data || typeof data !== "object" || Array.isArray(data)) return null;
-    return data as Record<string, unknown>;
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+async function readJsonBody(response: Response, timeoutMs: number): Promise<Record<string, unknown> | null> {
+  const data = await readJsonValue(response, timeoutMs);
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  return data as Record<string, unknown>;
+}
+
+async function readJsonArray(response: Response, timeoutMs: number): Promise<Array<Record<string, unknown>> | null> {
+  const data = await readJsonValue(response, timeoutMs);
+  if (!Array.isArray(data)) return null;
+  return data.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object" && !Array.isArray(entry));
 }
 
 async function readTextBody(response: Response, timeoutMs: number): Promise<string> {
@@ -375,6 +385,24 @@ async function fetchRelease(repo: string, endpoint: string): Promise<{
   }
 }
 
+async function fetchReleasePage(repo: string, page: number): Promise<{
+  ok: boolean;
+  status: number;
+  payload: Array<Record<string, unknown>> | null;
+}> {
+  const tc = timeoutController(RELEASE_FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${API_BASE}/repos/${repo}/releases?per_page=100&page=${page}`, {
+      headers: { Accept: "application/vnd.github+json", "User-Agent": USER_AGENT },
+      signal: tc.signal,
+    });
+    const payload = await readJsonArray(response, RELEASE_FETCH_TIMEOUT_MS);
+    return { ok: response.ok, status: response.status, payload };
+  } finally {
+    tc.clear();
+  }
+}
+
 function readAssets(payload: Record<string, unknown>): ReleaseAsset[] {
   const raw = Array.isArray(payload.assets) ? (payload.assets as Array<Record<string, unknown>>) : [];
   return raw
@@ -426,6 +454,71 @@ function parseReleasePayload(payload: Record<string, unknown>, fallbackUrl: stri
     setupAssetDigest: setup?.digest || "",
     releaseNotes: body || undefined,
   };
+}
+
+function combineReleaseNotes(
+  payloads: Array<Record<string, unknown>>,
+  currentVersion: string,
+  latestVersion: string,
+): string {
+  const seen = new Set<string>();
+  const releases = payloads
+    .filter((payload) => !isDraftOrPrerelease(payload))
+    .map((payload) => {
+      const tag = String(payload.tag_name || "").trim();
+      return {
+        tag,
+        version: tag.replace(/^v/i, ""),
+        body: typeof payload.body === "string" ? payload.body.trim() : "",
+      };
+    })
+    .filter((release) => (
+      release.tag
+      && release.body
+      && isRemoteNewer(currentVersion, release.version)
+      && !isRemoteNewer(latestVersion, release.version)
+    ))
+    .sort((first, second) => {
+      if (isRemoteNewer(first.version, second.version)) return 1;
+      if (isRemoteNewer(second.version, first.version)) return -1;
+      return 0;
+    });
+
+  return releases
+    .filter((release) => {
+      const key = release.version.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map((release) => `${release.tag}\n${release.body}`)
+    .join("\n\n");
+}
+
+async function resolveMissingReleaseNotes(
+  repo: string,
+  latestPayload: Record<string, unknown>,
+  latestVersion: string,
+): Promise<string> {
+  const fallbackBody = typeof latestPayload.body === "string" ? latestPayload.body.trim() : "";
+  const payloads: Array<Record<string, unknown>> = [latestPayload];
+
+  try {
+    for (let page = 1; page <= 10; page += 1) {
+      const result = await fetchReleasePage(repo, page);
+      if (!result.ok || !result.payload) break;
+      payloads.push(...result.payload);
+      const reachedInstalledVersion = result.payload.some((payload) => {
+        const version = String(payload.tag_name || "").trim().replace(/^v/i, "");
+        return version && !isRemoteNewer(APP_VERSION, version);
+      });
+      if (result.payload.length < 100 || reachedInstalledVersion) break;
+    }
+  } catch {
+    return fallbackBody;
+  }
+
+  return combineReleaseNotes(payloads, APP_VERSION, latestVersion) || fallbackBody;
 }
 
 function uniqueStrings(values: string[]): string[] {
@@ -821,7 +914,12 @@ export async function checkGitHubUpdate(repo: string): Promise<UpdateCheckResult
       const reason = String((payload?.message as string) || `HTTP ${status}`);
       return { ...fallback, error: reason };
     }
-    return parseReleasePayload(payload, fallbackUrl);
+    const result = parseReleasePayload(payload, fallbackUrl);
+    if (!result.updateAvailable) return result;
+    return {
+      ...result,
+      releaseNotes: await resolveMissingReleaseNotes(safeRepo, payload, result.latestVersion),
+    };
   } catch (error) {
     return { ...fallback, error: compactErrorText(error) };
   }

@@ -1,5 +1,5 @@
 import { parseDebridLinkApiKeys, getDebridLinkApiKeyId } from "../shared/debrid-link-keys";
-import { getMegaDebridAccountId, parseMegaDebridAccounts, serializeMegaDebridAccounts } from "../shared/mega-debrid-accounts";
+import { getMegaDebridAccountId, getMegaDebridAccountsForMode, getMegaDebridCredentialsForMode, getMegaDebridDisabledAccountIdsForMode, mergeMegaDebridCredentialPools, parseMegaDebridAccounts, serializeMegaDebridAccounts, type MegaDebridAccountMode } from "../shared/mega-debrid-accounts";
 import type { AppSettings, DebridAccountStatus, DebridProvider } from "../shared/types";
 
 export type AccountService = "realdebrid" | "megadebrid-api" | "megadebrid-web" | "bestdebrid" | "alldebrid" | "ddownload" | "onefichier" | "debridlink" | "linksnappy";
@@ -53,6 +53,10 @@ export interface AccountEditState {
 }
 
 const BYTES_PER_GIB = 1024 * 1024 * 1024;
+
+function getMegaTargetMode(target: Extract<AccountEditTarget, { type: "mega" }>): MegaDebridAccountMode {
+  return target.kind === "megadebrid-web" ? "web" : "api";
+}
 
 function formatDailyLimit(limitBytes: number): string {
   if (!Number.isFinite(limitBytes) || limitBytes <= 0) {
@@ -146,7 +150,7 @@ export function createAccountEditState(target: AccountEditTarget, settings: AppS
     return createSingleEditState(target, settings);
   }
   if (target.type === "mega") {
-    const account = parseMegaDebridAccounts(settings.megaCredentials || "", settings.megaPassword || "")
+    const account = getMegaDebridAccountsForMode(settings, getMegaTargetMode(target))
       .find((entry) => entry.id === target.accountId);
     if (!account) {
       throw new Error("Der ausgewählte Mega-Debrid-Account wurde nicht gefunden.");
@@ -200,7 +204,7 @@ export function validateAccountEdit(state: AccountEditState, settings: AppSettin
     if (/[\r\n]/.test(state.password)) {
       return "Das Passwort darf keinen Zeilenumbruch enthalten.";
     }
-    const accounts = parseMegaDebridAccounts(settings.megaCredentials || "", settings.megaPassword || "");
+    const accounts = getMegaDebridAccountsForMode(settings, getMegaTargetMode(target));
     if (!accounts.some((entry) => entry.id === target.accountId)) {
       return "Der ausgewählte Mega-Debrid-Account wurde nicht gefunden.";
     }
@@ -265,7 +269,9 @@ function applySingleEdit(settings: AppSettings, state: AccountEditState & { targ
 }
 
 function applyMegaEdit(settings: AppSettings, state: AccountEditState & { target: Extract<AccountEditTarget, { type: "mega" }> }): AppSettings {
-  const accounts = parseMegaDebridAccounts(settings.megaCredentials || "", settings.megaPassword || "");
+  const mode = getMegaTargetMode(state.target);
+  const otherMode: MegaDebridAccountMode = mode === "api" ? "web" : "api";
+  const accounts = getMegaDebridAccountsForMode(settings, mode);
   const index = accounts.findIndex((entry) => entry.id === state.target.accountId);
   if (index < 0) {
     throw new Error("Der ausgewählte Mega-Debrid-Account wurde nicht gefunden.");
@@ -277,25 +283,41 @@ function applyMegaEdit(settings: AppSettings, state: AccountEditState & { target
     ? { login, password: state.password }
     : { login: entry.login, password: entry.password });
   const idChanged = oldId !== newId;
-  const first = nextAccounts[0] || { login: "", password: "" };
+  const selectedCredentials = serializeMegaDebridAccounts(nextAccounts);
+  const apiCredentials = mode === "api" ? selectedCredentials : getMegaDebridCredentialsForMode(settings, "api");
+  const webCredentials = mode === "web" ? selectedCredentials : getMegaDebridCredentialsForMode(settings, "web");
+  const mergedCredentials = mergeMegaDebridCredentialPools(apiCredentials, webCredentials);
+  const first = parseMegaDebridAccounts(mergedCredentials)[0];
+  const oldIdStillUsed = idChanged && getMegaDebridAccountsForMode(settings, otherMode).some((entry) => entry.id === oldId);
+  const selectedDisabledIds = idChanged
+    ? migrateDisabledId(getMegaDebridDisabledAccountIdsForMode(settings, mode), oldId, newId)
+    : getMegaDebridDisabledAccountIdsForMode(settings, mode);
+  const otherDisabledIds = getMegaDebridDisabledAccountIdsForMode(settings, otherMode);
+  const apiDisabledIds = mode === "api" ? selectedDisabledIds : otherDisabledIds;
+  const webDisabledIds = mode === "web" ? selectedDisabledIds : otherDisabledIds;
+  const nextDailyLimits = updateTargetLimit(settings.megaDebridAccountDailyLimitBytes || {}, oldId, newId, state.dailyLimitGb, state.originalDailyLimitBytes);
+  if (oldIdStillUsed && settings.megaDebridAccountDailyLimitBytes?.[oldId]) {
+    nextDailyLimits[oldId] = settings.megaDebridAccountDailyLimitBytes[oldId];
+  }
+  const retainOldMetadata = <T,>(record: Record<string, T>): Record<string, T> => idChanged
+    ? oldIdStillUsed ? withoutRecordKeys(record, newId) : withoutRecordKeys(record, oldId, newId)
+    : { ...record };
   return {
     ...settings,
-    megaCredentials: serializeMegaDebridAccounts(nextAccounts),
-    megaLogin: first.login,
-    megaPassword: first.password,
-    megaDebridDisabledAccountIds: idChanged
-      ? migrateDisabledId(settings.megaDebridDisabledAccountIds || [], oldId, newId)
-      : [...(settings.megaDebridDisabledAccountIds || [])],
-    megaDebridAccountDailyLimitBytes: updateTargetLimit(settings.megaDebridAccountDailyLimitBytes || {}, oldId, newId, state.dailyLimitGb, state.originalDailyLimitBytes),
-    megaDebridAccountDailyUsageBytes: idChanged
-      ? withoutRecordKeys(settings.megaDebridAccountDailyUsageBytes || {}, oldId, newId)
-      : { ...(settings.megaDebridAccountDailyUsageBytes || {}) },
-    megaDebridAccountTotalUsageBytes: idChanged
-      ? withoutRecordKeys(settings.megaDebridAccountTotalUsageBytes || {}, oldId, newId)
-      : { ...(settings.megaDebridAccountTotalUsageBytes || {}) },
-    debridAccountStatuses: idChanged
-      ? withoutRecordKeys(settings.debridAccountStatuses || {}, oldId, newId)
-      : { ...(settings.debridAccountStatuses || {}) }
+    megaCredentials: mergedCredentials,
+    megaLogin: first?.login || "",
+    megaPassword: first?.password || "",
+    megaDebridApiCredentials: apiCredentials,
+    megaDebridWebCredentials: webCredentials,
+    megaDebridApiEnabled: settings.megaDebridApiEnabled && parseMegaDebridAccounts(apiCredentials).length > 0,
+    megaDebridWebEnabled: settings.megaDebridWebEnabled && parseMegaDebridAccounts(webCredentials).length > 0,
+    megaDebridDisabledAccountIds: [...new Set([...apiDisabledIds, ...webDisabledIds])],
+    megaDebridApiDisabledAccountIds: apiDisabledIds,
+    megaDebridWebDisabledAccountIds: webDisabledIds,
+    megaDebridAccountDailyLimitBytes: nextDailyLimits,
+    megaDebridAccountDailyUsageBytes: retainOldMetadata(settings.megaDebridAccountDailyUsageBytes || {}),
+    megaDebridAccountTotalUsageBytes: retainOldMetadata(settings.megaDebridAccountTotalUsageBytes || {}),
+    debridAccountStatuses: retainOldMetadata(settings.debridAccountStatuses || {})
   };
 }
 
@@ -370,22 +392,35 @@ export function removeAccountTarget(settings: AppSettings, target: AccountEditTa
     return clearSingleAccount(settings, target);
   }
   if (target.type === "mega") {
-    const accounts = parseMegaDebridAccounts(settings.megaCredentials || "", settings.megaPassword || "")
+    const mode = getMegaTargetMode(target);
+    const selectedAccounts = getMegaDebridAccountsForMode(settings, mode)
       .filter((entry) => entry.id !== target.accountId)
       .map((entry) => ({ login: entry.login, password: entry.password }));
-    const first = accounts[0] || { login: "", password: "" };
+    const selectedCredentials = serializeMegaDebridAccounts(selectedAccounts);
+    const apiCredentials = mode === "api" ? selectedCredentials : getMegaDebridCredentialsForMode(settings, "api");
+    const webCredentials = mode === "web" ? selectedCredentials : getMegaDebridCredentialsForMode(settings, "web");
+    const mergedCredentials = mergeMegaDebridCredentialPools(apiCredentials, webCredentials);
+    const first = parseMegaDebridAccounts(mergedCredentials)[0];
+    const accountStillUsed = parseMegaDebridAccounts(mode === "api" ? webCredentials : apiCredentials).some((entry) => entry.id === target.accountId);
+    const apiDisabledIds = (mode === "api" ? getMegaDebridDisabledAccountIdsForMode(settings, "api").filter((id) => id !== target.accountId) : getMegaDebridDisabledAccountIdsForMode(settings, "api"));
+    const webDisabledIds = (mode === "web" ? getMegaDebridDisabledAccountIdsForMode(settings, "web").filter((id) => id !== target.accountId) : getMegaDebridDisabledAccountIdsForMode(settings, "web"));
+    const keepOrRemoveMetadata = <T,>(record: Record<string, T>): Record<string, T> => accountStillUsed ? { ...record } : withoutRecordKeys(record, target.accountId);
     return {
       ...settings,
-      megaCredentials: serializeMegaDebridAccounts(accounts),
-      megaLogin: first.login,
-      megaPassword: first.password,
-      megaDebridApiEnabled: accounts.length > 0 && settings.megaDebridApiEnabled,
-      megaDebridWebEnabled: accounts.length > 0 && settings.megaDebridWebEnabled,
-      megaDebridDisabledAccountIds: (settings.megaDebridDisabledAccountIds || []).filter((id) => id !== target.accountId),
-      megaDebridAccountDailyLimitBytes: withoutRecordKeys(settings.megaDebridAccountDailyLimitBytes || {}, target.accountId),
-      megaDebridAccountDailyUsageBytes: withoutRecordKeys(settings.megaDebridAccountDailyUsageBytes || {}, target.accountId),
-      megaDebridAccountTotalUsageBytes: withoutRecordKeys(settings.megaDebridAccountTotalUsageBytes || {}, target.accountId),
-      debridAccountStatuses: withoutRecordKeys(settings.debridAccountStatuses || {}, target.accountId)
+      megaCredentials: mergedCredentials,
+      megaLogin: first?.login || "",
+      megaPassword: first?.password || "",
+      megaDebridApiCredentials: apiCredentials,
+      megaDebridWebCredentials: webCredentials,
+      megaDebridApiEnabled: parseMegaDebridAccounts(apiCredentials).length > 0 && settings.megaDebridApiEnabled,
+      megaDebridWebEnabled: parseMegaDebridAccounts(webCredentials).length > 0 && settings.megaDebridWebEnabled,
+      megaDebridDisabledAccountIds: [...new Set([...apiDisabledIds, ...webDisabledIds])],
+      megaDebridApiDisabledAccountIds: apiDisabledIds,
+      megaDebridWebDisabledAccountIds: webDisabledIds,
+      megaDebridAccountDailyLimitBytes: keepOrRemoveMetadata(settings.megaDebridAccountDailyLimitBytes || {}),
+      megaDebridAccountDailyUsageBytes: keepOrRemoveMetadata(settings.megaDebridAccountDailyUsageBytes || {}),
+      megaDebridAccountTotalUsageBytes: keepOrRemoveMetadata(settings.megaDebridAccountTotalUsageBytes || {}),
+      debridAccountStatuses: keepOrRemoveMetadata(settings.debridAccountStatuses || {})
     };
   }
   const keys = parseDebridLinkApiKeys(settings.debridLinkApiKeys || "").filter((entry) => entry.id !== target.keyId);
@@ -403,11 +438,19 @@ export function removeAccountTarget(settings: AppSettings, target: AccountEditTa
 export function buildAccountEditCheckSettings(settings: AppSettings, state: AccountEditState): AppSettings {
   if (state.target.type === "mega") {
     const login = state.login.trim();
+    const credentials = serializeMegaDebridAccounts([{ login, password: state.password }]);
+    const mode = getMegaTargetMode(state.target);
     return {
       ...settings,
-      megaCredentials: serializeMegaDebridAccounts([{ login, password: state.password }]),
+      megaCredentials: credentials,
       megaLogin: login,
       megaPassword: state.password,
+      megaDebridApiCredentials: mode === "api" ? credentials : "",
+      megaDebridWebCredentials: mode === "web" ? credentials : "",
+      megaDebridApiEnabled: mode === "api",
+      megaDebridWebEnabled: mode === "web",
+      megaDebridApiDisabledAccountIds: [],
+      megaDebridWebDisabledAccountIds: [],
       debridLinkApiKeys: ""
     };
   }
@@ -417,6 +460,8 @@ export function buildAccountEditCheckSettings(settings: AppSettings, state: Acco
       megaCredentials: "",
       megaLogin: "",
       megaPassword: "",
+      megaDebridApiCredentials: "",
+      megaDebridWebCredentials: "",
       debridLinkApiKeys: state.token.trim()
     };
   }
@@ -425,6 +470,8 @@ export function buildAccountEditCheckSettings(settings: AppSettings, state: Acco
     megaCredentials: "",
     megaLogin: "",
     megaPassword: "",
+    megaDebridApiCredentials: "",
+    megaDebridWebCredentials: "",
     debridLinkApiKeys: ""
   };
 }

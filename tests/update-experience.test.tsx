@@ -146,6 +146,18 @@ describe("update experience", () => {
     expect(css).toMatch(/\.md-update-dialog\s*\{[^}]*box-shadow:\s*0 12px 40px rgb\(0 0 0 \/ 45%\)/s);
   });
 
+  it("uses a light-blue update affordance and a bounded scrollable changelog", () => {
+    const css = readFileSync(new URL("../src/renderer/shell/shell.css", import.meta.url), "utf8");
+    const theme = readFileSync(new URL("../src/renderer/theme.css", import.meta.url), "utf8");
+
+    expect(theme).toMatch(/--ui-update:\s*#BAD0FC;/);
+    expect(theme).toMatch(/--ui-update-hover:\s*#8AA5DC;/);
+    expect(theme).toMatch(/--ui-update-text:\s*#181A1F;/);
+    expect(css).toMatch(/\.md-update-trigger\s*\{[^}]*background:\s*var\(--ui-update\);[^}]*color:\s*var\(--ui-update-text\);/s);
+    expect(css).toMatch(/\.md-update-trigger:hover\s*\{[^}]*background:\s*var\(--ui-update-hover\);/s);
+    expect(css).toMatch(/\.md-update-release-notes pre\s*\{[^}]*max-height:\s*min\(360px, 45vh\);[^}]*overflow-y:\s*auto;/s);
+  });
+
   it("keeps forward and reverse tabbing inside the update dialog", () => {
     expect(getUpdateDialogFocusTarget(false, -1, 4)).toBe(0);
     expect(getUpdateDialogFocusTarget(true, -1, 4)).toBe(3);

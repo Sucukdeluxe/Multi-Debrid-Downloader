@@ -108,6 +108,52 @@ describe("update", () => {
     expect(result.setupAssetName).toBe("Real-Debrid-Downloader-Setup-9.9.9.exe");
   });
 
+  it("combines every stable release note newer than the installed version", async () => {
+    const [major = 2, minor = 0, patch = 0] = parseVersionParts(APP_VERSION);
+    const version = (offset: number): string => `${major}.${minor}.${patch + offset}`;
+    const requestedUrls: string[] = [];
+
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      requestedUrls.push(url);
+      if (url.endsWith("/releases/latest")) {
+        return new Response(JSON.stringify({
+          tag_name: `v${version(3)}`,
+          html_url: `https://github.com/owner/repo/releases/tag/v${version(3)}`,
+          body: "Latest changes",
+          assets: []
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+
+      return new Response(JSON.stringify([
+        { tag_name: `v${version(3)}`, body: "Latest changes", draft: false, prerelease: false },
+        { tag_name: `v${version(2)}`, body: "Middle changes", draft: false, prerelease: false },
+        { tag_name: `v${version(1)}`, body: "First missed changes", draft: false, prerelease: false },
+        { tag_name: `v${version(4)}`, body: "Draft changes", draft: true, prerelease: false },
+        { tag_name: `v${version(5)}`, body: "Prerelease changes", draft: false, prerelease: true },
+        { tag_name: `v${version(0)}`, body: "Installed changes", draft: false, prerelease: false },
+        { tag_name: `v${version(-1)}`, body: "Older changes", draft: false, prerelease: false }
+      ]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+
+    const result = await checkGitHubUpdate("owner/repo");
+
+    expect(requestedUrls).toEqual([
+      "https://api.github.com/repos/owner/repo/releases/latest",
+      "https://api.github.com/repos/owner/repo/releases?per_page=100&page=1"
+    ]);
+    expect(result.releaseNotes).toBe([
+      `v${version(3)}`,
+      "Latest changes",
+      "",
+      `v${version(2)}`,
+      "Middle changes",
+      "",
+      `v${version(1)}`,
+      "First missed changes"
+    ].join("\n"));
+  });
+
   it("uses silent NSIS install flags with auto-run after update", () => {
     expect(buildInstallerLaunchArgs()).toEqual(["/S", "--updated", "--force-run"]);
   });

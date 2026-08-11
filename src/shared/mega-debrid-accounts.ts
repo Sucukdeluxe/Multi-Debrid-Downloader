@@ -7,6 +7,21 @@ export interface MegaDebridAccountEntry {
   maskedLogin: string;
 }
 
+export type MegaDebridAccountMode = "api" | "web";
+
+type MegaDebridModeSettings = {
+  megaCredentials?: string;
+  megaPassword?: string;
+  megaDebridApiCredentials?: string;
+  megaDebridWebCredentials?: string;
+  megaDebridApiEnabled?: boolean;
+  megaDebridWebEnabled?: boolean;
+  megaDebridPreferApi?: boolean;
+  megaDebridDisabledAccountIds?: string[];
+  megaDebridApiDisabledAccountIds?: string[];
+  megaDebridWebDisabledAccountIds?: string[];
+};
+
 const FNV64_OFFSET_BASIS = 0xcbf29ce484222325n;
 const FNV64_PRIME = 0x100000001b3n;
 const FNV64_MASK = 0xffffffffffffffffn;
@@ -87,4 +102,50 @@ export function serializeMegaDebridAccounts(accounts: { login: string; password:
 
 export function getMegaDebridAccountIds(raw: string, legacyPassword = ""): string[] {
   return parseMegaDebridAccounts(raw, legacyPassword).map((entry) => entry.id);
+}
+
+export function getMegaDebridCredentialsForMode(settings: MegaDebridModeSettings, mode: MegaDebridAccountMode): string {
+  const dedicated = mode === "api" ? settings.megaDebridApiCredentials : settings.megaDebridWebCredentials;
+  const otherDedicated = mode === "api" ? settings.megaDebridWebCredentials : settings.megaDebridApiCredentials;
+  if (String(dedicated || "").trim() || String(otherDedicated || "").trim()) {
+    return String(dedicated || "").trim();
+  }
+  const legacy = String(settings.megaCredentials || "").trim();
+  if (!legacy) {
+    return "";
+  }
+  const apiEnabled = Boolean(settings.megaDebridApiEnabled);
+  const webEnabled = Boolean(settings.megaDebridWebEnabled);
+  const preferredMode: MegaDebridAccountMode = settings.megaDebridPreferApi === false ? "web" : "api";
+  if (apiEnabled !== webEnabled) {
+    return mode === (apiEnabled ? "api" : "web") ? legacy : "";
+  }
+  return mode === preferredMode ? legacy : "";
+}
+
+export function getMegaDebridAccountsForMode(settings: MegaDebridModeSettings, mode: MegaDebridAccountMode): MegaDebridAccountEntry[] {
+  return parseMegaDebridAccounts(getMegaDebridCredentialsForMode(settings, mode), settings.megaPassword || "");
+}
+
+export function getMegaDebridDisabledAccountIdsForMode(settings: MegaDebridModeSettings, mode: MegaDebridAccountMode): string[] {
+  const dedicated = mode === "api" ? settings.megaDebridApiDisabledAccountIds : settings.megaDebridWebDisabledAccountIds;
+  const hasDedicatedCredentials = Boolean(
+    String(settings.megaDebridApiCredentials || "").trim()
+    || String(settings.megaDebridWebCredentials || "").trim()
+  );
+  if ((hasDedicatedCredentials || !getMegaDebridCredentialsForMode(settings, mode)) && Array.isArray(dedicated)) {
+    return [...dedicated];
+  }
+  return Array.isArray(settings.megaDebridDisabledAccountIds) ? [...settings.megaDebridDisabledAccountIds] : [];
+}
+
+export function mergeMegaDebridCredentialPools(apiCredentials: string, webCredentials: string): string {
+  const merged = new Map<string, { login: string; password: string }>();
+  for (const entry of [...parseMegaDebridAccounts(apiCredentials), ...parseMegaDebridAccounts(webCredentials)]) {
+    const key = entry.login.trim().toLowerCase();
+    if (!merged.has(key)) {
+      merged.set(key, { login: entry.login, password: entry.password });
+    }
+  }
+  return serializeMegaDebridAccounts([...merged.values()]);
 }

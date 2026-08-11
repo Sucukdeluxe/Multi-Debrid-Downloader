@@ -39,15 +39,20 @@ describe("account-specific editing", () => {
     const oldId = getMegaDebridAccountId("second@example.com");
     const newId = getMegaDebridAccountId("renamed@example.com");
     const firstId = getMegaDebridAccountId("first@example.com");
+    const webId = getMegaDebridAccountId("web@example.com");
     const settings = {
       ...defaultSettings(),
-      megaCredentials: "first@example.com:first-pass\nsecond@example.com:second-pass\nthird@example.com:third-pass",
+      megaCredentials: "first@example.com:first-pass\nsecond@example.com:second-pass\nthird@example.com:third-pass\nweb@example.com:web-pass",
+      megaDebridApiCredentials: "first@example.com:first-pass\nsecond@example.com:second-pass\nthird@example.com:third-pass",
+      megaDebridWebCredentials: "web@example.com:web-pass",
       megaLogin: "first@example.com",
       megaPassword: "first-pass",
       megaDebridApiEnabled: true,
       megaDebridWebEnabled: true,
       megaDebridPreferApi: false,
-      megaDebridDisabledAccountIds: [oldId, firstId],
+      megaDebridDisabledAccountIds: [oldId, firstId, webId],
+      megaDebridApiDisabledAccountIds: [oldId, firstId],
+      megaDebridWebDisabledAccountIds: [webId],
       megaDebridAccountDailyLimitBytes: { [oldId]: 15 * GIB, [firstId]: 9 * GIB },
       megaDebridAccountDailyUsageBytes: { [oldId]: 4 * GIB, [firstId]: 2 * GIB },
       megaDebridAccountTotalUsageBytes: { [oldId]: 40 * GIB, [firstId]: 20 * GIB },
@@ -66,13 +71,15 @@ describe("account-specific editing", () => {
     expect(validateAccountEdit(state, settings)).toBeNull();
     const next = applyAccountEdit(settings, state);
 
-    expect(next.megaCredentials).toBe("first@example.com:first-pass\nrenamed@example.com:new-pass\nthird@example.com:third-pass");
+    expect(next.megaCredentials).toBe("first@example.com:first-pass\nrenamed@example.com:new-pass\nthird@example.com:third-pass\nweb@example.com:web-pass");
+    expect(next.megaDebridApiCredentials).toBe("first@example.com:first-pass\nrenamed@example.com:new-pass\nthird@example.com:third-pass");
+    expect(next.megaDebridWebCredentials).toBe("web@example.com:web-pass");
     expect(next.megaLogin).toBe("first@example.com");
     expect(next.megaPassword).toBe("first-pass");
     expect(next.megaDebridApiEnabled).toBe(true);
     expect(next.megaDebridWebEnabled).toBe(true);
     expect(next.megaDebridPreferApi).toBe(false);
-    expect(next.megaDebridDisabledAccountIds).toEqual([firstId, newId]);
+    expect(next.megaDebridDisabledAccountIds).toEqual([firstId, newId, webId]);
     expect(next.megaDebridAccountDailyLimitBytes).toEqual({ [firstId]: 9 * GIB, [newId]: Math.floor(25.5 * GIB) });
     expect(next.megaDebridAccountDailyUsageBytes).toEqual({ [firstId]: 2 * GIB });
     expect(next.megaDebridAccountTotalUsageBytes).toEqual({ [firstId]: 20 * GIB });

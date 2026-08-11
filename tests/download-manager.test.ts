@@ -252,6 +252,187 @@ describe("download manager", () => {
     expect(failures.has("realdebrid")).toBe(true);
   });
 
+  it("invalidates only the Mega-Debrid Web session when Web credentials change", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-mega-web-session-refresh-"));
+    tempDirs.push(root);
+    const settings = {
+      ...defaultSettings(),
+      megaCredentials: "api-user:api-pass\nweb-user:web-pass",
+      megaDebridApiCredentials: "api-user:api-pass",
+      megaDebridWebCredentials: "web-user:web-pass",
+      megaDebridApiEnabled: true,
+      megaDebridWebEnabled: true
+    };
+    const invalidateMegaSession = vi.fn();
+    const manager = new DownloadManager(settings, emptySession(), createStoragePaths(path.join(root, "state")), { invalidateMegaSession });
+
+    manager.setSettings({ ...settings, megaDebridApiCredentials: "api-user:new-api-pass" });
+    expect(invalidateMegaSession).not.toHaveBeenCalled();
+
+    manager.setSettings({ ...settings, megaDebridApiCredentials: "api-user:new-api-pass", megaDebridWebCredentials: "web-user:new-web-pass" });
+    expect(invalidateMegaSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases only Mega-Debrid reset parks when a newly usable account appears", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-mega-account-refresh-"));
+    tempDirs.push(root);
+    const storagePaths = createStoragePaths(path.join(root, "state"));
+    const previousSettings = {
+      ...defaultSettings(),
+      megaCredentials: "old@example.test:old-secret",
+      megaDebridApiEnabled: true
+    };
+    const session = emptySession();
+    const megaPackageId = "mega-refresh-package";
+    const otherPackageId = "other-refresh-package";
+    const megaItemId = "mega-refresh-item";
+    const otherItemId = "other-refresh-item";
+    const createdAt = Date.now();
+    session.packageOrder = [megaPackageId, otherPackageId];
+    session.packages[megaPackageId] = {
+      id: megaPackageId,
+      name: "Mega refresh",
+      status: "downloading",
+      itemIds: [megaItemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    } as any;
+    session.packages[otherPackageId] = {
+      id: otherPackageId,
+      name: "Other refresh",
+      status: "queued",
+      itemIds: [otherItemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    } as any;
+    session.items[megaItemId] = {
+      id: megaItemId,
+      packageId: megaPackageId,
+      url: "https://rapidgator.net/file/mega-refresh",
+      provider: "megadebrid-api",
+      status: "queued",
+      retries: 1,
+      speedBps: 0,
+      downloadedBytes: 0,
+      totalBytes: null,
+      progressPercent: 0,
+      fileName: "mega-refresh.rar",
+      targetPath: "",
+      resumable: true,
+      attempts: 0,
+      lastError: "limit",
+      fullStatus: "Mega-Debrid bis Tagesreset gesperrt, Pause 3600s",
+      createdAt,
+      updatedAt: createdAt
+    } as any;
+    session.items[otherItemId] = {
+      ...session.items[megaItemId],
+      id: otherItemId,
+      packageId: otherPackageId,
+      url: "https://ddownload.com/file/other-refresh",
+      provider: "realdebrid",
+      fileName: "other-refresh.rar",
+      fullStatus: "Netzwerk-Retry in 60s"
+    } as any;
+    session.running = true;
+    const manager = new DownloadManager(previousSettings, session, storagePaths);
+    session.running = true;
+    session.packages[megaPackageId].status = "downloading";
+    session.items[megaItemId].status = "queued";
+    session.items[megaItemId].fullStatus = "Mega-Debrid bis Tagesreset gesperrt, Pause 3600s";
+    session.items[megaItemId].provider = "megadebrid-api";
+    session.items[otherItemId].status = "queued";
+    session.items[otherItemId].fullStatus = "Netzwerk-Retry in 60s";
+    session.items[otherItemId].provider = "realdebrid";
+    const retryAfter = (manager as any).retryAfterByItem as Map<string, number>;
+    const retryState = (manager as any).retryStateByItem as Map<string, unknown>;
+    retryAfter.set(megaItemId, Date.now() + 3_600_000);
+    retryAfter.set(otherItemId, Date.now() + 60_000);
+    retryState.set(megaItemId, { unrestrictRetries: 1 });
+    retryState.set(otherItemId, { genericErrorRetries: 1 });
+    const scheduler = vi.spyOn(manager as any, "ensureScheduler").mockResolvedValue(undefined);
+    vi.spyOn(manager as any, "cleanupExistingExtractedArchives").mockResolvedValue(0);
+
+    manager.setSettings({
+      ...previousSettings,
+      megaCredentials: "old@example.test:old-secret\nnew@example.test:new-secret",
+      megaDebridDisabledAccountIds: [getMegaDebridAccountId("old@example.test")]
+    });
+
+    expect(retryAfter.has(megaItemId)).toBe(false);
+    expect(retryState.has(megaItemId)).toBe(false);
+    expect(session.items[megaItemId].fullStatus).toBe("Wartet");
+    expect(session.packages[megaPackageId].status).toBe("queued");
+    expect(retryAfter.has(otherItemId)).toBe(true);
+    expect(retryState.has(otherItemId)).toBe(true);
+    expect(session.items[otherItemId].fullStatus).toBe("Netzwerk-Retry in 60s");
+    expect(scheduler).toHaveBeenCalledTimes(1);
+  });
+
+  it("updates the package status atomically when an active item is queued for retry", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-retry-package-status-"));
+    tempDirs.push(root);
+    const storagePaths = createStoragePaths(path.join(root, "state"));
+    initPackageLogs(storagePaths.baseDir);
+    initItemLogs(storagePaths.baseDir);
+    const session = emptySession();
+    const packageId = "retry-status-package";
+    const itemId = "retry-status-item";
+    const createdAt = Date.now();
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "Retry status",
+      status: "downloading",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    } as any;
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://rapidgator.net/file/retry-status",
+      provider: "megadebrid-api",
+      status: "downloading",
+      retries: 1,
+      speedBps: 0,
+      downloadedBytes: 0,
+      totalBytes: null,
+      progressPercent: 0,
+      fileName: "retry-status.rar",
+      targetPath: "",
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Download läuft",
+      createdAt,
+      updatedAt: createdAt
+    } as any;
+    const manager = new DownloadManager(defaultSettings(), session, storagePaths);
+    session.packages[packageId].status = "downloading";
+    const active = {
+      itemId,
+      packageId,
+      abortController: new AbortController(),
+      abortReason: "none",
+      resumable: true,
+      nonResumableCounted: false,
+      blockedOnDiskWrite: false,
+      blockedOnDiskSince: 0
+    };
+
+    (manager as any).queueRetry(session.items[itemId], active, 60_000, "Mega-Debrid bis Tagesreset gesperrt, Pause 60s");
+
+    expect(session.items[itemId].status).toBe("queued");
+    expect(session.packages[packageId].status).toBe("queued");
+  });
+
   it("records history duration from the first actual package start", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-history-"));
     tempDirs.push(root);

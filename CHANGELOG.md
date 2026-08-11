@@ -2,6 +2,41 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.23] - 2026-08-11
+
+### Update experience
+
+- Changed the available-update header action to a dedicated light-blue treatment with dark high-contrast text.
+- Added cumulative release notes for every stable version newer than the installed application, ordered from newest to oldest.
+- Excluded draft releases, prereleases, the installed version, and older versions from cumulative update notes.
+- Added a bounded vertical scroll area so long multi-version changelogs remain usable without overflowing the update dialog.
+
+### Download queue
+
+- Unified RapidGator main and short-link domains under one host identity for icons, host counts, routing, limits, and cooldowns.
+- Centered service and status values beneath their corresponding column headings.
+- Removed archive filenames from visible password-cracking progress while retaining full technical details in the status tooltip.
+- Kept active packages in their activation order and appended newly active packages behind downloads that were already running.
+- Removed status-driven automatic package expansion so collapse state changes only through explicit user actions.
+
+### Account handling
+
+- Separated Mega-Debrid API and Web Login credential pools so adding, editing, disabling, or removing one mode no longer changes the other mode.
+- Migrated legacy shared Mega-Debrid credentials and disabled-account states into the explicitly enabled access mode, falling back to the preferred mode only for ambiguous legacy configurations.
+- Kept mode-specific account availability and provider selection synchronized with live settings changes.
+- Applied added, edited, disabled, and re-enabled Mega-Debrid accounts to the active scheduler without requiring an application restart.
+- Invalidated cached Mega-Debrid Web Login sessions immediately when Web credentials change, prevented older in-flight, retried, and queued requests from restoring invalidated cookies, and left API-only changes isolated.
+- Released only Mega-Debrid reset-parked queue items when a usable account pool becomes available while preserving unrelated retry delays.
+- Prevented new Mega-Debrid account forms from exposing stored credentials in an unrelated token field.
+- Removed both mode-specific Mega-Debrid credential pools from persisted settings when credential storage is disabled.
+- Synchronized item and package status immediately when a provider retry is queued.
+
+### Reliability and testing
+
+- Kept the latest release notes as a fallback when the release history cannot be loaded.
+- Added regression coverage for cumulative version filtering, ordering, update colors, changelog scrolling, RapidGator aliases, centered queue cells, compact password progress, independent Mega-Debrid API and Web Login pools, credential persistence, legacy migration, live session invalidation, live account-pool refresh, stable active ordering, and user-controlled package expansion.
+- Verified the update dialog with twelve version sections at a 1120 by 760 pixel viewport.
+
 ## [2.0.22] - 2026-08-11
 
 ### History management

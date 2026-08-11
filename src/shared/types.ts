@@ -74,6 +74,8 @@ export interface AppSettings {
   megaLogin: string;
   megaPassword: string;
   megaCredentials: string;
+  megaDebridApiCredentials: string;
+  megaDebridWebCredentials: string;
   megaDebridApiEnabled: boolean;
   megaDebridWebEnabled: boolean;
   megaDebridPreferApi: boolean;
@@ -159,6 +161,8 @@ export interface AppSettings {
   debridLinkApiKeyDailyUsageBytes: Record<string, number>;
   debridLinkApiKeyTotalUsageBytes: Record<string, number>;
   megaDebridDisabledAccountIds: string[];
+  megaDebridApiDisabledAccountIds: string[];
+  megaDebridWebDisabledAccountIds: string[];
   megaDebridAccountDailyLimitBytes: Record<string, number>;
   megaDebridAccountDailyUsageBytes: Record<string, number>;
   megaDebridAccountTotalUsageBytes: Record<string, number>;

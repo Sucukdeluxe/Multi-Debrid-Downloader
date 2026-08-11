@@ -430,7 +430,7 @@ describe("debug-server", () => {
     const fixture = await createFixture();
     const response = await fetch(`${fixture.baseUrl}/health?token=${fixture.token}`, {
       headers: {
-        "X-Forwarded-For": "159.195.63.46"
+        "X-Forwarded-For": "203.0.113.46"
       }
     });
     expect(response.ok).toBe(true);
@@ -439,7 +439,7 @@ describe("debug-server", () => {
     const traceLogPath = getTraceLogPath();
     expect(traceLogPath).toBeTruthy();
     const traceText = fs.readFileSync(traceLogPath!, "utf8");
-    expect(traceText).toContain("clientIp=159.195.63.46");
+    expect(traceText).toContain("clientIp=203.0.113.46");
   });
 
   it("serves package details and package log by package query", async () => {

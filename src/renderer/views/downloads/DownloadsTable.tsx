@@ -139,6 +139,10 @@ export function compactDownloadStatus(value: string): string {
   if (/Download running\b/i.test(status)) return "Download running";
   if (/^Passwort gefunden\b/i.test(status)) return "Passwort gefunden";
   if (/^Password found\b/i.test(status)) return "Password found";
+  const passwordCracking = status.match(/^(Passwort knacken|Cracking password):?\s*(\d+)%\s*(?:\((\d+\/\d+)\))?/i);
+  if (passwordCracking) {
+    return `${passwordCracking[1]}: ${passwordCracking[2]}%${passwordCracking[3] ? ` (${passwordCracking[3]})` : ""}`;
+  }
   if (/^Entpack-Fehler\b/i.test(status)) return "Entpack-Fehler";
   if (/^Extraction error\b/i.test(status)) return "Extraction error";
   const extractionPending = status.match(/^(Entpacken|Extracting)\s*-\s*(Ausstehend|Pending|Warten auf Parts|Waiting for parts)/i);

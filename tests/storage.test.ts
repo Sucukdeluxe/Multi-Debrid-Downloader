@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
+import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
 import { AppSettings } from "../src/shared/types";
 import { defaultSettings } from "../src/main/constants";
@@ -48,6 +49,27 @@ describe("settings storage", () => {
     expect(defaultSettings().language).toBe("en");
     expect(normalizeSettings({ ...defaultSettings(), language: "de" }).language).toBe("de");
     expect(normalizeSettings({ ...defaultSettings(), language: "fr" as "en" }).language).toBe("en");
+  });
+
+  it("migrates a legacy shared Mega-Debrid pool into only the preferred mode", () => {
+    const legacy = { ...defaultSettings() } as Partial<AppSettings>;
+    legacy.megaCredentials = "legacy@example.test:legacy-pass";
+    legacy.megaLogin = "legacy@example.test";
+    legacy.megaPassword = "legacy-pass";
+    legacy.megaDebridApiEnabled = true;
+    legacy.megaDebridWebEnabled = true;
+    legacy.megaDebridPreferApi = true;
+    delete legacy.megaDebridApiCredentials;
+    delete legacy.megaDebridWebCredentials;
+    delete legacy.megaDebridApiDisabledAccountIds;
+    delete legacy.megaDebridWebDisabledAccountIds;
+
+    const normalized = normalizeSettings(legacy as AppSettings);
+
+    expect(normalized.megaDebridApiCredentials).toBe("legacy@example.test:legacy-pass");
+    expect(normalized.megaDebridWebCredentials).toBe("");
+    expect(normalized.megaDebridApiEnabled).toBe(true);
+    expect(normalized.megaDebridWebEnabled).toBe(false);
   });
 
   it("keeps German for existing settings files created before language selection existed", () => {
@@ -112,6 +134,9 @@ describe("settings storage", () => {
       token: "rd-token",
       megaLogin: "mega-user",
       megaPassword: "mega-pass",
+      megaCredentials: "mega-user:mega-pass",
+      megaDebridApiCredentials: "mega-user:mega-pass",
+      megaDebridWebCredentials: "web-user:web-pass",
       bestToken: "best-token",
       allDebridToken: "all-token"
     });
@@ -120,6 +145,9 @@ describe("settings storage", () => {
     expect(raw.token).toBe("");
     expect(raw.megaLogin).toBe("");
     expect(raw.megaPassword).toBe("");
+    expect(raw.megaCredentials).toBe("");
+    expect(raw.megaDebridApiCredentials).toBe("");
+    expect(raw.megaDebridWebCredentials).toBe("");
     expect(raw.bestToken).toBe("");
     expect(raw.allDebridToken).toBe("");
 
@@ -128,6 +156,9 @@ describe("settings storage", () => {
     expect(loaded.token).toBe("");
     expect(loaded.megaLogin).toBe("");
     expect(loaded.megaPassword).toBe("");
+    expect(loaded.megaCredentials).toBe("");
+    expect(loaded.megaDebridApiCredentials).toBe("");
+    expect(loaded.megaDebridWebCredentials).toBe("");
     expect(loaded.bestToken).toBe("");
     expect(loaded.allDebridToken).toBe("");
   });
@@ -305,6 +336,68 @@ describe("settings storage", () => {
     const loadedWeb = loadSettings(paths2);
     expect(loadedWeb.megaDebridApiEnabled).toBe(false);
     expect(loadedWeb.megaDebridWebEnabled).toBe(true);
+  });
+
+  it("migrates an explicitly Web-only legacy account even when API remains preferred", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    fs.writeFileSync(paths.configFile, JSON.stringify({
+      rememberToken: true,
+      megaCredentials: "web-user:web-pass",
+      megaDebridPreferApi: true,
+      megaDebridApiEnabled: false,
+      megaDebridWebEnabled: true
+    }), "utf8");
+
+    const loaded = loadSettings(paths);
+
+    expect(loaded.megaDebridApiCredentials).toBe("");
+    expect(loaded.megaDebridWebCredentials).toBe("web-user:web-pass");
+    expect(loaded.megaDebridApiEnabled).toBe(false);
+    expect(loaded.megaDebridWebEnabled).toBe(true);
+  });
+
+  it("migrates legacy disabled Mega-Debrid accounts into the selected mode", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const accountId = getMegaDebridAccountId("disabled-user");
+    fs.writeFileSync(paths.configFile, JSON.stringify({
+      rememberToken: true,
+      megaCredentials: "disabled-user:disabled-pass",
+      megaDebridPreferApi: true,
+      megaDebridApiEnabled: true,
+      megaDebridWebEnabled: false,
+      megaDebridDisabledAccountIds: [accountId]
+    }), "utf8");
+
+    const loaded = loadSettings(paths);
+
+    expect(loaded.megaDebridApiDisabledAccountIds).toEqual([accountId]);
+    expect(loaded.megaDebridWebDisabledAccountIds).toEqual([]);
+  });
+
+  it("preserves explicit mode-specific disabled Mega-Debrid accounts", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const accountId = getMegaDebridAccountId("shared-user");
+    fs.writeFileSync(paths.configFile, JSON.stringify({
+      rememberToken: true,
+      megaDebridApiCredentials: "shared-user:api-pass",
+      megaDebridWebCredentials: "shared-user:web-pass",
+      megaDebridApiEnabled: true,
+      megaDebridWebEnabled: true,
+      megaDebridDisabledAccountIds: [accountId],
+      megaDebridApiDisabledAccountIds: [],
+      megaDebridWebDisabledAccountIds: [accountId]
+    }), "utf8");
+
+    const loaded = loadSettings(paths);
+
+    expect(loaded.megaDebridApiDisabledAccountIds).toEqual([]);
+    expect(loaded.megaDebridWebDisabledAccountIds).toEqual([accountId]);
   });
 
   it("re-aktiviert KEINE bewusst deaktivierten Mega-Flags und migriert nicht ohne Mega-Creds", () => {

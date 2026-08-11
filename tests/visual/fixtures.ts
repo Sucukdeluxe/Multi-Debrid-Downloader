@@ -60,6 +60,8 @@ function createSettings(): AppSettings {
     megaPassword: "visual-password",
     language: "de",
     megaCredentials: `${megaLogin}:visual-password`,
+    megaDebridApiCredentials: `${megaLogin}:visual-password`,
+    megaDebridWebCredentials: "",
     megaDebridApiEnabled: true,
     megaDebridWebEnabled: true,
     megaDebridPreferApi: true,
@@ -174,6 +176,8 @@ function createSettings(): AppSettings {
       [debridLinkKeys[1].id]: 549755813888
     },
     megaDebridDisabledAccountIds: [],
+    megaDebridApiDisabledAccountIds: [],
+    megaDebridWebDisabledAccountIds: [],
     megaDebridAccountDailyLimitBytes: {
       [megaAccountId]: 322122547200
     },

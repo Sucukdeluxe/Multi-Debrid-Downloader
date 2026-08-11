@@ -1,4 +1,5 @@
 import type { AudioStripSummary, DebridProvider } from "../shared/types";
+import { extractHosterFromUrl } from "../shared/hoster";
 import { hosterIconSources } from "./hoster-icons";
 
 export const providerLabels: Record<DebridProvider, string> = {
@@ -48,13 +49,7 @@ export function formatDateTime(timestamp: number): string {
 }
 
 export function extractHoster(url: string): string {
-  try {
-    const host = new URL(url).hostname.replace(/^www\./, "");
-    const parts = host.split(".");
-    return parts.length >= 2 ? parts[parts.length - 2] : host;
-  } catch {
-    return "";
-  }
+  return extractHosterFromUrl(url);
 }
 
 export function formatHosterLabel(hoster: string): { compact: string; title: string; iconSrc?: string } {

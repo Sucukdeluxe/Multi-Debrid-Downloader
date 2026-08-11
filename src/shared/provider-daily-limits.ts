@@ -1,4 +1,5 @@
 import type { AppSettings, DebridProvider } from "./types";
+import { getMegaDebridDisabledAccountIdsForMode, type MegaDebridAccountMode } from "./mega-debrid-accounts";
 
 export type ProviderByteMap = Partial<Record<DebridProvider, number>>;
 export type DebridLinkKeyByteMap = Record<string, number>;
@@ -6,7 +7,7 @@ export type DebridLinkKeyByteMap = Record<string, number>;
 type ProviderDailySettings =
   Pick<AppSettings, "providerDailyLimitBytes" | "providerDailyUsageBytes" | "providerDailyUsageDay">
   & Partial<Pick<AppSettings, "debridLinkApiKeyDailyLimitBytes" | "debridLinkApiKeyDailyUsageBytes">>
-  & Partial<Pick<AppSettings, "megaDebridDisabledAccountIds" | "megaDebridAccountDailyLimitBytes" | "megaDebridAccountDailyUsageBytes">>;
+  & Partial<Pick<AppSettings, "megaDebridDisabledAccountIds" | "megaDebridApiDisabledAccountIds" | "megaDebridWebDisabledAccountIds" | "megaDebridAccountDailyLimitBytes" | "megaDebridAccountDailyUsageBytes">>;
 
 type ProviderUsageSettings =
   ProviderDailySettings
@@ -250,7 +251,10 @@ export function addDebridLinkApiKeyTotalUsageBytes(
   };
 }
 
-export function isMegaDebridAccountDisabled(settings: ProviderDailySettings, accountId: string): boolean {
+export function isMegaDebridAccountDisabled(settings: ProviderDailySettings, accountId: string, mode?: MegaDebridAccountMode): boolean {
+  if (mode) {
+    return getMegaDebridDisabledAccountIdsForMode(settings, mode).includes(accountId);
+  }
   return Array.isArray(settings.megaDebridDisabledAccountIds) && settings.megaDebridDisabledAccountIds.includes(accountId);
 }
 

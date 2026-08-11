@@ -15,6 +15,9 @@
   --ui-primary: #D6D6D6;
   --ui-primary-hover: #E6E6E6;
   --ui-primary-text: #181A1F;
+  --ui-update: #BAD0FC;
+  --ui-update-hover: #8AA5DC;
+  --ui-update-text: #181A1F;
   --ui-accent: #4A4A4A;
   --ui-focus: #9AB8E8;
   --ui-speed-accent: #4ADE80;
@@ -48,6 +51,9 @@
   --ui-primary: #3A3A3A;
   --ui-primary-hover: #202020;
   --ui-primary-text: #FFFFFF;
+  --ui-update: #BAD0FC;
+  --ui-update-hover: #8AA5DC;
+  --ui-update-text: #181A1F;
   --ui-accent: #5E5E5E;
   --ui-focus: #24558D;
   --ui-speed-accent: #1E9E55;

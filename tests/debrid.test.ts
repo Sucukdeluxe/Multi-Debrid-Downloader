@@ -1630,6 +1630,8 @@ describe("debrid service", () => {
       megaLogin: "user",
       megaPassword: "pass",
       megaCredentials: "user:pass",
+      megaDebridApiCredentials: "user:pass",
+      megaDebridWebCredentials: "user:pass",
       megaDebridApiEnabled: true,
       megaDebridWebEnabled: true,
       providerOrder: [] as const,

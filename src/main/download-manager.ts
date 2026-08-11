@@ -22,7 +22,9 @@ import {
   StartConflictResolutionResult,
   UiSnapshot, DebridAccountStatus } from "../shared/types";
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
+import { extractHosterFromUrl } from "../shared/hoster";
 import { isMegaDebridTransientResolveFailure, germanMegaDebridResolveReason } from "../shared/mega-debrid-errors";
+import { getMegaDebridAccountsForMode } from "../shared/mega-debrid-accounts";
 import {
   addDebridLinkApiKeyDailyUsageBytes,
   addDebridLinkApiKeyTotalUsageBytes,
@@ -471,13 +473,7 @@ function isArchiveLikePath(filePath: string): boolean {
 }
 
 function extractHosterKey(link: string): string {
-  try {
-    const host = new URL(link).hostname.replace(/^www\./, "").toLowerCase();
-    const parts = host.split(".");
-    return parts.length >= 2 ? parts[parts.length - 2] : host;
-  } catch {
-    return "";
-  }
+  return extractHosterFromUrl(link);
 }
 
 function isLargeBinaryLikePath(filePath: string): boolean {
@@ -2176,6 +2172,25 @@ export class DownloadManager extends EventEmitter {
 
   public setSettings(next: AppSettings, opts?: { suppressRetroactiveCleanup?: boolean; settingsOnlyImport?: boolean }): void {
     const previous = this.settings;
+    const previousMegaPool = (["api", "web"] as const)
+      .flatMap((mode) => getAvailableMegaDebridAccounts(previous, mode).map((account) => `${mode}:${account.id}:${account.password}`))
+      .sort()
+      .join("\n");
+    const nextMegaAccounts = (["api", "web"] as const)
+      .flatMap((mode) => getAvailableMegaDebridAccounts(next, mode));
+    const nextMegaPool = (["api", "web"] as const)
+      .flatMap((mode) => getAvailableMegaDebridAccounts(next, mode).map((account) => `${mode}:${account.id}:${account.password}`))
+      .sort()
+      .join("\n");
+    const previousMegaWebCredentials = getMegaDebridAccountsForMode(previous, "web")
+      .map((account) => `${account.id}:${account.password}`)
+      .sort()
+      .join("\n");
+    const nextMegaWebCredentials = getMegaDebridAccountsForMode(next, "web")
+      .map((account) => `${account.id}:${account.password}`)
+      .sort()
+      .join("\n");
+    const megaPoolChanged = previousMegaPool !== nextMegaPool && nextMegaAccounts.length > 0;
     next.totalDownloadedAllTime = Math.max(next.totalDownloadedAllTime || 0, this.settings.totalDownloadedAllTime || 0);
     next.totalCompletedFilesAllTime = Math.max(next.totalCompletedFilesAllTime || 0, this.settings.totalCompletedFilesAllTime || 0);
     const now = nowMs();
@@ -2185,6 +2200,9 @@ export class DownloadManager extends EventEmitter {
     this.runtimePersistedTotalMs = this.settings.totalRuntimeAllTimeMs || 0;
     this.runtimePersistedAt = now;
     this.ensureProviderDailyUsageFresh(nowMs());
+    if (previousMegaWebCredentials !== nextMegaWebCredentials) {
+      this.invalidateMegaSessionFn?.();
+    }
     this.debridService.setSettings(next);
     this.allDebridHostInfoCache.clear();
 
@@ -2218,7 +2236,11 @@ export class DownloadManager extends EventEmitter {
       { prev: previous.debridLinkApiKeys || "", next: next.debridLinkApiKeys || "", providers: ["debridlink"] },
       { prev: previous.linkSnappyLogin + "|" + previous.linkSnappyPassword, next: next.linkSnappyLogin + "|" + next.linkSnappyPassword, providers: ["linksnappy"] },
       { prev: previous.ddownloadLogin + "|" + previous.ddownloadPassword, next: next.ddownloadLogin + "|" + next.ddownloadPassword, providers: ["ddownload"] },
-      { prev: previous.megaCredentials + "|" + previous.megaPassword, next: next.megaCredentials + "|" + next.megaPassword, providers: ["megadebrid", "megadebrid-api", "megadebrid-web"] }
+      {
+        prev: `${previous.megaDebridApiCredentials}|${previous.megaDebridWebCredentials}|${previous.megaDebridApiEnabled}|${previous.megaDebridWebEnabled}`,
+        next: `${next.megaDebridApiCredentials}|${next.megaDebridWebCredentials}|${next.megaDebridApiEnabled}|${next.megaDebridWebEnabled}`,
+        providers: ["megadebrid", "megadebrid-api", "megadebrid-web"]
+      }
     ];
     let clearedProviderFailures = 0;
     for (const change of credChanges) {
@@ -2236,6 +2258,10 @@ export class DownloadManager extends EventEmitter {
       logger.info(`Settings-Update: ${clearedProviderFailures} Provider-Failure(s) gecleart wegen geaenderter Credentials`);
     }
 
+    if (!opts?.settingsOnlyImport && megaPoolChanged) {
+      this.releaseMegaDebridResetParks();
+    }
+
     if (!opts?.settingsOnlyImport) {
       this.resolveExistingQueuedOpaqueFilenames();
       void this.cleanupExistingExtractedArchives().catch((err) => logger.warn(`cleanupExistingExtractedArchives Fehler (setSettings): ${compactErrorText(err)}`));
@@ -2244,6 +2270,41 @@ export class DownloadManager extends EventEmitter {
       }
     }
     this.emitState();
+  }
+
+  private releaseMegaDebridResetParks(): number {
+    const activeItemIds = new Set([...this.activeTasks.values()].map((task) => task.itemId));
+    const affectedPackageIds = new Set<string>();
+    let released = 0;
+    for (const item of Object.values(this.session.items)) {
+      if (activeItemIds.has(item.id)) continue;
+      if (item.status !== "queued" && item.status !== "reconnect_wait") continue;
+      if (!/Mega-Debrid bis Tagesreset gesperrt/i.test(item.fullStatus || "")) continue;
+      this.retryAfterByItem.delete(item.id);
+      this.retryStateByItem.delete(item.id);
+      item.status = "queued";
+      item.fullStatus = "Wartet";
+      item.lastError = "";
+      item.provider = null;
+      item.providerLabel = undefined;
+      item.providerAccountId = undefined;
+      item.providerAccountLabel = undefined;
+      item.updatedAt = nowMs();
+      affectedPackageIds.add(item.packageId);
+      released += 1;
+    }
+    for (const packageId of affectedPackageIds) {
+      const pkg = this.session.packages[packageId];
+      if (pkg) this.refreshPackageStatus(pkg);
+    }
+    if (released > 0) {
+      logger.info(`Settings-Update: ${released} Mega-Debrid-Tagesreset-Warteitem(s) wegen geaendertem Account-Pool freigegeben`);
+      this.persistSoon();
+      if (this.session.running) {
+        void this.ensureScheduler().catch((error) => logger.error(`Scheduler nach Account-Update fehlgeschlagen: ${compactErrorText(error)}`));
+      }
+    }
+    return released;
   }
 
   public getSettings(): AppSettings {
@@ -8020,11 +8081,11 @@ export class DownloadManager extends EventEmitter {
       return Boolean(this.settings.realDebridUseWebLogin || this.settings.token.trim());
     }
     if (effectiveProvider === "megadebrid-api") {
-      const hasMegaCreds = Boolean(this.settings.megaCredentials.trim() || (this.settings.megaLogin.trim() && this.settings.megaPassword.trim()));
+      const hasMegaCreds = getMegaDebridAccountsForMode(this.settings, "api").length > 0;
       return Boolean(hasMegaCreds && (resolveMegaDebridProvider(this.settings, "megadebrid") === "megadebrid-api" || this.settings.megaDebridApiEnabled));
     }
     if (effectiveProvider === "megadebrid-web") {
-      const hasMegaCreds = Boolean(this.settings.megaCredentials.trim() || (this.settings.megaLogin.trim() && this.settings.megaPassword.trim()));
+      const hasMegaCreds = getMegaDebridAccountsForMode(this.settings, "web").length > 0;
       return Boolean(hasMegaCreds && (resolveMegaDebridProvider(this.settings, "megadebrid") === "megadebrid-web" || this.settings.megaDebridWebEnabled));
     }
     if (effectiveProvider === "bestdebrid") {
@@ -8209,7 +8270,7 @@ export class DownloadManager extends EventEmitter {
   private getSerializedValidatingLimit(provider: DebridProvider | null): number {
     if (provider === "megadebrid-web" || provider === "megadebrid-api") {
       const mode = provider === "megadebrid-web" ? "web" : "api";
-      const usableAccounts = getAvailableMegaDebridAccounts(this.settings)
+      const usableAccounts = getAvailableMegaDebridAccounts(this.settings, mode)
         .filter((account) => !getMegaDebridAccountCooldownState(`${account.id}:${mode}`))
         .length;
       return Math.max(1, usableAccounts);
@@ -8795,6 +8856,8 @@ export class DownloadManager extends EventEmitter {
       resumeHardResetUsed: Boolean(active.resumeHardResetUsed)
     });
     this.retryAfterByItem.set(item.id, nowMs() + waitMs);
+    const pkg = this.session.packages[item.packageId];
+    if (pkg) this.refreshPackageStatus(pkg);
   }
 
   private scheduleHttp416Retry(

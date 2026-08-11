@@ -3,6 +3,7 @@ import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { defaultSettings } from "../src/main/constants";
+import { buildAccountAddFields, createAccountDialogState } from "../src/renderer/App";
 import {
   applyAccountEdit,
   createAccountEditState,
@@ -905,6 +906,24 @@ describe("account workspace", () => {
 });
 
 describe("settings App integration", () => {
+  it("keeps new Mega-Debrid credentials empty and never exposes stored accounts as an API key", () => {
+    const settings = {
+      ...defaultSettings(),
+      megaCredentials: "first@example.test:first-secret\nsecond@example.test:second-secret",
+      debridLinkApiKeys: "existing-debrid-link-key"
+    };
+    const megaDialog = createAccountDialogState("create", "megadebrid-api", settings);
+    const megaFields = buildAccountAddFields(megaDialog);
+    const debridLinkFields = buildAccountAddFields(createAccountDialogState("create", "debridlink-api", settings));
+
+    expect(megaDialog.megaNewLogin).toBe("");
+    expect(megaDialog.megaNewPassword).toBe("");
+    expect(megaDialog.token).toBe("");
+    expect(megaFields.map((field) => field.id)).toEqual(["megaNewLogin", "megaNewPassword", "dailyLimitGb"]);
+    expect(megaFields.map((field) => field.label)).not.toContain("Token / API-Key");
+    expect(debridLinkFields.find((field) => field.id === "token")).toEqual(expect.objectContaining({ value: "" }));
+  });
+
   it("keeps specific persistence revision-safe when the draft changes in flight", () => {
     const block = sourceBlock(appSource, "const persistSpecificSettings", "const runAccountQuickAction");
     expect(block).toContain("revisionAtStart");

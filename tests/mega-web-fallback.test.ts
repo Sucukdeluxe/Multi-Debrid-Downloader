@@ -16,6 +16,88 @@ describe("mega-web-fallback", () => {
       expect(result).toBeNull();
     });
 
+    it("does not restore an invalidated session when an older login finishes later", async () => {
+      let finishLogin: (cookie: string) => void = () => {};
+      const loginResult = new Promise<string>((resolve) => {
+        finishLogin = resolve;
+      });
+      const fallback = new MegaWebFallback(() => ({ login: "old-user", password: "old-pass" }));
+      const internals = fallback as unknown as {
+        ensureSession: (key: string, login: string, password: string) => Promise<string>;
+        login: (login: string, password: string) => Promise<string>;
+        sessions: Map<string, { cookie: string; setAt: number }>;
+      };
+      vi.spyOn(internals, "login").mockReturnValue(loginResult);
+
+      const pending = internals.ensureSession("old-user", "old-user", "old-pass");
+      await Promise.resolve();
+      fallback.invalidateSession();
+      finishLogin("stale-old-cookie");
+
+      await expect(pending).resolves.toBe("stale-old-cookie");
+      expect(internals.sessions.size).toBe(0);
+    });
+
+    it("does not cache an old session when an invalidated request retries login", async () => {
+      const fallback = new MegaWebFallback(() => ({ login: "old-user", password: "old-pass" }));
+      const internals = fallback as unknown as {
+        login: (login: string, password: string) => Promise<string>;
+        generate: (link: string, cookie: string) => Promise<{ directUrl: string; fileName: string } | null>;
+        sessions: Map<string, { cookie: string; setAt: number }>;
+      };
+      vi.spyOn(internals, "login")
+        .mockResolvedValueOnce("first-stale-cookie")
+        .mockResolvedValueOnce("second-stale-cookie");
+      vi.spyOn(internals, "generate")
+        .mockImplementationOnce(async () => {
+          fallback.invalidateSession();
+          return null;
+        })
+        .mockResolvedValueOnce({ directUrl: "https://mega.direct/retry", fileName: "retry.bin" });
+
+      const result = await fallback.unrestrict("https://mega.debrid/retry", undefined, { login: "old-user", password: "old-pass" });
+
+      expect(result?.directUrl).toBe("https://mega.direct/retry");
+      expect(internals.sessions.size).toBe(0);
+    });
+
+    it("does not cache old credentials from a queued request after invalidation", async () => {
+      let releaseFirstLogin: () => void = () => {};
+      let markFirstLoginStarted: () => void = () => {};
+      const firstLoginGate = new Promise<void>((resolve) => {
+        releaseFirstLogin = resolve;
+      });
+      const firstLoginStarted = new Promise<void>((resolve) => {
+        markFirstLoginStarted = resolve;
+      });
+      const fallback = new MegaWebFallback(() => ({ login: "old-user", password: "old-pass" }));
+      const internals = fallback as unknown as {
+        login: (login: string, password: string) => Promise<string>;
+        generate: (link: string, cookie: string) => Promise<{ directUrl: string; fileName: string }>;
+        sessions: Map<string, { cookie: string; setAt: number }>;
+      };
+      let loginCount = 0;
+      vi.spyOn(internals, "login").mockImplementation(async () => {
+        loginCount += 1;
+        if (loginCount === 1) {
+          markFirstLoginStarted();
+          await firstLoginGate;
+        }
+        return `old-cookie-${loginCount}`;
+      });
+      vi.spyOn(internals, "generate").mockResolvedValue({ directUrl: "https://mega.direct/queued", fileName: "queued.bin" });
+
+      const first = fallback.unrestrict("https://mega.debrid/first", undefined, { login: "old-user", password: "old-pass" });
+      await firstLoginStarted;
+      const queued = fallback.unrestrict("https://mega.debrid/queued", undefined, { login: "old-user", password: "old-pass" });
+      fallback.invalidateSession();
+      releaseFirstLogin();
+
+      await expect(Promise.all([first, queued])).resolves.toHaveLength(2);
+      expect(loginCount).toBe(2);
+      expect(internals.sessions.size).toBe(0);
+    });
+
     it("logs in, fetches HTML, parses code, and polls AJAX for direct url", async () => {
       let fetchCallCount = 0;
       globalThis.fetch = vi.fn(async (url: string | URL | Request) => {

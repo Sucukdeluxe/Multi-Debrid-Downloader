@@ -164,8 +164,8 @@
   justify-content: center;
   border: 0;
   border-radius: 6px;
-  background: var(--ui-primary);
-  color: var(--ui-primary-text);
+  background: var(--ui-update);
+  color: var(--ui-update-text);
   cursor: pointer;
   font-size: 14px;
   font-weight: 600;
@@ -174,7 +174,7 @@
 }
 
 .md-update-trigger:hover {
-  background: var(--ui-primary-hover);
+  background: var(--ui-update-hover);
 }
 
 .md-update-trigger:focus-visible,
@@ -310,9 +310,14 @@
 
 .md-update-release-notes pre {
   margin: 10px 0 0;
+  max-height: min(360px, 45vh);
+  overflow-y: auto;
+  padding-right: 8px;
   color: var(--ui-text-secondary);
   font: inherit;
   line-height: 20px;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   white-space: pre-wrap;
 }
 

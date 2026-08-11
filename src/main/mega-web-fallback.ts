@@ -228,6 +228,8 @@ export class MegaWebFallback {
 
   private sessions = new Map<string, { cookie: string; setAt: number }>();
 
+  private sessionGeneration = 0;
+
   public constructor(getCredentials: () => MegaCredentials) {
     this.getCredentials = getCredentials;
   }
@@ -245,14 +247,15 @@ export class MegaWebFallback {
       return null;
     }
     const key = creds.login.trim().toLowerCase();
+    const sessionGeneration = this.sessionGeneration;
     return this.runExclusive(async () => {
       throwIfAborted(overallSignal);
-      let cookie = await this.ensureSession(key, creds.login, creds.password, overallSignal);
+      let cookie = await this.ensureSession(key, creds.login, creds.password, overallSignal, sessionGeneration);
 
       let generated = await this.generate(link, cookie, overallSignal);
       if (!generated) {
         this.sessions.delete(key);
-        cookie = await this.ensureSession(key, creds.login, creds.password, overallSignal);
+        cookie = await this.ensureSession(key, creds.login, creds.password, overallSignal, sessionGeneration);
         generated = await this.generate(link, cookie, overallSignal);
         if (!generated) {
           return null;
@@ -267,17 +270,26 @@ export class MegaWebFallback {
     }, key, overallSignal);
   }
 
-  private async ensureSession(key: string, login: string, password: string, signal?: AbortSignal): Promise<string> {
+  private async ensureSession(
+    key: string,
+    login: string,
+    password: string,
+    signal?: AbortSignal,
+    generation = this.sessionGeneration
+  ): Promise<string> {
     const existing = this.sessions.get(key);
     if (existing && existing.cookie && Date.now() - existing.setAt <= 20 * 60 * 1000) {
       return existing.cookie;
     }
     const cookie = await this.login(login, password, signal);
-    this.sessions.set(key, { cookie, setAt: Date.now() });
+    if (generation === this.sessionGeneration) {
+      this.sessions.set(key, { cookie, setAt: Date.now() });
+    }
     return cookie;
   }
 
   public invalidateSession(): void {
+    this.sessionGeneration += 1;
     this.sessions.clear();
   }
 

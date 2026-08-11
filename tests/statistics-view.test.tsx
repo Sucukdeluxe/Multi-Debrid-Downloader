@@ -438,7 +438,7 @@ describe("bandwidth chart palette", () => {
     const collector = readFileSync(new URL("../src/renderer/views/collector/collector.css", import.meta.url), "utf8");
 
     expect(theme).toMatch(/:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--ui-focus\);/s);
-    expect(shell).toContain("color: var(--ui-primary-text);");
+    expect(shell).toContain("color: var(--ui-update-text);");
     expect(collector.match(/color:\s*var\(--ui-primary-text\);/g)).toHaveLength(3);
   });
 

@@ -3,7 +3,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { getDebridLinkApiKeyIds } from "../shared/debrid-link-keys";
-import { getMegaDebridAccountIds } from "../shared/mega-debrid-accounts";
+import { getMegaDebridAccountIds, mergeMegaDebridCredentialPools, parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
 import { AppSettings, AudioStripSummary, BandwidthScheduleEntry, DebridAccountStatus, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, HistoryEntry, HistoryRetentionMode, PackageEntry, PackagePriority, SessionState } from "../shared/types";
 import { getProviderUsageDayKey } from "../shared/provider-daily-limits";
 import { defaultSettings } from "./constants";
@@ -381,21 +381,49 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
   const defaults = defaultSettings();
   const directorySettings = migrateLegacyDefaultDirectories(settings, defaults);
   const currentUsageDay = getProviderUsageDayKey();
-  const megaLogin = asText(settings.megaLogin);
-  const megaPassword = asText(settings.megaPassword);
-  let megaCredentials = String(settings.megaCredentials ?? "").replace(/\r\n|\r/g, "\n").trim();
-  if (!megaCredentials && megaLogin && megaPassword) {
-    megaCredentials = `${megaLogin}:${megaPassword}`;
+  const legacyMegaLogin = asText(settings.megaLogin);
+  const legacyMegaPassword = asText(settings.megaPassword);
+  let legacyMegaCredentials = String(settings.megaCredentials ?? "").replace(/\r\n|\r/g, "\n").trim();
+  if (!legacyMegaCredentials && legacyMegaLogin && legacyMegaPassword) {
+    legacyMegaCredentials = `${legacyMegaLogin}:${legacyMegaPassword}`;
   }
-  const megaDebridAccountIds = getMegaDebridAccountIds(megaCredentials);
   const megaDebridPreferApi = settings.megaDebridPreferApi !== undefined ? Boolean(settings.megaDebridPreferApi) : true;
-  const hasMegaCreds = Boolean(megaLogin && megaPassword);
-  const megaDebridApiEnabled = settings.megaDebridApiEnabled !== undefined
+  const hasLegacyMegaCredentials = getMegaDebridAccountIds(legacyMegaCredentials).length > 0;
+  const requestedMegaDebridApiEnabled = settings.megaDebridApiEnabled !== undefined
     ? Boolean(settings.megaDebridApiEnabled)
-    : (hasMegaCreds ? megaDebridPreferApi : defaults.megaDebridApiEnabled);
-  const megaDebridWebEnabled = settings.megaDebridWebEnabled !== undefined
+    : (hasLegacyMegaCredentials ? megaDebridPreferApi : defaults.megaDebridApiEnabled);
+  const requestedMegaDebridWebEnabled = settings.megaDebridWebEnabled !== undefined
     ? Boolean(settings.megaDebridWebEnabled)
-    : (hasMegaCreds ? !megaDebridPreferApi : defaults.megaDebridWebEnabled);
+    : (hasLegacyMegaCredentials ? !megaDebridPreferApi : defaults.megaDebridWebEnabled);
+  const legacyMegaMode = requestedMegaDebridApiEnabled !== requestedMegaDebridWebEnabled
+    ? requestedMegaDebridApiEnabled ? "api" : "web"
+    : megaDebridPreferApi ? "api" : "web";
+  const rawMegaDebridApiCredentials = String(settings.megaDebridApiCredentials || "").replace(/\r\n|\r/g, "\n").trim();
+  const rawMegaDebridWebCredentials = String(settings.megaDebridWebCredentials || "").replace(/\r\n|\r/g, "\n").trim();
+  const hasDedicatedMegaPools = Boolean(rawMegaDebridApiCredentials || rawMegaDebridWebCredentials) || !legacyMegaCredentials;
+  const megaDebridApiCredentials = hasDedicatedMegaPools
+    ? rawMegaDebridApiCredentials
+    : legacyMegaMode === "api" ? legacyMegaCredentials : "";
+  const megaDebridWebCredentials = hasDedicatedMegaPools
+    ? rawMegaDebridWebCredentials
+    : legacyMegaMode === "web" ? legacyMegaCredentials : "";
+  const megaDebridApiAccountIds = getMegaDebridAccountIds(megaDebridApiCredentials);
+  const megaDebridWebAccountIds = getMegaDebridAccountIds(megaDebridWebCredentials);
+  const megaCredentials = mergeMegaDebridCredentialPools(megaDebridApiCredentials, megaDebridWebCredentials);
+  const megaDebridAccountIds = getMegaDebridAccountIds(megaCredentials);
+  const primaryMegaAccount = parseMegaDebridAccounts(megaCredentials)[0];
+  const megaLogin = primaryMegaAccount?.login || "";
+  const megaPassword = primaryMegaAccount?.password || "";
+  const megaDebridApiEnabled = requestedMegaDebridApiEnabled && megaDebridApiAccountIds.length > 0;
+  const megaDebridWebEnabled = requestedMegaDebridWebEnabled && megaDebridWebAccountIds.length > 0;
+  const legacyMegaDisabledAccountIds = normalizeStringList(settings.megaDebridDisabledAccountIds, megaDebridAccountIds);
+  const megaDebridApiDisabledAccountIds = Array.isArray(settings.megaDebridApiDisabledAccountIds)
+    ? normalizeStringList(settings.megaDebridApiDisabledAccountIds, megaDebridApiAccountIds)
+    : legacyMegaDisabledAccountIds.filter((id) => megaDebridApiAccountIds.includes(id));
+  const megaDebridWebDisabledAccountIds = Array.isArray(settings.megaDebridWebDisabledAccountIds)
+    ? normalizeStringList(settings.megaDebridWebDisabledAccountIds, megaDebridWebAccountIds)
+    : legacyMegaDisabledAccountIds.filter((id) => megaDebridWebAccountIds.includes(id));
+  const megaDebridDisabledAccountIds = [...new Set([...megaDebridApiDisabledAccountIds, ...megaDebridWebDisabledAccountIds])];
   const providerDailyUsageDayRaw = asText(settings.providerDailyUsageDay);
   const providerDailyUsageDay = /^\d{4}-\d{2}-\d{2}$/.test(providerDailyUsageDayRaw)
     ? providerDailyUsageDayRaw
@@ -431,6 +459,8 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     megaLogin,
     megaPassword,
     megaCredentials,
+    megaDebridApiCredentials,
+    megaDebridWebCredentials,
     megaDebridApiEnabled,
     megaDebridWebEnabled,
     megaDebridPreferApi,
@@ -527,7 +557,9 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     debridLinkApiKeyDailyLimitBytes,
     debridLinkApiKeyDailyUsageBytes: providerDailyUsageDay === currentUsageDay ? debridLinkApiKeyDailyUsageBytes : {},
     debridLinkApiKeyTotalUsageBytes,
-    megaDebridDisabledAccountIds: normalizeStringList(settings.megaDebridDisabledAccountIds, megaDebridAccountIds),
+    megaDebridDisabledAccountIds,
+    megaDebridApiDisabledAccountIds,
+    megaDebridWebDisabledAccountIds,
     megaDebridAccountDailyLimitBytes: normalizeNamedByteMap(settings.megaDebridAccountDailyLimitBytes, megaDebridAccountIds),
     megaDebridAccountDailyUsageBytes: providerDailyUsageDay === currentUsageDay
       ? normalizeNamedByteMap(settings.megaDebridAccountDailyUsageBytes, megaDebridAccountIds)
@@ -583,6 +615,8 @@ function sanitizeCredentialPersistence(settings: AppSettings): AppSettings {
     megaLogin: "",
     megaPassword: "",
     megaCredentials: "",
+    megaDebridApiCredentials: "",
+    megaDebridWebCredentials: "",
     bestToken: "",
     bestDebridUseWebLogin: settings.bestDebridUseWebLogin,
     allDebridToken: "",
@@ -672,7 +706,10 @@ function migrateLegacyMegaEnableFlags(parsed: AppSettings): AppSettings {
   if (parsed.megaDebridApiEnabled !== undefined || parsed.megaDebridWebEnabled !== undefined) {
     return parsed;
   }
-  const hasMegaCreds = Boolean(asText(parsed.megaLogin) && asText(parsed.megaPassword));
+  const hasMegaCreds = Boolean(
+    getMegaDebridAccountIds(asText(parsed.megaCredentials), asText(parsed.megaPassword)).length
+    || (asText(parsed.megaLogin) && asText(parsed.megaPassword))
+  );
   if (!hasMegaCreds) {
     return parsed;
   }
@@ -684,12 +721,20 @@ function readSettingsFile(filePath: string): AppSettings | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as AppSettings;
     const migratedLanguage = (parsed as Partial<AppSettings>).language === undefined ? "de" : parsed.language;
-    const merged = normalizeSettings({
+    const migrated = migrateLegacyMegaEnableFlags(parsed);
+    const mergedInput = {
       ...defaultSettings(),
-      ...migrateLegacyMegaEnableFlags(parsed),
+      ...migrated,
       language: migratedLanguage,
       columnOrderVersion: parsed.columnOrderVersion
-    });
+    } as AppSettings;
+    if (!Object.prototype.hasOwnProperty.call(parsed, "megaDebridApiDisabledAccountIds")) {
+      delete (mergedInput as Partial<AppSettings>).megaDebridApiDisabledAccountIds;
+    }
+    if (!Object.prototype.hasOwnProperty.call(parsed, "megaDebridWebDisabledAccountIds")) {
+      delete (mergedInput as Partial<AppSettings>).megaDebridWebDisabledAccountIds;
+    }
+    const merged = normalizeSettings(mergedInput);
     return sanitizeCredentialPersistence(merged);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException)?.code || "";

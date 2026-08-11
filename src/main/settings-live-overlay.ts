@@ -1,10 +1,10 @@
 import { getDebridLinkApiKeyIds } from "../shared/debrid-link-keys";
-import { getMegaDebridAccountIds } from "../shared/mega-debrid-accounts";
+import { getMegaDebridAccountIds, mergeMegaDebridCredentialPools } from "../shared/mega-debrid-accounts";
 import type { AppSettings } from "../shared/types";
 
 export function overlayLiveUsageCounters(target: AppSettings, liveSettings: AppSettings, liveTotalRuntimeMs: number): void {
   const debridLinkKeyIds = new Set(getDebridLinkApiKeyIds(target.debridLinkApiKeys));
-  const megaAccountIds = new Set(getMegaDebridAccountIds(target.megaCredentials || "", target.megaPassword || ""));
+  const megaAccountIds = new Set(getMegaDebridAccountIds(mergeMegaDebridCredentialPools(target.megaDebridApiCredentials || "", target.megaDebridWebCredentials || "") || target.megaCredentials || "", target.megaPassword || ""));
   const validAccountIds = new Set([...debridLinkKeyIds, ...megaAccountIds]);
   target.totalDownloadedAllTime = Math.max(target.totalDownloadedAllTime || 0, liveSettings.totalDownloadedAllTime || 0);
   target.totalCompletedFilesAllTime = Math.max(target.totalCompletedFilesAllTime || 0, liveSettings.totalCompletedFilesAllTime || 0);

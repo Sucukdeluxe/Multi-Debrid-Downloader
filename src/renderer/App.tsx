@@ -1,7 +1,7 @@
 import { DragEvent, ReactElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
-import { getMegaDebridAccountId, parseMegaDebridAccounts, serializeMegaDebridAccounts, maskMegaDebridLogin } from "../shared/mega-debrid-accounts";
+import { getMegaDebridAccountId, getMegaDebridAccountsForMode, getMegaDebridCredentialsForMode, getMegaDebridDisabledAccountIdsForMode, mergeMegaDebridCredentialPools, parseMegaDebridAccounts, serializeMegaDebridAccounts, type MegaDebridAccountMode } from "../shared/mega-debrid-accounts";
 import type {
   AllDebridHostInfo,
   AppSettings,
@@ -447,8 +447,7 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
     serviceLabel: "Mega-Debrid",
     title: "Mega-Debrid API",
     modeLabel: "API",
-    pickerDescription: "Login:Passwort-Paare für Mega-Debrid (API). Mehrere Accounts zeilenweise für Multi-Account.",
-    needsToken: true
+    pickerDescription: "Login:Passwort-Paare für Mega-Debrid (API). Mehrere Accounts zeilenweise für Multi-Account."
   },
   {
     kind: "megadebrid-web",
@@ -456,8 +455,7 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
     serviceLabel: "Mega-Debrid",
     title: "Mega-Debrid Web-Login",
     modeLabel: "Web-Login",
-    pickerDescription: "Login:Passwort-Paare für Mega-Debrid (Web). Mehrere Accounts zeilenweise für Multi-Account.",
-    needsToken: true
+    pickerDescription: "Login:Passwort-Paare für Mega-Debrid (Web). Mehrere Accounts zeilenweise für Multi-Account."
   },
   {
     kind: "bestdebrid-api",
@@ -621,9 +619,11 @@ function getAccountCredentialLabel(kind: AccountKind): string {
   }
 }
 
-function hasMegaDebridCredentials(settings: AppSettings): boolean {
-  if (parseMegaDebridAccounts(settings.megaCredentials || "").length > 0) return true;
-  return Boolean(settings.megaLogin.trim() && settings.megaPassword.trim());
+function hasMegaDebridCredentials(settings: AppSettings, mode?: MegaDebridAccountMode): boolean {
+  if (mode) {
+    return getMegaDebridAccountsForMode(settings, mode).length > 0;
+  }
+  return getMegaDebridAccountsForMode(settings, "api").length > 0 || getMegaDebridAccountsForMode(settings, "web").length > 0;
 }
 
 function getConfiguredProvidersFromSettings(settings: AppSettings): DebridProvider[] {
@@ -631,10 +631,10 @@ function getConfiguredProvidersFromSettings(settings: AppSettings): DebridProvid
   if (settings.token.trim() || settings.realDebridUseWebLogin) {
     list.push("realdebrid");
   }
-  if (hasMegaDebridCredentials(settings) && settings.megaDebridApiEnabled) {
+  if (hasMegaDebridCredentials(settings, "api") && settings.megaDebridApiEnabled) {
     list.push("megadebrid-api");
   }
-  if (hasMegaDebridCredentials(settings) && settings.megaDebridWebEnabled) {
+  if (hasMegaDebridCredentials(settings, "web") && settings.megaDebridWebEnabled) {
     list.push("megadebrid-web");
   }
   if (settings.bestDebridUseWebLogin || settings.bestToken.trim()) {
@@ -682,9 +682,9 @@ function getConfiguredAccountKind(settings: AppSettings, service: AccountService
       if (settings.realDebridUseWebLogin) return "realdebrid-web";
       return settings.token.trim() ? "realdebrid-api" : null;
     case "megadebrid-api":
-      return hasMegaDebridCredentials(settings) && settings.megaDebridApiEnabled ? "megadebrid-api" : null;
+      return hasMegaDebridCredentials(settings, "api") && settings.megaDebridApiEnabled ? "megadebrid-api" : null;
     case "megadebrid-web":
-      return hasMegaDebridCredentials(settings) && settings.megaDebridWebEnabled ? "megadebrid-web" : null;
+      return hasMegaDebridCredentials(settings, "web") && settings.megaDebridWebEnabled ? "megadebrid-web" : null;
     case "bestdebrid":
       if (settings.bestDebridUseWebLogin) return "bestdebrid-web";
       return settings.bestToken.trim() ? "bestdebrid-api" : null;
@@ -721,7 +721,8 @@ function summarizeAccount(kind: AccountKind, settings: AppSettings): string {
       return "Browser-Login";
     case "megadebrid-api":
     case "megadebrid-web": {
-      const megaAccounts = parseMegaDebridAccounts(settings.megaCredentials || "", settings.megaPassword);
+      const mode = kind === "megadebrid-web" ? "web" : "api";
+      const megaAccounts = getMegaDebridAccountsForMode(settings, mode);
       if (megaAccounts.length > 1) return `${megaAccounts.length} Accounts`;
       if (megaAccounts.length === 1) return megaAccounts[0].maskedLogin;
       return settings.megaLogin.trim() ? maskValue(settings.megaLogin.trim(), 2, 6) : "Nicht hinterlegt";
@@ -758,7 +759,7 @@ function summarizeAccountLines(kind: AccountKind, settings: AppSettings): string
     }
   }
   if (kind === "megadebrid-api" || kind === "megadebrid-web") {
-    const accounts = parseMegaDebridAccounts(settings.megaCredentials || "", settings.megaPassword);
+    const accounts = getMegaDebridAccountsForMode(settings, kind === "megadebrid-web" ? "web" : "api");
     if (accounts.length > 1) {
       return accounts.map((entry) => `${entry.label}: ${entry.maskedLogin}`);
     }
@@ -782,7 +783,7 @@ function getStoredAccountUsername(kind: AccountKind, settings: AppSettings): str
   }
 }
 
-function createAccountDialogState(mode: "create" | "edit", kind: AccountKind | null, settings: AppSettings): AccountDialogState {
+export function createAccountDialogState(mode: "create" | "edit", kind: AccountKind | null, settings: AppSettings): AccountDialogState {
   const baseMega: Pick<AccountDialogState, "megaAccounts" | "megaNewLogin" | "megaNewPassword" | "megaDisabledIds"> = { megaAccounts: [], megaNewLogin: "", megaNewPassword: "", megaDisabledIds: [] };
   if (!kind) {
     return {
@@ -807,15 +808,12 @@ function createAccountDialogState(mode: "create" | "edit", kind: AccountKind | n
       return { mode, kind, service, token: "", login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {}, ...baseMega };
     case "megadebrid-api":
     case "megadebrid-web": {
-      let megaToken = (settings.megaCredentials || "").trim();
-      if (!megaToken && settings.megaLogin.trim() && settings.megaPassword.trim()) {
-        megaToken = `${settings.megaLogin.trim()}:${settings.megaPassword.trim()}`;
-      }
-      const parsed = parseMegaDebridAccounts(megaToken);
+      const megaMode = kind === "megadebrid-web" ? "web" : "api";
+      const parsed = getMegaDebridAccountsForMode(settings, megaMode);
       const megaAccounts = parsed.map((a) => ({ login: a.login, password: a.password }));
       const loadedIds = new Set(parsed.map((a) => a.id));
-      const megaDisabledIds = (settings.megaDebridDisabledAccountIds || []).filter((id) => loadedIds.has(id));
-      return { mode, kind, service, token: megaToken, login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {}, megaAccounts, megaNewLogin: "", megaNewPassword: "", megaDisabledIds };
+      const megaDisabledIds = getMegaDebridDisabledAccountIdsForMode(settings, megaMode).filter((id) => loadedIds.has(id));
+      return { mode, kind, service, token: "", login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {}, megaAccounts, megaNewLogin: "", megaNewPassword: "", megaDisabledIds };
     }
     case "bestdebrid-api":
       return { mode, kind, service, token: settings.bestToken, login: "", password: "", dailyLimitGb, keyDailyLimitGbById: {}, ...baseMega };
@@ -848,6 +846,83 @@ function createAccountDialogState(mode: "create" | "edit", kind: AccountKind | n
   }
 }
 
+export function buildAccountAddFields(dialog: AccountDialogState | null): AccountDialogField[] {
+  if (!dialog?.kind) {
+    return [];
+  }
+  const option = findAccountOption(dialog.kind);
+  return [
+    ...((dialog.kind === "megadebrid-api" || dialog.kind === "megadebrid-web") ? [
+      { id: "megaNewLogin", label: "Login / E-Mail", type: "text" as const, value: dialog.megaNewLogin },
+      { id: "megaNewPassword", label: "Passwort", type: "password" as const, value: dialog.megaNewPassword }
+    ] : option.needsCredentials ? [
+      { id: "login", label: "Login / E-Mail", type: "text" as const, value: dialog.login },
+      { id: "password", label: "Passwort", type: "password" as const, value: dialog.password }
+    ] : []),
+    ...(option.needsToken ? [
+      { id: "token", label: dialog.kind === "debridlink-api" ? "API-Key" : "Token / API-Key", type: "password" as const, value: dialog.token }
+    ] : []),
+    {
+      id: "dailyLimitGb",
+      label: "Tageslimit (GB, optional)",
+      type: "number" as const,
+      value: dialog.dailyLimitGb,
+      placeholder: "Kein Limit",
+      help: "Der Zähler wird täglich um 00:00 Uhr zurückgesetzt."
+    }
+  ];
+}
+
+function applyMegaDebridDialogToSettings(settings: AppSettings, dialog: AccountDialogState, mode: MegaDebridAccountMode, providerDailyLimitBytes: AppSettings["providerDailyLimitBytes"]): AppSettings {
+  const selectedCredentials = serializeMegaDebridAccounts(dialog.megaAccounts);
+  const apiCredentials = mode === "api" ? selectedCredentials : getMegaDebridCredentialsForMode(settings, "api");
+  const webCredentials = mode === "web" ? selectedCredentials : getMegaDebridCredentialsForMode(settings, "web");
+  const mergedCredentials = mergeMegaDebridCredentialPools(apiCredentials, webCredentials);
+  const first = parseMegaDebridAccounts(mergedCredentials)[0];
+  const selectedIds = new Set(parseMegaDebridAccounts(selectedCredentials).map((account) => account.id));
+  const selectedDisabledIds = (dialog.megaDisabledIds || []).filter((id) => selectedIds.has(id));
+  const apiDisabledIds = mode === "api" ? selectedDisabledIds : getMegaDebridDisabledAccountIdsForMode(settings, "api");
+  const webDisabledIds = mode === "web" ? selectedDisabledIds : getMegaDebridDisabledAccountIdsForMode(settings, "web");
+  return {
+    ...settings,
+    megaCredentials: mergedCredentials,
+    megaLogin: first?.login || "",
+    megaPassword: first?.password || "",
+    megaDebridApiCredentials: apiCredentials,
+    megaDebridWebCredentials: webCredentials,
+    megaDebridApiEnabled: mode === "api" ? selectedIds.size > 0 : settings.megaDebridApiEnabled && parseMegaDebridAccounts(apiCredentials).length > 0,
+    megaDebridWebEnabled: mode === "web" ? selectedIds.size > 0 : settings.megaDebridWebEnabled && parseMegaDebridAccounts(webCredentials).length > 0,
+    megaDebridDisabledAccountIds: [...new Set([...apiDisabledIds, ...webDisabledIds])],
+    megaDebridApiDisabledAccountIds: apiDisabledIds,
+    megaDebridWebDisabledAccountIds: webDisabledIds,
+    providerDailyLimitBytes
+  };
+}
+
+function clearMegaDebridModeFromSettings(settings: AppSettings, mode: MegaDebridAccountMode, providerDailyLimitBytes: AppSettings["providerDailyLimitBytes"], providerDailyUsageBytes: AppSettings["providerDailyUsageBytes"]): AppSettings {
+  const apiCredentials = mode === "api" ? "" : getMegaDebridCredentialsForMode(settings, "api");
+  const webCredentials = mode === "web" ? "" : getMegaDebridCredentialsForMode(settings, "web");
+  const mergedCredentials = mergeMegaDebridCredentialPools(apiCredentials, webCredentials);
+  const first = parseMegaDebridAccounts(mergedCredentials)[0];
+  const apiDisabledIds = mode === "api" ? [] : getMegaDebridDisabledAccountIdsForMode(settings, "api");
+  const webDisabledIds = mode === "web" ? [] : getMegaDebridDisabledAccountIdsForMode(settings, "web");
+  return {
+    ...settings,
+    megaCredentials: mergedCredentials,
+    megaLogin: first?.login || "",
+    megaPassword: first?.password || "",
+    megaDebridApiCredentials: apiCredentials,
+    megaDebridWebCredentials: webCredentials,
+    megaDebridApiEnabled: mode === "api" ? false : settings.megaDebridApiEnabled && parseMegaDebridAccounts(apiCredentials).length > 0,
+    megaDebridWebEnabled: mode === "web" ? false : settings.megaDebridWebEnabled && parseMegaDebridAccounts(webCredentials).length > 0,
+    megaDebridDisabledAccountIds: [...new Set([...apiDisabledIds, ...webDisabledIds])],
+    megaDebridApiDisabledAccountIds: apiDisabledIds,
+    megaDebridWebDisabledAccountIds: webDisabledIds,
+    providerDailyLimitBytes,
+    providerDailyUsageBytes
+  };
+}
+
 export function applyAccountDialogToSettings(settings: AppSettings, dialog: AccountDialogState): AppSettings {
   if (!dialog.kind) {
     return settings;
@@ -877,22 +952,10 @@ export function applyAccountDialogToSettings(settings: AppSettings, dialog: Acco
     case "realdebrid-web":
       return { ...settings, token: "", realDebridUseWebLogin: true, providerDailyLimitBytes: nextProviderDailyLimitBytes };
     case "megadebrid-api": {
-      const megaSerialized = serializeMegaDebridAccounts(dialog.megaAccounts);
-      const megaParsed = parseMegaDebridAccounts(megaSerialized);
-      const firstLogin = megaParsed.length > 0 ? megaParsed[0].login : "";
-      const firstPassword = megaParsed.length > 0 ? megaParsed[0].password : "";
-      const validIds = new Set(megaParsed.map((a) => a.id));
-      const megaDebridDisabledAccountIds = (dialog.megaDisabledIds || []).filter((id) => validIds.has(id));
-      return { ...settings, megaCredentials: megaSerialized, megaLogin: firstLogin, megaPassword: firstPassword, megaDebridApiEnabled: true, megaDebridDisabledAccountIds, providerDailyLimitBytes: nextProviderDailyLimitBytes };
+      return applyMegaDebridDialogToSettings(settings, dialog, "api", nextProviderDailyLimitBytes);
     }
     case "megadebrid-web": {
-      const megaSerialized = serializeMegaDebridAccounts(dialog.megaAccounts);
-      const megaParsed = parseMegaDebridAccounts(megaSerialized);
-      const firstLogin = megaParsed.length > 0 ? megaParsed[0].login : "";
-      const firstPassword = megaParsed.length > 0 ? megaParsed[0].password : "";
-      const validIds = new Set(megaParsed.map((a) => a.id));
-      const megaDebridDisabledAccountIds = (dialog.megaDisabledIds || []).filter((id) => validIds.has(id));
-      return { ...settings, megaCredentials: megaSerialized, megaLogin: firstLogin, megaPassword: firstPassword, megaDebridWebEnabled: true, megaDebridDisabledAccountIds, providerDailyLimitBytes: nextProviderDailyLimitBytes };
+      return applyMegaDebridDialogToSettings(settings, dialog, "web", nextProviderDailyLimitBytes);
     }
     case "bestdebrid-api":
       return { ...settings, bestToken: token, bestDebridUseWebLogin: false, providerDailyLimitBytes: nextProviderDailyLimitBytes };
@@ -938,13 +1001,9 @@ function clearAccountServiceFromSettings(settings: AppSettings, service: Account
     case "realdebrid":
       return { ...settings, token: "", realDebridUseWebLogin: false, providerDailyLimitBytes: nextProviderDailyLimitBytes, providerDailyUsageBytes: nextProviderDailyUsageBytes };
     case "megadebrid-api":
-      return settings.megaDebridWebEnabled
-        ? { ...settings, megaDebridApiEnabled: false, providerDailyLimitBytes: nextProviderDailyLimitBytes, providerDailyUsageBytes: nextProviderDailyUsageBytes }
-        : { ...settings, megaCredentials: "", megaLogin: "", megaPassword: "", megaDebridApiEnabled: false, providerDailyLimitBytes: nextProviderDailyLimitBytes, providerDailyUsageBytes: nextProviderDailyUsageBytes };
+      return clearMegaDebridModeFromSettings(settings, "api", nextProviderDailyLimitBytes, nextProviderDailyUsageBytes);
     case "megadebrid-web":
-      return settings.megaDebridApiEnabled
-        ? { ...settings, megaDebridWebEnabled: false, providerDailyLimitBytes: nextProviderDailyLimitBytes, providerDailyUsageBytes: nextProviderDailyUsageBytes }
-        : { ...settings, megaCredentials: "", megaLogin: "", megaPassword: "", megaDebridWebEnabled: false, providerDailyLimitBytes: nextProviderDailyLimitBytes, providerDailyUsageBytes: nextProviderDailyUsageBytes };
+      return clearMegaDebridModeFromSettings(settings, "web", nextProviderDailyLimitBytes, nextProviderDailyUsageBytes);
     case "bestdebrid":
       return { ...settings, bestToken: "", bestDebridUseWebLogin: false, providerDailyLimitBytes: nextProviderDailyLimitBytes, providerDailyUsageBytes: nextProviderDailyUsageBytes };
     case "alldebrid":
@@ -1029,7 +1088,7 @@ const emptyStats = (): DownloadStats => ({
 
 const emptySnapshot = (): UiSnapshot => ({
   settings: {
-    language: "en", token: "", realDebridUseWebLogin: false, megaLogin: "", megaPassword: "", megaCredentials: "", megaDebridApiEnabled: false, megaDebridWebEnabled: false, megaDebridPreferApi: true, bestToken: "", bestDebridUseWebLogin: false, allDebridToken: "", allDebridUseWebLogin: false, ddownloadLogin: "", ddownloadPassword: "", oneFichierApiKey: "", debridLinkApiKeys: "", linkSnappyLogin: "", linkSnappyPassword: "",
+    language: "en", token: "", realDebridUseWebLogin: false, megaLogin: "", megaPassword: "", megaCredentials: "", megaDebridApiCredentials: "", megaDebridWebCredentials: "", megaDebridApiEnabled: false, megaDebridWebEnabled: false, megaDebridPreferApi: true, bestToken: "", bestDebridUseWebLogin: false, allDebridToken: "", allDebridUseWebLogin: false, ddownloadLogin: "", ddownloadPassword: "", oneFichierApiKey: "", debridLinkApiKeys: "", linkSnappyLogin: "", linkSnappyPassword: "",
     debridLinkDisabledKeyIds: [],
     archivePasswordList: "",
     rememberToken: true, providerOrder: [], providerPrimary: "realdebrid", providerSecondary: "none",
@@ -1057,6 +1116,8 @@ const emptySnapshot = (): UiSnapshot => ({
     debridLinkApiKeyDailyUsageBytes: {},
     debridLinkApiKeyTotalUsageBytes: {},
     megaDebridDisabledAccountIds: [],
+    megaDebridApiDisabledAccountIds: [],
+    megaDebridWebDisabledAccountIds: [],
     megaDebridAccountDailyLimitBytes: {},
     megaDebridAccountDailyUsageBytes: {},
     megaDebridAccountTotalUsageBytes: {},
@@ -1753,8 +1814,6 @@ export function App(): ReactElement {
   const snapshotRef = useRef(snapshot);
   snapshotRef.current = snapshot;
   const tabRef = useRef(tab);
-  const autoExpandedPkgsRef = useRef(new Set<string>());
-  const manualCollapsedPkgsRef = useRef(new Set<string>());
   tabRef.current = tab;
   const stateFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2270,11 +2329,6 @@ export function App(): ReactElement {
           changed = true;
         }
       }
-      for (const packageId of Array.from(manualCollapsedPkgsRef.current)) {
-        if (!snapshot.session.packages[packageId]) {
-          manualCollapsedPkgsRef.current.delete(packageId);
-        }
-      }
       return changed ? next : prev;
     });
   }, [downloadsTabActive, packageOrderKey, snapshot.session.packageOrder, snapshot.session.packages, totalPackageCount]);
@@ -2337,36 +2391,6 @@ export function App(): ReactElement {
     }
     void loadAllDebridHostInfo(true);
   }, [settingsSubTab, hasSavedAllDebridAccount, snapshot.settings.allDebridToken, snapshot.settings.allDebridUseWebLogin, loadAllDebridHostInfo]);
-
-  useEffect(() => {
-    const extractingPkgIds: string[] = [];
-    const currentlyExtracting = new Set<string>();
-    for (const pkg of packages) {
-      const items = (pkg.itemIds ?? []).map((id) => snapshot.session.items[id]).filter(Boolean);
-      const isExtracting = items.some((item) => item.fullStatus?.startsWith("Entpacken -") && !item.fullStatus?.includes("Done"));
-      if (isExtracting) {
-        currentlyExtracting.add(pkg.id);
-        if (collapsedPackages[pkg.id]
-          && !manualCollapsedPkgsRef.current.has(pkg.id)
-          && !autoExpandedPkgsRef.current.has(pkg.id)) {
-          extractingPkgIds.push(pkg.id);
-          autoExpandedPkgsRef.current.add(pkg.id);
-        }
-      }
-    }
-    for (const id of autoExpandedPkgsRef.current) {
-      if (!currentlyExtracting.has(id)) {
-        autoExpandedPkgsRef.current.delete(id);
-      }
-    }
-    if (extractingPkgIds.length > 0) {
-      setCollapsedPackages((prev) => {
-        const next = { ...prev };
-        for (const id of extractingPkgIds) next[id] = false;
-        return next;
-      });
-    }
-  }, [packages, snapshot.session.items, collapsedPackages]);
 
   const allPackagesCollapsed = useMemo(() => (
     packages.length > 0 && packages.every((pkg) => collapsedPackages[pkg.id])
@@ -2454,11 +2478,11 @@ export function App(): ReactElement {
       let statusLabel = "Aktiviert";
       let note = "";
       if (kind === "megadebrid-api") {
-        const megaAccountCount = parseMegaDebridAccounts(settingsDraft.megaCredentials || "", settingsDraft.megaPassword).length;
+        const megaAccountCount = getMegaDebridAccountsForMode(settingsDraft, "api").length;
         statusLabel = megaAccountCount > 1 ? `${megaAccountCount} Accounts` : "Aktiviert";
         note = "Nur API aktiv. Kein Web-Fallback.";
       } else if (kind === "megadebrid-web") {
-        const megaAccountCount = parseMegaDebridAccounts(settingsDraft.megaCredentials || "", settingsDraft.megaPassword).length;
+        const megaAccountCount = getMegaDebridAccountsForMode(settingsDraft, "web").length;
         statusLabel = megaAccountCount > 1 ? `${megaAccountCount} Accounts` : "Aktiviert";
         note = "Nur Web aktiv. Kein API-Fallback.";
       } else if (kind === "realdebrid-web") {
@@ -2570,7 +2594,9 @@ export function App(): ReactElement {
     const rows: AccountTableRow[] = [];
     for (const entry of configuredAccounts) {
       if (entry.kind === "megadebrid-api" || entry.kind === "megadebrid-web") {
-        const accounts = parseMegaDebridAccounts(settingsDraft.megaCredentials || "", settingsDraft.megaPassword || "");
+        const mode = entry.kind === "megadebrid-web" ? "web" : "api";
+        const accounts = getMegaDebridAccountsForMode(settingsDraft, mode);
+        const disabledAccountIds = getMegaDebridDisabledAccountIdsForMode(settingsDraft, mode);
         for (const acc of accounts) {
           const used = getMegaDebridAccountDailyUsageBytes(snapshot.settings, acc.id);
           const limit = getMegaDebridAccountDailyLimitBytes(settingsDraft, acc.id);
@@ -2583,7 +2609,7 @@ export function App(): ReactElement {
             credentialLabel: "••••••",
             accountId: acc.id,
             checkable: true,
-            disabled: (settingsDraft.megaDebridDisabledAccountIds || []).includes(acc.id),
+            disabled: disabledAccountIds.includes(acc.id),
             dailyUsedBytes: used,
             dailyLimitBytes: limit,
             dailyRemainingBytes: limit > 0 ? Math.max(0, limit - used) : 0,
@@ -3095,9 +3121,23 @@ export function App(): ReactElement {
               megaCredentials: serializeMegaDebridAccounts([newMegaCredentials]),
               megaLogin: newMegaCredentials.login,
               megaPassword: newMegaCredentials.password,
+              megaDebridApiCredentials: selectedOption?.service === "megadebrid-web" ? "" : serializeMegaDebridAccounts([newMegaCredentials]),
+              megaDebridWebCredentials: selectedOption?.service === "megadebrid-web" ? serializeMegaDebridAccounts([newMegaCredentials]) : "",
+              megaDebridApiEnabled: selectedOption?.service !== "megadebrid-web",
+              megaDebridWebEnabled: selectedOption?.service === "megadebrid-web",
               debridLinkApiKeys: ""
             }
-          : { ...nextDraft, megaCredentials: "", megaLogin: "", megaPassword: "", debridLinkApiKeys: newDebridLinkToken };
+          : {
+              ...nextDraft,
+              megaCredentials: "",
+              megaLogin: "",
+              megaPassword: "",
+              megaDebridApiCredentials: "",
+              megaDebridWebCredentials: "",
+              megaDebridApiEnabled: false,
+              megaDebridWebEnabled: false,
+              debridLinkApiKeys: newDebridLinkToken
+            };
         const statuses = await window.rd.checkDebridAccounts(checkSettings, true, targetedCheck.expectedStatusId);
         const status = statuses.length === 1 && statuses[0].accountId === targetedCheck.expectedStatusId ? statuses[0] : null;
         if (!status || !status.valid) {
@@ -3193,28 +3233,24 @@ export function App(): ReactElement {
     });
   };
 
-  const onToggleMegaAccountEnabled = async (login: string, currentlyDisabled: boolean): Promise<void> => {
+  const onToggleMegaAccountEnabled = async (kind: "megadebrid-api" | "megadebrid-web", login: string, currentlyDisabled: boolean): Promise<void> => {
     const accId = getMegaDebridAccountId(login.trim());
     await performQuickAction(async () => {
-      const current = settingsDraft.megaDebridDisabledAccountIds || [];
+      const mode = kind === "megadebrid-web" ? "web" : "api";
+      const current = getMegaDebridDisabledAccountIdsForMode(settingsDraft, mode);
       const next = currentlyDisabled ? current.filter((id) => id !== accId) : [...current, accId];
-      await persistSpecificSettings({ ...settingsDraft, megaDebridDisabledAccountIds: next });
+      const apiDisabledIds = mode === "api" ? next : getMegaDebridDisabledAccountIdsForMode(settingsDraft, "api");
+      const webDisabledIds = mode === "web" ? next : getMegaDebridDisabledAccountIdsForMode(settingsDraft, "web");
+      await persistSpecificSettings({
+        ...settingsDraft,
+        megaDebridDisabledAccountIds: [...new Set([...apiDisabledIds, ...webDisabledIds])],
+        megaDebridApiDisabledAccountIds: apiDisabledIds,
+        megaDebridWebDisabledAccountIds: webDisabledIds
+      });
       showToast(currentlyDisabled ? "Account aktiviert" : "Account deaktiviert", 2000);
     }, (error) => {
       showToast(`Umschalten fehlgeschlagen: ${String(error)}`, 3200);
     });
-  };
-
-  const onRemoveMegaAccount = async (login: string): Promise<void> => {
-    const confirmed = await askConfirmPrompt({ title: "Account entfernen", message: `Soll der Mega-Debrid-Account ${maskMegaDebridLogin(login)} wirklich entfernt werden?`, confirmLabel: "Entfernen", danger: true });
-    if (!confirmed) return;
-    await performQuickAction(async () => {
-      const remaining = parseMegaDebridAccounts(settingsDraft.megaCredentials || "", settingsDraft.megaPassword || "")
-        .filter((a) => a.login.trim().toLowerCase() !== login.trim().toLowerCase());
-      const nextCreds = serializeMegaDebridAccounts(remaining.map((a) => ({ login: a.login, password: a.password })));
-      await persistSpecificSettings({ ...settingsDraft, megaCredentials: nextCreds, megaLogin: remaining[0]?.login ?? "", megaPassword: remaining[0]?.password ?? "" });
-      showToast("Account entfernt", 2000);
-    }, (error) => { showToast(`Entfernen fehlgeschlagen: ${String(error)}`, 3200); });
   };
 
   const onRemoveDebridLinkKey = async (key: DebridLinkAccountKeyEntry): Promise<void> => {
@@ -3253,7 +3289,7 @@ export function App(): ReactElement {
   const toggleAccountTableRow = (row: AccountTableRow): void => {
     setAccountContextMenu(null);
     if (row.toggleKind === "mega" && row.megaLogin) {
-      void onToggleMegaAccountEnabled(row.megaLogin, row.disabled);
+      void onToggleMegaAccountEnabled(row.entry.kind as "megadebrid-api" | "megadebrid-web", row.megaLogin, row.disabled);
     } else if (row.toggleKind === "dl" && row.dlKey) {
       void onToggleDebridLinkApiKeyEnabled(row.entry, row.dlKey);
     } else {
@@ -3273,7 +3309,9 @@ export function App(): ReactElement {
       );
       const nextDraft: AppSettings = {
         ...settingsDraft,
-        ...nextEnabledState
+        ...nextEnabledState,
+        megaDebridApiDisabledAccountIds: enabled ? [] : accountRows.filter((row) => row.entry.kind === "megadebrid-api" && row.accountId).map((row) => row.accountId as string),
+        megaDebridWebDisabledAccountIds: enabled ? [] : accountRows.filter((row) => row.entry.kind === "megadebrid-web" && row.accountId).map((row) => row.accountId as string)
       };
       await persistSpecificSettings(nextDraft);
       showToast(enabled ? "Accounts aktiviert" : "Accounts deaktiviert", 2200);
@@ -3310,7 +3348,7 @@ export function App(): ReactElement {
   const checkAccountTableRow = (row: AccountTableRow): void => {
     setAccountContextMenu(null);
     if (row.toggleKind === "mega" && row.megaLogin) {
-      const account = parseMegaDebridAccounts(settingsDraft.megaCredentials || "", settingsDraft.megaPassword || "")
+      const account = getMegaDebridAccountsForMode(settingsDraft, row.entry.kind === "megadebrid-web" ? "web" : "api")
         .find((entry) => entry.id === row.accountId);
       if (account) {
         void runMegaAccountCheck(account.login, account.password);
@@ -4032,12 +4070,6 @@ export function App(): ReactElement {
   const onPackageToggleCollapse = useCallback((packageId: string): void => {
     setCollapsedPackages((prev) => {
       const nextCollapsed = !(prev[packageId] ?? false);
-      if (nextCollapsed) {
-        manualCollapsedPkgsRef.current.add(packageId);
-      } else {
-        manualCollapsedPkgsRef.current.delete(packageId);
-        autoExpandedPkgsRef.current.delete(packageId);
-      }
       return { ...prev, [packageId]: nextCollapsed };
     });
   }, []);
@@ -5014,11 +5046,6 @@ export function App(): ReactElement {
         const next = { ...current };
         for (const entry of packages) {
           next[entry.id] = targetState;
-          if (targetState) manualCollapsedPkgsRef.current.add(entry.id);
-          else {
-            manualCollapsedPkgsRef.current.delete(entry.id);
-            autoExpandedPkgsRef.current.delete(entry.id);
-          }
         }
         return next;
       });
@@ -5480,26 +5507,7 @@ export function App(): ReactElement {
     multi: option.kind === "megadebrid-api" || option.kind === "megadebrid-web" || option.kind === "debridlink-api",
     icon: ACCOUNT_SERVICE_ICONS[option.service]
   }));
-  const accountAddFields: AccountDialogField[] = accountDialog && accountDialogOption ? [
-    ...((accountDialog.kind === "megadebrid-api" || accountDialog.kind === "megadebrid-web") ? [
-      { id: "megaNewLogin", label: "Login / E-Mail", type: "text" as const, value: accountDialog.megaNewLogin },
-      { id: "megaNewPassword", label: "Passwort", type: "password" as const, value: accountDialog.megaNewPassword }
-    ] : accountDialogOption.needsCredentials ? [
-      { id: "login", label: "Login / E-Mail", type: "text" as const, value: accountDialog.login },
-      { id: "password", label: "Passwort", type: "password" as const, value: accountDialog.password }
-    ] : []),
-    ...(accountDialogOption.needsToken ? [
-      { id: "token", label: accountDialog.kind === "debridlink-api" ? "API-Key" : "Token / API-Key", type: "password" as const, value: accountDialog.token }
-    ] : []),
-    {
-      id: "dailyLimitGb",
-      label: "Tageslimit (GB, optional)",
-      type: "number" as const,
-      value: accountDialog.dailyLimitGb,
-      placeholder: "Kein Limit",
-      help: "Der Zähler wird täglich um 00:00 Uhr zurückgesetzt."
-    }
-  ] : [];
+  const accountAddFields = buildAccountAddFields(accountDialog);
   const accountAddDialog = (
     <AccountAddDialog
       actions={{

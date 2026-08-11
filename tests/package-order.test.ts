@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { DownloadItem, PackageEntry } from "../src/shared/types";
 import { sortPackagesForDisplay } from "../src/renderer/package-order";
 
-function createPackage(id: string, itemIds: string[]): PackageEntry {
+function createPackage(id: string, itemIds: string[], downloadStartedAt = 0): PackageEntry {
   const now = Date.now();
   return {
     id,
@@ -15,7 +15,8 @@ function createPackage(id: string, itemIds: string[]): PackageEntry {
     enabled: true,
     priority: "normal",
     createdAt: now,
-    updatedAt: now
+    updatedAt: now,
+    downloadStartedAt
   };
 }
 
@@ -105,5 +106,34 @@ describe("sortPackagesForDisplay", () => {
     const sorted = sortPackagesForDisplay(packages, items, true, false);
 
     expect(sorted.map((pkg) => pkg.id)).toEqual(["pkg-a", "pkg-b", "pkg-c"]);
+  });
+
+  it("keeps every active package in activation order when a new package starts", () => {
+    const packages = [
+      createPackage("pkg-new", ["new-item"], 200),
+      createPackage("pkg-existing", ["existing-item"], 100)
+    ];
+    const items: Record<string, DownloadItem> = {
+      "new-item": createItem("new-item", "pkg-new", "downloading", 100),
+      "existing-item": createItem("existing-item", "pkg-existing", "downloading", 200)
+    };
+    const sorted = sortPackagesForDisplay(packages, items, true, true);
+
+    expect(sorted.map((pkg) => pkg.id)).toEqual(["pkg-existing", "pkg-new"]);
+  });
+
+  it("keeps queue order for active packages without a recorded start time", () => {
+    const packages = [
+      createPackage("pkg-a", ["a1"]),
+      createPackage("pkg-b", ["b1"]),
+      createPackage("pkg-c", ["c1"])
+    ];
+    const items: Record<string, DownloadItem> = {
+      a1: createItem("a1", "pkg-a", "completed", 500),
+      b1: createItem("b1", "pkg-b", "downloading", 200),
+      c1: createItem("c1", "pkg-c", "downloading", 100)
+    };
+
+    expect(sortPackagesForDisplay(packages, items, true, true).map((pkg) => pkg.id)).toEqual(["pkg-b", "pkg-c", "pkg-a"]);
   });
 });

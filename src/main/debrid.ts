@@ -1,5 +1,6 @@
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
-import { parseMegaDebridAccounts, type MegaDebridAccountEntry } from "../shared/mega-debrid-accounts";
+import { getMegaDebridAccountsForMode, mergeMegaDebridCredentialPools, parseMegaDebridAccounts, type MegaDebridAccountEntry, type MegaDebridAccountMode } from "../shared/mega-debrid-accounts";
+import { extractHosterFromUrl } from "../shared/hoster";
 import { AllDebridHostInfo, AppSettings, DebridFallbackProvider, DebridLinkHostLimitInfo, DebridProvider } from "../shared/types";
 import { isDebridLinkApiKeyDailyLimitReached, isMegaDebridAccountDisabled, isMegaDebridAccountDailyLimitReached, isProviderDailyLimitReached } from "../shared/provider-daily-limits";
 import { isMegaDebridResolveFailure, germanMegaDebridResolveReason } from "../shared/mega-debrid-errors";
@@ -557,16 +558,6 @@ const PROVIDER_LABELS: Record<DebridProvider, string> = {
   linksnappy: "LinkSnappy"
 };
 
-function extractHosterFromUrl(url: string): string {
-  try {
-    const host = new URL(url).hostname.replace(/^www\./, "").toLowerCase();
-    const parts = host.split(".");
-    return parts.length >= 2 ? parts[parts.length - 2] : host;
-  } catch {
-    return "";
-  }
-}
-
 interface ProviderUnrestrictedLink extends UnrestrictedLink {
   provider: DebridProvider;
   providerLabel: string;
@@ -596,6 +587,8 @@ function cloneSettings(settings: AppSettings): AppSettings {
     debridLinkApiKeyDailyUsageBytes: { ...(settings.debridLinkApiKeyDailyUsageBytes || {}) },
     debridLinkApiKeyTotalUsageBytes: { ...(settings.debridLinkApiKeyTotalUsageBytes || {}) },
     megaDebridDisabledAccountIds: [...(settings.megaDebridDisabledAccountIds || [])],
+    megaDebridApiDisabledAccountIds: [...(settings.megaDebridApiDisabledAccountIds || [])],
+    megaDebridWebDisabledAccountIds: [...(settings.megaDebridWebDisabledAccountIds || [])],
     megaDebridAccountDailyLimitBytes: { ...(settings.megaDebridAccountDailyLimitBytes || {}) },
     megaDebridAccountDailyUsageBytes: { ...(settings.megaDebridAccountDailyUsageBytes || {}) },
     megaDebridAccountTotalUsageBytes: { ...(settings.megaDebridAccountTotalUsageBytes || {}) }
@@ -612,25 +605,26 @@ export function getAvailableDebridLinkApiKeys(settings: AppSettings, epochMs = D
   );
 }
 
-export function getAvailableMegaDebridAccounts(settings: AppSettings, epochMs = Date.now()): MegaDebridAccountEntry[] {
-  return getMegaDebridAccountList(settings).filter(
-    (entry) => !isMegaDebridAccountDisabled(settings, entry.id) && !isMegaDebridAccountDailyLimitReached(settings, entry.id, epochMs)
+export function getAvailableMegaDebridAccounts(settings: AppSettings, mode: MegaDebridAccountMode, epochMs = Date.now()): MegaDebridAccountEntry[] {
+  return getMegaDebridAccountList(settings, mode).filter(
+    (entry) => !isMegaDebridAccountDisabled(settings, entry.id, mode) && !isMegaDebridAccountDailyLimitReached(settings, entry.id, epochMs)
   );
 }
 
-function getMegaDebridAccountList(settings: AppSettings): MegaDebridAccountEntry[] {
-  const multiAccounts = parseMegaDebridAccounts(settings.megaCredentials || "");
+function getMegaDebridAccountList(settings: AppSettings, mode: MegaDebridAccountMode): MegaDebridAccountEntry[] {
+  const multiAccounts = getMegaDebridAccountsForMode(settings, mode);
   if (multiAccounts.length > 0) {
     return multiAccounts;
   }
-  if (settings.megaLogin?.trim() && settings.megaPassword?.trim()) {
+  const hasDedicatedPools = typeof settings.megaDebridApiCredentials === "string" || typeof settings.megaDebridWebCredentials === "string";
+  if (!hasDedicatedPools && settings.megaLogin?.trim() && settings.megaPassword?.trim()) {
     return parseMegaDebridAccounts(settings.megaLogin.trim(), settings.megaPassword.trim());
   }
   return [];
 }
 
 function hasMegaDebridCredentials(settings: AppSettings): boolean {
-  return getMegaDebridAccountList(settings).length > 0;
+  return parseMegaDebridAccounts(mergeMegaDebridCredentialPools(settings.megaDebridApiCredentials || "", settings.megaDebridWebCredentials || "") || settings.megaCredentials || "").length > 0;
 }
 
 function isMegaDebridModeEnabled(settings: AppSettings, mode: "api" | "web"): boolean {
@@ -2039,12 +2033,12 @@ class MegaDebridClient {
     megaWebUnrestrict: MegaWebUnrestrictor | undefined,
     signal?: AbortSignal
   ): Promise<UnrestrictedLink> {
-    const accounts = getMegaDebridAccountList(settings);
+    const accounts = getMegaDebridAccountList(settings, mode);
     if (accounts.length === 0) {
       throw new Error("Mega-Debrid: Kein Account konfiguriert");
     }
 
-    if (getAvailableMegaDebridAccounts(settings).length === 0) {
+    if (getAvailableMegaDebridAccounts(settings, mode).length === 0) {
       throw new Error("Mega-Debrid: Kein aktiver Account verfuegbar (deaktiviert oder am Tageslimit)");
     }
 
@@ -2087,7 +2081,7 @@ class MegaDebridClient {
       const accountLabel = ` (${account.label}/${totalAccounts}, ${account.maskedLogin})`;
       const rotationLabel = `${account.label}/${totalAccounts} (${account.maskedLogin})`;
 
-      if (isMegaDebridAccountDisabled(settings, account.id)) {
+      if (isMegaDebridAccountDisabled(settings, account.id, mode)) {
         logger.info(`Mega-Debrid${accountLabel}: uebersprungen (manuell deaktiviert), pruefe naechsten Account`);
         logAccountRotation("INFO", providerName, rotationLabel, "SKIP_DISABLED", { reason: "manually disabled" });
         continue;
@@ -2172,7 +2166,7 @@ class MegaDebridClient {
             if (candidate.account.id === account.id) {
               return count;
             }
-            if (isMegaDebridAccountDisabled(settings, candidate.account.id)) {
+            if (isMegaDebridAccountDisabled(settings, candidate.account.id, mode)) {
               return count;
             }
             if (isMegaDebridAccountDailyLimitReached(settings, candidate.account.id)) {
@@ -2254,7 +2248,7 @@ class MegaDebridClient {
         let nextLabel = "ENDE";
         for (let nextPos = orderPos + 1; nextPos < orderedEntries.length; nextPos += 1) {
           const nextAcc = orderedEntries[nextPos].account;
-          if (!isMegaDebridAccountDisabled(settings, nextAcc.id) && !isMegaDebridAccountDailyLimitReached(settings, nextAcc.id) && !getMegaDebridAccountCooldownState(`${nextAcc.id}:${mode}`)) {
+          if (!isMegaDebridAccountDisabled(settings, nextAcc.id, mode) && !isMegaDebridAccountDailyLimitReached(settings, nextAcc.id) && !getMegaDebridAccountCooldownState(`${nextAcc.id}:${mode}`)) {
             nextLabel = `${nextAcc.label}/${totalAccounts} (${nextAcc.maskedLogin})`;
             break;
           }
@@ -3825,8 +3819,9 @@ export class DebridService {
       }
     }
     if (effectiveProvider === "megadebrid-api" || effectiveProvider === "megadebrid-web") {
-      const configuredAccounts = getMegaDebridAccountList(settings);
-      if (configuredAccounts.length > 0 && getAvailableMegaDebridAccounts(settings).length === 0) {
+      const mode = effectiveProvider === "megadebrid-web" ? "web" : "api";
+      const configuredAccounts = getMegaDebridAccountList(settings, mode);
+      if (configuredAccounts.length > 0 && getAvailableMegaDebridAccounts(settings, mode).length === 0) {
         return true;
       }
     }
@@ -3842,8 +3837,11 @@ export class DebridService {
     if (effectiveProvider === "debridlink" && parseDebridLinkApiKeys(settings.debridLinkApiKeys).length > 0 && getAvailableDebridLinkApiKeys(settings).length === 0) {
       return "Debrid-Link nicht verfuegbar (alle aktiven API-Keys deaktiviert oder ausgeschopft)";
     }
-    if ((effectiveProvider === "megadebrid-api" || effectiveProvider === "megadebrid-web") && getMegaDebridAccountList(settings).length > 0 && getAvailableMegaDebridAccounts(settings).length === 0) {
-      return "Mega-Debrid nicht verfuegbar (alle aktiven Accounts deaktiviert oder ausgeschopft)";
+    if (effectiveProvider === "megadebrid-api" || effectiveProvider === "megadebrid-web") {
+      const mode = effectiveProvider === "megadebrid-web" ? "web" : "api";
+      if (getMegaDebridAccountList(settings, mode).length > 0 && getAvailableMegaDebridAccounts(settings, mode).length === 0) {
+        return "Mega-Debrid nicht verfuegbar (alle aktiven Accounts deaktiviert oder ausgeschopft)";
+      }
     }
     return `${PROVIDER_LABELS[effectiveProvider]} Tageslimit erreicht`;
   }

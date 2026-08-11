@@ -420,8 +420,8 @@
 }
 
 .downloads-cell-slot > :is(.downloads-status-cell, .downloads-service-cell) {
-  justify-content: flex-start;
-  text-align: left;
+  justify-content: center;
+  text-align: center;
 }
 
 .downloads-cell,
