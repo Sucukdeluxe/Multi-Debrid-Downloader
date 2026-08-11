@@ -46,7 +46,7 @@ describe("responsive shell mode", () => {
     expect(html).toContain("md-shell is-full");
     expect(css).toContain(".md-shell.is-compact");
     expect(css).toContain(".md-shell.is-minimum");
-    expect(css).toMatch(/grid-template-columns:\s*56px minmax\(0,\s*1fr\)/);
+    expect(css).toMatch(/\.md-shell\.has-collapsed-sidebar \.md-shell-workspace\s*\{[^}]*grid-template-columns:\s*0 minmax\(0,\s*1fr\);/s);
   });
 
   it("keeps responsive rail content hidden behind a visible expand control", () => {

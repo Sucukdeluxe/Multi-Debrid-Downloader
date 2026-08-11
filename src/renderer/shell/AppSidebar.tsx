@@ -21,8 +21,10 @@ export function AppSidebar({
       className={`md-shell-sidebar${collapsed ? " is-collapsed" : ""}${responsiveRail ? " is-responsive-rail" : ""}`}
       data-ui-region="sidebar"
     >
-      {children ? <div className="md-shell-sidebar-scroll">{children}</div> : null}
-      {status ? <div className="md-shell-sidebar-status" data-ui-region="sidebar-status">{status}</div> : null}
+      <div className="md-shell-sidebar-panel">
+        {children ? <div className="md-shell-sidebar-scroll">{children}</div> : null}
+        {status ? <div className="md-shell-sidebar-status" data-ui-region="sidebar-status">{status}</div> : null}
+      </div>
       <button
         aria-label={collapsed ? "Seitenleiste ausklappen" : "Seitenleiste einklappen"}
         className="md-shell-sidebar-toggle"

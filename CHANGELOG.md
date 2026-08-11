@@ -2,6 +2,28 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.20] - 2026-08-11
+
+### Downloads and selection
+
+- Added package selection through a normal row click while preserving Control, Command, and Shift selection behavior.
+- Added package expansion and collapse through a double-click on unused row space while keeping the disclosure button available.
+- Kept renaming, checkboxes, progress meters, links, form controls, and action buttons isolated from the row disclosure gesture.
+- Replaced segmented selection markers with a continuous three-pixel success-colored edge across adjacent selected packages and files.
+- Extended package selection markers across card separators so consecutive selected packages no longer show one-pixel gaps.
+
+### Sidebar motion
+
+- Removed the empty sidebar rail when the sidebar is collapsed.
+- Added synchronized 520-millisecond width and panel transitions for smooth sidebar opening and closing.
+- Kept the sidebar edge control visible and reachable while the sidebar content is fully hidden.
+- Preserved the requested sidebar motion when Windows application animations are disabled.
+
+### Reliability and testing
+
+- Added regression coverage for zero-width sidebar collapse, synchronized sidebar motion, package row selection, double-click disclosure boundaries, and continuous selection markers.
+- Added rendered-pixel verification for the updated interactions and continuous selection edge.
+
 ## [2.0.19] - 2026-08-11
 
 ### Interface fixes

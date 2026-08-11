@@ -300,6 +300,11 @@
   opacity: 0.58;
 }
 
+.downloads-package-card.is-selected,
+.downloads-package-card:has(.downloads-package-items-inner > .downloads-item-row:last-child.is-selected) {
+  position: relative;
+}
+
 .downloads-package-items {
   height: auto;
   overflow: hidden;
@@ -332,6 +337,7 @@
   color: var(--ui-text);
   background: transparent;
   border-color: var(--ui-border);
+  border-left: 3px solid transparent;
   contain: layout paint style;
   content-visibility: auto;
   contain-intrinsic-size: 40px;
@@ -346,8 +352,41 @@
 
 .downloads-item-row.is-selected,
 .downloads-package-card.is-selected > .downloads-package-row {
+  position: relative;
   background: color-mix(in srgb, var(--ui-success) 14%, var(--ui-canvas));
-  box-shadow: inset 3px 0 0 var(--ui-success);
+  border-left-color: var(--ui-success);
+}
+
+.downloads-item-row.is-selected::before {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  inset: -1px auto -1px -3px;
+  width: 3px;
+  background: var(--ui-success);
+  pointer-events: none;
+}
+
+.downloads-package-card.is-selected::before {
+  content: "";
+  position: absolute;
+  z-index: 3;
+  inset: 0 auto auto 0;
+  width: 3px;
+  height: 41px;
+  background: var(--ui-success);
+  pointer-events: none;
+}
+
+.downloads-package-card:has(.downloads-package-items-inner > .downloads-item-row:last-child.is-selected)::after {
+  content: "";
+  position: absolute;
+  z-index: 3;
+  inset: auto auto -1px 0;
+  width: 3px;
+  height: 1px;
+  background: var(--ui-success);
+  pointer-events: none;
 }
 
 .downloads-package-row:hover,

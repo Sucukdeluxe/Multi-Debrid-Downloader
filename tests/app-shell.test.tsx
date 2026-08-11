@@ -115,6 +115,47 @@ describe("desktop shell", () => {
     expect(html).not.toContain("data-ui-region=\"footer\"");
   });
 
+  it("collapses a populated sidebar to zero width while preserving the edge toggle", () => {
+    const html = renderToStaticMarkup(
+      <AppShell
+        activeView="downloads"
+        onViewChange={() => {}}
+        sidebar={<div>Filter</div>}
+        sidebarStatus={<div>2 Downloads</div>}
+        headerActions={null}
+        toolbar={null}
+        footer={null}
+        contextInfo={null}
+        sidebarCollapsed
+        onSidebarCollapsedChange={() => {}}
+      >
+        <div>Downloads</div>
+      </AppShell>
+    );
+    const shellCss = readFileSync(new URL("../src/renderer/shell/shell.css", import.meta.url), "utf8");
+
+    expect(html).toContain("has-collapsed-sidebar");
+    expect(html).toContain("md-shell-sidebar-panel");
+    expect(html).toContain("Seitenleiste ausklappen");
+    expect(shellCss).toMatch(/\.md-shell\.has-collapsed-sidebar \.md-shell-workspace\s*\{[^}]*grid-template-columns:\s*0 minmax\(0,\s*1fr\);/s);
+  });
+
+  it("slides the complete sidebar panel in both directions with the workspace width", () => {
+    const shellCss = readFileSync(new URL("../src/renderer/shell/shell.css", import.meta.url), "utf8");
+
+    expect(shellCss).toMatch(/\.md-shell-workspace\s*\{[^}]*transition:\s*grid-template-columns 520ms cubic-bezier\(0\.22, 0\.76, 0\.22, 1\);/s);
+    expect(shellCss).toMatch(/\.md-shell-sidebar-panel\s*\{[^}]*transform:\s*translate3d\(0, 0, 0\);[^}]*transition:[^}]*transform 520ms cubic-bezier\(0\.22, 0\.76, 0\.22, 1\)/s);
+    expect(shellCss).toMatch(/\.md-shell-sidebar\.is-collapsed \.md-shell-sidebar-panel\s*\{[^}]*transform:\s*translate3d\(calc\(-100% - 8px\), 0, 0\);[^}]*pointer-events:\s*none;/s);
+    expect(shellCss).toMatch(/\.md-shell-sidebar:hover \.md-shell-sidebar-toggle,\s*\.md-shell-sidebar\.is-collapsed \.md-shell-sidebar-toggle,\s*\.md-shell-sidebar-toggle:focus-visible\s*\{[^}]*opacity:\s*1;/s);
+  });
+
+  it("keeps the explicitly requested sidebar motion active when Windows animations are disabled", () => {
+    const shellCss = readFileSync(new URL("../src/renderer/shell/shell.css", import.meta.url), "utf8");
+
+    expect(shellCss).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.md-shell-workspace\s*\{[^}]*transition-duration:\s*520ms !important;/s);
+    expect(shellCss).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.md-shell-sidebar-panel\s*\{[^}]*transition-duration:\s*260ms, 520ms, 0s !important;/s);
+  });
+
   it("keeps every view sidebar on the same content axis", () => {
     const shellCss = readFileSync(new URL("../src/renderer/shell/shell.css", import.meta.url), "utf8").replaceAll("\r\n", "\n");
 

@@ -18,6 +18,7 @@ export type DownloadSortColumn = "name" | "size" | "hoster" | "progress";
 
 const DOWNLOAD_SELECTION_COLUMN_WIDTH = "36px";
 const DOWNLOAD_ACTION_COLUMN_WIDTH = "60px";
+const PACKAGE_ROW_DISCLOSURE_EXCLUSION_SELECTOR = "button, input, select, textarea, a, [contenteditable='true'], .downloads-copyable, .downloads-meter";
 const useRendererLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 type HosterLabel = ReturnType<typeof formatHosterLabel>;
@@ -38,6 +39,11 @@ function HosterLabels({ labels }: { labels: HosterLabel[] }): ReactElement {
 
 function downloadGridTemplate(gridTemplate: string): string {
   return `${DOWNLOAD_SELECTION_COLUMN_WIDTH} ${gridTemplate} ${DOWNLOAD_ACTION_COLUMN_WIDTH}`;
+}
+
+function isPackageRowDisclosureExcluded(target: EventTarget | null): boolean {
+  const closest = (target as { closest?: (selector: string) => Element | null } | null)?.closest;
+  return typeof closest === "function" && closest.call(target, PACKAGE_ROW_DISCLOSURE_EXCLUSION_SELECTOR) !== null;
 }
 
 export const downloadColumnDefinitions: Record<string, { label: string; width: string; sortable?: DownloadSortColumn }> = {
@@ -489,9 +495,14 @@ export function PackageCardContent({ row, selectedIds, editing, editingName, pac
         role="row"
         style={{ gridTemplateColumns: downloadGridTemplate(gridTemplate) }}
         onClick={(event) => {
-          if (event.ctrlKey || event.metaKey || event.shiftKey) {
-            actions.onToggleSelection(entry.id, event.ctrlKey || event.metaKey, event.shiftKey);
-          }
+          if (event.detail > 1) return;
+          if (!event.ctrlKey && !event.metaKey && !event.shiftKey && selectedIds.size === 1 && selectedIds.has(entry.id)) return;
+          actions.onToggleSelection(entry.id, event.ctrlKey || event.metaKey, event.shiftKey);
+        }}
+        onDoubleClick={(event) => {
+          if (event.ctrlKey || event.metaKey || event.shiftKey || isPackageRowDisclosureExcluded(event.target)) return;
+          event.preventDefault();
+          actions.onTogglePackageCollapse(entry.id);
         }}
         onMouseDown={(event) => actions.onSelectionMouseDown(entry.id, event)}
         onMouseEnter={() => actions.onSelectionMouseEnter(entry.id)}

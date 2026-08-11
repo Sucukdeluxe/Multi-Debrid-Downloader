@@ -709,7 +709,11 @@ describe("downloads view", () => {
     const css = readFileSync(new URL("../src/renderer/views/downloads/downloads.css", import.meta.url), "utf8");
     const source = readFileSync(new URL("../src/renderer/views/downloads/DownloadsTable.tsx", import.meta.url), "utf8");
 
-    expect(css).toMatch(/\.downloads-item-row\.is-selected,\s*\.downloads-package-card\.is-selected\s*>\s*\.downloads-package-row\s*\{[^}]*background:\s*color-mix\(in srgb, var\(--ui-success\) 14%, var\(--ui-canvas\)\);[^}]*box-shadow:\s*inset 3px 0 0 var\(--ui-success\);/s);
+    expect(css).toMatch(/\.downloads-item-row,\s*\.downloads-package-row\s*\{[^}]*border-left:\s*3px solid transparent;/s);
+    expect(css).toMatch(/\.downloads-item-row\.is-selected,\s*\.downloads-package-card\.is-selected\s*>\s*\.downloads-package-row\s*\{[^}]*background:\s*color-mix\(in srgb, var\(--ui-success\) 14%, var\(--ui-canvas\)\);[^}]*border-left-color:\s*var\(--ui-success\);/s);
+    expect(css).toMatch(/\.downloads-item-row\.is-selected::before\s*\{[^}]*content:\s*"";[^}]*position:\s*absolute;[^}]*inset:\s*-1px auto -1px -3px;[^}]*width:\s*3px;[^}]*background:\s*var\(--ui-success\);/s);
+    expect(css).toMatch(/\.downloads-package-card\.is-selected::before\s*\{[^}]*content:\s*"";[^}]*position:\s*absolute;[^}]*inset:\s*0 auto auto 0;[^}]*width:\s*3px;[^}]*height:\s*41px;[^}]*background:\s*var\(--ui-success\);/s);
+    expect(css).toMatch(/\.downloads-package-card:has\(\.downloads-package-items-inner\s*>\s*\.downloads-item-row:last-child\.is-selected\)::after\s*\{[^}]*content:\s*"";[^}]*position:\s*absolute;[^}]*inset:\s*auto auto -1px 0;[^}]*width:\s*3px;[^}]*height:\s*1px;[^}]*background:\s*var\(--ui-success\);/s);
     expect(css).toMatch(/\.downloads-selection-cell\s+input\[type="checkbox"\]\s*\{[^}]*width:\s*18px;[^}]*height:\s*18px;/s);
     expect(css).toMatch(/\.downloads-hoster-icon\s*\{[^}]*width:\s*18px;[^}]*height:\s*18px;[^}]*object-fit:\s*contain;/s);
     expect(css).toMatch(/\.downloads-hoster-icon\[data-hoster="rapidgator"\]\s*\{[^}]*transform:\s*translateY\(-4px\) scale\(2\);/s);
@@ -996,12 +1000,39 @@ describe("download table row contracts", () => {
     expect(calls).toEqual(["select"]);
   });
 
-  it("only collapses a package through its visible disclosure button", () => {
+  it("selects a package on a plain row click", () => {
+    const calls: Array<[string, boolean, boolean]> = [];
+    const model = withRuntime(createInput());
+    const row = model.packageRows[0];
+    const component = PackageCardContent({
+      actions: createActions({
+        onToggleSelection: (id, ctrl, shift) => calls.push([id, ctrl, shift])
+      }),
+      columnOrder: model.columnOrder,
+      editing: false,
+      editingName: "",
+      gridTemplate: model.gridTemplate,
+      packageSpeedBps: 0,
+      row,
+      selectedIds: new Set<string>(),
+      selectedVersion: 1
+    });
+    const packageRow = findElement(component, (element) => element.props["data-download-row-id"] === row.package.id);
+
+    packageRow.props.onClick({ ctrlKey: false, metaKey: false, shiftKey: false });
+
+    expect(calls).toEqual([[row.package.id, false, false]]);
+  });
+
+  it("collapses a package through its disclosure button or a free-row double click", () => {
     const calls: string[] = [];
     const model = withRuntime(createInput());
     const row = model.packageRows[0];
     const component = PackageCardContent({
-      actions: createActions({ onTogglePackageCollapse: () => calls.push("collapse") }),
+      actions: createActions({
+        onTogglePackageCollapse: () => calls.push("collapse"),
+        onToggleSelection: () => calls.push("select")
+      }),
       columnOrder: model.columnOrder,
       editing: false,
       editingName: "",
@@ -1014,12 +1045,93 @@ describe("download table row contracts", () => {
     const packageRow = findElement(component, (element) => element.props["data-download-row-id"] === row.package.id);
     const collapseButton = findElement(component, (element) => element.type === "button" && String(element.props.className || "").includes("downloads-collapse-button"));
 
-    packageRow.props.onClick({ ctrlKey: false, metaKey: false, shiftKey: false, target: {}, currentTarget: {} });
+    packageRow.props.onClick({ ctrlKey: false, detail: 1, metaKey: false, shiftKey: false, target: {}, currentTarget: {} });
+    packageRow.props.onClick({ ctrlKey: false, detail: 2, metaKey: false, shiftKey: false, target: {}, currentTarget: {} });
+    expect(packageRow.props.onDoubleClick).toBeTypeOf("function");
+    packageRow.props.onDoubleClick({
+      ctrlKey: false,
+      currentTarget: {},
+      metaKey: false,
+      preventDefault: () => calls.push("prevent"),
+      shiftKey: false,
+      target: { closest: () => null }
+    });
     collapseButton.props.onClick({ stopPropagation: () => {} });
 
-    expect(calls).toEqual(["collapse"]);
+    expect(calls).toEqual(["select", "prevent", "collapse", "collapse"]);
     expect(collapseButton.props["aria-expanded"]).toBe(true);
     expect(collapseButton.props["aria-controls"]).toBe(`downloads-package-items-${row.package.id}`);
+  });
+
+  it("does not collapse a package when a row double click starts on interactive content", () => {
+    const calls: string[] = [];
+    const model = withRuntime(createInput());
+    const row = model.packageRows[0];
+    const component = PackageCardContent({
+      actions: createActions({
+        onStartPackageRename: () => calls.push("rename"),
+        onTogglePackageCollapse: () => calls.push("collapse"),
+        onToggleSelection: () => calls.push("select")
+      }),
+      columnOrder: model.columnOrder,
+      editing: false,
+      editingName: "",
+      gridTemplate: model.gridTemplate,
+      packageSpeedBps: 0,
+      row,
+      selectedIds: new Set<string>(),
+      selectedVersion: 1
+    });
+    const packageRow = findElement(component, (element) => element.props["data-download-row-id"] === row.package.id);
+    const title = findElement(component, (element) => element.type === "strong" && String(element.props.className || "").includes("downloads-copyable"));
+
+    packageRow.props.onClick({ ctrlKey: false, detail: 1, metaKey: false, shiftKey: false });
+    packageRow.props.onClick({ ctrlKey: false, detail: 2, metaKey: false, shiftKey: false });
+    expect(packageRow.props.onDoubleClick).toBeTypeOf("function");
+    packageRow.props.onDoubleClick({
+      ctrlKey: false,
+      currentTarget: {},
+      metaKey: false,
+      preventDefault: () => calls.push("prevent"),
+      shiftKey: false,
+      target: { closest: () => ({}) }
+    });
+    title.props.onDoubleClick({ stopPropagation: () => calls.push("stop") });
+
+    expect(calls).toEqual(["select", "stop", "rename"]);
+  });
+
+  it("keeps an already selected package selected during a row double click", () => {
+    const calls: string[] = [];
+    const model = withRuntime(createInput());
+    const row = model.packageRows[0];
+    const component = PackageCardContent({
+      actions: createActions({
+        onTogglePackageCollapse: () => calls.push("collapse"),
+        onToggleSelection: () => calls.push("select")
+      }),
+      columnOrder: model.columnOrder,
+      editing: false,
+      editingName: "",
+      gridTemplate: model.gridTemplate,
+      packageSpeedBps: 0,
+      row,
+      selectedIds: new Set([row.package.id]),
+      selectedVersion: 1
+    });
+    const packageRow = findElement(component, (element) => element.props["data-download-row-id"] === row.package.id);
+
+    packageRow.props.onClick({ ctrlKey: false, detail: 1, metaKey: false, shiftKey: false });
+    packageRow.props.onClick({ ctrlKey: false, detail: 2, metaKey: false, shiftKey: false });
+    packageRow.props.onDoubleClick({
+      ctrlKey: false,
+      metaKey: false,
+      preventDefault: () => calls.push("prevent"),
+      shiftKey: false,
+      target: { closest: () => null }
+    });
+
+    expect(calls).toEqual(["prevent", "collapse"]);
   });
 
   it("keeps the complete package status and audio details in the tooltip", () => {
