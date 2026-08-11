@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { app, BrowserWindow, clipboard, dialog, ipcMain, IpcMainInvokeEvent, Menu, safeStorage, shell, Tray } from "electron";
+import { pathToFileURL } from "node:url";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, safeStorage, shell, Tray, type IpcMainEvent, type IpcMainInvokeEvent } from "electron";
 import { AddLinksPayload, AppSettings, DebridProvider, EnableRemoteDiagnosticsInput, RendererSettingsUpdate, UpdateInstallProgress } from "../shared/types";
 import { AppController } from "./app-controller";
 import { IPC_CHANNELS } from "../shared/ipc";
@@ -18,6 +19,8 @@ import { isMdd2Backup } from "./backup-crypto";
 import { validateAccountCommand, validateAccountCredentialCheckInput } from "./account-commands";
 import { createRendererSettings } from "./renderer-state";
 import { validateRendererSettingsUpdate } from "./renderer-settings";
+import { applyMainWindowSecurity, createMainWindowWebPreferences, MAIN_WINDOW_EXTERNAL_HOSTS, openAllowedExternalUrl } from "./browser-security";
+import { assertTrustedIpcSender, type TrustedIpcOptions } from "./ipc-security";
 
 function validateString(value: unknown, name: string): string {
   if (typeof value !== "string") {
@@ -86,6 +89,36 @@ function isDevMode(): boolean {
   return process.env.NODE_ENV === "development";
 }
 
+function getRendererFileUrl(): string {
+  return pathToFileURL(path.join(app.getAppPath(), "build", "renderer", "index.html")).toString();
+}
+
+function getTrustedRendererUrl(): string {
+  return isDevMode() ? DEV_SERVER_URL : getRendererFileUrl();
+}
+
+function getTrustedIpcOptions(): TrustedIpcOptions {
+  return {
+    isPackaged: !isDevMode(),
+    devServerUrl: DEV_SERVER_URL,
+    appPath: app.getAppPath()
+  };
+}
+
+function handleTrusted<TArgs extends unknown[]>(channel: string, listener: (event: IpcMainInvokeEvent, ...args: TArgs) => unknown): void {
+  ipcMain.handle(channel, (event, ...args) => {
+    assertTrustedIpcSender(event, getTrustedIpcOptions());
+    return listener(event, ...(args as TArgs));
+  });
+}
+
+function onTrusted<TArgs extends unknown[]>(channel: string, listener: (event: IpcMainEvent, ...args: TArgs) => void): void {
+  ipcMain.on(channel, (event, ...args) => {
+    assertTrustedIpcSender(event, getTrustedIpcOptions());
+    listener(event, ...(args as TArgs));
+  });
+}
+
 // Single owner of the scheduled-start timer. startOnPast: a past time entered
 // interactively starts right away; at boot a stale past time is cleared instead
 // (an unattended auto-start at boot would race autoResumeOnStart's conflict gate).
@@ -124,11 +157,12 @@ function createWindow(): BrowserWindow {
     backgroundColor: "#070b14",
     title: `${APP_NAME} - v${controller.getVersion()}`,
     icon: resolveAppIconPath(app.isPackaged, app.getAppPath(), process.resourcesPath),
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      preload: path.join(__dirname, "../preload/preload.js")
-    }
+    webPreferences: createMainWindowWebPreferences(path.join(__dirname, "../preload/preload.js"))
+  });
+
+  applyMainWindowSecurity(window, {
+    rendererUrl: getTrustedRendererUrl(),
+    externalHosts: MAIN_WINDOW_EXTERNAL_HOSTS
   });
 
   if (!isDevMode()) {
@@ -332,10 +366,10 @@ function updateTray(): void {
 }
 
 function registerIpcHandlers(): void {
-  ipcMain.handle(IPC_CHANNELS.GET_SNAPSHOT, () => controller.getSnapshot());
-  ipcMain.handle(IPC_CHANNELS.GET_VERSION, () => controller.getVersion());
-  ipcMain.handle(IPC_CHANNELS.CHECK_UPDATES, async () => controller.checkUpdates());
-  ipcMain.handle(IPC_CHANNELS.INSTALL_UPDATE, async () => {
+  handleTrusted(IPC_CHANNELS.GET_SNAPSHOT, () => controller.getSnapshot());
+  handleTrusted(IPC_CHANNELS.GET_VERSION, () => controller.getVersion());
+  handleTrusted(IPC_CHANNELS.CHECK_UPDATES, async () => controller.checkUpdates());
+  handleTrusted(IPC_CHANNELS.INSTALL_UPDATE, async () => {
     const result = await controller.installUpdate((progress: UpdateInstallProgress) => {
       if (!mainWindow || mainWindow.isDestroyed()) {
         return;
@@ -349,19 +383,10 @@ function registerIpcHandlers(): void {
     }
     return result;
   });
-  ipcMain.handle(IPC_CHANNELS.OPEN_EXTERNAL, async (_event: IpcMainInvokeEvent, rawUrl: string) => {
-    try {
-      const parsed = new URL(String(rawUrl || "").trim());
-      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-        return false;
-      }
-      await shell.openExternal(parsed.toString());
-      return true;
-    } catch {
-      return false;
-    }
+  handleTrusted(IPC_CHANNELS.OPEN_EXTERNAL, async (_event: IpcMainInvokeEvent, rawUrl: string) => {
+    return openAllowedExternalUrl(String(rawUrl || "").trim(), MAIN_WINDOW_EXTERNAL_HOSTS);
   });
-  ipcMain.handle(IPC_CHANNELS.UPDATE_SETTINGS, (_event: IpcMainInvokeEvent, partial: RendererSettingsUpdate) => {
+  handleTrusted(IPC_CHANNELS.UPDATE_SETTINGS, (_event: IpcMainInvokeEvent, partial: RendererSettingsUpdate) => {
     const validated = validateRendererSettingsUpdate(partial ?? {}, controller.getSettings());
     const result = controller.updateSettings(validated as Partial<AppSettings>);
     updateClipboardWatcher();
@@ -369,14 +394,14 @@ function registerIpcHandlers(): void {
     armScheduledStart(result.scheduledStartEpochMs || 0, { startOnPast: true });
     return createRendererSettings(result);
   });
-  ipcMain.handle(IPC_CHANNELS.RESET_PROVIDER_DAILY_USAGE, (_event: IpcMainInvokeEvent, provider: string) => {
+  handleTrusted(IPC_CHANNELS.RESET_PROVIDER_DAILY_USAGE, (_event: IpcMainInvokeEvent, provider: string) => {
     const validatedProvider = validateString(provider, "provider") as DebridProvider;
     if (!RESETTABLE_PROVIDER_KEYS.has(validatedProvider)) {
       throw new Error("provider ist ungültig");
     }
     return createRendererSettings(controller.resetProviderDailyUsage(validatedProvider));
   });
-  ipcMain.handle(IPC_CHANNELS.RESET_DEBRID_LINK_API_KEY_DAILY_USAGE, (_event: IpcMainInvokeEvent, keyId: string) => {
+  handleTrusted(IPC_CHANNELS.RESET_DEBRID_LINK_API_KEY_DAILY_USAGE, (_event: IpcMainInvokeEvent, keyId: string) => {
     const validatedKeyId = validateString(keyId, "keyId").trim();
     if (!validatedKeyId) {
       throw new Error("keyId ist ungültig");
@@ -384,30 +409,30 @@ function registerIpcHandlers(): void {
     return createRendererSettings(controller.resetDebridLinkApiKeyDailyUsage(validatedKeyId));
   });
 
-  ipcMain.handle(IPC_CHANNELS.CREATE_ACCOUNT, (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
+  handleTrusted(IPC_CHANNELS.CREATE_ACCOUNT, (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
     const command = validateAccountCommand(rawCommand);
     if (command.action !== "create") throw new Error("Account-Payload ist ungültig");
     return controller.executeAccountCommand(command);
   });
 
-  ipcMain.handle(IPC_CHANNELS.REPLACE_ACCOUNT, (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
+  handleTrusted(IPC_CHANNELS.REPLACE_ACCOUNT, (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
     const command = validateAccountCommand(rawCommand);
     if (command.action !== "replace") throw new Error("Account-Payload ist ungültig");
     return controller.executeAccountCommand(command);
   });
 
-  ipcMain.handle(IPC_CHANNELS.UPDATE_ACCOUNT_SECRET, (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
+  handleTrusted(IPC_CHANNELS.UPDATE_ACCOUNT_SECRET, (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
     const command = validateAccountCommand(rawCommand);
     if (command.action !== "update-secret") throw new Error("Account-Payload ist ungültig");
     return controller.executeAccountCommand(command);
   });
 
-  ipcMain.handle(IPC_CHANNELS.DELETE_ACCOUNT, (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
+  handleTrusted(IPC_CHANNELS.DELETE_ACCOUNT, (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
     const command = validateAccountCommand(rawCommand);
     if (command.action !== "delete") throw new Error("Account-Payload ist ungültig");
     return controller.executeAccountCommand(command);
   });
-  ipcMain.handle(IPC_CHANNELS.ADD_LINKS, (_event: IpcMainInvokeEvent, payload: AddLinksPayload) => {
+  handleTrusted(IPC_CHANNELS.ADD_LINKS, (_event: IpcMainInvokeEvent, payload: AddLinksPayload) => {
     validatePlainObject(payload ?? {}, "payload");
     validateString(payload?.rawText, "rawText");
     if (payload.packageName !== undefined) {
@@ -418,13 +443,13 @@ function registerIpcHandlers(): void {
     }
     return controller.addLinks(payload);
   });
-  ipcMain.handle(IPC_CHANNELS.ADD_CONTAINERS, async (_event: IpcMainInvokeEvent, filePaths: string[]) => {
+  handleTrusted(IPC_CHANNELS.ADD_CONTAINERS, async (_event: IpcMainInvokeEvent, filePaths: string[]) => {
     const validPaths = validateStringArray(filePaths ?? [], "filePaths");
     const safePaths = validPaths.filter((p) => path.isAbsolute(p));
     return controller.addContainers(safePaths);
   });
-  ipcMain.handle(IPC_CHANNELS.GET_START_CONFLICTS, () => controller.getStartConflicts());
-  ipcMain.handle(IPC_CHANNELS.RESOLVE_START_CONFLICT, (_event: IpcMainInvokeEvent, packageId: string, policy: "keep" | "skip" | "overwrite") => {
+  handleTrusted(IPC_CHANNELS.GET_START_CONFLICTS, () => controller.getStartConflicts());
+  handleTrusted(IPC_CHANNELS.RESOLVE_START_CONFLICT, (_event: IpcMainInvokeEvent, packageId: string, policy: "keep" | "skip" | "overwrite") => {
     validateString(packageId, "packageId");
     validateString(policy, "policy");
     if (policy !== "keep" && policy !== "skip" && policy !== "overwrite") {
@@ -432,8 +457,8 @@ function registerIpcHandlers(): void {
     }
     return controller.resolveStartConflict(packageId, policy);
   });
-  ipcMain.handle(IPC_CHANNELS.CLEAR_ALL, () => controller.clearAll());
-  ipcMain.handle(IPC_CHANNELS.START, () => {
+  handleTrusted(IPC_CHANNELS.CLEAR_ALL, () => controller.clearAll());
+  handleTrusted(IPC_CHANNELS.START, () => {
     if (scheduledStartTimer !== null) {
       clearTimeout(scheduledStartTimer);
       scheduledStartTimer = null;
@@ -441,21 +466,21 @@ function registerIpcHandlers(): void {
     }
     return controller.start();
   });
-  ipcMain.handle(IPC_CHANNELS.START_PACKAGES, (_event: IpcMainInvokeEvent, packageIds: string[]) => {
+  handleTrusted(IPC_CHANNELS.START_PACKAGES, (_event: IpcMainInvokeEvent, packageIds: string[]) => {
     validateStringArray(packageIds ?? [], "packageIds");
     return controller.startPackages(packageIds ?? []);
   });
-  ipcMain.handle(IPC_CHANNELS.START_ITEMS, (_event: IpcMainInvokeEvent, itemIds: string[]) => {
+  handleTrusted(IPC_CHANNELS.START_ITEMS, (_event: IpcMainInvokeEvent, itemIds: string[]) => {
     validateStringArray(itemIds ?? [], "itemIds");
     return controller.startItems(itemIds ?? []);
   });
-  ipcMain.handle(IPC_CHANNELS.STOP, () => controller.stop());
-  ipcMain.handle(IPC_CHANNELS.TOGGLE_PAUSE, () => controller.togglePause());
-  ipcMain.handle(IPC_CHANNELS.CANCEL_PACKAGE, (_event: IpcMainInvokeEvent, packageId: string) => {
+  handleTrusted(IPC_CHANNELS.STOP, () => controller.stop());
+  handleTrusted(IPC_CHANNELS.TOGGLE_PAUSE, () => controller.togglePause());
+  handleTrusted(IPC_CHANNELS.CANCEL_PACKAGE, (_event: IpcMainInvokeEvent, packageId: string) => {
     validateString(packageId, "packageId");
     return controller.cancelPackage(packageId);
   });
-  ipcMain.handle(IPC_CHANNELS.RENAME_PACKAGE, (_event: IpcMainInvokeEvent, packageId: string, newName: string) => {
+  handleTrusted(IPC_CHANNELS.RENAME_PACKAGE, (_event: IpcMainInvokeEvent, packageId: string, newName: string) => {
     validateString(packageId, "packageId");
     validateString(newName, "newName");
     if (newName.length > RENAME_PACKAGE_MAX_CHARS) {
@@ -463,19 +488,19 @@ function registerIpcHandlers(): void {
     }
     return controller.renamePackage(packageId, newName);
   });
-  ipcMain.handle(IPC_CHANNELS.REORDER_PACKAGES, (_event: IpcMainInvokeEvent, packageIds: string[]) => {
+  handleTrusted(IPC_CHANNELS.REORDER_PACKAGES, (_event: IpcMainInvokeEvent, packageIds: string[]) => {
     validateStringArray(packageIds, "packageIds");
     return controller.reorderPackages(packageIds);
   });
-  ipcMain.handle(IPC_CHANNELS.REMOVE_ITEM, (_event: IpcMainInvokeEvent, itemId: string) => {
+  handleTrusted(IPC_CHANNELS.REMOVE_ITEM, (_event: IpcMainInvokeEvent, itemId: string) => {
     validateString(itemId, "itemId");
     return controller.removeItem(itemId);
   });
-  ipcMain.handle(IPC_CHANNELS.TOGGLE_PACKAGE, (_event: IpcMainInvokeEvent, packageId: string) => {
+  handleTrusted(IPC_CHANNELS.TOGGLE_PACKAGE, (_event: IpcMainInvokeEvent, packageId: string) => {
     validateString(packageId, "packageId");
     return controller.togglePackage(packageId);
   });
-  ipcMain.handle(IPC_CHANNELS.EXPORT_PACKAGE_SELECTION, async (_event: IpcMainInvokeEvent, packageIds: string[]) => {
+  handleTrusted(IPC_CHANNELS.EXPORT_PACKAGE_SELECTION, async (_event: IpcMainInvokeEvent, packageIds: string[]) => {
     const validPackageIds = validateStringArray(packageIds ?? [], "packageIds");
     const exported = controller.exportPackageSelection(validPackageIds);
     if (exported.packageCount === 0 || exported.linkCount === 0) {
@@ -492,7 +517,7 @@ function registerIpcHandlers(): void {
     await fs.promises.writeFile(result.filePath, exported.text, "utf8");
     return { saved: true, packageCount: exported.packageCount, linkCount: exported.linkCount, filePath: result.filePath };
   });
-  ipcMain.handle(IPC_CHANNELS.EXPORT_ITEM_SELECTION, async (_event: IpcMainInvokeEvent, itemIds: string[]) => {
+  handleTrusted(IPC_CHANNELS.EXPORT_ITEM_SELECTION, async (_event: IpcMainInvokeEvent, itemIds: string[]) => {
     const validItemIds = validateStringArray(itemIds ?? [], "itemIds");
     const exported = controller.exportItemSelection(validItemIds);
     if (exported.packageCount === 0 || exported.linkCount === 0) {
@@ -509,19 +534,19 @@ function registerIpcHandlers(): void {
     await fs.promises.writeFile(result.filePath, exported.text, "utf8");
     return { saved: true, packageCount: exported.packageCount, linkCount: exported.linkCount, filePath: result.filePath };
   });
-  ipcMain.handle(IPC_CHANNELS.RETRY_EXTRACTION, (_event: IpcMainInvokeEvent, packageId: string) => {
+  handleTrusted(IPC_CHANNELS.RETRY_EXTRACTION, (_event: IpcMainInvokeEvent, packageId: string) => {
     validateString(packageId, "packageId");
     return controller.retryExtraction(packageId);
   });
-  ipcMain.handle(IPC_CHANNELS.EXTRACT_NOW, (_event: IpcMainInvokeEvent, packageId: string) => {
+  handleTrusted(IPC_CHANNELS.EXTRACT_NOW, (_event: IpcMainInvokeEvent, packageId: string) => {
     validateString(packageId, "packageId");
     return controller.extractNow(packageId);
   });
-  ipcMain.handle(IPC_CHANNELS.RESET_PACKAGE, (_event: IpcMainInvokeEvent, packageId: string) => {
+  handleTrusted(IPC_CHANNELS.RESET_PACKAGE, (_event: IpcMainInvokeEvent, packageId: string) => {
     validateString(packageId, "packageId");
     return controller.resetPackage(packageId);
   });
-  ipcMain.handle(IPC_CHANNELS.SET_PACKAGE_PRIORITY, (_event: IpcMainInvokeEvent, packageId: string, priority: string) => {
+  handleTrusted(IPC_CHANNELS.SET_PACKAGE_PRIORITY, (_event: IpcMainInvokeEvent, packageId: string, priority: string) => {
     validateString(packageId, "packageId");
     validateString(priority, "priority");
     if (priority !== "high" && priority !== "normal" && priority !== "low") {
@@ -529,28 +554,28 @@ function registerIpcHandlers(): void {
     }
     return controller.setPackagePriority(packageId, priority);
   });
-  ipcMain.handle(IPC_CHANNELS.SKIP_ITEMS, (_event: IpcMainInvokeEvent, itemIds: string[]) => {
+  handleTrusted(IPC_CHANNELS.SKIP_ITEMS, (_event: IpcMainInvokeEvent, itemIds: string[]) => {
     validateStringArray(itemIds ?? [], "itemIds");
     return controller.skipItems(itemIds ?? []);
   });
-  ipcMain.handle(IPC_CHANNELS.RESET_ITEMS, (_event: IpcMainInvokeEvent, itemIds: string[]) => {
+  handleTrusted(IPC_CHANNELS.RESET_ITEMS, (_event: IpcMainInvokeEvent, itemIds: string[]) => {
     validateStringArray(itemIds ?? [], "itemIds");
     return controller.resetItems(itemIds ?? []);
   });
-  ipcMain.handle(IPC_CHANNELS.GET_HISTORY, () => controller.getHistory());
-  ipcMain.handle(IPC_CHANNELS.CLEAR_HISTORY, () => controller.clearHistory());
-  ipcMain.handle(IPC_CHANNELS.REMOVE_HISTORY_ENTRY, (_event: IpcMainInvokeEvent, entryId: string) => {
+  handleTrusted(IPC_CHANNELS.GET_HISTORY, () => controller.getHistory());
+  handleTrusted(IPC_CHANNELS.CLEAR_HISTORY, () => controller.clearHistory());
+  handleTrusted(IPC_CHANNELS.REMOVE_HISTORY_ENTRY, (_event: IpcMainInvokeEvent, entryId: string) => {
     validateString(entryId, "entryId");
     return controller.removeHistoryEntry(entryId);
   });
-  ipcMain.handle(IPC_CHANNELS.REVEAL_HISTORY_ENTRY, (_event: IpcMainInvokeEvent, entryId: unknown) => {
+  handleTrusted(IPC_CHANNELS.REVEAL_HISTORY_ENTRY, (_event: IpcMainInvokeEvent, entryId: unknown) => {
     return revealHistoryEntry({ entryId }, {
       loadHistory: () => controller.getHistory(),
       stat: (directory) => fs.promises.stat(directory),
       openPath: (directory) => shell.openPath(directory)
     });
   });
-  ipcMain.handle(IPC_CHANNELS.EXPORT_QUEUE, async () => {
+  handleTrusted(IPC_CHANNELS.EXPORT_QUEUE, async () => {
     const options = {
       defaultPath: `rd-queue-export.json`,
       filters: [{ name: "Queue Export", extensions: ["json"] }]
@@ -563,7 +588,7 @@ function registerIpcHandlers(): void {
     await fs.promises.writeFile(result.filePath, json, "utf8");
     return { saved: true };
   });
-  ipcMain.handle(IPC_CHANNELS.IMPORT_QUEUE, (_event: IpcMainInvokeEvent, json: string) => {
+  handleTrusted(IPC_CHANNELS.IMPORT_QUEUE, (_event: IpcMainInvokeEvent, json: string) => {
     validateString(json, "json");
     const bytes = Buffer.byteLength(json, "utf8");
     if (bytes > IMPORT_QUEUE_MAX_BYTES) {
@@ -571,21 +596,21 @@ function registerIpcHandlers(): void {
     }
     return controller.importQueue(json);
   });
-  ipcMain.handle(IPC_CHANNELS.TOGGLE_CLIPBOARD, () => {
+  handleTrusted(IPC_CHANNELS.TOGGLE_CLIPBOARD, () => {
     const settings = controller.getSettings();
     const next = !settings.clipboardWatch;
     controller.updateSettings({ clipboardWatch: next });
     updateClipboardWatcher();
     return next;
   });
-  ipcMain.handle(IPC_CHANNELS.PICK_FOLDER, async () => {
+  handleTrusted(IPC_CHANNELS.PICK_FOLDER, async () => {
     const options = {
       properties: ["openDirectory", "createDirectory"] as Array<"openDirectory" | "createDirectory">
     };
     const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
     return result.canceled ? null : result.filePaths[0] || null;
   });
-  ipcMain.handle(IPC_CHANNELS.PICK_CONTAINERS, async () => {
+  handleTrusted(IPC_CHANNELS.PICK_CONTAINERS, async () => {
     const options = {
       properties: ["openFile", "multiSelections"] as Array<"openFile" | "multiSelections">,
       filters: [
@@ -596,20 +621,20 @@ function registerIpcHandlers(): void {
     const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
     return result.canceled ? [] : result.filePaths;
   });
-  ipcMain.handle(IPC_CHANNELS.GET_SESSION_STATS, () => controller.getSessionStats());
-  ipcMain.handle(IPC_CHANNELS.RESET_SESSION_STATS, () => controller.resetSessionStats());
-  ipcMain.handle(IPC_CHANNELS.RESET_DOWNLOAD_STATS, () => controller.resetDownloadStats());
+  handleTrusted(IPC_CHANNELS.GET_SESSION_STATS, () => controller.getSessionStats());
+  handleTrusted(IPC_CHANNELS.RESET_SESSION_STATS, () => controller.resetSessionStats());
+  handleTrusted(IPC_CHANNELS.RESET_DOWNLOAD_STATS, () => controller.resetDownloadStats());
 
-  ipcMain.handle(IPC_CHANNELS.RESTART, () => {
+  handleTrusted(IPC_CHANNELS.RESTART, () => {
     app.relaunch();
     app.quit();
   });
 
-  ipcMain.handle(IPC_CHANNELS.QUIT, () => {
+  handleTrusted(IPC_CHANNELS.QUIT, () => {
     app.quit();
   });
 
-  ipcMain.handle(IPC_CHANNELS.EXPORT_BACKUP, async (_event: IpcMainInvokeEvent, rawPassphrase: unknown) => {
+  handleTrusted(IPC_CHANNELS.EXPORT_BACKUP, async (_event: IpcMainInvokeEvent, rawPassphrase: unknown) => {
     const passphrase = validateString(rawPassphrase, "passphrase");
     const options = {
       defaultPath: `${new Date().toISOString().slice(0, 10).split("-").reverse().join("-")}-mdd-backup.mdd`,
@@ -624,9 +649,9 @@ function registerIpcHandlers(): void {
     return { saved: true };
   });
 
-  ipcMain.handle(IPC_CHANNELS.EXPORT_ONLINE_BACKUP, async () => controller.exportOnlineBackup());
+  handleTrusted(IPC_CHANNELS.EXPORT_ONLINE_BACKUP, async () => controller.exportOnlineBackup());
 
-  ipcMain.handle(IPC_CHANNELS.IMPORT_ONLINE_BACKUP, async (_event: IpcMainInvokeEvent, rawKey: unknown) => {
+  handleTrusted(IPC_CHANNELS.IMPORT_ONLINE_BACKUP, async (_event: IpcMainInvokeEvent, rawKey: unknown) => {
     const key = validateString(rawKey, "key").trim();
     if (key.length > 128) {
       throw new Error("Online-Sicherungsschlüssel ist ungültig");
@@ -634,7 +659,7 @@ function registerIpcHandlers(): void {
     return controller.importOnlineBackup(key);
   });
 
-  ipcMain.handle(IPC_CHANNELS.EXPORT_SUPPORT_BUNDLE, async () => {
+  handleTrusted(IPC_CHANNELS.EXPORT_SUPPORT_BUNDLE, async () => {
     const options = {
       defaultPath: controller.getSupportBundleDefaultFileName(),
       filters: [{ name: "Support Bundle", extensions: ["zip"] }]
@@ -648,40 +673,40 @@ function registerIpcHandlers(): void {
     return { saved: true, filePath: result.filePath };
   });
 
-  ipcMain.handle(IPC_CHANNELS.OPEN_LOG, async () => {
+  handleTrusted(IPC_CHANNELS.OPEN_LOG, async () => {
     const logPath = getLogFilePath();
     await shell.openPath(logPath);
   });
 
-  ipcMain.handle(IPC_CHANNELS.OPEN_AUDIT_LOG, async () => {
+  handleTrusted(IPC_CHANNELS.OPEN_AUDIT_LOG, async () => {
     const logPath = controller.getAuditLogPath();
     if (logPath) {
       await shell.openPath(logPath);
     }
   });
 
-  ipcMain.handle(IPC_CHANNELS.OPEN_RENAME_LOG, async () => {
+  handleTrusted(IPC_CHANNELS.OPEN_RENAME_LOG, async () => {
     const logPath = controller.getRenameLogPath();
     if (logPath) {
       await shell.openPath(logPath);
     }
   });
 
-  ipcMain.handle(IPC_CHANNELS.OPEN_SESSION_LOG, async () => {
+  handleTrusted(IPC_CHANNELS.OPEN_SESSION_LOG, async () => {
     const logPath = controller.getSessionLogPath();
     if (logPath) {
       await shell.openPath(logPath);
     }
   });
 
-  ipcMain.handle(IPC_CHANNELS.OPEN_TRACE_LOG, async () => {
+  handleTrusted(IPC_CHANNELS.OPEN_TRACE_LOG, async () => {
     const logPath = controller.getTraceLogPath();
     if (logPath) {
       await shell.openPath(logPath);
     }
   });
 
-  ipcMain.handle(IPC_CHANNELS.OPEN_PACKAGE_LOG, async (_event: IpcMainInvokeEvent, packageId: string) => {
+  handleTrusted(IPC_CHANNELS.OPEN_PACKAGE_LOG, async (_event: IpcMainInvokeEvent, packageId: string) => {
     validateString(packageId, "packageId");
     const logPath = controller.getPackageLogPath(packageId);
     if (logPath) {
@@ -689,11 +714,11 @@ function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle(IPC_CHANNELS.GET_DEBUG_SETUP_CHECK, async () => controller.getDebugSetupCheck());
+  handleTrusted(IPC_CHANNELS.GET_DEBUG_SETUP_CHECK, async () => controller.getDebugSetupCheck());
 
-  ipcMain.handle(IPC_CHANNELS.GET_RECENT_ERRORS, async () => getRecentErrors());
+  handleTrusted(IPC_CHANNELS.GET_RECENT_ERRORS, async () => getRecentErrors());
 
-  ipcMain.handle(IPC_CHANNELS.TEST_NOTIFY, async (_event: IpcMainInvokeEvent, url: string, mention: string) => {
+  handleTrusted(IPC_CHANNELS.TEST_NOTIFY, async (_event: IpcMainInvokeEvent, url: string, mention: string) => {
     validateString(url, "url");
     return sendNotification(url, {
       title: "🔔 Test-Benachrichtigung",
@@ -702,9 +727,9 @@ function registerIpcHandlers(): void {
     });
   });
 
-  ipcMain.handle(IPC_CHANNELS.GET_TRACE_CONFIG, async () => controller.getTraceConfig());
+  handleTrusted(IPC_CHANNELS.GET_TRACE_CONFIG, async () => controller.getTraceConfig());
 
-  ipcMain.handle(IPC_CHANNELS.SET_TRACE_ENABLED, async (_event: IpcMainInvokeEvent, enabled: boolean, note?: string, durationMinutes?: number) => {
+  handleTrusted(IPC_CHANNELS.SET_TRACE_ENABLED, async (_event: IpcMainInvokeEvent, enabled: boolean, note?: string, durationMinutes?: number) => {
     if (typeof enabled !== "boolean") {
       throw new Error("enabled muss ein Boolean sein");
     }
@@ -717,16 +742,16 @@ function registerIpcHandlers(): void {
     return controller.setTraceEnabled(enabled, note, durationMinutes ? durationMinutes * 60 * 1000 : undefined);
   });
 
-  ipcMain.handle(IPC_CHANNELS.ROTATE_DEBUG_TOKEN, async () => {
+  handleTrusted(IPC_CHANNELS.ROTATE_DEBUG_TOKEN, async () => {
     const rotated = controller.rotateDebugToken();
     return { path: rotated.path };
   });
 
-  ipcMain.handle(IPC_CHANNELS.GET_REMOTE_DIAGNOSTICS, async () => {
+  handleTrusted(IPC_CHANNELS.GET_REMOTE_DIAGNOSTICS, async () => {
     return controller.getRemoteDiagnostics();
   });
 
-  ipcMain.handle(IPC_CHANNELS.ENABLE_REMOTE_DIAGNOSTICS, async (_event: IpcMainInvokeEvent, input: EnableRemoteDiagnosticsInput) => {
+  handleTrusted(IPC_CHANNELS.ENABLE_REMOTE_DIAGNOSTICS, async (_event: IpcMainInvokeEvent, input: EnableRemoteDiagnosticsInput) => {
     if (!input || (input.hostMode !== "local" && input.hostMode !== "network")) {
       throw new Error("hostMode muss 'local' oder 'network' sein");
     }
@@ -741,15 +766,15 @@ function registerIpcHandlers(): void {
     });
   });
 
-  ipcMain.handle(IPC_CHANNELS.DISABLE_REMOTE_DIAGNOSTICS, async () => {
+  handleTrusted(IPC_CHANNELS.DISABLE_REMOTE_DIAGNOSTICS, async () => {
     return controller.disableRemoteDiagnostics();
   });
 
-  ipcMain.handle(IPC_CHANNELS.ROTATE_REMOTE_DIAGNOSTICS_TOKEN, async () => {
+  handleTrusted(IPC_CHANNELS.ROTATE_REMOTE_DIAGNOSTICS_TOKEN, async () => {
     return controller.rotateRemoteDiagnosticsToken();
   });
 
-  ipcMain.handle(IPC_CHANNELS.OPEN_ITEM_LOG, async (_event: IpcMainInvokeEvent, itemId: string) => {
+  handleTrusted(IPC_CHANNELS.OPEN_ITEM_LOG, async (_event: IpcMainInvokeEvent, itemId: string) => {
     validateString(itemId, "itemId");
     const logPath = controller.getItemLogPath(itemId);
     if (logPath) {
@@ -757,15 +782,15 @@ function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle(IPC_CHANNELS.OPEN_REALDEBRID_LOGIN, async () => {
+  handleTrusted(IPC_CHANNELS.OPEN_REALDEBRID_LOGIN, async () => {
     await controller.openRealDebridLoginWindow();
   });
 
-  ipcMain.handle(IPC_CHANNELS.OPEN_ALLDEBRID_LOGIN, async () => {
+  handleTrusted(IPC_CHANNELS.OPEN_ALLDEBRID_LOGIN, async () => {
     await controller.openAllDebridLoginWindow();
   });
 
-  ipcMain.handle(IPC_CHANNELS.IMPORT_BESTDEBRID_COOKIES, async () => {
+  handleTrusted(IPC_CHANNELS.IMPORT_BESTDEBRID_COOKIES, async () => {
     const options = {
       properties: ["openFile"] as Array<"openFile">,
       filters: [
@@ -780,23 +805,23 @@ function registerIpcHandlers(): void {
     return controller.importBestDebridCookies(result.filePaths[0]);
   });
 
-  ipcMain.handle(IPC_CHANNELS.GET_ALLDEBRID_HOST_INFO, async () => {
+  handleTrusted(IPC_CHANNELS.GET_ALLDEBRID_HOST_INFO, async () => {
     return controller.getAllDebridHostInfo();
   });
 
-  ipcMain.handle(IPC_CHANNELS.GET_DEBRIDLINK_HOST_LIMITS, async () => {
+  handleTrusted(IPC_CHANNELS.GET_DEBRIDLINK_HOST_LIMITS, async () => {
     return controller.getDebridLinkHostLimits();
   });
 
-  ipcMain.handle(IPC_CHANNELS.CHECK_DEBRID_ACCOUNTS, async () => {
+  handleTrusted(IPC_CHANNELS.CHECK_DEBRID_ACCOUNTS, async () => {
     return controller.checkDebridAccounts();
   });
 
-  ipcMain.handle(IPC_CHANNELS.CHECK_ACCOUNT_CREDENTIALS, async (_event, rawInput: unknown) => {
+  handleTrusted(IPC_CHANNELS.CHECK_ACCOUNT_CREDENTIALS, async (_event, rawInput: unknown) => {
     return controller.checkAccountCredentials(validateAccountCredentialCheckInput(rawInput));
   });
 
-  ipcMain.handle(IPC_CHANNELS.SELECT_BACKUP_IMPORT, async () => {
+  handleTrusted(IPC_CHANNELS.SELECT_BACKUP_IMPORT, async () => {
     pendingBackupImport = null;
     const options = {
       properties: ["openFile"] as Array<"openFile">,
@@ -821,11 +846,11 @@ function registerIpcHandlers(): void {
     return { selected: true, requiresPassphrase: isMdd2Backup(data) };
   });
 
-  ipcMain.handle(IPC_CHANNELS.CANCEL_BACKUP_IMPORT, () => {
+  handleTrusted(IPC_CHANNELS.CANCEL_BACKUP_IMPORT, () => {
     pendingBackupImport = null;
   });
 
-  ipcMain.handle(IPC_CHANNELS.IMPORT_BACKUP, async (_event: IpcMainInvokeEvent, rawPassphrase?: unknown) => {
+  handleTrusted(IPC_CHANNELS.IMPORT_BACKUP, async (_event: IpcMainInvokeEvent, rawPassphrase?: unknown) => {
     const data = pendingBackupImport;
     pendingBackupImport = null;
     if (!data) {
@@ -845,7 +870,7 @@ function registerIpcHandlers(): void {
     return importResult;
   });
 
-  ipcMain.on(IPC_CHANNELS.LOG_RENDERER_ERROR, (_event, rawReport: unknown) => {
+  onTrusted(IPC_CHANNELS.LOG_RENDERER_ERROR, (_event, rawReport: unknown) => {
     try {
       logger.error(formatRendererErrorReport(rawReport));
     } catch (error) {

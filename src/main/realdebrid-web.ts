@@ -2,6 +2,7 @@ import { BrowserWindow, session } from "electron";
 import { UnrestrictedLink } from "./realdebrid";
 import { filenameFromUrl, sleep } from "./utils";
 import { API_BASE_URL, REQUEST_RETRIES } from "./constants";
+import { applyRemoteLoginSecurity, createRemoteLoginWebPreferences, REALDEBRID_LOGIN_HOSTS } from "./browser-security";
 
 const RD_BASE_URL = "https://real-debrid.com";
 const RD_LOGIN_URL = RD_BASE_URL;
@@ -217,11 +218,11 @@ export class RealDebridWebFallback {
       minHeight: 760,
       autoHideMenuBar: true,
       title: "Real-Debrid Web-Login",
-      webPreferences: {
-        partition,
-        contextIsolation: true,
-        nodeIntegration: false
-      }
+      webPreferences: createRemoteLoginWebPreferences(partition)
+    });
+    applyRemoteLoginSecurity(window, {
+      providerHosts: REALDEBRID_LOGIN_HOSTS,
+      externalHosts: REALDEBRID_LOGIN_HOSTS
     });
     window.setMenuBarVisibility(false);
     window.webContents.setUserAgent(RD_USER_AGENT);

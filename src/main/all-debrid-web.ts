@@ -2,6 +2,7 @@ import { BrowserWindow, session } from "electron";
 import { AllDebridHostInfo } from "../shared/types";
 import { UnrestrictedLink } from "./realdebrid";
 import { filenameFromUrl, sleep } from "./utils";
+import { ALLDEBRID_LOGIN_HOSTS, applyRemoteLoginSecurity, createRemoteLoginWebPreferences } from "./browser-security";
 
 const ALLDEBRID_BASE_URL = "https://alldebrid.com";
 const ALLDEBRID_LOGIN_URL = `${ALLDEBRID_BASE_URL}/register/?from=de`;
@@ -302,11 +303,11 @@ export class AllDebridWebFallback {
       minHeight: 760,
       autoHideMenuBar: true,
       title: "AllDebrid Web-Login",
-      webPreferences: {
-        partition,
-        contextIsolation: true,
-        nodeIntegration: false
-      }
+      webPreferences: createRemoteLoginWebPreferences(partition)
+    });
+    applyRemoteLoginSecurity(window, {
+      providerHosts: ALLDEBRID_LOGIN_HOSTS,
+      externalHosts: ALLDEBRID_LOGIN_HOSTS
     });
     window.setMenuBarVisibility(false);
     window.on("closed", () => {

@@ -10,7 +10,9 @@ const {
   mockExecuteJavaScript,
   mockLoadURL,
   mockShow,
-  mockFocus
+  mockFocus,
+  mockSetWindowOpenHandler,
+  mockSetPermissionRequestHandler
 } = vi.hoisted(() => {
   const sessionFetch = vi.fn();
   const clearStorageData = vi.fn();
@@ -20,6 +22,8 @@ const {
   const loadURL = vi.fn(async () => {});
   const show = vi.fn();
   const focus = vi.fn();
+  const setWindowOpenHandler = vi.fn();
+  const setPermissionRequestHandler = vi.fn();
   const webContentsEvents: Record<string, (...args: unknown[]) => void> = {};
   const windowEvents: Record<string, (...args: unknown[]) => void> = {};
   let destroyed = false;
@@ -42,14 +46,18 @@ const {
     }),
     webContents: {
       setUserAgent: vi.fn(),
+      setWindowOpenHandler,
       on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
         webContentsEvents[event] = handler;
       }),
-      executeJavaScript
+      executeJavaScript,
+      session: {
+        setPermissionRequestHandler
+      }
     }
   };
 
-  const BrowserWindowCtor = vi.fn(() => {
+  const BrowserWindowCtor = vi.fn((_options: unknown) => {
     destroyed = false;
     return browserWindow;
   });
@@ -64,7 +72,9 @@ const {
     mockExecuteJavaScript: executeJavaScript,
     mockLoadURL: loadURL,
     mockShow: show,
-    mockFocus: focus
+    mockFocus: focus,
+    mockSetWindowOpenHandler: setWindowOpenHandler,
+    mockSetPermissionRequestHandler: setPermissionRequestHandler
   };
 });
 
@@ -72,7 +82,10 @@ vi.mock("electron", () => ({
   session: {
     fromPartition: mockFromPartition
   },
-  BrowserWindow: mockBrowserWindowCtor
+  BrowserWindow: mockBrowserWindowCtor,
+  shell: {
+    openExternal: vi.fn()
+  }
 }));
 
 import { RealDebridWebFallback, extractPrivateTokenFromHtml } from "../src/main/realdebrid-web";
@@ -129,6 +142,18 @@ describe("realdebrid-web", () => {
       retriesUsed: 0
     });
     expect(mockBrowserWindowCtor).toHaveBeenCalledTimes(1);
+    expect(mockBrowserWindowCtor.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+      webPreferences: {
+        partition: "persist:realdebrid-web",
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        webSecurity: true,
+        allowRunningInsecureContent: false
+      }
+    }));
+    expect(mockSetWindowOpenHandler).toHaveBeenCalledTimes(1);
+    expect(mockSetPermissionRequestHandler).toHaveBeenCalledTimes(1);
     expect(mockLoadURL).toHaveBeenCalledWith("https://real-debrid.com");
     expect(mockShow).toHaveBeenCalled();
     expect(mockFocus).toHaveBeenCalled();
