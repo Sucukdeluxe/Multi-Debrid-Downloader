@@ -14,6 +14,7 @@ import { revealHistoryEntry } from "./history-reveal";
 import { DEV_SERVER_URL } from "./dev-server-url";
 import { resolveAppIconPath } from "./app-icon";
 import { configureCredentialProtector } from "./credential-protection";
+import { isMdd2Backup } from "./backup-crypto";
 
 function validateString(value: unknown, name: string): string {
   if (typeof value !== "string") {
@@ -75,6 +76,7 @@ let updateQuitTimer: ReturnType<typeof setTimeout> | null = null;
 let scheduledStartTimer: ReturnType<typeof setTimeout> | null = null;
 let lastClipboardText = "";
 let controller: AppController;
+let pendingBackupImport: Buffer | null = null;
 const CLIPBOARD_MAX_TEXT_CHARS = 50_000;
 
 function isDevMode(): boolean {
@@ -580,7 +582,8 @@ function registerIpcHandlers(): void {
     app.quit();
   });
 
-  ipcMain.handle(IPC_CHANNELS.EXPORT_BACKUP, async () => {
+  ipcMain.handle(IPC_CHANNELS.EXPORT_BACKUP, async (_event: IpcMainInvokeEvent, rawPassphrase: unknown) => {
+    const passphrase = validateString(rawPassphrase, "passphrase");
     const options = {
       defaultPath: `${new Date().toISOString().slice(0, 10).split("-").reverse().join("-")}-mdd-backup.mdd`,
       filters: [{ name: "MDD Backup", extensions: ["mdd"] }]
@@ -589,7 +592,7 @@ function registerIpcHandlers(): void {
     if (result.canceled || !result.filePath) {
       return { saved: false };
     }
-    const encrypted = controller.exportBackup();
+    const encrypted = controller.exportBackup(passphrase);
     await fs.promises.writeFile(result.filePath, encrypted);
     return { saved: true };
   });
@@ -766,7 +769,8 @@ function registerIpcHandlers(): void {
     return controller.checkSingleMegaDebridAccount(String(login || ""), String(password || ""));
   });
 
-  ipcMain.handle(IPC_CHANNELS.IMPORT_BACKUP, async () => {
+  ipcMain.handle(IPC_CHANNELS.SELECT_BACKUP_IMPORT, async () => {
+    pendingBackupImport = null;
     const options = {
       properties: ["openFile"] as Array<"openFile">,
       filters: [
@@ -777,16 +781,31 @@ function registerIpcHandlers(): void {
     };
     const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
     if (result.canceled || result.filePaths.length === 0) {
-      return { restored: false, message: "Abgebrochen" };
+      return { selected: false, requiresPassphrase: false, message: "Abgebrochen" };
     }
     const filePath = result.filePaths[0];
     const stat = await fs.promises.stat(filePath);
     const BACKUP_MAX_BYTES = 50 * 1024 * 1024;
     if (stat.size > BACKUP_MAX_BYTES) {
-      return { restored: false, message: `Backup-Datei zu groß (max 50 MB, Datei hat ${(stat.size / 1024 / 1024).toFixed(1)} MB)` };
+      return { selected: false, requiresPassphrase: false, message: `Backup-Datei zu groß (max 50 MB, Datei hat ${(stat.size / 1024 / 1024).toFixed(1)} MB)` };
     }
     const data = await fs.promises.readFile(filePath);
-    const importResult = controller.importBackup(data);
+    pendingBackupImport = data;
+    return { selected: true, requiresPassphrase: isMdd2Backup(data) };
+  });
+
+  ipcMain.handle(IPC_CHANNELS.CANCEL_BACKUP_IMPORT, () => {
+    pendingBackupImport = null;
+  });
+
+  ipcMain.handle(IPC_CHANNELS.IMPORT_BACKUP, async (_event: IpcMainInvokeEvent, rawPassphrase?: unknown) => {
+    const data = pendingBackupImport;
+    pendingBackupImport = null;
+    if (!data) {
+      return { restored: false, relaunch: false, message: "Keine Backup-Datei ausgewählt" };
+    }
+    const passphrase = typeof rawPassphrase === "string" ? rawPassphrase : undefined;
+    const importResult = controller.importBackup(data, passphrase);
     // Only a full restore (queue swapped) needs the auto-relaunch. A settings-
     // only import applied live — relaunching would be pointless and would drop
     // the running queue.

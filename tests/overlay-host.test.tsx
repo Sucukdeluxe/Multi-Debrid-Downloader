@@ -8,6 +8,7 @@ describe("OverlayHost", () => {
   it("renders every desktop overlay slot exactly once", () => {
     const slots = {
       confirm: <span>confirm-slot</span>,
+      backupPassphrase: <span>backup-passphrase-slot</span>,
       onlineBackup: <span>backup-slot</span>,
       diagnostics: <span>diagnostics-slot</span>,
       deleteConfirmation: <span>delete-slot</span>,

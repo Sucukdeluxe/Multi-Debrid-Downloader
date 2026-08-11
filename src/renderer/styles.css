@@ -3269,6 +3269,46 @@ td {
   width: min(760px, calc(100vw - 24px));
 }
 
+.backup-passphrase-modal {
+  width: min(520px, calc(100vw - 24px));
+}
+
+.backup-passphrase-form,
+.backup-passphrase-fields {
+  display: grid;
+  gap: 10px;
+}
+
+.backup-passphrase-fields label {
+  display: grid;
+  gap: 5px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.backup-passphrase-fields input {
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+  box-sizing: border-box;
+  font: inherit;
+}
+
+.backup-passphrase-fields input:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  border-color: var(--accent);
+}
+
+.backup-passphrase-error {
+  color: var(--danger);
+  font-size: 13px;
+}
+
 .online-backup-key {
   width: 100%;
   min-height: 86px;

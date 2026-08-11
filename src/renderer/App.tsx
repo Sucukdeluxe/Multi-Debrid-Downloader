@@ -45,6 +45,7 @@ import type { AccountEditState, AccountEditTarget, AccountKind, AccountService, 
 import { ACCOUNT_SERVICE_ICONS } from "./account-service-icons";
 import { DOWNLOAD_SPEED_MAX_SAMPLES, updateDownloadSpeedHistory } from "./download-speed-state";
 import { createUiLocalizer, normalizeLanguage } from "./i18n";
+import { runLocalBackupExport, runLocalBackupImport, type BackupPassphraseMode } from "./backup-flow";
 import type { DownloadSpeedHistoryState } from "./download-speed-state";
 import { extractHoster, formatDateTime, formatSpeedMbps, humanSize, providerLabels } from "./download-format";
 import { AppShell } from "./shell/AppShell";
@@ -53,6 +54,7 @@ import { OverlayHost } from "./shell/OverlayHost";
 import { UpdateExperience } from "./shell/UpdateExperience";
 import type { MainView } from "./shell/shell-model";
 import { ContextMenu } from "./ui/ContextMenu";
+import { BackupPassphraseDialog } from "./ui/BackupPassphraseDialog";
 import { Dialog } from "./ui/Dialog";
 import { Icon } from "./ui/Icon";
 import { Toast } from "./ui/Toast";
@@ -1865,6 +1867,7 @@ export function App(): ReactElement {
   const [startConflictPrompt, setStartConflictPrompt] = useState<StartConflictPromptState | null>(null);
   const startConflictResolverRef = useRef<((result: { policy: Extract<DuplicatePolicy, "skip" | "overwrite">; applyToAll: boolean } | null) => void) | null>(null);
   const [confirmPrompt, setConfirmPrompt] = useState<ConfirmPromptState | null>(null);
+  const [backupPassphraseMode, setBackupPassphraseMode] = useState<BackupPassphraseMode | null>(null);
   const [onlineBackupDialog, setOnlineBackupDialog] = useState<OnlineBackupDialogState | null>(null);
   const [remoteDiag, setRemoteDiag] = useState<RemoteDiagnosticsInfo | null>(null);
   const [remoteDiagOpen, setRemoteDiagOpen] = useState(false);
@@ -1875,6 +1878,7 @@ export function App(): ReactElement {
   const [rdAllowlist, setRdAllowlist] = useState("");
   const [rdName, setRdName] = useState("");
   const confirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
+  const backupPassphraseResolverRef = useRef<((passphrase: string | null) => void) | null>(null);
   const confirmQueueRef = useRef<Array<{ prompt: ConfirmPromptState; resolve: (confirmed: boolean) => void }>>([]);
   const importQueueFocusHandlerRef = useRef<(() => void) | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -2266,6 +2270,11 @@ export function App(): ReactElement {
         const resolver = confirmResolverRef.current;
         confirmResolverRef.current = null;
         resolver(false);
+      }
+      if (backupPassphraseResolverRef.current) {
+        const resolver = backupPassphraseResolverRef.current;
+        backupPassphraseResolverRef.current = null;
+        resolver(null);
       }
       while (confirmQueueRef.current.length > 0) {
         const request = confirmQueueRef.current.shift();
@@ -3422,6 +3431,20 @@ export function App(): ReactElement {
     });
   }, [pumpConfirmQueue]);
 
+  const closeBackupPassphraseDialog = useCallback((passphrase: string | null): void => {
+    const resolver = backupPassphraseResolverRef.current;
+    backupPassphraseResolverRef.current = null;
+    setBackupPassphraseMode(null);
+    resolver?.(passphrase);
+  }, []);
+
+  const askBackupPassphrase = useCallback((mode: BackupPassphraseMode): Promise<string | null> => {
+    return new Promise((resolve) => {
+      backupPassphraseResolverRef.current = resolve;
+      setBackupPassphraseMode(mode);
+    });
+  }, []);
+
   const restoreHistoryEntries = useCallback(async (entryIds: string[]): Promise<void> => {
     const requested = new Set(entryIds);
     const entries = historyEntriesRef.current.filter((entry) => requested.has(entry.id));
@@ -4519,7 +4542,7 @@ export function App(): ReactElement {
   const onExportBackup = async (): Promise<void> => {
     closeMenus();
     await performQuickAction(async () => {
-      const result = await window.rd.exportBackup();
+      const result = await runLocalBackupExport(window.rd, askBackupPassphrase);
       if (result.saved) {
         showToast("Sicherung exportiert");
       }
@@ -4531,7 +4554,7 @@ export function App(): ReactElement {
   const onImportBackup = async (): Promise<void> => {
     closeMenus();
     await performQuickAction(async () => {
-      const result = await window.rd.importBackup();
+      const result = await runLocalBackupImport(window.rd, askBackupPassphrase);
       if (result.restored) {
         showToast(result.message, 4000);
         // A settings-only import applies live without a relaunch, so the editable
@@ -5987,6 +6010,13 @@ export function App(): ReactElement {
       </AppShell>
 
       <OverlayHost
+        backupPassphrase={backupPassphraseMode ? (
+          <BackupPassphraseDialog
+            mode={backupPassphraseMode}
+            onCancel={() => closeBackupPassphraseDialog(null)}
+            onSubmit={(passphrase) => closeBackupPassphraseDialog(passphrase)}
+          />
+        ) : null}
         confirm={confirmPrompt ? (
           <Dialog actions={null} danger={confirmPrompt.danger} onClose={() => closeConfirmPrompt(false)} open title={confirmPrompt.title}>
             <p style={{ whiteSpace: "pre-line" }}>{confirmPrompt.message}</p>

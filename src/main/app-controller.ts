@@ -752,7 +752,7 @@ public async checkDebridAccounts(settingsOverride?: AppSettings, persistValidOve
     this.audit("INFO", "Download-Statistik zurückgesetzt");
   }
 
-  public exportBackup(): Buffer {
+  public exportBackup(passphrase: string): Buffer {
     let remoteDiagnostics: BackupRemoteDiagnostics | undefined;
     if (Boolean(this.settings.backupIncludeRemoteDiagnostics)) {
       const status = getDebugServerRuntimeStatus();
@@ -770,13 +770,14 @@ public async checkDebridAccounts(settingsOverride?: AppSettings, persistValidOve
       history: loadHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode, this.historyLimits()),
       remoteDiagnostics
     });
+    const encrypted = encryptBackup(JSON.stringify(payloadObj), passphrase);
     this.audit("INFO", "Backup exportiert", {
       kind: payloadObj.kind,
       historyEntries: payloadObj.history ? payloadObj.history.length : 0,
       sessionItems: payloadObj.session ? Object.keys(payloadObj.session.items).length : 0,
       sessionPackages: payloadObj.session ? Object.keys(payloadObj.session.packages).length : 0
     });
-    return encryptBackup(JSON.stringify(payloadObj));
+    return encrypted;
   }
 
   public async exportOnlineBackup(): Promise<{ key: string }> {
@@ -812,10 +813,10 @@ public async checkDebridAccounts(settingsOverride?: AppSettings, persistValidOve
     return getSupportBundleDefaultFileName();
   }
 
-  public importBackup(data: Buffer): { restored: boolean; relaunch: boolean; message: string } {
+  public importBackup(data: Buffer, passphrase?: string): { restored: boolean; relaunch: boolean; message: string } {
     let parsed: Record<string, unknown>;
     try {
-      const json = decryptBackup(data);
+      const json = decryptBackup(data, passphrase);
       parsed = JSON.parse(json) as Record<string, unknown>;
     } catch {
       try {

@@ -2,6 +2,7 @@ import type { ReactElement, ReactNode } from "react";
 
 export interface OverlayHostProps {
   confirm?: ReactNode;
+  backupPassphrase?: ReactNode;
   onlineBackup?: ReactNode;
   diagnostics?: ReactNode;
   deleteConfirmation?: ReactNode;
@@ -21,6 +22,7 @@ export interface OverlayHostProps {
 
 export function OverlayHost({
   confirm,
+  backupPassphrase,
   onlineBackup,
   diagnostics,
   deleteConfirmation,
@@ -40,6 +42,7 @@ export function OverlayHost({
   return (
     <div className="md-overlay-host" id="md-overlay-host">
       {confirm}
+      {backupPassphrase}
       {onlineBackup}
       {diagnostics}
       {deleteConfirmation}

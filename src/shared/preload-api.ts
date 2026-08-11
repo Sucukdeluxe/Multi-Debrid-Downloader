@@ -58,8 +58,10 @@ export interface ElectronApi {
   resetDownloadStats: () => Promise<void>;
   restart: () => Promise<void>;
   quit: () => Promise<void>;
-  exportBackup: () => Promise<{ saved: boolean }>;
-  importBackup: () => Promise<{ restored: boolean; relaunch: boolean; message: string }>;
+  exportBackup: (passphrase: string) => Promise<{ saved: boolean }>;
+  selectBackupImport: () => Promise<{ selected: boolean; requiresPassphrase: boolean; message?: string }>;
+  importBackup: (passphrase?: string) => Promise<{ restored: boolean; relaunch: boolean; message: string }>;
+  cancelBackupImport: () => Promise<void>;
   exportOnlineBackup: () => Promise<{ key: string }>;
   importOnlineBackup: (key: string) => Promise<{ restored: boolean; relaunch: false; message: string }>;
   exportSupportBundle: () => Promise<{ saved: boolean; filePath?: string }>;
