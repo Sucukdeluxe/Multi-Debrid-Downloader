@@ -352,9 +352,9 @@ export function getDebugSetupCheck(baseDir: string): DebugSetupCheckResult {
     warnings.push("debug_token.txt fehlt oder ist leer. Der Debug-Server startet dann nicht.");
   }
   if (localOnly) {
-    warnings.push("Der Debug-Server ist aktuell nur lokal erreichbar. FÃ¼r Remote-Support debug_host.txt auf 0.0.0.0 setzen.");
+    notes.push("Der Debug-Server ist lokal gebunden. Remote-Support nutzt eine vertrauenswürdige Bridge oder einen Tunnel auf diese lokale Adresse.");
   } else {
-    notes.push("Der Debug-Server ist fÃ¼r Remote-Zugriff konfiguriert. Firewall oder Provider-Regeln mÃ¼ssen separat offen sein.");
+    warnings.push("Der Debug-Server ist nicht lokal gebunden. Für Support sicherheitshalber auf 127.0.0.1 zurückstellen und eine Bridge oder einen Tunnel nutzen.");
   }
   if (!fs.existsSync(supportManifestPath)) {
     warnings.push("debug_support_manifest.json fehlt. App einmal neu starten, damit das Support-Manifest neu geschrieben wird.");
@@ -422,14 +422,14 @@ export function getDebugSetupCheck(baseDir: string): DebugSetupCheckResult {
     warnings,
     notes,
     localUrls: {
-      health: `http://127.0.0.1:${port}/health?token=${token || "<TOKEN>"}`,
-      meta: `http://127.0.0.1:${port}/meta?token=${token || "<TOKEN>"}`,
-      diagnostics: `http://127.0.0.1:${port}/diagnostics?token=${token || "<TOKEN>"}`
+      health: `http://127.0.0.1:${port}/health`,
+      meta: `http://127.0.0.1:${port}/meta`,
+      diagnostics: `http://127.0.0.1:${port}/diagnostics`
     },
     remoteUrlTemplates: {
-      health: `http://<SERVER_IP_OR_DNS>:${port}/health?token=${token || "<TOKEN>"}`,
-      meta: `http://<SERVER_IP_OR_DNS>:${port}/meta?token=${token || "<TOKEN>"}`,
-      diagnostics: `http://<SERVER_IP_OR_DNS>:${port}/diagnostics?token=${token || "<TOKEN>"}`
+      health: `http://127.0.0.1:${port}/health`,
+      meta: `http://127.0.0.1:${port}/meta`,
+      diagnostics: `http://127.0.0.1:${port}/diagnostics`
     }
   };
 }

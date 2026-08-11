@@ -36,7 +36,7 @@ async function waitForReady(url: string): Promise<void> {
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { headers: bearerHeaders(TOKEN) });
       if (res.ok) {
         return;
       }
@@ -47,18 +47,34 @@ async function waitForReady(url: string): Promise<void> {
   throw new Error(`debug server not ready: ${url}`);
 }
 
-async function startWithAllowlist(allowlist: string[], host = "0.0.0.0"): Promise<{ baseUrl: string }> {
+function bearerHeaders(token: string): HeadersInit {
+  return { Authorization: `Bearer ${token}` };
+}
+
+function authedFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  return fetch(url, {
+    ...init,
+    headers: {
+      ...(init.headers || {}),
+      ...bearerHeaders(TOKEN)
+    }
+  });
+}
+
+async function startWithAllowlist(allowlist: string[], host = "127.0.0.1", writeHost = true): Promise<{ baseUrl: string }> {
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-allow-"));
   tempDirs.push(baseDir);
   const port = await getFreePort();
   fs.writeFileSync(path.join(baseDir, "debug_token.txt"), TOKEN, "utf8");
   fs.writeFileSync(path.join(baseDir, "debug_port.txt"), String(port), "utf8");
-  fs.writeFileSync(path.join(baseDir, "debug_host.txt"), host, "utf8");
+  if (writeHost) {
+    fs.writeFileSync(path.join(baseDir, "debug_host.txt"), host, "utf8");
+  }
   fs.writeFileSync(path.join(baseDir, "debug_allowlist.txt"), allowlist.join("\n"), "utf8");
   const manager = {} as unknown as DownloadManager;
   startDebugServer(manager, baseDir);
   const baseUrl = `http://127.0.0.1:${port}`;
-  await waitForReady(`${baseUrl}/health?token=${TOKEN}`);
+  await waitForReady(`${baseUrl}/health`);
   return { baseUrl };
 }
 
@@ -117,11 +133,18 @@ describe("debug-server allowlist matcher (pure)", () => {
 });
 
 describe("debug-server allowlist enforcement (wired)", () => {
+  it("binds to loopback when no host file exists", async () => {
+    await startWithAllowlist([], "0.0.0.0", false);
+    const status = getDebugServerRuntimeStatus();
+    expect(status.host).toBe("127.0.0.1");
+    expect(status.localOnly).toBe(true);
+  });
+
   it("allows a loopback connection and ignores a spoofed X-Forwarded-For", async () => {
     const { baseUrl } = await startWithAllowlist(["8.8.8.8"]);
-    const plain = await fetch(`${baseUrl}/health?token=${TOKEN}`);
+    const plain = await authedFetch(`${baseUrl}/health`);
     expect(plain.status).toBe(200);
-    const spoofed = await fetch(`${baseUrl}/health?token=${TOKEN}`, {
+    const spoofed = await authedFetch(`${baseUrl}/health`, {
       headers: { "X-Forwarded-For": "203.0.113.9" }
     });
     expect(spoofed.status).toBe(200);
@@ -140,7 +163,7 @@ describe("debug-server allowlist enforcement (wired)", () => {
     const status = await restartDebugServer();
     expect(status.running).toBe(true);
     expect(status.allowlistCount).toBe(2);
-    await waitForReady(`${baseUrl}/health?token=${TOKEN}`);
-    expect((await fetch(`${baseUrl}/health?token=${TOKEN}`)).status).toBe(200);
+    await waitForReady(`${baseUrl}/health`);
+    expect((await authedFetch(`${baseUrl}/health`)).status).toBe(200);
   });
 });

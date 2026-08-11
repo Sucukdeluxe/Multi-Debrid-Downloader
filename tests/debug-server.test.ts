@@ -98,7 +98,7 @@ async function waitForReady(url: string): Promise<void> {
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(url);
+      const response = await fetch(url, { headers: bearerHeaders("debug-secret") });
       if (response.ok) {
         return;
       }
@@ -107,6 +107,20 @@ async function waitForReady(url: string): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error(`debug server not ready: ${url}`);
+}
+
+function bearerHeaders(token: string): HeadersInit {
+  return { Authorization: `Bearer ${token}` };
+}
+
+function authedFetch(url: string, token: string, init: RequestInit = {}): Promise<Response> {
+  return fetch(url, {
+    ...init,
+    headers: {
+      ...(init.headers || {}),
+      ...bearerHeaders(token)
+    }
+  });
 }
 
 function buildSnapshot(baseDir: string): UiSnapshot {
@@ -227,7 +241,6 @@ async function createFixture() {
 
   fs.writeFileSync(path.join(baseDir, "debug_token.txt"), token, "utf8");
   fs.writeFileSync(path.join(baseDir, "debug_port.txt"), String(port), "utf8");
-  fs.writeFileSync(path.join(baseDir, "debug_host.txt"), "0.0.0.0", "utf8");
   const debridLinkApiKeys = "key-a\nkey-b";
   const debridLinkKeyIds = getDebridLinkApiKeyIds(debridLinkApiKeys);
 
@@ -315,7 +328,7 @@ async function createFixture() {
 
   startDebugServer(manager, baseDir);
   const baseUrl = `http://127.0.0.1:${port}`;
-  await waitForReady(`${baseUrl}/health?token=${token}`);
+  await waitForReady(`${baseUrl}/health`);
   await new Promise((resolve) => setTimeout(resolve, 300));
 
   return {
@@ -348,12 +361,14 @@ afterEach(() => {
 describe("debug-server", () => {
   it("serves diagnostics with main, session, and package log tails", async () => {
     const fixture = await createFixture();
-    const response = await fetch(`${fixture.baseUrl}/diagnostics?token=${fixture.token}&package=server-package&lines=20`);
+    const response = await authedFetch(`${fixture.baseUrl}/diagnostics?package=server-package&lines=20`, fixture.token);
     expect(response.ok).toBe(true);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(response.headers.get("access-control-allow-origin")).toBeNull();
     const payload = await response.json() as Record<string, any>;
 
     expect(payload.meta?.appVersion).toBeTruthy();
-    expect(payload.meta?.debugServer?.host).toBe("0.0.0.0");
+    expect(payload.meta?.debugServer?.host).toBe("127.0.0.1");
     expect(payload.status?.running).toBe(true);
     expect(payload.host?.platform).toBe("win32");
     expect(payload.host?.recentKernelPower?.[0]?.id).toBe(41);
@@ -379,15 +394,17 @@ describe("debug-server", () => {
     expect(JSON.stringify(manifest)).not.toMatch(new RegExp(`\\b(?:${forbiddenSupportMarkers.join("|")})\\b`, "i"));
     expect(JSON.stringify(manifest)).not.toContain(fixture.token);
     expect(manifest.debugServer?.port).toBeGreaterThan(0);
-    expect(manifest.debugServer?.remoteBaseUrlTemplate).toContain("<SERVER_IP_OR_DNS>");
-    expect(manifest.remoteAccessRequirements).toContain("A reachable server IP or DNS name.");
+    expect(manifest.auth?.methods).toEqual(["Authorization: Bearer <token>"]);
+    expect(JSON.stringify(manifest)).not.toContain("?token=");
+    expect(manifest.debugServer?.remoteBridgeBaseUrlTemplate).toContain("127.0.0.1");
+    expect(manifest.remoteAccessRequirements.join("\n")).toContain("local bridge");
     expect(manifest.setupCheckEndpoint).toBe("/debug/setup");
     expect(manifest.selfCheckEndpoint).toBe("/self-check");
     expect(manifest.runtimeFiles?.tokenFile).toContain("debug_token.txt");
     expect(manifest.endpoints?.some((entry: Record<string, any>) => entry.path === "/diagnostics")).toBe(true);
     expect(manifest.endpoints?.some((entry: Record<string, any>) => entry.path === "/logs/main")).toBe(true);
 
-    const metaResponse = await fetch(`${fixture.baseUrl}/meta?token=${fixture.token}`);
+    const metaResponse = await authedFetch(`${fixture.baseUrl}/meta`, fixture.token);
     expect(metaResponse.ok).toBe(true);
     const metaPayload = await metaResponse.json() as Record<string, any>;
     expect(metaPayload.supportFiles?.supportManifest).toBe(manifestPath);
@@ -401,7 +418,7 @@ describe("debug-server", () => {
 
   it("serves a debug setup check with trace expiry details", async () => {
     const fixture = await createFixture();
-    const response = await fetch(`${fixture.baseUrl}/debug/setup?token=${fixture.token}`);
+    const response = await authedFetch(`${fixture.baseUrl}/debug/setup`, fixture.token);
     expect(response.ok).toBe(true);
     const payload = await response.json() as Record<string, any>;
 
@@ -409,8 +426,8 @@ describe("debug-server", () => {
     expect(Array.isArray(payload.warnings)).toBe(true);
     expect(payload.status).toBe(payload.warnings.length > 0 ? "warn" : "ok");
     expect(payload.runtimeBaseDir).toBe(fixture.baseDir);
-    expect(payload.host).toBe("0.0.0.0");
-    expect(payload.localOnly).toBe(false);
+    expect(payload.host).toBe("127.0.0.1");
+    expect(payload.localOnly).toBe(true);
     expect(payload.tokenConfigured).toBe(true);
     expect(payload.supportManifestPresent).toBe(true);
     expect(payload[`${legacyManifestField}Present`]).toBeUndefined();
@@ -425,13 +442,17 @@ describe("debug-server", () => {
     expect(payload.logSummary?.packageLogs?.fileCount).toBe(1);
     expect(payload.logSummary?.itemLogs?.fileCount).toBe(1);
     expect(payload.supportBundle?.estimatedBytes).toBeGreaterThan(0);
-    expect(payload.remoteUrlTemplates?.health).toContain("<SERVER_IP_OR_DNS>");
+    expect(JSON.stringify(payload.localUrls)).not.toContain(fixture.token);
+    expect(JSON.stringify(payload.remoteUrlTemplates)).not.toContain(fixture.token);
+    expect(JSON.stringify(payload.localUrls)).not.toContain("?token=");
+    expect(JSON.stringify(payload.remoteUrlTemplates)).not.toContain("?token=");
+    expect(payload.remoteUrlTemplates?.health).toContain("127.0.0.1");
     expect(Array.isArray(payload.notes)).toBe(true);
   });
 
   it("serves the self-check alias", async () => {
     const fixture = await createFixture();
-    const response = await fetch(`${fixture.baseUrl}/self-check?token=${fixture.token}`);
+    const response = await authedFetch(`${fixture.baseUrl}/self-check`, fixture.token);
     expect(response.ok).toBe(true);
     const payload = await response.json() as Record<string, any>;
     expect(Array.isArray(payload.warnings)).toBe(true);
@@ -441,7 +462,7 @@ describe("debug-server", () => {
 
   it("writes the client IP into the debug trace log", async () => {
     const fixture = await createFixture();
-    const response = await fetch(`${fixture.baseUrl}/health?token=${fixture.token}`, {
+    const response = await authedFetch(`${fixture.baseUrl}/health`, fixture.token, {
       headers: {
         "X-Forwarded-For": "203.0.113.46"
       }
@@ -458,13 +479,13 @@ describe("debug-server", () => {
   it("serves package details and package log by package query", async () => {
     const fixture = await createFixture();
 
-    const packagesResponse = await fetch(`${fixture.baseUrl}/packages?token=${fixture.token}&package=server&includeItems=1`);
+    const packagesResponse = await authedFetch(`${fixture.baseUrl}/packages?package=server&includeItems=1`, fixture.token);
     expect(packagesResponse.ok).toBe(true);
     const packagesPayload = await packagesResponse.json() as Record<string, any>;
     expect(packagesPayload.count).toBe(1);
     expect(packagesPayload.packages?.[0]?.items?.length).toBe(2);
 
-    const logResponse = await fetch(`${fixture.baseUrl}/logs/package?token=${fixture.token}&package=server-package&lines=20`);
+    const logResponse = await authedFetch(`${fixture.baseUrl}/logs/package?package=server-package&lines=20`, fixture.token);
     expect(logResponse.ok).toBe(true);
     const logPayload = await logResponse.json() as Record<string, any>;
     expect(logPayload.package?.name).toBe("server-package");
@@ -474,7 +495,7 @@ describe("debug-server", () => {
   it("serves item log by item query", async () => {
     const fixture = await createFixture();
 
-    const response = await fetch(`${fixture.baseUrl}/logs/item?token=${fixture.token}&item=episode.part2.rar&lines=20`);
+    const response = await authedFetch(`${fixture.baseUrl}/logs/item?item=episode.part2.rar&lines=20`, fixture.token);
     expect(response.ok).toBe(true);
     const payload = await response.json() as Record<string, any>;
     expect(payload.item?.id).toBe("item-2");
@@ -484,7 +505,7 @@ describe("debug-server", () => {
 
   it("serves host diagnostics separately", async () => {
     const fixture = await createFixture();
-    const response = await fetch(`${fixture.baseUrl}/host/diagnostics?token=${fixture.token}`);
+    const response = await authedFetch(`${fixture.baseUrl}/host/diagnostics`, fixture.token);
     expect(response.ok).toBe(true);
     const payload = await response.json() as Record<string, any>;
     expect(payload.platform).toBe("win32");
@@ -495,28 +516,30 @@ describe("debug-server", () => {
   it("serves audit log, settings, accounts, stats, and history", async () => {
     const fixture = await createFixture();
 
-    const auditResponse = await fetch(`${fixture.baseUrl}/logs/audit?token=${fixture.token}&lines=20`);
+    const auditResponse = await authedFetch(`${fixture.baseUrl}/logs/audit?lines=20`, fixture.token);
     expect(auditResponse.ok).toBe(true);
     const auditPayload = await auditResponse.json() as Record<string, any>;
     expect((auditPayload.lines || []).join("\n")).toContain("AUDIT-LINE");
 
-    const renameResponse = await fetch(`${fixture.baseUrl}/logs/rename?token=${fixture.token}&lines=20`);
+    const renameResponse = await authedFetch(`${fixture.baseUrl}/logs/rename?lines=20`, fixture.token);
     expect(renameResponse.ok).toBe(true);
     const renamePayload = await renameResponse.json() as Record<string, any>;
     expect((renamePayload.lines || []).join("\n")).toContain("RENAME-LINE");
 
-    const traceResponse = await fetch(`${fixture.baseUrl}/logs/trace?token=${fixture.token}&lines=50`);
+    const traceResponse = await authedFetch(`${fixture.baseUrl}/logs/trace?lines=50`, fixture.token);
     expect(traceResponse.ok).toBe(true);
     const tracePayload = await traceResponse.json() as Record<string, any>;
     expect((tracePayload.lines || []).join("\n")).toContain("TRACE-EVENT");
     expect((tracePayload.lines || []).join("\n")).toContain("TRACE-MAIN-LINE");
 
-    const traceConfigResponse = await fetch(`${fixture.baseUrl}/trace/config?token=${fixture.token}&enable=0&note=test`);
+    const traceConfigGetResponse = await authedFetch(`${fixture.baseUrl}/trace/config?enable=0&note=test`, fixture.token);
+    expect(traceConfigGetResponse.status).toBe(405);
+    const traceConfigResponse = await authedFetch(`${fixture.baseUrl}/trace/config?enable=0&note=test`, fixture.token, { method: "POST" });
     expect(traceConfigResponse.ok).toBe(true);
     const traceConfigPayload = await traceConfigResponse.json() as Record<string, any>;
     expect(traceConfigPayload.config?.enabled).toBe(false);
 
-    const settingsResponse = await fetch(`${fixture.baseUrl}/settings?token=${fixture.token}`);
+    const settingsResponse = await authedFetch(`${fixture.baseUrl}/settings`, fixture.token);
     expect(settingsResponse.ok).toBe(true);
     const settingsPayload = await settingsResponse.json() as Record<string, any>;
     expect(settingsPayload.accounts?.realDebrid?.configured).toBe(true);
@@ -525,19 +548,19 @@ describe("debug-server", () => {
     expect(JSON.stringify(settingsPayload)).not.toContain("key-a");
     expect(JSON.stringify(settingsPayload)).not.toContain("key-b");
 
-    const accountsResponse = await fetch(`${fixture.baseUrl}/accounts?token=${fixture.token}`);
+    const accountsResponse = await authedFetch(`${fixture.baseUrl}/accounts`, fixture.token);
     expect(accountsResponse.ok).toBe(true);
     const accountsPayload = await accountsResponse.json() as Record<string, any>;
     expect(accountsPayload.debridLink?.keyCount).toBe(2);
     expect(accountsPayload.debridLink?.disabledKeyCount).toBe(1);
 
-    const statsResponse = await fetch(`${fixture.baseUrl}/stats?token=${fixture.token}`);
+    const statsResponse = await authedFetch(`${fixture.baseUrl}/stats`, fixture.token);
     expect(statsResponse.ok).toBe(true);
     const statsPayload = await statsResponse.json() as Record<string, any>;
     expect(statsPayload.session?.totalDownloaded).toBeGreaterThan(0);
     expect(statsPayload.allTime?.totalDownloadedAllTime).toBeGreaterThan(0);
 
-    const historyResponse = await fetch(`${fixture.baseUrl}/history?token=${fixture.token}&limit=10`);
+    const historyResponse = await authedFetch(`${fixture.baseUrl}/history?limit=10`, fixture.token);
     expect(historyResponse.ok).toBe(true);
     const historyPayload = await historyResponse.json() as Record<string, any>;
     expect(historyPayload.total).toBe(1);
@@ -548,9 +571,11 @@ describe("debug-server", () => {
   it("downloads a support bundle zip", async () => {
     const fixture = await createFixture();
     fs.writeFileSync(path.join(fixture.baseDir, legacyManifestFile), JSON.stringify({ purpose: "legacy" }), "utf8");
-    const response = await fetch(`${fixture.baseUrl}/support/bundle?token=${fixture.token}`);
+    const response = await authedFetch(`${fixture.baseUrl}/support/bundle`, fixture.token);
     expect(response.ok).toBe(true);
     expect(response.headers.get("content-type")).toContain("application/zip");
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(response.headers.get("access-control-allow-origin")).toBeNull();
 
     const buffer = Buffer.from(await response.arrayBuffer());
     const zip = new AdmZip(buffer);
@@ -574,5 +599,45 @@ describe("debug-server", () => {
     const fixture = await createFixture();
     const response = await fetch(`${fixture.baseUrl}/status`);
     expect(response.status).toBe(401);
+    expect(response.headers.get("www-authenticate")).toContain("Bearer");
+  });
+
+  it("accepts bearer auth and rejects query tokens", async () => {
+    const fixture = await createFixture();
+    const bearer = await authedFetch(`${fixture.baseUrl}/health`, fixture.token);
+    expect(bearer.status).toBe(200);
+
+    const queryOnly = await fetch(`${fixture.baseUrl}/health?token=${fixture.token}`);
+    expect(queryOnly.status).toBe(400);
+    const queryOnlyPayload = await queryOnly.json() as Record<string, any>;
+    expect(queryOnlyPayload.code).toBe("query_token_rejected");
+
+    const mixed = await authedFetch(`${fixture.baseUrl}/health?token=bad-fixture-token`, fixture.token);
+    expect(mixed.status).toBe(400);
+  });
+
+  it("rejects unsupported methods with a controlled method response", async () => {
+    const fixture = await createFixture();
+    const response = await authedFetch(`${fixture.baseUrl}/status`, fixture.token, { method: "PUT" });
+    expect(response.status).toBe(405);
+    expect(response.headers.get("allow")).toContain("GET");
+    const payload = await response.json() as Record<string, any>;
+    expect(payload.code).toBe("method_not_allowed");
+  });
+
+  it("limits repeated loopback requests with a controlled response", async () => {
+    const fixture = await createFixture();
+    let limited: Response | null = null;
+    for (let i = 0; i < 130; i += 1) {
+      const response = await authedFetch(`${fixture.baseUrl}/health`, fixture.token);
+      if (response.status === 429) {
+        limited = response;
+        break;
+      }
+    }
+    expect(limited).not.toBeNull();
+    expect(limited!.headers.get("retry-after")).toBeTruthy();
+    const payload = await limited!.json() as Record<string, any>;
+    expect(payload.code).toBe("rate_limited");
   });
 });

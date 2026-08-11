@@ -45,11 +45,11 @@ async function getFreePort(): Promise<number> {
   return address.port;
 }
 
-async function waitForReady(url: string): Promise<void> {
+async function waitForReady(url: string, token = "rt-secret"): Promise<void> {
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { headers: bearerHeaders(token) });
       if (res.ok) {
         return;
       }
@@ -58,6 +58,10 @@ async function waitForReady(url: string): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 40));
   }
   throw new Error(`debug server not ready: ${url}`);
+}
+
+function bearerHeaders(token = "rt-secret"): HeadersInit {
+  return { Authorization: `Bearer ${token}` };
 }
 
 afterEach(() => {
@@ -75,7 +79,7 @@ afterEach(() => {
 });
 
 describe("backup remoteDiagnostics export gating", () => {
-  it("includes remoteDiagnostics when backupIncludeRemoteDiagnostics is on", () => {
+  it("includes only sanitized remoteDiagnostics when backupIncludeRemoteDiagnostics is on", () => {
     const settings = {
       ...defaultSettings(),
       backupIncludeRemoteDiagnostics: true
@@ -89,14 +93,15 @@ describe("backup remoteDiagnostics export gating", () => {
       remoteDiagnostics: {
         allowlist: ["192.0.2.0/24"],
         port: 8976,
-        hostMode: "network"
-      }
+        hostMode: "network",
+        token: "legacy-backup-token",
+        publicHost: "legacy.example.test",
+        endpoint: "http://legacy.example.test:8976"
+      } as unknown as BackupRemoteDiagnostics
     });
 
     expect(payload.remoteDiagnostics).toEqual({
-      allowlist: ["192.0.2.0/24"],
-      port: 8976,
-      hostMode: "network"
+      allowlist: ["192.0.2.0/24"]
     });
   });
 
@@ -110,13 +115,16 @@ describe("backup remoteDiagnostics export gating", () => {
     expect(payload.remoteDiagnostics).toBeUndefined();
   });
 
-  it("the remoteDiagnostics section carries ONLY allowlist/port/hostMode (no token, publicHost, name)", () => {
+  it("the remoteDiagnostics section carries ONLY allowlist", () => {
     const payload = buildBackupPayload(input({ backupIncludeRemoteDiagnostics: true }, { allowlist: ["10.0.0.5"], port: 9868, hostMode: "network" }));
-    expect(payload.remoteDiagnostics && Object.keys(payload.remoteDiagnostics).sort()).toEqual(["allowlist", "hostMode", "port"]);
+    expect(payload.remoteDiagnostics && Object.keys(payload.remoteDiagnostics).sort()).toEqual(["allowlist"]);
     const sectionJson = JSON.stringify(payload.remoteDiagnostics);
     expect(sectionJson.toLowerCase()).not.toContain("token");
     expect(sectionJson).not.toContain("publicHost");
     expect(sectionJson.toLowerCase()).not.toContain("\"name\"");
+    expect(sectionJson.toLowerCase()).not.toContain("endpoint");
+    expect(sectionJson.toLowerCase()).not.toContain("hostmode");
+    expect(sectionJson.toLowerCase()).not.toContain("port");
   });
 });
 
@@ -129,23 +137,36 @@ describe("backupIncludeRemoteDiagnostics settings persistence", () => {
 });
 
 describe("resolveRemoteDiagnosticsRestore", () => {
-  it("maps network + non-empty allowlist to 0.0.0.0", () => {
+  it("scrubs network restores to loopback and keeps only allowlist", () => {
     expect(resolveRemoteDiagnosticsRestore({ allowlist: ["10.0.0.5"], port: 9868, hostMode: "network" }))
-      .toEqual({ host: "0.0.0.0", port: 9868, allowlist: ["10.0.0.5"] });
+      .toEqual({ host: "127.0.0.1", allowlist: ["10.0.0.5"] });
   });
 
-  it("SAFETY: network with EMPTY allowlist binds local, never 0.0.0.0", () => {
-    expect(resolveRemoteDiagnosticsRestore({ allowlist: [], port: 9868, hostMode: "network" })?.host).toBe("127.0.0.1");
+  it("scrubs legacy token and endpoint fields during restore planning", () => {
+    const restore = resolveRemoteDiagnosticsRestore({
+      allowlist: ["198.51.100.8"],
+      port: 9999,
+      hostMode: "network",
+      token: "legacy-backup-token",
+      publicHost: "legacy.example.test",
+      endpoint: "http://legacy.example.test:9999"
+    });
+    expect(restore).toEqual({ host: "127.0.0.1", allowlist: ["198.51.100.8"] });
+    expect(JSON.stringify(restore).toLowerCase()).not.toContain("token");
+    expect(JSON.stringify(restore).toLowerCase()).not.toContain("endpoint");
+    expect(JSON.stringify(restore).toLowerCase()).not.toContain("publichost");
+    expect(JSON.stringify(restore).toLowerCase()).not.toContain("9999");
   });
 
   it("maps local to 127.0.0.1", () => {
-    expect(resolveRemoteDiagnosticsRestore({ allowlist: ["10.0.0.5"], port: 9868, hostMode: "local" })?.host).toBe("127.0.0.1");
+    expect(resolveRemoteDiagnosticsRestore({ allowlist: ["10.0.0.5"], port: 9868, hostMode: "local" }))
+      .toEqual({ host: "127.0.0.1", allowlist: ["10.0.0.5"] });
   });
 
-  it("rejects an out-of-range or non-integer port", () => {
-    expect(resolveRemoteDiagnosticsRestore({ allowlist: ["10.0.0.5"], port: 80, hostMode: "network" })?.port).toBeUndefined();
-    expect(resolveRemoteDiagnosticsRestore({ allowlist: ["10.0.0.5"], port: 70000, hostMode: "network" })?.port).toBeUndefined();
-    expect(resolveRemoteDiagnosticsRestore({ allowlist: ["10.0.0.5"], port: 9868.5, hostMode: "network" })?.port).toBeUndefined();
+  it("does not restore any port values", () => {
+    expect(resolveRemoteDiagnosticsRestore({ allowlist: ["10.0.0.5"], port: 80, hostMode: "network" })).toEqual({ host: "127.0.0.1", allowlist: ["10.0.0.5"] });
+    expect(resolveRemoteDiagnosticsRestore({ allowlist: ["10.0.0.5"], port: 70000, hostMode: "network" })).toEqual({ host: "127.0.0.1", allowlist: ["10.0.0.5"] });
+    expect(resolveRemoteDiagnosticsRestore({ allowlist: ["10.0.0.5"], port: 9868.5, hostMode: "network" })).toEqual({ host: "127.0.0.1", allowlist: ["10.0.0.5"] });
   });
 
   it("filters non-string and blank allowlist entries and trims", () => {
@@ -153,11 +174,14 @@ describe("resolveRemoteDiagnosticsRestore", () => {
     expect(r?.allowlist).toEqual(["10.0.0.5", "8.8.8.8"]);
   });
 
-  it("returns null for missing or empty/invalid sections", () => {
+  it("returns null for missing sections", () => {
     expect(resolveRemoteDiagnosticsRestore(undefined)).toBeNull();
     expect(resolveRemoteDiagnosticsRestore(null)).toBeNull();
     expect(resolveRemoteDiagnosticsRestore("x")).toBeNull();
-    expect(resolveRemoteDiagnosticsRestore({})).toBeNull();
+  });
+
+  it("migrates empty legacy sections to loopback", () => {
+    expect(resolveRemoteDiagnosticsRestore({})).toEqual({ host: "127.0.0.1", allowlist: [] });
   });
 });
 
@@ -172,7 +196,7 @@ describe("backup remoteDiagnostics live restore round-trip", () => {
     fs.writeFileSync(path.join(baseDir, "debug_host.txt"), "127.0.0.1", "utf8");
     fs.writeFileSync(path.join(baseDir, "debug_allowlist.txt"), "", "utf8");
     startDebugServer({} as unknown as DownloadManager, baseDir);
-    await waitForReady(`http://127.0.0.1:${startPort}/health?token=rt-secret`);
+    await waitForReady(`http://127.0.0.1:${startPort}/health`);
     expect(getDebugAllowlist()).toEqual([]);
 
     const payload = buildBackupPayload(input(
@@ -186,17 +210,17 @@ describe("backup remoteDiagnostics live restore round-trip", () => {
     const status = await restartDebugServer();
 
     expect(getDebugAllowlist()).toEqual(["203.0.113.4", "10.0.0.0/24"]);
-    expect(status.port).toBe(restorePort);
-    expect(status.host).toBe("0.0.0.0");
+    expect(status.port).toBe(startPort);
+    expect(status.host).toBe("127.0.0.1");
     expect(status.allowlistCount).toBe(2);
 
     expect(fs.readFileSync(path.join(baseDir, "debug_token.txt"), "utf8").trim()).toBe("rt-secret");
     expect(fs.existsSync(path.join(baseDir, "debug_remote.json"))).toBe(false);
 
-    await waitForReady(`http://127.0.0.1:${restorePort}/health?token=rt-secret`);
+    await waitForReady(`http://127.0.0.1:${startPort}/health`);
   });
 
-  it("full-backup path writes the debug_* files to disk without a restart (boot picks them up)", async () => {
+  it("full-backup path writes only safe debug files to disk without a restart", async () => {
     const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-backup-remote2-"));
     tempDirs.push(baseDir);
     const startPort = await getFreePort();
@@ -205,13 +229,13 @@ describe("backup remoteDiagnostics live restore round-trip", () => {
     fs.writeFileSync(path.join(baseDir, "debug_host.txt"), "127.0.0.1", "utf8");
     fs.writeFileSync(path.join(baseDir, "debug_allowlist.txt"), "", "utf8");
     startDebugServer({} as unknown as DownloadManager, baseDir);
-    await waitForReady(`http://127.0.0.1:${startPort}/health?token=rt2`);
+    await waitForReady(`http://127.0.0.1:${startPort}/health`, "rt2");
 
     const restore = resolveRemoteDiagnosticsRestore({ allowlist: ["198.51.100.9"], port: 9100, hostMode: "network" });
     writeDebugServerConfig({ host: restore!.host, port: restore!.port, allowlist: restore!.allowlist });
 
-    expect(fs.readFileSync(path.join(baseDir, "debug_host.txt"), "utf8").trim()).toBe("0.0.0.0");
-    expect(fs.readFileSync(path.join(baseDir, "debug_port.txt"), "utf8").trim()).toBe("9100");
+    expect(fs.readFileSync(path.join(baseDir, "debug_host.txt"), "utf8").trim()).toBe("127.0.0.1");
+    expect(fs.readFileSync(path.join(baseDir, "debug_port.txt"), "utf8").trim()).toBe(String(startPort));
     expect(fs.readFileSync(path.join(baseDir, "debug_allowlist.txt"), "utf8")).toContain("198.51.100.9");
     expect(getDebugServerRuntimeStatus().port).toBe(startPort);
   });
@@ -227,9 +251,9 @@ describe("debug-server live diagnostics endpoints", () => {
     fs.writeFileSync(path.join(baseDir, "debug_host.txt"), "127.0.0.1", "utf8");
     fs.writeFileSync(path.join(baseDir, "debug_allowlist.txt"), "", "utf8");
     startDebugServer({} as unknown as DownloadManager, baseDir);
-    await waitForReady(`http://127.0.0.1:${port}/health?token=prov-secret`);
+    await waitForReady(`http://127.0.0.1:${port}/health`, "prov-secret");
 
-    const provRes = await fetch(`http://127.0.0.1:${port}/providers?token=prov-secret`);
+    const provRes = await fetch(`http://127.0.0.1:${port}/providers`, { headers: bearerHeaders("prov-secret") });
     expect(provRes.status).toBe(200);
     const prov = await provRes.json();
     expect(typeof prov.capturedAtMs).toBe("number");
@@ -242,7 +266,7 @@ describe("debug-server live diagnostics endpoints", () => {
     const unauth = await fetch(`http://127.0.0.1:${port}/providers`);
     expect(unauth.status).toBe(401);
 
-    const convRes = await fetch(`http://127.0.0.1:${port}/logs/conversion?token=prov-secret`);
+    const convRes = await fetch(`http://127.0.0.1:${port}/logs/conversion`, { headers: bearerHeaders("prov-secret") });
     expect(convRes.status).toBe(200);
     const conv = await convRes.json();
     expect(Array.isArray(conv.lines)).toBe(true);

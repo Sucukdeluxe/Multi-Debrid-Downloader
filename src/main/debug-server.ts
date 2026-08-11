@@ -25,9 +25,11 @@ const DEFAULT_PORT = 9868;
 const DEFAULT_HOST = "127.0.0.1";
 const MAX_LOG_LINES = 10000;
 const SUPPORT_MANIFEST_FILE = "debug_support_manifest.json";
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX_REQUESTS = 120;
 
 type DebugEndpointDescriptor = {
-  method: "GET";
+  method: "GET" | "POST";
   path: string;
   queryExample?: string;
   description: string;
@@ -49,7 +51,8 @@ const DEBUG_ENDPOINTS: DebugEndpointDescriptor[] = [
   { method: "GET", path: "/logs/package", queryExample: "package=Release&lines=100&grep=keyword", description: "Reads the package log for a specific package name or id." },
   { method: "GET", path: "/logs/item", queryExample: "item=episode.part2.rar&lines=100&grep=keyword", description: "Reads the item log for a specific file name or item id." },
   { method: "GET", path: "/errors", queryExample: "level=ERROR&limit=100", description: "Returns the in-memory ring of the most recent WARN/ERROR log lines." },
-  { method: "GET", path: "/trace/config", queryExample: "enable=1&note=support&durationMinutes=120", description: "Reads or updates the support trace configuration." },
+  { method: "GET", path: "/trace/config", description: "Reads the support trace configuration." },
+  { method: "POST", path: "/trace/config", queryExample: "enable=1&note=support&durationMinutes=120", description: "Updates the support trace configuration." },
   { method: "GET", path: "/settings", description: "Returns a redacted settings snapshot without raw secrets." },
   { method: "GET", path: "/accounts", description: "Returns a redacted account/provider configuration summary." },
   { method: "GET", path: "/providers", description: "Live provider runtime state: per-account/key cooldowns (until/remaining/reason/category), in-flight depth, Mega rotation cursor, empty-response streaks. The 'why is it cooling down right now' view." },
@@ -70,6 +73,7 @@ let bindHost = DEFAULT_HOST;
 let bindPort = DEFAULT_PORT;
 let runtimeBaseDir = "";
 let allowlist: string[] = [];
+let requestLimits = new Map<string, { startedAt: number; count: number }>();
 
 export interface DebugServerRuntimeStatus {
   running: boolean;
@@ -245,20 +249,33 @@ function checkAuth(req: http.IncomingMessage): boolean {
   if (!authToken) {
     return false;
   }
-  const header = req.headers.authorization || "";
-  if (header === `Bearer ${authToken}`) {
-    return true;
+  const header = typeof req.headers.authorization === "string" ? req.headers.authorization : "";
+  const match = /^Bearer\s+(.+)$/i.exec(header);
+  if (!match) {
+    return false;
   }
-  const url = new URL(req.url || "/", "http://localhost");
-  return url.searchParams.get("token") === authToken;
+  const supplied = Buffer.from(match[1] || "", "utf8");
+  const expected = Buffer.from(authToken, "utf8");
+  if (supplied.length !== expected.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(supplied, expected);
 }
 
-function jsonResponse(res: http.ServerResponse, status: number, data: unknown): void {
+function noStoreHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  return {
+    "Cache-Control": "no-store",
+    "Pragma": "no-cache",
+    "Expires": "0",
+    ...extra
+  };
+}
+
+function jsonResponse(res: http.ServerResponse, status: number, data: unknown, headers: Record<string, string> = {}): void {
   const body = JSON.stringify(data, null, 2);
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
-    "Access-Control-Allow-Origin": "*",
-    "Cache-Control": "no-cache"
+    ...noStoreHeaders(headers)
   });
   res.end(body);
 }
@@ -273,11 +290,33 @@ function binaryResponse(
   res.writeHead(status, {
     "Content-Type": contentType,
     "Content-Length": String(body.length),
-    "Access-Control-Allow-Origin": "*",
-    "Cache-Control": "no-cache",
+    ...noStoreHeaders(),
     ...(fileName ? { "Content-Disposition": `attachment; filename="${fileName}"` } : {})
   });
   res.end(body);
+}
+
+function rateLimitKey(clientIp: string): string {
+  const normalized = normalizeIp(clientIp);
+  return isLoopbackIp(normalized) || normalized === "" ? "loopback" : normalized;
+}
+
+function checkRateLimit(clientIp: string): { allowed: boolean; retryAfterSeconds: number } {
+  const now = Date.now();
+  const key = rateLimitKey(clientIp);
+  const current = requestLimits.get(key);
+  if (!current || now - current.startedAt >= RATE_LIMIT_WINDOW_MS) {
+    requestLimits.set(key, { startedAt: now, count: 1 });
+    return { allowed: true, retryAfterSeconds: 0 };
+  }
+  current.count += 1;
+  if (current.count <= RATE_LIMIT_MAX_REQUESTS) {
+    return { allowed: true, retryAfterSeconds: 0 };
+  }
+  return {
+    allowed: false,
+    retryAfterSeconds: Math.max(1, Math.ceil((RATE_LIMIT_WINDOW_MS - (now - current.startedAt)) / 1000))
+  };
 }
 
 function normalizeLinesParam(rawValue: string | null, fallback: number): number {
@@ -352,8 +391,7 @@ function buildSupportManifest(baseDir: string): Record<string, unknown> {
     auth: {
       required: true,
       methods: [
-        "Authorization: Bearer <token>",
-        "?token=<token>"
+        "Authorization: Bearer <token>"
       ],
       tokenFile: path.join(baseDir, "debug_token.txt")
     },
@@ -378,15 +416,14 @@ function buildSupportManifest(baseDir: string): Record<string, unknown> {
       host: bindHost,
       port: bindPort,
       localBaseUrl: `http://127.0.0.1:${bindPort}`,
-      remoteBaseUrlTemplate: `http://<SERVER_IP_OR_DNS>:${bindPort}`
+      remoteBridgeBaseUrlTemplate: `http://127.0.0.1:${bindPort}`
     },
     setupCheckEndpoint: "/debug/setup",
     selfCheckEndpoint: "/self-check",
     remoteAccessRequirements: [
-      "A reachable server IP or DNS name.",
-      "The configured diagnostics port.",
-      "The token stored in debug_token.txt.",
-      "A network route and firewall rule that permit access to the configured port."
+      "Use a trusted local bridge or tunnel to forward support traffic to the loopback diagnostics port.",
+      "Send Authorization: Bearer with the token stored in debug_token.txt.",
+      "Do not expose the diagnostics port directly on LAN or WAN."
     ],
     endpoints: DEBUG_ENDPOINTS.map((endpoint) => ({
       ...endpoint,
@@ -530,25 +567,46 @@ function buildStatusPayload(snapshot: UiSnapshot): Record<string, unknown> {
   };
 }
 
+function hasTraceMutationParams(url: URL): boolean {
+  return ["enable", "includeMainLog", "includeAudit", "logDebugRequests", "note", "durationMinutes"]
+    .some((key) => url.searchParams.has(key));
+}
+
+function allowedMethods(pathname: string, url: URL): string[] {
+  if (pathname === "/trace/config") {
+    return hasTraceMutationParams(url) ? ["POST"] : ["GET", "POST"];
+  }
+  return ["GET"];
+}
+
+function rejectMethod(res: http.ServerResponse, methods: string[]): void {
+  jsonResponse(res, 405, {
+    error: "Method Not Allowed",
+    code: "method_not_allowed",
+    allowedMethods: methods
+  }, {
+    "Allow": methods.join(", ")
+  });
+}
+
 function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
   const url = new URL(req.url || "/", "http://localhost");
   const pathname = url.pathname;
+  const method = (req.method || "GET").toUpperCase();
   const traceConfig = getTraceConfig();
   if (traceConfig.enabled && traceConfig.logDebugRequests) {
     logTraceEvent("INFO", "debug-http", "Request", {
-      method: req.method || "GET",
+      method,
       url: sanitizeRequestUrlForTrace(req.url || "/"),
       clientIp: extractDebugClientIp(req)
     });
   }
 
-  if (req.method === "OPTIONS") {
-    res.writeHead(204, {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Headers": "Authorization",
-      "Access-Control-Allow-Methods": "GET,OPTIONS"
+  if (url.searchParams.has("token")) {
+    jsonResponse(res, 400, {
+      error: "Bad Request",
+      code: "query_token_rejected"
     });
-    res.end();
     return;
   }
 
@@ -565,15 +623,35 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     return;
   }
 
+  const limit = checkRateLimit(peerIp);
+  if (!limit.allowed) {
+    jsonResponse(res, 429, {
+      error: "Too Many Requests",
+      code: "rate_limited",
+      retryAfterSeconds: limit.retryAfterSeconds
+    }, {
+      "Retry-After": String(limit.retryAfterSeconds)
+    });
+    return;
+  }
+
   if (!checkAuth(req)) {
     if (traceConfig.enabled && traceConfig.logDebugRequests) {
       logTraceEvent("WARN", "debug-http", "Unauthorized request", {
-        method: req.method || "GET",
+        method,
         url: sanitizeRequestUrlForTrace(req.url || "/"),
         clientIp: extractDebugClientIp(req)
       });
     }
-    jsonResponse(res, 401, { error: "Unauthorized" });
+    jsonResponse(res, 401, { error: "Unauthorized", code: "unauthorized" }, {
+      "WWW-Authenticate": "Bearer"
+    });
+    return;
+  }
+
+  const methods = allowedMethods(pathname, url);
+  if (!methods.includes(method)) {
+    rejectMethod(res, methods);
     return;
   }
 
@@ -720,6 +798,14 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
   }
 
   if (pathname === "/trace/config") {
+    if (method === "GET") {
+      jsonResponse(res, 200, {
+        path: getTraceConfigPath(),
+        logPath: getTraceLogPath(),
+        config: getTraceConfig()
+      });
+      return;
+    }
     const patch: Record<string, unknown> = {};
     const enabled = toBooleanQuery(url.searchParams.get("enable"));
     const includeMainLog = toBooleanQuery(url.searchParams.get("includeMainLog"));
@@ -1057,6 +1143,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
 
 function openServerSocket(): Promise<void> {
   return new Promise((resolve) => {
+    requestLimits = new Map();
     authToken = loadToken(runtimeBaseDir);
     bindPort = getPort(runtimeBaseDir);
     bindHost = getHost(runtimeBaseDir);
@@ -1176,6 +1263,7 @@ export function stopDebugServer(): void {
     } catch {
     }
     server = null;
+    requestLimits = new Map();
     logger.info("Debug-Server gestoppt");
   }
 }

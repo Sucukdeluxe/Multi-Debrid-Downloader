@@ -3,9 +3,9 @@ import type { AppSettings, SessionState, HistoryEntry } from "../shared/types";
 export type BackupKind = "full" | "settings-only";
 
 export interface BackupRemoteDiagnostics {
-  allowlist: string[];
-  port: number;
-  hostMode: "local" | "network";
+  allowlist?: string[];
+  port?: number;
+  hostMode?: "local" | "network";
 }
 
 export interface BackupPayload {
@@ -49,36 +49,38 @@ export function buildBackupPayload(input: BuildBackupInput): BackupPayload {
     base.history = input.history;
   }
   if (Boolean(input.settings.backupIncludeRemoteDiagnostics) && input.remoteDiagnostics) {
-    base.remoteDiagnostics = input.remoteDiagnostics;
+    base.remoteDiagnostics = sanitizeBackupRemoteDiagnostics(input.remoteDiagnostics);
   }
   return base;
 }
 
 export interface RemoteDiagnosticsRestore {
-  host?: "127.0.0.1" | "0.0.0.0";
+  host?: "127.0.0.1";
   port?: number;
   allowlist?: string[];
+}
+
+function sanitizeAllowlist(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0).map((entry) => entry.trim())
+    : [];
+}
+
+function sanitizeBackupRemoteDiagnostics(section: BackupRemoteDiagnostics): BackupRemoteDiagnostics {
+  return {
+    allowlist: sanitizeAllowlist(section.allowlist)
+  };
 }
 
 export function resolveRemoteDiagnosticsRestore(section: unknown): RemoteDiagnosticsRestore | null {
   if (!section || typeof section !== "object") {
     return null;
   }
-  const s = section as { allowlist?: unknown; port?: unknown; hostMode?: unknown };
-  const allowlist = Array.isArray(s.allowlist)
-    ? s.allowlist.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0).map((entry) => entry.trim())
-    : undefined;
-  const port = (typeof s.port === "number" && Number.isInteger(s.port) && s.port >= 1024 && s.port <= 65535) ? s.port : undefined;
-  let host: "127.0.0.1" | "0.0.0.0" | undefined;
-  if (s.hostMode === "network") {
-    host = allowlist && allowlist.length > 0 ? "0.0.0.0" : "127.0.0.1";
-  } else if (s.hostMode === "local") {
-    host = "127.0.0.1";
-  }
-  if (host === undefined && port === undefined && allowlist === undefined) {
-    return null;
-  }
-  return { host, port, allowlist };
+  const s = section as { allowlist?: unknown };
+  return {
+    host: "127.0.0.1",
+    allowlist: sanitizeAllowlist(s.allowlist)
+  };
 }
 
 export interface ImportPlan {
