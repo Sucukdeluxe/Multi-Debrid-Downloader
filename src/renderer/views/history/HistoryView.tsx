@@ -97,6 +97,7 @@ export function HistoryToolbar({ model, actions }: HistoryViewProps): ReactEleme
         <button className="history-action" disabled={selectedIds.length !== 1} onClick={() => actions.onReveal(selectedIds[0])} type="button">Im Ordner zeigen</button>
         <button className="history-action history-action-danger" disabled={selectedIds.length === 0} onClick={() => actions.onRemove(selectedIds)} type="button">Entfernen</button>
         <button className="history-action" disabled={selectedIds.length === 0} onClick={actions.onClearSelection} type="button">Auswahl löschen</button>
+        <button className="history-action history-action-danger" disabled={model.totalCount === 0 || model.loading} onClick={actions.onClearHistory} type="button">Gesamtverlauf löschen</button>
       </ToolbarGroup>
       <ToolbarSearch
         label="Verlauf durchsuchen"

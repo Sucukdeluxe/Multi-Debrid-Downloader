@@ -2,6 +2,19 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.22] - 2026-08-11
+
+### History management
+
+- Added a permanently visible destructive toolbar action for clearing the complete download history without selecting individual entries.
+- Kept full-history deletion behind the existing confirmation dialog and disabled the action while history is empty or loading.
+- Added complete English localization for the new history action.
+
+### Reliability and testing
+
+- Added regression coverage for full-history action visibility, danger styling, loading state, empty state, and dispatch behavior.
+- Verified the updated History toolbar at 1920 and 1120 pixel window widths without horizontal overflow.
+
 ## [2.0.21] - 2026-08-11
 
 ### Responsive interface

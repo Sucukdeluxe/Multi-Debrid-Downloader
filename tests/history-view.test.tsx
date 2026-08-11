@@ -513,6 +513,25 @@ describe("HistoryView", () => {
     ]);
   });
 
+  it("keeps the full-history delete action visible without a selection and disables it only for unavailable history", () => {
+    const calls: string[] = [];
+    const populated = buildHistoryViewModel(entries, "all", "", [], [], false, "", now);
+    const empty = buildHistoryViewModel([], "all", "", [], [], false, "", now);
+    const loading = buildHistoryViewModel(entries, "all", "", [], [], true, "", now);
+    const actions = createActions({ onClearHistory: () => calls.push("clear-history") });
+
+    const populatedButton = findButton(HistoryToolbar({ actions, model: populated }), "Gesamtverlauf löschen");
+    const emptyButton = findButton(HistoryToolbar({ actions, model: empty }), "Gesamtverlauf löschen");
+    const loadingButton = findButton(HistoryToolbar({ actions, model: loading }), "Gesamtverlauf löschen");
+
+    expect(populatedButton.props.className).toContain("history-action-danger");
+    expect(populatedButton.props.disabled).toBe(false);
+    expect(emptyButton.props.disabled).toBe(true);
+    expect(loadingButton.props.disabled).toBe(true);
+    populatedButton.props.onClick();
+    expect(calls).toEqual(["clear-history"]);
+  });
+
   it("renders expanded paths and URLs as copyable details without changing the 48px main-row contract", () => {
     const html = renderToStaticMarkup(
       <HistoryView

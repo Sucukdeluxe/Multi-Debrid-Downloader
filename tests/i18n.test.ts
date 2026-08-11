@@ -31,6 +31,7 @@ describe("renderer localization", () => {
       ["Gelöscht", "Deleted"],
       ["Fehlgeschlagen", "Failed"],
       ["Verlauf leeren", "Clear history"],
+      ["Gesamtverlauf löschen", "Delete all history"],
       ["Erneut hinzufügen", "Add again"],
       ["Im Ordner zeigen", "Show in folder"],
       ["Auswahl löschen", "Clear selection"],
