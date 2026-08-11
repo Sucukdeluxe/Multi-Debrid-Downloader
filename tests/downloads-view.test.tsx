@@ -957,11 +957,18 @@ describe("download table row contracts", () => {
     expect(html).toContain(`aria-label="${expectedStatus}"`);
     expect(html.match(new RegExp(`>${expectedStatus}</span>`, "g"))).toHaveLength(2);
     expect(html).not.toContain(">release.part1.rar</span>");
+    if (target === "item") expect(html).not.toMatch(/title="[^"]*release\.part1\.rar/);
   });
 
   it.each([
     ["Finalisieren (3/2) · release.part1.rar", "Finalisieren - 100%"],
     ["Finalizing (-1/2) · release.part1.rar", "Finalizing - 0%"],
+    ["Finalisieren (/2) · release.part1.rar", "Finalisieren"],
+    ["Finalizing (1/) · release.part1.rar", "Finalizing"],
+    ["Finalisieren (1/2/3) · release.part1.rar", "Finalisieren"],
+    ["Finalizing (not-a-number/2) · release.part1.rar", "Finalizing"],
+    ["Finalisieren (Infinity/2) · release.part1.rar", "Finalisieren"],
+    ["Finalizing (NaN/2) · release.part1.rar", "Finalizing"],
     ["Finalisieren (1/0) · release.part1.rar", "Finalisieren"],
     ["Finalizing (invalid/2) · release.part1.rar", "Finalizing"]
   ])("derives only finite finalization percentages", (rawStatus, expectedStatus) => {

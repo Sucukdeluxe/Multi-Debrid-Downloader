@@ -157,9 +157,10 @@ export function compactDownloadStatus(value: string): string {
   if (finalizing) {
     const fraction = status.match(/\(([^)]*)\)/);
     if (fraction) {
-      const [currentValue, totalValue] = fraction[1].split("/");
-      const current = Number(currentValue?.trim());
-      const total = Number(totalValue?.trim());
+      const values = fraction[1].split("/");
+      if (values.length !== 2 || values.some((value) => !value.trim())) return finalizing[1];
+      const current = Number(values[0]);
+      const total = Number(values[1]);
       if (Number.isFinite(current) && Number.isFinite(total) && total > 0) return `${finalizing[1]} - ${progress((current / total) * 100)}%`;
       return finalizing[1];
     }
@@ -184,8 +185,9 @@ function DownloadMeter({ value, text }: { value: number; text: string }): ReactE
 
 function DownloadStatusCell({ status, title }: { status: string; title?: string }): ReactElement {
   const visibleStatus = compactDownloadStatus(status);
+  const statusTitle = /^(Finalisieren|Finalizing)\b/i.test(status) ? visibleStatus : title || status;
   return (
-    <span aria-label={visibleStatus} className="downloads-cell downloads-status-cell" title={title || status}>
+    <span aria-label={visibleStatus} className="downloads-cell downloads-status-cell" title={statusTitle}>
       <span aria-hidden="true" className="downloads-status-full">{visibleStatus}</span>
       <span aria-hidden="true" className="downloads-status-compact">{visibleStatus}</span>
     </span>
