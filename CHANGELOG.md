@@ -2,6 +2,14 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.26] - 2026-08-12
+
+### Log storage
+
+- Added a configurable log location in AppData or in a dedicated Desktop folder.
+- Migrated recognised log files safely when changing location while keeping settings, credentials, and runtime data in AppData.
+- Preserved active trace settings during log migration and routed startup recovery diagnostics to the selected log location.
+
 ## [2.0.25] - 2026-08-12
 
 ### Credential and application security
