@@ -29,7 +29,7 @@ Windows 10 or Windows 11 is required. Release executables are currently unsigned
 
 ## Highlights
 
-- Dense package queue with expandable file rows, search, filters, bulk selection, Shift range selection, and keyboard clearing with Escape.
+- Virtualized package queue with expandable file rows, search, filters, bulk selection, Shift range selection, and keyboard clearing with Escape.
 - RapidGator availability and file-size discovery before a download starts.
 - Package totals calculated from known link sizes and updated while links are checked.
 - Multi-account provider routing with configurable priority, hoster overrides, traffic limits, and automatic fallback.

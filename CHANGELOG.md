@@ -2,6 +2,33 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.25] - 2026-08-12
+
+### Credential and application security
+
+- Encrypted persisted provider credentials with the operating system credential protection and migrated legacy plaintext values safely.
+- Removed provider secrets from renderer snapshots, account-check responses, settings backups, support diagnostics, and copied account details.
+- Added passphrase-protected local backup encryption while keeping legacy backup import available without writing the legacy format again.
+- Hardened Electron navigation, redirects, permissions, popup handling, remote-login windows, and IPC sender validation.
+- Restricted remote diagnostics to loopback by default, Bearer authentication, POST-only mutations, rate limiting, non-cacheable responses, and token-free support URLs.
+
+### Storage reliability
+
+- Added volume-aware capacity reservations before download writes, archive extraction, and media remux operations.
+- Accounted for concurrent reservations and a configurable safety margin so parallel work cannot overbook the same volume.
+- Parked capacity-blocked work without consuming regular retry attempts and exposed structured disk-wait state for automatic recovery.
+
+### Large queue performance
+
+- Virtualized package and file rows with fixed row heights and overscan to keep very large queues responsive.
+- Preserved logical range selection, select-all behavior, column dragging, context actions, expansion state, and inline renaming outside the rendered viewport.
+- Kept the existing scroll container and limited DOM work without adding another runtime dependency.
+
+### Status and reliability
+
+- Removed archive names from visible finalization progress in both German and English while retaining compact phase progress.
+- Added focused regression coverage for credential migration, backup encryption, Electron trust boundaries, diagnostics authentication, disk reservations, and virtualized download rows.
+
 ## [2.0.24] - 2026-08-11
 
 ### Download queue
