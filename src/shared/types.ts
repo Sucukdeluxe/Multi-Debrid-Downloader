@@ -31,6 +31,7 @@ export type AppLanguage = "en" | "de";
 export type PackagePriority = "high" | "normal" | "low";
 export type ExtractCpuPriority = "high" | "middle" | "low";
 export type HistoryRetentionMode = "never" | "session" | "permanent";
+export type LogStorageLocation = "appdata" | "desktop";
 
 export interface BandwidthScheduleEntry {
   id: string;
@@ -128,6 +129,7 @@ export interface AppSettings {
   clipboardWatch: boolean;
   minimizeToTray: boolean;
   theme: AppTheme;
+  logStorageLocation: LogStorageLocation;
   collapseNewPackages: boolean;
   historyRetentionMode: HistoryRetentionMode;
   historyMaxEntries: number;
@@ -246,6 +248,7 @@ export interface RendererSettings {
   clipboardWatch: boolean;
   minimizeToTray: boolean;
   theme: AppTheme;
+  logStorageLocation: LogStorageLocation;
   collapseNewPackages: boolean;
   historyRetentionMode: HistoryRetentionMode;
   historyMaxEntries: number;

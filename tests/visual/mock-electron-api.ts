@@ -182,6 +182,7 @@ export function createVisualElectronApi(
     importOnlineBackup: async () => ({ restored: true, relaunch: false, message: "Visual online backup importiert" }),
     exportSupportBundle: async () => ({ saved: true, filePath: "C:\\Visual\\Support\\support.zip" }),
     openLog: async () => {},
+    openLogDirectory: async () => {},
     openAuditLog: async () => {},
     openRenameLog: async () => {},
     openSessionLog: async () => {},

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { getDebridLinkApiKeyIds } from "../shared/debrid-link-keys";
 import { getMegaDebridAccountIds, mergeMegaDebridCredentialPools, parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
-import { AppSettings, AudioStripSummary, BandwidthScheduleEntry, DebridAccountStatus, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, HistoryEntry, HistoryRetentionMode, PackageEntry, PackagePriority, SessionState } from "../shared/types";
+import { AppSettings, AudioStripSummary, BandwidthScheduleEntry, DebridAccountStatus, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, HistoryEntry, HistoryRetentionMode, LogStorageLocation, PackageEntry, PackagePriority, SessionState } from "../shared/types";
 import { getProviderUsageDayKey } from "../shared/provider-daily-limits";
 import { defaultSettings } from "./constants";
 import { needsPersistedSettingsRewrite, protectPersistedSettings, restorePersistedSettings } from "./credential-protection";
@@ -19,6 +19,7 @@ const VALID_SPEED_MODES = new Set(["global", "per_download"]);
 const VALID_THEMES = new Set(["dark", "light"]);
 const VALID_EXTRACT_CPU_PRIORITIES = new Set(["high", "middle", "low"]);
 const VALID_HISTORY_RETENTION_MODES = new Set<HistoryRetentionMode>(["never", "session", "permanent"]);
+const VALID_LOG_STORAGE_LOCATIONS = new Set<LogStorageLocation>(["appdata", "desktop"]);
 const VALID_PACKAGE_PRIORITIES = new Set<string>(["high", "normal", "low"]);
 const VALID_DOWNLOAD_STATUSES = new Set<DownloadStatus>([
   "queued", "validating", "downloading", "paused", "reconnect_wait", "extracting", "integrity_check", "completed", "failed", "cancelled"
@@ -517,6 +518,9 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     updateRepo: migrateUpdateRepo(asText(settings.updateRepo), defaults.updateRepo),
     clipboardWatch: Boolean(settings.clipboardWatch),
     minimizeToTray: Boolean(settings.minimizeToTray),
+    logStorageLocation: VALID_LOG_STORAGE_LOCATIONS.has(settings.logStorageLocation)
+      ? settings.logStorageLocation
+      : defaults.logStorageLocation,
     collapseNewPackages: settings.collapseNewPackages !== undefined ? Boolean(settings.collapseNewPackages) : defaults.collapseNewPackages,
     historyRetentionMode: VALID_HISTORY_RETENTION_MODES.has(settings.historyRetentionMode)
       ? settings.historyRetentionMode

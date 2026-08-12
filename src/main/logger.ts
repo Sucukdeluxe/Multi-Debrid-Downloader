@@ -63,6 +63,14 @@ export function configureLogger(baseDir: string): void {
   fallbackLogFilePath = cwdLogPath === logFilePath ? null : cwdLogPath;
 }
 
+export function flushLoggerSync(): void {
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+  flushSyncPending();
+}
+
 function appendLine(filePath: string, line: string): { ok: boolean; errorText: string } {
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -101,10 +109,10 @@ function flushSyncPending(): void {
 
   rotateIfNeeded(logFilePath);
   const primary = appendLine(logFilePath, chunk);
-  if (fallbackLogFilePath) {
+  if (!primary.ok && fallbackLogFilePath) {
     rotateIfNeeded(fallbackLogFilePath);
     const fallback = appendLine(fallbackLogFilePath, chunk);
-    if (!primary.ok && !fallback.ok) {
+    if (!fallback.ok) {
       writeStderr(`LOGGER write failed (primary+fallback): ${primary.errorText} | ${fallback.errorText}\n`);
     }
     return;
@@ -197,11 +205,11 @@ async function flushAsync(): Promise<void> {
     await rotateIfNeededAsync(logFilePath);
     const primary = await appendChunk(logFilePath, chunk);
     let wroteAny = primary.ok;
-    if (fallbackLogFilePath) {
+    if (!primary.ok && fallbackLogFilePath) {
       await rotateIfNeededAsync(fallbackLogFilePath);
       const fallback = await appendChunk(fallbackLogFilePath, chunk);
-      wroteAny = wroteAny || fallback.ok;
-      if (!primary.ok && !fallback.ok) {
+      wroteAny = fallback.ok;
+      if (!fallback.ok) {
         writeStderr(`LOGGER write failed (primary+fallback): ${primary.errorText} | ${fallback.errorText}\n`);
       }
     } else if (!primary.ok) {

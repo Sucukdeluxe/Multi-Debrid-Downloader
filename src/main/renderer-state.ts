@@ -179,6 +179,7 @@ export function createRendererSettings(settings: AppSettings): RendererSettings 
     clipboardWatch: settings.clipboardWatch,
     minimizeToTray: settings.minimizeToTray,
     theme: settings.theme,
+    logStorageLocation: settings.logStorageLocation,
     collapseNewPackages: settings.collapseNewPackages,
     historyRetentionMode: settings.historyRetentionMode,
     historyMaxEntries: settings.historyMaxEntries,

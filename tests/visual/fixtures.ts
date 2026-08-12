@@ -115,6 +115,7 @@ function createSettings(): AppSettings {
     clipboardWatch: true,
     minimizeToTray: false,
     theme: "dark",
+    logStorageLocation: "appdata",
     collapseNewPackages: false,
     historyRetentionMode: "permanent",
     historyMaxEntries: 500,

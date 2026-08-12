@@ -103,6 +103,7 @@ export function defaultSettings(): AppSettings {
     clipboardWatch: false,
     minimizeToTray: false,
     theme: "dark" as const,
+    logStorageLocation: "appdata",
     collapseNewPackages: true,
     historyRetentionMode: "permanent",
     historyMaxEntries: 500,

@@ -4,7 +4,7 @@ import { logTimestamp } from "./log-timestamp";
 
 type DesktopRenameLevel = "INFO" | "WARN" | "ERROR";
 
-const FOLDER_NAME = "Downloader-Log";
+const LEGACY_FOLDER_NAME = "Downloader-Log";
 
 let logDir: string | null = null;
 let logFilePath: string | null = null;
@@ -58,15 +58,15 @@ function ensureWritable(): boolean {
   }
 }
 
-export function initDesktopRenameLog(desktopDir: string | null | undefined): void {
+function initializeRenameLog(directory: string | null | undefined): void {
   try {
-    const base = String(desktopDir || "").trim();
+    const base = String(directory || "").trim();
     if (!base) {
       logDir = null;
       logFilePath = null;
       return;
     }
-    logDir = path.join(base, FOLDER_NAME);
+    logDir = path.resolve(base);
     logFilePath = path.join(logDir, `rename-session_${fileTimestamp()}.txt`);
     sessionHeader = `=== Rename-Session gestartet: ${logTimestamp()} ===\n`
       + "Diese Datei protokolliert JEDEN Umbenenn-/Verschiebevorgang dieser Programm-Sitzung\n"
@@ -78,6 +78,15 @@ export function initDesktopRenameLog(desktopDir: string | null | undefined): voi
     logDir = null;
     logFilePath = null;
   }
+}
+
+export function initDesktopRenameLog(desktopDir: string | null | undefined): void {
+  const base = String(desktopDir || "").trim();
+  initializeRenameLog(base ? path.join(base, LEGACY_FOLDER_NAME) : null);
+}
+
+export function initDesktopRenameLogAt(directory: string | null | undefined): void {
+  initializeRenameLog(directory);
 }
 
 export function logDesktopRename(level: DesktopRenameLevel, message: string, fields?: Record<string, unknown>): void {

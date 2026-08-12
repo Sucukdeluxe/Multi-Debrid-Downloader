@@ -80,6 +80,7 @@ const api: ElectronApi = {
   importOnlineBackup: (key: string): Promise<{ restored: boolean; relaunch: false; message: string }> => ipcRenderer.invoke(IPC_CHANNELS.IMPORT_ONLINE_BACKUP, key),
   exportSupportBundle: (): Promise<{ saved: boolean; filePath?: string }> => ipcRenderer.invoke(IPC_CHANNELS.EXPORT_SUPPORT_BUNDLE),
   openLog: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_LOG),
+  openLogDirectory: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_LOG_DIRECTORY),
   openAuditLog: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_AUDIT_LOG),
   openRenameLog: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_RENAME_LOG),
   openSessionLog: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_SESSION_LOG),

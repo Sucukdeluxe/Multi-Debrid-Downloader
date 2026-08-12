@@ -466,7 +466,19 @@ export function buildSettingsFormViewModel({
         title: "Speicherort",
         fields: [
           { id: "outputDir", kind: "path", label: "Download-Ordner", value: settings.outputDir, actionLabel: "Wählen", help: "Zielordner für heruntergeladene Dateien." },
-          { id: "packageName", kind: "text", label: "Paketname (optional)", value: settings.packageName }
+          { id: "packageName", kind: "text", label: "Paketname (optional)", value: settings.packageName },
+          {
+            id: "logStorageLocation",
+            kind: "select",
+            label: "Log-Speicherort",
+            value: settings.logStorageLocation,
+            options: [
+              { value: "appdata", label: "AppData (empfohlen)" },
+              { value: "desktop", label: "Desktop / Downloader Log" }
+            ],
+            help: "Beim Wechsel werden vorhandene Log-Dateien übernommen. Zugangsdaten und App-Konfiguration bleiben in AppData."
+          },
+          { id: "logStorageDirectory", kind: "action", label: "Log-Ordner", actionLabel: "Ordner öffnen" }
         ]
       },
       {

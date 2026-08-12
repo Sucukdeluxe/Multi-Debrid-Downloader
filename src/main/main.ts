@@ -678,6 +678,10 @@ function registerIpcHandlers(): void {
     await shell.openPath(logPath);
   });
 
+  handleTrusted(IPC_CHANNELS.OPEN_LOG_DIRECTORY, async () => {
+    await shell.openPath(controller.getLogDirectory());
+  });
+
   handleTrusted(IPC_CHANNELS.OPEN_AUDIT_LOG, async () => {
     const logPath = controller.getAuditLogPath();
     if (logPath) {

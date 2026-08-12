@@ -38,7 +38,7 @@ import { applyAccountCommand } from "./account-commands";
 import { collectAccountStatusRedactionValues, sanitizeDebridAccountStatus, sanitizeDebridAccountStatuses } from "./account-status-sanitizer";
 import { createRendererState } from "./renderer-state";
 import { parseCollectorInput } from "./link-parser";
-import { configureLogger, getLogFilePath, logger } from "./logger";
+import { configureLogger, flushLoggerSync, getLogFilePath, logger } from "./logger";
 import { AllDebridWebFallback } from "./all-debrid-web";
 import { BestDebridWebFallback } from "./bestdebrid-web";
 import { RealDebridWebFallback } from "./realdebrid-web";
@@ -60,13 +60,14 @@ import { runStartupHealthCheck } from "./startup-health-check";
 import { getDebugSetupCheck } from "./debug-setup";
 import { buildLinkExportSelection, serializeLinkExportText } from "./link-export";
 import { getRenameLogPath, initRenameLog, shutdownRenameLog } from "./rename-log";
-import { getDesktopRenameLogPath, initDesktopRenameLog, shutdownDesktopRenameLog } from "./desktop-rename-log";
+import { getDesktopRenameLogPath, initDesktopRenameLogAt, shutdownDesktopRenameLog } from "./desktop-rename-log";
 import { buildAccountSummary, diffAccountSummary } from "./support-data";
 import { buildSupportBundle, getSupportBundleDefaultFileName } from "./support-bundle";
 import { getTraceConfig, getTraceLogPath, initTraceLog, logTraceEvent, setTraceEnabled, shutdownTraceLog } from "./trace-log";
 import type { DebugSetupCheckResult, SupportTraceConfig } from "../shared/types";
 import { createOnlineBackup, downloadOnlineBackup, uploadOnlineBackup } from "./online-backup";
 import { overlayLiveUsageCounters } from "./settings-live-overlay";
+import { getLegacyDesktopLogDirectory, migrateLogDirectories, prepareLogDirectory, resolveLogDirectory } from "./log-storage";
 
 function sanitizeSettingsPatch(partial: Partial<AppSettings>): Partial<AppSettings> {
   const entries = Object.entries(partial || {}).filter(([, value]) => value !== undefined);
@@ -96,6 +97,8 @@ export class AppController {
 
   private storagePaths = createStoragePaths(path.join(app.getPath("userData"), "runtime"));
 
+  private logDirectory = this.storagePaths.baseDir;
+
   private onStateHandler: ((snapshot: UiSnapshot) => void) | null = null;
 
   private autoResumePending = false;
@@ -104,22 +107,25 @@ export class AppController {
 
   public constructor() {
     configureLogger(this.storagePaths.baseDir);
-    initSessionLog(this.storagePaths.baseDir);
-    initPackageLogs(this.storagePaths.baseDir);
-    initItemLogs(this.storagePaths.baseDir);
-    initAuditLog(this.storagePaths.baseDir);
-    initAccountRotationLog(this.storagePaths.baseDir);
-    initConversionLog(this.storagePaths.baseDir);
-    initRenameLog(this.storagePaths.baseDir);
-    let desktopDir: string | null = null;
-    try {
-      desktopDir = app.getPath("desktop");
-    } catch {
-      desktopDir = null;
-    }
-    initDesktopRenameLog(desktopDir);
-    initTraceLog(this.storagePaths.baseDir);
     this.settings = loadSettings(this.storagePaths);
+    flushLoggerSync();
+    const desktopDir = this.getDesktopDirectory();
+    const requestedLogDirectory = resolveLogDirectory(this.storagePaths.baseDir, desktopDir, this.settings.logStorageLocation);
+    if (!prepareLogDirectory(requestedLogDirectory)) {
+      this.settings = normalizeSettings({ ...this.settings, logStorageLocation: "appdata" });
+      saveSettings(this.storagePaths, this.settings);
+      this.logDirectory = this.storagePaths.baseDir;
+    } else {
+      this.logDirectory = requestedLogDirectory;
+      const legacyDirectory = this.settings.logStorageLocation === "desktop"
+        ? getLegacyDesktopLogDirectory(desktopDir)
+        : null;
+      migrateLogDirectories(
+        [this.storagePaths.baseDir, ...(legacyDirectory ? [legacyDirectory] : [])],
+        this.logDirectory
+      );
+    }
+    this.initializeLogStorage();
     resetHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode);
     const loadResult = loadSessionWithStatus(this.storagePaths);
     const session = loadResult.session;
@@ -430,7 +436,14 @@ export class AppController {
   }
 
   private applySettingsOnlyBackup(importedSettings: AppSettings, remoteDiagnostics?: unknown, restoreRemoteDiagnostics = false): void {
-    const restoredSettings = normalizeSettings(importedSettings);
+    let restoredSettings = normalizeSettings(importedSettings);
+    if (this.settings.logStorageLocation !== restoredSettings.logStorageLocation
+      && !this.reconfigureLogStorage(restoredSettings.logStorageLocation)) {
+      restoredSettings = normalizeSettings({
+        ...restoredSettings,
+        logStorageLocation: this.settings.logStorageLocation
+      });
+    }
     this.overlayLiveUsageCounters(restoredSettings);
     this.settings = restoredSettings;
     saveSettings(this.storagePaths, this.settings);
@@ -443,7 +456,7 @@ export class AppController {
   public updateSettings(partial: Partial<AppSettings>): AppSettings {
     const sanitizedPatch = sanitizeSettingsPatch(partial);
     const previousSettings = this.settings;
-    const nextSettings = normalizeSettings({
+    let nextSettings = normalizeSettings({
       ...previousSettings,
       ...sanitizedPatch
     });
@@ -452,6 +465,13 @@ export class AppController {
       return previousSettings;
     }
 
+    if (previousSettings.logStorageLocation !== nextSettings.logStorageLocation
+      && !this.reconfigureLogStorage(nextSettings.logStorageLocation)) {
+      nextSettings = normalizeSettings({
+        ...nextSettings,
+        logStorageLocation: previousSettings.logStorageLocation
+      });
+    }
     this.overlayLiveUsageCounters(nextSettings);
     const retentionChanged = previousSettings.historyRetentionMode !== nextSettings.historyRetentionMode;
     const historyLimitsChanged = previousSettings.historyMaxEntries !== nextSettings.historyMaxEntries
@@ -889,7 +909,7 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
         importedSettingsRecord[key] = currentSettingsRecord[key];
       }
     }
-    const restoredSettings = normalizeSettings(importedSettings);
+    let restoredSettings = normalizeSettings(importedSettings);
 
     // Settings-only backup: keep the running queue AND the live counters untouched.
     // Overlay the live usage/status counters so they don't roll back to the backup's
@@ -909,6 +929,13 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
       };
     }
 
+    if (this.settings.logStorageLocation !== restoredSettings.logStorageLocation
+      && !this.reconfigureLogStorage(restoredSettings.logStorageLocation)) {
+      restoredSettings = normalizeSettings({
+        ...restoredSettings,
+        logStorageLocation: this.settings.logStorageLocation
+      });
+    }
     this.settings = restoredSettings;
     saveSettings(this.storagePaths, this.settings);
     this.manager.setSettings(this.settings);
@@ -951,6 +978,10 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     return getSessionLogPath();
   }
 
+  public getLogDirectory(): string {
+    return this.logDirectory;
+  }
+
   public getPackageLogPath(packageId: string): string | null {
     return this.manager.getPackageLogPath(packageId) || getPackageLogPath(packageId);
   }
@@ -972,11 +1003,7 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     this.realDebridWebFallback.dispose();
     this.allDebridWebFallback.dispose();
     this.bestDebridWebFallback.dispose();
-    shutdownSessionLog();
-    shutdownPackageLogs();
-    shutdownItemLogs();
-    shutdownRenameLog();
-    shutdownDesktopRenameLog();
+    this.shutdownLogStorage();
     this.audit("INFO", "App beendet");
     shutdownTraceLog();
     shutdownAccountRotationLog();
@@ -986,6 +1013,62 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
       clearHistory(this.storagePaths);
     }
     logger.info("App beendet");
+  }
+
+  private getDesktopDirectory(): string | null {
+    try {
+      return app.getPath("desktop");
+    } catch {
+      return null;
+    }
+  }
+
+  private initializeLogStorage(): void {
+    configureLogger(this.logDirectory);
+    initSessionLog(this.logDirectory);
+    initPackageLogs(this.logDirectory);
+    initItemLogs(this.logDirectory);
+    initAuditLog(this.logDirectory);
+    initAccountRotationLog(this.logDirectory);
+    initConversionLog(this.logDirectory);
+    initRenameLog(this.logDirectory);
+    initDesktopRenameLogAt(this.logDirectory);
+    initTraceLog(this.logDirectory);
+  }
+
+  private shutdownLogStorage(): void {
+    flushLoggerSync();
+    shutdownSessionLog();
+    shutdownPackageLogs();
+    shutdownItemLogs();
+    shutdownRenameLog();
+    shutdownDesktopRenameLog();
+  }
+
+  private reconfigureLogStorage(location: AppSettings["logStorageLocation"]): boolean {
+    const nextDirectory = resolveLogDirectory(this.storagePaths.baseDir, this.getDesktopDirectory(), location);
+    if (nextDirectory === this.logDirectory) {
+      return true;
+    }
+    if (!prepareLogDirectory(nextDirectory)) {
+      return false;
+    }
+    this.shutdownLogStorage();
+    shutdownTraceLog();
+    shutdownAccountRotationLog();
+    shutdownConversionLog();
+    shutdownAuditLog();
+    const legacyDirectory = location === "desktop"
+      ? getLegacyDesktopLogDirectory(this.getDesktopDirectory())
+      : null;
+    migrateLogDirectories(
+      [this.logDirectory, ...(legacyDirectory ? [legacyDirectory] : [])],
+      nextDirectory
+    );
+    this.logDirectory = nextDirectory;
+    this.initializeLogStorage();
+    logger.info(`Log-Speicherort geändert: ${this.logDirectory}`);
+    return true;
   }
 
   private historyLimits(): { maxEntries: number; maxAgeDays: number } {

@@ -821,7 +821,7 @@ const emptySnapshot = (): UiSnapshot => ({
     autoReconnect: false, reconnectWaitSeconds: 45, completedCleanupPolicy: "never",
     maxParallel: 4, maxParallelExtract: 2, extractCpuPriority: "high", retryLimit: 0, speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
     updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, minimizeToTray: false,
-    theme: "dark", collapseNewPackages: true, historyRetentionMode: "permanent", historyMaxEntries: 500, historyMaxAgeDays: 0, autoSortPackagesByProgress: false, autoSkipExtracted: false, hideExtractedItems: true, confirmDeleteSelection: true, backupIncludeDownloads: false, backupIncludeRemoteDiagnostics: false,
+    theme: "dark", logStorageLocation: "appdata", collapseNewPackages: true, historyRetentionMode: "permanent", historyMaxEntries: 500, historyMaxAgeDays: 0, autoSortPackagesByProgress: false, autoSkipExtracted: false, hideExtractedItems: true, confirmDeleteSelection: true, backupIncludeDownloads: false, backupIncludeRemoteDiagnostics: false,
     notifyMention: "", notifyOnPackageCompleted: false, notifyOnPackageFailed: false, notifyOnRunFinished: false,
     accountListShowDetailedDebridLinkKeys: false,
     bandwidthSchedules: [], totalDownloadedAllTime: 0, totalCompletedFilesAllTime: 0, totalRuntimeAllTimeMs: 0,
@@ -5075,6 +5075,12 @@ export function App(): ReactElement {
         });
         return;
       }
+      if (fieldId === "logStorageDirectory") {
+        void performQuickAction(async () => {
+          await window.rd.openLogDirectory();
+        });
+        return;
+      }
       const targetKey = fieldId === "outputDir" ? "outputDir" : fieldId === "extractDir" ? "extractDir" : fieldId === "mkvLibraryDir" ? "mkvLibraryDir" : null;
       if (targetKey) {
         void performQuickAction(async () => {
@@ -5467,6 +5473,7 @@ export function App(): ReactElement {
                   className={`menu-submenu-dropdown${openSubmenu === "hilfe-log" ? " is-open" : ""}`}
                 >
                     <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openLog().catch(() => {}); }}><span>Haupt-Log</span></button>
+                    <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openLogDirectory().catch(() => {}); }}><span>Log-Ordner öffnen</span></button>
                     <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openAuditLog().catch(() => {}); }}><span>Audit-Log</span></button>
                     <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openRenameLog().catch(() => {}); }}><span>Rename-Log</span></button>
                     <button className="menu-dropdown-item" onClick={() => { closeMenus(); void window.rd.openSessionLog().catch(() => {}); }}><span>Session-Log</span></button>
