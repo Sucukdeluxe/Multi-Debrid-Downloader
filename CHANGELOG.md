@@ -2,6 +2,13 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.27] - 2026-08-12
+
+### Startup reliability
+
+- Fixed Windows renderer startup validation so the packaged application accepts its own local renderer path regardless of path casing.
+- Prevented the startup navigation guard from blocking the application window on case-insensitive Windows file systems.
+
 ## [2.0.26] - 2026-08-12
 
 ### Log storage

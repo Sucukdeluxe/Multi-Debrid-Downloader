@@ -157,6 +157,19 @@ describe("browser-security", () => {
     expect(attacker.preventDefault).toHaveBeenCalledTimes(1);
   });
 
+  it("allows the packaged renderer file despite Windows path casing differences", () => {
+    const harness = createWindow();
+    const rendererUrl = "file:///C:/Program%20Files/MDD/resources/app.asar/build/renderer/index.html";
+    applyMainWindowSecurity(harness.window, {
+      rendererUrl,
+      externalHosts: githubOnly
+    });
+
+    const renderer = harness.navigate("file:///c:/program%20files/mdd/resources/app.asar/build/renderer/index.html");
+
+    expect(renderer.preventDefault).not.toHaveBeenCalled();
+  });
+
   it("denies popups while allowing exact allowlisted HTTPS popup URLs through the shell", () => {
     const harness = createWindow();
     applyMainWindowSecurity(harness.window, {

@@ -1,3 +1,5 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { shell, type WebPreferences } from "electron";
 
 export type HttpsHostRule = {
@@ -144,7 +146,14 @@ function isExpectedRendererUrl(rawUrl: string, expectedUrl: string): boolean {
     const parsed = new URL(String(rawUrl || ""));
     const expected = new URL(String(expectedUrl || ""));
     if (expected.protocol === "file:") {
-      return parsed.protocol === "file:" && parsed.host === expected.host && parsed.pathname === expected.pathname;
+      if (parsed.protocol !== "file:") {
+        return false;
+      }
+      const actualPath = path.resolve(fileURLToPath(parsed));
+      const expectedPath = path.resolve(fileURLToPath(expected));
+      return process.platform === "win32"
+        ? actualPath.toLowerCase() === expectedPath.toLowerCase()
+        : actualPath === expectedPath;
     }
     return parsed.origin === expected.origin;
   } catch {
