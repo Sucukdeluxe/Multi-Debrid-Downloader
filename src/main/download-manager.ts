@@ -71,6 +71,7 @@ import { logDesktopRename, verifyRename, verifyRenameAsync, type RenameVerificat
 import { StoragePaths, saveSession, saveSessionAsync, saveSettings, saveSettingsAsync } from "./storage";
 import { compactErrorText, ensureDirPath, filenameFromUrl, formatEta, humanSize, looksLikeOpaqueFilename, nowMs, sanitizeFilename, sleep } from "./utils";
 import { mergeKnownTotalBytes } from "./download-size";
+import { DiskCapacityError, DiskReservationCoordinator, type DiskReservationLease } from "./disk-space";
 import { createRendererState } from "./renderer-state";
 
 type ActiveTask = {
@@ -1859,6 +1860,14 @@ export class DownloadManager extends EventEmitter {
 
   private retryAfterByItem = new Map<string, number>();
 
+  private packageDiskRetryAfterByPackage = new Map<string, number>();
+
+  private diskWaitEvents: NonNullable<UiSnapshot["diskWaitEvents"]> = [];
+
+  private diskReservations = new DiskReservationCoordinator();
+
+  private diskLeasesByOwner = new Map<string, DiskReservationLease>();
+
   private retryStateByItem = new Map<string, {
     freshRetryUsed: boolean;
     resumeHardResetUsed: boolean;
@@ -2504,6 +2513,7 @@ export class DownloadManager extends EventEmitter {
       canPause: this.session.running,
       clipboardActive: this.settings.clipboardWatch,
       reconnectSeconds: Math.ceil(reconnectMs / 1000),
+      diskWaitEvents: this.diskWaitEvents,
       packageSpeedBps: !this.session.running || paused
         ? EMPTY_PACKAGE_SPEED_BPS
         : (() => {
@@ -4196,11 +4206,38 @@ export class DownloadManager extends EventEmitter {
         return processed;
       }
       const sourceName = path.basename(sourcePath);
-      let result: VideoProcessResult;
+      let result: VideoProcessResult | null = null;
+      let remuxLease: DiskReservationLease | null = null;
       try {
-        result = await processVideoFile(sourcePath, { mode, cpuPriority: this.settings.extractCpuPriority, signal });
+        try {
+          const sourceBytes = (await fs.promises.stat(sourcePath)).size;
+          remuxLease = await this.diskReservations.reserve({
+            phase: "remux",
+            ownerId: pkg?.id || sourcePath,
+            targetPath: sourcePath,
+            requiredBytes: sourceBytes
+          });
+        } catch (error) {
+          if (error instanceof DiskCapacityError) {
+            this.diskWaitEvents = [{
+              ...error.event,
+              ...(pkg ? { packageId: pkg.id } : {})
+            }];
+            result = { action: "skipped-no-space", reason: "zu wenig freier Speicher fuer Remux" };
+          } else {
+            throw error;
+          }
+        }
+        if (!result) {
+          result = await processVideoFile(sourcePath, { mode, cpuPriority: this.settings.extractCpuPriority, signal });
+        }
       } catch (error) {
         result = { action: "error", reason: "exception", error: compactErrorText(error) };
+      } finally {
+        remuxLease?.release();
+      }
+      if (!result) {
+        result = { action: "error", reason: "exception", error: "Unbekannter Remux-Status" };
       }
       if (result.action === "aborted") {
         return processed;
@@ -9028,6 +9065,8 @@ export class DownloadManager extends EventEmitter {
     void this.processItem(active).catch((err) => {
       logger.warn(`processItem unbehandelt (${itemId}): ${compactErrorText(err)}`);
     }).finally(() => {
+      this.diskLeasesByOwner.get(itemId)?.release();
+      this.diskLeasesByOwner.delete(itemId);
       if (!this.retryAfterByItem.has(item.id)) {
         this.releaseTargetPath(item.id);
       }
@@ -9208,6 +9247,31 @@ export class DownloadManager extends EventEmitter {
           : path.join(pkg.outputDir, item.fileName);
         item.targetPath = this.claimTargetPath(item.id, preferredTargetPath, Boolean(canReuseExistingTarget));
         item.totalBytes = mergeKnownTotalBytes(item.totalBytes, unrestricted.fileSize);
+        try {
+          const diskLease = await this.diskReservations.reserve({
+            phase: "download",
+            ownerId: item.id,
+            targetPath: item.targetPath,
+            requiredBytes: item.totalBytes,
+            alreadyPresentBytes: item.downloadedBytes
+          });
+          this.diskLeasesByOwner.get(item.id)?.release();
+          this.diskLeasesByOwner.set(item.id, diskLease);
+        } catch (error) {
+          if (error instanceof DiskCapacityError) {
+            this.diskWaitEvents = [{
+              ...error.event,
+              itemId: item.id,
+              packageId: pkg.id
+            }];
+            this.releaseTargetPath(item.id);
+            this.queueRetry(item, active, Math.max(1000, error.event.retryAt - nowMs()), "Warte auf Festplatte");
+            this.persistSoon();
+            this.emitState();
+            return;
+          }
+          throw error;
+        }
         item.status = "downloading";
         const pLabel = unrestricted.providerLabel;
         item.fullStatus = "Starte...";
@@ -9348,6 +9412,8 @@ export class DownloadManager extends EventEmitter {
         item.updatedAt = completedAt;
         this.notePackageDownloadCompleted(pkg, completedAt);
         pkg.updatedAt = completedAt;
+        this.diskLeasesByOwner.get(item.id)?.release();
+        this.diskLeasesByOwner.delete(item.id);
         this.recordRunOutcome(item.id, "completed");
         logger.info(`Download fertig: ${item.fileName} (${humanSize(item.downloadedBytes)}), pkg=${pkg.name}`);
         this.logPackageForItem(item, "INFO", "Download abgeschlossen", {
@@ -12174,6 +12240,40 @@ export class DownloadManager extends EventEmitter {
           for (const entry of archiveItems) {
             fullExtractItemIds.add(entry.id);
           }
+        }
+        const archiveSizes = await Promise.all([...fullArchiveSet].map(async (archivePath) => {
+          try {
+            return (await fs.promises.stat(archivePath)).size;
+          } catch {
+            return null;
+          }
+        }));
+        try {
+          const diskLease = await this.diskReservations.reserve({
+            phase: "extract",
+            ownerId: packageId,
+            targetPath: pkg.extractDir,
+            requiredBytes: archiveSizes.every((size) => size === null) ? null : archiveSizes.reduce<number>((total, size) => total + Math.max(0, size || 0), 0)
+          });
+          diskLease.release();
+        } catch (error) {
+          if (error instanceof DiskCapacityError) {
+            this.diskWaitEvents = [{ ...error.event, packageId }];
+            const retryAt = error.event.retryAt;
+            this.packageDiskRetryAfterByPackage.set(packageId, retryAt);
+            for (const entry of completedItems) {
+              entry.fullStatus = "Warte auf Festplatte";
+              entry.lastError = "Zu wenig Speicherplatz";
+              entry.updatedAt = nowMs();
+            }
+            pkg.postProcessLabel = undefined;
+            pkg.status = "queued";
+            pkg.updatedAt = nowMs();
+            this.persistSoon();
+            this.emitState();
+            return;
+          }
+          throw error;
         }
         const pendingAt = nowMs();
         for (const entry of completedItems) {

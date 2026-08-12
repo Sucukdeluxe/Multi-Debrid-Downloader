@@ -8,6 +8,7 @@ import AdmZip from "adm-zip";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DownloadManager, buildAutoRenameBaseNameFromFoldersWithOptions, extractArchiveNameFromExtractorLogMessage, getAuthoritativeRealDebridTotal, getDiskWriteWaitReason, resolveArchiveItemsFromList, runWithLimitedConcurrency } from "../src/main/download-manager";
 import { planDownloadCompletion, validateDownloadedFileCompletion } from "../src/main/download-completion";
+import { DiskReservationCoordinator } from "../src/main/disk-space";
 import { defaultSettings } from "../src/main/constants";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
@@ -18,7 +19,8 @@ import { primeDebridLinkRuntimeCooldownForTests, resetDebridLinkRuntimeStateForT
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import { getRenameLogPath, initRenameLog, shutdownRenameLog } from "../src/main/rename-log";
 import { UnrestrictedLink } from "../src/main/realdebrid";
-import type { HistoryEntry } from "../src/shared/types";
+import { resetVideoToolingCache } from "../src/main/video-processor";
+import type { HistoryEntry, PackageEntry } from "../src/shared/types";
 
 const tempDirs: string[] = [];
 const originalFetch = globalThis.fetch;
@@ -124,6 +126,201 @@ describe("disk write recovery", () => {
     expect(session.packages[packageId].status).toBe("queued");
   });
 
+  it("parks downloads before opening the target file when the final known size does not fit", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-disk-reserve-download-"));
+    tempDirs.push(root);
+    const session = emptySession();
+    const packageId = "reserve-download-package";
+    const itemId = "reserve-download-item";
+    const outputDir = path.join(root, "downloads", "reserve-download");
+    const extractDir = path.join(root, "extract", "reserve-download");
+    const createdAt = Date.now();
+    session.running = true;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "reserve-download",
+      outputDir,
+      extractDir,
+      status: "downloading",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://rapidgator.net/file/reserve-download",
+      provider: "realdebrid",
+      status: "downloading",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 0,
+      totalBytes: null,
+      progressPercent: 0,
+      fileName: "reserve-download.bin",
+      targetPath: "",
+      resumable: true,
+      attempts: 0,
+      lastError: "",
+      fullStatus: "Download läuft",
+      createdAt,
+      updatedAt: createdAt
+    };
+    const manager = new DownloadManager(
+      { ...defaultSettings(), token: "rd-token", outputDir: path.join(root, "downloads"), extractDir: path.join(root, "extract"), autoExtract: false },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+    (manager as any).diskReservations = new DiskReservationCoordinator({
+      safetyBytes: 128,
+      retryDelayMs: 45_000,
+      statVolume: async (targetPath) => ({
+        path: targetPath,
+        volumeKey: "download-volume",
+        freeBytes: 512,
+        totalBytes: 2_048
+      })
+    });
+    (manager as any).debridService.unrestrictLink = async () => ({
+      fileName: "reserve-download.bin",
+      directUrl: "https://dummy/reserve-download",
+      fileSize: 1_024,
+      retriesUsed: 0,
+      provider: "realdebrid",
+      providerLabel: "Real-Debrid"
+    });
+    globalThis.fetch = vi.fn(async () => new Response(Buffer.alloc(16, 1), {
+      status: 200,
+      headers: {
+        "content-length": "1024",
+        "accept-ranges": "bytes"
+      }
+    })) as typeof fetch;
+    const active = { itemId, packageId, abortController: new AbortController(), abortReason: "none", resumable: true, nonResumableCounted: false, blockedOnDiskWrite: false, blockedOnDiskSince: 0 };
+    (manager as any).activeTasks.set(itemId, active);
+
+    const before = Date.now();
+    await (manager as any).processItem(active);
+    (manager as any).activeTasks.delete(itemId);
+
+    const item = session.items[itemId];
+    expect(item).toEqual(expect.objectContaining({
+      status: "queued",
+      retries: 0,
+      speedBps: 0,
+      fullStatus: "Warte auf Festplatte"
+    }));
+    expect((manager as any).retryAfterByItem.get(itemId)).toBeGreaterThanOrEqual(before + 45_000);
+    expect(fs.existsSync(path.join(outputDir, "reserve-download.bin"))).toBe(false);
+    expect(manager.getSnapshot().diskWaitEvents?.[0]).toEqual(expect.objectContaining({
+      phase: "download",
+      ownerId: itemId,
+      itemId,
+      packageId,
+      volumeKey: "download-volume",
+      requiredBytes: 1_024,
+      availableBytes: 384,
+      deficitBytes: 640
+    }));
+  });
+
+  it("keeps disk-wait downloads out of the scheduler until their capacity retry is due", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-disk-reserve-resume-"));
+    tempDirs.push(root);
+    const session = emptySession();
+    const packageId = "reserve-resume-package";
+    const itemId = "reserve-resume-item";
+    const outputDir = path.join(root, "downloads", "reserve-resume");
+    const extractDir = path.join(root, "extract", "reserve-resume");
+    const createdAt = Date.now();
+    let freeBytes = 512;
+    session.running = true;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "reserve-resume",
+      outputDir,
+      extractDir,
+      status: "downloading",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://rapidgator.net/file/reserve-resume",
+      provider: "realdebrid",
+      status: "downloading",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 0,
+      totalBytes: null,
+      progressPercent: 0,
+      fileName: "reserve-resume.bin",
+      targetPath: "",
+      resumable: true,
+      attempts: 0,
+      lastError: "",
+      fullStatus: "Download läuft",
+      createdAt,
+      updatedAt: createdAt
+    };
+    const manager = new DownloadManager(
+      { ...defaultSettings(), token: "rd-token", outputDir: path.join(root, "downloads"), extractDir: path.join(root, "extract"), autoExtract: false },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+    (manager as any).diskReservations = new DiskReservationCoordinator({
+      safetyBytes: 128,
+      retryDelayMs: 45_000,
+      statVolume: async (targetPath) => ({
+        path: targetPath,
+        volumeKey: "download-volume",
+        freeBytes,
+        totalBytes: 2_048
+      })
+    });
+    (manager as any).debridService.unrestrictLink = async () => ({
+      fileName: "reserve-resume.bin",
+      directUrl: "https://dummy/reserve-resume",
+      fileSize: 1_024,
+      retriesUsed: 0,
+      provider: "realdebrid",
+      providerLabel: "Real-Debrid"
+    });
+    globalThis.fetch = vi.fn(async () => new Response(Buffer.alloc(1_024, 2), {
+      status: 200,
+      headers: {
+        "content-length": "1024",
+        "accept-ranges": "bytes"
+      }
+    })) as typeof fetch;
+    const firstActive = { itemId, packageId, abortController: new AbortController(), abortReason: "none", resumable: true, nonResumableCounted: false, blockedOnDiskWrite: false, blockedOnDiskSince: 0 };
+    (manager as any).activeTasks.set(itemId, firstActive);
+    await (manager as any).processItem(firstActive);
+    (manager as any).activeTasks.delete(itemId);
+
+    expect((manager as any).findNextQueuedItem()).toBeNull();
+
+    freeBytes = 2_048;
+    (manager as any).retryAfterByItem.set(itemId, Date.now() - 1);
+    expect((manager as any).findNextQueuedItem()).toEqual({ packageId, itemId });
+    const secondActive = { itemId, packageId, abortController: new AbortController(), abortReason: "none", resumable: true, nonResumableCounted: false, blockedOnDiskWrite: false, blockedOnDiskSince: 0 };
+    (manager as any).activeTasks.set(itemId, secondActive);
+    await (manager as any).processItem(secondActive);
+    (manager as any).activeTasks.delete(itemId);
+
+    expect(session.items[itemId].status).toBe("completed");
+    expect(fs.statSync(path.join(outputDir, "reserve-resume.bin")).size).toBe(1_024);
+    expect((manager as any).diskReservations.getReservedBytesByVolume().get("download-volume")).toBe(0);
+  });
+
   it("marks a fully downloaded package as failed when post-processing failed", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-status-"));
     tempDirs.push(root);
@@ -173,6 +370,165 @@ describe("disk write recovery", () => {
     (manager as any).refreshPackageStatus(session.packages[packageId]);
 
     expect(session.packages[packageId].status).toBe("failed");
+  });
+
+  it("parks extraction before the extractor starts when the extract volume is short", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-disk-reserve-extract-"));
+    tempDirs.push(root);
+    const session = emptySession();
+    const packageId = "reserve-extract-package";
+    const itemId = "reserve-extract-item";
+    const outputDir = path.join(root, "downloads", "reserve-extract");
+    const extractDir = path.join(root, "extract", "reserve-extract");
+    const archivePath = path.join(outputDir, "reserve-extract.zip");
+    const createdAt = Date.now();
+    fs.mkdirSync(outputDir, { recursive: true });
+    const zip = new AdmZip();
+    zip.addFile("episode.mkv", Buffer.alloc(1_024, 3));
+    zip.writeZip(archivePath);
+    const archiveBytes = fs.statSync(archivePath).size;
+    session.running = true;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "reserve-extract",
+      outputDir,
+      extractDir,
+      status: "completed",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://rapidgator.net/file/reserve-extract",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: archiveBytes,
+      totalBytes: archiveBytes,
+      progressPercent: 100,
+      fileName: "reserve-extract.zip",
+      targetPath: archivePath,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Entpacken - Ausstehend",
+      createdAt,
+      updatedAt: createdAt
+    };
+    const manager = new DownloadManager(
+      { ...defaultSettings(), token: "rd-token", outputDir: path.join(root, "downloads"), extractDir: path.join(root, "extract"), autoExtract: true },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+    (manager as any).diskReservations = new DiskReservationCoordinator({
+      safetyBytes: 0,
+      retryDelayMs: 60_000,
+      statVolume: async (targetPath) => ({
+        path: targetPath,
+        volumeKey: "extract-volume",
+        freeBytes: Math.max(0, archiveBytes - 1),
+        totalBytes: archiveBytes * 2
+      })
+    });
+
+    const before = Date.now();
+    await (manager as any).handlePackagePostProcessing(packageId);
+
+    expect(session.packages[packageId].status).toBe("queued");
+    expect(session.items[itemId]).toEqual(expect.objectContaining({
+      status: "completed",
+      fullStatus: "Warte auf Festplatte",
+      lastError: "Zu wenig Speicherplatz"
+    }));
+    expect((manager as any).packageDiskRetryAfterByPackage.get(packageId)).toBeGreaterThanOrEqual(before + 60_000);
+    expect(manager.getSnapshot().diskWaitEvents?.[0]).toEqual(expect.objectContaining({
+      phase: "extract",
+      ownerId: packageId,
+      packageId,
+      volumeKey: "extract-volume",
+      requiredBytes: archiveBytes,
+      availableBytes: archiveBytes - 1,
+      deficitBytes: 1
+    }));
+    expect(fs.existsSync(path.join(extractDir, "episode.mkv"))).toBe(false);
+  });
+
+  it("skips audio remux before processVideoFile when the source volume is short", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-disk-reserve-remux-"));
+    tempDirs.push(root);
+    const extractDir = path.join(root, "extract", "reserve-remux");
+    const sourcePath = path.join(extractDir, "Show.S01E01.German.DL.720p.mkv");
+    fs.mkdirSync(extractDir, { recursive: true });
+    fs.writeFileSync(sourcePath, Buffer.alloc(1_024, 4));
+    process.env.RD_FFMPEG_BIN = "pwsh";
+    process.env.RD_FFPROBE_BIN = "pwsh";
+    resetVideoToolingCache();
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir,
+        keepGermanAudioOnly: true,
+        germanAudioMode: "tag"
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+    const pkg: PackageEntry = {
+      id: "reserve-remux-package",
+      name: "reserve-remux",
+      outputDir: path.join(root, "downloads", "reserve-remux"),
+      extractDir,
+      status: "completed",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+    (manager as any).diskReservations = new DiskReservationCoordinator({
+      safetyBytes: 128,
+      retryDelayMs: 30_000,
+      statVolume: async (targetPath) => ({
+        path: targetPath,
+        volumeKey: "remux-volume",
+        freeBytes: 512,
+        totalBytes: 2_048
+      })
+    });
+
+    const processed = await (manager as any).keepGermanAudioOnlyImpl(extractDir, pkg);
+
+    expect(processed).toBe(0);
+    expect(fs.existsSync(sourcePath)).toBe(true);
+    expect(fs.readdirSync(extractDir)).toEqual(["Show.S01E01.German.DL.720p.mkv"]);
+    expect(pkg.audioStripSummary).toMatchObject({
+      candidates: 1,
+      remuxed: 0,
+      failed: 1
+    });
+    expect(pkg.audioStripSummary!.files[0]).toMatchObject({
+      name: "Show.S01E01.German.DL.720p.mkv",
+      action: "skipped-no-space",
+      reason: "zu wenig freier Speicher fuer Remux"
+    });
+    expect(manager.getSnapshot().diskWaitEvents?.[0]).toEqual(expect.objectContaining({
+      phase: "remux",
+      ownerId: "reserve-remux-package",
+      packageId: "reserve-remux-package",
+      volumeKey: "remux-volume",
+      requiredBytes: 1_024,
+      availableBytes: 384,
+      deficitBytes: 640
+    }));
+    expect((manager as any).diskReservations.getReservedBytesByVolume().get("remux-volume") ?? 0).toBe(0);
   });
 });
 
@@ -404,6 +760,9 @@ async function removeDirWithRetries(dir: string): Promise<void> {
 
 afterEach(async () => {
   globalThis.fetch = originalFetch;
+  delete process.env.RD_FFMPEG_BIN;
+  delete process.env.RD_FFPROBE_BIN;
+  resetVideoToolingCache();
   resetDebridLinkRuntimeStateForTests();
   resetMegaDebridRuntimeStateForTests();
   shutdownItemLogs();

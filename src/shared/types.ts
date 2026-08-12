@@ -470,6 +470,17 @@ export interface UiSnapshot {
   clipboardActive: boolean;
   reconnectSeconds: number;
   packageSpeedBps: Record<string, number>;
+  diskWaitEvents?: Array<{
+    phase: "download" | "extract" | "remux";
+    ownerId: string;
+    itemId?: string;
+    packageId?: string;
+    volumeKey: string;
+    requiredBytes: number;
+    availableBytes: number;
+    deficitBytes: number;
+    retryAt: number;
+  }>;
   payloadKind?: "full" | "delta";
   removedItemIds?: string[];
   removedPackageIds?: string[];
