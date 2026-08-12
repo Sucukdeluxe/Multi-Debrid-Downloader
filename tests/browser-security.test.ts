@@ -96,6 +96,37 @@ describe("browser-security", () => {
     });
   });
 
+  it("keeps native WebContents receivers when registering main-window security", () => {
+    const listeners = new Map<string, NavigationHandler>();
+    const webContents = {
+      on(this: unknown, event: string, listener: NavigationHandler) {
+        if (this !== webContents) {
+          throw new TypeError("WebContents receiver missing");
+        }
+        listeners.set(event, listener);
+      },
+      setWindowOpenHandler(this: unknown, _handler: WindowOpenHandler) {
+        if (this !== webContents) {
+          throw new TypeError("WebContents receiver missing");
+        }
+      },
+      session: {
+        setPermissionRequestHandler(this: unknown, _handler: PermissionHandler) {
+          if (this !== webContents.session) {
+            throw new TypeError("Session receiver missing");
+          }
+        }
+      }
+    };
+
+    expect(() => applyMainWindowSecurity({ webContents }, {
+      rendererUrl: "http://localhost:5180",
+      externalHosts: githubOnly
+    })).not.toThrow();
+    expect(listeners.has("will-navigate")).toBe(true);
+    expect(listeners.has("will-redirect")).toBe(true);
+  });
+
   it("denies main-window navigation to an untrusted origin", () => {
     const harness = createWindow();
     applyMainWindowSecurity(harness.window, {

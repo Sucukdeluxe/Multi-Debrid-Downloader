@@ -160,6 +160,10 @@ function createWindow(): BrowserWindow {
     webPreferences: createMainWindowWebPreferences(path.join(__dirname, "../preload/preload.js"))
   });
 
+  window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    logger.error(`Renderer-Laden fehlgeschlagen: id=${window.id} code=${errorCode} mainFrame=${isMainFrame} url=${validatedURL} error=${errorDescription}`);
+  });
+
   applyMainWindowSecurity(window, {
     rendererUrl: getTrustedRendererUrl(),
     externalHosts: MAIN_WINDOW_EXTERNAL_HOSTS
@@ -182,9 +186,13 @@ function createWindow(): BrowserWindow {
   window.setAutoHideMenuBar(true);
 
   if (isDevMode()) {
-    void window.loadURL(DEV_SERVER_URL);
+    void window.loadURL(DEV_SERVER_URL).catch((error) => {
+      logger.error(`Renderer-Start fehlgeschlagen: ${String(error?.stack || error)}`);
+    });
   } else {
-    void window.loadFile(path.join(app.getAppPath(), "build", "renderer", "index.html"));
+    void window.loadFile(path.join(app.getAppPath(), "build", "renderer", "index.html")).catch((error) => {
+      logger.error(`Renderer-Start fehlgeschlagen: ${String(error?.stack || error)}`);
+    });
   }
 
   return window;
@@ -956,11 +964,13 @@ app.whenReady().then(() => {
     }
   });
 }).catch((error) => {
+  logger.error(`App-Start fehlgeschlagen: ${String(error?.stack || error)}`);
   console.error("App startup failed:", error);
   app.quit();
 });
 
 app.on("window-all-closed", () => {
+  logger.warn("Alle Hauptfenster geschlossen");
   if (process.platform !== "darwin") {
     app.quit();
   }

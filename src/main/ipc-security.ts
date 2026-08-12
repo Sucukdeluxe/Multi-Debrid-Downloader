@@ -40,7 +40,9 @@ function isPackagedRendererUrl(senderUrl: string, appPath: string): boolean {
     }
     const senderPath = path.resolve(fileURLToPath(parsed));
     const rendererPath = path.resolve(appPath, "build", "renderer");
-    return senderPath === rendererPath || senderPath.startsWith(rendererPath + path.sep);
+    const actualPath = process.platform === "win32" ? senderPath.toLowerCase() : senderPath;
+    const trustedRendererPath = process.platform === "win32" ? rendererPath.toLowerCase() : rendererPath;
+    return actualPath === trustedRendererPath || actualPath.startsWith(trustedRendererPath + path.sep);
   } catch {
     return false;
   }

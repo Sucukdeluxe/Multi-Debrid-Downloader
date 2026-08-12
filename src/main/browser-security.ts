@@ -126,19 +126,19 @@ export function applyRemoteLoginSecurity(window: SecurityWindow, options: Remote
 
 function applyCommonSecurity(window: SecurityWindow, externalHosts: readonly HttpsHostRule[]): void {
   const setWindowOpenHandler = window.webContents.setWindowOpenHandler as (handler: (details: { url: string }) => { action: "deny" }) => unknown;
-  setWindowOpenHandler((details) => {
+  setWindowOpenHandler.call(window.webContents, (details) => {
     void openAllowedExternalUrl(details.url, externalHosts);
     return { action: "deny" };
   });
   const setPermissionRequestHandler = window.webContents.session.setPermissionRequestHandler as (handler: (webContents: unknown, permission: string, callback: (allowed: boolean) => void) => void) => unknown;
-  setPermissionRequestHandler((_webContents, _permission, callback) => {
+  setPermissionRequestHandler.call(window.webContents.session, (_webContents, _permission, callback) => {
     callback(false);
   });
 }
 
 function onNavigation(window: SecurityWindow, event: "will-navigate" | "will-redirect", listener: (event: NavigationEvent, url: string) => void): void {
   const on = window.webContents.on as (event: "will-navigate" | "will-redirect", listener: (event: NavigationEvent, url: string) => void) => unknown;
-  on(event, listener);
+  on.call(window.webContents, event, listener);
 }
 
 function isExpectedRendererUrl(rawUrl: string, expectedUrl: string): boolean {

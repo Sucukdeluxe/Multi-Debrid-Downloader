@@ -40,6 +40,25 @@ describe("ipc-security", () => {
     })).not.toThrow();
   });
 
+  it("accepts packaged renderer IPC despite Windows path casing differences", () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform");
+    Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+    try {
+      const appPath = path.join("C:", "Program Files", "MDD", "resources", "app.asar");
+      const rendererUrl = "file:///c:/program%20files/mdd/resources/app.asar/build/renderer/index.html";
+
+      expect(() => assertTrustedIpcSender(eventFor(rendererUrl), {
+        isPackaged: true,
+        devServerUrl: "http://localhost:5180",
+        appPath
+      })).not.toThrow();
+    } finally {
+      if (platform) {
+        Object.defineProperty(process, "platform", platform);
+      }
+    }
+  });
+
   it("rejects IPC from local files outside the packaged renderer tree", () => {
     const appPath = path.join("C:", "Program Files", "MDD", "resources", "app.asar");
     const attackerUrl = pathToFileURL(path.join("C:", "Users", "Public", "attacker.html")).toString();

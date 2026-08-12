@@ -2,6 +2,14 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.28] - 2026-08-12
+
+### Startup reliability
+
+- Fixed Electron security registration so native WebContents and session APIs retain their required receiver during application startup.
+- Fixed packaged renderer IPC validation for case-insensitive Windows file paths.
+- Added explicit startup and renderer-load error logging for future launch diagnostics.
+
 ## [2.0.27] - 2026-08-12
 
 ### Startup reliability
