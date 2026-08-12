@@ -502,10 +502,11 @@ export interface PackageCardProps {
   sessionRunning?: boolean;
   columnOrder: readonly string[];
   gridTemplate: string;
+  renderItems?: boolean;
   actions: DownloadsTableActions;
 }
 
-export function PackageCardContent({ row, selectedIds, editing, editingName, packageSpeedBps, sessionRunning = true, columnOrder, gridTemplate, actions }: PackageCardProps): ReactElement {
+export function PackageCardContent({ row, selectedIds, editing, editingName, packageSpeedBps, sessionRunning = true, columnOrder, gridTemplate, renderItems = true, actions }: PackageCardProps): ReactElement {
   const entry = row.package;
   let renameFinished = false;
   const finishRename = (value: string): void => {
@@ -546,7 +547,7 @@ export function PackageCardContent({ row, selectedIds, editing, editingName, pac
         {columnOrder.map((column) => <span className="downloads-cell-slot" data-download-column={column} key={column} role="cell">{packageCell(row, column, packageSpeedBps, editing, editingName, actions, finishRename)}</span>)}
         <span className="downloads-action-cell" role="cell"><button aria-label={`${entry.name} Aktionen`} onClick={(event) => { event.stopPropagation(); actions.onOpenContextMenu(entry.id, event.clientX, event.clientY, entry.id); }} type="button">⋮</button></span>
       </div>
-      <PackageItemsTransition actions={actions} collapsed={row.collapsed} columnOrder={columnOrder} gridTemplate={gridTemplate} id={`downloads-package-items-${entry.id}`} items={row.items} selectedIds={selectedIds} sessionRunning={sessionRunning} />
+      {renderItems ? <PackageItemsTransition actions={actions} collapsed={row.collapsed} columnOrder={columnOrder} gridTemplate={gridTemplate} id={`downloads-package-items-${entry.id}`} items={row.items} selectedIds={selectedIds} sessionRunning={sessionRunning} /> : null}
     </article>
   );
 }
@@ -555,7 +556,7 @@ export function arePackageCardPropsEqual(previous: PackageCardProps, next: Packa
   const a = previous.row.package;
   const b = next.row.package;
   if (a.id !== b.id || a.updatedAt !== b.updatedAt || a.status !== b.status || a.enabled !== b.enabled || a.name !== b.name || a.priority !== b.priority || a.createdAt !== b.createdAt) return false;
-  if (previous.packageSpeedBps !== next.packageSpeedBps || previous.editing !== next.editing || previous.editingName !== next.editingName || previous.row.collapsed !== next.row.collapsed || previous.sessionRunning !== next.sessionRunning || previous.columnOrder !== next.columnOrder || previous.gridTemplate !== next.gridTemplate || previous.actions !== next.actions) return false;
+  if (previous.packageSpeedBps !== next.packageSpeedBps || previous.editing !== next.editing || previous.editingName !== next.editingName || previous.row.collapsed !== next.row.collapsed || previous.sessionRunning !== next.sessionRunning || previous.columnOrder !== next.columnOrder || previous.gridTemplate !== next.gridTemplate || previous.renderItems !== next.renderItems || previous.actions !== next.actions) return false;
   if (previous.selectedVersion !== next.selectedVersion || previous.selectedIds !== next.selectedIds) {
     if (previous.selectedIds.has(a.id) !== next.selectedIds.has(a.id)) return false;
     for (const itemId of b.itemIds) {

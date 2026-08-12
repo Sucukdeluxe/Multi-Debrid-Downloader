@@ -67,6 +67,15 @@ describe("responsive shell mode", () => {
     expect(css).toMatch(/\.md-shell\.has-collapsed-sidebar:is\(\.is-compact, \.is-minimum\) \.md-shell-navigation\s*\{[^}]*padding-left:\s*44px;/s);
     expect(css).toMatch(/@media \(max-width: 1120px\)[\s\S]*\.md-shell\.is-minimum \.md-shell-sidebar\.is-responsive-rail \.md-shell-sidebar-toggle\s*\{[^}]*top:\s*-46px;/s);
   });
+
+  it("keeps the virtualized downloads body inside the existing table scrollport", () => {
+    const css = readFileSync(new URL("../src/renderer/views/downloads/downloads.css", import.meta.url), "utf8");
+
+    expect(css).toMatch(/\.downloads-table\s*\{[^}]*overflow-x:\s*auto;[^}]*overflow-y:\s*auto;/s);
+    expect(css).not.toMatch(/\.downloads-table-body\s*\{[^}]*overflow(?:-y)?:\s*auto;/s);
+    expect(css).toMatch(/\.downloads-virtual-spacer\s*\{[^}]*height:\s*var\(--downloads-virtual-total-height\);/s);
+    expect(css).toMatch(/\.downloads-virtual-row\s*\{[^}]*position:\s*absolute;/s);
+  });
 });
 
 describe("focus restoration", () => {

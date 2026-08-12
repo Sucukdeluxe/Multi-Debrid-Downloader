@@ -12,6 +12,7 @@ import {
   getDownloadQueueTotalBytes,
   getPendingDownloadItemCount,
   getDownloadSpeedBps,
+  buildDownloadLogicalRows,
   type DownloadSidebarFilter,
   type DownloadsModelInput
 } from "../src/renderer/views/downloads/downloads-model";
@@ -36,6 +37,11 @@ import {
   getPackageProgress,
   getPackageSizeProgress
 } from "../src/renderer/views/downloads/DownloadsTable";
+import {
+  DOWNLOAD_FILE_ROW_HEIGHT,
+  DOWNLOAD_PACKAGE_ROW_HEIGHT,
+  calculateDownloadVirtualWindow
+} from "../src/renderer/views/downloads/download-virtualizer";
 import {
   compactDownloadServiceLabel,
   extractHoster,
@@ -241,6 +247,23 @@ function createInput(overrides: Partial<DownloadsModelInput> = {}): DownloadsMod
     hideExtractedItems: false,
     showAllPackages: false,
     renderLimit: 260,
+    ...overrides
+  };
+}
+
+function createLargeInput(packageCount: number, itemCount: number, overrides: Partial<DownloadsModelInput> = {}): DownloadsModelInput {
+  const packageEntries = Array.from({ length: packageCount }, (_, packageIndex) => {
+    const ids = Array.from({ length: itemCount }, (_, itemIndex) => `i-${packageIndex}-${itemIndex}`);
+    return pkg(`p-${packageIndex}`, `Paket ${packageIndex}`, ids);
+  });
+  const itemEntries = packageEntries.flatMap((entry, packageIndex) => (
+    entry.itemIds.map((id, itemIndex) => item(id, entry.id, packageIndex === packageCount - 1 && itemIndex === 0 ? "downloading" : "queued"))
+  ));
+  return {
+    ...createInput(overrides),
+    packageOrder: packageEntries.map((entry) => entry.id),
+    packages: Object.fromEntries(packageEntries.map((entry) => [entry.id, entry])),
+    items: Object.fromEntries(itemEntries.map((entry) => [entry.id, entry])),
     ...overrides
   };
 }
@@ -468,7 +491,7 @@ describe("downloads model", () => {
     expect(model.actionableSelectedIds).toEqual(["package-a"]);
   });
 
-  it("limits occupied package rows honestly while preserving active packages and an actionable visible selection", () => {
+  it("keeps occupied package rows logical while preserving active packages and an actionable visible selection", () => {
     const packageEntries = Array.from({ length: 264 }, (_, index) => pkg(`p-${index}`, `Paket ${index}`, [`i-${index}`]));
     const itemEntries = packageEntries.map((entry, index) => item(`i-${index}`, entry.id, index === 263 ? "downloading" : "queued"));
     const model = buildDownloadsViewModel(createInput({
@@ -479,10 +502,59 @@ describe("downloads model", () => {
       renderLimit: 260
     }));
 
-    expect(model.packageRows).toHaveLength(260);
+    expect(model.packageRows).toHaveLength(264);
     expect(model.packageRows.some((row) => row.package.id === "p-263")).toBe(true);
-    expect(model.paginationLabel).toBe("1–260 von 264");
+    expect(model.paginationLabel).toBe("1–264 von 264");
     expect(model.actionableSelectedIds).toEqual(["p-0", "i-0", "p-263", "i-263"]);
+  });
+
+  it("keeps every filtered expanded row logical while the DOM window stays bounded", () => {
+    const model = buildDownloadsViewModel(createLargeInput(320, 2, {
+      selectedIds: ["p-0", "i-0-0", "p-319", "i-319-0"],
+      renderLimit: 20
+    }));
+    const logicalRows = buildDownloadLogicalRows(model);
+    const html = renderToStaticMarkup(<DownloadsView actions={createActions()} model={withRuntime(createLargeInput(320, 2, { renderLimit: 20 }))} />);
+    const renderedRows = html.match(/data-download-row-id=/g) ?? [];
+
+    expect(model.packageRows).toHaveLength(320);
+    expect(model.visibleRowIds).toHaveLength(960);
+    expect(model.visibleRowIds.slice(0, 3)).toEqual(["p-0", "i-0-0", "i-0-1"]);
+    expect(model.visibleRowIds.slice(-3)).toEqual(["p-319", "i-319-0", "i-319-1"]);
+    expect(model.actionableSelectedIds).toEqual(["p-0", "i-0-0", "p-319", "i-319-0"]);
+    expect(logicalRows).toHaveLength(960);
+    expect(renderedRows.length).toBeGreaterThan(0);
+    expect(renderedRows.length).toBeLessThan(80);
+  });
+
+  it("uses fixed download row geometry, overscan and pinned rows for the virtual window", () => {
+    const rows = [
+      { id: "p-0", height: DOWNLOAD_PACKAGE_ROW_HEIGHT },
+      { id: "i-0", height: DOWNLOAD_FILE_ROW_HEIGHT },
+      { id: "p-1", height: DOWNLOAD_PACKAGE_ROW_HEIGHT },
+      { id: "i-1", height: DOWNLOAD_FILE_ROW_HEIGHT },
+      { id: "p-2", height: DOWNLOAD_PACKAGE_ROW_HEIGHT },
+      { id: "i-2", height: DOWNLOAD_FILE_ROW_HEIGHT }
+    ];
+
+    const window = calculateDownloadVirtualWindow(rows, {
+      scrollTop: 79,
+      viewportHeight: 40,
+      overscan: 1,
+      pinnedIds: ["p-0", "i-2"]
+    });
+
+    expect(DOWNLOAD_PACKAGE_ROW_HEIGHT).toBe(40);
+    expect(DOWNLOAD_FILE_ROW_HEIGHT).toBe(38);
+    expect(window.totalHeight).toBe(234);
+    expect(window.rows.map((row) => [row.id, row.index, row.top, row.height, row.pinned])).toEqual([
+      ["p-0", 0, 0, 40, true],
+      ["i-0", 1, 40, 38, false],
+      ["p-1", 2, 78, 40, false],
+      ["i-1", 3, 118, 38, false],
+      ["p-2", 4, 156, 40, false],
+      ["i-2", 5, 196, 38, true]
+    ]);
   });
 });
 
@@ -692,14 +764,18 @@ describe("downloads view", () => {
     expect(html).toContain('data-download-column="name"');
     expect(html).toContain('data-download-column="hoster"');
     expect(html).toMatch(/grid-template-columns:[^"]+ 60px/);
-    expect(html).toContain('class="downloads-package-items is-expanded"');
-    expect(html).toContain('class="downloads-package-items-inner"');
+    expect(html).toContain('class="downloads-virtual-spacer"');
     expect(css).toMatch(/\.downloads-table\s*\{[^}]*overflow-x:\s*auto;[^}]*scrollbar-gutter:\s*stable;/s);
+    expect(css).not.toMatch(/\.downloads-table-body\s*\{[^}]*overflow(?:-y)?:\s*auto;/s);
     expect(css).toMatch(/\.downloads-table-header,\s*\.downloads-table-body\s*\{[^}]*width:\s*100%;[^}]*min-width:\s*var\(--downloads-table-min-width, 1191px\);/s);
     expect(css).not.toMatch(/min-width:\s*max-content;/);
     expect(css).toMatch(/\.downloads-table-header\s*\{[^}]*height:\s*41px;[^}]*position:\s*sticky;/s);
-    expect(css).toMatch(/\.downloads-item-row,\s*\.downloads-package-row\s*\{[^}]*height:\s*40px;/s);
-    expect(css).toMatch(/\.downloads-item-row\s*\{[^}]*height:\s*38px;/s);
+    expect(css).toMatch(/--downloads-package-row-height:\s*40px;/s);
+    expect(css).toMatch(/--downloads-file-row-height:\s*38px;/s);
+    expect(css).toMatch(/\.downloads-item-row,\s*\.downloads-package-row\s*\{[^}]*height:\s*var\(--downloads-package-row-height\);/s);
+    expect(css).toMatch(/\.downloads-item-row\s*\{[^}]*height:\s*var\(--downloads-file-row-height\);/s);
+    expect(css).toMatch(/\.downloads-virtual-spacer\s*\{[^}]*position:\s*relative;[^}]*height:\s*var\(--downloads-virtual-total-height\);/s);
+    expect(css).toMatch(/\.downloads-virtual-row\s*\{[^}]*position:\s*absolute;[^}]*transform:\s*translateY\(var\(--downloads-virtual-row-top\)\);/s);
     expect(css).toMatch(/\.downloads-toolbar button,\s*\.downloads-footer button,[^{]+\{[^}]*height:\s*36px;/s);
     expect(css).toMatch(/\.downloads-content\s*\{[^}]*height:\s*100%;/s);
     expect(css).toMatch(/\.downloads-collapse-button\s*\{[^}]*box-sizing:\s*border-box;[^}]*flex:\s*0 0 30px;[^}]*width:\s*30px;[^}]*min-width:\s*30px;[^}]*max-width:\s*30px;/s);
@@ -707,8 +783,6 @@ describe("downloads view", () => {
     expect(css).toMatch(/\.downloads-cell-slot\s*>\s*\.downloads-cell\s*\{[^}]*justify-content:\s*center;[^}]*text-align:\s*center;/s);
     expect(css).toMatch(/\.downloads-column-header\s*\{[^}]*justify-content:\s*center;[^}]*text-align:\s*center;/s);
     expect(css).toMatch(/\[data-download-column="name"\][^{]*\{[^}]*justify-content:\s*flex-start;[^}]*text-align:\s*left;/s);
-    expect(css).toMatch(/\.downloads-package-items\s*\{[^}]*height:\s*auto;[^}]*overflow:\s*hidden;/s);
-    expect(css).toMatch(/\.downloads-package-items\.is-collapsed\s*\{[^}]*height:\s*0;[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s);
     expect(css).toMatch(/\.downloads-meter-label\.is-track\s*\{[^}]*color:\s*var\(--ui-progress-track-text/s);
     expect(css).toMatch(/\.downloads-meter-label\s*\{[^}]*font-weight:\s*700;/s);
     expect(css).toMatch(/\.downloads-meter-label\.is-track\s*\{[^}]*clip-path:\s*inset\(0 0 0 var\(--downloads-progress\)\);/s);
@@ -788,6 +862,20 @@ describe("downloads App integration", () => {
     expect(source).toContain("downloadsActions.onStartDownloads(); setContextMenu(null);");
     expect(source).not.toContain(") : false ? (");
     expect(source).not.toContain("{false && (");
+  });
+
+  it("pins the inline rename row outside the initial viewport without rendering the whole queue", () => {
+    const model = withRuntime(createLargeInput(340, 1), {
+      editingPackageId: "p-339",
+      editingName: "Pinned Rename"
+    });
+    const html = renderToStaticMarkup(<DownloadsContent actions={createActions()} model={model} />);
+    const renderedRows = html.match(/data-download-row-id=/g) ?? [];
+
+    expect(html).toContain('data-download-row-id="p-339"');
+    expect(html).toContain('class="downloads-rename-input"');
+    expect(renderedRows.length).toBeGreaterThan(0);
+    expect(renderedRows.length).toBeLessThan(80);
   });
 });
 

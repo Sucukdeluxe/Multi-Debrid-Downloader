@@ -1,14 +1,13 @@
 import type { ReactElement } from "react";
 import { RollingMetricValue } from "../../ui/RollingMetricValue";
 import { SlidingSelection } from "../../ui/SlidingSelection";
-import type { DownloadPackageRow, DownloadsViewModelCore, DownloadDisplayMode, DownloadSidebarFilter } from "./downloads-model";
+import type { DownloadsViewModelCore, DownloadDisplayMode, DownloadSidebarFilter } from "./downloads-model";
 import {
   DownloadsTableHeader,
-  ItemRow,
-  PackageCard,
   type DownloadSortColumn,
   type DownloadsTableActions
 } from "./DownloadsTable";
+import { VirtualizedDownloadsBody } from "./VirtualizedDownloadsBody";
 import "./downloads.css";
 
 const integerFormatter = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 0 });
@@ -139,34 +138,13 @@ function tableState(model: DownloadsViewModel): ReactElement | null {
   return null;
 }
 
-function packageRows(model: DownloadsViewModel, actions: DownloadsViewActions): ReactElement[] {
-  return model.packageRows.map((row: DownloadPackageRow) => (
-    <PackageCard
-      actions={actions}
-      columnOrder={model.columnOrder}
-      editing={model.editingPackageId === row.package.id}
-      editingName={model.editingName}
-      gridTemplate={model.gridTemplate}
-      key={row.package.id}
-      packageSpeedBps={model.packageSpeedBps[row.package.id] ?? 0}
-      row={row}
-      selectedIds={model.selectedIds}
-      selectedVersion={model.actionableSelectedIds.length}
-      sessionRunning={model.running}
-    />
-  ));
-}
-
 export function DownloadsContent({ actions, model }: { actions: DownloadsViewActions; model: DownloadsViewModel }): ReactElement {
+  const state = tableState(model);
   return (
     <main className="downloads-content">
       <div className="downloads-table" role="table" aria-label="Downloads">
         <DownloadsTableHeader actions={actions} columnOrder={model.columnOrder} gridTemplate={model.gridTemplate} selectedCount={model.actionableSelectedIds.length} sortColumn={model.sortColumn ?? "name"} sortDirection={model.sortDirection ?? "asc"} visibleIds={model.visibleRowIds} />
-        <div className="downloads-table-body" data-visual-region="downloads-table-body" role="rowgroup">
-          {tableState(model)}
-          {!model.empty && !model.filteredEmpty && model.displayMode === "packages" ? packageRows(model, actions) : null}
-          {!model.empty && !model.filteredEmpty && model.displayMode === "files" ? model.fileRows.map((item) => <ItemRow actions={actions} columnOrder={model.columnOrder} gridTemplate={model.gridTemplate} item={item} key={item.id} selected={model.selectedIds.has(item.id)} sessionRunning={model.running} />) : null}
-        </div>
+        <VirtualizedDownloadsBody actions={actions} model={model} state={state} />
       </div>
     </main>
   );

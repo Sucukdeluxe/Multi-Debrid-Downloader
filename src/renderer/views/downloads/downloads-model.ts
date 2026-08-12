@@ -1,4 +1,5 @@
 import type { DownloadItem, DownloadStatus, PackageEntry } from "../../../shared/types";
+import { DOWNLOAD_FILE_ROW_HEIGHT, DOWNLOAD_PACKAGE_ROW_HEIGHT, type DownloadVirtualRowInput } from "./download-virtualizer";
 
 export type DownloadDisplayMode = "packages" | "files";
 export type DownloadSidebarFilter = "all" | "active" | "queued" | "paused" | "completed" | "failed";
@@ -55,6 +56,10 @@ export interface DownloadsViewModelCore {
   empty: boolean;
   filteredEmpty: boolean;
 }
+
+export type DownloadLogicalRow =
+  | (DownloadVirtualRowInput & { type: "package"; packageId: string; packageRow: DownloadPackageRow })
+  | (DownloadVirtualRowInput & { type: "item"; packageId: string; item: DownloadItem });
 
 const activeStatuses = new Set<DownloadStatus>(["downloading", "validating", "extracting", "integrity_check"]);
 const queuedStatuses = new Set<DownloadStatus>(["queued", "reconnect_wait"]);
@@ -116,13 +121,20 @@ function matchesProvider(item: DownloadItem, providerFilter: string): boolean {
   return providerFilter === "all" || item.provider === providerFilter;
 }
 
-function isActivePackage(row: DownloadPackageRow): boolean {
-  return row.items.some((entry) => classifyDownloadStatus(entry.status) === "active");
-}
-
 function paginationLabel(visible: number, total: number): string {
   if (visible === 0 || total === 0) return "0 von 0";
   return `1–${visible} von ${total}`;
+}
+
+export function buildDownloadLogicalRows(model: Pick<DownloadsViewModelCore, "displayMode" | "packageRows" | "fileRows">): DownloadLogicalRow[] {
+  if (model.displayMode === "files") {
+    return model.fileRows.map((item) => ({ type: "item", id: item.id, packageId: item.packageId, item, height: DOWNLOAD_FILE_ROW_HEIGHT }));
+  }
+  return model.packageRows.flatMap((row): DownloadLogicalRow[] => {
+    const packageRow: DownloadLogicalRow = { type: "package", id: row.package.id, packageId: row.package.id, packageRow: row, height: DOWNLOAD_PACKAGE_ROW_HEIGHT };
+    if (row.collapsed) return [packageRow];
+    return [packageRow, ...row.items.map((item): DownloadLogicalRow => ({ type: "item", id: item.id, packageId: item.packageId, item, height: DOWNLOAD_FILE_ROW_HEIGHT }))];
+  });
 }
 
 export function buildDownloadsViewModel(input: DownloadsModelInput): DownloadsViewModelCore {
@@ -139,7 +151,7 @@ export function buildDownloadsViewModel(input: DownloadsModelInput): DownloadsVi
   const query = input.query.trim().toLocaleLowerCase("de-DE");
   const collapsed = new Set(input.collapsedPackageIds);
   const selectedIds = new Set(input.selectedIds);
-  let packageRows = allPackages.flatMap((entry): DownloadPackageRow[] => {
+  const packageRows = allPackages.flatMap((entry): DownloadPackageRow[] => {
     const allPackageItems = entry.itemIds
       .map((id) => input.items[id])
       .filter((item): item is DownloadItem => Boolean(item));
@@ -165,20 +177,15 @@ export function buildDownloadsViewModel(input: DownloadsModelInput): DownloadsVi
 
   const totalPackageRows = packageRows.length;
   const allMatchingFileRows = packageRows.flatMap((row) => row.items);
-  if (!input.showAllPackages && input.renderLimit > 0 && packageRows.length > input.renderLimit) {
-    const activeRows = packageRows.filter(isActivePackage);
-    const inactiveRows = packageRows.filter((row) => !isActivePackage(row));
-    packageRows = [...activeRows, ...inactiveRows].slice(0, input.renderLimit);
-  }
-
   const fileRows = input.displayMode === "files" ? allMatchingFileRows : [];
   const displayedPackages = input.displayMode === "packages" ? packageRows : [];
-  const visibleItemIds = (input.displayMode === "files"
-    ? fileRows
-    : displayedPackages.flatMap((row) => row.collapsed ? [] : row.items)).map((entry) => entry.id);
-  const visibleRowIds = input.displayMode === "files"
-    ? visibleItemIds
-    : displayedPackages.flatMap((row) => row.collapsed ? [row.package.id] : [row.package.id, ...row.items.map((entry) => entry.id)]);
+  const logicalRows = buildDownloadLogicalRows({
+    displayMode: input.displayMode,
+    packageRows: displayedPackages,
+    fileRows
+  });
+  const visibleItemIds = logicalRows.filter((row): row is Extract<DownloadLogicalRow, { type: "item" }> => row.type === "item").map((row) => row.item.id);
+  const visibleRowIds = logicalRows.map((row) => row.id);
   const visibleRowSet = new Set(visibleRowIds);
   const actionableSelectedIds = [...selectedIds].filter((id) => visibleRowSet.has(id));
   const visiblePackageSet = new Set(displayedPackages.map((row) => row.package.id));
@@ -205,7 +212,7 @@ export function buildDownloadsViewModel(input: DownloadsModelInput): DownloadsVi
     mainRowCount,
     totalMainRowCount,
     paginationLabel: paginationLabel(mainRowCount, totalMainRowCount),
-    limited: mainRowCount < totalMainRowCount,
+    limited: false,
     empty: allItems.length === 0,
     filteredEmpty: allItems.length > 0 && mainRowCount === 0
   };
