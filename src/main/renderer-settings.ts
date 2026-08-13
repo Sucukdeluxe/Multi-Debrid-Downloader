@@ -64,6 +64,9 @@ export function validateRendererSettingsUpdate(value: unknown, current: AppSetti
   const input = value as Record<string, unknown>;
   const output: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(input)) {
+    if (entry === undefined) {
+      continue;
+    }
     if (DERIVED_KEYS.has(key)) {
       continue;
     }

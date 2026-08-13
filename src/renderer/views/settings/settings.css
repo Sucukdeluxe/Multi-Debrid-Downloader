@@ -782,6 +782,13 @@
   border-bottom: 1px solid var(--ui-border);
 }
 
+.settings-rule-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .settings-provider-order,
 .settings-routing-list {
   display: grid;

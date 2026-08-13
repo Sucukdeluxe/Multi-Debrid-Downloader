@@ -771,6 +771,26 @@ describe("account workspace", () => {
     expect(html).toContain("Automatischer Fallback");
   });
 
+  it("offers a visible action that resets every Mega-Debrid cooldown", () => {
+    const calls: string[] = [];
+    const tree = AccountWorkspace({
+      model: {
+        ...workspaceModel(),
+        activePanel: "rules",
+        rules: {
+          ...workspaceModel().rules,
+          rotationEvents: [{ id: "rotation-1", title: "Mega-Debrid Web · Account 1/3", detail: "übersprungen (Cooldown aktiv)" }]
+        }
+      },
+      actions: workspaceActions({ onResetMegaDebridCooldowns: () => calls.push("reset") } as Partial<AccountWorkspaceActions>)
+    });
+    const button = findElement(tree, (element) => element.type === "button" && element.props.children === "Cooldowns zurücksetzen");
+
+    button.props.onClick();
+
+    expect(calls).toEqual(["reset"]);
+  });
+
   it("keeps add and edit dialogs separate and every secret field protected", () => {
     const options = accountOptions();
     const addHtml = renderToStaticMarkup(

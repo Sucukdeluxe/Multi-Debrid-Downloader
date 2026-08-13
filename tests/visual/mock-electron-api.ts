@@ -35,6 +35,7 @@ export function createVisualElectronApi(
       fixture.snapshot.settings.debridLinkApiKeyDailyUsageBytes[keyId] = 0;
       return clone(fixture.snapshot.settings);
     },
+    resetMegaDebridCooldowns: async () => ({ cleared: 0 }),
     createAccount: async () => ({ accountId: null, settings: clone(fixture.snapshot.settings), accounts: clone(fixture.snapshot.accounts) }),
     replaceAccount: async () => ({ accountId: null, settings: clone(fixture.snapshot.settings), accounts: clone(fixture.snapshot.accounts) }),
     updateAccountSecret: async () => ({ accountId: null, settings: clone(fixture.snapshot.settings), accounts: clone(fixture.snapshot.accounts) }),

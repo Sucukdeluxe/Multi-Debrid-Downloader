@@ -72,4 +72,13 @@ describe("account preload contract", () => {
       "https://rapidgator.net/file/example"
     );
   });
+
+  it("resets Mega-Debrid runtime cooldowns through a dedicated channel", async () => {
+    electron.invoke.mockResolvedValueOnce({ cleared: 3 });
+
+    const result = await (electron.api as unknown as { resetMegaDebridCooldowns: () => Promise<{ cleared: number }> }).resetMegaDebridCooldowns();
+
+    expect(electron.invoke).toHaveBeenCalledWith(IPC_CHANNELS.RESET_MEGA_DEBRID_COOLDOWNS);
+    expect(result).toEqual({ cleared: 3 });
+  });
 });

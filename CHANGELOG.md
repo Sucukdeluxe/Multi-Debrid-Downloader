@@ -2,6 +2,25 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.34] - 2026-08-13
+
+### Account recovery and rotation
+
+- Added a visible cooldown reset action for Mega-Debrid accounts that clears account cooldowns, shared Web-session backoff, Mega-Debrid provider circuit breakers, and affected queued retries without interrupting active downloads.
+- Treated ambiguous Mega-Debrid Web login and blocked-session responses as one shared session backoff instead of incorrectly cooling every configured account.
+- Prevented repeated account cycling while a shared Mega-Debrid Web session failure is active and allowed queued work to resume through the normal scheduler after recovery.
+- Attributed fallback failures and cooldowns to the provider that actually handled the failed attempt.
+
+### Settings reliability
+
+- Accepted omitted optional settings fields during provider changes so adding a Debrid-Link account after disabling Mega-Debrid accounts no longer fails payload validation.
+- Added complete German and English interface feedback for cooldown reset success and failure states.
+
+### Release validation
+
+- Covered manual cooldown recovery, shared session backoff, provider fallback attribution, queue release, active-download preservation, settings validation, preload exposure, and interface behavior with regression tests.
+- Stabilized archive integration checks under concurrent test load and waited for asynchronous post-processing cleanup before asserting final folder removal.
+
 ## [2.0.33] - 2026-08-13
 
 ### Account and provider lifecycle

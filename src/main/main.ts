@@ -418,6 +418,7 @@ function registerIpcHandlers(): void {
     }
     return createRendererSettings(controller.resetDebridLinkApiKeyDailyUsage(validatedKeyId));
   });
+  handleTrusted(IPC_CHANNELS.RESET_MEGA_DEBRID_COOLDOWNS, () => controller.resetMegaDebridCooldowns());
 
   handleTrusted(IPC_CHANNELS.CREATE_ACCOUNT, (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
     const command = validateAccountCommand(rawCommand);

@@ -589,6 +589,12 @@ export class AppController {
     return this.settings;
   }
 
+  public resetMegaDebridCooldowns(): { cleared: number } {
+    const cleared = this.manager.resetMegaDebridCooldowns();
+    this.audit("INFO", "Mega-Debrid-Cooldowns manuell zurückgesetzt", { cleared });
+    return { cleared };
+  }
+
   public async openRealDebridLoginWindow(): Promise<void> {
     this.audit("INFO", "Real-Debrid Login-Fenster geöffnet");
     await this.realDebridWebFallback.openLoginWindow();

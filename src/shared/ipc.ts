@@ -12,6 +12,7 @@ export const IPC_CHANNELS = {
   DELETE_ACCOUNT: "app:delete-account",
   RESET_PROVIDER_DAILY_USAGE: "app:reset-provider-daily-usage",
   RESET_DEBRID_LINK_API_KEY_DAILY_USAGE: "app:reset-debrid-link-api-key-daily-usage",
+  RESET_MEGA_DEBRID_COOLDOWNS: "app:reset-mega-debrid-cooldowns",
   ADD_LINKS: "queue:add-links",
   ADD_CONTAINERS: "queue:add-containers",
   GET_START_CONFLICTS: "queue:get-start-conflicts",

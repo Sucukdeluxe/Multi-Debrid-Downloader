@@ -1283,6 +1283,136 @@ describe("download manager", () => {
     expect(failures.has("realdebrid:rapidgator.net")).toBe(true);
   });
 
+  it("clears Mega-Debrid cooldowns and releases parked queue items without touching other providers", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-mega-manual-cooldown-reset-"));
+    tempDirs.push(root);
+    const accountId = getMegaDebridAccountId("web-user");
+    const settings = {
+      ...defaultSettings(),
+      megaDebridWebCredentials: "web-user:web-pass",
+      megaDebridWebEnabled: true
+    };
+    const activeController = new AbortController();
+    const invalidateMegaSession = vi.fn(() => activeController.abort("session_invalidated"));
+    const manager = new DownloadManager(settings, emptySession(), createStoragePaths(path.join(root, "state")), { invalidateMegaSession });
+    manager.addPackages([{ name: "cooldown-reset", links: [
+      "https://rapidgator.net/file/cooldown-reset",
+      "https://rapidgator.net/file/active-resolution"
+    ] }]);
+    const session = (manager as any).session;
+    const [item, activeItem] = Object.values(session.items) as any[];
+    item.status = "queued";
+    item.fullStatus = "Mega-Debrid Cooldown, neuer Versuch in 30s";
+    item.lastError = "Mega-Web Login ungültig oder Session blockiert";
+    item.provider = "megadebrid-web";
+    (manager as any).retryAfterByItem.set(item.id, Date.now() + 30_000);
+    (manager as any).retryStateByItem.set(item.id, { key: "mega", attempts: 1 });
+    activeItem.status = "validating";
+    activeItem.provider = "megadebrid-web";
+    (manager as any).activeTasks.set(activeItem.id, {
+      itemId: activeItem.id,
+      packageId: activeItem.packageId,
+      abortController: activeController,
+      abortReason: "none",
+      resumable: true,
+      nonResumableCounted: false,
+      validationProvider: "megadebrid-web"
+    });
+    const failures = (manager as any).providerFailures as Map<string, unknown>;
+    failures.set("megadebrid-web", { count: 3, lastFailAt: 1, cooldownUntil: Date.now() + 60_000 });
+    failures.set("realdebrid", { count: 3, lastFailAt: 1, cooldownUntil: Date.now() + 60_000 });
+    primeMegaDebridRuntimeCooldownForTests(`${accountId}:web`, 120_000);
+
+    const cleared = (manager as unknown as { resetMegaDebridCooldowns: () => number }).resetMegaDebridCooldowns();
+
+    expect(cleared).toBe(1);
+    expect(getMegaDebridAccountCooldownState(`${accountId}:web`)).toBeNull();
+    expect((manager as any).retryAfterByItem.has(item.id)).toBe(false);
+    expect((manager as any).retryStateByItem.has(item.id)).toBe(false);
+    expect(item.status).toBe("queued");
+    expect(item.fullStatus).toBe("Wartet");
+    expect(item.lastError).toBe("");
+    expect(failures.has("megadebrid-web")).toBe(false);
+    expect(failures.has("realdebrid")).toBe(true);
+    expect(invalidateMegaSession).not.toHaveBeenCalled();
+    expect(activeController.signal.aborted).toBe(false);
+  });
+
+  it("applies a shared Mega-Web backoff after an ambiguous login failure without starting the next queued item", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-mega-shared-login-backoff-"));
+    tempDirs.push(root);
+    const settings = {
+      ...defaultSettings(),
+      megaDebridWebCredentials: "web-user:web-pass",
+      megaDebridWebEnabled: true,
+      providerOrder: ["megadebrid-web" as const],
+      outputDir: path.join(root, "downloads"),
+      extractDir: path.join(root, "extract"),
+      autoExtract: false,
+      maxParallel: 1
+    };
+    const manager = new DownloadManager(settings, emptySession(), createStoragePaths(path.join(root, "state")));
+    const attempts = vi.fn(async (
+      _link: string,
+      _signal?: AbortSignal,
+      _settingsSnapshot?: AppSettings,
+      _preferredLeadProvider?: DebridProvider | null,
+      onProviderAttempt?: (provider: DebridProvider) => void
+    ) => {
+      onProviderAttempt?.("megadebrid-web");
+      throw new Error("Mega-Web Login ungültig oder Session blockiert");
+    });
+    (manager as any).debridService.unrestrictLink = attempts;
+    manager.addPackages([{ name: "shared-login-backoff", links: [
+      "https://rapidgator.net/file/shared-login-backoff-1",
+      "https://rapidgator.net/file/shared-login-backoff-2"
+    ] }]);
+
+    await manager.start();
+    await waitFor(() => attempts.mock.calls.length >= 1, 5_000);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    expect(attempts).toHaveBeenCalledTimes(1);
+    expect((manager as any).getProviderCooldownRemaining("megadebrid-web")).toBeGreaterThan(10_000);
+    manager.stop();
+  });
+
+  it("assigns a fallback Mega-Web session failure to the provider that actually failed", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-mega-fallback-failure-key-"));
+    tempDirs.push(root);
+    const settings = {
+      ...defaultSettings(),
+      token: "real-debrid-token",
+      megaDebridWebCredentials: "web-user:web-pass",
+      megaDebridWebEnabled: true,
+      providerOrder: ["realdebrid" as const, "megadebrid-web" as const],
+      outputDir: path.join(root, "downloads"),
+      extractDir: path.join(root, "extract"),
+      autoExtract: false,
+      maxParallel: 1
+    };
+    const manager = new DownloadManager(settings, emptySession(), createStoragePaths(path.join(root, "state")));
+    (manager as any).debridService.unrestrictLink = async (
+      _link: string,
+      _signal?: AbortSignal,
+      _settingsSnapshot?: AppSettings,
+      _preferredLeadProvider?: DebridProvider | null,
+      onProviderAttempt?: (provider: DebridProvider) => void
+    ) => {
+      onProviderAttempt?.("realdebrid");
+      onProviderAttempt?.("megadebrid-web");
+      throw new Error("Mega-Web Login ungültig oder Session blockiert");
+    };
+    manager.addPackages([{ name: "fallback-failure-key", links: ["https://rapidgator.net/file/fallback-failure-key"] }]);
+
+    await manager.start();
+    await waitFor(() => (manager as any).getProviderCooldownRemaining("megadebrid-web") > 0, 5_000);
+
+    expect((manager as any).getProviderCooldownRemaining("megadebrid-web")).toBeGreaterThan(10_000);
+    expect((manager as any).getProviderCooldownRemaining("realdebrid")).toBe(0);
+    manager.stop();
+  });
+
   it("refreshes an active Debrid-Link key pool without restarting the application", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-debrid-link-live-pool-refresh-"));
     tempDirs.push(root);
@@ -12181,7 +12311,7 @@ describe("download manager", () => {
     );
 
     const flattenedPath = path.join(mkvLibraryDir, "Episode01.mkv");
-    await waitFor(() => fs.existsSync(flattenedPath), 12000);
+    await waitFor(() => fs.existsSync(flattenedPath) && !fs.existsSync(extractDir), 12000);
     await waitFor(() => manager.getSnapshot().session.packageOrder.length === 0, 12000);
 
     expect(fs.existsSync(flattenedPath)).toBe(true);

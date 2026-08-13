@@ -104,7 +104,7 @@ describe("extractor", () => {
     expect(fs.existsSync(validZipPath)).toBe(false);
     expect(fs.existsSync(invalidZipPath)).toBe(true);
     expect(fs.existsSync(path.join(targetDir, "release.txt"))).toBe(true);
-  });
+  }, 15000);
 
   it("collects companion rar parts for cleanup", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-"));

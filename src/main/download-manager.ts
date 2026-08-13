@@ -54,7 +54,7 @@ function releaseTlsSkip(): void {
 }
 import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 import { planDownloadCompletion, reconcileFinalizedSize, validateDownloadedFileCompletion } from "./download-completion";
-import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, clearMegaDebridAccountRuntimeStates, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline, fetchAllDebridHostInfo, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getMegaDebridAccountAttemptTimeoutMs, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState } from "./debrid";
+import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, clearAllMegaDebridAccountRuntimeCooldowns, clearMegaDebridAccountRuntimeStates, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline, fetchAllDebridHostInfo, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getMegaDebridAccountAttemptTimeoutMs, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState } from "./debrid";
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { classifyDiskError } from "./fs-error";
@@ -776,7 +776,9 @@ function isHosterUnavailableError(errorText: string): boolean {
 
 function isTemporaryUnrestrictError(errorText: string): boolean {
   const text = String(errorText || "").toLowerCase();
-  return text.includes("server error")
+  return text.includes("mega-web login ungültig oder session blockiert")
+    || text.includes("mega-web login ungultig oder session blockiert")
+    || text.includes("server error")
     || text.includes("internal server error")
     || text.includes("notdebrid")
     || text.includes("unable to generate link")
@@ -1739,6 +1741,21 @@ function retryDelayWithJitter(attempt: number, baseMs: number): number {
   return Math.floor(jitter);
 }
 
+export function parseMegaDebridSessionBackoff(errorText: string): { delayMs: number; detail: string } | null {
+  const match = String(errorText || "").match(/mega_debrid_session_backoff:(\d+):(.*)$/is);
+  if (!match) {
+    return null;
+  }
+  const raw = Number(match[1]);
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return null;
+  }
+  return {
+    delayMs: Math.max(1000, Math.min(5 * 60 * 1000, raw)),
+    detail: String(match[2] || "").trim()
+  };
+}
+
 function clearResumeRecoveryState(item: DownloadItem, includeHttp416Budget = true): void {
   delete item.resumeLinkRenewalFailures;
   delete item.resumeHardResetUsed;
@@ -2613,6 +2630,57 @@ export class DownloadManager extends EventEmitter {
       }
     }
     return released;
+  }
+
+  public resetMegaDebridCooldowns(): number {
+    const cleared = clearAllMegaDebridAccountRuntimeCooldowns();
+    let clearedProviderFailures = 0;
+    for (const key of [...this.providerFailures.keys()]) {
+      if (isMegaDebridProviderKey(key)) {
+        this.providerFailures.delete(key);
+        clearedProviderFailures += 1;
+      }
+    }
+    const activeItemIds = new Set([...this.activeTasks.values()].map((task) => task.itemId));
+    const affectedPackageIds = new Set<string>();
+    let released = 0;
+    for (const item of Object.values(this.session.items)) {
+      if (activeItemIds.has(item.id) || (item.status !== "queued" && item.status !== "reconnect_wait")) {
+        continue;
+      }
+      const status = item.fullStatus || "";
+      const expectedProvider = String(item.provider || this.getExpectedProviderForItem(item) || "");
+      const isMegaWait = /Mega-Debrid (?:Cooldown|Session-Backoff|bis Tagesreset gesperrt)/i.test(status)
+        || (/Provider-Cooldown/i.test(status) && isMegaDebridProviderKey(expectedProvider));
+      if (!isMegaWait) {
+        continue;
+      }
+      this.retryAfterByItem.delete(item.id);
+      this.retryStateByItem.delete(item.id);
+      item.status = "queued";
+      item.fullStatus = "Wartet";
+      item.lastError = "";
+      item.provider = null;
+      item.providerLabel = undefined;
+      item.providerAccountId = undefined;
+      item.providerAccountLabel = undefined;
+      item.updatedAt = nowMs();
+      affectedPackageIds.add(item.packageId);
+      released += 1;
+    }
+    for (const packageId of affectedPackageIds) {
+      const pkg = this.session.packages[packageId];
+      if (pkg) {
+        this.refreshPackageStatus(pkg);
+      }
+    }
+    logger.info(`Mega-Debrid-Cooldowns manuell zurückgesetzt: accounts=${cleared}, provider=${clearedProviderFailures}, queue=${released}`);
+    this.persistSoon();
+    this.emitState(true);
+    if (this.session.running) {
+      void this.ensureScheduler().catch((error) => logger.error(`Scheduler nach Cooldown-Reset fehlgeschlagen: ${compactErrorText(error)}`));
+    }
+    return cleared;
   }
 
   public getSettings(): AppSettings {
@@ -9542,6 +9610,7 @@ export class DownloadManager extends EventEmitter {
         if (active.abortController.signal.aborted) {
           throw new Error(`aborted:${active.abortReason}`);
         }
+        active.validationProvider = null;
         const cooldownProvider = this.getProviderFailureKeyForItem(item);
         const cooldownMs = this.getProviderCooldownRemaining(cooldownProvider);
         let preferredLeadProvider: DebridProvider | null = null;
@@ -9635,18 +9704,19 @@ export class DownloadManager extends EventEmitter {
             }
           );
         } catch (unrestrictError) {
+          const failedProvider = this.getProviderFailureKeyForItem(item, active.validationProvider || cooldownProvider);
           if (!active.abortController.signal.aborted && unrestrictTimeoutSignal.aborted) {
-            this.recordProviderFailure(cooldownProvider);
+            this.recordProviderFailure(failedProvider);
             throw new Error(`Unrestrict Timeout nach ${Math.ceil(unrestrictTimeoutMs / 1000)}s`);
           }
           const errText = compactErrorText(unrestrictError);
           if (isUnrestrictFailure(errText) && !isHosterUnavailableError(errText)) {
-            this.recordProviderFailure(cooldownProvider);
+            this.recordProviderFailure(failedProvider);
             if (isProviderBusyUnrestrictError(errText) || isTemporaryUnrestrictError(errText)) {
               const busyCooldownMs = isTemporaryUnrestrictError(errText)
                 ? Math.min(180000, 20000 + Number(active.unrestrictRetries || 0) * 10000)
                 : Math.min(60000, 12000 + Number(active.unrestrictRetries || 0) * 3000);
-              this.applyProviderBusyBackoff(cooldownProvider, busyCooldownMs);
+              this.applyProviderBusyBackoff(failedProvider, busyCooldownMs);
             }
           }
           throw unrestrictError;
@@ -10288,6 +10358,21 @@ export class DownloadManager extends EventEmitter {
           }
 
           const megaRawError = error instanceof Error ? String(error.message || "") : String(error || "");
+          const megaSessionBackoff = parseMegaDebridSessionBackoff(megaRawError);
+          if (megaSessionBackoff && active.unrestrictRetries < maxUnrestrictRetries) {
+            active.unrestrictRetries += 1;
+            item.retries += 1;
+            this.queueRetry(
+              item,
+              active,
+              megaSessionBackoff.delayMs,
+              `Mega-Debrid Session-Backoff, neuer Versuch in ${Math.ceil(megaSessionBackoff.delayMs / 1000)}s`
+            );
+            item.lastError = megaSessionBackoff.detail || errorText;
+            this.persistSoon();
+            this.emitState();
+            return;
+          }
           const megaSlowLinkRetry = parseMegaDebridSlowLinkRetry(megaRawError);
           if (megaSlowLinkRetry && active.unrestrictRetries < maxUnrestrictRetries) {
             active.unrestrictRetries += 1;
@@ -10393,7 +10478,7 @@ export class DownloadManager extends EventEmitter {
 
             active.unrestrictRetries += 1;
             item.retries += 1;
-            const failureProvider = this.getProviderFailureKeyForItem(item);
+            const failureProvider = this.getProviderFailureKeyForItem(item, active.validationProvider || item.provider);
             const isDebridLinkError = /debrid-link|debrid_link/i.test(errorText) || failureProvider === "debridlink";
             if (!isDebridLinkError) {
               this.recordProviderFailure(failureProvider);

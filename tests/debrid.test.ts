@@ -4,6 +4,7 @@ import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
 import { isMegaDebridTransientResolveFailure } from "../src/shared/mega-debrid-errors";
+import * as debridRuntime from "../src/main/debrid";
 import { checkRapidgatorOnline, classifyMegaDebridAccountFailureForTests, clearMegaDebridEmptyResponseStreak, DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, getDebridLinkKeyCooldownStateForTests, getDebridLinkKeyRuntimeStateForTests, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getProviderRuntimeSnapshot, leadProviderChainWith, MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART, MEGA_DEBRID_STICKY_LINKS, normalizeResolvedFilename, parseRapidgatorFileSize, primeDebridLinkRuntimeCooldownForTests, primeMegaDebridRuntimeCooldownForTests, primeMegaDebridUntilRestartForTests, recordMegaDebridEmptyResponseStreak, resetDebridLinkRuntimeStateForTests, resetMegaDebridRuntimeStateForTests } from "../src/main/debrid";
 
 const originalFetch = globalThis.fetch;
@@ -2863,6 +2864,62 @@ describe("debrid service", () => {
 
     const genuineEmpty = classifyMegaDebridAccountFailureForTests(new Error("Antwort leer"));
     expect(genuineEmpty.limitSignal).toBe(true);
+  });
+
+  it("does not cool an account for the ambiguous Mega-Web login or session-blocked response", () => {
+    const result = classifyMegaDebridAccountFailureForTests(new Error("Mega-Web Login ungültig oder Session blockiert"));
+
+    expect(result.fatal).toBe(false);
+    expect(result.category).toBe("temporary");
+    expect(result.cooldownMs).toBe(0);
+  });
+
+  it("backs off the shared Mega-Web session after one ambiguous login failure without cooling every account", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      megaDebridWebCredentials: "web-user-1:web-pass-1\nweb-user-2:web-pass-2\nweb-user-3:web-pass-3",
+      megaDebridWebEnabled: true,
+      megaDebridApiEnabled: false,
+      providerOrder: ["megadebrid-web" as const],
+      providerPrimary: "megadebrid-web" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+    const megaWeb = vi.fn(async () => {
+      throw new Error("Mega-Web Login ungültig oder Session blockiert");
+    });
+    const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
+
+    const firstError = await service.unrestrictLink("https://rapidgator.net/file/shared-session-1.rar.html").then(() => null, (error: unknown) => error);
+    const secondError = await service.unrestrictLink("https://rapidgator.net/file/shared-session-2.rar.html").then(() => null, (error: unknown) => error);
+
+    expect(String(firstError)).toMatch(/mega_debrid_session_backoff:\d+:/i);
+    expect(String(secondError)).toMatch(/mega_debrid_session_backoff:\d+:/i);
+    expect(megaWeb).toHaveBeenCalledTimes(1);
+    for (const login of ["web-user-1", "web-user-2", "web-user-3"]) {
+      expect(getMegaDebridAccountCooldownState(`${getMegaDebridAccountId(login)}:web`)).toBeNull();
+    }
+
+    expect((debridRuntime as unknown as { clearAllMegaDebridAccountRuntimeCooldowns: () => number }).clearAllMegaDebridAccountRuntimeCooldowns()).toBe(1);
+    await service.unrestrictLink("https://rapidgator.net/file/shared-session-3.rar.html").catch(() => undefined);
+    expect(megaWeb).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears every Mega-Debrid account cooldown without resetting account configuration", () => {
+    const apiKey = `${getMegaDebridAccountId("api-user")}:api`;
+    const webKey = `${getMegaDebridAccountId("web-user")}:web`;
+    primeMegaDebridRuntimeCooldownForTests(apiKey, 120_000);
+    primeMegaDebridUntilRestartForTests(webKey);
+
+    const cleared = (debridRuntime as unknown as { clearAllMegaDebridAccountRuntimeCooldowns: () => number }).clearAllMegaDebridAccountRuntimeCooldowns();
+
+    expect(cleared).toBe(2);
+    expect(getMegaDebridAccountCooldownState(apiKey)).toBeNull();
+    expect(getMegaDebridAccountCooldownState(webKey)).toBeNull();
   });
 
   it("sanitizes provider-supplied account failures before they leave Mega-Debrid rotation", async () => {

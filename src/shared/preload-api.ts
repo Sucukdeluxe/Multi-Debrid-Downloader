@@ -39,6 +39,7 @@ export interface ElectronApi {
   updateSettings: (settings: RendererSettingsUpdate) => Promise<RendererSettings>;
   resetProviderDailyUsage: (provider: DebridProvider) => Promise<RendererSettings>;
   resetDebridLinkApiKeyDailyUsage: (keyId: string) => Promise<RendererSettings>;
+  resetMegaDebridCooldowns: () => Promise<{ cleared: number }>;
   createAccount: (command: AccountCreateCommand) => Promise<AccountCommandResult>;
   replaceAccount: (command: AccountReplaceCommand) => Promise<AccountCommandResult>;
   updateAccountSecret: (command: AccountUpdateSecretCommand) => Promise<AccountCommandResult>;

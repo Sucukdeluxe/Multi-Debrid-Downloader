@@ -39,6 +39,7 @@ const api: ElectronApi = {
   updateSettings: (settings: RendererSettingsUpdate): Promise<RendererSettings> => ipcRenderer.invoke(IPC_CHANNELS.UPDATE_SETTINGS, settings),
   resetProviderDailyUsage: (provider: DebridProvider): Promise<RendererSettings> => ipcRenderer.invoke(IPC_CHANNELS.RESET_PROVIDER_DAILY_USAGE, provider),
   resetDebridLinkApiKeyDailyUsage: (keyId: string): Promise<RendererSettings> => ipcRenderer.invoke(IPC_CHANNELS.RESET_DEBRID_LINK_API_KEY_DAILY_USAGE, keyId),
+  resetMegaDebridCooldowns: (): Promise<{ cleared: number }> => ipcRenderer.invoke(IPC_CHANNELS.RESET_MEGA_DEBRID_COOLDOWNS),
   createAccount: (command: AccountCreateCommand): Promise<AccountCommandResult> => ipcRenderer.invoke(IPC_CHANNELS.CREATE_ACCOUNT, command),
   replaceAccount: (command: AccountReplaceCommand): Promise<AccountCommandResult> => ipcRenderer.invoke(IPC_CHANNELS.REPLACE_ACCOUNT, command),
   updateAccountSecret: (command: AccountUpdateSecretCommand): Promise<AccountCommandResult> => ipcRenderer.invoke(IPC_CHANNELS.UPDATE_ACCOUNT_SECRET, command),

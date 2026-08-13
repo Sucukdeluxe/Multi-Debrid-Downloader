@@ -310,6 +310,8 @@ function getMegaDebridAbortMinRunMs(): number {
 
 const megaDebridEmptyResponseStreaks = new Map<string, number>();
 export const MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART = 10;
+const MEGA_DEBRID_WEB_SESSION_BACKOFF_MS = 20_000;
+let megaDebridWebSessionBackoffUntil = 0;
 
 const megaDebridRotationState: Record<"api" | "web", { cursor: number; stickyCount: number }> = {
   api: { cursor: 0, stickyCount: 0 },
@@ -370,12 +372,35 @@ export function clearMegaDebridAccountRuntimeStates(accountKeys: Iterable<string
   }
 }
 
+export function clearAllMegaDebridAccountRuntimeCooldowns(): number {
+  const cleared = megaDebridAccountCooldowns.size + (megaDebridWebSessionBackoffUntil > Date.now() ? 1 : 0);
+  megaDebridAccountCooldowns.clear();
+  megaDebridEmptyResponseStreaks.clear();
+  megaDebridWebSessionBackoffUntil = 0;
+  return cleared;
+}
+
 export function resetMegaDebridRuntimeStateForTests(): void {
   megaDebridAccountCooldowns.clear();
   megaDebridEmptyResponseStreaks.clear();
   megaDebridRotationState.api = { cursor: 0, stickyCount: 0 };
   megaDebridRotationState.web = { cursor: 0, stickyCount: 0 };
   megaDebridInFlight.clear();
+  megaDebridWebSessionBackoffUntil = 0;
+}
+
+function getMegaDebridWebSessionBackoffRemaining(now = Date.now()): number {
+  const remaining = megaDebridWebSessionBackoffUntil - now;
+  if (remaining <= 0) {
+    megaDebridWebSessionBackoffUntil = 0;
+    return 0;
+  }
+  return remaining;
+}
+
+function startMegaDebridWebSessionBackoff(now = Date.now()): number {
+  megaDebridWebSessionBackoffUntil = Math.max(megaDebridWebSessionBackoffUntil, now + MEGA_DEBRID_WEB_SESSION_BACKOFF_MS);
+  return getMegaDebridWebSessionBackoffRemaining(now);
 }
 
 export function getMegaDebridInFlightCountForMode(mode: "api" | "web"): number {
@@ -2096,7 +2121,7 @@ class MegaDebridClient {
       if (!lastError) {
         lastError = "Mega-Web Antwort leer";
       }
-      if (/permanent ungültig|hosternotavailable|file.?not.?found|file.?unavailable|link.?is.?dead/i.test(lastError) || MEGA_DEBRID_NO_SERVER_RE.test(lastError)) {
+      if (/permanent ungültig|hosternotavailable|file.?not.?found|file.?unavailable|link.?is.?dead|mega-web login ung(?:ü|u)ltig oder session blockiert/i.test(lastError) || MEGA_DEBRID_NO_SERVER_RE.test(lastError)) {
         break;
       }
       if (attempt < REQUEST_RETRIES) {
@@ -2146,6 +2171,13 @@ class MegaDebridClient {
 
     if (getAvailableMegaDebridAccounts(settings, mode).length === 0) {
       throw new Error("Mega-Debrid: Kein aktiver Account verfuegbar (deaktiviert oder am Tageslimit)");
+    }
+
+    if (mode === "web") {
+      const sessionBackoffMs = getMegaDebridWebSessionBackoffRemaining();
+      if (sessionBackoffMs > 0) {
+        throw new Error(`mega_debrid_session_backoff:${sessionBackoffMs}:Mega-Web Login vorübergehend blockiert`);
+      }
     }
 
     const failures: string[] = [];
@@ -2321,6 +2353,14 @@ class MegaDebridClient {
           throw new Error(`Mega-Debrid${accountLabel}: ${abortText}`);
         }
         const failure = MegaDebridClient.classifyAccountFailure(error, redactions);
+        if (mode === "web" && /mega-web login ung(?:ü|u)ltig oder session blockiert/i.test(failure.message)) {
+          const sessionBackoffMs = startMegaDebridWebSessionBackoff();
+          logAccountRotation("WARN", providerName, rotationLabel, "SESSION_BACKOFF", {
+            reason: failure.message,
+            cooldownSec: Math.ceil(sessionBackoffMs / 1000)
+          });
+          throw new Error(`mega_debrid_session_backoff:${sessionBackoffMs}:${failure.message}`);
+        }
         traceConversionPhase({
           phase: "mega-account",
           provider: providerName.includes("API") ? "megadebrid-api" : "megadebrid-web",
@@ -2413,6 +2453,10 @@ class MegaDebridClient {
 
     if (/aborted/i.test(errorText) && !/timeout/i.test(errorText)) {
       return { fatal: true, cooldownMs: 0, message: errorText, category: "temporary" };
+    }
+
+    if (/mega-web login ung(?:ü|u)ltig oder session blockiert/i.test(errorText)) {
+      return { fatal: false, cooldownMs: 0, message: errorText, category: "temporary" };
     }
 
     if (/token.?error|please log.?in/i.test(errorText)) {

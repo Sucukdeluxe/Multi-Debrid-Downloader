@@ -63,7 +63,7 @@ describe.skipIf(!hasJavaRuntime() || !hasJvmExtractorRuntime())("extractor jvm b
     expect(result.extracted).toBe(1);
     expect(result.failed).toBe(0);
     expect(fs.existsSync(path.join(targetDir, "episode.txt"))).toBe(true);
-  });
+  }, 15000);
 
   it("emits progress callbacks with archiveName and percent", async () => {
     process.env.RD_EXTRACT_BACKEND = "jvm";

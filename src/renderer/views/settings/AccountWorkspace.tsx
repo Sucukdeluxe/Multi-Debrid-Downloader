@@ -87,6 +87,7 @@ export interface AccountWorkspaceActions {
   onRoutingProviderChange?: (hosterId: string, provider: string) => void;
   onRoutingRemove?: (hosterId: string) => void;
   onRoutingAdd?: (hosterId: string) => void;
+  onResetMegaDebridCooldowns?: () => void;
 }
 
 export interface AccountWorkspaceProps {
@@ -414,7 +415,15 @@ function AccountRules({ model, actions }: AccountWorkspaceProps): ReactElement {
       </section>
       {model.rules.rotationEvents ? (
         <section className="settings-rule-section">
-          <h3>Rotations-Verlauf</h3>
+          <div className="settings-rule-section-heading">
+            <h3>Rotations-Verlauf</h3>
+            <button
+              className="settings-button settings-button-secondary"
+              disabled={model.busy || !actions.onResetMegaDebridCooldowns}
+              onClick={actions.onResetMegaDebridCooldowns}
+              type="button"
+            >Cooldowns zurücksetzen</button>
+          </div>
           {model.rules.rotationEvents.length === 0 ? (
             <span className="settings-rule-empty">Noch keine Rotations-Ereignisse.</span>
           ) : model.rules.rotationEvents.map((event) => (

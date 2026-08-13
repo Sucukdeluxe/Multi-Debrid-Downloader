@@ -3014,6 +3014,16 @@ export function App(): ReactElement {
     });
   };
 
+  const onResetMegaDebridCooldowns = async (): Promise<void> => {
+    await performQuickAction(async () => {
+      const result = await window.rd.resetMegaDebridCooldowns();
+      await reconcileAuthoritativeSnapshot();
+      showToast(result.cleared > 0 ? "Mega-Debrid-Cooldowns zurückgesetzt" : "Keine aktiven Mega-Debrid-Cooldowns.", 2400);
+    }, (error) => {
+      showToast(`Cooldown-Reset fehlgeschlagen: ${String(error)}`, 3200);
+    });
+  };
+
   const getAccountToggleTarget = (row: AccountTableRow): AccountToggleTarget | null => {
     if (row.toggleKind === "mega" && row.accountId) {
       return {
@@ -5155,7 +5165,8 @@ export function App(): ReactElement {
         : hosterId;
       if (!resolvedHosterId || settingsDraft.hosterRouting?.[resolvedHosterId] || !configuredProviders[0]) return;
       setHosterRouting({ ...(settingsDraft.hosterRouting || {}), [resolvedHosterId]: configuredProviders[0] });
-    }
+    },
+    onResetMegaDebridCooldowns: () => { void onResetMegaDebridCooldowns(); }
   };
 
   const settingsFormActions: SettingsViewActions["form"] = {

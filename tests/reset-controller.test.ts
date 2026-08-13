@@ -14,6 +14,20 @@ vi.mock("electron", () => ({
 }));
 
 describe("reset controller boundary", () => {
+  it("delegates the Mega-Debrid cooldown reset and audits the cleared count", () => {
+    const controller = Object.create(AppController.prototype) as {
+      manager: { resetMegaDebridCooldowns: ReturnType<typeof vi.fn> };
+      audit: ReturnType<typeof vi.fn>;
+      resetMegaDebridCooldowns: () => { cleared: number };
+    };
+    controller.manager = { resetMegaDebridCooldowns: vi.fn(() => 3) };
+    controller.audit = vi.fn();
+
+    expect(controller.resetMegaDebridCooldowns()).toEqual({ cleared: 3 });
+    expect(controller.manager.resetMegaDebridCooldowns).toHaveBeenCalledTimes(1);
+    expect(controller.audit).toHaveBeenCalledWith("INFO", "Mega-Debrid-Cooldowns manuell zurückgesetzt", { cleared: 3 });
+  });
+
   it("audits reset completion only after the manager operation succeeds", async () => {
     const packagePromise = Promise.resolve();
     const itemPromise = Promise.resolve();
