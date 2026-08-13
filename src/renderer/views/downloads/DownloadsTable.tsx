@@ -147,6 +147,8 @@ export function compactDownloadStatus(value: string): string {
   }
   if (/^Entpack-Fehler\b/i.test(status)) return "Entpack-Fehler";
   if (/^Extraction error\b/i.test(status)) return "Extraction error";
+  if (/^Entpacken\s*-\s*(?:Error|Fehler)\b/i.test(status)) return "Entpack-Fehler";
+  if (/^Extracting\s*-\s*(?:Error|Fehler)\b/i.test(status)) return "Extraction error";
   const extractionPending = status.match(/^(Entpacken|Extracting)\s*-\s*(Ausstehend|Pending|Warten auf Parts|Waiting for parts)/i);
   if (extractionPending) return `${extractionPending[1]} - ${extractionPending[2]}`;
   const extracting = status.match(/Entpacken\s+(\d+)%/i);
@@ -168,6 +170,8 @@ export function compactDownloadStatus(value: string): string {
     if (percentage) return `${finalizing[1]} - ${progress(Number(percentage[1]))}%`;
     return finalizing[1];
   }
+  if (/^Fehler(?:\s*:|$)/i.test(status)) return "Fehler";
+  if (/^Error(?:\s*:|$)/i.test(status)) return "Error";
   return status;
 }
 

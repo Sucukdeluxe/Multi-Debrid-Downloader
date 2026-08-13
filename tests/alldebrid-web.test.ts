@@ -5,6 +5,7 @@ const {
   mockSession,
   mockFetch,
   mockBrowserWindowCtor,
+  mockBrowserWindow,
   mockLoadURL,
   mockShow,
   mockFocus,
@@ -63,6 +64,7 @@ const {
     },
     mockFetch: fetch,
     mockBrowserWindowCtor: BrowserWindowCtor,
+    mockBrowserWindow: browserWindow,
     mockLoadURL: loadURL,
     mockShow: show,
     mockFocus: focus,
@@ -115,6 +117,21 @@ describe("alldebrid-web", () => {
     expect(mockLoadURL).toHaveBeenCalledWith("https://alldebrid.com/register/?from=de");
     expect(mockShow).toHaveBeenCalled();
     expect(mockFocus).toHaveBeenCalled();
+  });
+
+  it("replaces a login window after its renderer process crashes", async () => {
+    const fallback = new AllDebridWebFallback(() => true);
+
+    await fallback.openLoginWindow();
+    const crashHandler = mockBrowserWindow.webContents.on.mock.calls.find(([event]) => event === "render-process-gone")?.[1];
+
+    expect(crashHandler).toBeTypeOf("function");
+    crashHandler?.();
+    await fallback.openLoginWindow();
+
+    expect(mockClose).toHaveBeenCalledTimes(1);
+    expect(mockBrowserWindowCtor).toHaveBeenCalledTimes(2);
+    expect(mockLoadURL).toHaveBeenCalledTimes(2);
   });
 
   it("uses an existing AllDebrid Web session to unrestrict without opening a login window", async () => {

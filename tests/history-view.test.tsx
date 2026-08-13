@@ -161,6 +161,7 @@ describe("history model", () => {
 
   it("derives hosters only from valid URL hostnames and clamps the calculated start time", () => {
     expect(deriveHistoryHoster(["https://rapidgator.net/a", "https://rapidgator.net/b", "https://ddownload.com/c", "not a url"])).toBe("rapidgator.net, ddownload.com");
+    expect(deriveHistoryHoster(["https://rapidgator.net/a", "https://rg.to/b", "https://cdn.rg.to/c"])).toBe("rapidgator.net");
     expect(deriveHistoryHoster([])).toBe("—");
     expect(deriveHistoryHoster(undefined)).toBe("—");
     expect(deriveHistoryStartAt(entry({ id: "start", name: "Start", completedAt: 20_000, durationSeconds: 3 }))).toBe(17_000);
@@ -169,6 +170,11 @@ describe("history model", () => {
     const row = filterHistoryRows([entry({ id: "provider", name: "Provider", provider: "realdebrid", urls: [] })], "all", "", now)[0];
     expect(row.hoster).toBe("—");
     expect(row.providerLabel).toBe("Real-Debrid");
+  });
+
+  it("keeps unrelated hostnames distinct", () => {
+    expect(deriveHistoryHoster(["https://files.example.com/a", "https://cdn.example.net/b"])).toBe("files.example.com, cdn.example.net");
+    expect(deriveHistoryHoster(["https://foo.co.uk/a", "https://bar.co.uk/b"])).toBe("foo.co.uk, bar.co.uk");
   });
 
   it("prunes removed ids and preserves the original set instance when every id survives", () => {

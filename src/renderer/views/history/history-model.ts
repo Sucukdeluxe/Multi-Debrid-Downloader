@@ -1,4 +1,5 @@
 import type { DebridProvider, HistoryEntry } from "../../../shared/types";
+import { normalizeHosterHostname } from "../../../shared/hoster";
 
 export type HistoryFilter = "all" | "today" | "week" | "older" | "completed" | "deleted" | "failed";
 export type HistoryViewStatus = HistoryEntry["status"] | "failed";
@@ -168,11 +169,12 @@ export function deriveHistoryHoster(urls: string[] | undefined): string {
         continue;
       }
       const hostname = url.hostname.toLocaleLowerCase("de-DE");
-      if (!hostname || seen.has(hostname)) {
+      const hoster = normalizeHosterHostname(hostname) === "rapidgator" ? "rapidgator.net" : hostname;
+      if (!hostname || seen.has(hoster)) {
         continue;
       }
-      seen.add(hostname);
-      hostnames.push(hostname);
+      seen.add(hoster);
+      hostnames.push(hoster);
     } catch {
       continue;
     }

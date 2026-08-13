@@ -310,6 +310,15 @@ export class AllDebridWebFallback {
       externalHosts: ALLDEBRID_LOGIN_HOSTS
     });
     window.setMenuBarVisibility(false);
+    window.webContents.on("render-process-gone", () => {
+      if (this.loginWindow === window) {
+        this.loginWindow = null;
+        this.loginWindowPartition = "";
+      }
+      if (!window.isDestroyed()) {
+        window.close();
+      }
+    });
     window.on("closed", () => {
       if (this.loginWindow === window) {
         this.loginWindow = null;

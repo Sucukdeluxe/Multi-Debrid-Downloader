@@ -128,4 +128,54 @@ describe("renderer state serialization", () => {
       expect(serialized).not.toContain(secret);
     }
   });
+
+  it("assigns mode-specific statuses to API and Web rows with the same Mega-Debrid login", () => {
+    const login = "shared-status@example.test";
+    const baseId = getMegaDebridAccountId(login);
+    const apiStatus = {
+      accountId: `${baseId}:api`,
+      provider: "megadebrid" as const,
+      label: "Account 1",
+      maskedLogin: "sh***st",
+      valid: true,
+      isPremium: true,
+      premiumUntilMs: 2_000,
+      message: "API valid",
+      checkedAt: 1
+    };
+    const webStatus = {
+      accountId: `${baseId}:web`,
+      provider: "megadebrid" as const,
+      label: "Account 1",
+      maskedLogin: "sh***st",
+      valid: false,
+      isPremium: false,
+      premiumUntilMs: null,
+      message: "Web rejected",
+      checkedAt: 1
+    };
+    const state = createRendererState({
+      ...defaultSettings(),
+      megaCredentials: `${login}:api-pass`,
+      megaDebridApiCredentials: `${login}:api-pass`,
+      megaDebridWebCredentials: `${login}:web-pass`,
+      megaDebridApiEnabled: true,
+      megaDebridWebEnabled: true,
+      debridAccountStatuses: {
+        [apiStatus.accountId]: apiStatus,
+        [webStatus.accountId]: webStatus
+      }
+    });
+
+    expect(state.accounts.find((account) => account.kind === "megadebrid-api")?.status).toMatchObject({
+      accountId: `${baseId}:api`,
+      valid: true,
+      message: "API valid"
+    });
+    expect(state.accounts.find((account) => account.kind === "megadebrid-web")?.status).toMatchObject({
+      accountId: `${baseId}:web`,
+      valid: false,
+      message: "Web rejected"
+    });
+  });
 });

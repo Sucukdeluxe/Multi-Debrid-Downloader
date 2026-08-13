@@ -8,11 +8,15 @@ describe("live settings overlay", () => {
   it("keeps current Mega-Debrid counters and drops data for identities no longer configured", () => {
     const keepMegaId = getMegaDebridAccountId("keep@example.com");
     const removedMegaId = getMegaDebridAccountId("removed@example.com");
+    const keepMegaApiStatusId = `${keepMegaId}:api`;
+    const keepMegaWebStatusId = `${keepMegaId}:web`;
+    const removedMegaApiStatusId = `${removedMegaId}:api`;
     const keepKeyId = getDebridLinkApiKeyId("keep-key");
     const removedKeyId = getDebridLinkApiKeyId("removed-key");
     const target = {
       ...defaultSettings(),
-      megaCredentials: "keep@example.com:pass",
+      megaDebridApiCredentials: "keep@example.com:api-pass",
+      megaDebridWebCredentials: "keep@example.com:web-pass",
       megaLogin: "keep@example.com",
       megaPassword: "pass",
       debridLinkApiKeys: "keep-key",
@@ -29,7 +33,10 @@ describe("live settings overlay", () => {
       debridLinkApiKeyTotalUsageBytes: { [keepKeyId]: 5_000, [removedKeyId]: 6_000 },
       debridAccountStatuses: {
         [keepMegaId]: { accountId: keepMegaId, provider: "megadebrid" as const, label: "Account 1", maskedLogin: "ke***om", valid: true, isPremium: true, premiumUntilMs: null, message: "OK", checkedAt: 1 },
+        [keepMegaApiStatusId]: { accountId: keepMegaApiStatusId, provider: "megadebrid" as const, label: "Account 1", maskedLogin: "ke***om", valid: false, isPremium: false, premiumUntilMs: null, message: "API ungültig", checkedAt: 2 },
+        [keepMegaWebStatusId]: { accountId: keepMegaWebStatusId, provider: "megadebrid" as const, label: "Account 1", maskedLogin: "ke***om", valid: true, isPremium: true, premiumUntilMs: null, message: "Web gültig", checkedAt: 3 },
         [removedMegaId]: { accountId: removedMegaId, provider: "megadebrid" as const, label: "Account 2", maskedLogin: "re***om", valid: true, isPremium: true, premiumUntilMs: null, message: "OK", checkedAt: 1 },
+        [removedMegaApiStatusId]: { accountId: removedMegaApiStatusId, provider: "megadebrid" as const, label: "Account 2", maskedLogin: "re***om", valid: true, isPremium: true, premiumUntilMs: null, message: "API gültig", checkedAt: 2 },
         [keepKeyId]: { accountId: keepKeyId, provider: "debridlink" as const, label: "Key 1", maskedLogin: "kee***key", valid: true, isPremium: false, premiumUntilMs: null, message: "Free", checkedAt: 1 },
         [removedKeyId]: { accountId: removedKeyId, provider: "debridlink" as const, label: "Key 2", maskedLogin: "rem***key", valid: true, isPremium: false, premiumUntilMs: null, message: "Free", checkedAt: 1 }
       }
@@ -41,7 +48,14 @@ describe("live settings overlay", () => {
     expect(target.megaDebridAccountTotalUsageBytes).toEqual({ [keepMegaId]: 3_000 });
     expect(target.debridLinkApiKeyDailyUsageBytes).toEqual({ [keepKeyId]: 500 });
     expect(target.debridLinkApiKeyTotalUsageBytes).toEqual({ [keepKeyId]: 5_000 });
-    expect(Object.keys(target.debridAccountStatuses).sort()).toEqual([keepKeyId, keepMegaId].sort());
+    expect(Object.keys(target.debridAccountStatuses).sort()).toEqual([
+      keepKeyId,
+      keepMegaId,
+      keepMegaApiStatusId,
+      keepMegaWebStatusId
+    ].sort());
+    expect(target.debridAccountStatuses[keepMegaApiStatusId]?.message).toBe("API ungültig");
+    expect(target.debridAccountStatuses[keepMegaWebStatusId]?.message).toBe("Web gültig");
     expect(target.totalRuntimeAllTimeMs).toBe(9_000);
   });
 });

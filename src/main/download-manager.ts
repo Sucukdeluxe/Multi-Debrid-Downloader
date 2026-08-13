@@ -86,6 +86,7 @@ type ActiveTask = {
   stallRetries?: number;
   genericErrorRetries?: number;
   unrestrictRetries?: number;
+  validationProvider?: DebridProvider | null;
   blockedOnDiskWrite?: boolean;
   blockedOnDiskSince?: number;
 };
@@ -2328,6 +2329,13 @@ export class DownloadManager extends EventEmitter {
 
   public setSettings(next: AppSettings, opts?: { suppressRetroactiveCleanup?: boolean; settingsOnlyImport?: boolean }): void {
     const previous = this.settings;
+    const activeValidationProviders = new Map<string, DebridProvider | null>();
+    for (const active of this.activeTasks.values()) {
+      const item = this.session.items[active.itemId];
+      if (item?.status === "validating") {
+        activeValidationProviders.set(active.itemId, active.validationProvider || item.provider || this.getExpectedProviderForItem(item));
+      }
+    }
     const previousMegaAccounts = (["api", "web"] as const)
       .flatMap((mode) => getAvailableMegaDebridAccounts(previous, mode).map((account) => ({ mode, account })));
     const previousMegaPoolEntries = new Map<string, string>(previousMegaAccounts.map(({ mode, account }) => [`${account.id}:${mode}`, account.password]));
@@ -2383,7 +2391,8 @@ export class DownloadManager extends EventEmitter {
     const nextOrder = JSON.stringify(next.providerOrder ?? []);
     const prevRouting = JSON.stringify(previous.hosterRouting ?? {});
     const nextRouting = JSON.stringify(next.hosterRouting ?? {});
-    if (!opts?.settingsOnlyImport && (prevOrder !== nextOrder || prevRouting !== nextRouting)) {
+    const downloadRoutingChanged = prevOrder !== nextOrder || prevRouting !== nextRouting;
+    if (!opts?.settingsOnlyImport && downloadRoutingChanged) {
       const activeItemIds = new Set([...this.activeTasks.values()].map((t) => t.itemId));
       for (const item of Object.values(this.session.items)) {
         if (!activeItemIds.has(item.id) && item.status !== "completed" && item.status !== "failed") {
@@ -2402,23 +2411,55 @@ export class DownloadManager extends EventEmitter {
       logger.info(`Archiv-Passwortliste geaendert (${pwCount} Eintraege): Extractor-Caches zurueckgesetzt (learned=${reset.learnedCleared}, daemonRestart=${reset.daemonRestarted})`);
     }
 
-    const credChanges: Array<{ prev: string; next: string; providers: string[] }> = [
-      { prev: previous.token || "", next: next.token || "", providers: ["realdebrid"] },
-      { prev: previous.allDebridToken || "", next: next.allDebridToken || "", providers: ["alldebrid"] },
-      { prev: previous.bestToken || "", next: next.bestToken || "", providers: ["bestdebrid"] },
-      { prev: previousDebridLinkPool, next: nextDebridLinkPool, providers: ["debridlink"] },
-      { prev: previous.linkSnappyLogin + "|" + previous.linkSnappyPassword, next: next.linkSnappyLogin + "|" + next.linkSnappyPassword, providers: ["linksnappy"] },
-      { prev: previous.ddownloadLogin + "|" + previous.ddownloadPassword, next: next.ddownloadLogin + "|" + next.ddownloadPassword, providers: ["ddownload"] },
+    const disabledProviderFingerprint = (settings: AppSettings, provider: DebridProvider): string => String((settings.disabledProviders || []).includes(provider));
+    const credChanges: Array<{ prev: string; next: string; providers: DebridProvider[] }> = [
       {
-        prev: `${previous.megaDebridApiCredentials}|${previous.megaDebridWebCredentials}|${previous.megaDebridApiEnabled}|${previous.megaDebridWebEnabled}`,
-        next: `${next.megaDebridApiCredentials}|${next.megaDebridWebCredentials}|${next.megaDebridApiEnabled}|${next.megaDebridWebEnabled}`,
+        prev: `${previous.token || ""}|${previous.realDebridUseWebLogin}|${disabledProviderFingerprint(previous, "realdebrid")}`,
+        next: `${next.token || ""}|${next.realDebridUseWebLogin}|${disabledProviderFingerprint(next, "realdebrid")}`,
+        providers: ["realdebrid"]
+      },
+      {
+        prev: `${previous.allDebridToken || ""}|${previous.allDebridUseWebLogin}|${disabledProviderFingerprint(previous, "alldebrid")}`,
+        next: `${next.allDebridToken || ""}|${next.allDebridUseWebLogin}|${disabledProviderFingerprint(next, "alldebrid")}`,
+        providers: ["alldebrid"]
+      },
+      {
+        prev: `${previous.bestToken || ""}|${previous.bestDebridUseWebLogin}|${disabledProviderFingerprint(previous, "bestdebrid")}`,
+        next: `${next.bestToken || ""}|${next.bestDebridUseWebLogin}|${disabledProviderFingerprint(next, "bestdebrid")}`,
+        providers: ["bestdebrid"]
+      },
+      {
+        prev: `${previousDebridLinkPool}|${disabledProviderFingerprint(previous, "debridlink")}`,
+        next: `${nextDebridLinkPool}|${disabledProviderFingerprint(next, "debridlink")}`,
+        providers: ["debridlink"]
+      },
+      {
+        prev: `${previous.linkSnappyLogin}|${previous.linkSnappyPassword}|${disabledProviderFingerprint(previous, "linksnappy")}`,
+        next: `${next.linkSnappyLogin}|${next.linkSnappyPassword}|${disabledProviderFingerprint(next, "linksnappy")}`,
+        providers: ["linksnappy"]
+      },
+      {
+        prev: `${previous.ddownloadLogin}|${previous.ddownloadPassword}|${disabledProviderFingerprint(previous, "ddownload")}`,
+        next: `${next.ddownloadLogin}|${next.ddownloadPassword}|${disabledProviderFingerprint(next, "ddownload")}`,
+        providers: ["ddownload"]
+      },
+      {
+        prev: `${previous.oneFichierApiKey}|${disabledProviderFingerprint(previous, "onefichier")}`,
+        next: `${next.oneFichierApiKey}|${disabledProviderFingerprint(next, "onefichier")}`,
+        providers: ["onefichier"]
+      },
+      {
+        prev: `${previous.megaDebridApiCredentials}|${previous.megaDebridWebCredentials}|${previous.megaDebridApiEnabled}|${previous.megaDebridWebEnabled}|${disabledProviderFingerprint(previous, "megadebrid")}|${disabledProviderFingerprint(previous, "megadebrid-api")}|${disabledProviderFingerprint(previous, "megadebrid-web")}`,
+        next: `${next.megaDebridApiCredentials}|${next.megaDebridWebCredentials}|${next.megaDebridApiEnabled}|${next.megaDebridWebEnabled}|${disabledProviderFingerprint(next, "megadebrid")}|${disabledProviderFingerprint(next, "megadebrid-api")}|${disabledProviderFingerprint(next, "megadebrid-web")}`,
         providers: ["megadebrid", "megadebrid-api", "megadebrid-web"]
       }
     ];
+    const changedProviders = new Set<DebridProvider>();
     let clearedProviderFailures = 0;
     for (const change of credChanges) {
       if (change.prev === change.next) continue;
       for (const provider of change.providers) {
+        changedProviders.add(provider);
         for (const key of [...this.providerFailures.keys()]) {
           if (key === provider || key.startsWith(`${provider}:`)) {
             this.providerFailures.delete(key);
@@ -2459,7 +2500,7 @@ export class DownloadManager extends EventEmitter {
         if (!item || item.status !== "validating") {
           continue;
         }
-        const provider = String(item.provider || this.getExpectedProviderForItem(item) || "");
+        const provider = String(active.validationProvider || item.provider || this.getExpectedProviderForItem(item) || "");
         if (provider !== "megadebrid" && provider !== "megadebrid-api" && provider !== "megadebrid-web") {
           continue;
         }
@@ -2474,8 +2515,23 @@ export class DownloadManager extends EventEmitter {
         if (!item || item.status !== "validating") {
           continue;
         }
-        const provider = String(item.provider || this.getExpectedProviderForItem(item) || "");
+        const provider = String(active.validationProvider || item.provider || this.getExpectedProviderForItem(item) || "");
         if (provider !== "debridlink") {
+          continue;
+        }
+        active.abortReason = "settings_refresh";
+        active.abortController.abort("settings_refresh");
+      }
+    }
+
+    if (!opts?.settingsOnlyImport && (downloadRoutingChanged || changedProviders.size > 0)) {
+      for (const active of this.activeTasks.values()) {
+        const item = this.session.items[active.itemId];
+        if (!item || item.status !== "validating" || active.abortController.signal.aborted) {
+          continue;
+        }
+        const provider = activeValidationProviders.get(active.itemId) || item.provider || null;
+        if (!downloadRoutingChanged && (!provider || !changedProviders.has(provider))) {
           continue;
         }
         active.abortReason = "settings_refresh";
@@ -6578,6 +6634,10 @@ export class DownloadManager extends EventEmitter {
           logger.info(`applyOnStartCleanupPolicy: entferne ${completedItemIds.length} completed Items aus Paket ${pkg.name} (${pkg.itemIds.length} Items verbleiben)`);
         }
         for (const itemId of completedItemIds) {
+          const item = this.session.items[itemId];
+          if (item) {
+            this.captureCompletedItemCleanup(pkg, item);
+          }
           delete this.session.items[itemId];
           this.itemCount = Math.max(0, this.itemCount - 1);
         }
@@ -6614,6 +6674,10 @@ export class DownloadManager extends EventEmitter {
           this.removePackageFromSession(pkgId, completedItemIds);
         } else {
           for (const itemId of completedItemIds) {
+            const item = this.session.items[itemId];
+            if (item) {
+              this.captureCompletedItemCleanup(pkg, item);
+            }
             delete this.session.items[itemId];
             this.itemCount = Math.max(0, this.itemCount - 1);
           }
@@ -9321,7 +9385,7 @@ export class DownloadManager extends EventEmitter {
       this.emitState();
       return;
     }
-    delete item.http416FreshRestarts;
+    item.http416FreshRestarts = Math.max(freshRestarts, MAX_HTTP416_FRESH_RESTARTS);
     item.status = "failed";
     this.recordRunOutcome(item.id, "failed");
     item.lastError = errorText;
@@ -9543,7 +9607,15 @@ export class DownloadManager extends EventEmitter {
                 traceConversionNote("slots", this.describeSlotOccupancy());
                 traceConversionNote("retry", Number(active.unrestrictRetries || 0));
                 try {
-                  return await this.debridService.unrestrictLink(item.url, unrestrictedSignal, undefined, preferredLeadProvider);
+                  return await this.debridService.unrestrictLink(
+                    item.url,
+                    unrestrictedSignal,
+                    undefined,
+                    preferredLeadProvider,
+                    (provider) => {
+                      active.validationProvider = provider;
+                    }
+                  );
                 } catch (innerError) {
                   if (!active.abortController.signal.aborted && unrestrictTimeoutSignal.aborted) {
                     traceConversionPhase({
@@ -9615,7 +9687,8 @@ export class DownloadManager extends EventEmitter {
             ownerId: item.id,
             targetPath: item.targetPath,
             requiredBytes: item.totalBytes,
-            alreadyPresentBytes: item.downloadedBytes
+            alreadyPresentBytes: item.downloadedBytes,
+            signal: active.abortController.signal
           });
           this.diskLeasesByOwner.get(item.id)?.release();
           this.diskLeasesByOwner.set(item.id, diskLease);
@@ -10004,6 +10077,15 @@ export class DownloadManager extends EventEmitter {
           this.retryStateByItem.delete(item.id);
         } else {
           const errorText = compactErrorText(error);
+          if (error instanceof DiskCapacityError) {
+            this.recordDiskWait(error.event, { itemId: item.id, packageId: pkg.id });
+            this.releaseTargetPath(item.id);
+            this.queueRetry(item, active, Math.max(1000, error.event.retryAt - nowMs()), "Warte auf Festplatte");
+            item.lastError = "Nicht genügend freier Speicherplatz";
+            this.persistSoon();
+            this.emitState();
+            return;
+          }
           if (this.tryFinalizeItemFromDisk(pkg, item, "Error-Recovery", errorText)) {
             return;
           }
@@ -10764,6 +10846,36 @@ export class DownloadManager extends EventEmitter {
         } else if (contentLength > 0) {
           item.totalBytes = response.status === 206 ? existingBytes + contentLength : contentLength;
         }
+        if (item.totalBytes && item.totalBytes > 0) {
+          const existingLease = this.diskLeasesByOwner.get(item.id);
+          try {
+            if (existingLease?.volumeKey) {
+              await existingLease.update({
+                requiredBytes: item.totalBytes,
+                alreadyPresentBytes: existingBytes,
+                signal: active.abortController.signal
+              });
+            } else {
+              existingLease?.release();
+              const updatedLease = await this.diskReservations.reserve({
+                phase: "download",
+                ownerId: item.id,
+                targetPath: effectiveTargetPath,
+                requiredBytes: item.totalBytes,
+                alreadyPresentBytes: existingBytes,
+                signal: active.abortController.signal
+              });
+              this.diskLeasesByOwner.set(item.id, updatedLease);
+            }
+            this.resolveDiskWait(item.id, "download");
+          } catch (error) {
+            try {
+              await response.body?.cancel();
+            } catch {
+            }
+            throw error;
+          }
+        }
         const completionPlan = planDownloadCompletion({
           existingBytes,
           responseStatus: response.status,
@@ -11414,6 +11526,9 @@ export class DownloadManager extends EventEmitter {
         if (active.abortController.signal.aborted || String(error).includes("aborted:")) {
           throw error;
         }
+        if (error instanceof DiskCapacityError) {
+          throw error;
+        }
         lastError = compactErrorText(error);
         const normalizedLastError = lastError.replace(/^Error:\s*/i, "");
         const diskCause = classifyDiskError(error);
@@ -11541,6 +11656,13 @@ export class DownloadManager extends EventEmitter {
         const hasZeroByteArchive = await this.hasZeroByteArchiveArtifact(item);
 
         if (item.status === "failed") {
+          if (is416Failure && Math.max(0, Number(item.http416FreshRestarts || 0)) >= MAX_HTTP416_FRESH_RESTARTS) {
+            logger.warn(
+              `Auto-Retry-Recovery (${trigger}) übersprungen: HTTP-416-Budget ausgeschöpft ` +
+              `für item=${item.fileName || item.id}, freshRestarts=${item.http416FreshRestarts}/${MAX_HTTP416_FRESH_RESTARTS}`
+            );
+            continue;
+          }
           if (!is416Failure && !hasZeroByteArchive && item.retries >= maxAutoRetryFailures) {
             continue;
           }
@@ -13334,17 +13456,7 @@ export class DownloadManager extends EventEmitter {
           return;
         }
       }
-      pkg.cleanedCompletedItemCount = Math.max(0, Number(pkg.cleanedCompletedItemCount || 0)) + 1;
-      if (isExtractedLabel(item.fullStatus || "")) {
-        pkg.cleanedExtractedItemCount = Math.max(0, Number(pkg.cleanedExtractedItemCount || 0)) + 1;
-      }
-      pkg.cleanedDownloadedBytes = Math.max(0, Number(pkg.cleanedDownloadedBytes || 0)) + Math.max(0, item.downloadedBytes || 0);
-      pkg.cleanedTotalBytes = Math.max(0, Number(pkg.cleanedTotalBytes || 0)) + Math.max(0, item.totalBytes || item.downloadedBytes || 0);
-      pkg.cleanedUrls = [...new Set([...(pkg.cleanedUrls || []), item.url].filter(Boolean))];
-      pkg.cleanedProviders = item.provider
-        ? [...new Set([...(pkg.cleanedProviders || []), item.provider])]
-        : [...(pkg.cleanedProviders || [])];
-      pkg.updatedAt = nowMs();
+      this.captureCompletedItemCleanup(pkg, item);
       pkg.itemIds = pkg.itemIds.filter((id) => id !== itemId);
       this.releaseTargetPath(itemId);
       this.dropItemContribution(itemId);
@@ -13382,6 +13494,20 @@ export class DownloadManager extends EventEmitter {
         this.removePackageFromSession(packageId, [...pkg.itemIds], "completed");
       }
     }
+  }
+
+  private captureCompletedItemCleanup(pkg: PackageEntry, item: DownloadItem): void {
+    pkg.cleanedCompletedItemCount = Math.max(0, Number(pkg.cleanedCompletedItemCount || 0)) + 1;
+    if (isExtractedLabel(item.fullStatus || "")) {
+      pkg.cleanedExtractedItemCount = Math.max(0, Number(pkg.cleanedExtractedItemCount || 0)) + 1;
+    }
+    pkg.cleanedDownloadedBytes = Math.max(0, Number(pkg.cleanedDownloadedBytes || 0)) + Math.max(0, item.downloadedBytes || 0);
+    pkg.cleanedTotalBytes = Math.max(0, Number(pkg.cleanedTotalBytes || 0)) + Math.max(0, item.totalBytes || item.downloadedBytes || 0);
+    pkg.cleanedUrls = [...new Set([...(pkg.cleanedUrls || []), item.url].filter(Boolean))];
+    pkg.cleanedProviders = item.provider
+      ? [...new Set([...(pkg.cleanedProviders || []), item.provider])]
+      : [...(pkg.cleanedProviders || [])];
+    pkg.updatedAt = nowMs();
   }
 
   private finishRun(): void {

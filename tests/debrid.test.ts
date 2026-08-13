@@ -1324,6 +1324,45 @@ describe("debrid service", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(0);
   });
 
+  it.each([
+    ["Real-Debrid", "realdebrid", "realDebridWebUnrestrict", { token: "rd-token", realDebridUseWebLogin: true }],
+    ["AllDebrid", "alldebrid", "allDebridWebUnrestrict", { allDebridToken: "ad-token", allDebridUseWebLogin: true }],
+    ["BestDebrid", "bestdebrid", "bestDebridWebUnrestrict", { bestToken: "best-token", bestDebridUseWebLogin: true }]
+  ] as const)("aborts a hanging %s Web provider callback even when it ignores the signal", async (_label, providerName, callbackName, settingsPatch) => {
+    let markStarted: () => void = () => {};
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const providerCallback = vi.fn(() => {
+      markStarted();
+      return new Promise<never>(() => {});
+    });
+    const settings = {
+      ...defaultSettings(),
+      ...settingsPatch,
+      providerOrder: [] as const,
+      providerPrimary: providerName,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+    const service = new DebridService(settings, { [callbackName]: providerCallback });
+    const controller = new AbortController();
+    const outcome = service.unrestrictLink("https://rapidgator.net/file/hanging-web-provider", controller.signal).then(
+      () => "fulfilled",
+      (error: unknown) => String(error)
+    );
+
+    await started;
+    controller.abort("pause");
+    const result = await Promise.race([
+      outcome,
+      new Promise<string>((resolve) => setTimeout(() => resolve("timeout"), 100))
+    ]);
+
+    expect(result).toMatch(/aborted/i);
+  });
+
   it("treats Real-Debrid web mode as not configured when callback is unavailable and no token", async () => {
     const settings = {
       ...defaultSettings(),
@@ -1494,6 +1533,47 @@ describe("debrid service", () => {
     const result = await service.unrestrictLink("https://rapidgator.net/file/legacy-web");
     expect(result.directUrl).toBe("https://mega-web.example/legacy-web.rar");
     expect(megaWeb).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports each provider as soon as its conversion attempt starts", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "rd-token",
+      megaLogin: "user",
+      megaPassword: "pass",
+      megaCredentials: "user:pass",
+      providerOrder: ["realdebrid", "megadebrid"] as const,
+      autoProviderFallback: true
+    };
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("api.real-debrid.com/rest/1.0/unrestrict/link")) {
+        return new Response(JSON.stringify({ error: "traffic_limit" }), {
+          status: 403,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+    const service = new DebridService(settings, {
+      megaWebUnrestrict: vi.fn(async () => ({
+        fileName: "file.bin",
+        directUrl: "https://mega-web.example/file.bin",
+        fileSize: null,
+        retriesUsed: 0
+      }))
+    });
+    const attempts: string[] = [];
+
+    await service.unrestrictLink(
+      "https://rapidgator.net/file/provider-attempts.rar.html",
+      undefined,
+      undefined,
+      undefined,
+      (provider) => attempts.push(provider)
+    );
+
+    expect(attempts).toEqual(["realdebrid", "megadebrid"]);
   });
 
   it("uses Mega web fallback when API fails", async () => {
@@ -2250,6 +2330,115 @@ describe("debrid service", () => {
 
     expect(usedIds.slice(0, MEGA_DEBRID_STICKY_LINKS)).toEqual(new Array(MEGA_DEBRID_STICKY_LINKS).fill(getMegaDebridAccountId("user1")));
     expect(usedIds[MEGA_DEBRID_STICKY_LINKS]).toBe(getMegaDebridAccountId("user2"));
+  }, 30000);
+
+  it("keeps the Mega-Debrid Web cursor independent from API rotation", async () => {
+    const apiSettings = {
+      ...defaultSettings(),
+      token: "", bestToken: "", allDebridToken: "",
+      megaCredentials: "cursor-api-1:pass1\ncursor-api-2:pass2",
+      megaDebridApiCredentials: "cursor-api-1:pass1\ncursor-api-2:pass2",
+      megaDebridWebCredentials: "",
+      megaDebridApiEnabled: true,
+      megaDebridWebEnabled: false,
+      providerOrder: [] as const, providerPrimary: "megadebrid-api" as const,
+      providerSecondary: "none" as const, providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = String(input);
+      if (url.includes("action=connectUser")) {
+        return new Response(JSON.stringify({ response_code: "ok", token: "cursor-api-token" }), { status: 200 });
+      }
+      if (url.includes("action=getLink")) {
+        return new Response(JSON.stringify({ response_code: "ok", debridLink: "https://mega-cdn.example/cursor.rar", filename: "cursor.rar" }), { status: 200 });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const apiService = new DebridService(apiSettings);
+    for (let index = 0; index < MEGA_DEBRID_STICKY_LINKS; index += 1) {
+      await apiService.unrestrictLink(`https://rapidgator.net/file/api-cursor-${index}`);
+    }
+
+    const webLogins: string[] = [];
+    const webSettings = {
+      ...defaultSettings(),
+      token: "", bestToken: "", allDebridToken: "",
+      megaCredentials: "cursor-web-1:pass1\ncursor-web-2:pass2",
+      megaDebridApiCredentials: "",
+      megaDebridWebCredentials: "cursor-web-1:pass1\ncursor-web-2:pass2",
+      megaDebridApiEnabled: false,
+      megaDebridWebEnabled: true,
+      providerOrder: [] as const, providerPrimary: "megadebrid-web" as const,
+      providerSecondary: "none" as const, providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+    const webService = new DebridService(webSettings, {
+      megaWebUnrestrict: async (_link, _signal, account) => {
+        webLogins.push(account?.login || "");
+        return { fileName: "web-cursor.rar", directUrl: "https://mega-web.example/web-cursor.rar", fileSize: null, retriesUsed: 0 };
+      }
+    });
+
+    await webService.unrestrictLink("https://rapidgator.net/file/web-cursor");
+
+    expect(webLogins).toEqual(["cursor-web-1"]);
+  }, 30000);
+
+  it("keeps the Mega-Debrid Web sticky counter independent from API successes", async () => {
+    const apiSettings = {
+      ...defaultSettings(),
+      token: "", bestToken: "", allDebridToken: "",
+      megaCredentials: "sticky-api-1:pass1\nsticky-api-2:pass2",
+      megaDebridApiCredentials: "sticky-api-1:pass1\nsticky-api-2:pass2",
+      megaDebridWebCredentials: "",
+      megaDebridApiEnabled: true,
+      megaDebridWebEnabled: false,
+      providerOrder: [] as const, providerPrimary: "megadebrid-api" as const,
+      providerSecondary: "none" as const, providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = String(input);
+      if (url.includes("action=connectUser")) {
+        return new Response(JSON.stringify({ response_code: "ok", token: "sticky-api-token" }), { status: 200 });
+      }
+      if (url.includes("action=getLink")) {
+        return new Response(JSON.stringify({ response_code: "ok", debridLink: "https://mega-cdn.example/sticky.rar", filename: "sticky.rar" }), { status: 200 });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const apiService = new DebridService(apiSettings);
+    for (let index = 0; index < MEGA_DEBRID_STICKY_LINKS - 1; index += 1) {
+      await apiService.unrestrictLink(`https://rapidgator.net/file/api-sticky-${index}`);
+    }
+
+    const webLogins: string[] = [];
+    const webSettings = {
+      ...defaultSettings(),
+      token: "", bestToken: "", allDebridToken: "",
+      megaCredentials: "sticky-web-1:pass1\nsticky-web-2:pass2",
+      megaDebridApiCredentials: "",
+      megaDebridWebCredentials: "sticky-web-1:pass1\nsticky-web-2:pass2",
+      megaDebridApiEnabled: false,
+      megaDebridWebEnabled: true,
+      providerOrder: [] as const, providerPrimary: "megadebrid-web" as const,
+      providerSecondary: "none" as const, providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+    const webService = new DebridService(webSettings, {
+      megaWebUnrestrict: async (_link, _signal, account) => {
+        webLogins.push(account?.login || "");
+        return { fileName: "web-sticky.rar", directUrl: "https://mega-web.example/web-sticky.rar", fileSize: null, retriesUsed: 0 };
+      }
+    });
+
+    await webService.unrestrictLink("https://rapidgator.net/file/web-sticky-1");
+    await webService.unrestrictLink("https://rapidgator.net/file/web-sticky-2");
+
+    expect(webLogins).toEqual(["sticky-web-1", "sticky-web-1"]);
   }, 30000);
 
   it("ueberspringt einen gesperrten Account und bleibt dann klebrig beim naechsten", async () => {

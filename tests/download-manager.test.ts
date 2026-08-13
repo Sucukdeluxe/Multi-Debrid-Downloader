@@ -188,12 +188,12 @@ describe("disk write recovery", () => {
     (manager as any).debridService.unrestrictLink = async () => ({
       fileName: "reserve-download.bin",
       directUrl: "https://dummy/reserve-download",
-      fileSize: 1_024,
+      fileSize: null,
       retriesUsed: 0,
       provider: "realdebrid",
       providerLabel: "Real-Debrid"
     });
-    globalThis.fetch = vi.fn(async () => new Response(Buffer.alloc(16, 1), {
+    globalThis.fetch = vi.fn(async () => new Response(Buffer.alloc(1_024, 1), {
       status: 200,
       headers: {
         "content-length": "1024",
@@ -230,6 +230,107 @@ describe("disk write recovery", () => {
       state: "waiting",
       at: expect.any(Number)
     }));
+  });
+
+  it("releases an active download when Stop aborts a blocked post-header disk reservation", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-disk-reserve-abort-"));
+    tempDirs.push(root);
+    const session = emptySession();
+    const packageId = "reserve-abort-package";
+    const itemId = "reserve-abort-item";
+    const outputDir = path.join(root, "downloads", "reserve-abort");
+    const createdAt = Date.now();
+    session.running = true;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "reserve-abort",
+      outputDir,
+      extractDir: path.join(root, "extract", "reserve-abort"),
+      status: "downloading",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://rapidgator.net/file/reserve-abort",
+      provider: "realdebrid",
+      status: "downloading",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 0,
+      totalBytes: null,
+      progressPercent: 0,
+      fileName: "reserve-abort.bin",
+      targetPath: "",
+      resumable: true,
+      attempts: 0,
+      lastError: "",
+      fullStatus: "Download läuft",
+      createdAt,
+      updatedAt: createdAt
+    };
+    let reservationStarted = false;
+    let statCalls = 0;
+    const manager = new DownloadManager(
+      { ...defaultSettings(), token: "rd-token", outputDir: path.join(root, "downloads"), extractDir: path.join(root, "extract"), autoExtract: false },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+    (manager as any).diskReservations = new DiskReservationCoordinator({
+      safetyBytes: 0,
+      statVolume: async (targetPath) => {
+        statCalls += 1;
+        reservationStarted = true;
+        if (statCalls === 1) {
+          return await new Promise(() => undefined);
+        }
+        return { path: targetPath, volumeKey: "follow-up-volume", freeBytes: 4_096, totalBytes: 8_192 };
+      }
+    });
+    (manager as any).debridService.unrestrictLink = async () => ({
+      fileName: "reserve-abort.bin",
+      directUrl: "https://dummy/reserve-abort",
+      fileSize: null,
+      retriesUsed: 0,
+      provider: "realdebrid",
+      providerLabel: "Real-Debrid"
+    });
+    const response = new Response(Buffer.alloc(1_024, 3), {
+      status: 200,
+      headers: { "content-length": "1024", "accept-ranges": "bytes" }
+    });
+    const cancelSpy = vi.spyOn(response.body!, "cancel");
+    globalThis.fetch = vi.fn(async () => response) as typeof fetch;
+    const active = { itemId, packageId, abortController: new AbortController(), abortReason: "none", resumable: true, nonResumableCounted: false, blockedOnDiskWrite: false, blockedOnDiskSince: 0 };
+    (manager as any).activeTasks.set(itemId, active);
+
+    const processing = (manager as any).processItem(active) as Promise<void>;
+    await waitFor(() => reservationStarted, 2_000);
+    active.abortReason = "stop";
+    active.abortController.abort("stop");
+
+    await expect(Promise.race([
+      processing.then(() => "released"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("blocked"), 500))
+    ])).resolves.toBe("released");
+    expect(cancelSpy).toHaveBeenCalled();
+    const followUpLease = await Promise.race([
+      (manager as any).diskReservations.reserve({
+        phase: "download",
+        ownerId: "follow-up",
+        targetPath: path.join(root, "follow-up.bin"),
+        requiredBytes: 512,
+        alreadyPresentBytes: 0
+      }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 500))
+    ]);
+    expect(followUpLease).not.toBeNull();
+    followUpLease?.release();
   });
 
   it("keeps disk-wait downloads out of the scheduler until their capacity retry is due", async () => {
@@ -988,6 +1089,113 @@ describe("download manager", () => {
     expect(failures.has("bestdebrid")).toBe(false);
     expect(failures.has("bestdebrid:rapidgator.net")).toBe(false);
     expect(failures.has("realdebrid")).toBe(true);
+  });
+
+  it("aborts active Real-Debrid validation when the provider is disabled live", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-real-live-disable-"));
+    tempDirs.push(root);
+    const settings = {
+      ...defaultSettings(),
+      token: "rd-token",
+      allDebridToken: "ad-token",
+      providerOrder: ["realdebrid", "alldebrid"] as const
+    };
+    const manager = new DownloadManager(settings, emptySession(), createStoragePaths(path.join(root, "state")));
+    manager.addPackages([{ name: "live-disable", links: ["https://rapidgator.net/file/live-disable"] }]);
+    const session = (manager as any).session;
+    const item = Object.values(session.items)[0] as any;
+    item.provider = null;
+    item.status = "validating";
+    session.running = true;
+    const active = {
+      itemId: item.id,
+      packageId: item.packageId,
+      abortController: new AbortController(),
+      abortReason: "none",
+      resumable: true,
+      nonResumableCounted: false
+    };
+    (manager as any).activeTasks.set(item.id, active);
+    const failures = (manager as any).providerFailures as Map<string, unknown>;
+    failures.set("realdebrid:rapidgator.net", { count: 3, lastFailAt: 1, cooldownUntil: Date.now() + 60_000 });
+    failures.set("alldebrid:rapidgator.net", { count: 3, lastFailAt: 1, cooldownUntil: Date.now() + 60_000 });
+
+    manager.setSettings({
+      ...settings,
+      disabledProviders: ["realdebrid"]
+    });
+
+    expect(active.abortController.signal.aborted).toBe(true);
+    expect(active.abortReason).toBe("settings_refresh");
+    expect(failures.has("realdebrid:rapidgator.net")).toBe(false);
+    expect(failures.has("alldebrid:rapidgator.net")).toBe(true);
+  });
+
+  it("aborts the active fallback provider when its settings change live", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-fallback-live-disable-"));
+    tempDirs.push(root);
+    const settings = {
+      ...defaultSettings(),
+      token: "rd-token",
+      allDebridToken: "ad-token",
+      providerOrder: ["realdebrid", "alldebrid"] as const,
+      outputDir: path.join(root, "downloads"),
+      extractDir: path.join(root, "extract"),
+      autoExtract: false,
+      maxParallel: 1
+    };
+    const manager = new DownloadManager(settings, emptySession(), createStoragePaths(path.join(root, "state")));
+    let fallbackStarted = false;
+    let providerSignal: AbortSignal | undefined;
+    (manager as any).debridService.unrestrictLink = async (
+      _link: string,
+      signal?: AbortSignal,
+      _settingsSnapshot?: AppSettings,
+      _preferredLeadProvider?: DebridProvider | null,
+      onProviderAttempt?: (provider: DebridProvider) => void
+    ) => {
+      providerSignal = signal;
+      onProviderAttempt?.("alldebrid");
+      fallbackStarted = true;
+      return await new Promise((_resolve, reject) => {
+        const onAbort = (): void => reject(new Error("aborted:settings-refresh"));
+        if (signal?.aborted) {
+          onAbort();
+          return;
+        }
+        signal?.addEventListener("abort", onAbort, { once: true });
+      });
+    };
+    manager.addPackages([{ name: "fallback-live-disable", links: ["https://rapidgator.net/file/fallback-live-disable"] }]);
+
+    await manager.start();
+    await waitFor(() => fallbackStarted, 5_000);
+    manager.setSettings({ ...settings, disabledProviders: ["alldebrid"] });
+
+    expect(providerSignal?.aborted).toBe(true);
+    manager.stop();
+  });
+
+  it("clears a provider cooldown when the provider is re-enabled live", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-real-live-reenable-"));
+    tempDirs.push(root);
+    const settings: AppSettings = {
+      ...defaultSettings(),
+      token: "rd-token",
+      disabledProviders: ["realdebrid"]
+    };
+    const manager = new DownloadManager(settings, emptySession(), createStoragePaths(path.join(root, "state")));
+    const failures = (manager as any).providerFailures as Map<string, unknown>;
+    failures.set("realdebrid", { count: 3, lastFailAt: 1, cooldownUntil: Date.now() + 60_000 });
+    failures.set("realdebrid:rapidgator.net", { count: 3, lastFailAt: 1, cooldownUntil: Date.now() + 60_000 });
+
+    manager.setSettings({
+      ...settings,
+      disabledProviders: []
+    });
+
+    expect(failures.has("realdebrid")).toBe(false);
+    expect(failures.has("realdebrid:rapidgator.net")).toBe(false);
   });
 
   it("invalidates only the Mega-Debrid Web session when Web credentials change", () => {
@@ -3840,7 +4048,7 @@ describe("download manager", () => {
       expect(item?.status).toBe("failed");
       expect(downloadCalls).toBeGreaterThan(4);
       expect(downloadCalls).toBeLessThan(30);
-      expect(item.http416FreshRestarts).toBeUndefined();
+      expect(item.http416FreshRestarts).toBe(2);
     } finally {
       if (prevDelay === undefined) { delete process.env.RD_HTTP416_FRESH_RESTART_DELAY_MS; } else { process.env.RD_HTTP416_FRESH_RESTART_DELAY_MS = prevDelay; }
     }
@@ -3907,7 +4115,7 @@ describe("download manager", () => {
     await (manager as any).escalateHttp416OrFail(item, active, "", "HTTP 416");
 
     expect(item.status).toBe("failed");
-    expect(item.http416FreshRestarts).toBeUndefined();
+    expect(item.http416FreshRestarts).toBe(2);
   });
 
   it("retries HTTP 416 in-session when using Debrid-Link API and then completes", async () => {
@@ -6304,7 +6512,7 @@ describe("download manager", () => {
     expect(snapshot.canStart).toBe(true);
   });
 
-  it("requeues failed HTTP 416 items automatically on startup", async () => {
+  it("does not requeue an exhausted HTTP 416 item after restart", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
 
@@ -6368,17 +6576,17 @@ describe("download manager", () => {
 
     const snapshot = manager.getSnapshot();
     const item = snapshot.session.items[itemId];
-    expect(item?.status).toBe("queued");
-    expect(item?.attempts).toBe(0);
-    expect(item?.downloadedBytes).toBe(0);
-    expect(item?.progressPercent).toBe(0);
-    expect(item?.fullStatus).toContain("Auto-Retry");
+    expect(item?.status).toBe("failed");
+    expect(item?.attempts).toBe(3);
+    expect(item?.downloadedBytes).toBe(12 * 1024);
+    expect(item?.progressPercent).toBe(100);
+    expect(item?.fullStatus).toContain("Fehler");
     expect(item?.http416FreshRestarts).toBe(2);
-    expect(snapshot.session.packages[packageId]?.status).toBe("queued");
-    expect(fs.existsSync(targetPath)).toBe(false);
+    expect(snapshot.session.packages[packageId]?.status).toBe("failed");
+    expect(fs.existsSync(targetPath)).toBe(true);
   });
 
-  it("keeps a locked HTTP 416 partial intact and persists a pending clean reset", async () => {
+  it("keeps an exhausted locked HTTP 416 partial intact without requeueing it after restart", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
 
@@ -6450,17 +6658,18 @@ describe("download manager", () => {
         createStoragePaths(path.join(root, "state"))
       );
 
-      await waitFor(() => manager.getSnapshot().session.items[itemId]?.status === "queued", 2000);
+      await manager.waitForStartupRecovery();
 
       const item = manager.getSnapshot().session.items[itemId];
       expect(item).toMatchObject({
-        status: "queued",
+        status: "failed",
         downloadedBytes: partialBytes,
         totalBytes: partialBytes * 2,
         progressPercent: 50,
-        resumeResetPending: true,
-        fullStatus: "Warte auf Teildatei-Freigabe"
+        http416FreshRestarts: 2,
+        fullStatus: "Fehler: Error: HTTP 416"
       });
+      expect(item?.resumeResetPending).toBeUndefined();
       expect(fs.existsSync(targetPath)).toBe(true);
       expect(fs.statSync(targetPath).size).toBe(partialBytes);
     } finally {
@@ -10265,6 +10474,85 @@ describe("download manager", () => {
     expect(packageEntry.cleanedExtractedItemCount).toBe(1);
     expect(packageEntry.cleanedDownloadedBytes).toBe(1_000);
     expect(packageEntry.cleanedTotalBytes).toBe(1_000);
+  });
+
+  it.each([
+    ["on_start", "on_start"],
+    ["retroactive immediate", "never"]
+  ] as const)("preserves completed package progress during %s cleanup", (_name, initialPolicy) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const session = emptySession();
+    const packageId = `cleanup-${initialPolicy}-package`;
+    const completedItemId = `cleanup-${initialPolicy}-completed`;
+    const queuedItemId = `cleanup-${initialPolicy}-queued`;
+    const createdAt = Date.now();
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: `cleanup-${initialPolicy}`,
+      outputDir: path.join(root, "downloads", `cleanup-${initialPolicy}`),
+      extractDir: path.join(root, "extract", `cleanup-${initialPolicy}`),
+      status: "queued",
+      itemIds: [completedItemId, queuedItemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[completedItemId] = {
+      id: completedItemId,
+      packageId,
+      url: "https://dummy/completed",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 1_000,
+      totalBytes: 1_000,
+      progressPercent: 100,
+      fileName: "completed.rar",
+      targetPath: path.join(root, "downloads", `cleanup-${initialPolicy}`, "completed.rar"),
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Entpackt - Fertig",
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[queuedItemId] = {
+      ...session.items[completedItemId],
+      id: queuedItemId,
+      url: "https://dummy/queued",
+      status: "queued",
+      downloadedBytes: 0,
+      totalBytes: 2_000,
+      progressPercent: 0,
+      fileName: "queued.rar",
+      targetPath: path.join(root, "downloads", `cleanup-${initialPolicy}`, "queued.rar"),
+      fullStatus: "Wartet"
+    };
+    const settings = {
+      ...defaultSettings(),
+      outputDir: path.join(root, "downloads"),
+      extractDir: path.join(root, "extract"),
+      autoExtract: true,
+      completedCleanupPolicy: initialPolicy
+    };
+    const manager = new DownloadManager(settings, session, createStoragePaths(path.join(root, "state")));
+
+    if (initialPolicy === "never") {
+      manager.setSettings({ ...settings, completedCleanupPolicy: "immediate" });
+    }
+
+    const packageEntry = manager.getSnapshot().session.packages[packageId];
+    expect(packageEntry.itemIds).toEqual([queuedItemId]);
+    expect(packageEntry.cleanedCompletedItemCount).toBe(1);
+    expect(packageEntry.cleanedExtractedItemCount).toBe(1);
+    expect(packageEntry.cleanedDownloadedBytes).toBe(1_000);
+    expect(packageEntry.cleanedTotalBytes).toBe(1_000);
+    expect(packageEntry.cleanedUrls).toEqual(["https://dummy/completed"]);
+    expect(packageEntry.cleanedProviders).toEqual(["realdebrid"]);
   });
 
   it("includes immediately cleaned items in the final package history entry", () => {

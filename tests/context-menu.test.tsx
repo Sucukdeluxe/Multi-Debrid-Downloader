@@ -1,16 +1,21 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   clampContextMenuPosition,
   ContextMenu,
   getContextMenuKeyboardAction,
   getContextMenuSubmenuKeyboardAction,
-  getContextSubmenuPosition
+  getContextSubmenuPosition,
+  observeContextMenuPosition
 } from "../src/renderer/ui/ContextMenu";
 
 const contextMenuSource = readFileSync(new URL("../src/renderer/ui/ContextMenu.tsx", import.meta.url), "utf8");
 const stylesSource = readFileSync(new URL("../src/renderer/styles.css", import.meta.url), "utf8");
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("ContextMenu", () => {
   it("renders menu semantics and marks buttons as menu items", () => {
@@ -102,6 +107,29 @@ describe("ContextMenu", () => {
       { width: 180, height: 150 },
       { width: 800, height: 600 }
     )).toEqual({ x: 590, y: 450 });
+  });
+
+  it("repositions an open menu immediately when the viewport is resized", () => {
+    const viewport = Object.assign(new EventTarget(), { innerWidth: 800, innerHeight: 600 });
+    vi.stubGlobal("window", viewport);
+    const menu = {
+      getBoundingClientRect: () => ({ width: 200, height: 150 })
+    } as Pick<HTMLElement, "getBoundingClientRect">;
+    const onPosition = vi.fn();
+    const stop = observeContextMenuPosition(menu, () => ({ x: 700, y: 550 }), onPosition);
+
+    expect(onPosition).toHaveBeenLastCalledWith({ x: 600, y: 450 });
+
+    viewport.innerWidth = 500;
+    viewport.innerHeight = 350;
+    viewport.dispatchEvent(new Event("resize"));
+
+    expect(onPosition).toHaveBeenLastCalledWith({ x: 300, y: 200 });
+    expect(onPosition).toHaveBeenCalledTimes(2);
+
+    stop();
+    viewport.dispatchEvent(new Event("resize"));
+    expect(onPosition).toHaveBeenCalledTimes(2);
   });
 
   it("keeps submenus hidden until their viewport-safe position is ready", () => {

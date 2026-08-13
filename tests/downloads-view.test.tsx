@@ -1412,6 +1412,13 @@ describe("download table row contracts", () => {
     expect(compactDownloadStatus("Warte auf Festplatte (Mega-Debrid Web)")).toBe("Warte auf Festplatte");
   });
 
+  it("keeps provider and hybrid extraction diagnostics out of the visible status", () => {
+    expect(compactDownloadStatus("Fehler: Mega-Debrid API: Kein Server verfügbar")).toBe("Fehler");
+    expect(compactDownloadStatus("Error: Mega-Debrid Web: No server available")).toBe("Error");
+    expect(compactDownloadStatus("Entpacken - Error")).toBe("Entpack-Fehler");
+    expect(compactDownloadStatus("Extracting - Error")).toBe("Extraction error");
+  });
+
   it("prioritizes disk waits and extraction errors in package status", () => {
     const diskPackage = pkg("disk-package", "Disk package", ["disk-item", "active-item"]);
     const diskHtml = renderToStaticMarkup(PackageCardContent({

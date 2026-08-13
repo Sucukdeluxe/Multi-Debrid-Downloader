@@ -474,6 +474,16 @@ export class AppController {
       return previousSettings;
     }
 
+    const retentionChanged = previousSettings.historyRetentionMode !== nextSettings.historyRetentionMode;
+    const historyLimitsChanged = previousSettings.historyMaxEntries !== nextSettings.historyMaxEntries
+      || previousSettings.historyMaxAgeDays !== nextSettings.historyMaxAgeDays;
+    if (retentionChanged && !resetHistoryForRetention(this.storagePaths, nextSettings.historyRetentionMode)) {
+      this.audit("ERROR", "Verlaufseinstellung nicht geändert", {
+        requestedMode: nextSettings.historyRetentionMode,
+        activeMode: previousSettings.historyRetentionMode
+      });
+      return previousSettings;
+    }
     if (previousSettings.logStorageLocation !== nextSettings.logStorageLocation
       && !this.reconfigureLogStorage(nextSettings.logStorageLocation)) {
       nextSettings = normalizeSettings({
@@ -482,13 +492,8 @@ export class AppController {
       });
     }
     this.overlayLiveUsageCounters(nextSettings);
-    const retentionChanged = previousSettings.historyRetentionMode !== nextSettings.historyRetentionMode;
-    const historyLimitsChanged = previousSettings.historyMaxEntries !== nextSettings.historyMaxEntries
-      || previousSettings.historyMaxAgeDays !== nextSettings.historyMaxAgeDays;
     this.settings = nextSettings;
-    if (retentionChanged) {
-      resetHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode);
-    } else if (historyLimitsChanged && this.settings.historyRetentionMode !== "never") {
+    if (historyLimitsChanged && this.settings.historyRetentionMode !== "never") {
       saveHistory(this.storagePaths, loadHistory(this.storagePaths), this.historyLimits());
     }
     saveSettings(this.storagePaths, this.settings);
@@ -1080,9 +1085,7 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     shutdownAccountRotationLog();
     shutdownConversionLog();
     shutdownAuditLog();
-    if (this.settings.historyRetentionMode === "session") {
-      clearHistory(this.storagePaths);
-    }
+    resetHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode === "session" ? "session" : "permanent");
     logger.info("App beendet");
   }
 
@@ -1151,8 +1154,16 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
   }
 
   public clearHistory(): void {
-    this.audit("WARN", "Verlauf geleert");
-    clearHistory(this.storagePaths);
+    try {
+      clearHistory(this.storagePaths);
+      this.audit("WARN", "Verlauf geleert");
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error
+        ? String((error as NodeJS.ErrnoException).code || "UNKNOWN")
+        : "UNKNOWN";
+      this.audit("ERROR", "Verlauf konnte nicht geleert werden", { code });
+      throw error;
+    }
   }
 
   public setPackagePriority(packageId: string, priority: PackagePriority): void {

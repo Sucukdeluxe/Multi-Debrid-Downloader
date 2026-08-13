@@ -1,5 +1,5 @@
 import type { AppSettings, DebridAccountStatus } from "../shared/types";
-import { parseMegaDebridAccounts, type MegaDebridAccountEntry } from "../shared/mega-debrid-accounts";
+import { getMegaDebridAccountsForMode, getMegaDebridAccountStatusId, type MegaDebridAccountEntry } from "../shared/mega-debrid-accounts";
 import { parseDebridLinkApiKeys, type DebridLinkApiKeyEntry } from "../shared/debrid-link-keys";
 import { logger } from "./logger";
 import { compactErrorText } from "./utils";
@@ -49,7 +49,7 @@ export async function checkMegaDebridAccount(
   now = Date.now()
 ): Promise<DebridAccountStatus> {
   const base: DebridAccountStatus = {
-    accountId: account.id,
+    accountId: account.mode ? getMegaDebridAccountStatusId(account.id, account.mode) : account.id,
     provider: "megadebrid",
     label: account.label,
     maskedLogin: account.maskedLogin,
@@ -163,7 +163,8 @@ export async function checkAllDebridAccounts(
   signal?: AbortSignal
 ): Promise<DebridAccountStatus[]> {
   const now = Date.now();
-  const megaAccounts = parseMegaDebridAccounts(settings.megaCredentials || "", settings.megaPassword || "");
+  const megaAccounts = (["api", "web"] as const)
+    .flatMap((mode) => getMegaDebridAccountsForMode(settings, mode));
   const debridLinkKeys = parseDebridLinkApiKeys(settings.debridLinkApiKeys || "");
 
   const taskFns: Array<() => Promise<DebridAccountStatus>> = [

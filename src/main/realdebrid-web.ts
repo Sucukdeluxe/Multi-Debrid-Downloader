@@ -232,6 +232,15 @@ export class RealDebridWebFallback {
     window.webContents.on("did-finish-load", primeFromWindow);
     window.webContents.on("did-navigate", primeFromWindow);
     window.webContents.on("did-navigate-in-page", primeFromWindow);
+    window.webContents.on("render-process-gone", () => {
+      if (this.loginWindow === window) {
+        this.loginWindow = null;
+        this.loginWindowPartition = "";
+      }
+      if (!window.isDestroyed()) {
+        window.close();
+      }
+    });
     window.on("close", () => {
       void this.primeTokenFromWindow(window);
     });

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { resolveAccountStatus } from "../src/renderer/App";
 import {
   buildConfiguredProviderOrder,
   getAccountDialogSelectableOptions,
@@ -8,6 +9,7 @@ import {
   resolveAccountUsername,
   resolveVisibleAccountKind
 } from "../src/renderer/account-ui";
+import type { DebridAccountStatus } from "../src/shared/types";
 
 describe("account mode filter", () => {
   it("shows only API options for the API filter", () => {
@@ -67,5 +69,38 @@ describe("account usernames", () => {
     expect(resolveAccountUsername("member@example.com", undefined)).toBe("member@example.com");
     expect(resolveAccountUsername("stored@example.com", "verified@example.com")).toBe("verified@example.com");
     expect(resolveAccountUsername("", undefined)).toBe("—");
+  });
+});
+
+describe("account row statuses", () => {
+  it("shows the status matching each Mega-Debrid mode", () => {
+    const apiStatus: DebridAccountStatus = {
+      accountId: "mda_shared:api",
+      provider: "megadebrid",
+      label: "Mega-Debrid API",
+      maskedLogin: "sh***ed",
+      valid: false,
+      isPremium: false,
+      premiumUntilMs: null,
+      message: "API ungültig",
+      checkedAt: 10
+    };
+    const webStatus: DebridAccountStatus = {
+      accountId: "mda_shared:web",
+      provider: "megadebrid",
+      label: "Mega-Debrid Web",
+      maskedLogin: "sh***ed",
+      valid: true,
+      isPremium: true,
+      premiumUntilMs: 2_000,
+      message: "Web gültig",
+      checkedAt: 20
+    };
+    const statuses = {
+      "mda_shared:api": apiStatus,
+      "mda_shared:web": webStatus
+    };
+    expect(resolveAccountStatus(statuses, "mda_shared", "megadebrid-api")?.message).toBe("API ungültig");
+    expect(resolveAccountStatus(statuses, "mda_shared", "megadebrid-web")?.message).toBe("Web gültig");
   });
 });

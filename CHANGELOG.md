@@ -2,6 +2,40 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.33] - 2026-08-13
+
+### Account and provider lifecycle
+
+- Separated Mega-Debrid API and Web account status, rotation position, sticky selection, cooldowns, and reloaded status records.
+- Applied credential, access-mode, provider enable, routing, and account-pool changes to active link conversions without requiring an application restart.
+- Tracked the provider currently handling each fallback attempt so live provider changes abort the exact in-flight conversion before stale credentials can start a download.
+- Cleared stale provider cooldowns when accounts or providers are re-enabled and immediately retried affected queued work through the current routing rules.
+- Made Real-Debrid, AllDebrid, and BestDebrid Web conversions abortable even when a remote login callback does not observe cancellation.
+- Closed and discarded crashed Real-Debrid and AllDebrid login windows so a new login attempt starts with a clean browser session.
+
+### Download and recovery reliability
+
+- Bounded HTTP 416 clean-restart recovery across application restarts and preserved locked partial files without reporting false progress or looping indefinitely.
+- Updated disk reservations from the authoritative HTTP content length before writing data when a provider did not report the final file size.
+- Made post-header disk capacity checks abortable so Pause and Stop release the response and reservation queue even when a volume query stalls.
+- Preserved completed package totals and history values when automatic cleanup removes finished files or packages.
+- Kept failed and recovery-relevant queue entries represented in bounded support diagnostics even when large queues contain newer waiting items.
+
+### Interface and history consistency
+
+- Kept context menus inside the current window bounds while the application is resized.
+- Shortened visible provider, archive extraction, and recovery errors while retaining their diagnostic details outside the compact status column.
+- Canonicalized RapidGator and rg.to history entries as one hoster.
+- Preserved mode-specific account status records across settings reloads.
+- Prevented automatic history cleanup failures from blocking startup, retained the previous retention setting when a requested cleanup fails, and surfaced manual deletion failures accurately.
+
+### Support privacy
+
+- Removed configured account identifiers and credential-derived provider details from support summaries.
+- Redacted package and file names discovered inside embedded package and item logs before writing the support archive.
+- Redacted snapshot and runtime package and file names from current and rotated main downloader logs included in support archives.
+- Prioritized active, failed, and recovery-pending diagnostics while keeping support bundle collection bounded and responsive.
+
 ## [2.0.32] - 2026-08-13
 
 ### Account controls

@@ -14,7 +14,7 @@ import { getSessionLogPath, initSessionLog, shutdownSessionLog } from "../src/ma
 import { initAccountRotationLog, logAccountRotation, shutdownAccountRotationLog } from "../src/main/account-rotation-log";
 import { configureLogger, flushLoggerSync, logger } from "../src/main/logger";
 import { ensurePackageLog, initPackageLogs, logPackageEvent, shutdownPackageLogs } from "../src/main/package-log";
-import { ensureItemLog, initItemLogs, logItemEvent, shutdownItemLogs } from "../src/main/item-log";
+import { ensureItemLog, flushItemLogs, initItemLogs, logItemEvent, shutdownItemLogs } from "../src/main/item-log";
 import { initTraceLog, logTraceEvent, setTraceEnabled, shutdownTraceLog } from "../src/main/trace-log";
 import {
   primeDebridLinkRuntimeCooldownForTests,
@@ -602,6 +602,289 @@ describe("buildSupportBundle (async, non-blocking)", () => {
     expect(itemEntry?.getData().toString("utf8") || "").toContain("item-buffer-marker");
   });
 
+  it("redacts snapshot and runtime package and file names from the tailed main log", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-bundle-main-log-names-"));
+    tempDirs.push(root);
+    const packageName = "MAINPKG-BEGIN === MAINPKG-MIDDLE | fileName=MAINPKG-END";
+    const fileName = "MAINFILE-BEGIN | packageName=MAINFILE-MIDDLE === MAINFILE-END.rar";
+    const runtimeOnlyName = "RUNTIME-BEGIN | decoy=RUNTIME-MIDDLE === RUNTIME-END";
+    flushLoggerSync();
+    configureLogger(root);
+    const mainLogPath = path.join(root, "rd_downloader.log");
+    const completeTail = [
+      "",
+      "2026-08-13 12:00:00.000 [INFO] main-diagnostic-marker status=downloading",
+      `2026-08-13 12:00:00.000 [INFO] runtime-name-marker packageName=${runtimeOnlyName} | status=queued`,
+      `2026-08-13 12:00:00.000 [INFO] main-package-marker ${packageName}`,
+      `2026-08-13 12:00:00.000 [INFO] main-file-marker ${fileName}`,
+      ""
+    ].join("\n");
+    const partialOffset = 8;
+    const fillerLength = 128 * 1024 - Buffer.byteLength(packageName.slice(partialOffset) + completeTail, "utf8");
+    fs.appendFileSync(mainLogPath, `${packageName}${completeTail}${"z".repeat(fillerLength)}`, "utf8");
+    const manager = {
+      getSnapshot: () => ({
+        stats: {},
+        session: {
+          version: 1,
+          packages: {
+            "package-main-log": {
+              id: "package-main-log",
+              name: packageName,
+              outputDir: path.join(root, "output", packageName),
+              extractDir: path.join(root, "extract", packageName),
+              status: "downloading",
+              itemIds: ["item-main-log"],
+              cancelled: false,
+              enabled: true,
+              createdAt: 1,
+              updatedAt: 2
+            }
+          },
+          items: {
+            "item-main-log": {
+              id: "item-main-log",
+              packageId: "package-main-log",
+              url: "https://example.test/main-log",
+              provider: "realdebrid",
+              status: "downloading",
+              retries: 0,
+              speedBps: 1,
+              downloadedBytes: 1,
+              totalBytes: 2,
+              progressPercent: 50,
+              fileName,
+              targetPath: path.join(root, "output", packageName, fileName),
+              resumable: true,
+              attempts: 1,
+              lastError: "",
+              fullStatus: "Download läuft",
+              createdAt: 1,
+              updatedAt: 2
+            }
+          },
+          packageOrder: ["package-main-log"],
+          running: true,
+          paused: false,
+          updatedAt: 2
+        },
+        speedText: "1 B/s",
+        etaText: "1s",
+        canStart: false,
+        canStop: true,
+        canPause: true
+      }),
+      getPackageLogPath: () => null,
+      getItemLogPath: () => null
+    } as unknown as DownloadManager;
+
+    const buffer = await buildSupportBundle(manager, root, {
+      hostDiagnosticsMode: "none",
+      debugSetupMode: "deferred"
+    });
+    const mainLog = new AdmZip(buffer).getEntry("logs/rd_downloader.log")?.getData().toString("utf8") || "";
+
+    for (const fragment of [
+      "MAINPKG-BEGIN",
+      "MAINPKG-MIDDLE",
+      "MAINPKG-END",
+      "MAINFILE-BEGIN",
+      "MAINFILE-MIDDLE",
+      "MAINFILE-END",
+      "RUNTIME-BEGIN",
+      "RUNTIME-MIDDLE",
+      "RUNTIME-END"
+    ]) {
+      expect(mainLog).not.toContain(fragment);
+    }
+    expect(mainLog).toContain("main-diagnostic-marker");
+    expect(mainLog).toContain("main-package-marker");
+    expect(mainLog).toContain("main-file-marker");
+  });
+
+  it("redacts completed download names after the package was removed from the session", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-bundle-removed-main-log-names-"));
+    tempDirs.push(root);
+    flushLoggerSync();
+    configureLogger(root);
+    const fileName = "REMOVED-PRIVATE-FILE.part01.rar";
+    const packageName = "REMOVED-PRIVATE-PACKAGE";
+    fs.appendFileSync(
+      path.join(root, "rd_downloader.log"),
+      `2026-08-13 12:00:00.000 [INFO] Download fertig: ${fileName} (1.00 GB), pkg=${packageName}\n`,
+      "utf8"
+    );
+
+    const buffer = await buildSupportBundle(fakeManager(), root, {
+      hostDiagnosticsMode: "none",
+      debugSetupMode: "deferred"
+    });
+    const mainLog = new AdmZip(buffer).getEntry("logs/rd_downloader.log")?.getData().toString("utf8") || "";
+
+    expect(mainLog).toContain("Download fertig:");
+    expect(mainLog).not.toContain(fileName);
+    expect(mainLog).not.toContain(packageName);
+  });
+
+  it("redacts runtime package and file names from included package and item logs", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-bundle-runtime-names-"));
+    tempDirs.push(root);
+    const packageId = "package-runtime-private";
+    const itemId = "item-runtime-private";
+    const privatePackageName = "Family.Vacation.Private.Release";
+    const privateFileName = "Family.Vacation.Private.Release.part01.rar";
+    initPackageLogs(root);
+    initItemLogs(root);
+    ensurePackageLog({
+      packageId,
+      name: privatePackageName,
+      outputDir: path.join(root, "output", privatePackageName),
+      extractDir: path.join(root, "extract", privatePackageName)
+    });
+    ensureItemLog({
+      itemId,
+      packageId,
+      packageName: privatePackageName,
+      fileName: privateFileName,
+      targetPath: path.join(root, "output", privatePackageName, privateFileName)
+    });
+    logPackageEvent(packageId, "INFO", `package-transfer-active ${privatePackageName}`, { status: "downloading" });
+    logItemEvent(itemId, "INFO", `item-transfer-active ${privateFileName}`, { status: "downloading" });
+
+    const manager = {
+      getSnapshot: () => ({
+        stats: {},
+        session: {
+          version: 1,
+          packages: {
+            [packageId]: {
+              id: packageId,
+              name: privatePackageName,
+              outputDir: path.join(root, "output", privatePackageName),
+              extractDir: path.join(root, "extract", privatePackageName),
+              status: "downloading",
+              itemIds: [itemId],
+              cancelled: false,
+              enabled: true,
+              createdAt: 1,
+              updatedAt: 2
+            }
+          },
+          items: {
+            [itemId]: {
+              id: itemId,
+              packageId,
+              url: "https://rapidgator.net/file/runtime-private",
+              provider: "megadebrid-web",
+              status: "downloading",
+              retries: 0,
+              speedBps: 1024,
+              downloadedBytes: 512,
+              totalBytes: 1024,
+              progressPercent: 50,
+              fileName: privateFileName,
+              targetPath: path.join(root, "output", privatePackageName, privateFileName),
+              resumable: true,
+              attempts: 1,
+              lastError: "",
+              fullStatus: "Download läuft",
+              createdAt: 1,
+              updatedAt: 2
+            }
+          },
+          packageOrder: [packageId],
+          running: true,
+          paused: false,
+          updatedAt: 2
+        },
+        speedText: "1 KB/s",
+        etaText: "1s",
+        canStart: false,
+        canStop: true,
+        canPause: true
+      }),
+      getPackageLogPath: () => null,
+      getItemLogPath: () => null
+    } as unknown as DownloadManager;
+
+    const buffer = await buildSupportBundle(manager, root, {
+      hostDiagnosticsMode: "none",
+      debugSetupMode: "deferred"
+    });
+    const zip = new AdmZip(buffer);
+    const packageLog = zip.getEntries()
+      .find((entry) => entry.entryName.startsWith("logs/package-logs/"))
+      ?.getData().toString("utf8") || "";
+    const itemLog = zip.getEntries()
+      .find((entry) => entry.entryName.startsWith("logs/item-logs/"))
+      ?.getData().toString("utf8") || "";
+    const overview = [
+      zip.getEntry("overview/packages.json")?.getData().toString("utf8") || "",
+      zip.getEntry("overview/items.json")?.getData().toString("utf8") || ""
+    ].join("\n");
+
+    expect(`${packageLog}\n${itemLog}`).not.toContain(privatePackageName);
+    expect(`${packageLog}\n${itemLog}`).not.toContain(privateFileName);
+    expect(packageLog).toContain(packageId);
+    expect(itemLog).toContain(itemId);
+    expect(packageLog).toContain("package-transfer-active");
+    expect(itemLog).toContain("item-transfer-active");
+    expect(`${packageLog}\n${itemLog}`).toContain("status=downloading");
+    expect(overview).toContain('"name": "package-001.release"');
+    expect(overview).toContain('"fileName": "item-001.rar"');
+  });
+
+  it("removes delimiter-injected package and file names from complete and tailed runtime logs", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-bundle-runtime-name-boundaries-"));
+    tempDirs.push(root);
+    const packageName = "PRIVATEPKG-BEGIN === PRIVATEPKG-MIDDLE | decoy=PRIVATEPKG-END";
+    const fileName = "PRIVATEFILE-BEGIN | decoyField=PRIVATEFILE-MIDDLE | packageName=PRIVATEFILE-END.rar";
+    initPackageLogs(root);
+    initItemLogs(root);
+    const packageLogPath = ensurePackageLog({
+      packageId: "package-runtime-boundaries",
+      name: packageName,
+      outputDir: path.join(root, "output", packageName),
+      extractDir: path.join(root, "extract", packageName)
+    });
+    const itemLogPath = ensureItemLog({
+      itemId: "item-runtime-boundaries",
+      packageId: "package-runtime-boundaries",
+      packageName,
+      fileName,
+      targetPath: path.join(root, "output", packageName, fileName)
+    });
+    expect(packageLogPath).not.toBeNull();
+    expect(itemLogPath).not.toBeNull();
+    fs.appendFileSync(packageLogPath!, `2026-08-13 12:00:00.000 [INFO] package-diagnostic-marker ${packageName} | status=downloading\n`, "utf8");
+    const partialOffset = 12;
+    const completeTail = `\n2026-08-13 12:00:00.000 [INFO] item-diagnostic-marker ${fileName} | status=downloading\n`;
+    const fillerLength = 128 * 1024 - Buffer.byteLength(fileName.slice(partialOffset) + completeTail, "utf8");
+    fs.appendFileSync(itemLogPath!, `${"p".repeat(1024)}${fileName}${completeTail}${"z".repeat(fillerLength)}`, "utf8");
+
+    const buffer = await buildSupportBundle(fakeManager(), root, {
+      hostDiagnosticsMode: "none",
+      debugSetupMode: "deferred"
+    });
+    const runtimeLogText = new AdmZip(buffer).getEntries()
+      .filter((entry) => /logs\/(?:package|item)-logs\//.test(entry.entryName))
+      .map((entry) => entry.getData().toString("utf8"))
+      .join("\n");
+
+    for (const fragment of [
+      "PRIVATEPKG-BEGIN",
+      "PRIVATEPKG-MIDDLE",
+      "PRIVATEPKG-END",
+      "PRIVATEFILE-BEGIN",
+      "PRIVATEFILE-MIDDLE",
+      "PRIVATEFILE-END"
+    ]) {
+      expect(runtimeLogText).not.toContain(fragment);
+    }
+    expect(runtimeLogText).toContain("package-diagnostic-marker");
+    expect(runtimeLogText).toContain("item-diagnostic-marker");
+  });
+
   it("bounds recent item logs to the newest diagnostic files", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-bundle-"));
     tempDirs.push(root);
@@ -738,9 +1021,14 @@ describe("buildSupportBundle (async, non-blocking)", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-bundle-sensitive-"));
     tempDirs.push(root);
     const escapedSecret = "prefix\"suffix\\trail\tend";
+    const privatePackageName = "Private Default Package Name";
+    const firstKeyId = getDebridLinkApiKeyId("abc123456789xyz");
     fs.writeFileSync(path.join(root, "rd_downloader_config.json"), JSON.stringify({
       megaDebridWebCredentials: `primary-user:primary-password-secret\nsecondary-user:secondary-password-secret\nZ9:Q7!\nAlice:${escapedSecret}`,
       debridLinkApiKeys: "abc123456789xyz,def987654321uvw",
+      debridLinkApiKeyDailyUsageBytes: { [firstKeyId]: 1234 },
+      debridLinkApiKeyTotalUsageBytes: { [firstKeyId]: 5678 },
+      packageName: privatePackageName,
       megaDebridWebEnabled: true
     }), "utf8");
     initAccountRotationLog(root);
@@ -823,7 +1111,9 @@ describe("buildSupportBundle (async, non-blocking)", () => {
       "file-private.bin",
       "manifest-bearer-secret",
       "manifest-query-secret",
-      "manifest-fragment"
+      "manifest-fragment",
+      privatePackageName,
+      firstKeyId
     ];
 
     for (const secret of forbidden) {
@@ -970,6 +1260,92 @@ describe("buildSupportBundle (async, non-blocking)", () => {
     expect(timerGaps.length).toBeGreaterThan(2);
     expect(Math.max(...timerGaps)).toBeLessThan(100);
   }, 15_000);
+
+  it("retains failed recovery items when the pending queue exceeds the DTO cap", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-bundle-recovery-priority-"));
+    tempDirs.push(root);
+    const recoveryId = "failed-recovery-item";
+    initItemLogs(root);
+    ensureItemLog({ itemId: recoveryId, packageId: "package-recovery", packageName: "Recovery", fileName: "recovery.rar", targetPath: "C:\\Downloads\\recovery.rar" });
+    logItemEvent(recoveryId, "ERROR", "failed-recovery-marker");
+    flushItemLogs();
+    const queuedItems = Object.fromEntries(Array.from({ length: 501 }, (_, index) => {
+      const id = `queued-${index}`;
+      return [id, {
+        id,
+        packageId: "package-queued",
+        url: `https://rapidgator.net/file/${index}`,
+        provider: "megadebrid-web",
+        status: "queued",
+        retries: 0,
+        speedBps: 0,
+        downloadedBytes: 0,
+        totalBytes: 100,
+        progressPercent: 0,
+        fileName: `${id}.rar`,
+        targetPath: `C:\\Downloads\\${id}.rar`,
+        resumable: true,
+        attempts: 0,
+        lastError: "",
+        fullStatus: "Wartet",
+        createdAt: index + 1,
+        updatedAt: index + 1
+      }];
+    }));
+    const items = {
+      ...queuedItems,
+      [recoveryId]: {
+        id: recoveryId,
+        packageId: "package-recovery",
+        url: "https://rapidgator.net/file/recovery",
+        provider: "megadebrid-web",
+        status: "failed",
+        retries: 8,
+        speedBps: 0,
+        downloadedBytes: 512,
+        totalBytes: 1024,
+        progressPercent: 50,
+        fileName: "recovery.rar",
+        targetPath: "C:\\Downloads\\recovery.rar",
+        resumable: true,
+        attempts: 9,
+        lastError: "Resume recovery exhausted",
+        fullStatus: "Fehler",
+        resumeResetPending: true,
+        createdAt: 1,
+        updatedAt: 1
+      }
+    };
+    const manager = {
+      getSnapshot: () => ({
+        stats: {},
+        session: { version: 1, packages: {}, items, packageOrder: [], running: true, paused: false, updatedAt: 1000 },
+        speedText: "",
+        etaText: "",
+        canStart: false,
+        canStop: true,
+        canPause: true
+      }),
+      getPackageLogPath: () => null,
+      getItemLogPath: () => null
+    } as unknown as DownloadManager;
+
+    const buffer = await buildSupportBundle(manager, root, {
+      hostDiagnosticsMode: "none",
+      debugSetupMode: "deferred"
+    });
+    const zip = new AdmZip(buffer);
+    const itemOverview = JSON.parse(zip.getEntry("overview/items.json")?.getData().toString("utf8") || "{}") as {
+      items?: Array<{ id?: string }>;
+    };
+    const logText = zip.getEntries()
+      .filter((entry) => entry.entryName.startsWith("logs/item-logs/"))
+      .map((entry) => entry.getData().toString("utf8"))
+      .join("\n");
+
+    expect(itemOverview.items?.some((entry) => entry.id === recoveryId)).toBe(true);
+    expect(logText).toContain("failed-recovery-marker");
+  });
 });
 
 describe("support bundle export runner", () => {

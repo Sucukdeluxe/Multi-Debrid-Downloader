@@ -49,6 +49,28 @@ export function clampContextMenuPosition(
   };
 }
 
+export function observeContextMenuPosition(
+  menu: Pick<HTMLElement, "getBoundingClientRect">,
+  anchor: () => { x: number; y: number },
+  onPosition: (position: { x: number; y: number }) => void
+): () => void {
+  const reposition = (): void => {
+    const rect = menu.getBoundingClientRect();
+    const point = anchor();
+    onPosition(clampContextMenuPosition(
+      point.x,
+      point.y,
+      rect.width,
+      rect.height,
+      window.innerWidth,
+      window.innerHeight
+    ));
+  };
+  reposition();
+  window.addEventListener("resize", reposition);
+  return () => window.removeEventListener("resize", reposition);
+}
+
 export function getContextSubmenuPosition(
   trigger: { left: number; right: number; top: number },
   submenu: { width: number; height: number },
@@ -223,12 +245,13 @@ export const ContextMenu = forwardRef<HTMLDivElement, ContextMenuProps>(function
     if (!previousFocusRef.current) {
       previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     }
-    const rect = menuRef.current.getBoundingClientRect();
-    const next = clampContextMenuPosition(x, y, rect.width, rect.height, window.innerWidth, window.innerHeight);
-    setPosition((current) => current.x === next.x && current.y === next.y && current.sourceX === x && current.sourceY === y && current.ready
-      ? current
-      : { ...next, sourceX: x, sourceY: y, ready: true });
+    const stopObserving = observeContextMenuPosition(menuRef.current, () => ({ x, y }), (next) => {
+      setPosition((current) => current.x === next.x && current.y === next.y && current.sourceX === x && current.sourceY === y && current.ready
+        ? current
+        : { ...next, sourceX: x, sourceY: y, ready: true });
+    });
     getTopLevelMenuItems(menuRef.current)[0]?.focus();
+    return stopObserving;
   }, [open, x, y]);
 
   useEffect(() => {

@@ -6,6 +6,10 @@ function hasText(value: unknown): boolean {
   return String(value || "").trim().length > 0;
 }
 
+function sumUsage(values: Record<string, number> | undefined): number {
+  return Object.values(values || {}).reduce((sum, value) => sum + Math.max(0, Number(value) || 0), 0);
+}
+
 export function buildAccountSummary(settings: AppSettings): Record<string, unknown> {
   const debridLinkKeyIds = getDebridLinkApiKeyIds(settings.debridLinkApiKeys);
   const disabledDebridLinkIds = new Set(settings.debridLinkDisabledKeyIds || []);
@@ -113,7 +117,7 @@ export function buildRedactedSettingsPayload(settings: AppSettings): Record<stri
       completedCleanupPolicy: settings.completedCleanupPolicy
     },
     ui: {
-      packageName: settings.packageName,
+      packageNameConfigured: hasText(settings.packageName),
       theme: settings.theme,
       collapseNewPackages: settings.collapseNewPackages,
       hideExtractedItems: settings.hideExtractedItems,
@@ -147,9 +151,9 @@ export function buildRedactedSettingsPayload(settings: AppSettings): Record<stri
       providerDailyLimitBytes: settings.providerDailyLimitBytes,
       providerDailyUsageBytes: settings.providerDailyUsageBytes,
       providerTotalUsageBytes: settings.providerTotalUsageBytes,
-      debridLinkApiKeyDailyLimitBytes: settings.debridLinkApiKeyDailyLimitBytes,
-      debridLinkApiKeyDailyUsageBytes: settings.debridLinkApiKeyDailyUsageBytes,
-      debridLinkApiKeyTotalUsageBytes: settings.debridLinkApiKeyTotalUsageBytes,
+      debridLinkApiKeyDailyLimitBytes: sumUsage(settings.debridLinkApiKeyDailyLimitBytes),
+      debridLinkApiKeyDailyUsageBytes: sumUsage(settings.debridLinkApiKeyDailyUsageBytes),
+      debridLinkApiKeyTotalUsageBytes: sumUsage(settings.debridLinkApiKeyTotalUsageBytes),
       providerDailyUsageDay: settings.providerDailyUsageDay
     },
     accounts: buildAccountSummary(settings)

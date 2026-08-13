@@ -11,6 +11,7 @@ const {
   mockLoadURL,
   mockShow,
   mockFocus,
+  mockClose,
   mockSetWindowOpenHandler,
   mockSetPermissionRequestHandler
 } = vi.hoisted(() => {
@@ -73,6 +74,7 @@ const {
     mockLoadURL: loadURL,
     mockShow: show,
     mockFocus: focus,
+    mockClose: browserWindow.close,
     mockSetWindowOpenHandler: setWindowOpenHandler,
     mockSetPermissionRequestHandler: setPermissionRequestHandler
   };
@@ -161,5 +163,20 @@ describe("realdebrid-web", () => {
     expect(apiFetch).toHaveBeenCalledTimes(1);
     expect(apiFetch.mock.calls[0]?.[0]).toBe("https://api.real-debrid.com/rest/1.0/unrestrict/link");
     expect(mockBrowserWindow.webContents.executeJavaScript).toHaveBeenCalled();
+  });
+
+  it("replaces a login window after its renderer process crashes", async () => {
+    const fallback = new RealDebridWebFallback(() => true);
+
+    await fallback.openLoginWindow();
+    const crashHandler = mockBrowserWindow.webContents.on.mock.calls.find(([event]) => event === "render-process-gone")?.[1];
+
+    expect(crashHandler).toBeTypeOf("function");
+    crashHandler?.();
+    await fallback.openLoginWindow();
+
+    expect(mockClose).toHaveBeenCalledTimes(1);
+    expect(mockBrowserWindowCtor).toHaveBeenCalledTimes(2);
+    expect(mockLoadURL).toHaveBeenCalledTimes(2);
   });
 });

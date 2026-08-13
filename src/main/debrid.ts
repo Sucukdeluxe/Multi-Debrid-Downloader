@@ -311,8 +311,10 @@ function getMegaDebridAbortMinRunMs(): number {
 const megaDebridEmptyResponseStreaks = new Map<string, number>();
 export const MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART = 10;
 
-let megaDebridRotationCursor = 0;
-let megaDebridStickyCount = 0;
+const megaDebridRotationState: Record<"api" | "web", { cursor: number; stickyCount: number }> = {
+  api: { cursor: 0, stickyCount: 0 },
+  web: { cursor: 0, stickyCount: 0 }
+};
 // Mega-Web cacht Sessions pro Account (~20 Min). Wuerde jede Link-Aufloesung den
 // Account wechseln (reines Round-Robin), zahlte JEDER Link einen kalten Login in
 // die serielle Single-Flight-Queue → minutenlanger Vorlauf. Stattdessen bleibt die
@@ -371,8 +373,8 @@ export function clearMegaDebridAccountRuntimeStates(accountKeys: Iterable<string
 export function resetMegaDebridRuntimeStateForTests(): void {
   megaDebridAccountCooldowns.clear();
   megaDebridEmptyResponseStreaks.clear();
-  megaDebridRotationCursor = 0;
-  megaDebridStickyCount = 0;
+  megaDebridRotationState.api = { cursor: 0, stickyCount: 0 };
+  megaDebridRotationState.web = { cursor: 0, stickyCount: 0 };
   megaDebridInFlight.clear();
 }
 
@@ -571,8 +573,8 @@ export function getProviderRuntimeSnapshot(now = Date.now()): ProviderRuntimeSna
   return {
     capturedAtMs: now,
     megaDebrid: {
-      rotationCursor: megaDebridRotationCursor,
-      stickyCount: megaDebridStickyCount,
+      rotationCursor: Math.max(megaDebridRotationState.api.cursor, megaDebridRotationState.web.cursor),
+      stickyCount: Math.max(megaDebridRotationState.api.stickyCount, megaDebridRotationState.web.stickyCount),
       accounts: megaAccounts
     },
     debridLink: { keys: dlKeys, hostCooldowns: dlHostCooldowns }
@@ -2160,7 +2162,8 @@ class MegaDebridClient {
     // Checks bleiben. Der Cursor wird erst im Erfolgszweig weitergesetzt — nach einem
     // Schwung erfolgreicher Umwandlungen (MEGA_DEBRID_STICKY_LINKS) — sodass aufeinander
     // folgende Links auf demselben warmen Account laufen statt jeweils neu einzuloggen.
-    const startOffset = ((megaDebridRotationCursor % accounts.length) + accounts.length) % accounts.length;
+    const rotationState = megaDebridRotationState[mode];
+    const startOffset = ((rotationState.cursor % accounts.length) + accounts.length) % accounts.length;
     const cursorOrder: { account: MegaDebridAccountEntry; idx: number }[] = [];
     for (let step = 0; step < accounts.length; step += 1) {
       const idx = (startOffset + step) % accounts.length;
@@ -2238,12 +2241,12 @@ class MegaDebridClient {
         clearMegaDebridEmptyResponseStreak(cooldownKey);
         const elapsedMs = Date.now() - testStartedAt;
         traceConversionPhase({ phase: "mega-account", provider: providerName.includes("API") ? "megadebrid-api" : "megadebrid-web", account: rotationLabel, workMs: elapsedMs, outcome: "ok" });
-        megaDebridStickyCount += 1;
-        if (megaDebridStickyCount >= MEGA_DEBRID_STICKY_LINKS) {
-          megaDebridRotationCursor = idx + 1;
-          megaDebridStickyCount = 0;
+        rotationState.stickyCount += 1;
+        if (rotationState.stickyCount >= MEGA_DEBRID_STICKY_LINKS) {
+          rotationState.cursor = idx + 1;
+          rotationState.stickyCount = 0;
         } else {
-          megaDebridRotationCursor = idx;
+          rotationState.cursor = idx;
         }
         logger.info(`Mega-Debrid${accountLabel}: Unrestrict OK nach ${elapsedMs}ms -> ${result.fileName || "?"}`);
         logAccountRotation("INFO", providerName, rotationLabel, "OK", {
@@ -3977,7 +3980,13 @@ export class DebridService {
     return `${PROVIDER_LABELS[effectiveProvider]} Tageslimit erreicht`;
   }
 
-  public async unrestrictLink(link: string, signal?: AbortSignal, settingsSnapshot?: AppSettings, preferredLeadProvider?: DebridProvider | null): Promise<ProviderUnrestrictedLink> {
+  public async unrestrictLink(
+    link: string,
+    signal?: AbortSignal,
+    settingsSnapshot?: AppSettings,
+    preferredLeadProvider?: DebridProvider | null,
+    onProviderAttempt?: (provider: DebridProvider) => void
+  ): Promise<ProviderUnrestrictedLink> {
     const settings = settingsSnapshot ? cloneSettings(settingsSnapshot) : cloneSettings(this.settings);
 
     const routing = settings.hosterRouting || {};
@@ -3987,6 +3996,7 @@ export class DebridService {
       if (this.isProviderSelectableFor(settings, routedProvider)) {
         logger.info(`Hoster-Zuordnung: ${hosterKey} → ${PROVIDER_LABELS[routedProvider]}`);
         try {
+          onProviderAttempt?.(routedProvider);
           const result = await this.unrestrictViaProvider(settings, routedProvider, link, signal);
           let fileName = result.fileName;
           if (isRapidgatorLink(link) && looksLikeOpaqueFilename(fileName || filenameFromUrl(link))) {
@@ -4018,6 +4028,7 @@ export class DebridService {
 
     if (ONEFICHIER_URL_RE.test(link) && this.isProviderSelectableFor(settings, "onefichier")) {
       try {
+        onProviderAttempt?.("onefichier");
         const result = await this.unrestrictViaProvider(settings, "onefichier", link, signal);
         return {
           ...result,
@@ -4037,6 +4048,7 @@ export class DebridService {
 
     if (DDOWNLOAD_URL_RE.test(link) && this.isProviderSelectableFor(settings, "ddownload")) {
       try {
+        onProviderAttempt?.("ddownload");
         const result = await this.unrestrictViaProvider(settings, "ddownload", link, signal);
         return {
           ...result,
@@ -4071,6 +4083,7 @@ export class DebridService {
         throw new Error(this.formatProviderLimitMessage(settings, primary));
       }
       try {
+        onProviderAttempt?.(selectedProvider);
         const result = await this.unrestrictViaProvider(settings, selectedProvider, link, signal);
         let fileName = result.fileName;
         if (isRapidgatorLink(link) && looksLikeOpaqueFilename(fileName || filenameFromUrl(link))) {
@@ -4113,6 +4126,7 @@ export class DebridService {
       const providerStartedAt = Date.now();
       try {
         logger.info(`Provider-Kette: versuche ${PROVIDER_LABELS[provider]}`);
+        onProviderAttempt?.(provider);
         traceConversionPhase({ phase: "chain-try", provider });
         const result = await this.unrestrictViaProvider(settings, provider, link, signal);
         traceConversionPhase({ phase: "chain-ok", provider, workMs: Date.now() - providerStartedAt, outcome: "ok" });
@@ -4196,7 +4210,7 @@ export class DebridService {
     const effectiveProvider = resolveMegaDebridProvider(settings, provider);
     if (effectiveProvider === "realdebrid") {
       if (this.shouldUseRealDebridWeb(settings) && this.options.realDebridWebUnrestrict) {
-        const result = await this.options.realDebridWebUnrestrict(link, signal);
+        const result = await waitForPromiseWithSignal(this.options.realDebridWebUnrestrict(link, signal), signal);
         if (!result) {
           throw new Error("Real-Debrid-Web-Fallback nicht verfügbar");
         }
@@ -4215,7 +4229,7 @@ export class DebridService {
     }
     if (effectiveProvider === "alldebrid") {
       if (this.shouldUseAllDebridWeb(settings) && this.options.allDebridWebUnrestrict) {
-        const result = await this.options.allDebridWebUnrestrict(link, signal);
+        const result = await waitForPromiseWithSignal(this.options.allDebridWebUnrestrict(link, signal), signal);
         if (!result) {
           throw new Error("AllDebrid-Web-Fallback nicht verfügbar");
         }
@@ -4241,7 +4255,7 @@ export class DebridService {
       return this.getLinkSnappyClient(settings.linkSnappyLogin, settings.linkSnappyPassword).unrestrictLink(link, signal);
     }
     if (this.shouldUseBestDebridWeb(settings) && this.options.bestDebridWebUnrestrict) {
-      const bdResult = await this.options.bestDebridWebUnrestrict(link, signal);
+      const bdResult = await waitForPromiseWithSignal(this.options.bestDebridWebUnrestrict(link, signal), signal);
       if (!bdResult) {
         throw new Error("BestDebrid-Web-Fallback nicht verfügbar");
       }

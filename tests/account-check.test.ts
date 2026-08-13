@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { checkMegaDebridAccount, checkDebridLinkKey, checkAllDebridAccounts } from "../src/main/account-check";
-import type { MegaDebridAccountEntry } from "../src/shared/mega-debrid-accounts";
+import { getMegaDebridAccountId, type MegaDebridAccountEntry } from "../src/shared/mega-debrid-accounts";
 import type { DebridLinkApiKeyEntry } from "../src/shared/debrid-link-keys";
 import type { AppSettings } from "../src/shared/types";
 
@@ -137,6 +137,37 @@ describe("checkAllDebridAccounts", () => {
     expect(result.filter((r) => r.provider === "megadebrid")).toHaveLength(2);
     expect(result.filter((r) => r.provider === "debridlink")).toHaveLength(3);
     expect(result.every((r) => r.valid)).toBe(true);
+  });
+
+  it("keeps API and Web status identities separate when both modes use the same login", async () => {
+    const futureSec = Math.floor(Date.now() / 1000) + 1000;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      const password = url.searchParams.get("password");
+      if (password === "api-pass") {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ response_code: "ok", token: "api-token", vip_end: String(futureSec) }) };
+      }
+      return { ok: true, status: 200, text: async () => JSON.stringify({ response_code: "error", response_text: "web credentials rejected" }) };
+    }) as unknown as typeof fetch);
+
+    const settings = {
+      megaCredentials: "shared@example.test:api-pass",
+      megaPassword: "",
+      megaDebridApiCredentials: "shared@example.test:api-pass",
+      megaDebridWebCredentials: "shared@example.test:web-pass",
+      megaDebridApiEnabled: true,
+      megaDebridWebEnabled: true,
+      megaDebridPreferApi: true,
+      debridLinkApiKeys: ""
+    } as unknown as AppSettings;
+
+    const result = await checkAllDebridAccounts(settings);
+    const baseId = getMegaDebridAccountId("shared@example.test");
+
+    expect(result).toHaveLength(2);
+    expect(result.map((status) => status.accountId)).toEqual([`${baseId}:api`, `${baseId}:web`]);
+    expect(result[0]).toMatchObject({ valid: true, isPremium: true });
+    expect(result[1]).toMatchObject({ valid: false, isPremium: false });
   });
 
   it("caps concurrency (never more than 4 in flight) and preserves result order", async () => {

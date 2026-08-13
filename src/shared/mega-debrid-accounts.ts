@@ -5,6 +5,7 @@ export interface MegaDebridAccountEntry {
   index: number;
   label: string;
   maskedLogin: string;
+  mode?: MegaDebridAccountMode;
 }
 
 export type MegaDebridAccountMode = "api" | "web";
@@ -37,6 +38,10 @@ function fnv1a64(text: string): string {
 
 export function getMegaDebridAccountId(login: string): string {
   return `mda_${fnv1a64(login.trim().toLowerCase())}`;
+}
+
+export function getMegaDebridAccountStatusId(accountId: string, mode: MegaDebridAccountMode): string {
+  return `${accountId}:${mode}`;
 }
 
 export function maskMegaDebridLogin(login: string): string {
@@ -124,7 +129,8 @@ export function getMegaDebridCredentialsForMode(settings: MegaDebridModeSettings
 }
 
 export function getMegaDebridAccountsForMode(settings: MegaDebridModeSettings, mode: MegaDebridAccountMode): MegaDebridAccountEntry[] {
-  return parseMegaDebridAccounts(getMegaDebridCredentialsForMode(settings, mode), settings.megaPassword || "");
+  return parseMegaDebridAccounts(getMegaDebridCredentialsForMode(settings, mode), settings.megaPassword || "")
+    .map((account) => ({ ...account, mode }));
 }
 
 export function getMegaDebridDisabledAccountIdsForMode(settings: MegaDebridModeSettings, mode: MegaDebridAccountMode): string[] {

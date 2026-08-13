@@ -1,12 +1,14 @@
 import { DragEvent, ReactElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
+import { getMegaDebridAccountStatusId } from "../shared/mega-debrid-accounts";
 import type {
   AccountCreateCommand,
   AllDebridHostInfo,
   AppTheme,
   BandwidthScheduleEntry,
   DebugSetupCheckResult,
+  DebridAccountStatus,
   DebridFallbackProvider,
   DebridLinkHostLimitInfo,
   DebridProvider,
@@ -876,6 +878,24 @@ const AUTO_RENDER_PACKAGE_LIMIT = 260;
 
 export function getSnapshotRenderDelay(_itemCount: number, _running: boolean, _activeTab: MainView): number {
   return 0;
+}
+
+export function resolveAccountStatus(
+  statuses: Readonly<Record<string, DebridAccountStatus>>,
+  accountId: string | null,
+  kind: AccountKind
+): DebridAccountStatus | undefined {
+  if (!accountId) {
+    return undefined;
+  }
+  const mode = kind === "megadebrid-api"
+    ? "api"
+    : kind === "megadebrid-web"
+      ? "web"
+      : null;
+  return mode
+    ? statuses[getMegaDebridAccountStatusId(accountId, mode)] ?? statuses[accountId]
+    : statuses[accountId];
 }
 
 export interface ResetUiActionGate {
@@ -2513,7 +2533,9 @@ export function App(): ReactElement {
   ), [configuredAccountServices]);
   const accountEditOption = accountEditDialog ? findAccountOption(accountEditDialog.target.kind) : null;
   const accountEditRow = accountEditDialog ? accountRows.find((row) => row.rowKey === accountEditDialog.target.rowKey) ?? null : null;
-  const accountEditStatus = accountEditRow?.accountId ? snapshot.settings.debridAccountStatuses?.[accountEditRow.accountId] ?? null : null;
+  const accountEditStatus = accountEditRow
+    ? resolveAccountStatus(snapshot.settings.debridAccountStatuses, accountEditRow.accountId, accountEditRow.entry.kind) ?? null
+    : null;
   const accountEditQuickAction = accountEditOption ? getAccountQuickActionMeta(accountEditOption.kind) : null;
   const accountDialogOption = accountDialog?.kind ? findAccountOption(accountDialog.kind) : null;
   const accountDialogSelectableOptions = useMemo(() => {
@@ -3041,7 +3063,10 @@ export function App(): ReactElement {
   const removeAccountTableRow = (row: AccountTableRow): void => {
     setAccountContextMenu(null);
     void (async () => {
-      const username = resolveAccountUsername(row.username, row.accountId ? snapshot.settings.debridAccountStatuses?.[row.accountId]?.email : undefined);
+      const username = resolveAccountUsername(
+        row.username,
+        resolveAccountStatus(snapshot.settings.debridAccountStatuses, row.accountId, row.entry.kind)?.email
+      );
       const confirmed = await askConfirmPrompt({
         title: `${row.hosterLabel} entfernen`,
         message: `Soll ${row.hosterLabel}${username !== "—" ? ` (${username})` : ""} wirklich entfernt werden?`,
@@ -4987,7 +5012,7 @@ export function App(): ReactElement {
     ? accountRowBindings.get(accountContextMenu.rowId) ?? null
     : null;
   const accountSources = useMemo<AccountRowSource[]>(() => accountRows.map((row) => {
-    const checkedStatus = row.accountId ? snapshot.settings.debridAccountStatuses?.[row.accountId] : undefined;
+    const checkedStatus = resolveAccountStatus(snapshot.settings.debridAccountStatuses, row.accountId, row.entry.kind);
     const state: AccountRowSource["status"]["state"] = row.disabled
       ? "disabled"
       : !checkedStatus

@@ -1,5 +1,5 @@
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
-import { getMegaDebridAccountsForMode, getMegaDebridDisabledAccountIdsForMode } from "../shared/mega-debrid-accounts";
+import { getMegaDebridAccountsForMode, getMegaDebridAccountStatusId, getMegaDebridDisabledAccountIdsForMode } from "../shared/mega-debrid-accounts";
 import type { AppSettings, DebridAccountStatus, DebridProvider, RendererAccount, RendererAccountKind, RendererSettings } from "../shared/types";
 import { collectAccountStatusRedactionValues, sanitizeDebridAccountStatus } from "./account-status-sanitizer";
 
@@ -78,7 +78,7 @@ export function createRendererAccounts(settings: AppSettings): RendererAccount[]
         dailyLimitBytes: settings.megaDebridAccountDailyLimitBytes[account.id] || 0,
         dailyUsageBytes: settings.megaDebridAccountDailyUsageBytes[account.id] || 0,
         totalUsageBytes: settings.megaDebridAccountTotalUsageBytes[account.id] || 0,
-        status: safeStatus(settings.debridAccountStatuses[account.id], redactions)
+        status: safeStatus(settings.debridAccountStatuses[getMegaDebridAccountStatusId(account.id, mode)], redactions)
       });
     }
   }

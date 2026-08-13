@@ -42,6 +42,7 @@ const MAX_PACKAGE_DTOS = 200;
 const MAX_ITEM_DTOS = 500;
 const MAX_HISTORY_FILE_BYTES = 1024 * 1024;
 const MAX_HISTORY_ENTRIES = 100;
+const MAX_RUNTIME_PRIVATE_NAMES = 64;
 
 interface TextBudget {
   remainingBytes: number;
@@ -98,6 +99,164 @@ function collectSensitiveValues(value: unknown, key = "", output = new Set<strin
     }
   }
   return output;
+}
+
+function addRuntimePrivateName(output: Set<string>, value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed || output.has(trimmed)) {
+    return true;
+  }
+  if (output.size >= MAX_RUNTIME_PRIVATE_NAMES) {
+    return false;
+  }
+  output.add(trimmed);
+  return true;
+}
+
+function collectSnapshotPrivateNames(
+  packageEntries: readonly PackageEntry[],
+  itemEntries: readonly DownloadItem[]
+): string[] {
+  const names = new Set<string>();
+  const addName = (name: string): boolean => {
+    const trimmed = String(name || "").trim();
+    if (trimmed) {
+      names.add(trimmed);
+    }
+    return names.size <= MAX_RUNTIME_PRIVATE_NAMES;
+  };
+  for (const entry of packageEntries) {
+    if (!addName(entry.name)) {
+      return [...names];
+    }
+  }
+  for (const entry of itemEntries) {
+    if (!addName(entry.fileName)) {
+      return [...names];
+    }
+  }
+  return [...names];
+}
+
+function collectRuntimeLogPrivateNames(value: string, output: Set<string>): boolean {
+  const lines = value.split(/\r?\n/);
+  const itemFileNames = new Set<string>();
+  for (const line of lines) {
+    const footerIndex = line.lastIndexOf(" ===");
+    const logKeyIndex = line.indexOf(" | logKey=");
+    if (footerIndex <= logKeyIndex) {
+      continue;
+    }
+    if (line.startsWith("=== Paket-Log Start:")) {
+      const marker = " | name=";
+      const markerIndex = line.indexOf(marker, logKeyIndex + 1);
+      if (markerIndex > logKeyIndex && !addRuntimePrivateName(output, line.slice(markerIndex + marker.length, footerIndex))) {
+        return false;
+      }
+    } else if (line.startsWith("=== Item-Log Start:")) {
+      const marker = " | fileName=";
+      const markerIndex = line.indexOf(marker, logKeyIndex + 1);
+      if (markerIndex > logKeyIndex) {
+        const fileName = line.slice(markerIndex + marker.length, footerIndex);
+        if (!addRuntimePrivateName(output, fileName) || !addRuntimePrivateName(itemFileNames, fileName)) {
+          return false;
+        }
+      }
+    }
+  }
+  for (const line of lines) {
+    const contextIndex = line.indexOf("Item-Kontext initialisiert");
+    if (contextIndex < 0) {
+      continue;
+    }
+    const packageMarker = " | packageName=";
+    const packageStart = line.indexOf(packageMarker, contextIndex);
+    if (packageStart < 0) {
+      continue;
+    }
+    for (const fileName of itemFileNames) {
+      const fileMarker = ` | fileName=${fileName} | targetPath=`;
+      const fileStart = line.lastIndexOf(fileMarker);
+      if (fileStart > packageStart) {
+        if (!addRuntimePrivateName(output, line.slice(packageStart + packageMarker.length, fileStart))) {
+          return false;
+        }
+        break;
+      }
+    }
+  }
+  return true;
+}
+
+function redactRuntimeMetadataLines(value: string): string {
+  return value.split(/\r?\n/).map((line) => {
+    if (line.startsWith("=== Paket-Log Start:")) {
+      const logKeyIndex = line.indexOf(" | logKey=");
+      const nameIndex = line.indexOf(" | name=", logKeyIndex + 1);
+      return logKeyIndex > 0 && nameIndex > logKeyIndex
+        ? `${line.slice(0, nameIndex)} | name=<redacted> ===`
+        : "=== Laufzeitprotokoll-Kontext entfernt ===";
+    }
+    if (line.startsWith("=== Item-Log Start:")) {
+      const logKeyIndex = line.indexOf(" | logKey=");
+      const nameIndex = line.indexOf(" | fileName=", logKeyIndex + 1);
+      return logKeyIndex > 0 && nameIndex > logKeyIndex
+        ? `${line.slice(0, nameIndex)} | fileName=<redacted> ===`
+        : "=== Laufzeitprotokoll-Kontext entfernt ===";
+    }
+    if (line.includes("Paket-Kontext initialisiert") || line.includes("Item-Kontext initialisiert")) {
+      return "Laufzeitprotokoll-Kontext entfernt";
+    }
+    if (/\b(?:name|packageName|fileName)\s*=/.test(line)) {
+      return "Laufzeitprotokoll-Namensfeld entfernt";
+    }
+    return line;
+  }).join("\n");
+}
+
+function redactMainDownloaderLogText(value: string): string {
+  return value.split(/\r?\n/).map((line) => {
+    const lifecycleMatch = /\b(Download (?:Start|fertig):)/.exec(line);
+    if (lifecycleMatch?.index !== undefined) {
+      return `${line.slice(0, lifecycleMatch.index)}${lifecycleMatch[1]} <redacted>`;
+    }
+    if (/\b(?:pkg|item)\s*=/.test(line)) {
+      const prefix = /^(?:.*?\[(?:TRACE|DEBUG|INFO|WARN|ERROR|FATAL)\]\s*)/i.exec(line)?.[0] || "";
+      return `${prefix}Laufzeitprotokoll-Namensfeld entfernt`;
+    }
+    return line;
+  }).join("\n");
+}
+
+function redactRuntimeLogText(
+  value: string,
+  context: string,
+  sensitiveValues: ReadonlySet<string>,
+  knownPrivateNames: readonly string[]
+): string {
+  const privateNames = new Set<string>();
+  for (const privateName of knownPrivateNames) {
+    if (!addRuntimePrivateName(privateNames, privateName)) {
+      return "Laufzeitprotokoll-Kontext entfernt\n";
+    }
+  }
+  if (!collectRuntimeLogPrivateNames(context, privateNames) || !collectRuntimeLogPrivateNames(value, privateNames)) {
+    return "Laufzeitprotokoll-Kontext entfernt\n";
+  }
+  const fieldPattern = /\b(?:name|packageName|fileName)\s*=\s*(.*?)(?=\s+\|\s+|\s+===|\r?$)/gim;
+  for (const match of value.matchAll(fieldPattern)) {
+    if (!addRuntimePrivateName(privateNames, match[1] || "")) {
+      return "Laufzeitprotokoll-Kontext entfernt\n";
+    }
+  }
+  let output = value;
+  for (const privateName of [...privateNames].sort((left, right) => right.length - left.length)) {
+    const escaped = escapeRegExp(privateName);
+    output = privateName.length >= 4
+      ? output.replaceAll(privateName, "<redacted>")
+      : output.replace(new RegExp(`(^|[^A-Za-z0-9])${escaped}(?=$|[^A-Za-z0-9])`, "g"), "$1<redacted>");
+  }
+  return redactSupportText(redactRuntimeMetadataLines(output), sensitiveValues);
 }
 
 function redactSupportText(value: string, sensitiveValues: ReadonlySet<string>): string {
@@ -205,7 +364,12 @@ function getSourcePathKey(sourcePath: string): string {
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
-async function readTextTail(filePath: string, maxBytes: number): Promise<string> {
+interface TextTailResult {
+  text: string;
+  truncated: boolean;
+}
+
+async function readTextHead(filePath: string, maxBytes: number): Promise<string> {
   const stats = await fsp.stat(filePath);
   const bytesToRead = Math.min(stats.size, Math.max(0, maxBytes));
   if (bytesToRead <= 0) {
@@ -214,12 +378,42 @@ async function readTextTail(filePath: string, maxBytes: number): Promise<string>
   const handle = await fsp.open(filePath, "r");
   try {
     const buffer = Buffer.alloc(bytesToRead);
-    const { bytesRead } = await handle.read(buffer, 0, bytesToRead, Math.max(0, stats.size - bytesToRead));
-    const text = buffer.subarray(0, bytesRead).toString("utf8");
-    return stats.size > bytesRead ? `[gekürzt: letzte ${bytesRead} Bytes]\n${text}` : text;
+    const { bytesRead } = await handle.read(buffer, 0, bytesToRead, 0);
+    return buffer.subarray(0, bytesRead).toString("utf8");
   } finally {
     await handle.close();
   }
+}
+
+async function readTextTail(filePath: string, maxBytes: number): Promise<TextTailResult> {
+  const stats = await fsp.stat(filePath);
+  const bytesToRead = Math.min(stats.size, Math.max(0, maxBytes));
+  if (bytesToRead <= 0) {
+    return { text: "", truncated: false };
+  }
+  const handle = await fsp.open(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(bytesToRead);
+    const { bytesRead } = await handle.read(buffer, 0, bytesToRead, Math.max(0, stats.size - bytesToRead));
+    const truncated = stats.size > bytesRead;
+    let text = buffer.subarray(0, bytesRead).toString("utf8");
+    if (truncated) {
+      const firstLineEnd = text.indexOf("\n");
+      text = firstLineEnd >= 0 ? text.slice(firstLineEnd + 1) : "";
+      text = `[gekürzt: letzte ${bytesRead} Bytes]\n${text}`;
+    }
+    return { text, truncated };
+  } finally {
+    await handle.close();
+  }
+}
+
+function trimTextBufferToCompleteLines(buffer: Buffer, maxBytes: number): Buffer {
+  if (buffer.length <= maxBytes) {
+    return buffer;
+  }
+  const firstLineEnd = buffer.indexOf(0x0a, buffer.length - maxBytes);
+  return firstLineEnd >= 0 ? buffer.subarray(firstLineEnd + 1) : Buffer.alloc(0);
 }
 
 async function addTextFileIfExists(
@@ -231,7 +425,8 @@ async function addTextFileIfExists(
   budget: TextBudget,
   maxFileBytes: number,
   maxAgeMs?: number,
-  redactArchiveFileName = false
+  redactArchiveFileName = false,
+  knownPrivateNames: readonly string[] = []
 ): Promise<boolean> {
   if (!sourcePath || budget.remainingBytes <= 0) {
     return false;
@@ -245,11 +440,21 @@ async function addTextFileIfExists(
       return false;
     }
     const allowedBytes = Math.min(maxFileBytes, budget.remainingBytes);
-    const text = redactSupportText(await readTextTail(sourcePath, allowedBytes), sensitiveValues);
-    let buffer = Buffer.from(text, "utf8");
-    if (buffer.length > allowedBytes) {
-      buffer = Buffer.from(buffer.subarray(buffer.length - allowedBytes).toString("utf8"), "utf8");
-    }
+    const tail = await readTextTail(sourcePath, allowedBytes);
+    const normalizedZipPath = zipPath.replace(/\\/g, "/");
+    const contextualRuntimeLog = /^(?:logs\/)?(?:package|item)-logs\//.test(normalizedZipPath);
+    const mainDownloaderLog = /^logs\/rd_downloader\.log(?:\.old)?$/.test(normalizedZipPath);
+    const runtimeLog = contextualRuntimeLog || mainDownloaderLog;
+    const context = contextualRuntimeLog && tail.truncated ? await readTextHead(sourcePath, MAX_TEXT_FILE_BYTES) : tail.text;
+    const text = runtimeLog
+      ? redactRuntimeLogText(
+        mainDownloaderLog ? redactMainDownloaderLogText(tail.text) : tail.text,
+        mainDownloaderLog ? redactMainDownloaderLogText(context) : context,
+        sensitiveValues,
+        knownPrivateNames
+      )
+      : redactSupportText(tail.text, sensitiveValues);
+    const buffer = trimTextBufferToCompleteLines(Buffer.from(text, "utf8"), allowedBytes);
     await yieldToEventLoop();
     zip.addFile(sanitizeArchivePath(zipPath, sensitiveValues, redactArchiveFileName), buffer);
     includedSourcePaths.add(sourcePathKey);
@@ -333,7 +538,8 @@ async function addRelevantLogFiles<T extends { id: string }>(
   maxFiles: number,
   includedSourcePaths: Set<string>,
   sensitiveValues: ReadonlySet<string>,
-  budget: TextBudget
+  budget: TextBudget,
+  resolvePrivateNames: (entry: T) => readonly string[]
 ): Promise<number> {
   let added = 0;
   for (const entry of entries.slice(0, maxFiles)) {
@@ -353,7 +559,8 @@ async function addRelevantLogFiles<T extends { id: string }>(
       budget,
       MAX_TEXT_FILE_BYTES,
       undefined,
-      true
+      true,
+      resolvePrivateNames(entry)
     )) {
       added += 1;
     }
@@ -448,8 +655,16 @@ function createItemDto(entry: DownloadItem, fileName: string): Record<string, un
   };
 }
 
-function selectRelevantEntries<T extends { status: unknown; updatedAt: number }>(entries: T[], limit: number): T[] {
-  return entries.sort((a, b) => Number(isActiveStatus(b.status)) - Number(isActiveStatus(a.status)) || b.updatedAt - a.updatedAt).slice(0, limit);
+function diagnosticPriority(entry: { status: unknown; resumeResetPending?: unknown; retries?: unknown; lastError?: unknown }): number {
+  const status = String(entry.status || "");
+  if (["downloading", "converting", "reconnect_wait", "extracting", "finalizing"].includes(status)) return 3;
+  if (status === "failed" || entry.resumeResetPending === true || Number(entry.retries || 0) > 0 || String(entry.lastError || "").trim()) return 2;
+  if (isActiveStatus(status)) return 1;
+  return 0;
+}
+
+function selectRelevantEntries<T extends { status: unknown; updatedAt: number; resumeResetPending?: unknown; retries?: unknown; lastError?: unknown }>(entries: T[], limit: number): T[] {
+  return entries.sort((a, b) => diagnosticPriority(b) - diagnosticPriority(a) || b.updatedAt - a.updatedAt).slice(0, limit);
 }
 
 function createSessionDto(session: SessionState): Record<string, unknown> {
@@ -849,6 +1064,7 @@ export async function buildSupportBundle(manager: DownloadManager, baseDir: stri
   const snapshot = manager.getSnapshot();
   const packageEntries = Object.values(snapshot.session.packages);
   const itemEntries = Object.values(snapshot.session.items);
+  const snapshotPrivateNames = collectSnapshotPrivateNames(packageEntries, itemEntries);
   const selectedPackageEntries = selectRelevantEntries(packageEntries, MAX_PACKAGE_DTOS);
   const selectedItemEntries = selectRelevantEntries(itemEntries, MAX_ITEM_DTOS);
   const selectedPackages = selectedPackageEntries
@@ -925,16 +1141,7 @@ export async function buildSupportBundle(manager: DownloadManager, baseDir: stri
     textBudget,
     MAX_RUNTIME_FILE_BYTES
   );
-  const addCurrentLog = (sourcePath: string | null, zipPath: string): Promise<boolean> => addTextFileIfExists(
-    zip,
-    sourcePath,
-    zipPath,
-    includedSourcePaths,
-    sensitiveValues,
-    textBudget,
-    MAX_TEXT_FILE_BYTES
-  );
-  const addRotatedLog = (sourcePath: string | null, zipPath: string): Promise<boolean> => addTextFileIfExists(
+  const addCurrentLog = (sourcePath: string | null, zipPath: string, privateNames: readonly string[] = []): Promise<boolean> => addTextFileIfExists(
     zip,
     sourcePath,
     zipPath,
@@ -942,7 +1149,21 @@ export async function buildSupportBundle(manager: DownloadManager, baseDir: stri
     sensitiveValues,
     textBudget,
     MAX_TEXT_FILE_BYTES,
-    SUPPORT_BUNDLE_LOG_WINDOW_MS
+    undefined,
+    false,
+    privateNames
+  );
+  const addRotatedLog = (sourcePath: string | null, zipPath: string, privateNames: readonly string[] = []): Promise<boolean> => addTextFileIfExists(
+    zip,
+    sourcePath,
+    zipPath,
+    includedSourcePaths,
+    sensitiveValues,
+    textBudget,
+    MAX_TEXT_FILE_BYTES,
+    SUPPORT_BUNDLE_LOG_WINDOW_MS,
+    false,
+    privateNames
   );
 
   await addRuntimeFile(path.join(baseDir, SUPPORT_MANIFEST_FILE), `runtime/${SUPPORT_MANIFEST_FILE}`);
@@ -964,7 +1185,8 @@ export async function buildSupportBundle(manager: DownloadManager, baseDir: stri
     MAX_PACKAGE_LOG_FILES,
     includedSourcePaths,
     sensitiveValues,
-    textBudget
+    textBudget,
+    (entry) => [entry.name]
   );
   const relevantItemLogCount = await addRelevantLogFiles(
     zip,
@@ -974,7 +1196,8 @@ export async function buildSupportBundle(manager: DownloadManager, baseDir: stri
     MAX_ITEM_LOG_FILES,
     includedSourcePaths,
     sensitiveValues,
-    textBudget
+    textBudget,
+    (entry) => [entry.fileName, snapshot.session.packages[entry.packageId]?.name || ""]
   );
 
   const mainLogPath = getLogFilePath();
@@ -983,8 +1206,8 @@ export async function buildSupportBundle(manager: DownloadManager, baseDir: stri
   const traceLogPath = getTraceLogPath();
   const accountRotationLogPath = getAccountRotationLogPath();
   const conversionLogPath = getConversionLogPath();
-  await addCurrentLog(mainLogPath, "logs/rd_downloader.log");
-  await addRotatedLog(`${mainLogPath}.old`, "logs/rd_downloader.log.old");
+  await addCurrentLog(mainLogPath, "logs/rd_downloader.log", snapshotPrivateNames);
+  await addRotatedLog(`${mainLogPath}.old`, "logs/rd_downloader.log.old", snapshotPrivateNames);
   await addCurrentLog(auditLogPath, "logs/audit.log");
   await addRotatedLog(auditLogPath ? `${auditLogPath}.old` : null, "logs/audit.log.old");
   await addCurrentLog(renameLogPath, "logs/rename.log");

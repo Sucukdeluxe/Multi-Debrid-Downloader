@@ -1,14 +1,14 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
-import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
+import { getMegaDebridAccountId, getMegaDebridAccountStatusId } from "../src/shared/mega-debrid-accounts";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
 import { AppSettings } from "../src/shared/types";
 import { defaultSettings } from "../src/main/constants";
 import { configureCredentialProtector } from "../src/main/credential-protection";
-import { addHistoryEntryForRetention, createStoragePaths, emptySession, loadHistory, loadHistoryForRetention, loadSession, loadSettings, normalizeLoadedSession, normalizeSettings, resetHistoryForRetention, saveHistory, saveSession, saveSessionAsync, saveSettings, saveSettingsAsync } from "../src/main/storage";
+import { addHistoryEntryForRetention, clearHistory, createStoragePaths, emptySession, loadHistory, loadHistoryForRetention, loadSession, loadSettings, normalizeLoadedSession, normalizeSettings, resetHistoryForRetention, saveHistory, saveSession, saveSessionAsync, saveSettings, saveSettingsAsync } from "../src/main/storage";
 
 const tempDirs: string[] = [];
 type SettingsSaveMode = "sync" | "async";
@@ -30,6 +30,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const dir of tempDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -202,6 +203,49 @@ describe("settings storage", () => {
     expect(loaded.megaPassword).toBe("mega-pass");
     expect(loaded.bestToken).toBe("best-token");
     expect(loaded.allDebridToken).toBe("all-token");
+  });
+
+  it("preserves mode-specific Mega-Debrid account statuses across save and load", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const accountId = getMegaDebridAccountId("shared-login");
+    const apiStatusId = getMegaDebridAccountStatusId(accountId, "api");
+    const webStatusId = getMegaDebridAccountStatusId(accountId, "web");
+    const settings = {
+      ...defaultSettings(),
+      rememberToken: true,
+      megaDebridApiCredentials: "shared-login:api-password",
+      megaDebridWebCredentials: "shared-login:web-password",
+      debridAccountStatuses: {
+        [apiStatusId]: {
+          accountId: apiStatusId,
+          provider: "megadebrid" as const,
+          label: "API account",
+          maskedLogin: "sh*******in",
+          valid: false,
+          isPremium: false,
+          premiumUntilMs: null,
+          message: "API login failed",
+          checkedAt: 100
+        },
+        [webStatusId]: {
+          accountId: webStatusId,
+          provider: "megadebrid" as const,
+          label: "Web account",
+          maskedLogin: "sh*******in",
+          valid: true,
+          isPremium: true,
+          premiumUntilMs: 200,
+          message: "Web login succeeded",
+          checkedAt: 101
+        }
+      }
+    };
+
+    saveSettings(paths, settings);
+
+    expect(loadSettings(paths).debridAccountStatuses).toEqual(settings.debridAccountStatuses);
   });
 
   it.each(["sync", "async"] as const)("preserves the previous recoverable settings state during a %s save", async (mode) => {
@@ -724,6 +768,37 @@ describe("settings storage", () => {
     resetHistoryForRetention(paths, "session");
 
     expect(loadHistory(paths)).toEqual([]);
+  });
+
+  it("propagates a history deletion failure instead of reporting success", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    saveHistory(paths, [{
+      id: "hist-locked",
+      name: "locked",
+      totalBytes: 1,
+      downloadedBytes: 1,
+      fileCount: 1,
+      provider: "realdebrid",
+      completedAt: Date.now(),
+      durationSeconds: 1,
+      status: "completed",
+      outputDir: path.join(dir, "out"),
+      urls: []
+    }]);
+    const originalUnlink = fs.unlinkSync;
+    vi.spyOn(fs, "unlinkSync").mockImplementation((target) => {
+      if (target === paths.historyFile) {
+        const error = new Error("EPERM: history file is locked") as NodeJS.ErrnoException;
+        error.code = "EPERM";
+        throw error;
+      }
+      return originalUnlink(target);
+    });
+
+    expect(() => clearHistory(paths)).toThrow(/EPERM/);
+    expect(loadHistory(paths)).toHaveLength(1);
   });
 
   it("caps persisted history to the configured maxEntries", () => {

@@ -3,7 +3,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { getDebridLinkApiKeyIds } from "../shared/debrid-link-keys";
-import { getMegaDebridAccountIds, mergeMegaDebridCredentialPools, parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
+import { getMegaDebridAccountIds, getMegaDebridAccountStatusId, mergeMegaDebridCredentialPools, parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
 import { AppSettings, AudioStripSummary, BandwidthScheduleEntry, DebridAccountStatus, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, HistoryEntry, HistoryRetentionMode, LogStorageLocation, PackageEntry, PackagePriority, SessionState } from "../shared/types";
 import { getProviderUsageDayKey } from "../shared/provider-daily-limits";
 import { defaultSettings } from "./constants";
@@ -271,7 +271,14 @@ function normalizeDebridAccountStatuses(
   megaIds: string[],
   debridLinkIds: string[]
 ): Record<string, DebridAccountStatus> {
-  const allowed = new Set([...megaIds, ...debridLinkIds]);
+  const allowed = new Set([
+    ...megaIds,
+    ...megaIds.flatMap((accountId) => [
+      getMegaDebridAccountStatusId(accountId, "api"),
+      getMegaDebridAccountStatusId(accountId, "web")
+    ]),
+    ...debridLinkIds
+  ]);
   const result: Record<string, DebridAccountStatus> = {};
   if (value && typeof value === "object" && !Array.isArray(value)) {
     for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
@@ -1465,11 +1472,20 @@ export function addHistoryEntryForRetention(paths: StoragePaths, retentionMode: 
   return addHistoryEntry(paths, entry, limits);
 }
 
-export function resetHistoryForRetention(paths: StoragePaths, retentionMode: HistoryRetentionMode): void {
+export function resetHistoryForRetention(paths: StoragePaths, retentionMode: HistoryRetentionMode): boolean {
   if (retentionMode === "permanent") {
-    return;
+    return true;
   }
-  clearHistory(paths);
+  try {
+    clearHistory(paths);
+    return true;
+  } catch (error) {
+    const code = error && typeof error === "object" && "code" in error
+      ? String((error as NodeJS.ErrnoException).code || "UNKNOWN")
+      : "UNKNOWN";
+    logger.warn(`Automatische Verlaufbereinigung fehlgeschlagen (${code})`);
+    return false;
+  }
 }
 
 export function removeHistoryEntry(paths: StoragePaths, entryId: string): HistoryEntry[] {
@@ -1482,9 +1498,6 @@ export function removeHistoryEntry(paths: StoragePaths, entryId: string): Histor
 export function clearHistory(paths: StoragePaths): void {
   ensureBaseDir(paths.baseDir);
   if (fs.existsSync(paths.historyFile)) {
-    try {
-      fs.unlinkSync(paths.historyFile);
-    } catch {
-    }
+    fs.unlinkSync(paths.historyFile);
   }
 }

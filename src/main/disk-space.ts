@@ -16,6 +16,7 @@ export type DiskReservationRequest = {
   targetPath: string;
   requiredBytes: number | null;
   alreadyPresentBytes?: number;
+  signal?: AbortSignal;
 };
 
 export type DiskWaitEvent = {
@@ -46,7 +47,7 @@ type DiskReservationCoordinatorOptions = {
   statVolume?: (targetPath: string) => Promise<DiskVolumeStats>;
 };
 
-type DiskReservationUpdate = Pick<DiskReservationRequest, "requiredBytes" | "alreadyPresentBytes">;
+type DiskReservationUpdate = Pick<DiskReservationRequest, "requiredBytes" | "alreadyPresentBytes" | "signal">;
 
 export type DiskReservationLease = {
   readonly volumeKey: string | null;
@@ -85,6 +86,31 @@ async function defaultStatVolume(targetPath: string): Promise<DiskVolumeStats> {
   }
 }
 
+function waitForDiskOperation<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation;
+  if (signal.aborted) {
+    void operation.catch(() => {});
+    return Promise.reject(new Error("aborted:disk-reservation"));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      signal.removeEventListener("abort", onAbort);
+      reject(new Error("aborted:disk-reservation"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    void operation.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      }
+    );
+  });
+}
+
 export class DiskReservationCoordinator {
   private readonly safetyBytes: number;
   private readonly retryDelayMs: number;
@@ -105,7 +131,7 @@ export class DiskReservationCoordinator {
     return this.enqueue(async () => {
       const requiredBytes = calculateRemainingReservationBytes(request.requiredBytes, request.alreadyPresentBytes ?? 0);
       if (requiredBytes === null) return this.createLease(request.ownerId, request.targetPath, null, 0);
-      const volume = await this.statVolume(request.targetPath);
+      const volume = await waitForDiskOperation(this.statVolume(request.targetPath), request.signal);
       const reserved = this.reservedByVolume.get(volume.volumeKey) ?? 0;
       const availableBytes = Math.max(0, Math.floor(volume.freeBytes) - reserved - this.safetyBytes);
       if (requiredBytes > availableBytes) {
@@ -149,7 +175,7 @@ export class DiskReservationCoordinator {
           if (nextBytes === null) return;
           const delta = nextBytes - lease.reservedBytes;
           if (delta > 0) {
-            const volume = await coordinator.statVolume(lease.targetPath);
+            const volume = await waitForDiskOperation(coordinator.statVolume(lease.targetPath), update.signal);
             const available = Math.max(0, Math.floor(volume.freeBytes) - (coordinator.reservedByVolume.get(volumeKey) ?? 0) - coordinator.safetyBytes);
             if (delta > available) throw new DiskCapacityError({ phase: "download", ownerId, volumeKey, requiredBytes: nextBytes, availableBytes: available, deficitBytes: delta - available, safetyBytes: coordinator.safetyBytes, retryAt: coordinator.now() + coordinator.retryDelayMs });
           }
