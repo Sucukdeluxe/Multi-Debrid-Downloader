@@ -119,7 +119,7 @@ export function DownloadsToolbar({ actions, model }: { actions: DownloadsViewAct
     <div className="downloads-toolbar" data-visual-region="downloads-toolbar">
       <button disabled={model.actionBusy || !model.canStart} onClick={actions.onStartDownloads} type="button">Start</button>
       <button disabled={!model.canPause || model.paused} onClick={actions.onPauseDownloads} type="button">Pause</button>
-      <button disabled={!model.canStop || model.actionBusy} onClick={actions.onStopDownloads} type="button">Stop</button>
+      <button disabled={!model.canStop} onClick={actions.onStopDownloads} type="button">Stop</button>
       {model.scheduleActive
         ? <span className="downloads-schedule-controls"><strong>Geplant: {model.scheduleLabel}</strong><button disabled={false} onClick={actions.onCancelSchedule} type="button">Abbrechen</button></span>
         : <><button aria-expanded={model.scheduleOpen} onClick={actions.onToggleSchedule} type="button">Zeitplan</button>{model.scheduleOpen ? <span className="downloads-schedule-controls"><input aria-label="Startzeit" onChange={(event) => actions.onScheduleTimeChange(event.target.value)} type="time" value={model.scheduleTime} /><button onClick={actions.onActivateSchedule} type="button">Planen</button></span> : null}</>}

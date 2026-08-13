@@ -708,7 +708,7 @@ describe("downloads view", () => {
     expect(renderToStaticMarkup(toolbar)).not.toContain("Reconnect");
   });
 
-  it("blocks resume without a usable account and keeps pause independent from unrelated action busy state", () => {
+  it("blocks resume without a usable account and keeps lifecycle controls independent from unrelated action busy state", () => {
     const pausedToolbar = DownloadsToolbar({
       actions: createActions(),
       model: withRuntime(createInput(), { paused: true, canStart: false, canPause: true })
@@ -721,6 +721,7 @@ describe("downloads view", () => {
     expect(findButton(pausedToolbar, "Start").props.disabled).toBe(true);
     expect(findButton(pausedToolbar, "Pause").props.disabled).toBe(true);
     expect(findButton(busyToolbar, "Pause").props.disabled).toBe(false);
+    expect(findButton(busyToolbar, "Stop").props.disabled).toBe(false);
   });
 
   it("enables package movement only for a visible selected package row", () => {

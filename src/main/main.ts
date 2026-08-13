@@ -21,6 +21,7 @@ import { createRendererSettings } from "./renderer-state";
 import { validateRendererSettingsUpdate } from "./renderer-settings";
 import { applyMainWindowSecurity, createMainWindowWebPreferences, MAIN_WINDOW_EXTERNAL_HOSTS, openAllowedExternalUrl } from "./browser-security";
 import { assertTrustedIpcSender, type TrustedIpcOptions } from "./ipc-security";
+import { createSupportBundleExportRunner, writeSupportBundleAtomically } from "./support-bundle";
 
 function validateString(value: unknown, name: string): string {
   if (typeof value !== "string") {
@@ -611,6 +612,13 @@ function registerIpcHandlers(): void {
     updateClipboardWatcher();
     return next;
   });
+  handleTrusted(IPC_CHANNELS.WRITE_CLIPBOARD_TEXT, (_event: IpcMainInvokeEvent, text: unknown) => {
+    if (typeof text !== "string" || text.length > 16 * 1024 * 1024) {
+      throw new Error("Ungültiger Zwischenablageinhalt");
+    }
+    clipboard.writeText(text);
+    return true;
+  });
   handleTrusted(IPC_CHANNELS.PICK_FOLDER, async () => {
     const options = {
       properties: ["openDirectory", "createDirectory"] as Array<"openDirectory" | "createDirectory">
@@ -667,19 +675,22 @@ function registerIpcHandlers(): void {
     return controller.importOnlineBackup(key);
   });
 
-  handleTrusted(IPC_CHANNELS.EXPORT_SUPPORT_BUNDLE, async () => {
-    const options = {
-      defaultPath: controller.getSupportBundleDefaultFileName(),
-      filters: [{ name: "Support Bundle", extensions: ["zip"] }]
-    };
-    const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
-    if (result.canceled || !result.filePath) {
-      return { saved: false };
-    }
-    const exported = await controller.exportSupportBundle();
-    await fs.promises.writeFile(result.filePath, exported.buffer);
-    return { saved: true, filePath: result.filePath };
+  const runSupportBundleExport = createSupportBundleExportRunner({
+    chooseFile: async () => {
+      const options = {
+        defaultPath: controller.getSupportBundleDefaultFileName(),
+        filters: [{ name: "Support Bundle", extensions: ["zip"] }]
+      };
+      const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
+      return result.canceled || !result.filePath ? null : result.filePath;
+    },
+    build: async () => (await controller.exportSupportBundle()).buffer,
+    write: writeSupportBundleAtomically,
+    onSuccess: ({ filePath, bytes }) => controller.recordSupportBundleExported(filePath, bytes),
+    onFailure: (error) => controller.recordSupportBundleExportFailed(error)
   });
+
+  handleTrusted(IPC_CHANNELS.EXPORT_SUPPORT_BUNDLE, () => runSupportBundleExport());
 
   handleTrusted(IPC_CHANNELS.OPEN_LOG, async () => {
     const logPath = getLogFilePath();

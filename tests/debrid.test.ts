@@ -13,6 +13,7 @@ afterEach(() => {
   resetDebridLinkRuntimeStateForTests();
   resetMegaDebridRuntimeStateForTests();
   delete process.env.RD_MEGA_ABORT_MIN_RUN_MS;
+  delete process.env.RD_MEGA_ACCOUNT_ATTEMPT_TIMEOUT_MS;
   vi.restoreAllMocks();
 });
 
@@ -1429,6 +1430,181 @@ describe("debrid service", () => {
     expect(megaWeb).toHaveBeenCalledTimes(0);
   });
 
+  it("isolates Mega-Debrid API single-flight consumers so one abort does not cancel the shared connect", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      megaCredentials: "single-flight-user:single-flight-pass",
+      megaDebridApiCredentials: "single-flight-user:single-flight-pass",
+      megaDebridApiEnabled: true,
+      megaDebridWebEnabled: false,
+      providerOrder: [] as const,
+      providerPrimary: "megadebrid-api" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+    let releaseConnect: () => void = () => {};
+    let markConnectStarted: () => void = () => {};
+    const connectStarted = new Promise<void>((resolve) => {
+      markConnectStarted = resolve;
+    });
+    let connectSignal: AbortSignal | undefined;
+    let connectCalls = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("action=connectUser")) {
+        connectCalls += 1;
+        connectSignal = init?.signal as AbortSignal | undefined;
+        markConnectStarted();
+        await new Promise<void>((resolve, reject) => {
+          const onAbort = (): void => reject(new Error("shared connect aborted"));
+          releaseConnect = (): void => {
+            connectSignal?.removeEventListener("abort", onAbort);
+            resolve();
+          };
+          if (connectSignal?.aborted) {
+            onAbort();
+            return;
+          }
+          connectSignal?.addEventListener("abort", onAbort, { once: true });
+        });
+        return new Response(JSON.stringify({ response_code: "ok", token: "shared-token" }), { status: 200 });
+      }
+      if (url.includes("action=getLink")) {
+        return new Response(JSON.stringify({
+          response_code: "ok",
+          debridLink: "https://mega-cdn.example/survivor.rar",
+          filename: "survivor.rar"
+        }), { status: 200 });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    const first = service.unrestrictLink("https://rapidgator.net/file/first-consumer", firstController.signal);
+    await connectStarted;
+    const second = service.unrestrictLink("https://rapidgator.net/file/second-consumer", secondController.signal);
+    const firstOutcome = first.then(() => "fulfilled", () => "rejected");
+    const secondOutcome = second.then(
+      (value) => ({ status: "fulfilled" as const, value }),
+      (error: unknown) => ({ status: "rejected" as const, error })
+    );
+
+    try {
+      firstController.abort("cancel-first-consumer");
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const firstState = await Promise.race([
+        firstOutcome,
+        new Promise<"pending">((resolve) => {
+          timeout = setTimeout(() => resolve("pending"), 100);
+        })
+      ]);
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+      expect(firstState).toBe("rejected");
+      expect(connectSignal?.aborted).toBe(false);
+      expect(secondController.signal.aborted).toBe(false);
+
+      releaseConnect();
+      const survivor = await secondOutcome;
+      expect(survivor.status).toBe("fulfilled");
+      if (survivor.status === "fulfilled") {
+        expect(survivor.value.directUrl).toBe("https://mega-cdn.example/survivor.rar");
+      }
+      expect(connectCalls).toBe(1);
+    } finally {
+      releaseConnect();
+      await Promise.all([firstOutcome, secondOutcome]);
+    }
+  });
+
+  it("does not cache a stale Mega-Debrid API token after credentials change during connect", async () => {
+    const oldSettings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      megaCredentials: "generation-user:old-pass",
+      megaDebridApiCredentials: "generation-user:old-pass",
+      megaDebridApiEnabled: true,
+      megaDebridWebEnabled: false,
+      providerOrder: [] as const,
+      providerPrimary: "megadebrid-api" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+    const newSettings = {
+      ...oldSettings,
+      megaCredentials: "generation-user:new-pass",
+      megaDebridApiCredentials: "generation-user:new-pass"
+    };
+    let releaseOldConnect: () => void = () => {};
+    let markOldConnectStarted: () => void = () => {};
+    const oldConnectStarted = new Promise<void>((resolve) => {
+      markOldConnectStarted = resolve;
+    });
+    const connectPasswords: string[] = [];
+    const getLinkTokens: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("action=connectUser")) {
+        const parsed = new URL(url);
+        const password = parsed.searchParams.get("password") || "";
+        connectPasswords.push(password);
+        if (password === "old-pass") {
+          markOldConnectStarted();
+          await new Promise<void>((resolve) => {
+            releaseOldConnect = resolve;
+          });
+          return new Response(JSON.stringify({ response_code: "ok", token: "old-token" }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ response_code: "ok", token: "new-token" }), { status: 200 });
+      }
+      if (url.includes("action=getLink")) {
+        const token = new URL(url).searchParams.get("token") || "";
+        getLinkTokens.push(token);
+        return new Response(JSON.stringify({
+          response_code: "ok",
+          debridLink: `https://mega-cdn.example/${token}.rar`,
+          filename: `${token}.rar`
+        }), { status: 200 });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const service = new DebridService(oldSettings);
+    const oldRequest = service.unrestrictLink("https://rapidgator.net/file/old-credentials");
+    const oldOutcome = oldRequest.then(
+      (value) => ({ status: "fulfilled" as const, value }),
+      (error: unknown) => ({ status: "rejected" as const, error })
+    );
+    await oldConnectStarted;
+
+    try {
+      service.setSettings(newSettings);
+      const current = await service.unrestrictLink("https://rapidgator.net/file/new-credentials");
+      expect(current.directUrl).toBe("https://mega-cdn.example/new-token.rar");
+
+      releaseOldConnect();
+      await oldOutcome;
+
+      const subsequent = await service.unrestrictLink("https://rapidgator.net/file/subsequent");
+      expect(subsequent.directUrl).toBe("https://mega-cdn.example/new-token.rar");
+      expect(connectPasswords).toEqual(["old-pass", "new-pass"]);
+      expect(getLinkTokens.at(-1)).toBe("new-token");
+    } finally {
+      releaseOldConnect();
+      await oldOutcome;
+    }
+  });
+
   it("treats a Mega-Debrid 'Fichier supprimé' as transient: no account cooldown, German message, retryable", async () => {
     const settings = {
       ...defaultSettings(),
@@ -1693,7 +1869,6 @@ describe("debrid service", () => {
     try {
       await expect(service.unrestrictLink("https://rapidgator.net/file/abort-mega-web", controller.signal)).rejects.toThrow(/aborted/i);
       expect(megaWeb).toHaveBeenCalledTimes(1);
-      expect(megaWeb.mock.calls[0]?.[1]).toBe(controller.signal);
     } finally {
       clearTimeout(abortTimer);
     }
@@ -2093,6 +2268,7 @@ describe("debrid service", () => {
 
   it("single Mega-Debrid account: a long Web abort parks only the slow link and does NOT freeze the sole account", async () => {
     process.env.RD_MEGA_ABORT_MIN_RUN_MS = "0";
+    process.env.RD_MEGA_ACCOUNT_ATTEMPT_TIMEOUT_MS = "20";
     const settings = {
       ...defaultSettings(),
       token: "",
@@ -2110,13 +2286,18 @@ describe("debrid service", () => {
     };
     globalThis.fetch = (async () => new Response("error", { status: 500 })) as typeof fetch;
 
-    const controller = new AbortController();
     let calls = 0;
-    const megaWeb = vi.fn((): Promise<{ fileName: string; directUrl: string; fileSize: number | null; retriesUsed: number }> => {
+    const megaWeb = vi.fn((_link: string, signal?: AbortSignal): Promise<{ fileName: string; directUrl: string; fileSize: number | null; retriesUsed: number }> => {
       calls += 1;
       if (calls === 1) {
-        controller.abort("simulated-60s-timeout");
-        return Promise.reject(new Error("aborted"));
+        return new Promise((_resolve, reject) => {
+          const onAbort = (): void => reject(new Error("aborted"));
+          if (signal?.aborted) {
+            onAbort();
+            return;
+          }
+          signal?.addEventListener("abort", onAbort, { once: true });
+        });
       }
       return Promise.resolve({
         fileName: "healthy.rar",
@@ -2128,7 +2309,7 @@ describe("debrid service", () => {
 
     const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
 
-    const err = await service.unrestrictLink("https://rapidgator.net/file/slow-link.rar.html", controller.signal).then(() => null, (e: unknown) => e);
+    const err = await service.unrestrictLink("https://rapidgator.net/file/slow-link.rar.html").then(() => null, (e: unknown) => e);
     expect(err).toBeTruthy();
     expect(String(err)).toMatch(/mega_debrid_slow_link:\d+:/i);
 
@@ -2280,7 +2461,7 @@ describe("debrid service", () => {
     expect(getMegaDebridAccountCooldownState(key)?.untilRestart).toBe(true);
   }, 20000);
 
-  it("cools down a Mega-Web account that aborts (timeout) so the NEXT unrestrict rotates to the next account", async () => {
+  it("rotates to the next Mega-Web account in the same unrestrict after an account timeout", async () => {
     process.env.RD_MEGA_ABORT_MIN_RUN_MS = "0"; // treat the instant mock abort as a real timeout
     const settings = {
       ...defaultSettings(),
@@ -2310,17 +2491,68 @@ describe("debrid service", () => {
     const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
     const user1Key = `${getMegaDebridAccountId("user1")}:web`;
 
-    // Call 1: account 1 aborts -> rotation stops this pass, account 2 NOT tried, but account 1 is cooled down.
-    await expect(service.unrestrictLink("https://rapidgator.net/file/abort-call-1")).rejects.toThrow();
+    const result = await service.unrestrictLink("https://rapidgator.net/file/abort-call-1");
     expect(loginsSeen).toContain("user1");
-    expect(loginsSeen).not.toContain("user2");
-    expect(getMegaDebridAccountCooldownState(user1Key)).not.toBeNull();
-
-    // Call 2 (the retry, same state): account 1 is on cooldown -> skipped -> account 2 served.
-    loginsSeen.length = 0;
-    const result = await service.unrestrictLink("https://rapidgator.net/file/abort-call-2");
-    expect(loginsSeen).not.toContain("user1");
     expect(loginsSeen).toContain("user2");
+    expect(getMegaDebridAccountCooldownState(user1Key)).not.toBeNull();
+    expect((result as { sourceAccountId?: string }).sourceAccountId).toBe(getMegaDebridAccountId("user2"));
+  }, 20000);
+
+  it("gives every Mega-Web account a fresh timeout budget after a queue timeout", async () => {
+    process.env.RD_MEGA_ACCOUNT_ATTEMPT_TIMEOUT_MS = "20";
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      megaLogin: "user1",
+      megaPassword: "pass1",
+      megaCredentials: "user1:pass1\nuser2:pass2",
+      megaDebridPreferApi: false,
+      providerOrder: [] as const,
+      providerPrimary: "megadebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+    const loginsSeen: string[] = [];
+    const accountSignals: AbortSignal[] = [];
+    const outerController = new AbortController();
+    const megaWeb = vi.fn(async (_link: string, signal?: AbortSignal, account?: { login: string; password: string }) => {
+      loginsSeen.push(account?.login || "");
+      if (signal) {
+        accountSignals.push(signal);
+      }
+      if (account?.login === "user1") {
+        await new Promise<void>((_resolve, reject) => {
+          const onAbort = (): void => reject(new Error("aborted:debrid"));
+          if (signal?.aborted) {
+            onAbort();
+            return;
+          }
+          signal?.addEventListener("abort", onAbort, { once: true });
+        });
+      }
+      if (signal?.aborted) {
+        throw new Error("account 2 received an aborted signal");
+      }
+      return {
+        directUrl: "https://mega-web.example/fresh-account.rar",
+        fileName: "fresh-account.rar",
+        fileSize: null,
+        retriesUsed: 0
+      };
+    });
+    const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
+
+    const result = await service.unrestrictLink("https://rapidgator.net/file/queue-timeout-rotation", outerController.signal);
+
+    expect(loginsSeen).toEqual(["user1", "user2"]);
+    expect(accountSignals).toHaveLength(2);
+    expect(accountSignals[0]).not.toBe(accountSignals[1]);
+    expect(accountSignals[0].aborted).toBe(true);
+    expect(accountSignals[1].aborted).toBe(false);
+    expect(outerController.signal.aborted).toBe(false);
     expect((result as { sourceAccountId?: string }).sourceAccountId).toBe(getMegaDebridAccountId("user2"));
   }, 20000);
 

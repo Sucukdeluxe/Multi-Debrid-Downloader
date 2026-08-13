@@ -62,6 +62,7 @@ export interface ElectronApi {
   exportQueue: () => Promise<{ saved: boolean }>;
   importQueue: (json: string) => Promise<{ addedPackages: number; addedLinks: number }>;
   toggleClipboard: () => Promise<boolean>;
+  writeClipboardText: (text: string) => Promise<boolean>;
   pickFolder: () => Promise<string | null>;
   pickContainers: () => Promise<string[]>;
   getSessionStats: () => Promise<SessionStats>;
@@ -75,7 +76,7 @@ export interface ElectronApi {
   cancelBackupImport: () => Promise<void>;
   exportOnlineBackup: () => Promise<{ key: string }>;
   importOnlineBackup: (key: string) => Promise<{ restored: boolean; relaunch: false; message: string }>;
-  exportSupportBundle: () => Promise<{ saved: boolean; filePath?: string }>;
+  exportSupportBundle: () => Promise<{ saved: boolean; filePath?: string; busy?: boolean }>;
   openLog: () => Promise<void>;
   openLogDirectory: () => Promise<void>;
   openAuditLog: () => Promise<void>;

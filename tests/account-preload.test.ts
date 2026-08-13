@@ -61,4 +61,15 @@ describe("account preload contract", () => {
       IPC_CHANNELS.DELETE_ACCOUNT
     ]);
   });
+
+  it("writes copied text through the native Electron clipboard channel", async () => {
+    electron.invoke.mockResolvedValueOnce(true);
+
+    await electron.api?.writeClipboardText("https://rapidgator.net/file/example");
+
+    expect(electron.invoke).toHaveBeenCalledWith(
+      IPC_CHANNELS.WRITE_CLIPBOARD_TEXT,
+      "https://rapidgator.net/file/example"
+    );
+  });
 });

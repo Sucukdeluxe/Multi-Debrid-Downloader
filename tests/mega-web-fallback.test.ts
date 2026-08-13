@@ -45,7 +45,7 @@ describe("mega-web-fallback", () => {
         generate: (link: string, cookie: string) => Promise<{ directUrl: string; fileName: string } | null>;
         sessions: Map<string, { cookie: string; setAt: number }>;
       };
-      vi.spyOn(internals, "login")
+      const login = vi.spyOn(internals, "login")
         .mockResolvedValueOnce("first-stale-cookie")
         .mockResolvedValueOnce("second-stale-cookie");
       vi.spyOn(internals, "generate")
@@ -55,10 +55,56 @@ describe("mega-web-fallback", () => {
         })
         .mockResolvedValueOnce({ directUrl: "https://mega.direct/retry", fileName: "retry.bin" });
 
-      const result = await fallback.unrestrict("https://mega.debrid/retry", undefined, { login: "old-user", password: "old-pass" });
+      await expect(fallback.unrestrict("https://mega.debrid/retry", undefined, { login: "old-user", password: "old-pass" }))
+        .rejects.toThrow(/aborted/i);
 
-      expect(result?.directUrl).toBe("https://mega.direct/retry");
+      expect(login).toHaveBeenCalledTimes(1);
       expect(internals.sessions.size).toBe(0);
+    });
+
+    it("keeps a fresh session when an invalidated older request finishes later", async () => {
+      let releaseOldGenerate: () => void = () => {};
+      let markOldGenerateStarted: () => void = () => {};
+      const oldGenerateGate = new Promise<void>((resolve) => {
+        releaseOldGenerate = resolve;
+      });
+      const oldGenerateStarted = new Promise<void>((resolve) => {
+        markOldGenerateStarted = resolve;
+      });
+      const fallback = new MegaWebFallback(() => ({ login: "same-user", password: "same-pass" }));
+      const internals = fallback as unknown as {
+        login: (login: string, password: string, signal?: AbortSignal) => Promise<string>;
+        generate: (link: string, cookie: string, signal?: AbortSignal) => Promise<{ directUrl: string; fileName: string } | null>;
+        sessions: Map<string, { cookie: string; setAt: number }>;
+      };
+      const login = vi.spyOn(internals, "login")
+        .mockResolvedValueOnce("old-cookie")
+        .mockResolvedValueOnce("fresh-cookie");
+      vi.spyOn(internals, "generate").mockImplementation(async (link) => {
+        if (link.includes("old")) {
+          markOldGenerateStarted();
+          await oldGenerateGate;
+          return null;
+        }
+        return { directUrl: "https://mega.direct/fresh", fileName: "fresh.bin" };
+      });
+
+      const oldRequest = fallback.unrestrict("https://mega.debrid/old", undefined, { login: "same-user", password: "same-pass" });
+      const oldSettled = oldRequest.catch((error: unknown) => error);
+      await oldGenerateStarted;
+      fallback.invalidateSession();
+      const freshRequest = fallback.unrestrict("https://mega.debrid/fresh", undefined, { login: "same-user", password: "same-pass" });
+
+      try {
+        await expect(freshRequest).resolves.toMatchObject({ directUrl: "https://mega.direct/fresh" });
+        expect(internals.sessions.get("same-user")?.cookie).toBe("fresh-cookie");
+      } finally {
+        releaseOldGenerate();
+      }
+
+      await oldSettled;
+      expect(internals.sessions.get("same-user")?.cookie).toBe("fresh-cookie");
+      expect(login).toHaveBeenCalledTimes(2);
     });
 
     it("does not cache old credentials from a queued request after invalidation", async () => {
@@ -88,14 +134,160 @@ describe("mega-web-fallback", () => {
       vi.spyOn(internals, "generate").mockResolvedValue({ directUrl: "https://mega.direct/queued", fileName: "queued.bin" });
 
       const first = fallback.unrestrict("https://mega.debrid/first", undefined, { login: "old-user", password: "old-pass" });
+      const firstSettled = first.catch((error: unknown) => error);
       await firstLoginStarted;
       const queued = fallback.unrestrict("https://mega.debrid/queued", undefined, { login: "old-user", password: "old-pass" });
+      const queuedSettled = queued.catch((error: unknown) => error);
       fallback.invalidateSession();
       releaseFirstLogin();
 
-      await expect(Promise.all([first, queued])).resolves.toHaveLength(2);
-      expect(loginCount).toBe(2);
+      await expect(firstSettled).resolves.toBeInstanceOf(Error);
+      await expect(queuedSettled).resolves.toBeInstanceOf(Error);
+      expect(loginCount).toBe(1);
       expect(internals.sessions.size).toBe(0);
+    });
+
+    it("does not let a blocked old account job block a new request after session invalidation", async () => {
+      let releaseOldLogin: () => void = () => {};
+      let markOldLoginStarted: () => void = () => {};
+      const oldLoginGate = new Promise<void>((resolve) => {
+        releaseOldLogin = resolve;
+      });
+      const oldLoginStarted = new Promise<void>((resolve) => {
+        markOldLoginStarted = resolve;
+      });
+      const fallback = new MegaWebFallback(() => ({ login: "same-user", password: "same-pass" }));
+      const internals = fallback as unknown as {
+        login: (login: string, password: string, signal?: AbortSignal) => Promise<string>;
+        generate: (link: string, cookie: string, signal?: AbortSignal) => Promise<{ directUrl: string; fileName: string }>;
+      };
+      const login = vi.spyOn(internals, "login")
+        .mockImplementationOnce(async () => {
+          markOldLoginStarted();
+          await oldLoginGate;
+          return "old-cookie";
+        })
+        .mockResolvedValueOnce("new-cookie");
+      vi.spyOn(internals, "generate").mockImplementation(async (link) => ({
+        directUrl: link.includes("fresh") ? "https://mega.direct/fresh" : "https://mega.direct/old",
+        fileName: link.includes("fresh") ? "fresh.bin" : "old.bin"
+      }));
+
+      const oldRequest = fallback.unrestrict("https://mega.debrid/old", undefined, { login: "same-user", password: "same-pass" });
+      const oldSettled = oldRequest.catch((error: unknown) => error);
+      await oldLoginStarted;
+      fallback.invalidateSession();
+      const freshRequest = fallback.unrestrict("https://mega.debrid/fresh", undefined, { login: "same-user", password: "same-pass" });
+
+      try {
+        await vi.waitFor(() => expect(login).toHaveBeenCalledTimes(2), { timeout: 500, interval: 5 });
+        await expect(freshRequest).resolves.toMatchObject({
+          directUrl: "https://mega.direct/fresh",
+          fileName: "fresh.bin"
+        });
+      } finally {
+        releaseOldLogin();
+        await Promise.allSettled([oldSettled, freshRequest]);
+      }
+    });
+
+    it("does not execute provider work for a queued request aborted before it starts", async () => {
+      let releaseFirstLogin: () => void = () => {};
+      let markFirstLoginStarted: () => void = () => {};
+      const firstLoginGate = new Promise<void>((resolve) => {
+        releaseFirstLogin = resolve;
+      });
+      const firstLoginStarted = new Promise<void>((resolve) => {
+        markFirstLoginStarted = resolve;
+      });
+      const generatedLinks: string[] = [];
+      const fallback = new MegaWebFallback(() => ({ login: "same-user", password: "same-pass" }));
+      const internals = fallback as unknown as {
+        login: (login: string, password: string, signal?: AbortSignal) => Promise<string>;
+        generate: (link: string, cookie: string, signal?: AbortSignal) => Promise<{ directUrl: string; fileName: string }>;
+        queues: Map<string, Promise<unknown>>;
+      };
+      const login = vi.spyOn(internals, "login").mockImplementation(async () => {
+        markFirstLoginStarted();
+        await firstLoginGate;
+        return "first-cookie";
+      });
+      vi.spyOn(internals, "generate").mockImplementation(async (link) => {
+        generatedLinks.push(link);
+        return { directUrl: "https://mega.direct/first", fileName: "first.bin" };
+      });
+
+      const firstRequest = fallback.unrestrict("https://mega.debrid/first", undefined, { login: "same-user", password: "same-pass" });
+      await firstLoginStarted;
+      const queuedController = new AbortController();
+      const queuedRequest = fallback.unrestrict("https://mega.debrid/aborted", queuedController.signal, { login: "same-user", password: "same-pass" });
+      const queueTail = internals.queues.get("same-user");
+      queuedController.abort("cancel-before-start");
+
+      await expect(queuedRequest).rejects.toThrow(/queue.?timeout/i);
+      releaseFirstLogin();
+      await expect(firstRequest).resolves.toMatchObject({ directUrl: "https://mega.direct/first" });
+      await queueTail;
+
+      expect(login).toHaveBeenCalledTimes(1);
+      expect(generatedLinks).toEqual(["https://mega.debrid/first"]);
+    });
+
+    it("starts a new request normally after invalidating a queue with an aborted waiter", async () => {
+      let releaseOldLogin: () => void = () => {};
+      let markOldLoginStarted: () => void = () => {};
+      const oldLoginGate = new Promise<void>((resolve) => {
+        releaseOldLogin = resolve;
+      });
+      const oldLoginStarted = new Promise<void>((resolve) => {
+        markOldLoginStarted = resolve;
+      });
+      const generatedLinks: string[] = [];
+      const fallback = new MegaWebFallback(() => ({ login: "same-user", password: "same-pass" }));
+      const internals = fallback as unknown as {
+        login: (login: string, password: string, signal?: AbortSignal) => Promise<string>;
+        generate: (link: string, cookie: string, signal?: AbortSignal) => Promise<{ directUrl: string; fileName: string }>;
+        queues: Map<string, Promise<unknown>>;
+      };
+      const login = vi.spyOn(internals, "login")
+        .mockImplementationOnce(async () => {
+          markOldLoginStarted();
+          await oldLoginGate;
+          return "old-cookie";
+        })
+        .mockResolvedValueOnce("fresh-cookie");
+      vi.spyOn(internals, "generate").mockImplementation(async (link) => {
+        generatedLinks.push(link);
+        return {
+          directUrl: link.includes("fresh") ? "https://mega.direct/fresh" : "https://mega.direct/old",
+          fileName: link.includes("fresh") ? "fresh.bin" : "old.bin"
+        };
+      });
+
+      const oldRequest = fallback.unrestrict("https://mega.debrid/old", undefined, { login: "same-user", password: "same-pass" });
+      const oldSettled = oldRequest.catch((error: unknown) => error);
+      await oldLoginStarted;
+      const queuedController = new AbortController();
+      const queuedRequest = fallback.unrestrict("https://mega.debrid/aborted", queuedController.signal, { login: "same-user", password: "same-pass" });
+      const staleQueueTail = internals.queues.get("same-user");
+      queuedController.abort("cancel-before-start");
+      await expect(queuedRequest).rejects.toThrow(/queue.?timeout/i);
+
+      fallback.invalidateSession();
+      const freshRequest = fallback.unrestrict("https://mega.debrid/fresh", undefined, { login: "same-user", password: "same-pass" });
+
+      try {
+        await vi.waitFor(() => expect(login).toHaveBeenCalledTimes(2), { timeout: 500, interval: 5 });
+        await expect(freshRequest).resolves.toMatchObject({
+          directUrl: "https://mega.direct/fresh",
+          fileName: "fresh.bin"
+        });
+      } finally {
+        releaseOldLogin();
+        await Promise.allSettled([oldSettled, freshRequest, staleQueueTail]);
+      }
+
+      expect(generatedLinks).toEqual(["https://mega.debrid/fresh"]);
     });
 
     it("logs in, fetches HTML, parses code, and polls AJAX for direct url", async () => {

@@ -291,6 +291,7 @@ const megaDebridAccountCooldowns = new Map<string, MegaDebridCooldownDetail>();
 const MEGA_DEBRID_ACCOUNT_COOLDOWN_MS = 120_000;
 const MEGA_DEBRID_SLOW_LINK_RETRY_MS = 120_000;
 const MEGA_DEBRID_INVALID_ACCOUNT_COOLDOWN_MS = 60 * 60 * 1000;
+const MEGA_DEBRID_ACCOUNT_ATTEMPT_TIMEOUT_MS_DEFAULT = 120_000;
 
 // A Mega-Web account abort (the shared unrestrict timeout firing while this
 // account ran) only cools the account down — so the next attempt rotates on —
@@ -330,6 +331,20 @@ export function recordMegaDebridEmptyResponseStreak(accountId: string): number {
 
 export function clearMegaDebridEmptyResponseStreak(accountId: string): void {
   megaDebridEmptyResponseStreaks.delete(accountId);
+}
+
+export function getMegaDebridAccountAttemptTimeoutMs(): number {
+  const fromEnv = Number(process.env.RD_MEGA_ACCOUNT_ATTEMPT_TIMEOUT_MS ?? NaN);
+  return Number.isFinite(fromEnv) && fromEnv >= 10 && fromEnv <= 10 * 60 * 1000
+    ? Math.floor(fromEnv)
+    : MEGA_DEBRID_ACCOUNT_ATTEMPT_TIMEOUT_MS_DEFAULT;
+}
+
+export function clearMegaDebridAccountRuntimeStates(accountKeys: Iterable<string>): void {
+  for (const accountKey of accountKeys) {
+    megaDebridAccountCooldowns.delete(accountKey);
+    megaDebridEmptyResponseStreaks.delete(accountKey);
+  }
 }
 
 export function resetMegaDebridRuntimeStateForTests(): void {
@@ -745,6 +760,32 @@ async function sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void> 
     };
 
     signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function waitForPromiseWithSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) {
+    return promise;
+  }
+  if (signal.aborted) {
+    return Promise.reject(new Error("aborted:debrid"));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      signal.removeEventListener("abort", onAbort);
+      reject(new Error("aborted:debrid"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    void promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      }
+    );
   });
 }
 
@@ -1808,31 +1849,47 @@ class MegaDebridClient {
 
   private allowApiFallback: boolean;
 
-  private static cachedApiTokens = new Map<string, { token: string; at: number }>();
+  private static cachedApiTokens = new Map<string, { token: string; at: number; generation: number }>();
 
-  private static pendingConnects = new Map<string, Promise<string | null>>();
+  private static pendingConnects = new Map<string, { generation: number; promise: Promise<string | null> }>();
+
+  private static credentialGenerations = new Map<string, number>();
+
+  private static getCredentialGeneration(key: string): number {
+    return MegaDebridClient.credentialGenerations.get(key) ?? 0;
+  }
+
+  private static invalidateCredential(key: string): void {
+    MegaDebridClient.credentialGenerations.set(key, MegaDebridClient.getCredentialGeneration(key) + 1);
+    MegaDebridClient.cachedApiTokens.delete(key);
+    MegaDebridClient.pendingConnects.delete(key);
+  }
+
+  private static invalidateCredentialIfCurrent(key: string, generation: number): void {
+    if (MegaDebridClient.getCredentialGeneration(key) === generation) {
+      MegaDebridClient.invalidateCredential(key);
+    }
+  }
 
   public static pruneCachedTokensNotIn(activeLogins: Iterable<string>): void {
     const keep = new Set<string>();
     for (const login of activeLogins) {
       keep.add(String(login || "").toLowerCase());
     }
-    for (const login of MegaDebridClient.cachedApiTokens.keys()) {
+    const knownLogins = new Set<string>([
+      ...MegaDebridClient.cachedApiTokens.keys(),
+      ...MegaDebridClient.pendingConnects.keys()
+    ]);
+    for (const login of knownLogins) {
       if (!keep.has(login)) {
-        MegaDebridClient.cachedApiTokens.delete(login);
-      }
-    }
-    for (const login of MegaDebridClient.pendingConnects.keys()) {
-      if (!keep.has(login)) {
-        MegaDebridClient.pendingConnects.delete(login);
+        MegaDebridClient.invalidateCredential(login);
       }
     }
   }
 
   public static clearCachedApiToken(login: string): void {
     const key = String(login || "").toLowerCase();
-    MegaDebridClient.cachedApiTokens.delete(key);
-    MegaDebridClient.pendingConnects.delete(key);
+    MegaDebridClient.invalidateCredential(key);
   }
 
   public constructor(login: string, password: string, mode: "api" | "web", allowApiFallback: boolean, megaWebUnrestrict?: MegaWebUnrestrictor) {
@@ -1849,40 +1906,46 @@ class MegaDebridClient {
 
   private async connectApi(signal?: AbortSignal): Promise<string | null> {
     const key = this.cacheKey;
+    const generation = MegaDebridClient.getCredentialGeneration(key);
     const cached = MegaDebridClient.cachedApiTokens.get(key);
-    if (cached && cached.token && Date.now() - cached.at < 20 * 60 * 1000) {
+    if (cached && cached.generation === generation && cached.token && Date.now() - cached.at < 20 * 60 * 1000) {
       traceConversionPhase({ phase: "token", provider: "megadebrid-api", tokenState: `cached(${Math.floor((Date.now() - cached.at) / 1000)}s)`, outcome: "ok" });
-      return cached.token;
+      return waitForPromiseWithSignal(Promise.resolve(cached.token), signal);
     }
 
     const pending = MegaDebridClient.pendingConnects.get(key);
-    if (pending) {
+    if (pending && pending.generation === generation) {
       traceConversionPhase({ phase: "token", provider: "megadebrid-api", tokenState: "pending-join", outcome: "ok" });
-      return pending;
+      return waitForPromiseWithSignal(pending.promise, signal);
     }
 
-    const promise = this.doConnectApi(signal).finally(() => {
-      MegaDebridClient.pendingConnects.delete(key);
-    });
-    MegaDebridClient.pendingConnects.set(key, promise);
-    return promise;
+    const promise = this.doConnectApi(key, generation);
+    const entry = { generation, promise };
+    MegaDebridClient.pendingConnects.set(key, entry);
+    const clearPending = (): void => {
+      if (MegaDebridClient.pendingConnects.get(key) === entry) {
+        MegaDebridClient.pendingConnects.delete(key);
+      }
+    };
+    void promise.then(clearPending, clearPending);
+    return waitForPromiseWithSignal(promise, signal);
   }
 
   private clearTokenCache(): void {
     MegaDebridClient.cachedApiTokens.delete(this.cacheKey);
   }
 
-  private async doConnectApi(signal?: AbortSignal): Promise<string | null> {
+  private async doConnectApi(cacheKey: string, generation: number): Promise<string | null> {
     const connectStartedAt = Date.now();
     const url = `${MEGA_DEBRID_API_BASE}?action=connectUser&login=${encodeURIComponent(this.login)}&password=${encodeURIComponent(this.password)}`;
     const response = await fetch(url, {
       headers: { "User-Agent": DEBRID_USER_AGENT },
-      signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
+      signal: AbortSignal.timeout(API_TIMEOUT_MS)
     });
     const text = await response.text();
     if (!response.ok) {
       if (response.status === 401 || response.status === 403) {
-        this.clearTokenCache();
+        MegaDebridClient.invalidateCredentialIfCurrent(cacheKey, generation);
       }
       traceConversionPhase({ phase: "token", provider: "megadebrid-api", tokenState: "fresh-login", workMs: Date.now() - connectStartedAt, outcome: "error", detail: `HTTP ${response.status}` });
       return null;
@@ -1890,7 +1953,7 @@ class MegaDebridClient {
     const payload = parseJsonSafe(text);
     if (!payload || payload.response_code !== "ok") {
       if (payload && String(payload.response_code || "").toLowerCase().includes("token")) {
-        this.clearTokenCache();
+        MegaDebridClient.invalidateCredentialIfCurrent(cacheKey, generation);
       }
       traceConversionPhase({ phase: "token", provider: "megadebrid-api", tokenState: "fresh-login", workMs: Date.now() - connectStartedAt, outcome: "error", detail: `response_code=${payload?.response_code || "?"} ${String(payload?.response_text || "").slice(0, 80)}`.trim() });
       return null;
@@ -1900,7 +1963,10 @@ class MegaDebridClient {
       traceConversionPhase({ phase: "token", provider: "megadebrid-api", tokenState: "fresh-login", workMs: Date.now() - connectStartedAt, outcome: "error", detail: "leeres Token" });
       return null;
     }
-    MegaDebridClient.cachedApiTokens.set(this.cacheKey, { token, at: Date.now() });
+    if (MegaDebridClient.getCredentialGeneration(cacheKey) !== generation) {
+      return null;
+    }
+    MegaDebridClient.cachedApiTokens.set(cacheKey, { token, at: Date.now(), generation });
     traceConversionPhase({ phase: "token", provider: "megadebrid-api", tokenState: "fresh-login", workMs: Date.now() - connectStartedAt, outcome: "ok" });
     return token;
   }
@@ -2123,9 +2189,13 @@ class MegaDebridClient {
 
       usableAccountSeen = true;
       megaDebridInFlight.set(cooldownKey, (megaDebridInFlight.get(cooldownKey) ?? 0) + 1);
+      const accountAttemptTimeoutSignal = AbortSignal.timeout(getMegaDebridAccountAttemptTimeoutMs());
+      const accountAttemptSignal = signal
+        ? AbortSignal.any([signal, accountAttemptTimeoutSignal])
+        : accountAttemptTimeoutSignal;
       try {
         const client = new MegaDebridClient(account.login, account.password, mode, allowApiFallback, megaWebUnrestrict);
-        const result = await client.unrestrictLink(link, signal);
+        const result = await client.unrestrictLink(link, accountAttemptSignal);
         clearMegaDebridAccountCooldownState(cooldownKey);
         clearMegaDebridEmptyResponseStreak(cooldownKey);
         const elapsedMs = Date.now() - testStartedAt;
@@ -2152,6 +2222,9 @@ class MegaDebridClient {
       } catch (error) {
         const elapsedMs = Date.now() - testStartedAt;
         const abortText = compactErrorText(error).replace(/^Error:\s*/i, "");
+        if (signal?.aborted) {
+          throw error;
+        }
         // Timeout/abort on THIS account (the shared unrestrict timeout fired). The
         // account-wide cooldown exists ONLY to make the retry rotate to another
         // account — so it is set only when another usable account actually exists.
@@ -2161,7 +2234,8 @@ class MegaDebridClient {
         // we park just this link (mega_debrid_slow_link) and leave the account free
         // for other items. A quick user-cancel (below the min run) parks nothing.
         if (/aborted/i.test(abortText) && !/timeout/i.test(abortText)) {
-          const ranLongEnough = elapsedMs >= getMegaDebridAbortMinRunMs();
+          const accountAttemptTimedOut = accountAttemptTimeoutSignal.aborted;
+          const ranLongEnough = accountAttemptTimedOut || elapsedMs >= getMegaDebridAbortMinRunMs();
           const otherUsableAccounts = orderedEntries.reduce((count, candidate) => {
             if (candidate.account.id === account.id) {
               return count;
@@ -2194,8 +2268,11 @@ class MegaDebridClient {
             elapsedMs,
             reason: abortText,
             cooldownSec: rotateToAnotherAccount ? Math.ceil(MEGA_DEBRID_ACCOUNT_COOLDOWN_MS / 1000) : 0,
-            next: rotateToAnotherAccount ? "naechster Account beim Retry" : "Einzel-Retry (Account bleibt fuer andere Items frei)"
+            next: rotateToAnotherAccount ? "naechster Account im selben Versuch" : "Einzel-Retry (Account bleibt fuer andere Items frei)"
           });
+          if (rotateToAnotherAccount) {
+            continue;
+          }
           if (ranLongEnough && !rotateToAnotherAccount) {
             throw new Error(`mega_debrid_slow_link:${MEGA_DEBRID_SLOW_LINK_RETRY_MS}:Mega-Debrid${accountLabel}: ${abortText}`);
           }

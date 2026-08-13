@@ -860,15 +860,34 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
   }
 
   public async exportSupportBundle(): Promise<{ buffer: Buffer; defaultFileName: string }> {
-    this.audit("INFO", "Support-Bundle exportiert");
-    logTraceEvent("INFO", "support", "Support-Bundle erstellt", {
-      packageCount: Object.keys(this.manager.getSnapshot().session.packages).length,
-      itemCount: Object.keys(this.manager.getSnapshot().session.items).length
+    const buffer = await buildSupportBundle(this.manager, this.storagePaths.baseDir, {
+      hostDiagnosticsMode: "cached",
+      debugSetupMode: "deferred"
     });
     return {
-      buffer: await buildSupportBundle(this.manager, this.storagePaths.baseDir, { hostDiagnosticsMode: "cached" }),
+      buffer,
       defaultFileName: getSupportBundleDefaultFileName()
     };
+  }
+
+  public recordSupportBundleExported(filePath: string, bytes: number): void {
+    const snapshot = this.manager.getSnapshot();
+    const fields = {
+      fileName: path.basename(filePath),
+      bytes,
+      packageCount: Object.keys(snapshot.session.packages).length,
+      itemCount: Object.keys(snapshot.session.items).length
+    };
+    this.audit("INFO", "Support-Bundle exportiert", fields);
+    logTraceEvent("INFO", "support", "Support-Bundle exportiert", fields);
+  }
+
+  public recordSupportBundleExportFailed(error: unknown): void {
+    const fields = {
+      error: error instanceof Error ? error.message : String(error)
+    };
+    this.audit("ERROR", "Support-Bundle-Export fehlgeschlagen", fields);
+    logTraceEvent("ERROR", "support", "Support-Bundle-Export fehlgeschlagen", fields);
   }
 
   public getSupportBundleDefaultFileName(): string {

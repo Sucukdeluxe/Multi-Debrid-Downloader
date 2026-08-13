@@ -54,7 +54,7 @@ function releaseTlsSkip(): void {
 }
 import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 import { planDownloadCompletion, reconcileFinalizedSize, validateDownloadedFileCompletion } from "./download-completion";
-import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline, fetchAllDebridHostInfo, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState } from "./debrid";
+import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, clearMegaDebridAccountRuntimeStates, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline, fetchAllDebridHostInfo, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getMegaDebridAccountAttemptTimeoutMs, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState } from "./debrid";
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { classifyDiskError } from "./fs-error";
@@ -78,7 +78,7 @@ type ActiveTask = {
   itemId: string;
   packageId: string;
   abortController: AbortController;
-  abortReason: "stop" | "cancel" | "reconnect" | "package_toggle" | "stall" | "shutdown" | "reset" | "none";
+  abortReason: "stop" | "pause" | "cancel" | "reconnect" | "package_toggle" | "settings_refresh" | "stall" | "shutdown" | "reset" | "none";
   resumable: boolean;
   nonResumableCounted: boolean;
   freshRetryUsed?: boolean;
@@ -123,6 +123,10 @@ const DEFAULT_DOWNLOAD_STALL_TIMEOUT_MS = 10000;
 const DEFAULT_DOWNLOAD_CONNECT_TIMEOUT_MS = 25000;
 
 const DEFAULT_GLOBAL_STALL_WATCHDOG_TIMEOUT_MS = 60000;
+
+const MAX_UNRESTRICT_TIMEOUT_MS = 2_147_483_647;
+
+const UNRESTRICT_TIMEOUT_OVERHEAD_MS = 15_000;
 
 const DEFAULT_POST_EXTRACT_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 
@@ -477,6 +481,31 @@ function extractHosterKey(link: string): string {
   return extractHosterFromUrl(link);
 }
 
+export function getUnrestrictTimeoutMsForProviderPlan(settings: AppSettings, providerPlan: readonly DebridProvider[]): number {
+  const baseTimeoutMs = getUnrestrictTimeoutMs();
+  const megaModes = new Set<"api" | "web">();
+  for (const provider of providerPlan) {
+    const effectiveProvider = resolveMegaDebridProvider(settings, provider);
+    if (effectiveProvider === "megadebrid-api") {
+      megaModes.add("api");
+    } else if (effectiveProvider === "megadebrid-web") {
+      megaModes.add("web");
+    }
+  }
+  if (megaModes.size === 0) {
+    return baseTimeoutMs;
+  }
+  let accountCount = 0;
+  for (const mode of megaModes) {
+    accountCount += getAvailableMegaDebridAccounts(settings, mode).length;
+  }
+  if (accountCount === 0) {
+    return baseTimeoutMs;
+  }
+  const calculatedTimeoutMs = baseTimeoutMs + UNRESTRICT_TIMEOUT_OVERHEAD_MS + accountCount * getMegaDebridAccountAttemptTimeoutMs();
+  return Math.min(MAX_UNRESTRICT_TIMEOUT_MS, Math.max(baseTimeoutMs, calculatedTimeoutMs));
+}
+
 function isLargeBinaryLikePath(filePath: string): boolean {
   const lower = path.basename(String(filePath || "")).toLowerCase();
   return isArchiveLikePath(lower) || LARGE_BINARY_FILE_RE.test(lower);
@@ -552,9 +581,14 @@ function shouldPreflightFinalizeItemFromDisk(item: DownloadItem): boolean {
     || text.includes("server ignorierte range");
 }
 
-function isResumeHardResetReason(errorText: string): boolean {
-  const text = String(errorText || "");
-  return text.startsWith("resume_download_underflow:");
+export function isResumeHardResetReason(errorText: string, renewedLinkFailures = 0): boolean {
+  const text = String(errorText || "").toLowerCase();
+  return text.startsWith("resume_download_underflow:")
+    || (renewedLinkFailures > 0 && (
+      text.startsWith("range_ignored_on_resume:")
+      || text.startsWith("range_mismatch_on_resume:")
+      || text.includes("server ignorierte range")
+    ));
 }
 
 function isRealDebridProvider(provider: string | null | undefined): boolean {
@@ -1701,6 +1735,15 @@ function retryDelayWithJitter(attempt: number, baseMs: number): number {
   return Math.floor(jitter);
 }
 
+function isMegaDebridProviderKey(value: string): boolean {
+  return value === "megadebrid"
+    || value === "megadebrid-api"
+    || value === "megadebrid-web"
+    || value.startsWith("megadebrid:")
+    || value.startsWith("megadebrid-api:")
+    || value.startsWith("megadebrid-web:");
+}
+
 export function getDiskWriteWaitReason(error: unknown): string | null {
   const text = compactErrorText(error).replace(/^Error:\s*/i, "");
   const marked = text.match(/^disk_write_wait:(.+)$/i);
@@ -2194,25 +2237,31 @@ export class DownloadManager extends EventEmitter {
 
   public setSettings(next: AppSettings, opts?: { suppressRetroactiveCleanup?: boolean; settingsOnlyImport?: boolean }): void {
     const previous = this.settings;
-    const previousMegaPool = (["api", "web"] as const)
-      .flatMap((mode) => getAvailableMegaDebridAccounts(previous, mode).map((account) => `${mode}:${account.id}:${account.password}`))
+    const previousMegaAccounts = (["api", "web"] as const)
+      .flatMap((mode) => getAvailableMegaDebridAccounts(previous, mode).map((account) => ({ mode, account })));
+    const previousMegaPoolEntries = new Map<string, string>(previousMegaAccounts.map(({ mode, account }) => [`${account.id}:${mode}`, account.password]));
+    const previousMegaPool = [...previousMegaPoolEntries]
+      .map(([key, password]) => `${key}:${password}`)
       .sort()
       .join("\n");
     const nextMegaAccounts = (["api", "web"] as const)
       .flatMap((mode) => getAvailableMegaDebridAccounts(next, mode));
-    const nextMegaPool = (["api", "web"] as const)
-      .flatMap((mode) => getAvailableMegaDebridAccounts(next, mode).map((account) => `${mode}:${account.id}:${account.password}`))
+    const nextMegaPoolEntries = new Map<string, string>((["api", "web"] as const)
+      .flatMap((mode) => getAvailableMegaDebridAccounts(next, mode).map((account) => [`${account.id}:${mode}`, account.password] as const)));
+    const nextMegaPool = [...nextMegaPoolEntries]
+      .map(([key, password]) => `${key}:${password}`)
       .sort()
       .join("\n");
-    const previousMegaWebCredentials = getMegaDebridAccountsForMode(previous, "web")
+    const previousMegaWebPool = getAvailableMegaDebridAccounts(previous, "web")
       .map((account) => `${account.id}:${account.password}`)
       .sort()
       .join("\n");
-    const nextMegaWebCredentials = getMegaDebridAccountsForMode(next, "web")
+    const nextMegaWebPool = getAvailableMegaDebridAccounts(next, "web")
       .map((account) => `${account.id}:${account.password}`)
       .sort()
       .join("\n");
-    const megaPoolChanged = previousMegaPool !== nextMegaPool && nextMegaAccounts.length > 0;
+    const megaPoolChanged = previousMegaPool !== nextMegaPool;
+    const megaWebPoolChanged = previousMegaWebPool !== nextMegaWebPool;
     next.totalDownloadedAllTime = Math.max(next.totalDownloadedAllTime || 0, this.settings.totalDownloadedAllTime || 0);
     next.totalCompletedFilesAllTime = Math.max(next.totalCompletedFilesAllTime || 0, this.settings.totalCompletedFilesAllTime || 0);
     const now = nowMs();
@@ -2222,7 +2271,7 @@ export class DownloadManager extends EventEmitter {
     this.runtimePersistedTotalMs = this.settings.totalRuntimeAllTimeMs || 0;
     this.runtimePersistedAt = now;
     this.ensureProviderDailyUsageFresh(nowMs());
-    if (previousMegaWebCredentials !== nextMegaWebCredentials) {
+    if (megaWebPoolChanged) {
       this.invalidateMegaSessionFn?.();
     }
     this.debridService.setSettings(next);
@@ -2280,7 +2329,34 @@ export class DownloadManager extends EventEmitter {
       logger.info(`Settings-Update: ${clearedProviderFailures} Provider-Failure(s) gecleart wegen geaenderter Credentials`);
     }
 
-    if (!opts?.settingsOnlyImport && megaPoolChanged) {
+    if (megaPoolChanged) {
+      const changedAccountKeys = new Set<string>();
+      for (const key of new Set<string>([...previousMegaPoolEntries.keys(), ...nextMegaPoolEntries.keys()])) {
+        if (previousMegaPoolEntries.get(key) !== nextMegaPoolEntries.get(key)) {
+          changedAccountKeys.add(key);
+        }
+      }
+      clearMegaDebridAccountRuntimeStates(changedAccountKeys);
+      for (const key of [...this.providerFailures.keys()]) {
+        if (isMegaDebridProviderKey(key)) {
+          this.providerFailures.delete(key);
+        }
+      }
+      for (const active of this.activeTasks.values()) {
+        const item = this.session.items[active.itemId];
+        if (!item || item.status !== "validating") {
+          continue;
+        }
+        const provider = String(item.provider || this.getExpectedProviderForItem(item) || "");
+        if (provider !== "megadebrid" && provider !== "megadebrid-api" && provider !== "megadebrid-web") {
+          continue;
+        }
+        active.abortReason = "settings_refresh";
+        active.abortController.abort("settings_refresh");
+      }
+    }
+
+    if (!opts?.settingsOnlyImport && megaPoolChanged && nextMegaAccounts.length > 0) {
       this.releaseMegaDebridResetParks();
     }
 
@@ -5372,7 +5448,6 @@ export class DownloadManager extends EventEmitter {
       item.targetPath = "";
       item.provider = null;
       item.fullStatus = "Wartet";
-      item.onlineStatus = undefined;
       item.updatedAt = nowMs();
     }
 
@@ -5456,7 +5531,6 @@ export class DownloadManager extends EventEmitter {
       item.targetPath = "";
       item.provider = null;
       item.fullStatus = "Wartet";
-      item.onlineStatus = undefined;
       item.updatedAt = nowMs();
 
       if (this.session.running) {
@@ -5937,6 +6011,12 @@ export class DownloadManager extends EventEmitter {
     this.providerStartReservations.clear();
     this.pacedStartReservationByItem.clear();
     this.retryStateByItem.clear();
+    this.invalidateMegaSessionFn?.();
+    for (const key of [...this.providerFailures.keys()]) {
+      if (isMegaDebridProviderKey(key)) {
+        this.providerFailures.delete(key);
+      }
+    }
     this.lastGlobalProgressBytes = this.session.totalDownloadedBytes;
     this.lastGlobalProgressAt = nowMs();
     this.speedEvents = [];
@@ -6091,6 +6171,11 @@ export class DownloadManager extends EventEmitter {
       this.speedBytesLastWindow = 0;
       this.speedBytesPerPackage.clear();
       this.speedEventsHead = 0;
+      this.invalidateMegaSessionFn?.();
+      for (const active of this.activeTasks.values()) {
+        active.abortReason = "pause";
+        active.abortController.abort("pause");
+      }
     }
 
     if (wasPaused && !this.session.paused) {
@@ -8188,6 +8273,34 @@ export class DownloadManager extends EventEmitter {
     ].filter(Boolean) as DebridProvider[];
   }
 
+  private getReachableUnrestrictProviderPlan(item: DownloadItem, preferredLeadProvider: DebridProvider | null): DebridProvider[] {
+    const baseOrder = this.getProviderOrder();
+    const order = preferredLeadProvider && baseOrder.includes(preferredLeadProvider)
+      ? [preferredLeadProvider, ...baseOrder.filter((provider) => provider !== preferredLeadProvider)]
+      : baseOrder;
+    const candidates: DebridProvider[] = [];
+    const hosterKey = extractHosterKey(item.url);
+    const routedProvider = hosterKey ? (this.settings.hosterRouting || {})[hosterKey] : undefined;
+    if (routedProvider && this.isProviderConfigured(routedProvider)) {
+      candidates.push(routedProvider);
+      if (!this.settings.autoProviderFallback) {
+        return [resolveMegaDebridProvider(this.settings, routedProvider) || routedProvider];
+      }
+    }
+    const configuredOrder = order.filter((provider) => this.isProviderConfigured(provider));
+    candidates.push(...(this.settings.autoProviderFallback ? configuredOrder : configuredOrder.slice(0, 1)));
+    const seen = new Set<DebridProvider>();
+    const providerPlan: DebridProvider[] = [];
+    for (const provider of candidates) {
+      const effectiveProvider = resolveMegaDebridProvider(this.settings, provider) || provider;
+      if (!seen.has(effectiveProvider)) {
+        seen.add(effectiveProvider);
+        providerPlan.push(effectiveProvider);
+      }
+    }
+    return providerPlan;
+  }
+
   private findFallbackProviderNotInCooldown(item: DownloadItem): DebridProvider | null {
     const hosterKey = extractHosterKey(item.url);
     for (const provider of this.getProviderOrder()) {
@@ -8677,7 +8790,6 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    const VALIDATING_STUCK_MS = getUnrestrictTimeoutMs() + 15000;
     for (const active of this.activeTasks.values()) {
       if (active.abortController.signal.aborted) {
         continue;
@@ -8686,8 +8798,9 @@ export class DownloadManager extends EventEmitter {
       if (!item || item.status !== "validating") {
         continue;
       }
+      const validatingStuckMs = getUnrestrictTimeoutMsForProviderPlan(this.settings, this.getReachableUnrestrictProviderPlan(item, null)) + 15_000;
       const ageMs = item.updatedAt > 0 ? now - item.updatedAt : 0;
-      if (ageMs > VALIDATING_STUCK_MS) {
+      if (ageMs > validatingStuckMs) {
         logger.warn(`Validating-Stuck erkannt: item=${item.fileName || active.itemId}, ${Math.floor(ageMs / 1000)}s ohne Fortschritt`);
         active.abortReason = "stall";
         active.abortController.abort("stall");
@@ -9172,7 +9285,9 @@ export class DownloadManager extends EventEmitter {
           this.emitState();
           return;
         }
-        const unrestrictTimeoutSignal = AbortSignal.timeout(getUnrestrictTimeoutMs());
+        const unrestrictProviderPlan = this.getReachableUnrestrictProviderPlan(item, preferredLeadProvider);
+        const unrestrictTimeoutMs = getUnrestrictTimeoutMsForProviderPlan(this.settings, unrestrictProviderPlan);
+        const unrestrictTimeoutSignal = AbortSignal.timeout(unrestrictTimeoutMs);
         const unrestrictedSignal = AbortSignal.any([active.abortController.signal, unrestrictTimeoutSignal]);
         let unrestricted;
         try {
@@ -9193,7 +9308,7 @@ export class DownloadManager extends EventEmitter {
                   traceConversionPhase({
                     phase: "caller-timeout",
                     outcome: "timeout",
-                    detail: `Caller-Budget ${Math.ceil(getUnrestrictTimeoutMs() / 1000)}s erschoepft (siehe letzte Phase fuer in-flight Provider/Account)`
+                    detail: `Caller-Budget ${Math.ceil(unrestrictTimeoutMs / 1000)}s erschoepft (siehe letzte Phase fuer in-flight Provider/Account)`
                   });
                 }
                 throw innerError;
@@ -9203,7 +9318,7 @@ export class DownloadManager extends EventEmitter {
         } catch (unrestrictError) {
           if (!active.abortController.signal.aborted && unrestrictTimeoutSignal.aborted) {
             this.recordProviderFailure(cooldownProvider);
-            throw new Error(`Unrestrict Timeout nach ${Math.ceil(getUnrestrictTimeoutMs() / 1000)}s`);
+            throw new Error(`Unrestrict Timeout nach ${Math.ceil(unrestrictTimeoutMs / 1000)}s`);
           }
           const errText = compactErrorText(unrestrictError);
           if (isUnrestrictFailure(errText) && !isHosterUnavailableError(errText)) {
@@ -9484,6 +9599,18 @@ export class DownloadManager extends EventEmitter {
             this.dropItemContribution(item.id);
           }
           this.retryStateByItem.delete(item.id);
+        } else if (reason === "pause") {
+          item.status = "queued";
+          item.speedBps = 0;
+          item.fullStatus = "Pausiert";
+          this.retryAfterByItem.delete(item.id);
+          this.retryStateByItem.set(item.id, {
+            freshRetryUsed: Boolean(active.freshRetryUsed),
+            resumeHardResetUsed: Boolean(active.resumeHardResetUsed),
+            stallRetries: Number(active.stallRetries || 0),
+            genericErrorRetries: Number(active.genericErrorRetries || 0),
+            unrestrictRetries: Number(active.unrestrictRetries || 0)
+          });
         } else if (reason === "shutdown") {
           this.logPackageForItem(item, "WARN", "Download für Shutdown geparkt", {
             reason
@@ -9508,6 +9635,17 @@ export class DownloadManager extends EventEmitter {
             unrestrictRetries: Number(active.unrestrictRetries || 0)
           });
         } else if (reason === "reset") {
+          this.retryStateByItem.delete(item.id);
+        } else if (reason === "settings_refresh") {
+          item.status = "queued";
+          item.speedBps = 0;
+          item.fullStatus = "Wartet";
+          item.lastError = "";
+          item.provider = null;
+          item.providerLabel = undefined;
+          item.providerAccountId = undefined;
+          item.providerAccountLabel = undefined;
+          this.retryAfterByItem.delete(item.id);
           this.retryStateByItem.delete(item.id);
         } else if (reason === "package_toggle") {
           this.logPackageForItem(item, "WARN", "Download wegen Paket-Toggle pausiert", {
@@ -9640,7 +9778,7 @@ export class DownloadManager extends EventEmitter {
               this.escalateHttp416OrFail(item, active, claimedTargetPath, exhaustedReason);
               return;
             }
-            if (isResumeHardResetReason(exhaustedReason) && !active.resumeHardResetUsed) {
+            if (isResumeHardResetReason(exhaustedReason, active.genericErrorRetries) && !active.resumeHardResetUsed) {
               active.resumeHardResetUsed = true;
               item.retries += 1;
               logger.warn(`Resume-Neustart: item=${item.fileName || item.id}, error=${exhaustedReason}, provider=${item.provider || "?"}`);

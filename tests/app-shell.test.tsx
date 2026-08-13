@@ -5,7 +5,7 @@ import { AvatarMenu, getAvatarMenuKeyboardAction } from "../src/renderer/shell/A
 import { AppHeader } from "../src/renderer/shell/AppHeader";
 import { AppShell } from "../src/renderer/shell/AppShell";
 import { buildMainNavigation } from "../src/renderer/shell/shell-model";
-import { getSnapshotRenderDelay } from "../src/renderer/App";
+import { getSnapshotRenderDelay, runSupportBundleExportUi, SupportBundleToast } from "../src/renderer/App";
 
 describe("desktop shell", () => {
   it("uses keyboard-focusable controls for every copy target", () => {
@@ -13,8 +13,8 @@ describe("desktop shell", () => {
 
     expect(source).not.toMatch(/<span[^>]*className="[^"]*link-popup-click/);
     expect(source.match(/<button[^>]*className="[^"]*link-popup-click[^>]*type="button"/g)).toHaveLength(3);
-    expect(source).not.toContain("navigator.clipboard.writeText(key.token)");
-    expect(source).toContain("navigator.clipboard.writeText(key.masked)");
+    expect(source).not.toContain("navigator.clipboard.writeText");
+    expect(source).toContain("window.rd.writeClipboardText(key.masked)");
     expect(source).toContain("Maskierte Kennung kopiert");
   });
 
@@ -35,9 +35,55 @@ describe("desktop shell", () => {
     expect(removal).toContain('title: "Ausgewählte Links löschen"');
   });
 
-  it("does not stack renderer latency on the manager cadence for large active queues", () => {
-    expect(getSnapshotRenderDelay(2_470, true, "downloads")).toBe(0);
+  it("renders active download telemetry at a stable half-second cadence", () => {
+    expect(getSnapshotRenderDelay(2_470, true, "downloads")).toBe(500);
     expect(getSnapshotRenderDelay(2_470, true, "statistics")).toBe(800);
+  });
+
+  it("keeps support bundle progress tied to the unresolved export", async () => {
+    let resolveExport: (value: { saved: boolean; busy?: boolean }) => void = () => undefined;
+    const pendingExport = new Promise<{ saved: boolean; busy?: boolean }>((resolve) => { resolveExport = resolve; });
+    const busyStates: boolean[] = [];
+    const messages: string[] = [];
+
+    const running = runSupportBundleExportUi({
+      exportBundle: () => pendingExport,
+      setBusy: (busy) => { busyStates.push(busy); },
+      clearMessage: () => { messages.length = 0; },
+      showMessage: (message) => { messages.push(message); }
+    });
+
+    expect(busyStates).toEqual([true]);
+    expect(messages).toEqual([]);
+    resolveExport({ saved: true });
+    await running;
+    expect(busyStates).toEqual([true, false]);
+    expect(messages).toEqual(["Support-Bundle exportiert"]);
+  });
+
+  it("ends support bundle progress immediately when the file dialog is canceled", async () => {
+    const busyStates: boolean[] = [];
+    const messages = ["Vorherige Meldung"];
+
+    await runSupportBundleExportUi({
+      exportBundle: async () => ({ saved: false, busy: false }),
+      setBusy: (busy) => { busyStates.push(busy); },
+      clearMessage: () => { messages.length = 0; },
+      showMessage: (message) => { messages.push(message); }
+    });
+
+    expect(busyStates).toEqual([true, false]);
+    expect(messages).toEqual([]);
+  });
+
+  it("renders progress from the real busy state instead of a timed status message", () => {
+    const busyHtml = renderToStaticMarkup(<SupportBundleToast busy message="Alte Meldung" />);
+    const idleHtml = renderToStaticMarkup(<SupportBundleToast busy={false} message="Export beendet" />);
+
+    expect(busyHtml).toContain("Support-Bundle wird erstellt …");
+    expect(busyHtml).not.toContain("Alte Meldung");
+    expect(idleHtml).toContain("Export beendet");
+    expect(idleHtml).not.toContain("Support-Bundle wird erstellt …");
   });
 
   it("keeps application menus mounted for animated opening and closing", () => {

@@ -2,6 +2,30 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.29] - 2026-08-13
+
+### Account and rotation reliability
+
+- Applied rapid account enable and disable changes immediately, persisted every click in order, and reconciled the final state without losing fast consecutive changes.
+- Refreshed Mega-Debrid API and Web account pools during active downloads without requiring an application restart.
+- Isolated account attempt cancellation and timeouts so a failed or stalled account can rotate to the next enabled account within the same link conversion.
+- Cleared stale account cooldowns, provider failures, API token work, and Web sessions when relevant credentials or enabled accounts change.
+- Added explicit TEST, OK, and FAILED account-rotation evidence with masked account identities to diagnostics and support bundles.
+
+### Download lifecycle
+
+- Kept Pause and Stop responsive while other interface actions are running and canceled active requests cleanly when pausing.
+- Recovered persisted partial downloads by renewing expiring direct links and falling back to one clean full request after repeated range rejection.
+- Preserved known online availability when resetting packages or selected files.
+- Kept every start and resume path blocked when no usable download account is active.
+- Reduced active session, speed, sparkline, and bandwidth updates to a stable 500 ms interface cadence.
+
+### Diagnostics and desktop integration
+
+- Routed copy actions through Electron's native clipboard for reliable operation in hardened and Remote Desktop sessions.
+- Made support bundle creation visibly active from the save dialog through the final write, prevented duplicate exports, and saved completed bundles atomically.
+- Bounded support bundle queue data and recent log collection, kept the interface responsive during creation, and strengthened redaction for credentials, URLs, local paths, and account identifiers.
+
 ## [2.0.28] - 2026-08-12
 
 ### Startup reliability

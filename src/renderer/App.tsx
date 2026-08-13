@@ -45,6 +45,7 @@ import type { AccountModeFilter } from "./account-ui";
 import { buildAccountDeleteCommand, buildAccountReplaceCommand, createAccountEditState, validateAccountEdit } from "./account-edit";
 import type { AccountEditState, AccountEditTarget, AccountKind, AccountService, SingleAccountKind } from "./account-edit";
 import { ACCOUNT_SERVICE_ICONS } from "./account-service-icons";
+import { buildAccountToggleSettingsUpdate, SerialTaskQueue, setAccountTargetEnabled, type AccountToggleTarget } from "./account-toggle-queue";
 import { DOWNLOAD_SPEED_MAX_SAMPLES, updateDownloadSpeedHistory } from "./download-speed-state";
 import { createUiLocalizer, normalizeLanguage } from "./i18n";
 import { runLocalBackupExport, runLocalBackupImport, type BackupPassphraseMode } from "./backup-flow";
@@ -869,10 +870,43 @@ const historyRetentionLabels: Record<RendererSettings["historyRetentionMode"], s
 const AUTO_RENDER_PACKAGE_LIMIT = 260;
 
 export function getSnapshotRenderDelay(itemCount: number, running: boolean, activeTab: MainView): number {
-  let delay = itemCount >= 700 ? 0 : itemCount >= 250 ? 50 : 100;
+  let delay = running ? 500 : itemCount >= 700 ? 100 : itemCount >= 250 ? 150 : 200;
   if (!running) delay = Math.min(delay, 200);
   if (activeTab !== "downloads") delay = Math.max(delay, 800);
   return delay;
+}
+
+interface SupportBundleExportUiOptions {
+  exportBundle: () => Promise<{ saved: boolean; busy?: boolean }>;
+  setBusy: (busy: boolean) => void;
+  clearMessage: () => void;
+  showMessage: (message: string) => void;
+}
+
+export async function runSupportBundleExportUi(options: SupportBundleExportUiOptions): Promise<void> {
+  options.clearMessage();
+  options.setBusy(true);
+  try {
+    const result = await options.exportBundle();
+    if (result.saved) {
+      options.showMessage("Support-Bundle exportiert");
+    } else if (result.busy) {
+      options.showMessage("Support-Bundle wird bereits erstellt …");
+    }
+  } catch (error) {
+    options.showMessage(`Support-Bundle fehlgeschlagen: ${String(error)}`);
+  } finally {
+    options.setBusy(false);
+  }
+}
+
+interface SupportBundleToastProps {
+  busy: boolean;
+  message: string;
+}
+
+export function SupportBundleToast({ busy, message }: SupportBundleToastProps): ReactElement | null {
+  return <Toast message={busy ? "Support-Bundle wird erstellt …" : message} />;
 }
 
 const KNOWN_HOSTERS: { id: string; label: string }[] = [
@@ -1261,7 +1295,7 @@ const BandwidthChart = memo(function BandwidthChart({ running, paused, speedHist
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const interval = setInterval(() => {
       drawChart();
-    }, reducedMotion ? 1000 : 250);
+    }, reducedMotion ? 1000 : 500);
     return () => clearInterval(interval);
   }, [drawChart, running, paused]);
 
@@ -1363,7 +1397,7 @@ const DownloadSpeedSparkline = memo(function DownloadSpeedSparkline({ speedBps, 
       draw();
     };
 
-    const id = window.setInterval(tick, 250);
+    const id = window.setInterval(tick, 500);
     return () => window.clearInterval(id);
   }, []);
 
@@ -1513,6 +1547,8 @@ export function App(): ReactElement {
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
   const [updateInstallProgress, setUpdateInstallProgress] = useState<UpdateInstallProgress | null>(null);
   const [settingsDraft, setSettingsDraft] = useState<RendererSettingsDraft>(() => createSettingsDraft(emptySnapshot().settings));
+  const settingsDraftRef = useRef(settingsDraft);
+  settingsDraftRef.current = settingsDraft;
   const [settingsThemeChoice, setSettingsThemeChoice] = useState<SettingsThemeChoice>(emptySnapshot().settings.theme);
   const [speedLimitInput, setSpeedLimitInput] = useState(() => formatMbpsInputFromKbps(emptySnapshot().settings.speedLimitKbps));
   const [scheduleSpeedInputs, setScheduleSpeedInputs] = useState<Record<string, string>>({});
@@ -1571,10 +1607,17 @@ export function App(): ReactElement {
   const [showAllPackages, setShowAllPackages] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [accountCheckBusy, setAccountCheckBusy] = useState(false);
+  const [accountEnabledOverrides, setAccountEnabledOverrides] = useState<Record<string, boolean>>({});
+  const accountEnabledOverridesRef = useRef<Record<string, boolean>>({});
+  const accountToggleQueueRef = useRef(new SerialTaskQueue());
+  const accountToggleRevisionRef = useRef(0);
+  const accountTogglePendingRef = useRef(0);
   const actionBusyRef = useRef(false);
   const actionUnlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
   const [supportTraceEnabled, setSupportTraceEnabled] = useState(false);
+  const [supportBundleExporting, setSupportBundleExporting] = useState(false);
+  const supportBundleExportingRef = useRef(false);
   const dragOverRef = useRef(false);
   const dragDepthRef = useRef(0);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
@@ -1753,6 +1796,14 @@ export function App(): ReactElement {
       setStatusToast("");
       toastTimerRef.current = null;
     }, timeoutMs);
+  }, []);
+
+  const clearToast = useCallback((): void => {
+    setStatusToast("");
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
   }, []);
 
   const applyHistoryEntries = useCallback((entries: HistoryEntry[]): void => {
@@ -1954,7 +2005,7 @@ export function App(): ReactElement {
           if (next.settings.columnOrder?.length > 0) {
             setColumnOrder(next.settings.columnOrder);
           }
-          if (!settingsDirtyRef.current) {
+          if (!settingsDirtyRef.current && accountTogglePendingRef.current === 0) {
             setSettingsDraft(createSettingsDraft(next.settings));
           }
           latestStateRef.current = null;
@@ -2308,8 +2359,9 @@ export function App(): ReactElement {
         for (const acc of accounts) {
           const used = acc.dailyUsageBytes;
           const limit = acc.dailyLimitBytes;
+          const rowKey = `mega-${entry.kind}-${acc.accountId}`;
           rows.push({
-            rowKey: `mega-${entry.kind}-${acc.accountId}`,
+            rowKey,
             entry,
             hosterLabel: entry.serviceLabel,
             modeLabel: entry.modeLabel,
@@ -2317,7 +2369,9 @@ export function App(): ReactElement {
             credentialLabel: "••••••",
             accountId: acc.accountId,
             checkable: true,
-            disabled: !acc.enabled,
+            disabled: Object.prototype.hasOwnProperty.call(accountEnabledOverrides, rowKey)
+              ? !accountEnabledOverrides[rowKey]
+              : !acc.enabled,
             dailyUsedBytes: used,
             dailyLimitBytes: limit,
             dailyRemainingBytes: limit > 0 ? Math.max(0, limit - used) : 0,
@@ -2334,8 +2388,9 @@ export function App(): ReactElement {
         }
       } else if (entry.kind === "debridlink-api") {
         for (const key of entry.debridLinkKeys) {
+          const rowKey = `dl-${key.id}`;
           rows.push({
-            rowKey: `dl-${key.id}`,
+            rowKey,
             entry,
             hosterLabel: entry.serviceLabel,
             modeLabel: entry.modeLabel,
@@ -2343,7 +2398,9 @@ export function App(): ReactElement {
             credentialLabel: "API-Key",
             accountId: key.id,
             checkable: true,
-            disabled: key.disabled,
+            disabled: Object.prototype.hasOwnProperty.call(accountEnabledOverrides, rowKey)
+              ? !accountEnabledOverrides[rowKey]
+              : key.disabled,
             dailyUsedBytes: key.dailyUsedBytes,
             dailyLimitBytes: key.dailyLimitBytes,
             dailyRemainingBytes: key.dailyLimitBytes > 0 ? Math.max(0, key.dailyLimitBytes - key.dailyUsedBytes) : 0,
@@ -2360,8 +2417,9 @@ export function App(): ReactElement {
           });
         }
       } else {
+        const rowKey = `svc-${entry.service}`;
         rows.push({
-          rowKey: `svc-${entry.service}`,
+          rowKey,
           entry,
           hosterLabel: entry.serviceLabel,
           modeLabel: entry.modeLabel,
@@ -2369,7 +2427,9 @@ export function App(): ReactElement {
           credentialLabel: getAccountCredentialLabel(entry.kind),
           accountId: null,
           checkable: false,
-          disabled: entry.disabled,
+          disabled: Object.prototype.hasOwnProperty.call(accountEnabledOverrides, rowKey)
+            ? !accountEnabledOverrides[rowKey]
+            : entry.disabled,
           dailyUsedBytes: entry.dailyUsedBytes,
           dailyLimitBytes: entry.dailyLimitBytes,
           dailyRemainingBytes: entry.dailyLimitBytes > 0 ? Math.max(0, entry.dailyRemainingBytes ?? 0) : 0,
@@ -2386,7 +2446,7 @@ export function App(): ReactElement {
       }
     }
     return rows;
-  }, [configuredAccounts, snapshot.accounts]);
+  }, [accountEnabledOverrides, configuredAccounts, snapshot.accounts]);
 
   const [accountStatusSort, setAccountStatusSort] = useState<"none" | "desc" | "asc">("none");
   const cycleAccountStatusSort = (): void => setAccountStatusSort((s) => (s === "none" ? "desc" : s === "desc" ? "asc" : "none"));
@@ -2791,28 +2851,6 @@ export function App(): ReactElement {
     });
   };
 
-  const onToggleDebridLinkApiKeyEnabled = async (entry: ConfiguredAccountEntry, key: DebridLinkAccountKeyEntry): Promise<void> => {
-    await performQuickAction(async () => {
-      const currentDisabledIds = settingsDraft.debridLinkDisabledKeyIds || [];
-      const nextDisabledIds = key.disabled
-        ? currentDisabledIds.filter((existingId) => existingId !== key.id)
-        : [...currentDisabledIds, key.id];
-      const nextDraft: RendererSettingsDraft = {
-        ...settingsDraft,
-        debridLinkDisabledKeyIds: nextDisabledIds
-      };
-      await persistSpecificSettings(nextDraft);
-      showToast(
-        key.disabled
-          ? `${entry.serviceLabel} ${key.label} aktiviert`
-          : `${entry.serviceLabel} ${key.label} deaktiviert`,
-        2200
-      );
-    }, (error) => {
-      showToast(`${entry.serviceLabel} ${key.label}: Umschalten fehlgeschlagen: ${String(error)}`, 3200);
-    });
-  };
-
   const onAccountRowQuickAction = async (entry: ConfiguredAccountEntry): Promise<void> => {
     const meta = getAccountQuickActionMeta(entry.kind);
     if (!meta) {
@@ -2822,25 +2860,6 @@ export function App(): ReactElement {
       await runAccountQuickAction(meta.action);
     }, (error) => {
       showToast(`${entry.serviceLabel}: Aktion fehlgeschlagen: ${String(error)}`, 3200);
-    });
-  };
-
-  const onToggleMegaAccountEnabled = async (kind: "megadebrid-api" | "megadebrid-web", accountId: string, currentlyDisabled: boolean): Promise<void> => {
-    await performQuickAction(async () => {
-      const mode = kind === "megadebrid-web" ? "web" : "api";
-      const current = mode === "api" ? settingsDraft.megaDebridApiDisabledAccountIds : settingsDraft.megaDebridWebDisabledAccountIds;
-      const next = currentlyDisabled ? current.filter((id) => id !== accountId) : [...current, accountId];
-      const apiDisabledIds = mode === "api" ? next : settingsDraft.megaDebridApiDisabledAccountIds;
-      const webDisabledIds = mode === "web" ? next : settingsDraft.megaDebridWebDisabledAccountIds;
-      await persistSpecificSettings({
-        ...settingsDraft,
-        megaDebridDisabledAccountIds: [...new Set([...apiDisabledIds, ...webDisabledIds])],
-        megaDebridApiDisabledAccountIds: apiDisabledIds,
-        megaDebridWebDisabledAccountIds: webDisabledIds
-      });
-      showToast(currentlyDisabled ? "Account aktiviert" : "Account deaktiviert", 2000);
-    }, (error) => {
-      showToast(`Umschalten fehlgeschlagen: ${String(error)}`, 3200);
     });
   };
 
@@ -2855,61 +2874,145 @@ export function App(): ReactElement {
     }, (error) => { showToast(`Entfernen fehlgeschlagen: ${String(error)}`, 3200); });
   };
 
-  const onToggleAccountEnabled = async (entry: ConfiguredAccountEntry): Promise<void> => {
-    await performQuickAction(async () => {
-      const provider = entry.service as DebridProvider;
-      const current = settingsDraft.disabledProviders || [];
-      const nextDisabledProviders = current.includes(provider)
-        ? current.filter((existing) => existing !== provider)
-        : [...current, provider];
-      const nextDraft: RendererSettingsDraft = {
-        ...settingsDraft,
-        disabledProviders: nextDisabledProviders
-      };
-      await persistSpecificSettings(nextDraft);
-      showToast(
-        nextDisabledProviders.includes(provider)
-          ? `${entry.serviceLabel} deaktiviert`
-          : `${entry.serviceLabel} aktiviert`,
-        2200
-      );
-    }, (error) => {
-      showToast(`${entry.serviceLabel} konnte nicht umgeschaltet werden: ${String(error)}`, 3200);
+  const reconcileAccountToggleState = async (revision: number): Promise<void> => {
+    const fresh = await window.rd.getSnapshot();
+    if (!mountedRef.current || revision !== accountToggleRevisionRef.current) {
+      return;
+    }
+    masterSnapshotRef.current = fresh;
+    latestStateRef.current = null;
+    setSnapshot(fresh);
+    const reconciledDraft: RendererSettingsDraft = {
+      ...settingsDraftRef.current,
+      ...buildAccountToggleSettingsUpdate(fresh.settings)
+    };
+    settingsDraftRef.current = reconciledDraft;
+    setSettingsDraft(reconciledDraft);
+    accountEnabledOverridesRef.current = {};
+    setAccountEnabledOverrides({});
+  };
+
+  const enqueueAccountSettingsChange = (
+    nextDraft: RendererSettingsDraft,
+    nextOverrides: Record<string, boolean>,
+    successMessage: string,
+    errorMessage: string
+  ): void => {
+    settingsDraftRevisionRef.current += 1;
+    settingsDraftRef.current = nextDraft;
+    setSettingsDraft(nextDraft);
+    accountEnabledOverridesRef.current = nextOverrides;
+    setAccountEnabledOverrides(nextOverrides);
+    const revision = accountToggleRevisionRef.current + 1;
+    accountToggleRevisionRef.current = revision;
+    accountTogglePendingRef.current += 1;
+    void accountToggleQueueRef.current.enqueue(async () => {
+      let error: unknown = null;
+      try {
+        await window.rd.updateSettings(buildAccountToggleSettingsUpdate(nextDraft));
+      } catch (caught) {
+        error = caught;
+      } finally {
+        accountTogglePendingRef.current = Math.max(0, accountTogglePendingRef.current - 1);
+      }
+      if (revision !== accountToggleRevisionRef.current) {
+        return;
+      }
+      try {
+        await reconcileAccountToggleState(revision);
+      } catch (caught) {
+        error = error ?? caught;
+        if (mountedRef.current && revision === accountToggleRevisionRef.current) {
+          const fallbackDraft: RendererSettingsDraft = {
+            ...settingsDraftRef.current,
+            ...buildAccountToggleSettingsUpdate(snapshotRef.current.settings)
+          };
+          settingsDraftRef.current = fallbackDraft;
+          setSettingsDraft(fallbackDraft);
+          accountEnabledOverridesRef.current = {};
+          setAccountEnabledOverrides({});
+        }
+      }
+      if (error) {
+        showToast(`${errorMessage}: ${String(error)}`, 3200);
+      } else {
+        showToast(successMessage, 1800);
+      }
     });
+  };
+
+  const getAccountToggleTarget = (row: AccountTableRow): AccountToggleTarget | null => {
+    if (row.toggleKind === "mega" && row.accountId) {
+      return {
+        kind: row.entry.kind === "megadebrid-web" ? "mega-web" : "mega-api",
+        accountId: row.accountId
+      };
+    }
+    if (row.toggleKind === "dl" && row.accountId) {
+      return { kind: "debridlink", accountId: row.accountId };
+    }
+    if (row.toggleKind === "single") {
+      return { kind: "provider", provider: row.entry.service as DebridProvider };
+    }
+    return null;
   };
 
   const toggleAccountTableRow = (row: AccountTableRow): void => {
     setAccountContextMenu(null);
-    if (row.toggleKind === "mega" && row.accountId) {
-      void onToggleMegaAccountEnabled(row.entry.kind as "megadebrid-api" | "megadebrid-web", row.accountId, row.disabled);
-    } else if (row.toggleKind === "dl" && row.dlKey) {
-      void onToggleDebridLinkApiKeyEnabled(row.entry, row.dlKey);
-    } else {
-      void onToggleAccountEnabled(row.entry);
+    const target = getAccountToggleTarget(row);
+    if (!target) {
+      return;
+    }
+    const currentEnabled = Object.prototype.hasOwnProperty.call(accountEnabledOverridesRef.current, row.rowKey)
+      ? accountEnabledOverridesRef.current[row.rowKey]
+      : !row.disabled;
+    const nextEnabled = !currentEnabled;
+    const nextDraft = setAccountTargetEnabled(settingsDraftRef.current, target, nextEnabled);
+    const nextOverrides = {
+      ...accountEnabledOverridesRef.current,
+      [row.rowKey]: nextEnabled
+    };
+    enqueueAccountSettingsChange(
+      nextDraft,
+      nextOverrides,
+      nextEnabled ? "Account aktiviert" : "Account deaktiviert",
+      "Account konnte nicht umgeschaltet werden"
+    );
+  };
+
+  const onToggleDebridLinkApiKeyEnabled = (entry: ConfiguredAccountEntry, key: DebridLinkAccountKeyEntry): void => {
+    const row = accountRows.find((candidate) => candidate.entry.service === entry.service && candidate.accountId === key.id);
+    if (row) {
+      toggleAccountTableRow(row);
     }
   };
 
-  const setAllAccountsEnabled = async (enabled: boolean): Promise<void> => {
-    await performQuickAction(async () => {
-      const configuredProviderIds = [...new Set(configuredAccounts.map((entry) => entry.service as DebridProvider))];
-      const nextEnabledState = buildBulkAccountEnabledState(
-        settingsDraft.disabledProviders || [],
-        configuredProviderIds,
-        accountRows.filter((row) => row.toggleKind === "mega" && row.accountId).map((row) => row.accountId as string),
-        accountRows.filter((row) => row.toggleKind === "dl" && row.accountId).map((row) => row.accountId as string),
-        enabled
-      );
-      const nextDraft: RendererSettingsDraft = {
-        ...settingsDraft,
-        ...nextEnabledState,
-        megaDebridApiDisabledAccountIds: enabled ? [] : accountRows.filter((row) => row.entry.kind === "megadebrid-api" && row.accountId).map((row) => row.accountId as string),
-        megaDebridWebDisabledAccountIds: enabled ? [] : accountRows.filter((row) => row.entry.kind === "megadebrid-web" && row.accountId).map((row) => row.accountId as string)
-      };
-      await persistSpecificSettings(nextDraft);
-      showToast(enabled ? "Accounts aktiviert" : "Accounts deaktiviert", 2200);
-    }, (error) => {
-      showToast(`Accounts konnten nicht umgeschaltet werden: ${String(error)}`, 3200);
-    });
+  const setAllAccountsEnabled = (enabled: boolean): void => {
+    const configuredProviderIds = [...new Set(configuredAccounts.map((entry) => entry.service as DebridProvider))];
+    const nextEnabledState = buildBulkAccountEnabledState(
+      settingsDraftRef.current.disabledProviders || [],
+      configuredProviderIds,
+      accountRows.filter((row) => row.toggleKind === "mega" && row.accountId).map((row) => row.accountId as string),
+      accountRows.filter((row) => row.toggleKind === "dl" && row.accountId).map((row) => row.accountId as string),
+      enabled
+    );
+    const nextDraft: RendererSettingsDraft = {
+      ...settingsDraftRef.current,
+      ...nextEnabledState,
+      megaDebridApiDisabledAccountIds: enabled ? [] : accountRows.filter((row) => row.entry.kind === "megadebrid-api" && row.accountId).map((row) => row.accountId as string),
+      megaDebridWebDisabledAccountIds: enabled ? [] : accountRows.filter((row) => row.entry.kind === "megadebrid-web" && row.accountId).map((row) => row.accountId as string)
+    };
+    nextDraft.megaDebridDisabledAccountIds = [...new Set([
+      ...nextDraft.megaDebridApiDisabledAccountIds,
+      ...nextDraft.megaDebridWebDisabledAccountIds
+    ])];
+    const nextOverrides = Object.fromEntries(accountRows.map((row) => [row.rowKey, enabled]));
+    enqueueAccountSettingsChange(
+      nextDraft,
+      nextOverrides,
+      enabled ? "Accounts aktiviert" : "Accounts deaktiviert",
+      "Accounts konnten nicht umgeschaltet werden"
+    );
   };
 
   const removeAccountTableRow = (row: AccountTableRow): void => {
@@ -4199,7 +4302,7 @@ export function App(): ReactElement {
   const onCopyOnlineBackupKey = async (): Promise<void> => {
     if (!onlineBackupDialog?.key) return;
     try {
-      await navigator.clipboard.writeText(onlineBackupDialog.key);
+      await window.rd.writeClipboardText(onlineBackupDialog.key);
       showToast("Online-Schlüssel kopiert", 2200);
     } catch {
       showToast("Schlüssel konnte nicht kopiert werden", 2600);
@@ -4208,14 +4311,21 @@ export function App(): ReactElement {
 
   const onExportSupportBundle = async (): Promise<void> => {
     closeMenus();
-    await performQuickAction(async () => {
-      const result = await window.rd.exportSupportBundle();
-      if (result.saved) {
-        showToast("Support-Bundle exportiert", 2600);
-      }
-    }, (error) => {
-      showToast(`Support-Bundle fehlgeschlagen: ${String(error)}`, 2800);
-    });
+    if (supportBundleExportingRef.current) {
+      showToast("Support-Bundle wird bereits erstellt …", 2600);
+      return;
+    }
+    supportBundleExportingRef.current = true;
+    try {
+      await runSupportBundleExportUi({
+        exportBundle: () => window.rd.exportSupportBundle(),
+        setBusy: setSupportBundleExporting,
+        clearMessage: clearToast,
+        showMessage: (message) => showToast(message, 2800)
+      });
+    } finally {
+      supportBundleExportingRef.current = false;
+    }
   };
 
   const onToggleSupportTrace = async (): Promise<void> => {
@@ -4268,7 +4378,7 @@ export function App(): ReactElement {
         detailsLabel: "Einträge anzeigen"
       });
       if (copy && entries.length > 0) {
-        await navigator.clipboard.writeText(details);
+        await window.rd.writeClipboardText(details);
         showToast("Fehlerliste kopiert", 2600);
       }
     } catch (error) {
@@ -4371,7 +4481,7 @@ export function App(): ReactElement {
       return;
     }
     try {
-      await navigator.clipboard.writeText(remoteDiag.code);
+      await window.rd.writeClipboardText(remoteDiag.code);
       showToast("Verbindungscode kopiert", 2200);
     } catch {
       showToast("Kopieren fehlgeschlagen", 2200);
@@ -4624,9 +4734,26 @@ export function App(): ReactElement {
     },
     onPauseDownloads: () => {
       setSnapshot((current) => ({ ...current, session: { ...current.session, paused: true } }));
-      void window.rd.togglePause().catch(() => {});
+      void window.rd.togglePause().then((paused) => {
+        setSnapshot((current) => ({ ...current, session: { ...current.session, paused } }));
+      }).catch(async (error) => {
+        try {
+          setSnapshot(await window.rd.getSnapshot());
+        } catch {
+        }
+        showToast(`Pause fehlgeschlagen: ${String(error)}`, 3200);
+      });
     },
-    onStopDownloads: () => { void performQuickAction(() => window.rd.stop()); },
+    onStopDownloads: () => {
+      setSnapshot((current) => ({ ...current, session: { ...current.session, running: false, paused: false } }));
+      void window.rd.stop().catch(async (error) => {
+        try {
+          setSnapshot(await window.rd.getSnapshot());
+        } catch {
+        }
+        showToast(`Stop fehlgeschlagen: ${String(error)}`, 3200);
+      });
+    },
     onToggleSchedule: () => {
       setSchedulePickerOpen((current) => !current);
       setScheduleTimeInput("");
@@ -5492,7 +5619,7 @@ export function App(): ReactElement {
                   className={`menu-submenu-dropdown${openSubmenu === "hilfe-remote" ? " is-open" : ""}`}
                 >
                     <button className="menu-dropdown-item" onClick={() => { void onOpenRemoteDiagnostics(); }}><span>Ferndiagnose …</span></button>
-                    <button className="menu-dropdown-item" onClick={() => { void onExportSupportBundle(); }}><span>Support-Bundle exportieren</span></button>
+                    <button className="menu-dropdown-item" disabled={supportBundleExporting} onClick={() => { void onExportSupportBundle(); }}><span>{supportBundleExporting ? "Support-Bundle wird erstellt …" : "Support-Bundle exportieren"}</span></button>
                     <button className="menu-dropdown-item" onClick={() => { void onToggleSupportTrace(); }}><span>{supportTraceEnabled ? "Support-Trace deaktivieren" : "Support-Trace aktivieren"}</span></button>
                 </div>
               </div>
@@ -5843,7 +5970,7 @@ export function App(): ReactElement {
 
         accountEdit={accountEditDialogView}
         accountCreate={accountAddDialog}
-        toast={<Toast message={statusToast} />}
+        toast={<SupportBundleToast busy={supportBundleExporting} message={statusToast} />}
         dropOverlay={dragOver ? <div className="drop-overlay md-drop-overlay">Links, .dlc oder Export-Dateien hier ablegen</div> : null}
         accountContextMenu={accountContextMenu && activeAccountContextRow ? (
         <ContextMenu
@@ -6153,7 +6280,7 @@ export function App(): ReactElement {
                       type="button"
                       title={`${key.masked}\nMaskierte Kennung kopieren`}
                       onClick={() => {
-                        void navigator.clipboard.writeText(key.masked)
+                        void window.rd.writeClipboardText(key.masked)
                           .then(() => showToast("Maskierte Kennung kopiert", 1800))
                           .catch(() => showToast("Kopieren fehlgeschlagen", 2200));
                       }}
@@ -6211,8 +6338,8 @@ export function App(): ReactElement {
             <div className="link-popup-list">
               {linkPopup.links.map((link, i) => (
                 <div key={i} className="link-popup-row">
-                  <button aria-label={`${link.name} kopieren`} className="link-popup-name link-popup-click" type="button" title={`${link.name}\nKlicken zum Kopieren`} onClick={() => { void navigator.clipboard.writeText(link.name).then(() => showToast("Name kopiert")).catch(() => showToast("Kopieren fehlgeschlagen")); }}>{link.name}</button>
-                  <button aria-label="Link kopieren" className="link-popup-url link-popup-click" type="button" title={`${link.url}\nKlicken zum Kopieren`} onClick={() => { void navigator.clipboard.writeText(link.url).then(() => showToast("Link kopiert")).catch(() => showToast("Kopieren fehlgeschlagen")); }}>{link.url}</button>
+                  <button aria-label={`${link.name} kopieren`} className="link-popup-name link-popup-click" type="button" title={`${link.name}\nKlicken zum Kopieren`} onClick={() => { void window.rd.writeClipboardText(link.name).then(() => showToast("Name kopiert")).catch(() => showToast("Kopieren fehlgeschlagen")); }}>{link.name}</button>
+                  <button aria-label="Link kopieren" className="link-popup-url link-popup-click" type="button" title={`${link.url}\nKlicken zum Kopieren`} onClick={() => { void window.rd.writeClipboardText(link.url).then(() => showToast("Link kopiert")).catch(() => showToast("Kopieren fehlgeschlagen")); }}>{link.url}</button>
                 </div>
               ))}
             </div>
@@ -6220,13 +6347,13 @@ export function App(): ReactElement {
               {linkPopup.isPackage && (
                 <button className="btn" onClick={() => {
                   const text = linkPopup.links.map((l) => l.name).join("\n");
-                  void navigator.clipboard.writeText(text).then(() => showToast("Alle Namen kopiert")).catch(() => showToast("Kopieren fehlgeschlagen"));
+                  void window.rd.writeClipboardText(text).then(() => showToast("Alle Namen kopiert")).catch(() => showToast("Kopieren fehlgeschlagen"));
                 }}>Alle Namen kopieren</button>
               )}
               {linkPopup.isPackage && (
                 <button className="btn" onClick={() => {
                   const text = linkPopup.links.map((l) => l.url).join("\n");
-                  void navigator.clipboard.writeText(text).then(() => showToast("Alle Links kopiert")).catch(() => showToast("Kopieren fehlgeschlagen"));
+                  void window.rd.writeClipboardText(text).then(() => showToast("Alle Links kopiert")).catch(() => showToast("Kopieren fehlgeschlagen"));
                 }}>Alle Links kopieren</button>
               )}
               <button className="btn" onClick={() => setLinkPopup(null)}>Schließen</button>

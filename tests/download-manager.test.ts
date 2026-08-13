@@ -6,7 +6,7 @@ import crypto from "node:crypto";
 import { EventEmitter, once } from "node:events";
 import AdmZip from "adm-zip";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DownloadManager, buildAutoRenameBaseNameFromFoldersWithOptions, extractArchiveNameFromExtractorLogMessage, getAuthoritativeRealDebridTotal, getDiskWriteWaitReason, resolveArchiveItemsFromList, runWithLimitedConcurrency } from "../src/main/download-manager";
+import { DownloadManager, buildAutoRenameBaseNameFromFoldersWithOptions, extractArchiveNameFromExtractorLogMessage, getAuthoritativeRealDebridTotal, getDiskWriteWaitReason, getUnrestrictTimeoutMsForProviderPlan, isResumeHardResetReason, resolveArchiveItemsFromList, runWithLimitedConcurrency } from "../src/main/download-manager";
 import { planDownloadCompletion, validateDownloadedFileCompletion } from "../src/main/download-completion";
 import { DiskReservationCoordinator } from "../src/main/disk-space";
 import { defaultSettings } from "../src/main/constants";
@@ -14,13 +14,13 @@ import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
 import { getItemLogPath, initItemLogs, shutdownItemLogs } from "../src/main/item-log";
 import { initPackageLogs, shutdownPackageLogs } from "../src/main/package-log";
-import { createStoragePaths, emptySession } from "../src/main/storage";
-import { primeDebridLinkRuntimeCooldownForTests, resetDebridLinkRuntimeStateForTests, primeMegaDebridRuntimeCooldownForTests, resetMegaDebridRuntimeStateForTests, primeMegaDebridInFlightForTests } from "../src/main/debrid";
+import { createStoragePaths, emptySession, loadSession, saveSession } from "../src/main/storage";
+import { getMegaDebridAccountCooldownState, primeDebridLinkRuntimeCooldownForTests, resetDebridLinkRuntimeStateForTests, primeMegaDebridRuntimeCooldownForTests, resetMegaDebridRuntimeStateForTests, primeMegaDebridInFlightForTests } from "../src/main/debrid";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import { getRenameLogPath, initRenameLog, shutdownRenameLog } from "../src/main/rename-log";
 import { UnrestrictedLink } from "../src/main/realdebrid";
 import { resetVideoToolingCache } from "../src/main/video-processor";
-import type { HistoryEntry, PackageEntry } from "../src/shared/types";
+import type { AppSettings, DebridProvider, HistoryEntry, PackageEntry } from "../src/shared/types";
 
 const tempDirs: string[] = [];
 const originalFetch = globalThis.fetch;
@@ -532,6 +532,43 @@ describe("disk write recovery", () => {
   });
 });
 
+describe("resume recovery", () => {
+  it("preserves a partial file for one renewed link and resets after repeated range rejection", () => {
+    expect(isResumeHardResetReason("range_ignored_on_resume:100/200", 0)).toBe(false);
+    expect(isResumeHardResetReason("range_ignored_on_resume:100/200", 1)).toBe(true);
+    expect(isResumeHardResetReason("range_mismatch_on_resume:100/0", 1)).toBe(true);
+    expect(isResumeHardResetReason("resume_download_underflow:100/200", 0)).toBe(true);
+  });
+
+  it("budgets a later Mega fallback across every active account without a fifteen minute cap", () => {
+    process.env.RD_UNRESTRICT_TIMEOUT_MS = "60000";
+    process.env.RD_MEGA_ACCOUNT_ATTEMPT_TIMEOUT_MS = "120000";
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-unrestrict-budget-"));
+    tempDirs.push(root);
+    const settings: AppSettings = {
+      ...defaultSettings(),
+      bestToken: "best-token",
+      megaDebridWebCredentials: Array.from({ length: 8 }, (_, index) => `user-${index}:pass-${index}`).join("\n"),
+      megaDebridWebEnabled: true,
+      megaDebridApiEnabled: false,
+      providerOrder: ["megadebrid-web", "bestdebrid"],
+      autoProviderFallback: true,
+      outputDir: path.join(root, "downloads"),
+      extractDir: path.join(root, "extract")
+    };
+    const manager = new DownloadManager(settings, emptySession(), createStoragePaths(path.join(root, "state")));
+    manager.addPackages([{ name: "fallback-budget", links: ["https://rapidgator.net/file/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"] }]);
+    const snapshot = manager.getSnapshot();
+    const item = snapshot.session.items[snapshot.session.packages[snapshot.session.packageOrder[0]].itemIds[0]];
+    const providerPlan = (manager as unknown as {
+      getReachableUnrestrictProviderPlan: (candidate: typeof item, preferredLeadProvider: DebridProvider | null) => DebridProvider[];
+    }).getReachableUnrestrictProviderPlan(item, "bestdebrid");
+
+    expect(providerPlan).toEqual(["bestdebrid", "megadebrid-web"]);
+    expect(getUnrestrictTimeoutMsForProviderPlan(settings, providerPlan)).toBe(1_035_000);
+  });
+});
+
 describe("download start account gate", () => {
   it("disables every start path when no usable account is active", async () => {
     const createManager = () => {
@@ -760,6 +797,8 @@ async function removeDirWithRetries(dir: string): Promise<void> {
 
 afterEach(async () => {
   globalThis.fetch = originalFetch;
+  delete process.env.RD_UNRESTRICT_TIMEOUT_MS;
+  delete process.env.RD_MEGA_ACCOUNT_ATTEMPT_TIMEOUT_MS;
   delete process.env.RD_FFMPEG_BIN;
   delete process.env.RD_FFPROBE_BIN;
   resetVideoToolingCache();
@@ -858,6 +897,155 @@ describe("download manager", () => {
     expect(invalidateMegaSession).not.toHaveBeenCalled();
 
     manager.setSettings({ ...settings, megaDebridApiCredentials: "api-user:new-api-pass", megaDebridWebCredentials: "web-user:new-web-pass" });
+    expect(invalidateMegaSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes an active Mega-Debrid account pool without restarting the application", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-mega-live-pool-refresh-"));
+    tempDirs.push(root);
+    const firstId = getMegaDebridAccountId("first-user");
+    const settings = {
+      ...defaultSettings(),
+      megaCredentials: "first-user:first-pass\nsecond-user:second-pass",
+      megaDebridWebCredentials: "first-user:first-pass\nsecond-user:second-pass",
+      megaDebridWebEnabled: true
+    };
+    const invalidateMegaSession = vi.fn();
+    const manager = new DownloadManager(settings, emptySession(), createStoragePaths(path.join(root, "state")), { invalidateMegaSession });
+    manager.addPackages([{ name: "pool-refresh", links: ["https://rapidgator.net/file/pool-refresh"] }]);
+    const session = (manager as any).session;
+    const item = Object.values(session.items)[0] as any;
+    item.provider = "megadebrid-web";
+    item.status = "validating";
+    session.running = true;
+    const active = {
+      itemId: item.id,
+      packageId: item.packageId,
+      abortController: new AbortController(),
+      abortReason: "none",
+      resumable: true,
+      nonResumableCounted: false
+    };
+    (manager as any).activeTasks.set(item.id, active);
+    const failures = (manager as any).providerFailures as Map<string, unknown>;
+    primeMegaDebridRuntimeCooldownForTests(`${firstId}:web`, 120_000);
+    failures.set("megadebrid-web:rapidgator.net", { count: 3, lastFailAt: 1, cooldownUntil: Date.now() + 60_000 });
+    failures.set("megadebrid-api:rapidgator.net", { count: 3, lastFailAt: 1, cooldownUntil: Date.now() + 60_000 });
+    failures.set("realdebrid:rapidgator.net", { count: 3, lastFailAt: 1, cooldownUntil: Date.now() + 60_000 });
+
+    manager.setSettings({ ...settings, megaDebridWebDisabledAccountIds: [firstId] });
+
+    expect(invalidateMegaSession).toHaveBeenCalledTimes(1);
+    expect(active.abortController.signal.aborted).toBe(true);
+    expect(active.abortReason).toBe("settings_refresh");
+    expect(getMegaDebridAccountCooldownState(`${firstId}:web`)).toBeNull();
+    expect(failures.has("megadebrid-web:rapidgator.net")).toBe(false);
+    expect(failures.has("megadebrid-api:rapidgator.net")).toBe(false);
+    expect(failures.has("realdebrid:rapidgator.net")).toBe(true);
+  });
+
+  it("continues a running Mega-Web download with the next enabled account after a live settings change", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-mega-live-account-switch-"));
+    tempDirs.push(root);
+    const payload = Buffer.alloc(256 * 1024, 0x5a);
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, {
+        "Content-Length": String(payload.length),
+        "Content-Type": "application/octet-stream"
+      });
+      res.end(payload);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Testserver konnte nicht gestartet werden");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/account-two.bin`;
+    const firstAccountId = getMegaDebridAccountId("first-user");
+    const accountCalls: string[] = [];
+    const settings = {
+      ...defaultSettings(),
+      megaCredentials: "first-user:first-pass\nsecond-user:second-pass",
+      megaDebridWebCredentials: "first-user:first-pass\nsecond-user:second-pass",
+      megaDebridWebEnabled: true,
+      megaDebridApiEnabled: false,
+      megaDebridPreferApi: false,
+      providerOrder: [],
+      providerPrimary: "megadebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      outputDir: path.join(root, "downloads"),
+      extractDir: path.join(root, "extract"),
+      autoExtract: false,
+      autoReconnect: false,
+      enableIntegrityCheck: false,
+      maxParallel: 1
+    };
+    const manager = new DownloadManager(settings, emptySession(), createStoragePaths(path.join(root, "state")), {
+      invalidateMegaSession: vi.fn(),
+      megaWebUnrestrict: vi.fn(async (_link: string, signal?: AbortSignal, account?: { login: string; password: string }) => {
+        const login = account?.login || "";
+        accountCalls.push(login);
+        if (login === "first-user") {
+          return await new Promise<UnrestrictedLink | null>((_resolve, reject) => {
+            const onAbort = (): void => reject(new Error("aborted:settings-refresh"));
+            if (signal?.aborted) {
+              onAbort();
+              return;
+            }
+            signal?.addEventListener("abort", onAbort, { once: true });
+          });
+        }
+        return {
+          fileName: "account-two.bin",
+          directUrl,
+          fileSize: payload.length,
+          retriesUsed: 0
+        };
+      })
+    });
+    manager.addPackages([{ name: "live-account-switch", links: ["https://rapidgator.net/file/live-account-switch"] }]);
+
+    try {
+      await manager.start();
+      await waitFor(() => accountCalls.includes("first-user"), 10_000);
+
+      manager.setSettings({ ...settings, megaDebridWebDisabledAccountIds: [firstAccountId] });
+
+      await waitFor(() => Object.values(manager.getSnapshot().session.items).every((item) => item.status === "completed"), 15_000);
+      expect(accountCalls).toEqual(["first-user", "second-user"]);
+      expect(fs.readFileSync(path.join(root, "downloads", "live-account-switch", "account-two.bin"))).toEqual(payload);
+    } finally {
+      manager.stop();
+      server.close();
+      await once(server, "close");
+    }
+  }, 20_000);
+
+  it("aborts active work immediately when downloads are paused", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-pause-active-"));
+    tempDirs.push(root);
+    const invalidateMegaSession = vi.fn();
+    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(root, "state")), { invalidateMegaSession });
+    manager.addPackages([{ name: "pause-active", links: ["https://rapidgator.net/file/pause-active"] }]);
+    const session = (manager as any).session;
+    const item = Object.values(session.items)[0] as any;
+    item.status = "validating";
+    session.running = true;
+    const active = {
+      itemId: item.id,
+      packageId: item.packageId,
+      abortController: new AbortController(),
+      abortReason: "none",
+      resumable: true,
+      nonResumableCounted: false
+    };
+    (manager as any).activeTasks.set(item.id, active);
+
+    expect(manager.togglePause()).toBe(true);
+
+    expect(active.abortController.signal.aborted).toBe(true);
+    expect(active.abortReason).toBe("pause");
     expect(invalidateMegaSession).toHaveBeenCalledTimes(1);
   });
 
@@ -2578,6 +2766,134 @@ describe("download manager", () => {
       expect(resumeCalls).toBeGreaterThanOrEqual(1);
       expect(resumeStarts).toContain(partialSize);
       expect(fs.statSync(existingTargetPath).size).toBe(binary.length);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
+  it("restores a persisted Mega-Web partial and hard-resets after two HTTP 200 range rejections", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-mega-resume-restore-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(192 * 1024, 37);
+    const partialSize = 64 * 1024;
+    const packageId = "mega-resume-restore-package";
+    const itemId = "mega-resume-restore-item";
+    const outputDir = path.join(root, "downloads", "mega-resume-restore");
+    const targetPath = path.join(outputDir, "mega-resume-restore.mkv");
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.writeFileSync(targetPath, binary.subarray(0, partialSize));
+    const rangeHeaders: string[] = [];
+
+    const server = http.createServer((req, res) => {
+      if (req.method === "GET") {
+        rangeHeaders.push(String(req.headers.range || ""));
+      }
+      res.statusCode = 200;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(binary.length));
+      res.end(binary);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/mega-resume-restore`;
+
+    try {
+      const session = emptySession();
+      const createdAt = Date.now() - 10_000;
+      session.packageOrder = [packageId];
+      session.packages[packageId] = {
+        id: packageId,
+        name: "mega-resume-restore",
+        outputDir,
+        extractDir: path.join(root, "extract", "mega-resume-restore"),
+        status: "queued",
+        itemIds: [itemId],
+        cancelled: false,
+        enabled: true,
+        createdAt,
+        updatedAt: createdAt
+      };
+      session.items[itemId] = {
+        id: itemId,
+        packageId,
+        url: "https://dummy/mega-resume-restore",
+        provider: "megadebrid-web",
+        status: "queued",
+        retries: 1,
+        speedBps: 0,
+        downloadedBytes: partialSize,
+        totalBytes: binary.length,
+        progressPercent: Math.floor((partialSize / binary.length) * 100),
+        fileName: "mega-resume-restore.mkv",
+        targetPath,
+        resumable: true,
+        attempts: 0,
+        lastError: `range_ignored_on_resume:${partialSize}/${binary.length}`,
+        fullStatus: "Resume-Link erneuern, Retry 1/3",
+        onlineStatus: "online",
+        createdAt,
+        updatedAt: createdAt
+      };
+      const storagePaths = createStoragePaths(path.join(root, "state"));
+      saveSession(storagePaths, session);
+      const megaWebUnrestrict = vi.fn(async (): Promise<UnrestrictedLink> => ({
+        directUrl,
+        fileName: "mega-resume-restore.mkv",
+        fileSize: binary.length,
+        retriesUsed: 0
+      }));
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          megaDebridWebCredentials: "mega-user:mega-pass",
+          megaDebridWebEnabled: true,
+          megaDebridApiEnabled: false,
+          megaDebridPreferApi: false,
+          providerOrder: ["megadebrid-web"],
+          autoProviderFallback: false,
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          retryLimit: 3,
+          autoExtract: false,
+          autoReconnect: false,
+          enableIntegrityCheck: false,
+          maxParallel: 1
+        },
+        loadSession(storagePaths),
+        storagePaths,
+        { megaWebUnrestrict }
+      );
+
+      expect(manager.getSnapshot().session.items[itemId]).toEqual(expect.objectContaining({
+        status: "queued",
+        downloadedBytes: partialSize,
+        targetPath,
+        onlineStatus: "online"
+      }));
+
+      await manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 25000);
+
+      const restoredItem = manager.getSnapshot().session.items[itemId];
+      expect(restoredItem).toEqual(expect.objectContaining({
+        status: "completed",
+        downloadedBytes: binary.length,
+        onlineStatus: "online"
+      }));
+      expect(megaWebUnrestrict).toHaveBeenCalledTimes(3);
+      expect(rangeHeaders).toEqual([
+        `bytes=${partialSize}-`,
+        `bytes=${partialSize}-`,
+        ""
+      ]);
+      expect(fs.readFileSync(targetPath)).toEqual(binary);
     } finally {
       server.close();
       await once(server, "close");
@@ -8323,9 +8639,71 @@ describe("download manager", () => {
         progressPercent: 0,
         lastError: "",
         fullStatus: "Wartet",
-        onlineStatus: undefined
+        onlineStatus: "online"
       }));
     }
+  });
+
+  it("preserves a known online status when resetting a whole package", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-reset-package-online-"));
+    tempDirs.push(root);
+    const session = emptySession();
+    const packageId = "reset-package-online";
+    const itemId = "reset-package-online-item";
+    const createdAt = Date.now();
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "reset-package-online",
+      outputDir: path.join(root, "downloads", "reset-package-online"),
+      extractDir: path.join(root, "extract", "reset-package-online"),
+      status: "failed",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/reset-package-online",
+      provider: "megadebrid-web",
+      status: "failed",
+      retries: 3,
+      speedBps: 0,
+      downloadedBytes: 512,
+      totalBytes: 1_024,
+      progressPercent: 50,
+      fileName: "reset-package-online.bin",
+      targetPath: "",
+      resumable: true,
+      attempts: 3,
+      lastError: "range_ignored_on_resume:512/1024",
+      fullStatus: "Fehler",
+      onlineStatus: "online",
+      createdAt,
+      updatedAt: createdAt
+    };
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await manager.resetPackage(packageId);
+
+    expect(manager.getSnapshot().session.items[itemId]).toEqual(expect.objectContaining({
+      status: "queued",
+      downloadedBytes: 0,
+      fullStatus: "Wartet",
+      onlineStatus: "online"
+    }));
   });
 
   it("does not freeze the scheduler when a reset item's old task is parked in a non-abort-observing await", async () => {
