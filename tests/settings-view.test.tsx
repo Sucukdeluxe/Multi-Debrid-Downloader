@@ -6,10 +6,7 @@ import { defaultSettings } from "../src/main/constants";
 import { createRendererSettings, createRendererState } from "../src/main/renderer-state";
 import { buildAccountAddFields, createAccountDialogState } from "../src/renderer/App";
 import { buildAccountReplaceCommand, createAccountEditState, type AccountEditTarget } from "../src/renderer/account-edit";
-import {
-  buildBulkAccountEnabledState,
-  buildConfiguredProviderOrder
-} from "../src/renderer/account-ui";
+import { buildConfiguredProviderOrder } from "../src/renderer/account-ui";
 import { getDebridLinkApiKeyId } from "../src/shared/debrid-link-keys";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import {
@@ -391,22 +388,11 @@ describe("settings model", () => {
     expect(buildTargetedAccountCheck(options[1], "ddownload-new")).toBeNull();
   });
 
-  it("preserves provider order and deduplicates bulk account identities", () => {
+  it("preserves provider order", () => {
     expect(buildConfiguredProviderOrder(
       ["debridlink", "realdebrid", "alldebrid"],
       ["realdebrid", "alldebrid", "debridlink", "bestdebrid"]
     )).toEqual(["debridlink", "realdebrid", "alldebrid", "bestdebrid"]);
-    expect(buildBulkAccountEnabledState(
-      ["alldebrid"],
-      ["megadebrid-api", "alldebrid"],
-      ["mega-1", "mega-1"],
-      ["dl-1", "dl-1"],
-      false
-    )).toEqual({
-      disabledProviders: ["alldebrid", "megadebrid-api"],
-      megaDebridDisabledAccountIds: ["mega-1"],
-      debridLinkDisabledKeyIds: ["dl-1"]
-    });
   });
 
   it("keeps exact rounded limits and migrates edited identity metadata", () => {
@@ -738,6 +724,42 @@ describe("account workspace", () => {
       `edit:${rowId}`,
       `context:${rowId}`
     ]);
+  });
+
+  it("does not open account editing when the enable checkbox is double-clicked", () => {
+    const calls: string[] = [];
+    const tree = AccountWorkspace({
+      model: workspaceModel(),
+      actions: workspaceActions({
+        onToggleEnabled: (id) => calls.push(`toggle:${id}`),
+        onEdit: (id) => calls.push(`edit:${id}`)
+      })
+    });
+    const row = findElement(tree, (element) => element.props.role === "row" && element.props["aria-selected"] === true);
+    const checkbox = findElement(row, (element) => element.type === "input" && element.props.type === "checkbox");
+    const event = {
+      propagationStopped: false,
+      stopPropagation() {
+        this.propagationStopped = true;
+      }
+    };
+
+    checkbox.props.onChange();
+    checkbox.props.onDoubleClick(event);
+    if (!event.propagationStopped) {
+      row.props.onDoubleClick();
+    }
+
+    expect(calls).toEqual([`toggle:${workspaceModel().rows[0].id}`]);
+  });
+
+  it("does not expose a global switch that enables or disables every account", () => {
+    const legacyModel = { ...workspaceModel(), allEnabled: true } as AccountWorkspaceViewModel;
+    const legacyActions = { ...workspaceActions(), onSetAllEnabled: () => {} } as AccountWorkspaceActions;
+    const html = renderToStaticMarkup(<AccountWorkspace actions={legacyActions} model={legacyModel} />);
+
+    expect(html).not.toContain("Accounts zum Herunterladen verwenden");
+    expect(html).not.toContain("settings-account-all-enabled");
   });
 
   it("keeps overview and rules in the same workspace while only one panel is active", () => {

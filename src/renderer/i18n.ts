@@ -29,7 +29,7 @@ const pairs = [
   ["Hoch", "High"], ["Normal", "Normal"], ["Niedrig", "Low"], ["In Warteschlange", "Queued"], ["Abgeschlossen", "Completed"], ["Entpackt", "Extracted"], ["Automatisch entpacken", "Extract automatically"],
   ["Liste leeren", "Clear list"], ["Sitzung", "Session"], ["Gesamt", "Total"], ["Bereit", "Ready"], ["Download läuft", "Download running"], ["Wartet", "Waiting"], ["Offline", "Offline"],
   ["Übersicht", "Overview"], ["Verwendungsregeln", "Usage rules"], ["Accountverwaltung", "Account management"], ["Accounts hinzufügen, prüfen und verwalten.", "Add, check and manage accounts."],
-  ["Accounts zum Herunterladen verwenden", "Use accounts for downloads"], ["Download-Traffic übrig", "Download traffic remaining"], ["Benutzername", "Username"], ["E-Mail", "Email"], ["Verfallsdatum", "Expiration date"], ["Passwort/Zugang", "Password/access"],
+  ["Download-Traffic übrig", "Download traffic remaining"], ["Benutzername", "Username"], ["E-Mail", "Email"], ["Verfallsdatum", "Expiration date"], ["Passwort/Zugang", "Password/access"],
   ["Account hinzufügen", "Add account"], ["Ausgewählte prüfen", "Check selected"], ["Ausgewählte entfernen", "Remove selected"], ["Aktivieren", "Enable"], ["Deaktivieren", "Disable"], ["Noch nicht geprüft", "Not checked yet"],
   ["Aktiviert", "Enabled"], ["Aktionen", "Actions"], ["Deaktiviert", "Disabled"], ["Premium aktiv", "Premium active"], ["API-Key aktiv", "API key active"], ["API-Account", "API account"], ["API-Key", "API key"],
   ["Ungültiger API-Key (nicht autorisiert)", "Invalid API key (not authorized)"], ["Free Account", "Free account"], ["Unbeschränkt", "Unlimited"], ["Keine Accounts eingerichtet", "No accounts configured"],

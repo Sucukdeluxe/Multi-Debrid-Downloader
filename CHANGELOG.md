@@ -2,6 +2,13 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.32] - 2026-08-13
+
+### Account controls
+
+- Prevented rapid account enable and disable interactions from opening the account editor.
+- Removed the redundant global account toggle so every configured account remains independently controlled.
+
 ## [2.0.31] - 2026-08-13
 
 ### Account rotation and lifecycle

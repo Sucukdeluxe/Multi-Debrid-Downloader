@@ -58,24 +58,3 @@ export function isAccountRowSelectionKey(key: string, originatedOnRow: boolean):
 export function resolveAccountUsername(storedUsername: string, checkedEmail?: string): string {
   return checkedEmail?.trim() || storedUsername.trim() || "—";
 }
-
-export function buildBulkAccountEnabledState(
-  currentDisabledProviders: DebridProvider[],
-  configuredProviders: DebridProvider[],
-  megaAccountIds: string[],
-  debridLinkKeyIds: string[],
-  enabled: boolean
-): {
-  disabledProviders: DebridProvider[];
-  megaDebridDisabledAccountIds: string[];
-  debridLinkDisabledKeyIds: string[];
-} {
-  const configured = new Set(configuredProviders);
-  return {
-    disabledProviders: enabled
-      ? currentDisabledProviders.filter((provider) => !configured.has(provider))
-      : [...new Set([...currentDisabledProviders, ...configuredProviders])],
-    megaDebridDisabledAccountIds: enabled ? [] : [...new Set(megaAccountIds)],
-    debridLinkDisabledKeyIds: enabled ? [] : [...new Set(debridLinkKeyIds)]
-  };
-}

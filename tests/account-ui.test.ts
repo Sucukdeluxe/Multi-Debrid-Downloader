@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildBulkAccountEnabledState,
   buildConfiguredProviderOrder,
   getAccountDialogSelectableOptions,
   isAccountRowSelectionKey,
@@ -22,35 +21,7 @@ describe("account mode filter", () => {
   });
 });
 
-describe("bulk account activation", () => {
-  it("disables each configured provider and account exactly once", () => {
-    expect(buildBulkAccountEnabledState(
-      ["alldebrid"],
-      ["megadebrid-api", "alldebrid"],
-      ["mega-1", "mega-1", "mega-2"],
-      ["debrid-link-1", "debrid-link-1"],
-      false
-    )).toEqual({
-      disabledProviders: ["alldebrid", "megadebrid-api"],
-      megaDebridDisabledAccountIds: ["mega-1", "mega-2"],
-      debridLinkDisabledKeyIds: ["debrid-link-1"]
-    });
-  });
-
-  it("enables configured providers without changing unrelated provider state", () => {
-    expect(buildBulkAccountEnabledState(
-      ["realdebrid", "alldebrid", "megadebrid-api"],
-      ["alldebrid", "megadebrid-api"],
-      ["mega-1"],
-      ["debrid-link-1"],
-      true
-    )).toEqual({
-      disabledProviders: ["realdebrid"],
-      megaDebridDisabledAccountIds: [],
-      debridLinkDisabledKeyIds: []
-    });
-  });
-
+describe("account provider order", () => {
   it("preserves the custom provider order while accounts are disabled", () => {
     expect(buildConfiguredProviderOrder(
       ["debridlink", "realdebrid", "alldebrid"],

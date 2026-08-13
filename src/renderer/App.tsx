@@ -45,7 +45,7 @@ import {
   sortPackageOrderByName
 } from "./package-order";
 import { pruneSelection, shouldClearDownloadSelection, shouldClearDownloadSelectionOnEscape } from "./selection";
-import { buildBulkAccountEnabledState, buildConfiguredProviderOrder, getAccountDialogSelectableOptions, matchesAccountModeFilter, pruneAccountRowSelection, resolveAccountUsername, resolveVisibleAccountKind } from "./account-ui";
+import { buildConfiguredProviderOrder, getAccountDialogSelectableOptions, matchesAccountModeFilter, pruneAccountRowSelection, resolveAccountUsername, resolveVisibleAccountKind } from "./account-ui";
 import type { AccountModeFilter } from "./account-ui";
 import { buildAccountDeleteCommand, buildAccountReplaceCommand, createAccountEditState, validateAccountEdit } from "./account-edit";
 import type { AccountEditState, AccountEditTarget, AccountKind, AccountService, SingleAccountKind } from "./account-edit";
@@ -3038,34 +3038,6 @@ export function App(): ReactElement {
     }
   };
 
-  const setAllAccountsEnabled = (enabled: boolean): void => {
-    const configuredProviderIds = [...new Set(configuredAccounts.map((entry) => entry.service as DebridProvider))];
-    const nextEnabledState = buildBulkAccountEnabledState(
-      settingsDraftRef.current.disabledProviders || [],
-      configuredProviderIds,
-      accountRows.filter((row) => row.toggleKind === "mega" && row.accountId).map((row) => row.accountId as string),
-      accountRows.filter((row) => row.toggleKind === "dl" && row.accountId).map((row) => row.accountId as string),
-      enabled
-    );
-    const nextDraft: RendererSettingsDraft = {
-      ...settingsDraftRef.current,
-      ...nextEnabledState,
-      megaDebridApiDisabledAccountIds: enabled ? [] : accountRows.filter((row) => row.entry.kind === "megadebrid-api" && row.accountId).map((row) => row.accountId as string),
-      megaDebridWebDisabledAccountIds: enabled ? [] : accountRows.filter((row) => row.entry.kind === "megadebrid-web" && row.accountId).map((row) => row.accountId as string)
-    };
-    nextDraft.megaDebridDisabledAccountIds = [...new Set([
-      ...nextDraft.megaDebridApiDisabledAccountIds,
-      ...nextDraft.megaDebridWebDisabledAccountIds
-    ])];
-    const nextOverrides = Object.fromEntries(accountRows.map((row) => [row.rowKey, enabled]));
-    enqueueAccountSettingsChange(
-      nextDraft,
-      nextOverrides,
-      enabled ? "Accounts aktiviert" : "Accounts deaktiviert",
-      "Accounts konnten nicht umgeschaltet werden"
-    );
-  };
-
   const removeAccountTableRow = (row: AccountTableRow): void => {
     setAccountContextMenu(null);
     void (async () => {
@@ -5068,7 +5040,6 @@ export function App(): ReactElement {
     rows: visibleAccountRows,
     selectedIds: selectedAccountViewId ? [selectedAccountViewId] : [],
     busy: actionBusy || accountCheckBusy,
-    allEnabled: accountRows.length > 0 && accountRows.some((row) => !row.disabled),
     statusSort: accountStatusSort,
     rules: {
       providerOrder: activeProviderOrder.map((provider) => providerLabelWithMode(provider, settingsDraft)),
@@ -5121,7 +5092,6 @@ export function App(): ReactElement {
       if (row) removeAccountTableRow(row);
     },
     onCheckAll: () => { void checkAllAccounts(); },
-    onSetAllEnabled: (enabled) => { void setAllAccountsEnabled(enabled); },
     onStatusSort: cycleAccountStatusSort,
     onMoveProvider: (index, direction) => {
       const target = index + direction;

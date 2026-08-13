@@ -63,7 +63,6 @@ export interface AccountWorkspaceViewModel {
   selectedIds: readonly string[];
   busy: boolean;
   error?: string;
-  allEnabled?: boolean;
   statusSort?: "none" | "desc" | "asc";
   rules: AccountRulesViewModel;
 }
@@ -77,7 +76,6 @@ export interface AccountWorkspaceActions {
   onAdd: () => void;
   onRemoveSelected: () => void;
   onCheckAll: () => void;
-  onSetAllEnabled?: (enabled: boolean) => void;
   onStatusSort?: () => void;
   onMoveProvider?: (index: number, direction: -1 | 1) => void;
   onProviderDragStart?: (event: DragEvent<HTMLElement>, index: number) => void;
@@ -226,6 +224,7 @@ function AccountRow({
           disabled={busy}
           onChange={() => actions.onToggleEnabled(row.id)}
           onClick={(event) => event.stopPropagation()}
+          onDoubleClick={(event) => event.stopPropagation()}
           type="checkbox"
         />
       </span>
@@ -440,17 +439,6 @@ export function AccountWorkspace({ model, actions }: AccountWorkspaceProps): Rea
           <h2>Accountverwaltung</h2>
           <p>Accounts hinzufügen, prüfen und verwalten.</p>
         </div>
-        {typeof model.allEnabled === "boolean" && actions.onSetAllEnabled ? (
-          <label className="settings-rule-toggle settings-account-all-enabled">
-            <input
-              checked={model.allEnabled}
-              disabled={model.busy || model.rows.length === 0}
-              onChange={(event) => actions.onSetAllEnabled?.(event.target.checked)}
-              type="checkbox"
-            />
-            <span>Accounts zum Herunterladen verwenden</span>
-          </label>
-        ) : null}
       </header>
       <SlidingSelection activeKey={model.activePanel} aria-label="Accountverwaltung" aria-orientation="horizontal" axis="horizontal" className="settings-account-tabs" role="tablist">
         {ACCOUNT_WORKSPACE_PANELS.map((panel, index) => (
