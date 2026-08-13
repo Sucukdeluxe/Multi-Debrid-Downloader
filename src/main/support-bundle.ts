@@ -16,6 +16,8 @@ import { createStoragePaths, loadSettings } from "./storage";
 import { buildAccountSummary, buildRedactedSettingsPayload, buildStatsPayload } from "./support-data";
 import { getTraceConfig, getTraceConfigPath, getTraceLogPath } from "./trace-log";
 import { getCachedWindowsHostDiagnostics, getWindowsHostDiagnostics } from "./windows-host-diagnostics";
+import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
+import { maskMegaDebridLogin } from "../shared/mega-debrid-accounts";
 import type { DownloadManager } from "./download-manager";
 import type { DownloadItem, HistoryEntry, PackageEntry, SessionState } from "../shared/types";
 
@@ -41,25 +43,35 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function addSensitiveValue(output: Set<string>, value: string): void {
+  const trimmed = value.trim();
+  if (trimmed) {
+    output.add(trimmed);
+  }
+}
+
 function collectSensitiveValues(value: unknown, key = "", output = new Set<string>()): Set<string> {
   if (typeof value === "string") {
     if (/token|api.?key|password|passwd|secret|cookie|authorization|credential|login|username/i.test(key)) {
       for (const candidate of [value, ...value.split(/\r?\n/)]) {
         const trimmed = candidate.trim();
-        if (trimmed.length >= 4) {
-          output.add(trimmed);
-        }
+        addSensitiveValue(output, trimmed);
         if (/credential/i.test(key)) {
           const separator = trimmed.indexOf(":");
           if (separator > 0) {
             const login = trimmed.slice(0, separator).trim();
             const password = trimmed.slice(separator + 1).trim();
-            if (login.length >= 4) {
-              output.add(login);
+            addSensitiveValue(output, login);
+            addSensitiveValue(output, password);
+            if (/mega.?debrid/i.test(key)) {
+              addSensitiveValue(output, maskMegaDebridLogin(login));
             }
-            if (password.length >= 4) {
-              output.add(password);
-            }
+          }
+        }
+        if (/debrid.?link.*api.?keys?/i.test(key)) {
+          for (const entry of parseDebridLinkApiKeys(trimmed)) {
+            addSensitiveValue(output, entry.token);
+            addSensitiveValue(output, entry.masked);
           }
         }
       }
@@ -80,33 +92,46 @@ function collectSensitiveValues(value: unknown, key = "", output = new Set<strin
   return output;
 }
 
-function redactUrl(value: string): string {
-  try {
-    const parsed = new URL(value);
-    return `${parsed.protocol}//${parsed.hostname}${parsed.port ? `:${parsed.port}` : ""}/<redacted>`;
-  } catch {
-    return "<redacted-url>";
-  }
-}
-
 function redactSupportText(value: string, sensitiveValues: ReadonlySet<string>): string {
-  let output = String(value || "").replace(/\0/g, "");
-  const secrets = [...sensitiveValues].sort((a, b) => b.length - a.length);
-  for (const secret of secrets) {
-    output = output.replace(new RegExp(escapeRegExp(secret), "g"), "<redacted>");
-  }
-  output = output.replace(/https?:\/\/[^\s"'<>]+/gi, (url) => redactUrl(url));
-  output = output.replace(/(["']?(?:authorization|proxy-authorization|set-cookie|cookie|password|passwd|pwd|token|access[_-]?token|refresh[_-]?token|api[_ -]?key|secret|client[_-]?secret|auth|login|username|user)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*')/gi, "$1\"<redacted>\"");
+  const raw = String(value || "").replace(/\0/g, "");
+  const findMarker = (source: string, offset: number): string => {
+    for (let index = offset; index < 0x1900; index += 1) {
+      const marker = String.fromCharCode(0xe000 + index);
+      if (!source.includes(marker) && [...sensitiveValues].every((secret) => !secret.includes(marker))) {
+        return marker;
+      }
+    }
+    return String.fromCharCode(0xf8ff - offset);
+  };
+  const urlMarker = findMarker(raw, 0);
+  let output = raw.replace(/\b(?:https?|file):\/\/[^\s"'<>]+/gi, urlMarker);
+  const pathMarker = findMarker(output, 1);
+  output = output.replace(/\b[A-Z]:[\\/][^\r\n|"<>]+/gi, pathMarker);
+  output = output.replace(/\\\\[^\r\n|"<>]+/g, pathMarker);
+  output = output.replace(/\/(?:home|Users|var|tmp)\/[^\r\n|"<>]+/g, pathMarker);
   output = output.replace(/\b(?:authorization|proxy-authorization)\s*[:=]\s*[^\r\n]+/gi, "Authorization: <redacted>");
   output = output.replace(/\b(?:set-cookie|cookie)\s*[:=]\s*[^\r\n]+/gi, "Cookie: <redacted>");
-  output = output.replace(/\b(password|passwd|pwd|token|access[_-]?token|refresh[_-]?token|api[_ -]?key|secret|client[_-]?secret|auth|login|username|user)\b(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;|]+)/gi, "$1$2<redacted>");
+  output = output.replace(/\b((?:Account|Key)\s+\d+(?:\/\d+)?)\s*\([^)\r\n]*\)/gi, "$1 (<redacted-account>)");
+  output = output.replace(/(["']?(?:authorization|proxy-authorization|set-cookie|cookie|password|passwd|pwd|token|access[_-]?token|refresh[_-]?token|api[_ -]?key|secret|client[_-]?secret|auth|login|username|user)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/gi, "$1\"<redacted>\"");
+  output = output.replace(/\b(password|passwd|pwd|token|access[_-]?token|refresh[_-]?token|api[_ -]?key|secret|client[_-]?secret|auth|login|username|user)\b(\s*[:=]\s*)[^\s,;|]+/gi, "$1$2<redacted>");
+  const secretVariants = new Set<string>();
+  for (const secret of sensitiveValues) {
+    secretVariants.add(secret);
+    const jsonEscaped = JSON.stringify(secret).slice(1, -1);
+    if (jsonEscaped) {
+      secretVariants.add(jsonEscaped);
+    }
+  }
+  for (const secret of [...secretVariants].sort((a, b) => b.length - a.length)) {
+    const escaped = escapeRegExp(secret);
+    output = secret.length >= 4
+      ? output.replace(new RegExp(escaped, "g"), "<redacted>")
+      : output.replace(new RegExp(`(^|[^A-Za-z0-9])${escaped}(?=$|[^A-Za-z0-9])`, "g"), "$1<redacted>");
+  }
   output = output.replace(/\b[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\b/g, "<redacted>");
   output = output.replace(/\b(?=[A-Za-z0-9+/_=-]{24,}\b)(?=[A-Za-z0-9+/_=-]*[A-Za-z])(?=[A-Za-z0-9+/_=-]*\d)[A-Za-z0-9+/_=-]+\b/g, "<redacted>");
-  output = output.replace(/\b[A-Z]:\\[^\r\n|"<>]+/gi, "<local-path>");
-  output = output.replace(/\\\\[^\r\n|"<>]+/g, "<local-path>");
-  output = output.replace(/\/(?:home|Users|var|tmp)\/[^\r\n|"<>]+/g, "<local-path>");
   output = output.replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "<redacted-email>");
-  return output;
+  return output.replaceAll(urlMarker, "<redacted-url>").replaceAll(pathMarker, "<local-path>");
 }
 
 function redactSupportValue(value: unknown, sensitiveValues: ReadonlySet<string>, key = ""): unknown {

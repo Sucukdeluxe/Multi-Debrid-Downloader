@@ -10,12 +10,14 @@ import {
 } from "../src/main/support-bundle";
 import type { DownloadManager } from "../src/main/download-manager";
 import { getSessionLogPath, initSessionLog, shutdownSessionLog } from "../src/main/session-log";
+import { initAccountRotationLog, logAccountRotation, shutdownAccountRotationLog } from "../src/main/account-rotation-log";
 
 const tempDirs: string[] = [];
 const legacyManifestFile = ["debug_", "a", "i", "_manifest.json"].join("");
 
 afterEach(() => {
   shutdownSessionLog();
+  shutdownAccountRotationLog();
   for (const dir of tempDirs.splice(0)) {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch {  }
   }
@@ -241,10 +243,17 @@ describe("buildSupportBundle (async, non-blocking)", () => {
   it("redacts active DTOs, runtime text and logs at the ZIP boundary", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-bundle-sensitive-"));
     tempDirs.push(root);
+    const escapedSecret = "prefix\"suffix\\trail\tend";
     fs.writeFileSync(path.join(root, "rd_downloader_config.json"), JSON.stringify({
-      megaDebridWebCredentials: "primary-user:primary-password-secret\nsecondary-user:secondary-password-secret",
+      megaDebridWebCredentials: `primary-user:primary-password-secret\nsecondary-user:secondary-password-secret\nZ9:Q7!\nAlice:${escapedSecret}`,
+      debridLinkApiKeys: "abc123456789xyz,def987654321uvw",
       megaDebridWebEnabled: true
     }), "utf8");
+    initAccountRotationLog(root);
+    logAccountRotation("INFO", "Debrid-Link", "Key 1 (abc*********xyz)", "TEST");
+    logAccountRotation("WARN", "Debrid-Link", "Key 2 (def*********uvw)", "FAILED", { reason: "fixture" });
+    logAccountRotation("WARN", "Mega-Debrid", "Account 9/9 (Re*******er)", "FAILED", { next: "Account 8/9 (Al*******ce)" });
+    logAccountRotation("WARN", "Debrid-Link", "Key 9/9 (old***********ken)", "FAILED", { next: "Key 8/9 (ret***********key)" });
     const itemLogs = path.join(root, "item-logs");
     fs.mkdirSync(itemLogs, { recursive: true });
     fs.writeFileSync(path.join(itemLogs, "token=filename-secret.log"), [
@@ -254,8 +263,16 @@ describe("buildSupportBundle (async, non-blocking)", () => {
       "password=log-password-secret",
       "api_key=log-api-key-secret",
       "provider rejected secondary-password-secret during rotation",
+      "rotation rejected account Z9 before fallback Q7!",
+      "rotation tried Mega account Z*",
       "https://log-user:log-pass@files.example.test/archive?token=log-query-secret#log-fragment-secret",
-      "C:\\Users\\Alice\\Downloads\\Private Collection\\private.bin"
+      "https://private-support-host.invalid/archive?id=private-resource",
+      "https://private.example/Alice/after-alice-url-segment?token=x",
+      "C:\\Users\\Alice\\Downloads\\Private Collection\\private.bin",
+      "C:/Users/Alice/Downloads/Private Collection/forward-private.bin",
+      "C:/Users/Alice/after-alice-path-segment/private.bin",
+      "file:///C:/Users/Alice/Downloads/Private%20Collection/file-private.bin",
+      JSON.stringify({ password: escapedSecret })
     ].join("\n"), "utf8");
     fs.writeFileSync(path.join(root, "debug_support_manifest.json"), JSON.stringify({
       authorization: "Bearer manifest-bearer-secret",
@@ -292,8 +309,24 @@ describe("buildSupportBundle (async, non-blocking)", () => {
       "log-api-key-secret",
       "primary-password-secret",
       "secondary-password-secret",
+      "Z9",
+      "Q7!",
+      "Z*",
+      "abc*********xyz",
+      "def*********uvw",
+      "Re*******er",
+      "Al*******ce",
+      "old***********ken",
+      "ret***********key",
+      escapedSecret,
+      JSON.stringify(escapedSecret).slice(1, -1),
       "log-query-secret",
       "log-fragment-secret",
+      "private-support-host.invalid",
+      "after-alice-url-segment",
+      "after-alice-path-segment",
+      "forward-private.bin",
+      "file-private.bin",
       "manifest-bearer-secret",
       "manifest-query-secret",
       "manifest-fragment"

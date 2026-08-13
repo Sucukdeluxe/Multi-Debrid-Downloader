@@ -363,6 +363,9 @@ export interface DownloadItem {
   attempts: number;
   lastError: string;
   fullStatus: string;
+  resumeLinkRenewalFailures?: number;
+  resumeHardResetUsed?: boolean;
+  resumeResetPending?: boolean;
   createdAt: number;
   updatedAt: number;
   onlineStatus?: "online" | "offline" | "checking";

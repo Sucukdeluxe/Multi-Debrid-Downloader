@@ -37,7 +37,7 @@ describe("desktop shell", () => {
 
   it("renders active download telemetry at a stable half-second cadence", () => {
     expect(getSnapshotRenderDelay(2_470, true, "downloads")).toBe(500);
-    expect(getSnapshotRenderDelay(2_470, true, "statistics")).toBe(800);
+    expect(getSnapshotRenderDelay(2_470, true, "statistics")).toBe(500);
   });
 
   it("keeps support bundle progress tied to the unresolved export", async () => {

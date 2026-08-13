@@ -1735,6 +1735,33 @@ function retryDelayWithJitter(attempt: number, baseMs: number): number {
   return Math.floor(jitter);
 }
 
+function clearResumeRecoveryState(item: DownloadItem): void {
+  delete item.resumeLinkRenewalFailures;
+  delete item.resumeHardResetUsed;
+  delete item.resumeResetPending;
+}
+
+async function removeResumePartialForReset(targetPath: string): Promise<boolean> {
+  const retryableCodes = new Set(["EBUSY", "EPERM", "EACCES"]);
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      fs.rmSync(targetPath, { force: true });
+    } catch (error) {
+      const code = String((error as NodeJS.ErrnoException)?.code || "");
+      if (!retryableCodes.has(code)) {
+        return false;
+      }
+    }
+    if (!fs.existsSync(targetPath)) {
+      return true;
+    }
+    if (attempt < 3) {
+      await sleep((attempt + 1) * 100);
+    }
+  }
+  return !fs.existsSync(targetPath);
+}
+
 function isMegaDebridProviderKey(value: string): boolean {
   return value === "megadebrid"
     || value === "megadebrid-api"
@@ -2099,6 +2126,18 @@ export class DownloadManager extends EventEmitter {
       status: item.status,
       targetPath: item.targetPath,
       ...fields
+    });
+  }
+
+  private logRotationEventForItem(item: DownloadItem, event: RotationEvent): void {
+    this.logItemOnly(item, event.level, "Account-Rotation", {
+      provider: event.provider,
+      account: event.accountLabel,
+      event: event.event,
+      reason: event.reason,
+      category: event.category,
+      cooldownSec: event.cooldownSec,
+      next: event.next
     });
   }
 
@@ -5435,6 +5474,7 @@ export class DownloadManager extends EventEmitter {
       this.runItemIds.delete(itemId);
       this.retryAfterByItem.delete(itemId);
       this.retryStateByItem.delete(itemId);
+      clearResumeRecoveryState(item);
 
       item.status = "queued";
       item.downloadedBytes = 0;
@@ -5518,6 +5558,7 @@ export class DownloadManager extends EventEmitter {
       this.runOutcomes.delete(itemId);
       this.retryAfterByItem.delete(itemId);
       this.retryStateByItem.delete(itemId);
+      clearResumeRecoveryState(item);
 
       item.status = "queued";
       item.downloadedBytes = 0;
@@ -6240,6 +6281,7 @@ export class DownloadManager extends EventEmitter {
       }
       if (item.status === "extracting" || item.status === "integrity_check") {
         item.status = "completed";
+        clearResumeRecoveryState(item);
         item.fullStatus = `Fertig (${humanSize(item.downloadedBytes)})`;
         item.speedBps = 0;
         item.updatedAt = nowMs();
@@ -6531,7 +6573,7 @@ export class DownloadManager extends EventEmitter {
     const itemCount = this.itemCount;
     const emitDelay = this.session.running
       ? itemCount >= 1500
-        ? 700
+        ? 500
         : itemCount >= 700
           ? 500
           : itemCount >= 250
@@ -6987,6 +7029,7 @@ export class DownloadManager extends EventEmitter {
     });
 
     item.status = "completed";
+    clearResumeRecoveryState(item);
     item.fullStatus = this.settings.autoExtract
       ? "Entpacken - Ausstehend"
       : `Fertig (${humanSize(diskState.size)})`;
@@ -9026,6 +9069,7 @@ export class DownloadManager extends EventEmitter {
       genericErrorRetries: Number(active.genericErrorRetries || 0),
       unrestrictRetries: Number(active.unrestrictRetries || 0)
     });
+    item.resumeHardResetUsed = Boolean(active.resumeHardResetUsed) || undefined;
     this.logPackageForItem(item, "WARN", "Retry eingeplant", {
       delayMs: waitMs,
       statusText,
@@ -9038,6 +9082,25 @@ export class DownloadManager extends EventEmitter {
     this.retryAfterByItem.set(item.id, nowMs() + waitMs);
     const pkg = this.session.packages[item.packageId];
     if (pkg) this.refreshPackageStatus(pkg);
+  }
+
+  private async applyPendingResumeReset(item: DownloadItem, active: ActiveTask, targetPath: string): Promise<boolean> {
+    const removed = !targetPath || await removeResumePartialForReset(targetPath);
+    if (!removed) {
+      active.resumeHardResetUsed = false;
+      delete item.resumeHardResetUsed;
+      return false;
+    }
+    active.resumeHardResetUsed = true;
+    item.resumeHardResetUsed = true;
+    delete item.resumeResetPending;
+    this.releaseTargetPath(item.id);
+    this.dropItemContribution(item.id);
+    item.downloadedBytes = 0;
+    item.totalBytes = null;
+    item.progressPercent = 0;
+    item.speedBps = 0;
+    return true;
   }
 
   private scheduleHttp416Retry(
@@ -9201,9 +9264,9 @@ export class DownloadManager extends EventEmitter {
 
     const retryState = this.retryStateByItem.get(item.id) || {
       freshRetryUsed: false,
-      resumeHardResetUsed: false,
+      resumeHardResetUsed: Boolean(item.resumeHardResetUsed),
       stallRetries: 0,
-      genericErrorRetries: 0,
+      genericErrorRetries: Math.max(0, Number(item.resumeLinkRenewalFailures || 0)),
       unrestrictRetries: 0
     };
     this.retryStateByItem.set(item.id, retryState);
@@ -9212,6 +9275,19 @@ export class DownloadManager extends EventEmitter {
     active.stallRetries = retryState.stallRetries;
     active.genericErrorRetries = retryState.genericErrorRetries;
     active.unrestrictRetries = retryState.unrestrictRetries;
+    if (item.resumeResetPending) {
+      const resetTargetPath = String(item.targetPath || "").trim();
+      const resetApplied = await this.applyPendingResumeReset(item, active, resetTargetPath);
+      this.queueRetry(
+        item,
+        active,
+        resetApplied ? 300 : 1000,
+        resetApplied ? "Resume-Fehler erkannt, kompletter Neuversuch" : "Warte auf Teildatei-Freigabe"
+      );
+      this.persistSoon();
+      this.emitState();
+      return;
+    }
     const configuredRetryLimit = normalizeRetryLimit(this.settings.retryLimit);
     const retryDisplayLimit = retryLimitLabel(configuredRetryLimit);
     const maxItemRetries = retryLimitToMaxRetries(configuredRetryLimit);
@@ -9291,29 +9367,32 @@ export class DownloadManager extends EventEmitter {
         const unrestrictedSignal = AbortSignal.any([active.abortController.signal, unrestrictTimeoutSignal]);
         let unrestricted;
         try {
-          unrestricted = await runWithConversionTrace(
-            {
-              itemId: item.id,
-              itemName: item.fileName || item.id,
-              link: item.url,
-              providerOrder: (this.settings.providerOrder || []).join(",") || String(this.getExpectedProviderForItem(item) || "?")
-            },
-            async () => {
-              traceConversionNote("slots", this.describeSlotOccupancy());
-              traceConversionNote("retry", Number(active.unrestrictRetries || 0));
-              try {
-                return await this.debridService.unrestrictLink(item.url, unrestrictedSignal, undefined, preferredLeadProvider);
-              } catch (innerError) {
-                if (!active.abortController.signal.aborted && unrestrictTimeoutSignal.aborted) {
-                  traceConversionPhase({
-                    phase: "caller-timeout",
-                    outcome: "timeout",
-                    detail: `Caller-Budget ${Math.ceil(unrestrictTimeoutMs / 1000)}s erschoepft (siehe letzte Phase fuer in-flight Provider/Account)`
-                  });
+          unrestricted = await runWithRotationItemSink(
+            (event) => this.logRotationEventForItem(item, event),
+            () => runWithConversionTrace(
+              {
+                itemId: item.id,
+                itemName: item.fileName || item.id,
+                link: item.url,
+                providerOrder: (this.settings.providerOrder || []).join(",") || String(this.getExpectedProviderForItem(item) || "?")
+              },
+              async () => {
+                traceConversionNote("slots", this.describeSlotOccupancy());
+                traceConversionNote("retry", Number(active.unrestrictRetries || 0));
+                try {
+                  return await this.debridService.unrestrictLink(item.url, unrestrictedSignal, undefined, preferredLeadProvider);
+                } catch (innerError) {
+                  if (!active.abortController.signal.aborted && unrestrictTimeoutSignal.aborted) {
+                    traceConversionPhase({
+                      phase: "caller-timeout",
+                      outcome: "timeout",
+                      detail: `Caller-Budget ${Math.ceil(unrestrictTimeoutMs / 1000)}s erschoepft (siehe letzte Phase fuer in-flight Provider/Account)`
+                    });
+                  }
+                  throw innerError;
                 }
-                throw innerError;
               }
-            }
+            )
           );
         } catch (unrestrictError) {
           if (!active.abortController.signal.aborted && unrestrictTimeoutSignal.aborted) {
@@ -9519,6 +9598,7 @@ export class DownloadManager extends EventEmitter {
 
         const completedAt = nowMs();
         item.status = "completed";
+        clearResumeRecoveryState(item);
         item.fullStatus = this.settings.autoExtract
           ? "Entpacken - Ausstehend"
           : `Fertig (${humanSize(item.downloadedBytes)})`;
@@ -9779,23 +9859,18 @@ export class DownloadManager extends EventEmitter {
               return;
             }
             if (isResumeHardResetReason(exhaustedReason, active.genericErrorRetries) && !active.resumeHardResetUsed) {
-              active.resumeHardResetUsed = true;
               item.retries += 1;
               logger.warn(`Resume-Neustart: item=${item.fileName || item.id}, error=${exhaustedReason}, provider=${item.provider || "?"}`);
               const resetTargetPath = claimedTargetPath || String(item.targetPath || "").trim();
-              if (resetTargetPath) {
-                try {
-                  fs.rmSync(resetTargetPath, { force: true });
-                } catch {
-                }
-              }
-              this.releaseTargetPath(item.id);
-              this.dropItemContribution(item.id);
+              item.resumeResetPending = true;
               item.lastError = exhaustedReason;
-              item.downloadedBytes = 0;
-              item.totalBytes = null;
-              item.progressPercent = 0;
-              this.queueRetry(item, active, 300, "Resume-Fehler erkannt, kompletter Neuversuch");
+              const resetApplied = await this.applyPendingResumeReset(item, active, resetTargetPath);
+              this.queueRetry(
+                item,
+                active,
+                resetApplied ? 300 : 1000,
+                resetApplied ? "Resume-Fehler erkannt, kompletter Neuversuch" : "Warte auf Teildatei-Freigabe"
+              );
               this.persistSoon();
               this.emitState();
               return;
@@ -9805,6 +9880,9 @@ export class DownloadManager extends EventEmitter {
             active.genericErrorRetries += 1;
             item.retries += 1;
             const exhaustedReason = compactErrorText(directLinkRetryMatch[1] || errorText).replace(/^Error:\s*/i, "");
+            if (isResumeHardResetReason(exhaustedReason, 1)) {
+              item.resumeLinkRenewalFailures = active.genericErrorRetries;
+            }
             const refreshDelayMs = retryDelayWithJitter(active.genericErrorRetries, 200);
             logger.warn(
               `Direktlink erschöpft: item=${item.fileName || item.id}, ` +
@@ -11267,6 +11345,7 @@ export class DownloadManager extends EventEmitter {
 
   private queueItemForRetry(item: DownloadItem, options: { hardReset: boolean; reason: string }): void {
     this.retryStateByItem.delete(item.id);
+    clearResumeRecoveryState(item);
     const targetPath = String(item.targetPath || "").trim();
     if (options.hardReset && targetPath) {
       try {
@@ -12214,6 +12293,7 @@ export class DownloadManager extends EventEmitter {
           }
           logger.info(`Item-Recovery: ${item.fileName} war "${item.status}" aber Datei existiert (${humanSize(stat.size)}), setze auf completed`);
           item.status = "completed";
+          clearResumeRecoveryState(item);
           item.fullStatus = this.settings.autoExtract ? "Entpacken - Ausstehend" : `Fertig (${humanSize(stat.size)})`;
           item.downloadedBytes = stat.size;
           item.progressPercent = 100;

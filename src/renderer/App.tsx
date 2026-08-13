@@ -872,7 +872,7 @@ const AUTO_RENDER_PACKAGE_LIMIT = 260;
 export function getSnapshotRenderDelay(itemCount: number, running: boolean, activeTab: MainView): number {
   let delay = running ? 500 : itemCount >= 700 ? 100 : itemCount >= 250 ? 150 : 200;
   if (!running) delay = Math.min(delay, 200);
-  if (activeTab !== "downloads") delay = Math.max(delay, 800);
+  if (!running && activeTab !== "downloads") delay = Math.max(delay, 800);
   return delay;
 }
 
@@ -1292,10 +1292,9 @@ const BandwidthChart = memo(function BandwidthChart({ running, paused, speedHist
     if (!running || paused) {
       return;
     }
-    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const interval = setInterval(() => {
       drawChart();
-    }, reducedMotion ? 1000 : 500);
+    }, 500);
     return () => clearInterval(interval);
   }, [drawChart, running, paused]);
 
@@ -4726,8 +4725,21 @@ export function App(): ReactElement {
     },
     onStartDownloads: () => {
       if (snapshot.session.paused) {
-        setSnapshot((current) => ({ ...current, session: { ...current.session, paused: false } }));
-        void window.rd.togglePause().catch(() => {});
+        void (async () => {
+          try {
+            await window.rd.togglePause();
+          } catch (error) {
+            showToast(`Fortsetzen fehlgeschlagen: ${String(error)}`, 3200);
+          } finally {
+            try {
+              const fresh = await window.rd.getSnapshot();
+              masterSnapshotRef.current = fresh;
+              latestStateRef.current = null;
+              setSnapshot(fresh);
+            } catch {
+            }
+          }
+        })();
       } else {
         void onStartDownloads();
       }

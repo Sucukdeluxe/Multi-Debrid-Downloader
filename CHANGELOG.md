@@ -2,6 +2,24 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.30] - 2026-08-13
+
+### Rotation diagnostics
+
+- Recorded every real account conversion attempt in the affected file log, including masked TEST, FAILED, timeout, fallback, and successful outcome events.
+- Kept timeout-cooldown attempts visible as failures in the live rotation diagnostics without changing their technical event type.
+- Removed historical and current account masks, short credentials, URLs, and local paths from generated support bundles.
+
+### Download recovery
+
+- Persisted resumed-link recovery state across application restarts so repeated range rejection advances to one clean full download instead of restarting the same retry cycle.
+- Retried transient Windows file locks before discarding a partial download and prevented a new request until the old partial file is confirmed removed.
+- Reconciled Pause and Resume controls with the authoritative main-process snapshot after success, rejection, or a missing state event.
+
+### Live interface cadence
+
+- Limited large running queues and the live bandwidth chart to the same stable 500 ms refresh cadence used by the other active download telemetry.
+
 ## [2.0.29] - 2026-08-13
 
 ### Account and rotation reliability

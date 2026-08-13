@@ -47,11 +47,26 @@ describe("rotation item-sink (AsyncLocalStorage)", () => {
     expect(b.map((e) => e.event)).toEqual(["TEST", "FAILED"]);
   });
 
-  it("still feeds the global UI ring (outcomes only, TEST filtered)", () => {
+  it("feeds the global UI ring with TEST and outcome events", () => {
     logAccountRotation("INFO", "Mega-Debrid API", "Account 9 (zz)", "TEST");
     logAccountRotation("INFO", "Mega-Debrid API", "Account 9 (zz)", "OK", { fileName: "ring.mkv" });
     const ring = getRecentRotationEvents(10);
     expect(ring.some((e) => e.event === "OK" && e.accountLabel === "Account 9 (zz)")).toBe(true);
-    expect(ring.some((e) => e.event === "TEST" && e.accountLabel === "Account 9 (zz)")).toBe(false);
+    expect(ring.some((e) => e.event === "TEST" && e.accountLabel === "Account 9 (zz)")).toBe(true);
+  });
+
+  it("marks TIMEOUT_COOLDOWN as a failed attempt in the global UI ring without changing its event type", () => {
+    logAccountRotation("WARN", "Mega-Debrid Web", "Account 10 (xy)", "TIMEOUT_COOLDOWN", {
+      reason: "aborted:debrid",
+      cooldownSec: 30,
+      next: "Account 11 (yz)"
+    });
+
+    const event = getRecentRotationEvents(10).find((entry) => entry.accountLabel === "Account 10 (xy)");
+
+    expect(event).toMatchObject({
+      event: "TIMEOUT_COOLDOWN",
+      reason: "Versuch fehlgeschlagen: aborted:debrid"
+    });
   });
 });

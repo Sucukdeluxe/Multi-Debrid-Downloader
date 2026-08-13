@@ -762,6 +762,8 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
     const providerRaw = asText(item.provider) as DebridProvider;
 
     const onlineStatusRaw = asText(item.onlineStatus);
+    const lastError = asText(item.lastError);
+    const legacyResumeFailureCount = /^(?:range_ignored_on_resume:|range_mismatch_on_resume:|resume_download_underflow:)/i.test(lastError) ? 1 : 0;
 
     itemsById[id] = {
       id,
@@ -781,8 +783,11 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
       targetPath: asText(item.targetPath),
       resumable: item.resumable === undefined ? true : Boolean(item.resumable),
       attempts: clampNumber(item.attempts, 0, 0, 10_000),
-      lastError: asText(item.lastError),
+      lastError,
       fullStatus: asText(item.fullStatus),
+      resumeLinkRenewalFailures: clampNumber(item.resumeLinkRenewalFailures, legacyResumeFailureCount, 0, 1_000_000) || undefined,
+      resumeHardResetUsed: Boolean(item.resumeHardResetUsed) || undefined,
+      resumeResetPending: Boolean(item.resumeResetPending) || undefined,
       onlineStatus: VALID_ONLINE_STATUSES.has(onlineStatusRaw) ? onlineStatusRaw as "online" | "offline" | "checking" : undefined,
       createdAt: clampNumber(item.createdAt, now, 0, Number.MAX_SAFE_INTEGER),
       updatedAt: clampNumber(item.updatedAt, now, 0, Number.MAX_SAFE_INTEGER)

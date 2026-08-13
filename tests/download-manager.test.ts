@@ -18,6 +18,7 @@ import { createStoragePaths, emptySession, loadSession, saveSession } from "../s
 import { getMegaDebridAccountCooldownState, primeDebridLinkRuntimeCooldownForTests, resetDebridLinkRuntimeStateForTests, primeMegaDebridRuntimeCooldownForTests, resetMegaDebridRuntimeStateForTests, primeMegaDebridInFlightForTests } from "../src/main/debrid";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import { getRenameLogPath, initRenameLog, shutdownRenameLog } from "../src/main/rename-log";
+import { logAccountRotation } from "../src/main/account-rotation-log";
 import { UnrestrictedLink } from "../src/main/realdebrid";
 import { resetVideoToolingCache } from "../src/main/video-processor";
 import type { AppSettings, DebridProvider, HistoryEntry, PackageEntry } from "../src/shared/types";
@@ -813,6 +814,61 @@ afterEach(async () => {
 });
 
 describe("download manager", () => {
+  it("writes the real unrestrict account trail into the active item log", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-rotation-item-log-"));
+    tempDirs.push(root);
+    const stateDir = path.join(root, "state");
+    initItemLogs(stateDir);
+    const session = emptySession();
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false,
+        retryLimit: 0
+      },
+      session,
+      createStoragePaths(stateDir)
+    );
+    manager.addPackages([{ name: "rotation-proof", links: ["https://rapidgator.net/file/rotation-proof"] }]);
+    const packageId = session.packageOrder[0];
+    const itemId = session.packages[packageId].itemIds[0];
+    const active = {
+      itemId,
+      packageId,
+      abortController: new AbortController(),
+      abortReason: "none",
+      resumable: true,
+      nonResumableCounted: false,
+      blockedOnDiskWrite: false,
+      blockedOnDiskSince: 0
+    };
+    (manager as any).activeTasks.set(itemId, active);
+    (manager as any).debridService.unrestrictLink = async () => {
+      logAccountRotation("INFO", "Mega-Debrid Web", "Account 1/3 (al***ha)", "TEST");
+      logAccountRotation("WARN", "Mega-Debrid Web", "Account 1/3 (al***ha)", "FAILED", { reason: "aborted" });
+      logAccountRotation("INFO", "Mega-Debrid Web", "Account 2/3 (be***ta)", "TEST");
+      logAccountRotation("INFO", "Mega-Debrid Web", "Account 2/3 (be***ta)", "OK");
+      throw new Error("rotation-proof-stop");
+    };
+
+    await (manager as any).processItem(active);
+    const itemLogPath = getItemLogPath(itemId);
+    expect(itemLogPath).not.toBeNull();
+    shutdownItemLogs();
+    const content = fs.readFileSync(itemLogPath!, "utf8");
+    const firstTest = content.indexOf("Account 1/3 (al***ha)");
+    const firstFailure = content.indexOf("event=FAILED");
+    const secondTest = content.indexOf("Account 2/3 (be***ta)");
+    const secondSuccess = content.indexOf("event=OK");
+    expect(firstTest).toBeGreaterThanOrEqual(0);
+    expect(firstFailure).toBeGreaterThan(firstTest);
+    expect(secondTest).toBeGreaterThan(firstFailure);
+    expect(secondSuccess).toBeGreaterThan(secondTest);
+  });
+
   it("stores RapidGator metadata before a download starts", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
@@ -2772,7 +2828,7 @@ describe("download manager", () => {
     }
   });
 
-  it("restores a persisted Mega-Web partial and hard-resets after two HTTP 200 range rejections", async () => {
+  it("restores a persisted Mega-Web resume failure and retries transient cleanup before the fresh restart", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-mega-resume-restore-"));
     tempDirs.push(root);
     const binary = Buffer.alloc(192 * 1024, 37);
@@ -2784,6 +2840,17 @@ describe("download manager", () => {
     fs.mkdirSync(outputDir, { recursive: true });
     fs.writeFileSync(targetPath, binary.subarray(0, partialSize));
     const rangeHeaders: string[] = [];
+    const originalRmSync = fs.rmSync;
+    let targetRemovalAttempts = 0;
+    const rmSpy = vi.spyOn(fs, "rmSync").mockImplementation(((candidate, options) => {
+      if (path.resolve(String(candidate)) === path.resolve(targetPath)) {
+        targetRemovalAttempts += 1;
+        if (targetRemovalAttempts === 1) {
+          throw Object.assign(new Error("target busy"), { code: "EBUSY" });
+        }
+      }
+      return originalRmSync(candidate, options);
+    }) as typeof fs.rmSync);
 
     const server = http.createServer((req, res) => {
       if (req.method === "GET") {
@@ -2887,14 +2954,15 @@ describe("download manager", () => {
         downloadedBytes: binary.length,
         onlineStatus: "online"
       }));
-      expect(megaWebUnrestrict).toHaveBeenCalledTimes(3);
+      expect(megaWebUnrestrict).toHaveBeenCalledTimes(2);
       expect(rangeHeaders).toEqual([
-        `bytes=${partialSize}-`,
         `bytes=${partialSize}-`,
         ""
       ]);
+      expect(targetRemovalAttempts).toBeGreaterThanOrEqual(2);
       expect(fs.readFileSync(targetPath)).toEqual(binary);
     } finally {
+      rmSpy.mockRestore();
       server.close();
       await once(server, "close");
     }
@@ -13682,6 +13750,38 @@ describe("download manager", () => {
     const packageLogsDir = path.join(stateDir, "package-logs");
     const pkgLogFiles = fs.readdirSync(packageLogsDir).filter((f) => f.startsWith("package_") && f.endsWith(".txt"));
     expect(pkgLogFiles.length).toBe(60);
+  });
+
+  it("emits running large-queue state updates within 500 ms", async () => {
+    vi.useFakeTimers();
+    try {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-state-cadence-"));
+      tempDirs.push(root);
+      const manager = new DownloadManager(
+        defaultSettings(),
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+      const internal = manager as unknown as {
+        session: { running: boolean };
+        itemCount: number;
+        emitState: () => void;
+      };
+      internal.session.running = true;
+      internal.itemCount = 1_500;
+      let emitted = 0;
+      manager.on("state", () => {
+        emitted += 1;
+      });
+
+      internal.emitState();
+      await vi.advanceTimersByTimeAsync(499);
+      expect(emitted).toBe(0);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(emitted).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("serializes parallel auto-rename invocations for the same package (no Ziel existiert / ENOENT race)", async () => {

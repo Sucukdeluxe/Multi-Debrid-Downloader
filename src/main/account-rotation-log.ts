@@ -28,10 +28,6 @@ export function getRecentRotationEvents(limit = ROTATION_EVENT_RING_MAX): Rotati
   return slice;
 }
 
-function isUiRelevantRotationEvent(event: string): boolean {
-  return event !== "TEST";
-}
-
 function pushRotationEvent(
   level: RotationLevel,
   provider: string,
@@ -62,16 +58,16 @@ function pushRotationEvent(
     }
   }
 
-  if (!isUiRelevantRotationEvent(event)) {
-    return;
-  }
-  rotationEventRing.push(entry);
+  const uiEntry = event === "TIMEOUT_COOLDOWN"
+    ? { ...entry, reason: entry.reason ? `Versuch fehlgeschlagen: ${entry.reason}` : "Versuch fehlgeschlagen" }
+    : entry;
+  rotationEventRing.push(uiEntry);
   if (rotationEventRing.length > ROTATION_EVENT_RING_MAX) {
     rotationEventRing.splice(0, rotationEventRing.length - ROTATION_EVENT_RING_MAX);
   }
   if (rotationEventListener) {
     try {
-      rotationEventListener(entry);
+      rotationEventListener(uiEntry);
     } catch {
     }
   }

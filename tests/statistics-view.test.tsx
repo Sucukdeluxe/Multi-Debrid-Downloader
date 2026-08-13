@@ -475,14 +475,14 @@ describe("bandwidth chart palette", () => {
     expect(palette).toEqual({ accent: "rgb(74, 222, 128)" });
   });
 
-  it("labels the live chart and slows redraws when reduced motion is requested", () => {
+  it("labels the live chart and keeps live redraws at 500 ms", () => {
     const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
     const chartBlock = source.slice(source.indexOf("const BandwidthChart"), source.indexOf("interface DownloadSpeedSparklineProps"));
 
     expect(chartBlock).toContain('role="img"');
     expect(chartBlock).toContain('aria-label="Bandbreitenverlauf der letzten 60 Sekunden"');
-    expect(chartBlock).toContain('window.matchMedia("(prefers-reduced-motion: reduce)")');
-    expect(chartBlock).toContain("reducedMotion ? 1000 : 500");
+    expect(chartBlock).toContain("}, 500);");
+    expect(chartBlock).not.toContain("reducedMotion ? 1000 : 500");
   });
 
   it("asks for confirmation before deleting all saved download statistics", () => {
