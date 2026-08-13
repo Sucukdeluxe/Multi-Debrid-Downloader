@@ -30,7 +30,11 @@ function validateJsonValue(value: unknown, depth = 0): void {
   }
   const entries = Object.entries(value as Record<string, unknown>);
   if (entries.length > 10_000) invalid();
-  entries.forEach(([, entry]) => validateJsonValue(entry, depth + 1));
+  entries.forEach(([, entry]) => {
+    if (entry !== undefined) {
+      validateJsonValue(entry, depth + 1);
+    }
+  });
 }
 
 function validateTopLevelType(value: unknown, expected: unknown): void {

@@ -2,6 +2,18 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.35] - 2026-08-13
+
+### Settings reliability
+
+- Accepted omitted optional values inside nested account status records when saving a complete settings draft.
+- Prevented valid Debrid-Link and Mega-Debrid account states from triggering an invalid settings payload after account checks or provider changes.
+
+### Release validation
+
+- Added a full renderer-settings regression fixture with a checked Debrid-Link account and an omitted optional e-mail field.
+- Verified account toggle sequencing, renderer settings validation, and the packaged main-process build.
+
 ## [2.0.34] - 2026-08-13
 
 ### Account recovery and rotation
