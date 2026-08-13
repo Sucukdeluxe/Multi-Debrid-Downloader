@@ -22,6 +22,7 @@ import { validateRendererSettingsUpdate } from "./renderer-settings";
 import { applyMainWindowSecurity, createMainWindowWebPreferences, MAIN_WINDOW_EXTERNAL_HOSTS, openAllowedExternalUrl } from "./browser-security";
 import { assertTrustedIpcSender, type TrustedIpcOptions } from "./ipc-security";
 import { createSupportBundleExportRunner, writeSupportBundleAtomically } from "./support-bundle";
+import { writeClipboardTextFromIpc } from "./clipboard-ipc";
 
 function validateString(value: unknown, name: string): string {
   if (typeof value !== "string") {
@@ -612,13 +613,9 @@ function registerIpcHandlers(): void {
     updateClipboardWatcher();
     return next;
   });
-  handleTrusted(IPC_CHANNELS.WRITE_CLIPBOARD_TEXT, (_event: IpcMainInvokeEvent, text: unknown) => {
-    if (typeof text !== "string" || text.length > 16 * 1024 * 1024) {
-      throw new Error("Ungültiger Zwischenablageinhalt");
-    }
-    clipboard.writeText(text);
-    return true;
-  });
+  ipcMain.handle(IPC_CHANNELS.WRITE_CLIPBOARD_TEXT, (event, text: unknown) => (
+    writeClipboardTextFromIpc(event, text, getTrustedIpcOptions())
+  ));
   handleTrusted(IPC_CHANNELS.PICK_FOLDER, async () => {
     const options = {
       properties: ["openDirectory", "createDirectory"] as Array<"openDirectory" | "createDirectory">
@@ -684,10 +681,10 @@ function registerIpcHandlers(): void {
       const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
       return result.canceled || !result.filePath ? null : result.filePath;
     },
+    onStart: () => controller.recordSupportBundleExportSelected(),
     build: async () => (await controller.exportSupportBundle()).buffer,
     write: writeSupportBundleAtomically,
-    onSuccess: ({ filePath, bytes }) => controller.recordSupportBundleExported(filePath, bytes),
-    onFailure: (error) => controller.recordSupportBundleExportFailed(error)
+    onLifecycle: (event) => controller.recordSupportBundleExportLifecycle(event)
   });
 
   handleTrusted(IPC_CHANNELS.EXPORT_SUPPORT_BUNDLE, () => runSupportBundleExport());

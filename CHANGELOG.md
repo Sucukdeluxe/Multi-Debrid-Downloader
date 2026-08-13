@@ -2,6 +2,31 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.31] - 2026-08-13
+
+### Account rotation and lifecycle
+
+- Applied active account and Debrid-Link key changes to running queues without requiring an application restart.
+- Isolated every provider attempt with its own cancellation and timeout boundary so a stalled account cannot block the next enabled account.
+- Preserved explicit Pause and Stop ownership while account settings, resets, or provider operations are changing concurrently.
+- Prevented late provider failures from surfacing as unhandled process rejections after an operation was already canceled.
+
+### Download recovery and queue state
+
+- Persisted bounded HTTP 416 recovery state and clean-restart decisions across application restarts.
+- Kept locked partial files pending until Windows confirms removal instead of starting a conflicting replacement request.
+- Reconciled resets with the authoritative queue snapshot and preserved known availability information.
+- Stabilized package ordering while active items start, finish, reset, or refresh in the background.
+- Coalesced all running state updates, including forced refreshes, into the shared 500 ms interface cadence.
+
+### Support diagnostics
+
+- Correlated account rotation, link conversion, download recovery, disk waiting, Pause, Stop, Reset, and export events with anonymous attempt identifiers.
+- Added bounded disk-wait entry and resolution history to support bundles.
+- Recorded support bundle selection, cancellation, build, write, success, and failure phases without storing destination paths or filenames.
+- Added native clipboard operation diagnostics with byte counts and errors while never recording copied content.
+- Redacted credentials, account identities, URLs, hostnames, local paths, package names, and filenames at every persistent log boundary and again when building the support archive.
+
 ## [2.0.30] - 2026-08-13
 
 ### Rotation diagnostics

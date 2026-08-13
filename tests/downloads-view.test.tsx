@@ -48,7 +48,7 @@ import {
   formatHosterLabel,
   normalizeDownloadServiceLabel
 } from "../src/renderer/download-format";
-import { getRollingMetricDirection } from "../src/renderer/ui/RollingMetricValue";
+import { getRollingMetricDirection, shouldAnimateRollingMetric } from "../src/renderer/ui/RollingMetricValue";
 
 const now = new Date(2026, 7, 10, 12, 0, 0, 0).getTime();
 
@@ -96,6 +96,13 @@ describe("rollende Downloadkennzahlen", () => {
     expect(getRollingMetricDirection(300, 600)).toBe("up");
     expect(getRollingMetricDirection(600, 300)).toBe("down");
     expect(getRollingMetricDirection(300, 300)).toBe("none");
+  });
+
+  it("skips rolling animations when reduced motion is requested", () => {
+    expect(shouldAnimateRollingMetric("up", true)).toBe(false);
+    expect(shouldAnimateRollingMetric("down", true)).toBe(false);
+    expect(shouldAnimateRollingMetric("up", false)).toBe(true);
+    expect(shouldAnimateRollingMetric("none", false)).toBe(false);
   });
 
   it("animates exactly the five stable sidebar metrics", () => {

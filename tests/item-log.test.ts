@@ -64,6 +64,53 @@ describe("item-log", () => {
     expect(content).toContain("code=missing_parts");
   });
 
+  it("redacts secrets, identities, direct links and local paths from item logs", async () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-ilog-"));
+    tempDirs.push(baseDir);
+
+    initItemLogs(baseDir);
+    ensureItemLog({
+      itemId: "item-sensitive",
+      packageId: "pkg-sensitive",
+      packageName: "Sensitive Paket",
+      fileName: "episode.part2.rar",
+      targetPath: "C:\\Users\\Administrator\\Downloads\\Sensitive Paket\\episode.part2.rar"
+    });
+
+    logItemEvent(
+      "item-sensitive",
+      "ERROR",
+      "Download https://ddownload.com/private/file.rar?auth=url-secret für user@example.net nach /mnt/downloads/file.rar fehlgeschlagen",
+      {
+        downloadUrl: "https://ddownload.com/private/file.rar?auth=url-secret",
+        password: "password-secret-value",
+        metadata: {
+          cookies: "sid=cookie-secret-value",
+          username: "user@example.net",
+          localPath: "\\\\server\\share\\file.rar"
+        }
+      }
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 350));
+
+    const logPath = getItemLogPath("item-sensitive");
+    expect(logPath).not.toBeNull();
+    const content = fs.readFileSync(logPath!, "utf8");
+    expect(content).toMatch(/ddownload\.com#[a-f0-9]{10}/);
+    expect(content).toContain("<redacted>");
+    expect(content).toContain("<redacted-account>");
+    expect(content).toContain("<redacted-path>");
+    expect(content).not.toContain("/private/file.rar");
+    expect(content).not.toContain("url-secret");
+    expect(content).not.toContain("password-secret-value");
+    expect(content).not.toContain("cookie-secret-value");
+    expect(content).not.toContain("user@example.net");
+    expect(content).not.toContain("C:\\Users\\Administrator");
+    expect(content).not.toContain("/mnt/downloads");
+    expect(content).not.toContain("\\\\server\\share");
+  });
+
   it("keeps traversal-like item ids inside the item log directory", () => {
     const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-ilog-"));
     tempDirs.push(baseDir);

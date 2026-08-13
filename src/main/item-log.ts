@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { logTimestamp } from "./log-timestamp";
 import path from "node:path";
 import crypto from "node:crypto";
+import { sanitizeDiagnosticFields, sanitizeDiagnosticText } from "./diagnostic-sanitizer";
 
 const ITEM_LOG_FLUSH_INTERVAL_MS = 200;
 const ITEM_LOG_RETENTION_DAYS = 30;
@@ -54,10 +55,11 @@ function sanitizeFieldValue(value: unknown): string {
 }
 
 function formatFields(fields?: Record<string, unknown>): string {
-  if (!fields) {
+  const safeFields = sanitizeDiagnosticFields(fields);
+  if (!safeFields) {
     return "";
   }
-  const parts = Object.entries(fields)
+  const parts = Object.entries(safeFields)
     .filter(([, value]) => value !== undefined && value !== null && sanitizeFieldValue(value) !== "")
     .map(([key, value]) => `${key}=${sanitizeFieldValue(value)}`);
   return parts.length > 0 ? ` | ${parts.join(" | ")}` : "";
@@ -165,9 +167,14 @@ export function ensureItemLog(meta: ItemLogMeta): string | null {
     if (!initializedThisProcess.has(normalizedItemId)) {
       initializedThisProcess.add(normalizedItemId);
       const startedAt = logTimestamp();
+      const headerFields = sanitizeDiagnosticFields({
+        itemId: String(meta.itemId || ""),
+        logKey: normalizedItemId,
+        fileName: meta.fileName
+      }) || {};
       fs.appendFileSync(
         logPath,
-        `=== Item-Log Start: ${startedAt} | itemId=${sanitizeFieldValue(String(meta.itemId || ""))} | logKey=${normalizedItemId} | fileName=${sanitizeFieldValue(meta.fileName)} ===\n`,
+        `=== Item-Log Start: ${startedAt} | itemId=${sanitizeFieldValue(headerFields.itemId)} | logKey=${sanitizeFieldValue(headerFields.logKey)} | fileName=${sanitizeFieldValue(headerFields.fileName)} ===\n`,
         "utf8"
       );
       fs.appendFileSync(
@@ -197,7 +204,7 @@ export function logItemEvent(
   if (!logPath) {
     return;
   }
-  const line = `${logTimestamp()} [${level}] ${message}${formatFields(fields)}\n`;
+  const line = `${logTimestamp()} [${level}] ${sanitizeDiagnosticText(message)}${formatFields(fields)}\n`;
   appendLine(itemId, line);
 }
 
@@ -209,12 +216,16 @@ export function getItemLogPath(itemId: string): string | null {
   return fs.existsSync(logPath) ? logPath : null;
 }
 
-export function shutdownItemLogs(): void {
+export function flushItemLogs(): void {
   if (flushTimer) {
     clearTimeout(flushTimer);
     flushTimer = null;
   }
   flushPending();
+}
+
+export function shutdownItemLogs(): void {
+  flushItemLogs();
   for (const itemId of knownLogPaths.keys()) {
     const logPath = getItemLogFilePathFromNormalized(itemId);
     if (!logPath) {

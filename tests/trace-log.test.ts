@@ -52,6 +52,34 @@ describe("trace-log", () => {
     expect(JSON.parse(fs.readFileSync(traceConfigPath!, "utf8")).enabled).toBe(true);
   });
 
+  it("redacts sensitive messages and fields before writing the trace log", async () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-tlog-redaction-"));
+    tempDirs.push(baseDir);
+
+    configureLogger(baseDir);
+    initTraceLog(baseDir);
+    setTraceEnabled(true, "redaction-test");
+    logTraceEvent("WARN", "download", "Failed https://rapidgator.net/file/private at C:\\Users\\Admin\\Desktop\\private.rar", {
+      directUrl: "https://cdn.example/private?token=secret",
+      targetPath: "C:\\Users\\Admin\\Desktop\\private.rar",
+      email: "user@example.com",
+      password: "hunter2"
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 350));
+
+    const content = fs.readFileSync(getTraceLogPath()!, "utf8");
+    expect(content).toContain("rapidgator.net#");
+    expect(content).toContain("cdn.example#");
+    expect(content).toContain("<redacted-path>");
+    expect(content).toContain("<redacted-account>");
+    expect(content).toContain("<redacted>");
+    expect(content).not.toContain("/file/private");
+    expect(content).not.toContain("C:\\Users\\Admin");
+    expect(content).not.toContain("user@example.com");
+    expect(content).not.toContain("hunter2");
+  });
+
   it("auto-disables support trace after the requested duration", async () => {
     const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-tlog-expire-"));
     tempDirs.push(baseDir);

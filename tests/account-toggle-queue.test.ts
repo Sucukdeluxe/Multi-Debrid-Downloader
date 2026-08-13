@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildAccountToggleSettingsUpdate,
   SerialTaskQueue,
   setAccountTargetEnabled,
   type AccountToggleTarget
@@ -47,6 +48,8 @@ describe("account toggle queue", () => {
     let settings = {
       disabledProviders: [],
       debridLinkDisabledKeyIds: [],
+      megaDebridApiEnabled: false,
+      megaDebridWebEnabled: true,
       megaDebridApiDisabledAccountIds: [],
       megaDebridWebDisabledAccountIds: [...accountIds],
       megaDebridDisabledAccountIds: [...accountIds]
@@ -59,5 +62,26 @@ describe("account toggle queue", () => {
 
     expect(settings.megaDebridWebDisabledAccountIds).toEqual([]);
     expect(settings.megaDebridDisabledAccountIds).toEqual([]);
+  });
+
+  it("reactivates a disabled Mega-Debrid mode when one of its accounts is enabled", () => {
+    const settings = {
+      disabledProviders: [],
+      debridLinkDisabledKeyIds: [],
+      megaDebridApiEnabled: false,
+      megaDebridWebEnabled: false,
+      megaDebridApiDisabledAccountIds: ["api-1"],
+      megaDebridWebDisabledAccountIds: ["web-1"],
+      megaDebridDisabledAccountIds: ["api-1", "web-1"]
+    };
+
+    const next = setAccountTargetEnabled(settings, { kind: "mega-web", accountId: "web-1" }, true);
+    const update = buildAccountToggleSettingsUpdate(next);
+
+    expect(next.megaDebridWebEnabled).toBe(true);
+    expect(next.megaDebridApiEnabled).toBe(false);
+    expect(update.megaDebridWebEnabled).toBe(true);
+    expect(update.megaDebridApiEnabled).toBe(false);
+    expect(update.megaDebridWebDisabledAccountIds).toEqual([]);
   });
 });

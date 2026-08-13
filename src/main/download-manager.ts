@@ -440,6 +440,11 @@ function parseContentRange(contentRange: string | null): ParsedContentRange | nu
 }
 
 function parseContentRangeTotal(contentRange: string | null): number | null {
+  const unsatisfiedMatch = contentRange?.match(/^bytes\s+\*\/(\d+)$/i);
+  if (unsatisfiedMatch) {
+    const total = Number(unsatisfiedMatch[1]);
+    return Number.isFinite(total) && total > 0 ? total : null;
+  }
   return parseContentRange(contentRange)?.total ?? null;
 }
 
@@ -871,10 +876,8 @@ function resolveMegaDebridProvider(settings: AppSettings, provider: DebridProvid
   if (provider !== "megadebrid") {
     return provider;
   }
-  const apiEnabled = settings.megaDebridApiEnabled
-    || (settings.megaLogin.trim() && settings.megaPassword.trim() && !settings.megaDebridApiEnabled && !settings.megaDebridWebEnabled && settings.megaDebridPreferApi);
-  const webEnabled = settings.megaDebridWebEnabled
-    || (settings.megaLogin.trim() && settings.megaPassword.trim() && !settings.megaDebridApiEnabled && !settings.megaDebridWebEnabled && !settings.megaDebridPreferApi);
+  const apiEnabled = settings.megaDebridApiEnabled;
+  const webEnabled = settings.megaDebridWebEnabled;
   if (apiEnabled && !webEnabled) {
     return "megadebrid-api";
   }
@@ -1735,10 +1738,13 @@ function retryDelayWithJitter(attempt: number, baseMs: number): number {
   return Math.floor(jitter);
 }
 
-function clearResumeRecoveryState(item: DownloadItem): void {
+function clearResumeRecoveryState(item: DownloadItem, includeHttp416Budget = true): void {
   delete item.resumeLinkRenewalFailures;
   delete item.resumeHardResetUsed;
   delete item.resumeResetPending;
+  if (includeHttp416Budget) {
+    delete item.http416FreshRestarts;
+  }
 }
 
 async function removeResumePartialForReset(targetPath: string): Promise<boolean> {
@@ -1934,6 +1940,40 @@ export class DownloadManager extends EventEmitter {
 
   private diskWaitEvents: NonNullable<UiSnapshot["diskWaitEvents"]> = [];
 
+  private recordDiskWait(
+    event: DiskCapacityError["event"],
+    context: { itemId?: string; packageId?: string } = {}
+  ): void {
+    this.diskWaitEvents.push({
+      ...event,
+      ...context,
+      at: nowMs(),
+      state: "waiting"
+    });
+    if (this.diskWaitEvents.length > 60) {
+      this.diskWaitEvents.splice(0, this.diskWaitEvents.length - 60);
+    }
+  }
+
+  private resolveDiskWait(ownerId: string, phase: "download" | "extract" | "remux"): void {
+    const pending = [...this.diskWaitEvents]
+      .reverse()
+      .find((event) => event.ownerId === ownerId && event.phase === phase && event.state === "waiting");
+    if (!pending) {
+      return;
+    }
+    const resolvedAt = nowMs();
+    this.diskWaitEvents.push({
+      ...pending,
+      at: resolvedAt,
+      state: "resolved",
+      resolvedAt
+    });
+    if (this.diskWaitEvents.length > 60) {
+      this.diskWaitEvents.splice(0, this.diskWaitEvents.length - 60);
+    }
+  }
+
   private diskReservations = new DiskReservationCoordinator();
 
   private diskLeasesByOwner = new Map<string, DiskReservationLease>();
@@ -1946,8 +1986,6 @@ export class DownloadManager extends EventEmitter {
     unrestrictRetries: number;
   }>();
 
-  private http416FreshRestartByItem = new Map<string, number>();
-
   private providerFailures = new Map<string, { count: number; lastFailAt: number; cooldownUntil: number }>();
 
   private allDebridHostInfoCache = new Map<string, { info: AllDebridHostInfo; cachedAt: number }>();
@@ -1958,6 +1996,10 @@ export class DownloadManager extends EventEmitter {
   private lastStaleResetAt = 0;
 
   private onHistoryEntryCallback?: HistoryEntryCallback;
+
+  private startupRecoveryPromise: Promise<number>;
+
+  private pausedForMissingAccount = false;
 
   public constructor(settings: AppSettings, session: SessionState, storagePaths: StoragePaths, options: DownloadManagerOptions = {}) {
     super();
@@ -1996,7 +2038,10 @@ export class DownloadManager extends EventEmitter {
     this.restoreTargetPathReservations();
     this.resolveExistingQueuedOpaqueFilenames();
     this.revalidateCompletedItems();
-    void this.recoverRetryableItems("startup").catch((err) => logger.warn(`recoverRetryableItems Fehler (startup): ${compactErrorText(err)}`));
+    this.startupRecoveryPromise = this.recoverRetryableItems("startup").catch((err) => {
+      logger.warn(`recoverRetryableItems Fehler (startup): ${compactErrorText(err)}`);
+      return 0;
+    });
     this.recoverPostProcessingOnStartup();
     this.checkExistingRapidgatorLinks();
     void this.cleanupExistingExtractedArchives().catch((err) => logger.warn(`cleanupExistingExtractedArchives Fehler (constructor): ${compactErrorText(err)}`));
@@ -2005,13 +2050,17 @@ export class DownloadManager extends EventEmitter {
         return;
       }
       try {
-        this.emitState(true);
+        this.emitState();
       } catch {
       }
     });
   }
 
   private rotationListenerActive = true;
+
+  public waitForStartupRecovery(): Promise<number> {
+    return this.startupRecoveryPromise;
+  }
 
   public getPackageLogPath(packageId: string): string | null {
     const pkg = this.session.packages[packageId];
@@ -2132,12 +2181,15 @@ export class DownloadManager extends EventEmitter {
   private logRotationEventForItem(item: DownloadItem, event: RotationEvent): void {
     this.logItemOnly(item, event.level, "Account-Rotation", {
       provider: event.provider,
-      account: event.accountLabel,
+      accountLabel: event.accountLabel,
       event: event.event,
       reason: event.reason,
       category: event.category,
       cooldownSec: event.cooldownSec,
-      next: event.next
+      next: event.next,
+      attemptId: event.attemptId,
+      itemId: event.itemId,
+      packageId: event.packageId
     });
   }
 
@@ -2279,8 +2331,13 @@ export class DownloadManager extends EventEmitter {
     const previousMegaAccounts = (["api", "web"] as const)
       .flatMap((mode) => getAvailableMegaDebridAccounts(previous, mode).map((account) => ({ mode, account })));
     const previousMegaPoolEntries = new Map<string, string>(previousMegaAccounts.map(({ mode, account }) => [`${account.id}:${mode}`, account.password]));
+    const previousMegaApiEnabled = previous.megaDebridApiEnabled !== false;
+    const previousMegaWebEnabled = previous.megaDebridWebEnabled !== false;
+    const nextMegaApiEnabled = next.megaDebridApiEnabled !== false;
+    const nextMegaWebEnabled = next.megaDebridWebEnabled !== false;
     const previousMegaPool = [...previousMegaPoolEntries]
       .map(([key, password]) => `${key}:${password}`)
+      .concat(`apiEnabled:${previousMegaApiEnabled}`, `webEnabled:${previousMegaWebEnabled}`)
       .sort()
       .join("\n");
     const nextMegaAccounts = (["api", "web"] as const)
@@ -2289,18 +2346,24 @@ export class DownloadManager extends EventEmitter {
       .flatMap((mode) => getAvailableMegaDebridAccounts(next, mode).map((account) => [`${account.id}:${mode}`, account.password] as const)));
     const nextMegaPool = [...nextMegaPoolEntries]
       .map(([key, password]) => `${key}:${password}`)
+      .concat(`apiEnabled:${nextMegaApiEnabled}`, `webEnabled:${nextMegaWebEnabled}`)
       .sort()
       .join("\n");
     const previousMegaWebPool = getAvailableMegaDebridAccounts(previous, "web")
       .map((account) => `${account.id}:${account.password}`)
+      .concat(`webEnabled:${previousMegaWebEnabled}`)
       .sort()
       .join("\n");
     const nextMegaWebPool = getAvailableMegaDebridAccounts(next, "web")
       .map((account) => `${account.id}:${account.password}`)
+      .concat(`webEnabled:${nextMegaWebEnabled}`)
       .sort()
       .join("\n");
     const megaPoolChanged = previousMegaPool !== nextMegaPool;
     const megaWebPoolChanged = previousMegaWebPool !== nextMegaWebPool;
+    const previousDebridLinkPool = `${previous.debridLinkApiKeys || ""}\n${[...(previous.debridLinkDisabledKeyIds || [])].sort().join(",")}`;
+    const nextDebridLinkPool = `${next.debridLinkApiKeys || ""}\n${[...(next.debridLinkDisabledKeyIds || [])].sort().join(",")}`;
+    const debridLinkPoolChanged = previousDebridLinkPool !== nextDebridLinkPool;
     next.totalDownloadedAllTime = Math.max(next.totalDownloadedAllTime || 0, this.settings.totalDownloadedAllTime || 0);
     next.totalCompletedFilesAllTime = Math.max(next.totalCompletedFilesAllTime || 0, this.settings.totalCompletedFilesAllTime || 0);
     const now = nowMs();
@@ -2343,7 +2406,7 @@ export class DownloadManager extends EventEmitter {
       { prev: previous.token || "", next: next.token || "", providers: ["realdebrid"] },
       { prev: previous.allDebridToken || "", next: next.allDebridToken || "", providers: ["alldebrid"] },
       { prev: previous.bestToken || "", next: next.bestToken || "", providers: ["bestdebrid"] },
-      { prev: previous.debridLinkApiKeys || "", next: next.debridLinkApiKeys || "", providers: ["debridlink"] },
+      { prev: previousDebridLinkPool, next: nextDebridLinkPool, providers: ["debridlink"] },
       { prev: previous.linkSnappyLogin + "|" + previous.linkSnappyPassword, next: next.linkSnappyLogin + "|" + next.linkSnappyPassword, providers: ["linksnappy"] },
       { prev: previous.ddownloadLogin + "|" + previous.ddownloadPassword, next: next.ddownloadLogin + "|" + next.ddownloadPassword, providers: ["ddownload"] },
       {
@@ -2375,6 +2438,16 @@ export class DownloadManager extends EventEmitter {
           changedAccountKeys.add(key);
         }
       }
+      if (previousMegaApiEnabled !== nextMegaApiEnabled) {
+        for (const key of new Set<string>([...previousMegaPoolEntries.keys(), ...nextMegaPoolEntries.keys()])) {
+          if (key.endsWith(":api")) changedAccountKeys.add(key);
+        }
+      }
+      if (previousMegaWebEnabled !== nextMegaWebEnabled) {
+        for (const key of new Set<string>([...previousMegaPoolEntries.keys(), ...nextMegaPoolEntries.keys()])) {
+          if (key.endsWith(":web")) changedAccountKeys.add(key);
+        }
+      }
       clearMegaDebridAccountRuntimeStates(changedAccountKeys);
       for (const key of [...this.providerFailures.keys()]) {
         if (isMegaDebridProviderKey(key)) {
@@ -2392,6 +2465,48 @@ export class DownloadManager extends EventEmitter {
         }
         active.abortReason = "settings_refresh";
         active.abortController.abort("settings_refresh");
+      }
+    }
+
+    if (debridLinkPoolChanged) {
+      for (const active of this.activeTasks.values()) {
+        const item = this.session.items[active.itemId];
+        if (!item || item.status !== "validating") {
+          continue;
+        }
+        const provider = String(item.provider || this.getExpectedProviderForItem(item) || "");
+        if (provider !== "debridlink") {
+          continue;
+        }
+        active.abortReason = "settings_refresh";
+        active.abortController.abort("settings_refresh");
+      }
+    }
+
+    if (!opts?.settingsOnlyImport && this.session.running) {
+      if (!this.hasUsableDownloadAccount()) {
+        if (!this.session.paused) {
+          logger.warn("Download-Queue pausiert: Kein aktiver Download-Account verfügbar");
+          this.pausedForMissingAccount = true;
+          this.session.paused = true;
+          this.speedEvents = [];
+          this.speedBytesLastWindow = 0;
+          this.speedBytesPerPackage.clear();
+          this.speedEventsHead = 0;
+          for (const active of this.activeTasks.values()) {
+            if (active.abortController.signal.aborted) continue;
+            active.abortReason = "pause";
+            active.abortController.abort("pause");
+          }
+        }
+      } else if (this.pausedForMissingAccount) {
+        this.pausedForMissingAccount = false;
+        this.session.paused = false;
+        this.retryAfterByItem.clear();
+        this.providerStartReservations.clear();
+        this.pacedStartReservationByItem.clear();
+        logger.info("Download-Queue fortgesetzt: Aktiver Download-Account wieder verfügbar");
+        void this.ensureScheduler().catch((error) => logger.error(`Scheduler nach Account-Reaktivierung fehlgeschlagen: ${compactErrorText(error)}`));
       }
     }
 
@@ -2643,7 +2758,7 @@ export class DownloadManager extends EventEmitter {
 
   public getStats(now = nowMs()): DownloadStats {
     const itemCount = this.itemCount;
-    if (this.statsCache && this.session.running && itemCount >= 500 && now - this.statsCacheAt < 1500) {
+    if (this.statsCache && this.session.running && itemCount >= 500 && now - this.statsCacheAt < 500) {
       return this.statsCache;
     }
 
@@ -4323,21 +4438,20 @@ export class DownloadManager extends EventEmitter {
       const sourceName = path.basename(sourcePath);
       let result: VideoProcessResult | null = null;
       let remuxLease: DiskReservationLease | null = null;
+      const remuxOwnerId = pkg?.id || sourcePath;
       try {
         try {
           const sourceBytes = (await fs.promises.stat(sourcePath)).size;
           remuxLease = await this.diskReservations.reserve({
             phase: "remux",
-            ownerId: pkg?.id || sourcePath,
+            ownerId: remuxOwnerId,
             targetPath: sourcePath,
             requiredBytes: sourceBytes
           });
+          this.resolveDiskWait(remuxOwnerId, "remux");
         } catch (error) {
           if (error instanceof DiskCapacityError) {
-            this.diskWaitEvents = [{
-              ...error.event,
-              ...(pkg ? { packageId: pkg.id } : {})
-            }];
+            this.recordDiskWait(error.event, pkg ? { packageId: pkg.id } : {});
             result = { action: "skipped-no-space", reason: "zu wenig freier Speicher fuer Remux" };
           } else {
             throw error;
@@ -5452,20 +5566,44 @@ export class DownloadManager extends EventEmitter {
     if (!pkg) return;
 
     const itemIds = [...pkg.itemIds];
+    for (const itemId of itemIds) {
+      const active = this.activeTasks.get(itemId);
+      if (!active) continue;
+      active.abortReason = "reset";
+      active.abortController.abort("reset");
+      if (this.session.items[itemId]?.status === "validating") {
+        this.activeTasks.delete(itemId);
+      }
+    }
+    const postProcessTasks = this.abortPackagePostProcessing(packageId, "reset");
+    if (postProcessTasks.length > 0) {
+      await Promise.allSettled(postProcessTasks);
+    }
+    const blockedItemIds: string[] = [];
 
     for (const itemId of itemIds) {
       const item = this.session.items[itemId];
       if (!item) continue;
 
-      const active = this.activeTasks.get(itemId);
-      if (active) {
-        active.abortReason = "reset";
-        active.abortController.abort("reset");
-      }
-
       const targetPath = String(item.targetPath || "").trim();
+      if (targetPath && fs.existsSync(targetPath)) {
+        const removed = await removeResumePartialForReset(targetPath);
+        if (!removed) {
+          item.status = "queued";
+          item.speedBps = 0;
+          item.resumeResetPending = true;
+          item.lastError = "Teildatei konnte nicht entfernt werden";
+          item.fullStatus = "Warte auf Teildatei-Freigabe";
+          item.updatedAt = nowMs();
+          blockedItemIds.push(itemId);
+          this.logPackageForItem(item, "WARN", "Paket-Reset wartet auf Teildatei-Freigabe", {
+            targetPath,
+            downloadedBytes: item.downloadedBytes
+          });
+          continue;
+        }
+      }
       if (targetPath) {
-        try { fs.rmSync(targetPath, { force: true }); } catch {  }
         this.releaseTargetPath(itemId);
       }
 
@@ -5491,7 +5629,6 @@ export class DownloadManager extends EventEmitter {
       item.updatedAt = nowMs();
     }
 
-    const postProcessTasks = this.abortPackagePostProcessing(packageId, "reset");
     this.runCompletedPackages.delete(packageId);
 
     pkg.status = "queued";
@@ -5518,7 +5655,6 @@ export class DownloadManager extends EventEmitter {
       this.runPackageIds.add(packageId);
     }
 
-    await Promise.allSettled(postProcessTasks);
     if (pkg.outputDir) {
       await Promise.allSettled([
         clearExtractResumeState(pkg.outputDir, packageId),
@@ -5531,26 +5667,60 @@ export class DownloadManager extends EventEmitter {
     if (this.session.running) {
       void this.ensureScheduler().catch((err) => logger.warn(`ensureScheduler Fehler (resetPackage): ${compactErrorText(err)}`));
     }
+    if (blockedItemIds.length > 0) {
+      throw new Error(`${blockedItemIds.length} Teildatei(en) sind noch gesperrt`);
+    }
   }
 
   public async resetItems(itemIds: string[]): Promise<void> {
     const affectedPackageIds = new Set<string>();
     const postProcessTasks = new Set<Promise<void>>();
     for (const itemId of itemIds) {
+      const active = this.activeTasks.get(itemId);
+      if (!active) continue;
+      active.abortReason = "reset";
+      active.abortController.abort("reset");
+      if (this.session.items[itemId]?.status === "validating") {
+        this.activeTasks.delete(itemId);
+      }
+    }
+    for (const itemId of itemIds) {
+      const item = this.session.items[itemId];
+      if (!item) continue;
+      for (const task of this.abortPackagePostProcessing(item.packageId, "reset")) postProcessTasks.add(task);
+    }
+    if (postProcessTasks.size > 0) {
+      await Promise.allSettled([...postProcessTasks]);
+    }
+    const blockedItemIds: string[] = [];
+    for (const itemId of itemIds) {
       const item = this.session.items[itemId];
       if (!item) continue;
 
       affectedPackageIds.add(item.packageId);
 
-      const active = this.activeTasks.get(itemId);
-      if (active) {
-        active.abortReason = "reset";
-        active.abortController.abort("reset");
-      }
-
       const targetPath = String(item.targetPath || "").trim();
+      if (targetPath && fs.existsSync(targetPath)) {
+        const removed = await removeResumePartialForReset(targetPath);
+        if (!removed) {
+          item.status = "queued";
+          item.speedBps = 0;
+          item.resumeResetPending = true;
+          item.lastError = "Teildatei konnte nicht entfernt werden";
+          item.fullStatus = "Warte auf Teildatei-Freigabe";
+          item.updatedAt = nowMs();
+          blockedItemIds.push(itemId);
+          this.logPackageForItem(item, "WARN", "Item-Reset wartet auf Teildatei-Freigabe", {
+            targetPath,
+            downloadedBytes: item.downloadedBytes
+          });
+          if (this.session.running) {
+            this.runItemIds.add(itemId);
+          }
+          continue;
+        }
+      }
       if (targetPath) {
-        try { fs.rmSync(targetPath, { force: true }); } catch {  }
         this.releaseTargetPath(itemId);
       }
 
@@ -5582,7 +5752,6 @@ export class DownloadManager extends EventEmitter {
     }
 
     for (const pkgId of affectedPackageIds) {
-      for (const task of this.abortPackagePostProcessing(pkgId, "reset")) postProcessTasks.add(task);
       this.runCompletedPackages.delete(pkgId);
       this.historyRecordedPackages.delete(pkgId);
       this.notifiedPackages.delete(pkgId);
@@ -5601,7 +5770,6 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
-    await Promise.allSettled([...postProcessTasks]);
     await Promise.allSettled([...affectedPackageIds].flatMap((pkgId) => {
       const pkg = this.session.packages[pkgId];
       return pkg?.outputDir ? [clearExtractResumeState(pkg.outputDir, pkgId)] : [];
@@ -5612,6 +5780,9 @@ export class DownloadManager extends EventEmitter {
     this.emitState(true);
     if (this.session.running) {
       void this.ensureScheduler().catch((err) => logger.warn(`ensureScheduler Fehler (resetItems): ${compactErrorText(err)}`));
+    }
+    if (blockedItemIds.length > 0) {
+      throw new Error(`${blockedItemIds.length} Teildatei(en) sind noch gesperrt`);
     }
   }
 
@@ -5689,6 +5860,7 @@ export class DownloadManager extends EventEmitter {
 
   public async startPackages(packageIds: string[]): Promise<void> {
     this.ensureUsableDownloadAccount();
+    this.pausedForMissingAccount = false;
     const targetSet = new Set(packageIds);
 
     for (const pkgId of targetSet) {
@@ -5784,6 +5956,7 @@ export class DownloadManager extends EventEmitter {
 
   public async startItems(itemIds: string[]): Promise<void> {
     this.ensureUsableDownloadAccount();
+    this.pausedForMissingAccount = false;
     const targetSet = new Set(itemIds);
 
     const affectedPackageIds = new Set<string>();
@@ -5893,6 +6066,7 @@ export class DownloadManager extends EventEmitter {
       return;
     }
     this.ensureUsableDownloadAccount();
+    this.pausedForMissingAccount = false;
     this.schedulerGeneration += 1;
 
     this.session.running = true;
@@ -5997,7 +6171,6 @@ export class DownloadManager extends EventEmitter {
     this.providerStartReservations.clear();
     this.pacedStartReservationByItem.clear();
     this.retryStateByItem.clear();
-    this.http416FreshRestartByItem.clear();
     this.itemContributedBytes.clear();
     this.reservedTargetPaths.clear();
     this.claimedTargetPathByItem.clear();
@@ -6046,6 +6219,7 @@ export class DownloadManager extends EventEmitter {
     this.schedulerGeneration += 1;
     this.session.running = false;
     this.session.paused = false;
+    this.pausedForMissingAccount = false;
     this.session.reconnectUntil = 0;
     this.session.reconnectReason = "";
     this.retryAfterByItem.clear();
@@ -6121,6 +6295,7 @@ export class DownloadManager extends EventEmitter {
     }
     this.session.running = false;
     this.session.paused = false;
+    this.pausedForMissingAccount = false;
     this.session.reconnectUntil = 0;
     this.session.reconnectReason = "";
     this.lastGlobalProgressBytes = this.session.totalDownloadedBytes;
@@ -6544,10 +6719,10 @@ export class DownloadManager extends EventEmitter {
 
   private emitState(force = false): void {
     const now = nowMs();
-    const MIN_FORCE_GAP_MS = 120;
+    const minGapMs = this.session.running ? 500 : 120;
     if (force) {
       const sinceLastEmit = now - this.lastStateEmitAt;
-      if (sinceLastEmit >= MIN_FORCE_GAP_MS) {
+      if (this.lastStateEmitAt === 0 || sinceLastEmit >= minGapMs) {
         if (this.stateEmitTimer) {
           clearTimeout(this.stateEmitTimer);
           this.stateEmitTimer = null;
@@ -6557,29 +6732,19 @@ export class DownloadManager extends EventEmitter {
         return;
       }
       if (this.stateEmitTimer) {
-        clearTimeout(this.stateEmitTimer);
-        this.stateEmitTimer = null;
+        return;
       }
       this.stateEmitTimer = setTimeout(() => {
         this.stateEmitTimer = null;
         this.lastStateEmitAt = nowMs();
         this.emit("state", this.getSnapshotForEmit());
-      }, MIN_FORCE_GAP_MS - sinceLastEmit);
+      }, minGapMs - sinceLastEmit);
       return;
     }
     if (this.stateEmitTimer) {
       return;
     }
-    const itemCount = this.itemCount;
-    const emitDelay = this.session.running
-      ? itemCount >= 1500
-        ? 500
-        : itemCount >= 700
-          ? 500
-          : itemCount >= 250
-            ? 300
-            : 150
-      : 200;
+    const emitDelay = this.session.running ? 500 : 200;
     this.stateEmitTimer = setTimeout(() => {
       this.stateEmitTimer = null;
       this.lastStateEmitAt = nowMs();
@@ -8267,11 +8432,11 @@ export class DownloadManager extends EventEmitter {
     }
     if (effectiveProvider === "megadebrid-api") {
       const hasMegaCreds = getAvailableMegaDebridAccounts(this.settings, "api").length > 0;
-      return Boolean(hasMegaCreds && (resolveMegaDebridProvider(this.settings, "megadebrid") === "megadebrid-api" || this.settings.megaDebridApiEnabled));
+      return Boolean(hasMegaCreds && this.settings.megaDebridApiEnabled);
     }
     if (effectiveProvider === "megadebrid-web") {
       const hasMegaCreds = getAvailableMegaDebridAccounts(this.settings, "web").length > 0;
-      return Boolean(hasMegaCreds && (resolveMegaDebridProvider(this.settings, "megadebrid") === "megadebrid-web" || this.settings.megaDebridWebEnabled));
+      return Boolean(hasMegaCreds && this.settings.megaDebridWebEnabled);
     }
     if (effectiveProvider === "bestdebrid") {
       return Boolean(this.settings.bestDebridUseWebLogin || this.settings.bestToken.trim());
@@ -9103,28 +9268,23 @@ export class DownloadManager extends EventEmitter {
     return true;
   }
 
-  private scheduleHttp416Retry(
+  private async scheduleHttp416Retry(
     item: DownloadItem,
     active: ActiveTask,
     retryDisplayLimit: string,
     errorText: string,
     claimedTargetPath: string
-  ): void {
+  ): Promise<void> {
     active.genericErrorRetries = Number(active.genericErrorRetries || 0) + 1;
     item.retries += 1;
-    if (claimedTargetPath) {
-      try {
-        fs.rmSync(claimedTargetPath, { force: true });
-      } catch {
-      }
-    }
-    this.releaseTargetPath(item.id);
-    this.dropItemContribution(item.id);
     item.lastError = errorText;
-    item.downloadedBytes = 0;
-    item.totalBytes = null;
-    item.progressPercent = 0;
-    item.speedBps = 0;
+    item.resumeResetPending = true;
+    const resetTargetPath = claimedTargetPath || String(item.targetPath || "").trim();
+    const resetApplied = await this.applyPendingResumeReset(item, active, resetTargetPath);
+    if (!resetApplied) {
+      this.queueRetry(item, active, 1000, "Warte auf Teildatei-Freigabe");
+      return;
+    }
     const delayMs = retryDelayWithJitter(active.genericErrorRetries, 200);
     logger.warn(
       `HTTP 416 erkannt: item=${item.fileName || item.id}, ` +
@@ -9133,24 +9293,21 @@ export class DownloadManager extends EventEmitter {
     this.queueRetry(item, active, delayMs, `HTTP 416 erkannt, Retry ${active.genericErrorRetries}/${retryDisplayLimit}`);
   }
 
-  private escalateHttp416OrFail(item: DownloadItem, active: ActiveTask, claimedTargetPath: string, errorText: string): void {
-    const freshRestarts = this.http416FreshRestartByItem.get(item.id) || 0;
+  private async escalateHttp416OrFail(item: DownloadItem, active: ActiveTask, claimedTargetPath: string, errorText: string): Promise<void> {
+    const freshRestarts = Math.max(0, Number(item.http416FreshRestarts || 0));
     if (freshRestarts < MAX_HTTP416_FRESH_RESTARTS) {
-      this.http416FreshRestartByItem.set(item.id, freshRestarts + 1);
       const resetTargetPath = claimedTargetPath || String(item.targetPath || "").trim();
-      if (resetTargetPath) {
-        try {
-          fs.rmSync(resetTargetPath, { force: true });
-        } catch {
-        }
+      item.resumeResetPending = true;
+      item.lastError = errorText;
+      const resetApplied = await this.applyPendingResumeReset(item, active, resetTargetPath);
+      if (!resetApplied) {
+        this.queueRetry(item, active, 1000, "Warte auf Teildatei-Freigabe");
+        this.persistSoon();
+        this.emitState();
+        return;
       }
-      this.releaseTargetPath(item.id);
-      this.dropItemContribution(item.id);
+      item.http416FreshRestarts = freshRestarts + 1;
       item.retries += 1;
-      item.downloadedBytes = 0;
-      item.totalBytes = null;
-      item.progressPercent = 0;
-      item.speedBps = 0;
       item.lastError = "";
       active.genericErrorRetries = 0;
       active.freshRetryUsed = false;
@@ -9164,7 +9321,7 @@ export class DownloadManager extends EventEmitter {
       this.emitState();
       return;
     }
-    this.http416FreshRestartByItem.delete(item.id);
+    delete item.http416FreshRestarts;
     item.status = "failed";
     this.recordRunOutcome(item.id, "failed");
     item.lastError = errorText;
@@ -9241,6 +9398,9 @@ export class DownloadManager extends EventEmitter {
     void this.processItem(active).catch((err) => {
       logger.warn(`processItem unbehandelt (${itemId}): ${compactErrorText(err)}`);
     }).finally(() => {
+      if (this.activeTasks.get(itemId) !== active) {
+        return;
+      }
       this.diskLeasesByOwner.get(itemId)?.release();
       this.diskLeasesByOwner.delete(itemId);
       if (!this.retryAfterByItem.has(item.id)) {
@@ -9366,12 +9526,15 @@ export class DownloadManager extends EventEmitter {
         const unrestrictTimeoutSignal = AbortSignal.timeout(unrestrictTimeoutMs);
         const unrestrictedSignal = AbortSignal.any([active.abortController.signal, unrestrictTimeoutSignal]);
         let unrestricted;
+        const conversionAttemptId = uuidv4();
         try {
           unrestricted = await runWithRotationItemSink(
             (event) => this.logRotationEventForItem(item, event),
             () => runWithConversionTrace(
               {
                 itemId: item.id,
+                packageId: item.packageId,
+                attemptId: conversionAttemptId,
                 itemName: item.fileName || item.id,
                 link: item.url,
                 providerOrder: (this.settings.providerOrder || []).join(",") || String(this.getExpectedProviderForItem(item) || "?")
@@ -9392,7 +9555,12 @@ export class DownloadManager extends EventEmitter {
                   throw innerError;
                 }
               }
-            )
+            ),
+            {
+              attemptId: conversionAttemptId,
+              itemId: item.id,
+              packageId: item.packageId
+            }
           );
         } catch (unrestrictError) {
           if (!active.abortController.signal.aborted && unrestrictTimeoutSignal.aborted) {
@@ -9451,13 +9619,10 @@ export class DownloadManager extends EventEmitter {
           });
           this.diskLeasesByOwner.get(item.id)?.release();
           this.diskLeasesByOwner.set(item.id, diskLease);
+          this.resolveDiskWait(item.id, "download");
         } catch (error) {
           if (error instanceof DiskCapacityError) {
-            this.diskWaitEvents = [{
-              ...error.event,
-              itemId: item.id,
-              packageId: pkg.id
-            }];
+            this.recordDiskWait(error.event, { itemId: item.id, packageId: pkg.id });
             this.releaseTargetPath(item.id);
             this.queueRetry(item, active, Math.max(1000, error.event.retryAt - nowMs()), "Warte auf Festplatte");
             this.persistSoon();
@@ -9473,14 +9638,14 @@ export class DownloadManager extends EventEmitter {
         this.emitState();
         logger.info(`Download Start: ${item.fileName} (${humanSize(unrestricted.fileSize || 0)}) via ${pLabel}, pkg=${pkg.name}`);
         this.logPackageForItem(item, "INFO", "Link umgewandelt", {
+          conversionAttemptId,
           provider: unrestricted.provider,
           providerLabel: unrestricted.providerLabel || "",
-          accountId: unrestricted.sourceAccountId || "",
           accountLabel: unrestricted.sourceAccountLabel || "",
           sizeBytes: unrestricted.fileSize,
           targetPath: item.targetPath,
           directHost,
-          directUrl: unrestricted.directUrl,
+          directLink: unrestricted.directUrl,
           resumableHint: unrestricted.retriesUsed >= 0
         });
 
@@ -9644,6 +9809,9 @@ export class DownloadManager extends EventEmitter {
           return;
         }
         const reason = active.abortReason;
+        if (reason === "reset" && this.activeTasks.get(item.id) !== active) {
+          return;
+        }
         const claimedTargetPath = this.claimedTargetPathByItem.get(item.id) || "";
         if (reason === "cancel") {
           this.logPackageForItem(item, "WARN", "Download abgebrochen durch Entfernen", {
@@ -9680,6 +9848,12 @@ export class DownloadManager extends EventEmitter {
           }
           this.retryStateByItem.delete(item.id);
         } else if (reason === "pause") {
+          this.logPackageForItem(item, "WARN", "Download pausiert", {
+            reason,
+            downloadedBytes: item.downloadedBytes,
+            totalBytes: item.totalBytes,
+            progressPercent: item.progressPercent
+          });
           item.status = "queued";
           item.speedBps = 0;
           item.fullStatus = "Pausiert";
@@ -9715,6 +9889,12 @@ export class DownloadManager extends EventEmitter {
             unrestrictRetries: Number(active.unrestrictRetries || 0)
           });
         } else if (reason === "reset") {
+          this.logPackageForItem(item, "WARN", "Download für Reset beendet", {
+            reason,
+            downloadedBytes: item.downloadedBytes,
+            totalBytes: item.totalBytes,
+            progressPercent: item.progressPercent
+          });
           this.retryStateByItem.delete(item.id);
         } else if (reason === "settings_refresh") {
           item.status = "queued";
@@ -9850,12 +10030,12 @@ export class DownloadManager extends EventEmitter {
             }
             if (isHttp416Text(exhaustedReason)) {
               if (active.genericErrorRetries < maxHttp416Retries) {
-                this.scheduleHttp416Retry(item, active, retryDisplayLimit, exhaustedReason, claimedTargetPath);
+                await this.scheduleHttp416Retry(item, active, retryDisplayLimit, exhaustedReason, claimedTargetPath);
                 this.persistSoon();
                 this.emitState();
                 return;
               }
-              this.escalateHttp416OrFail(item, active, claimedTargetPath, exhaustedReason);
+              await this.escalateHttp416OrFail(item, active, claimedTargetPath, exhaustedReason);
               return;
             }
             if (isResumeHardResetReason(exhaustedReason, active.genericErrorRetries) && !active.resumeHardResetUsed) {
@@ -9905,12 +10085,12 @@ export class DownloadManager extends EventEmitter {
           const isHttp416 = isHttp416Text(errorText);
           if (isHttp416) {
             if (active.genericErrorRetries < maxHttp416Retries) {
-              this.scheduleHttp416Retry(item, active, retryDisplayLimit, errorText, claimedTargetPath);
+              await this.scheduleHttp416Retry(item, active, retryDisplayLimit, errorText, claimedTargetPath);
               this.persistSoon();
               this.emitState();
               return;
             }
-            this.escalateHttp416OrFail(item, active, claimedTargetPath, errorText);
+            await this.escalateHttp416OrFail(item, active, claimedTargetPath, errorText);
             return;
           }
           if (shouldFreshRetry) {
@@ -10381,9 +10561,19 @@ export class DownloadManager extends EventEmitter {
             });
           }
 
-          try {
-            await fs.promises.rm(effectiveTargetPath, { force: true });
-          } catch {
+          const partialRemoved = await removeResumePartialForReset(effectiveTargetPath);
+          if (!partialRemoved) {
+            item.resumeResetPending = true;
+            item.lastError = "HTTP 416";
+            item.fullStatus = "Warte auf Teildatei-Freigabe";
+            item.speedBps = 0;
+            item.updatedAt = nowMs();
+            logAttemptEvent("WARN", "HTTP 416 Vollreset wartet auf Teildatei-Freigabe", {
+              attempt,
+              existingBytes,
+              expectedTotal: expectedTotal || null
+            });
+            throw new Error("disk_write_wait:Teildatei-Freigabe ausstehend");
           }
           this.dropItemContribution(active.itemId);
           item.downloadedBytes = 0;
@@ -10626,6 +10816,31 @@ export class DownloadManager extends EventEmitter {
           start: preAllocated ? 0 : undefined,
           highWaterMark: STREAM_HIGH_WATER_MARK
         });
+        let streamFailure: Error | null = null;
+        let resolveStreamFailure: ((error: Error) => void) | null = null;
+        const streamFailureSignal = new Promise<Error>((resolve) => {
+          resolveStreamFailure = resolve;
+        });
+        const onStreamFailure = (error: Error): void => {
+          if (streamFailure) {
+            return;
+          }
+          streamFailure = error;
+          resolveStreamFailure?.(error);
+        };
+        const throwStreamFailure = (): void => {
+          if (streamFailure) {
+            throw streamFailure;
+          }
+        };
+        const raceStreamFailure = async <T>(operation: Promise<T>): Promise<T> => {
+          throwStreamFailure();
+          return Promise.race([
+            operation,
+            streamFailureSignal.then((error) => Promise.reject(error))
+          ]);
+        };
+        stream.on("error", onStreamFailure);
         written = writeMode === "a" ? existingBytes : 0;
         let windowBytes = 0;
         let windowStarted = nowMs();
@@ -10734,6 +10949,7 @@ export class DownloadManager extends EventEmitter {
 
         const alignedFlush = async (final = false): Promise<void> => {
           if (writeBufPos === 0) return;
+          throwStreamFailure();
           let toWrite = writeBufPos;
           if (!final && toWrite > ALLOCATION_UNIT_SIZE) {
             toWrite = toWrite - (toWrite % ALLOCATION_UNIT_SIZE);
@@ -10742,6 +10958,7 @@ export class DownloadManager extends EventEmitter {
           if (!stream.write(slice)) {
             await waitDrain();
           }
+          throwStreamFailure();
           if (toWrite < writeBufPos) {
             writeBuf.copy(writeBuf, 0, toWrite, writeBufPos);
           }
@@ -10838,7 +11055,7 @@ export class DownloadManager extends EventEmitter {
 
           try {
             while (true) {
-              const { done, value } = await readWithTimeout();
+              const { done, value } = await raceStreamFailure(readWithTimeout());
               if (done) {
                 break;
               }
@@ -10996,6 +11213,7 @@ export class DownloadManager extends EventEmitter {
         } finally {
           try {
             await alignedFlush(true);
+            throwStreamFailure();
           } catch (flushError) {
             if (!bodyError) {
               bodyError = flushError;
@@ -11003,6 +11221,10 @@ export class DownloadManager extends EventEmitter {
           }
           try {
             await new Promise<void>((resolve, reject) => {
+              if (streamFailure) {
+                reject(streamFailure);
+                return;
+              }
               if (stream.closed || stream.destroyed) {
                 resolve();
                 return;
@@ -11023,17 +11245,46 @@ export class DownloadManager extends EventEmitter {
               stream.once("error", onError);
               stream.end();
             });
+            throwStreamFailure();
           } catch (streamCloseError) {
             if (!stream.destroyed) {
               stream.destroy();
             }
             if (!bodyError) {
-              throw streamCloseError;
+              bodyError = streamCloseError;
+            } else {
+              logger.warn(`Stream-Abschlussfehler unterdrückt: ${compactErrorText(streamCloseError)}`);
             }
-            logger.warn(`Stream-Abschlussfehler unterdrückt: ${compactErrorText(streamCloseError)}`);
           }
           if (!stream.destroyed) {
             stream.destroy();
+          }
+          if (streamFailure) {
+            let durableWritten = (writeMode === "a" ? existingBytes : 0) + Math.max(0, Number(stream.bytesWritten || 0));
+            if (preAllocated) {
+              try {
+                await fs.promises.truncate(effectiveTargetPath, durableWritten);
+              } catch {
+                if (await removeResumePartialForReset(effectiveTargetPath)) {
+                  durableWritten = 0;
+                } else {
+                  item.resumeResetPending = true;
+                }
+              }
+            }
+            const overcount = Math.max(0, written - durableWritten);
+            if (overcount > 0) {
+              this.session.totalDownloadedBytes = Math.max(0, this.session.totalDownloadedBytes - overcount);
+              this.sessionDownloadedBytes = Math.max(0, this.sessionDownloadedBytes - overcount);
+              this.settings.totalDownloadedAllTime = Math.max(0, Number(this.settings.totalDownloadedAllTime || 0) - overcount);
+              this.recordProviderDownloadedBytes(item.provider, -overcount, item.providerAccountId);
+              this.itemContributedBytes.set(active.itemId, Math.max(0, (this.itemContributedBytes.get(active.itemId) || 0) - overcount));
+              written = durableWritten;
+              item.downloadedBytes = durableWritten;
+              item.progressPercent = item.totalBytes
+                ? Math.max(0, Math.min(99, Math.floor((durableWritten / item.totalBytes) * 100)))
+                : 0;
+            }
           }
           if (!bodyError && preAllocated) {
             try {
@@ -11046,8 +11297,10 @@ export class DownloadManager extends EventEmitter {
             } catch {  }
           }
           if (bodyError) {
+            stream.off("error", onStreamFailure);
             throw bodyError;
           }
+          stream.off("error", onStreamFailure);
         }
 
         try {
@@ -11345,12 +11598,27 @@ export class DownloadManager extends EventEmitter {
 
   private queueItemForRetry(item: DownloadItem, options: { hardReset: boolean; reason: string }): void {
     this.retryStateByItem.delete(item.id);
-    clearResumeRecoveryState(item);
     const targetPath = String(item.targetPath || "").trim();
     if (options.hardReset && targetPath) {
+      let removalErrorCode = "";
       try {
         fs.rmSync(targetPath, { force: true });
-      } catch {
+      } catch (error) {
+        removalErrorCode = String((error as NodeJS.ErrnoException)?.code || "unknown");
+      }
+      if (fs.existsSync(targetPath)) {
+        item.resumeResetPending = true;
+        item.status = "queued";
+        item.speedBps = 0;
+        item.attempts = 0;
+        item.resumable = true;
+        item.fullStatus = "Warte auf Teildatei-Freigabe";
+        item.updatedAt = nowMs();
+        this.logPackageForItem(item, "WARN", "Vollreset wartet auf Teildatei-Freigabe", {
+          reason: options.reason,
+          errorCode: removalErrorCode || "still_exists"
+        });
+        return;
       }
       this.releaseTargetPath(item.id);
       item.downloadedBytes = 0;
@@ -11358,6 +11626,8 @@ export class DownloadManager extends EventEmitter {
       item.progressPercent = 0;
       this.dropItemContribution(item.id);
     }
+
+    clearResumeRecoveryState(item, false);
 
     item.status = "queued";
     item.speedBps = 0;
@@ -12474,9 +12744,10 @@ export class DownloadManager extends EventEmitter {
             requiredBytes: archiveSizes.every((size) => size === null) ? null : archiveSizes.reduce<number>((total, size) => total + Math.max(0, size || 0), 0)
           });
           diskLease.release();
+          this.resolveDiskWait(packageId, "extract");
         } catch (error) {
           if (error instanceof DiskCapacityError) {
-            this.diskWaitEvents = [{ ...error.event, packageId }];
+            this.recordDiskWait(error.event, { packageId });
             const retryAt = error.event.retryAt;
             this.packageDiskRetryAfterByPackage.set(packageId, retryAt);
             for (const entry of completedItems) {

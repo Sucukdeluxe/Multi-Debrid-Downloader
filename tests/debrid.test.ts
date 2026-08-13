@@ -4,7 +4,7 @@ import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
 import { isMegaDebridTransientResolveFailure } from "../src/shared/mega-debrid-errors";
-import { checkRapidgatorOnline, classifyMegaDebridAccountFailureForTests, clearMegaDebridEmptyResponseStreak, DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, getDebridLinkKeyCooldownStateForTests, getDebridLinkKeyRuntimeStateForTests, getMegaDebridAccountCooldownState, getProviderRuntimeSnapshot, leadProviderChainWith, MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART, MEGA_DEBRID_STICKY_LINKS, normalizeResolvedFilename, parseRapidgatorFileSize, primeMegaDebridRuntimeCooldownForTests, primeMegaDebridUntilRestartForTests, recordMegaDebridEmptyResponseStreak, resetDebridLinkRuntimeStateForTests, resetMegaDebridRuntimeStateForTests } from "../src/main/debrid";
+import { checkRapidgatorOnline, classifyMegaDebridAccountFailureForTests, clearMegaDebridEmptyResponseStreak, DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, getDebridLinkKeyCooldownStateForTests, getDebridLinkKeyRuntimeStateForTests, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getProviderRuntimeSnapshot, leadProviderChainWith, MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART, MEGA_DEBRID_STICKY_LINKS, normalizeResolvedFilename, parseRapidgatorFileSize, primeDebridLinkRuntimeCooldownForTests, primeMegaDebridRuntimeCooldownForTests, primeMegaDebridUntilRestartForTests, recordMegaDebridEmptyResponseStreak, resetDebridLinkRuntimeStateForTests, resetMegaDebridRuntimeStateForTests } from "../src/main/debrid";
 
 const originalFetch = globalThis.fetch;
 
@@ -369,6 +369,21 @@ describe("debrid service", () => {
     expect(result.provider).toBe("debridlink");
     expect(result.providerLabel).toContain("Key 2");
     expect(result.directUrl).toBe("https://debrid-link.example/valid.bin");
+  });
+
+  it("clears Debrid-Link runtime cooldown when a key is reactivated live", () => {
+    const keys = parseDebridLinkApiKeys("dl-key-one\ndl-key-two");
+    const settings = {
+      ...defaultSettings(),
+      debridLinkApiKeys: "dl-key-one\ndl-key-two",
+      debridLinkDisabledKeyIds: [keys[0].id]
+    };
+    primeDebridLinkRuntimeCooldownForTests(keys[0].id, 60_000, "stale cooldown");
+    const service = new DebridService(settings);
+
+    service.setSettings({ ...settings, debridLinkDisabledKeyIds: [] });
+
+    expect(getDebridLinkKeyCooldownStateForTests(keys[0].id)).toBeNull();
   });
 
   it("looks up limits and rotates keys when Debrid-Link host quota is reached", async () => {
@@ -1366,6 +1381,121 @@ describe("debrid service", () => {
     await expect(service.unrestrictLink("https://rapidgator.net/file/missing-mega-web")).rejects.toThrow(/nicht konfiguriert/i);
   });
 
+  it("keeps dedicated Mega-Debrid pools disabled when both explicit mode flags are false", async () => {
+    const fetchSpy = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("action=connectUser")) {
+        return new Response(JSON.stringify({ response_code: "ok", token: "disabled-api-token" }), { status: 200 });
+      }
+      if (url.includes("action=getLink")) {
+        return new Response(JSON.stringify({
+          response_code: "ok",
+          debridLink: "https://mega-cdn.example/disabled-api.rar",
+          filename: "disabled-api.rar"
+        }), { status: 200 });
+      }
+      return new Response("not-found", { status: 404 });
+    });
+    globalThis.fetch = fetchSpy as typeof fetch;
+    const megaWeb = vi.fn(async () => ({
+      fileName: "disabled-web.rar",
+      directUrl: "https://mega-web.example/disabled-web.rar",
+      fileSize: null,
+      retriesUsed: 0
+    }));
+
+    for (const preferApi of [true, false]) {
+      const settings = {
+        ...defaultSettings(),
+        megaLogin: "legacy-user",
+        megaPassword: "legacy-pass",
+        megaCredentials: "legacy-user:legacy-pass\napi-user:api-pass\nweb-user:web-pass",
+        megaDebridApiCredentials: "api-user:api-pass",
+        megaDebridWebCredentials: "web-user:web-pass",
+        megaDebridApiEnabled: false,
+        megaDebridWebEnabled: false,
+        megaDebridPreferApi: preferApi,
+        providerOrder: [] as const,
+        providerPrimary: "megadebrid" as const,
+        providerSecondary: "none" as const,
+        providerTertiary: "none" as const,
+        autoProviderFallback: false
+      };
+      const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
+      await expect(service.unrestrictLink(`https://rapidgator.net/file/dedicated-disabled-${preferApi}`)).rejects.toThrow(/nicht konfiguriert/i);
+    }
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(megaWeb).not.toHaveBeenCalled();
+  });
+
+  it("keeps the preferred API fallback for legacy Mega-Debrid settings without dedicated pool fields", async () => {
+    const settings = {
+      ...defaultSettings(),
+      megaLogin: "legacy-api-user",
+      megaPassword: "legacy-api-pass",
+      megaCredentials: "legacy-api-user:legacy-api-pass",
+      megaDebridApiEnabled: false,
+      megaDebridWebEnabled: false,
+      megaDebridPreferApi: true,
+      providerOrder: [] as const,
+      providerPrimary: "megadebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+    delete (settings as Partial<typeof settings>).megaDebridApiCredentials;
+    delete (settings as Partial<typeof settings>).megaDebridWebCredentials;
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("action=connectUser")) {
+        return new Response(JSON.stringify({ response_code: "ok", token: "legacy-api-token" }), { status: 200 });
+      }
+      if (url.includes("action=getLink")) {
+        return new Response(JSON.stringify({
+          response_code: "ok",
+          debridLink: "https://mega-cdn.example/legacy-api.rar",
+          filename: "legacy-api.rar"
+        }), { status: 200 });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    const result = await service.unrestrictLink("https://rapidgator.net/file/legacy-api");
+    expect(result.directUrl).toBe("https://mega-cdn.example/legacy-api.rar");
+  });
+
+  it("keeps the preferred Web fallback for legacy Mega-Debrid settings without dedicated pool fields", async () => {
+    const settings = {
+      ...defaultSettings(),
+      megaLogin: "legacy-web-user",
+      megaPassword: "legacy-web-pass",
+      megaCredentials: "legacy-web-user:legacy-web-pass",
+      megaDebridApiEnabled: false,
+      megaDebridWebEnabled: false,
+      megaDebridPreferApi: false,
+      providerOrder: [] as const,
+      providerPrimary: "megadebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+    delete (settings as Partial<typeof settings>).megaDebridApiCredentials;
+    delete (settings as Partial<typeof settings>).megaDebridWebCredentials;
+    const megaWeb = vi.fn(async () => ({
+      fileName: "legacy-web.rar",
+      directUrl: "https://mega-web.example/legacy-web.rar",
+      fileSize: null,
+      retriesUsed: 0
+    }));
+
+    const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
+    const result = await service.unrestrictLink("https://rapidgator.net/file/legacy-web");
+    expect(result.directUrl).toBe("https://mega-web.example/legacy-web.rar");
+    expect(megaWeb).toHaveBeenCalledTimes(1);
+  });
+
   it("uses Mega web fallback when API fails", async () => {
     const settings = {
       ...defaultSettings(),
@@ -1522,6 +1652,201 @@ describe("debrid service", () => {
       releaseConnect();
       await Promise.all([firstOutcome, secondOutcome]);
     }
+  });
+
+  it("releases Mega-Debrid Web in-flight state when the provider ignores caller abort", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      megaCredentials: "ignored-web-user:ignored-web-pass",
+      megaDebridApiCredentials: "",
+      megaDebridWebCredentials: "ignored-web-user:ignored-web-pass",
+      megaDebridApiEnabled: false,
+      megaDebridWebEnabled: true,
+      providerOrder: [] as const,
+      providerPrimary: "megadebrid-web" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+    let markProviderStarted: () => void = () => {};
+    const providerStarted = new Promise<void>((resolve) => {
+      markProviderStarted = resolve;
+    });
+    let rejectProvider: (reason?: unknown) => void = () => {};
+    const ignoredProviderPromise = new Promise<never>((_resolve, reject) => {
+      rejectProvider = reject;
+    });
+    const megaWeb = vi.fn(() => {
+      markProviderStarted();
+      return ignoredProviderPromise;
+    });
+    const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
+    const controller = new AbortController();
+    const request = service.unrestrictLink("https://rapidgator.net/file/ignored-web-abort", controller.signal);
+    const outcome = request.then(
+      () => ({ status: "fulfilled" as const, error: null }),
+      (error: unknown) => ({ status: "rejected" as const, error })
+    );
+    await providerStarted;
+    expect(getMegaDebridInFlightCountForMode("web")).toBe(1);
+
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      controller.abort("settings_refresh");
+      const settled = await Promise.race([
+        outcome,
+        new Promise<null>((resolve) => {
+          timeout = setTimeout(() => resolve(null), 100);
+        })
+      ]);
+      expect(settled).not.toBeNull();
+      expect(settled?.status).toBe("rejected");
+      expect(String(settled?.error)).toMatch(/aborted/i);
+      expect(getMegaDebridInFlightCountForMode("web")).toBe(0);
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+      rejectProvider(new Error("late Mega-Web provider failure"));
+      await outcome;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(getMegaDebridInFlightCountForMode("web")).toBe(0);
+  });
+
+  it("releases Mega-Debrid Web in-flight state when the provider ignores the account timeout", async () => {
+    process.env.RD_MEGA_ACCOUNT_ATTEMPT_TIMEOUT_MS = "20";
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      megaCredentials: "ignored-timeout-user:ignored-timeout-pass",
+      megaDebridApiCredentials: "",
+      megaDebridWebCredentials: "ignored-timeout-user:ignored-timeout-pass",
+      megaDebridApiEnabled: false,
+      megaDebridWebEnabled: true,
+      providerOrder: [] as const,
+      providerPrimary: "megadebrid-web" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+    let markProviderStarted: () => void = () => {};
+    const providerStarted = new Promise<void>((resolve) => {
+      markProviderStarted = resolve;
+    });
+    let rejectProvider: (reason?: unknown) => void = () => {};
+    const ignoredProviderPromise = new Promise<never>((_resolve, reject) => {
+      rejectProvider = reject;
+    });
+    const megaWeb = vi.fn(() => {
+      markProviderStarted();
+      return ignoredProviderPromise;
+    });
+    const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
+    const request = service.unrestrictLink("https://rapidgator.net/file/ignored-web-timeout");
+    const outcome = request.then(
+      () => ({ status: "fulfilled" as const, error: null }),
+      (error: unknown) => ({ status: "rejected" as const, error })
+    );
+    await providerStarted;
+    expect(getMegaDebridInFlightCountForMode("web")).toBe(1);
+
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const settled = await Promise.race([
+        outcome,
+        new Promise<null>((resolve) => {
+          timeout = setTimeout(() => resolve(null), 200);
+        })
+      ]);
+      expect(settled).not.toBeNull();
+      expect(settled?.status).toBe("rejected");
+      expect(String(settled?.error)).toMatch(/mega_debrid_slow_link|aborted/i);
+      expect(getMegaDebridInFlightCountForMode("web")).toBe(0);
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+      rejectProvider(new Error("late Mega-Web timeout failure"));
+      await outcome;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(getMegaDebridInFlightCountForMode("web")).toBe(0);
+  });
+
+  it("releases Mega-Debrid API in-flight state when getLink ignores caller abort", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      megaCredentials: "ignored-api-user:ignored-api-pass",
+      megaDebridApiCredentials: "ignored-api-user:ignored-api-pass",
+      megaDebridWebCredentials: "",
+      megaDebridApiEnabled: true,
+      megaDebridWebEnabled: false,
+      providerOrder: [] as const,
+      providerPrimary: "megadebrid-api" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+    let markGetLinkStarted: () => void = () => {};
+    const getLinkStarted = new Promise<void>((resolve) => {
+      markGetLinkStarted = resolve;
+    });
+    let rejectGetLink: (reason?: unknown) => void = () => {};
+    const ignoredGetLinkPromise = new Promise<Response>((_resolve, reject) => {
+      rejectGetLink = reject;
+    });
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("action=connectUser")) {
+        return new Response(JSON.stringify({ response_code: "ok", token: "ignored-api-token" }), { status: 200 });
+      }
+      if (url.includes("action=getLink")) {
+        markGetLinkStarted();
+        return ignoredGetLinkPromise;
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+    const service = new DebridService(settings);
+    const controller = new AbortController();
+    const request = service.unrestrictLink("https://rapidgator.net/file/ignored-api-abort", controller.signal);
+    const outcome = request.then(
+      () => ({ status: "fulfilled" as const, error: null }),
+      (error: unknown) => ({ status: "rejected" as const, error })
+    );
+    await getLinkStarted;
+    expect(getMegaDebridInFlightCountForMode("api")).toBe(1);
+
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      controller.abort("reset");
+      const settled = await Promise.race([
+        outcome,
+        new Promise<null>((resolve) => {
+          timeout = setTimeout(() => resolve(null), 100);
+        })
+      ]);
+      expect(settled).not.toBeNull();
+      expect(settled?.status).toBe("rejected");
+      expect(String(settled?.error)).toMatch(/aborted/i);
+      expect(getMegaDebridInFlightCountForMode("api")).toBe(0);
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+      rejectGetLink(new Error("late Mega-Debrid API provider failure"));
+      await outcome;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(getMegaDebridInFlightCountForMode("api")).toBe(0);
   });
 
   it("does not cache a stale Mega-Debrid API token after credentials change during connect", async () => {
@@ -2349,6 +2674,88 @@ describe("debrid service", () => {
 
     const genuineEmpty = classifyMegaDebridAccountFailureForTests(new Error("Antwort leer"));
     expect(genuineEmpty.limitSignal).toBe(true);
+  });
+
+  it("sanitizes provider-supplied account failures before they leave Mega-Debrid rotation", async () => {
+    const login = "private-user@example.test";
+    const password = "provider-password-secret";
+    const sourceUrl = "https://source-user:source-pass@files.example.test/private/file.rar?token=query-secret";
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      megaLogin: login,
+      megaPassword: password,
+      megaCredentials: `${login}:${password}`,
+      megaDebridApiCredentials: "",
+      megaDebridWebCredentials: `${login}:${password}`,
+      megaDebridApiEnabled: false,
+      megaDebridWebEnabled: true,
+      megaDebridPreferApi: false,
+      providerOrder: [] as const,
+      providerPrimary: "megadebrid-web" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+    const megaWeb = vi.fn(async () => {
+      throw new Error(`Incorrect password for ${login} login=${login} password=${password} source=${sourceUrl}`);
+    });
+    const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
+
+    const error = await service.unrestrictLink("https://rapidgator.net/file/provider-error").then(() => null, (caught: unknown) => caught as Error);
+    const message = String(error?.message || error || "");
+    const cooldown = getMegaDebridAccountCooldownState(`${getMegaDebridAccountId(login)}:web`);
+    expect(message).toContain("ungueltiger Account");
+    expect(message).toContain("Account 1/1");
+    expect(message).toMatch(/files\.example\.test#[a-f0-9]{10}/);
+    expect(cooldown?.category).toBe("invalid");
+    for (const sensitive of [login, password, "source-user", "source-pass", "query-secret", sourceUrl]) {
+      expect(message).not.toContain(sensitive);
+      expect(cooldown?.message || "").not.toContain(sensitive);
+    }
+    expect(message).not.toContain("*");
+  });
+
+  it("sanitizes provider-supplied API key failures before they leave Debrid-Link rotation", async () => {
+    const apiKey = "provider-debrid-link-secret";
+    const sourceUrl = "https://source-user:source-pass@files.example.test/private/file.rar?token=query-secret";
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      debridLinkApiKeys: apiKey,
+      providerOrder: [] as const,
+      providerPrimary: "debridlink" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      success: false,
+      error: "badToken",
+      error_description: `Rejected api_key=${apiKey} source=${sourceUrl}`
+    }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" }
+    })) as typeof fetch;
+    const service = new DebridService(settings);
+
+    const error = await service.unrestrictLink("https://rapidgator.net/file/provider-key-error").then(() => null, (caught: unknown) => caught as Error);
+    const message = String(error?.message || error || "");
+    const keyId = parseDebridLinkApiKeys(apiKey)[0].id;
+    const cooldown = getDebridLinkKeyCooldownStateForTests(keyId);
+    expect(message).toContain("ungueltiger oder deaktivierter API-Key");
+    expect(message).toContain("Key 1/1");
+    expect(message).toMatch(/files\.example\.test#[a-f0-9]{10}/);
+    expect(getDebridLinkKeyRuntimeStateForTests(keyId)).toBe("invalid");
+    for (const sensitive of [apiKey, "source-user", "source-pass", "query-secret", sourceUrl]) {
+      expect(message).not.toContain(sensitive);
+      expect(cooldown?.message || "").not.toContain(sensitive);
+    }
+    expect(message).not.toContain("*");
   });
 
   it("classifies an empty Mega-Debrid API result ('Linkgenerierung lieferte kein Ergebnis') as a fast transient, not a 30s cooldown", () => {

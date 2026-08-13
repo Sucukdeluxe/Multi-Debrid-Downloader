@@ -9,6 +9,8 @@ export type AccountToggleTarget =
 export interface AccountToggleSettings {
   disabledProviders: DebridProvider[];
   debridLinkDisabledKeyIds: string[];
+  megaDebridApiEnabled: boolean;
+  megaDebridWebEnabled: boolean;
   megaDebridDisabledAccountIds: string[];
   megaDebridApiDisabledAccountIds: string[];
   megaDebridWebDisabledAccountIds: string[];
@@ -45,6 +47,8 @@ export function setAccountTargetEnabled<T extends AccountToggleSettings>(
     : settings.megaDebridWebDisabledAccountIds;
   return {
     ...settings,
+    megaDebridApiEnabled: target.kind === "mega-api" && enabled ? true : settings.megaDebridApiEnabled,
+    megaDebridWebEnabled: target.kind === "mega-web" && enabled ? true : settings.megaDebridWebEnabled,
     megaDebridApiDisabledAccountIds: apiDisabled,
     megaDebridWebDisabledAccountIds: webDisabled,
     megaDebridDisabledAccountIds: [...new Set([...apiDisabled, ...webDisabled])]
@@ -55,6 +59,8 @@ export function buildAccountToggleSettingsUpdate(settings: AccountToggleSettings
   return {
     disabledProviders: settings.disabledProviders,
     debridLinkDisabledKeyIds: settings.debridLinkDisabledKeyIds,
+    megaDebridApiEnabled: settings.megaDebridApiEnabled,
+    megaDebridWebEnabled: settings.megaDebridWebEnabled,
     megaDebridDisabledAccountIds: settings.megaDebridDisabledAccountIds,
     megaDebridApiDisabledAccountIds: settings.megaDebridApiDisabledAccountIds,
     megaDebridWebDisabledAccountIds: settings.megaDebridWebDisabledAccountIds

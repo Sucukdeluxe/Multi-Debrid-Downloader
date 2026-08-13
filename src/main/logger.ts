@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { logTimestamp } from "./log-timestamp";
 import { recordRecentError } from "./error-ring";
 import path from "node:path";
+import { sanitizeDiagnosticText } from "./diagnostic-sanitizer";
 
 export function isDebugFlagEnabled(value: string | undefined): boolean {
   if (!value) {
@@ -33,7 +34,7 @@ let legacyLogListener: LogListener | null = null;
 let pendingLines: string[] = [];
 let pendingChars = 0;
 let flushTimer: NodeJS.Timeout | null = null;
-let flushInFlight = false;
+let flushInFlight: Promise<void> | null = null;
 let exitHookAttached = false;
 
 export function setLogListener(listener: LogListener | null): void {
@@ -69,6 +70,17 @@ export function flushLoggerSync(): void {
     flushTimer = null;
   }
   flushSyncPending();
+}
+
+export async function flushLogger(): Promise<void> {
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+  if (flushInFlight) {
+    await flushInFlight;
+  }
+  flushLoggerSync();
 }
 
 function appendLine(filePath: string, line: string): { ok: boolean; errorText: string } {
@@ -185,17 +197,7 @@ async function rotateIfNeededAsync(filePath: string): Promise<void> {
   }
 }
 
-async function flushAsync(): Promise<void> {
-  if (flushInFlight || pendingLines.length === 0) {
-    return;
-  }
-
-  flushInFlight = true;
-  // Move (not copy) the pending lines out and take ownership. A concurrent write()
-  // during the await below pushes new lines AND can trim the 1MB cap from the FRONT
-  // of pendingLines; the old count-based removal (pendingLines.slice(snapshot.length))
-  // then sliced off the wrong lines and dropped unwritten ones. Resetting the buffer
-  // here means await-time writes queue independently and nothing desyncs.
+async function performAsyncFlush(): Promise<void> {
   const linesSnapshot = pendingLines;
   pendingLines = [];
   pendingChars = 0;
@@ -216,9 +218,6 @@ async function flushAsync(): Promise<void> {
       writeStderr(`LOGGER write failed: ${primary.errorText}\n`);
     }
     if (!wroteAny) {
-      // Write failed: requeue the unwritten lines AHEAD of anything that arrived
-      // during the await (preserve order), then re-apply the buffer cap so a
-      // persistent write failure cannot grow the buffer without bound.
       pendingLines = linesSnapshot.concat(pendingLines);
       pendingChars += chunk.length;
       while (pendingChars > LOG_BUFFER_LIMIT_CHARS && pendingLines.length > 1) {
@@ -230,11 +229,23 @@ async function flushAsync(): Promise<void> {
       }
     }
   } finally {
-    flushInFlight = false;
+    flushInFlight = null;
     if (pendingLines.length > 0) {
       scheduleFlush();
     }
   }
+}
+
+function flushAsync(): Promise<void> {
+  if (flushInFlight) {
+    return flushInFlight;
+  }
+  if (pendingLines.length === 0) {
+    return Promise.resolve();
+  }
+  const operation = performAsyncFlush();
+  flushInFlight = operation;
+  return operation;
 }
 
 function ensureExitHook(): void {
@@ -249,14 +260,15 @@ function ensureExitHook(): void {
 function write(level: "DEBUG" | "INFO" | "WARN" | "ERROR", message: string): void {
   ensureExitHook();
   const ts = logTimestamp();
-  const line = `${ts} [${level}] ${message}\n`;
+  const safeMessage = sanitizeDiagnosticText(message);
+  const line = `${ts} [${level}] ${safeMessage}\n`;
   pendingLines.push(line);
   pendingChars += line.length;
 
   // Single chokepoint: every WARN/ERROR also lands in the in-memory ring so
   // "what failed recently" is answerable even after the file rotates.
   if (level === "ERROR" || level === "WARN") {
-    recordRecentError(level, message, ts);
+    recordRecentError(level, safeMessage, ts);
   }
 
   for (const listener of logListeners) {

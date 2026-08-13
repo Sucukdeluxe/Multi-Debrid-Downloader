@@ -79,6 +79,7 @@ The Downloads workspace is optimized for large queues:
 
 - Manage several accounts or API keys for the same provider.
 - Enable or disable individual accounts without deleting their saved data.
+- Apply account changes to active queues without restarting the application and continue with the next usable account when an attempt fails.
 - Check account status, remaining traffic, username, expiry, and access type.
 - Configure primary, secondary, and tertiary provider fallback.
 - Route individual hosters through a specific provider.
@@ -193,7 +194,9 @@ tests                    Unit and integration tests
 
 Configuration, credentials, queue state, history, and logs are stored locally in Electron's `userData` directory. Secrets are not included in public source or release archives. Provider credentials are only sent to the configured provider endpoints required for account and download operations.
 
-The application can generate support diagnostics and expose an optional authenticated local debug API. Remote access is disabled by default. Do not expose diagnostic endpoints publicly without a firewall, VPN, or reverse proxy, and always use a strong unique token.
+The application can generate a bounded support bundle that correlates account rotation, link conversion, download recovery, disk waiting, queue controls, and export phases with anonymous identifiers. Credentials, copied content, URLs, hostnames, local paths, package names, and filenames are redacted before diagnostic data is persisted and again when the archive is built.
+
+An optional authenticated local debug API is also available. Remote access is disabled by default. Do not expose diagnostic endpoints publicly without a firewall, VPN, or reverse proxy, and always use a strong unique token.
 
 ## Updates and changelog
 

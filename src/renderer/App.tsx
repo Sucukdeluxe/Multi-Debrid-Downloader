@@ -38,7 +38,12 @@ import {
   getProviderDailyUsageBytes,
   getProviderUsageDayKey
 } from "../shared/provider-daily-limits";
-import { preservePackageOrderForDisplay, sortPackageOrderByName } from "./package-order";
+import {
+  preservePackageOrderForDisplay,
+  reconcileCollapsedPackageState,
+  reconcileOptimisticPackageOrder,
+  sortPackageOrderByName
+} from "./package-order";
 import { pruneSelection, shouldClearDownloadSelection, shouldClearDownloadSelectionOnEscape } from "./selection";
 import { buildBulkAccountEnabledState, buildConfiguredProviderOrder, getAccountDialogSelectableOptions, matchesAccountModeFilter, pruneAccountRowSelection, resolveAccountUsername, resolveVisibleAccountKind } from "./account-ui";
 import type { AccountModeFilter } from "./account-ui";
@@ -869,11 +874,56 @@ const historyRetentionLabels: Record<RendererSettings["historyRetentionMode"], s
 
 const AUTO_RENDER_PACKAGE_LIMIT = 260;
 
-export function getSnapshotRenderDelay(itemCount: number, running: boolean, activeTab: MainView): number {
-  let delay = running ? 500 : itemCount >= 700 ? 100 : itemCount >= 250 ? 150 : 200;
-  if (!running) delay = Math.min(delay, 200);
-  if (!running && activeTab !== "downloads") delay = Math.max(delay, 800);
-  return delay;
+export function getSnapshotRenderDelay(_itemCount: number, _running: boolean, _activeTab: MainView): number {
+  return 0;
+}
+
+export interface ResetUiActionGate {
+  busy: boolean;
+}
+
+interface ResetUiActionOptions {
+  gate: ResetUiActionGate;
+  reset: () => Promise<void>;
+  reconcile: () => Promise<void>;
+  setBusy: (busy: boolean) => void;
+  onError: (error: unknown) => void;
+  onBusy?: () => void;
+}
+
+export async function runResetUiAction(options: ResetUiActionOptions): Promise<"completed" | "failed" | "busy"> {
+  if (options.gate.busy) {
+    options.onBusy?.();
+    return "busy";
+  }
+  options.gate.busy = true;
+  options.setBusy(true);
+  let failed = false;
+  let failure: unknown;
+  try {
+    await options.reset();
+  } catch (error) {
+    failed = true;
+    failure = error;
+  }
+  try {
+    await options.reconcile();
+  } catch (error) {
+    if (!failed) {
+      failure = error;
+    }
+    failed = true;
+  }
+  try {
+    if (failed) {
+      options.onError(failure);
+      return "failed";
+    }
+    return "completed";
+  } finally {
+    options.gate.busy = false;
+    options.setBusy(false);
+  }
 }
 
 interface SupportBundleExportUiOptions {
@@ -1466,18 +1516,6 @@ const DEFAULT_COLUMN_ORDER = ["name", "size", "progress", "hoster", "account", "
 const ALL_COLUMN_KEYS = ["name", "size", "progress", "hoster", "account", "prio", "status", "speed", "availability", "added"];
 const COLUMN_DEFS = downloadColumnDefinitions;
 
-function sameStringArray(a: string[], b: string[]): boolean {
-  if (a.length !== b.length) {
-    return false;
-  }
-  for (let index = 0; index < a.length; index += 1) {
-    if (a[index] !== b[index]) {
-      return false;
-    }
-  }
-  return true;
-}
-
 function formatMbpsInputFromKbps(kbps: number): string {
   const mbps = Math.max(0, Number(kbps) || 0) / 1024;
   return String(Number(mbps.toFixed(2)));
@@ -1571,9 +1609,49 @@ export function App(): ReactElement {
   const masterSnapshotRef = useRef<UiSnapshot | null>(null);
   const snapshotRef = useRef(snapshot);
   snapshotRef.current = snapshot;
+  const packageOrderRef = useRef<string[]>([]);
+  const serverPackageOrderRef = useRef<string[]>([]);
+  const pendingPackageOrderRef = useRef<string[] | null>(null);
+  const pendingPackageOrderAtRef = useRef(0);
   const tabRef = useRef(tab);
   tabRef.current = tab;
   const stateFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stageAuthoritativeSnapshot = useCallback((fresh: UiSnapshot): UiSnapshot => {
+    masterSnapshotRef.current = fresh;
+    serverPackageOrderRef.current = fresh.session.packageOrder;
+    const order = reconcileOptimisticPackageOrder(
+      fresh.session.packageOrder,
+      pendingPackageOrderRef.current,
+      pendingPackageOrderAtRef.current,
+      Date.now()
+    );
+    pendingPackageOrderRef.current = order.pendingOrder;
+    pendingPackageOrderAtRef.current = order.pendingAt;
+    packageOrderRef.current = order.displayOrder;
+    if (order.displayOrder === fresh.session.packageOrder) {
+      return fresh;
+    }
+    return {
+      ...fresh,
+      session: {
+        ...fresh.session,
+        packageOrder: order.displayOrder
+      }
+    };
+  }, []);
+  const applyAuthoritativeSnapshot = useCallback((fresh: UiSnapshot): void => {
+    if (stateFlushTimerRef.current) {
+      clearTimeout(stateFlushTimerRef.current);
+      stateFlushTimerRef.current = null;
+    }
+    const displaySnapshot = stageAuthoritativeSnapshot(fresh);
+    latestStateRef.current = null;
+    snapshotRef.current = displaySnapshot;
+    setSnapshot(displaySnapshot);
+  }, [stageAuthoritativeSnapshot]);
+  const reconcileAuthoritativeSnapshot = useCallback(async (): Promise<void> => {
+    applyAuthoritativeSnapshot(await window.rd.getSnapshot());
+  }, [applyAuthoritativeSnapshot]);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onImportDlcRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const [dragOver, setDragOver] = useState(false);
@@ -1592,10 +1670,6 @@ export function App(): ReactElement {
   const collectorTabsRef = useRef<CollectorTab[]>(collectorTabs);
   const activeCollectorTabRef = useRef(activeCollectorTab);
   const activeTabRef = useRef<Tab>(tab);
-  const packageOrderRef = useRef<string[]>([]);
-  const serverPackageOrderRef = useRef<string[]>([]);
-  const pendingPackageOrderRef = useRef<string[] | null>(null);
-  const pendingPackageOrderAtRef = useRef(0);
   const [collapsedPackages, setCollapsedPackages] = useState<Record<string, boolean>>({});
   const [downloadSearch, setDownloadSearch] = useState("");
   const [downloadDisplayMode, setDownloadDisplayMode] = useState<DownloadDisplayMode>("packages");
@@ -1605,6 +1679,7 @@ export function App(): ReactElement {
   const [downloadsSortDescending, setDownloadsSortDescending] = useState(false);
   const [showAllPackages, setShowAllPackages] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
   const [accountCheckBusy, setAccountCheckBusy] = useState(false);
   const [accountEnabledOverrides, setAccountEnabledOverrides] = useState<Record<string, boolean>>({});
   const accountEnabledOverridesRef = useRef<Record<string, boolean>>({});
@@ -1612,6 +1687,7 @@ export function App(): ReactElement {
   const accountToggleRevisionRef = useRef(0);
   const accountTogglePendingRef = useRef(0);
   const actionBusyRef = useRef(false);
+  const resetUiActionGateRef = useRef<ResetUiActionGate>({ busy: false });
   const actionUnlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
   const [supportTraceEnabled, setSupportTraceEnabled] = useState(false);
@@ -1735,34 +1811,6 @@ export function App(): ReactElement {
   }, [tab]);
 
   useEffect(() => {
-    const incoming = snapshot.session.packageOrder;
-    serverPackageOrderRef.current = incoming;
-
-    const pending = pendingPackageOrderRef.current;
-    if (!pending) {
-      packageOrderRef.current = incoming;
-      return;
-    }
-
-    if (sameStringArray(pending, incoming)) {
-      pendingPackageOrderRef.current = null;
-      pendingPackageOrderAtRef.current = 0;
-      packageOrderRef.current = incoming;
-      return;
-    }
-
-    const maxOptimisticHoldMs = 1500;
-    if (Date.now() - pendingPackageOrderAtRef.current >= maxOptimisticHoldMs) {
-      pendingPackageOrderRef.current = null;
-      pendingPackageOrderAtRef.current = 0;
-      packageOrderRef.current = incoming;
-      return;
-    }
-
-    packageOrderRef.current = pending;
-  }, [snapshot.session.packageOrder]);
-
-  useEffect(() => {
     setSpeedLimitInput(formatMbpsInputFromKbps(settingsDraft.speedLimitKbps));
   }, [settingsDraft.speedLimitKbps]);
 
@@ -1804,6 +1852,23 @@ export function App(): ReactElement {
       toastTimerRef.current = null;
     }
   }, []);
+
+  const performReset = useCallback(async (reset: () => Promise<void>): Promise<void> => {
+    if (!resetUiActionGateRef.current.busy) {
+      showToast("Zurücksetzen läuft …", 60_000);
+    }
+    const result = await runResetUiAction({
+      gate: resetUiActionGateRef.current,
+      reset,
+      reconcile: reconcileAuthoritativeSnapshot,
+      setBusy: setResetBusy,
+      onError: (error) => { showToast(`Zurücksetzen fehlgeschlagen: ${String(error)}`, 3200); },
+      onBusy: () => { showToast("Zurücksetzen läuft bereits …", 2200); }
+    });
+    if (result === "completed") {
+      showToast("Zurücksetzen abgeschlossen", 1800);
+    }
+  }, [reconcileAuthoritativeSnapshot, showToast]);
 
   const applyHistoryEntries = useCallback((entries: HistoryEntry[]): void => {
     const availableIds = entries.map((entry) => entry.id);
@@ -1943,8 +2008,7 @@ export function App(): ReactElement {
       if (!mountedRef.current) {
         return;
       }
-      masterSnapshotRef.current = state;
-      setSnapshot(state);
+      applyAuthoritativeSnapshot(state);
       if (state.settings.columnOrder?.length > 0) {
         setColumnOrder(state.settings.columnOrder);
       }
@@ -1989,8 +2053,7 @@ export function App(): ReactElement {
       } else {
         merged = wireState;
       }
-      masterSnapshotRef.current = merged;
-      latestStateRef.current = merged;
+      latestStateRef.current = stageAuthoritativeSnapshot(merged);
       if (stateFlushTimerRef.current) { return; }
 
       const itemCount = Object.keys(merged.session.items).length;
@@ -2000,6 +2063,7 @@ export function App(): ReactElement {
         stateFlushTimerRef.current = null;
         if (latestStateRef.current) {
           const next = latestStateRef.current;
+          snapshotRef.current = next;
           setSnapshot(next);
           if (next.settings.columnOrder?.length > 0) {
             setColumnOrder(next.settings.columnOrder);
@@ -2055,7 +2119,7 @@ export function App(): ReactElement {
       if (unsubClipboard) { unsubClipboard(); }
       if (unsubUpdateInstallProgress) { unsubUpdateInstallProgress(); }
     };
-  }, [clearImportQueueFocusListener]);
+  }, [applyAuthoritativeSnapshot, clearImportQueueFocusListener, stageAuthoritativeSnapshot]);
 
   const downloadsTabActive = tab === "downloads";
   const deferredDownloadSearch = useDeferredValue(downloadSearch);
@@ -2093,24 +2157,12 @@ export function App(): ReactElement {
     if (!downloadsTabActive) {
       return;
     }
-    setCollapsedPackages((prev) => {
-      let changed = false;
-      const next: Record<string, boolean> = { ...prev };
-      const defaultCollapsed = totalPackageCount >= 24;
-      for (const packageId of snapshot.session.packageOrder) {
-        if (!(packageId in prev)) {
-          next[packageId] = defaultCollapsed;
-          changed = true;
-        }
-      }
-      for (const packageId of Object.keys(next)) {
-        if (!snapshot.session.packages[packageId]) {
-          delete next[packageId];
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
+    setCollapsedPackages((prev) => reconcileCollapsedPackageState(
+      prev,
+      snapshot.session.packageOrder,
+      snapshot.session.packages,
+      totalPackageCount >= 24
+    ));
   }, [downloadsTabActive, packageOrderKey, snapshot.session.packageOrder, snapshot.session.packages, totalPackageCount]);
 
   // Prune selection when its packages/items disappear (e.g. via delta-removal or
@@ -3316,7 +3368,11 @@ export function App(): ReactElement {
         showToast(`Konflikte gelöst: ${overwritten} überschrieben, ${skipped} übersprungen`, 2800);
       }
 
-      await window.rd.start();
+      try {
+        await window.rd.start();
+      } finally {
+        await reconcileAuthoritativeSnapshot().catch(() => undefined);
+      }
     });
   };
 
@@ -4686,7 +4742,7 @@ export function App(): ReactElement {
     canStart: snapshot.canStart,
     canPause: snapshot.canPause,
     canStop: snapshot.canStop,
-    actionBusy,
+    actionBusy: actionBusy || resetBusy,
     reconnectSeconds: snapshot.reconnectSeconds,
     reconnectReason: snapshot.session.reconnectReason,
     clipboardWatcher: snapshot.clipboardActive,
@@ -4712,7 +4768,7 @@ export function App(): ReactElement {
       speed: liveDownloadSpeedBps > 0 ? formatSpeedMbps(liveDownloadSpeedBps) : "0 B/s",
       eta: snapshot.etaText
     }
-  }), [actionBusy, columnOrder, downloadPackageSpeeds, downloadQueueTotalBytes, downloadsSortColumn, downloadsSortDescending, downloadsViewCore, editingName, editingPackageId, gridTemplate, liveDownloadSpeedBps, providerStats.length, scheduleCountdown, schedulePickerOpen, scheduleTimeInput, snapshot.canPause, snapshot.canStart, snapshot.canStop, snapshot.clipboardActive, snapshot.etaText, snapshot.reconnectSeconds, snapshot.session.items, snapshot.session.paused, snapshot.session.reconnectReason, snapshot.session.running, snapshot.settings.scheduledStartEpochMs, snapshot.stats.totalDownloaded, snapshot.stats.totalPackages]);
+  }), [actionBusy, columnOrder, downloadPackageSpeeds, downloadQueueTotalBytes, downloadsSortColumn, downloadsSortDescending, downloadsViewCore, editingName, editingPackageId, gridTemplate, liveDownloadSpeedBps, providerStats.length, resetBusy, scheduleCountdown, schedulePickerOpen, scheduleTimeInput, snapshot.canPause, snapshot.canStart, snapshot.canStop, snapshot.clipboardActive, snapshot.etaText, snapshot.reconnectSeconds, snapshot.session.items, snapshot.session.paused, snapshot.session.reconnectReason, snapshot.session.running, snapshot.settings.scheduledStartEpochMs, snapshot.stats.totalDownloaded, snapshot.stats.totalPackages]);
 
   const downloadsActions: DownloadsViewActions = {
     onDisplayModeChange: setDownloadDisplayMode,
@@ -4732,10 +4788,7 @@ export function App(): ReactElement {
             showToast(`Fortsetzen fehlgeschlagen: ${String(error)}`, 3200);
           } finally {
             try {
-              const fresh = await window.rd.getSnapshot();
-              masterSnapshotRef.current = fresh;
-              latestStateRef.current = null;
-              setSnapshot(fresh);
+              await reconcileAuthoritativeSnapshot();
             } catch {
             }
           }
@@ -4746,11 +4799,11 @@ export function App(): ReactElement {
     },
     onPauseDownloads: () => {
       setSnapshot((current) => ({ ...current, session: { ...current.session, paused: true } }));
-      void window.rd.togglePause().then((paused) => {
-        setSnapshot((current) => ({ ...current, session: { ...current.session, paused } }));
+      void window.rd.togglePause().then(async () => {
+        await reconcileAuthoritativeSnapshot();
       }).catch(async (error) => {
         try {
-          setSnapshot(await window.rd.getSnapshot());
+          await reconcileAuthoritativeSnapshot();
         } catch {
         }
         showToast(`Pause fehlgeschlagen: ${String(error)}`, 3200);
@@ -4758,9 +4811,11 @@ export function App(): ReactElement {
     },
     onStopDownloads: () => {
       setSnapshot((current) => ({ ...current, session: { ...current.session, running: false, paused: false } }));
-      void window.rd.stop().catch(async (error) => {
+      void window.rd.stop().then(async () => {
+        await reconcileAuthoritativeSnapshot();
+      }).catch(async (error) => {
         try {
-          setSnapshot(await window.rd.getSnapshot());
+          await reconcileAuthoritativeSnapshot();
         } catch {
         }
         showToast(`Stop fehlgeschlagen: ${String(error)}`, 3200);
@@ -4920,7 +4975,7 @@ export function App(): ReactElement {
       if (failedIds.length === 0) {
         return;
       }
-      void window.rd.resetItems(failedIds).catch(() => {});
+      void performReset(() => window.rd.resetItems(failedIds));
     }
   };
   const collectorActions: CollectorViewActions = {
@@ -6097,17 +6152,21 @@ export function App(): ReactElement {
             }}>Ausgewählte Dateien entfernen ({selectedItemIds.length})</button>
           )}
           {hasPackages && !contextMenu.itemId && (
-            <button className="ctx-menu-item" onClick={() => {
-              for (const id of selectedPackageIds) void window.rd.resetPackage(id).catch(() => {});
+            <button className="ctx-menu-item" disabled={resetBusy} onClick={() => {
+              void performReset(async () => {
+                for (const id of selectedPackageIds) {
+                  await window.rd.resetPackage(id);
+                }
+              });
               setContextMenu(null);
-            }}>Zurücksetzen{multi ? ` (${selectedPackageIds.length})` : ""}</button>
+            }}>{resetBusy ? "Zurücksetzen läuft …" : `Zurücksetzen${multi ? ` (${selectedPackageIds.length})` : ""}`}</button>
           )}
           {contextMenu.itemId && (
-            <button className="ctx-menu-item" onClick={() => {
+            <button className="ctx-menu-item" disabled={resetBusy} onClick={() => {
               const itemIds = multi ? selectedItemIds : [contextMenu.itemId!];
-              void window.rd.resetItems(itemIds).catch(() => {});
+              void performReset(() => window.rd.resetItems(itemIds));
               setContextMenu(null);
-            }}>Zurücksetzen{multi ? ` (${selectedItemIds.length})` : ""}</button>
+            }}>{resetBusy ? "Zurücksetzen läuft …" : `Zurücksetzen${multi ? ` (${selectedItemIds.length})` : ""}`}</button>
           )}
           {hasPackages && !multi && (() => {
             const pkg = snapshot.session.packages[contextMenu.packageId];

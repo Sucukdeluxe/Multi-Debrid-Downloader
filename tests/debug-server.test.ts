@@ -583,7 +583,7 @@ describe("debug-server", () => {
     expect(entries).toContain("overview/settings.json");
     expect(entries).toContain("overview/accounts.json");
     expect(entries).toContain("overview/debug-setup.json");
-    expect(entries).toContain("overview/self-check.json");
+    expect(entries).not.toContain("overview/self-check.json");
     expect(entries).toContain("overview/trace-config.json");
     expect(entries).toContain("logs/audit.log");
     expect(entries).toContain("logs/rename.log");

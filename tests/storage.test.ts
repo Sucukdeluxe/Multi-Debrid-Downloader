@@ -1008,6 +1008,65 @@ describe("settings storage", () => {
     expect(restoredPrimary.packages && "pkg-backup" in restoredPrimary.packages).toBe(true);
   });
 
+  it("preserves resume recovery state across a session save and reload", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const session = emptySession();
+    const now = Date.now();
+    const outputDir = path.join(dir, "out");
+    const itemId = "item-resume";
+    session.packageOrder = ["pkg-resume"];
+    session.packages["pkg-resume"] = {
+      id: "pkg-resume",
+      name: "Resume Package",
+      outputDir,
+      extractDir: path.join(dir, "extract"),
+      status: "queued",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt: now,
+      updatedAt: now
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId: "pkg-resume",
+      url: "https://example.com/resume-file",
+      provider: "megadebrid-web",
+      status: "queued",
+      retries: 2,
+      speedBps: 0,
+      downloadedBytes: 8192,
+      totalBytes: 16384,
+      progressPercent: 50,
+      fileName: "resume-file.bin",
+      targetPath: path.join(outputDir, "resume-file.bin"),
+      resumable: true,
+      attempts: 3,
+      lastError: "",
+      fullStatus: "Resume-Link erneuern",
+      resumeLinkRenewalFailures: 4,
+      resumeHardResetUsed: true,
+      resumeResetPending: true,
+      http416FreshRestarts: 2,
+      createdAt: now,
+      updatedAt: now
+    };
+
+    saveSession(paths, session);
+    const loaded = loadSession(paths);
+
+    expect(loaded.items[itemId]).toEqual(expect.objectContaining({
+      downloadedBytes: 8192,
+      totalBytes: 16384,
+      resumeLinkRenewalFailures: 4,
+      resumeHardResetUsed: true,
+      resumeResetPending: true,
+      http416FreshRestarts: 2
+    }));
+  });
+
   it("returns defaults when config file contains invalid JSON", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
     tempDirs.push(dir);

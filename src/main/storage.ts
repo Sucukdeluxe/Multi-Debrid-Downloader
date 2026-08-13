@@ -788,6 +788,7 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
       resumeLinkRenewalFailures: clampNumber(item.resumeLinkRenewalFailures, legacyResumeFailureCount, 0, 1_000_000) || undefined,
       resumeHardResetUsed: Boolean(item.resumeHardResetUsed) || undefined,
       resumeResetPending: Boolean(item.resumeResetPending) || undefined,
+      http416FreshRestarts: clampNumber(item.http416FreshRestarts, 0, 0, 100) || undefined,
       onlineStatus: VALID_ONLINE_STATUSES.has(onlineStatusRaw) ? onlineStatusRaw as "online" | "offline" | "checking" : undefined,
       createdAt: clampNumber(item.createdAt, now, 0, Number.MAX_SAFE_INTEGER),
       updatedAt: clampNumber(item.updatedAt, now, 0, Number.MAX_SAFE_INTEGER)

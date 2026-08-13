@@ -3,6 +3,7 @@ import { logTimestamp } from "./log-timestamp";
 import path from "node:path";
 import { addLogListener, removeLogListener } from "./logger";
 import type { SupportTraceConfig } from "../shared/types";
+import { sanitizeDiagnosticFields, sanitizeDiagnosticText } from "./diagnostic-sanitizer";
 
 type TraceLevel = "INFO" | "WARN" | "ERROR";
 
@@ -33,23 +34,24 @@ function sanitizeFieldValue(value: unknown): string {
     return "";
   }
   if (typeof value === "string") {
-    return value.replace(/\r?\n/g, "\\n");
+    return sanitizeDiagnosticText(value);
   }
   if (typeof value === "number" || typeof value === "boolean") {
     return String(value);
   }
   try {
-    return JSON.stringify(value).replace(/\r?\n/g, "\\n");
+    return sanitizeDiagnosticText(JSON.stringify(value));
   } catch {
-    return String(value);
+    return sanitizeDiagnosticText(value);
   }
 }
 
 function formatFields(fields?: Record<string, unknown>): string {
-  if (!fields) {
+  const safeFields = sanitizeDiagnosticFields(fields);
+  if (!safeFields) {
     return "";
   }
-  const parts = Object.entries(fields)
+  const parts = Object.entries(safeFields)
     .filter(([, value]) => value !== undefined && value !== null && sanitizeFieldValue(value) !== "")
     .map(([key, value]) => `${key}=${sanitizeFieldValue(value)}`);
   return parts.length > 0 ? ` | ${parts.join(" | ")}` : "";
@@ -288,7 +290,15 @@ export function logTraceEvent(
   if (category === "audit" && !traceConfig.includeAudit) {
     return;
   }
-  appendTraceLine(`${logTimestamp()} [${level}] [${category}] ${message}${formatFields(fields)}\n`);
+  appendTraceLine(`${logTimestamp()} [${level}] [${sanitizeDiagnosticText(category)}] ${sanitizeDiagnosticText(message)}${formatFields(fields)}\n`);
+}
+
+export function flushTraceLog(): void {
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+  flushPending();
 }
 
 export function shutdownTraceLog(): void {
@@ -297,11 +307,7 @@ export function shutdownTraceLog(): void {
   if (!traceLogPath) {
     return;
   }
-  if (flushTimer) {
-    clearTimeout(flushTimer);
-    flushTimer = null;
-  }
-  flushPending();
+  flushTraceLog();
   try {
     fs.appendFileSync(traceLogPath, `=== Trace-Log Ende: ${logTimestamp()} ===\n`, "utf8");
   } catch {

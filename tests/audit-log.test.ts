@@ -45,4 +45,41 @@ describe("audit-log", () => {
     const content = fs.readFileSync(oversizedPath, "utf8");
     expect(content).toContain("Audit-Log Start");
   });
+
+  it("redacts secrets, identities, direct links and local paths from audit logs", () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-alog-sensitive-"));
+    tempDirs.push(baseDir);
+
+    initAuditLog(baseDir);
+    logAuditEvent(
+      "ERROR",
+      "Abruf https://rapidgator.net/file/private-id/archive.rar?token=url-secret für audit@example.com in C:\\Users\\Administrator\\Downloads\\archive.rar fehlgeschlagen",
+      {
+        directUrl: "https://rapidgator.net/file/private-id/archive.rar?token=url-secret",
+        authorization: "Bearer authorization-secret-value",
+        details: {
+          password: "password-secret-value",
+          cookie: "sid=cookie-secret-value",
+          email: "audit@example.com",
+          extractPath: "/var/lib/downloader/archive.rar"
+        }
+      }
+    );
+
+    const logPath = getAuditLogPath();
+    expect(logPath).not.toBeNull();
+    const content = fs.readFileSync(logPath!, "utf8");
+    expect(content).toMatch(/rapidgator\.net#[a-f0-9]{10}/);
+    expect(content).toContain("<redacted>");
+    expect(content).toContain("<redacted-account>");
+    expect(content).toContain("<redacted-path>");
+    expect(content).not.toContain("private-id");
+    expect(content).not.toContain("url-secret");
+    expect(content).not.toContain("authorization-secret-value");
+    expect(content).not.toContain("password-secret-value");
+    expect(content).not.toContain("cookie-secret-value");
+    expect(content).not.toContain("audit@example.com");
+    expect(content).not.toContain("C:\\Users\\Administrator");
+    expect(content).not.toContain("/var/lib/downloader");
+  });
 });

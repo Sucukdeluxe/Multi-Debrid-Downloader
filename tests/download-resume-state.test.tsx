@@ -79,35 +79,42 @@ function createSnapshot(running: boolean, paused: boolean): UiSnapshot {
   };
 }
 
-function findStartAction(node: ReactNode): (() => void) | null {
+interface DownloadActions {
+  onStartDownloads?: () => void;
+  onPauseDownloads?: () => void;
+  onStopDownloads?: () => void;
+}
+
+function findDownloadActions(node: ReactNode): DownloadActions | null {
   if (Array.isArray(node)) {
     for (const child of node) {
-      const action = findStartAction(child);
-      if (action) return action;
+      const actions = findDownloadActions(child);
+      if (actions) return actions;
     }
     return null;
   }
   if (!isValidElement(node)) return null;
   const props = node.props as {
-    actions?: { onStartDownloads?: () => void };
+    actions?: DownloadActions;
     children?: ReactNode;
     toolbar?: ReactNode;
   };
-  if (typeof props.actions?.onStartDownloads === "function") {
-    return props.actions.onStartDownloads;
+  if (props.actions && typeof props.actions.onStartDownloads === "function") {
+    return props.actions;
   }
-  return findStartAction(props.toolbar) ?? findStartAction(props.children);
+  return findDownloadActions(props.toolbar) ?? findDownloadActions(props.children);
 }
 
 async function flushAsyncAction(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
-function renderPausedStartAction(
+function renderDownloadActions(
   initialSnapshot: UiSnapshot,
   togglePause: () => Promise<boolean>,
-  getSnapshot: () => Promise<UiSnapshot>
-): () => void {
+  getSnapshot: () => Promise<UiSnapshot>,
+  stop: () => Promise<void> = async () => undefined
+): DownloadActions {
   hookState.capturedSnapshot = false;
   hookState.initialSnapshot = initialSnapshot;
   hookState.currentSnapshot = initialSnapshot;
@@ -125,14 +132,14 @@ function renderPausedStartAction(
     devicePixelRatio: 1,
     matchMedia: () => ({ matches: false }),
     prompt: () => null,
-    rd: { getSnapshot, togglePause },
+    rd: { getSnapshot, togglePause, stop },
     removeEventListener: () => {},
     setInterval,
     setTimeout
   });
-  const action = findStartAction(App() as ReactElement);
-  if (!action) throw new Error("Download-Startaktion nicht gefunden");
-  return action;
+  const actions = findDownloadActions(App() as ReactElement);
+  if (!actions) throw new Error("Download-Aktionen nicht gefunden");
+  return actions;
 }
 
 describe("paused download resume reconciliation", () => {
@@ -149,13 +156,13 @@ describe("paused download resume reconciliation", () => {
   it("restores the authoritative paused state when togglePause rejects without a state event", async () => {
     const initial = createSnapshot(true, true);
     const authoritative = createSnapshot(true, true);
-    const action = renderPausedStartAction(
+    const actions = renderDownloadActions(
       initial,
       async () => { throw new Error("Kein aktiver Download-Account verfügbar"); },
       async () => authoritative
     );
 
-    action();
+    actions.onStartDownloads?.();
     await flushAsyncAction();
 
     expect(hookState.currentSnapshot).toEqual(authoritative);
@@ -164,13 +171,51 @@ describe("paused download resume reconciliation", () => {
   it("replaces stale running state when togglePause returns false without a state event", async () => {
     const initial = createSnapshot(true, true);
     const authoritative = createSnapshot(false, false);
-    const action = renderPausedStartAction(
+    const actions = renderDownloadActions(
       initial,
       async () => false,
       async () => authoritative
     );
 
-    action();
+    actions.onStartDownloads?.();
+    await flushAsyncAction();
+
+    expect(hookState.currentSnapshot).toEqual(authoritative);
+  });
+
+  it("replaces stale running state when pausing returns false without a state event", async () => {
+    const initial = createSnapshot(true, false);
+    const authoritative = createSnapshot(false, false);
+    const actions = renderDownloadActions(
+      initial,
+      async () => false,
+      async () => authoritative
+    );
+
+    actions.onPauseDownloads?.();
+    await flushAsyncAction();
+
+    expect(hookState.currentSnapshot).toEqual(authoritative);
+  });
+
+  it("loads the complete authoritative snapshot after stop succeeds without a state event", async () => {
+    const initial = createSnapshot(true, false);
+    const authoritative = {
+      ...createSnapshot(false, false),
+      canStart: true,
+      stats: {
+        ...createSnapshot(false, false).stats,
+        totalDownloaded: 4096
+      }
+    };
+    const actions = renderDownloadActions(
+      initial,
+      async () => false,
+      async () => authoritative,
+      async () => undefined
+    );
+
+    actions.onStopDownloads?.();
     await flushAsyncAction();
 
     expect(hookState.currentSnapshot).toEqual(authoritative);

@@ -8,6 +8,7 @@ import { APP_VERSION, REQUEST_RETRIES } from "./constants";
 import { logger } from "./logger";
 import { logAccountRotation } from "./account-rotation-log";
 import { traceConversionPhase } from "./conversion-trace";
+import { sanitizeDiagnosticText, type DiagnosticRedactions } from "./diagnostic-sanitizer";
 import { RealDebridClient, UnrestrictedLink } from "./realdebrid";
 import { MEGA_DEBRID_NO_SERVER_RE } from "./mega-web-fallback";
 import { isMegaFileUrl, resolveMegaFilename } from "./mega-public-api";
@@ -25,6 +26,10 @@ const MEGA_DEBRID_API_BASE = "https://www.mega-debrid.eu/api.php";
 
 const ONEFICHIER_API_BASE = "https://api.1fichier.com/v1";
 const ONEFICHIER_URL_RE = /^https?:\/\/(?:www\.)?(?:1fichier\.com|alterupload\.com|cjoint\.net|desfichiers\.com|dfichiers\.com|megadl\.fr|mesfichiers\.org|piecejointe\.net|pjointe\.com|tenvoi\.com|dl4free\.com)\/\?([a-z0-9]{5,20})$/i;
+
+function sanitizeProviderErrorText(error: unknown, redactions: DiagnosticRedactions = {}): string {
+  return sanitizeDiagnosticText(compactErrorText(error).replace(/^Error:\s*/i, ""), redactions);
+}
 
 const DEBRID_LINK_API_BASE = "https://debrid-link.com/api/v2";
 const DEBRID_LINK_KEY_QUOTA_ERRORS = new Set(["maxLink", "maxData"]);
@@ -331,6 +336,22 @@ export function recordMegaDebridEmptyResponseStreak(accountId: string): number {
 
 export function clearMegaDebridEmptyResponseStreak(accountId: string): void {
   megaDebridEmptyResponseStreaks.delete(accountId);
+}
+
+function clearDebridLinkRuntimeStateForKeys(keyIds: Set<string>): void {
+  for (const keyId of keyIds) {
+    debridLinkKeyCooldowns.delete(keyId);
+    debridLinkKeyCooldownDetails.delete(keyId);
+    debridLinkKeyRuntimeStatuses.delete(keyId);
+  }
+  for (const stateKey of [...debridLinkKeyHostCooldowns.keys()]) {
+    const separator = stateKey.indexOf("|");
+    const keyId = separator >= 0 ? stateKey.slice(0, separator) : stateKey;
+    if (keyIds.has(keyId)) {
+      debridLinkKeyHostCooldowns.delete(stateKey);
+      debridLinkKeyHostCooldownDetails.delete(stateKey);
+    }
+  }
 }
 
 export function getMegaDebridAccountAttemptTimeoutMs(): number {
@@ -643,12 +664,16 @@ function hasMegaDebridCredentials(settings: AppSettings): boolean {
 }
 
 function isMegaDebridModeEnabled(settings: AppSettings, mode: "api" | "web"): boolean {
+  const hasDedicatedPoolCredentials = Boolean(
+    String(settings.megaDebridApiCredentials || "").trim()
+    || String(settings.megaDebridWebCredentials || "").trim()
+  );
   if (mode === "api") {
     return settings.megaDebridApiEnabled
-      || (hasMegaDebridCredentials(settings) && !settings.megaDebridApiEnabled && !settings.megaDebridWebEnabled && settings.megaDebridPreferApi);
+      || (!hasDedicatedPoolCredentials && hasMegaDebridCredentials(settings) && !settings.megaDebridApiEnabled && !settings.megaDebridWebEnabled && settings.megaDebridPreferApi);
   }
   return settings.megaDebridWebEnabled
-    || (hasMegaDebridCredentials(settings) && !settings.megaDebridApiEnabled && !settings.megaDebridWebEnabled && !settings.megaDebridPreferApi);
+    || (!hasDedicatedPoolCredentials && hasMegaDebridCredentials(settings) && !settings.megaDebridApiEnabled && !settings.megaDebridWebEnabled && !settings.megaDebridPreferApi);
 }
 
 function resolveMegaDebridProvider(settings: AppSettings, provider: DebridProvider): DebridProvider {
@@ -768,6 +793,7 @@ function waitForPromiseWithSignal<T>(promise: Promise<T>, signal?: AbortSignal):
     return promise;
   }
   if (signal.aborted) {
+    void promise.catch(() => {});
     return Promise.reject(new Error("aborted:debrid"));
   }
   return new Promise<T>((resolve, reject) => {
@@ -1079,9 +1105,10 @@ async function requestDebridLinkPayloadWithKey(
       const responseText = await response.text();
       const payload = parseJsonSafe(responseText);
       if (!payload) {
-        const description = looksLikeHtmlResponse(response.headers.get("content-type") || "", responseText)
+        const rawDescription = looksLikeHtmlResponse(response.headers.get("content-type") || "", responseText)
           ? `Debrid-Link lieferte HTML statt JSON (HTTP ${response.status})`
           : compactErrorText(responseText) || `Debrid-Link lieferte kein JSON (HTTP ${response.status})`;
+        const description = sanitizeDiagnosticText(rawDescription, { secretValues: [apiKey.token] });
         const error = new DebridLinkApiError(
           response.status,
           "requestError",
@@ -1097,10 +1124,14 @@ async function requestDebridLinkPayloadWithKey(
       }
 
       if (!response.ok || !parseDebridLinkSuccess(payload)) {
+        const description = sanitizeDiagnosticText(
+          parseDebridLinkErrorDescription(payload) || `HTTP ${response.status}`,
+          { secretValues: [apiKey.token] }
+        );
         const error = new DebridLinkApiError(
           response.status,
           parseDebridLinkErrorCode(payload) || `HTTP ${response.status}`,
-          parseDebridLinkErrorDescription(payload) || `HTTP ${response.status}`,
+          description,
           parseRetryAfterMs(response.headers.get("retry-after")),
           payload
         );
@@ -1116,9 +1147,9 @@ async function requestDebridLinkPayloadWithKey(
       if (error instanceof DebridLinkApiError) {
         throw error;
       }
-      lastTransportError = compactErrorText(error);
+      lastTransportError = sanitizeProviderErrorText(error, { secretValues: [apiKey.token] });
       if (signal?.aborted || (/aborted/i.test(lastTransportError) && !/timeout/i.test(lastTransportError))) {
-        throw error;
+        throw new Error(lastTransportError);
       }
       if (attempt >= maxAttempts || !isRetryableErrorText(lastTransportError)) {
         throw new Error(lastTransportError || "Debrid-Link Request fehlgeschlagen");
@@ -1955,7 +1986,11 @@ class MegaDebridClient {
       if (payload && String(payload.response_code || "").toLowerCase().includes("token")) {
         MegaDebridClient.invalidateCredentialIfCurrent(cacheKey, generation);
       }
-      traceConversionPhase({ phase: "token", provider: "megadebrid-api", tokenState: "fresh-login", workMs: Date.now() - connectStartedAt, outcome: "error", detail: `response_code=${payload?.response_code || "?"} ${String(payload?.response_text || "").slice(0, 80)}`.trim() });
+      const detail = sanitizeDiagnosticText(`response_code=${payload?.response_code || "?"} ${String(payload?.response_text || "").slice(0, 80)}`.trim(), {
+        accountValues: [this.login],
+        secretValues: [this.password]
+      });
+      traceConversionPhase({ phase: "token", provider: "megadebrid-api", tokenState: "fresh-login", workMs: Date.now() - connectStartedAt, outcome: "error", detail });
       return null;
     }
     const token = String(payload.token || "").trim();
@@ -2002,7 +2037,10 @@ class MegaDebridClient {
       if (tokenInvalidated) {
         this.clearTokenCache();
       }
-      const errorText = String(payload?.response_text || "").trim();
+      const errorText = sanitizeDiagnosticText(String(payload?.response_text || "").trim(), {
+        accountValues: [this.login],
+        secretValues: [this.password, token]
+      });
       traceConversionPhase({ phase: "api-getlink", provider: "megadebrid-api", workMs: Date.now() - getLinkStartedAt, outcome: "error", detail: `response_code=${payload?.response_code || "?"}${tokenInvalidated ? " (token-cache-geleert)" : ""} ${errorText}`.trim() });
       if (errorText) {
         throw new Error(`Mega-Debrid API: ${errorText}`);
@@ -2144,8 +2182,8 @@ class MegaDebridClient {
       const entry = orderedEntries[orderPos];
       const account = entry.account;
       const idx = entry.idx;
-      const accountLabel = ` (${account.label}/${totalAccounts}, ${account.maskedLogin})`;
-      const rotationLabel = `${account.label}/${totalAccounts} (${account.maskedLogin})`;
+      const accountLabel = ` (${account.label}/${totalAccounts})`;
+      const rotationLabel = `${account.label}/${totalAccounts}`;
 
       if (isMegaDebridAccountDisabled(settings, account.id, mode)) {
         logger.info(`Mega-Debrid${accountLabel}: uebersprungen (manuell deaktiviert), pruefe naechsten Account`);
@@ -2195,7 +2233,7 @@ class MegaDebridClient {
         : accountAttemptTimeoutSignal;
       try {
         const client = new MegaDebridClient(account.login, account.password, mode, allowApiFallback, megaWebUnrestrict);
-        const result = await client.unrestrictLink(link, accountAttemptSignal);
+        const result = await waitForPromiseWithSignal(client.unrestrictLink(link, accountAttemptSignal), accountAttemptSignal);
         clearMegaDebridAccountCooldownState(cooldownKey);
         clearMegaDebridEmptyResponseStreak(cooldownKey);
         const elapsedMs = Date.now() - testStartedAt;
@@ -2221,9 +2259,10 @@ class MegaDebridClient {
         };
       } catch (error) {
         const elapsedMs = Date.now() - testStartedAt;
-        const abortText = compactErrorText(error).replace(/^Error:\s*/i, "");
+        const redactions = { accountValues: [account.login], secretValues: [account.password] };
+        const abortText = sanitizeProviderErrorText(error, redactions);
         if (signal?.aborted) {
-          throw error;
+          throw new Error(abortText);
         }
         // Timeout/abort on THIS account (the shared unrestrict timeout fired). The
         // account-wide cooldown exists ONLY to make the retry rotate to another
@@ -2278,7 +2317,7 @@ class MegaDebridClient {
           }
           throw new Error(`Mega-Debrid${accountLabel}: ${abortText}`);
         }
-        const failure = MegaDebridClient.classifyAccountFailure(error);
+        const failure = MegaDebridClient.classifyAccountFailure(error, redactions);
         traceConversionPhase({
           phase: "mega-account",
           provider: providerName.includes("API") ? "megadebrid-api" : "megadebrid-web",
@@ -2326,7 +2365,7 @@ class MegaDebridClient {
         for (let nextPos = orderPos + 1; nextPos < orderedEntries.length; nextPos += 1) {
           const nextAcc = orderedEntries[nextPos].account;
           if (!isMegaDebridAccountDisabled(settings, nextAcc.id, mode) && !isMegaDebridAccountDailyLimitReached(settings, nextAcc.id) && !getMegaDebridAccountCooldownState(`${nextAcc.id}:${mode}`)) {
-            nextLabel = `${nextAcc.label}/${totalAccounts} (${nextAcc.maskedLogin})`;
+            nextLabel = `${nextAcc.label}/${totalAccounts}`;
             break;
           }
         }
@@ -2364,9 +2403,10 @@ class MegaDebridClient {
   }
 
   static classifyAccountFailure(
-    error: unknown
+    error: unknown,
+    redactions: DiagnosticRedactions = {}
   ): { fatal: boolean; cooldownMs: number; message: string; category: MegaDebridCooldownCategory; limitSignal?: boolean } {
-    const errorText = compactErrorText(error).replace(/^Error:\s*/i, "");
+    const errorText = sanitizeProviderErrorText(error, redactions);
 
     if (/aborted/i.test(errorText) && !/timeout/i.test(errorText)) {
       return { fatal: true, cooldownMs: 0, message: errorText, category: "temporary" };
@@ -2909,8 +2949,8 @@ class DebridLinkClient {
 
     for (let keyIdx = 0; keyIdx < this.apiKeys.length; keyIdx += 1) {
       const apiKey = this.apiKeys[keyIdx];
-      const keyLabel = ` (${apiKey.label}/${totalKeys}, ${apiKey.masked})`;
-      const rotationLabel = `${apiKey.label}/${totalKeys} (${apiKey.masked})`;
+      const keyLabel = ` (${apiKey.label}/${totalKeys})`;
+      const rotationLabel = `${apiKey.label}/${totalKeys}`;
       if (isDebridLinkApiKeyDisabled(settings, apiKey.id)) {
         logger.info(`Debrid-Link${keyLabel}: uebersprungen (manuell deaktiviert), pruefe naechsten Key`);
         logAccountRotation("INFO", providerName, rotationLabel, "SKIP_DISABLED", { reason: "manually disabled" });
@@ -2978,7 +3018,7 @@ class DebridLinkClient {
       } catch (error) {
         const failure = await this.classifyKeyFailure(error, apiKey, link, signal);
         const elapsedMs = Date.now() - testStartedAt;
-        const abortText = compactErrorText(error).replace(/^Error:\s*/i, "");
+        const abortText = sanitizeProviderErrorText(error, { secretValues: [apiKey.token] });
         if (/aborted/i.test(abortText) && !/timeout/i.test(abortText)) {
           const ranLongEnough = elapsedMs >= getMegaDebridAbortMinRunMs();
           if (ranLongEnough) {
@@ -3059,7 +3099,7 @@ class DebridLinkClient {
         for (let nextIdx = keyIdx + 1; nextIdx < this.apiKeys.length; nextIdx += 1) {
           const nextKey = this.apiKeys[nextIdx];
           if (!isDebridLinkApiKeyDisabled(settings, nextKey.id) && !isDebridLinkApiKeyDailyLimitReached(settings, nextKey.id) && !getDebridLinkKeyCooldownState(nextKey.id)) {
-            nextLabel = `${nextKey.label}/${totalKeys} (${nextKey.masked})`;
+            nextLabel = `${nextKey.label}/${totalKeys}`;
             break;
           }
         }
@@ -3232,16 +3272,18 @@ class DebridLinkClient {
     link: string,
     signal?: AbortSignal
   ): Promise<{ fatal: boolean; cooldownMs: number; message: string; category?: DebridLinkCooldownCategory; providerWide?: boolean; hostOnly?: boolean; hoster?: string }> {
-    const errorText = compactErrorText(error).replace(/^Error:\s*/i, "");
+    const redactions = { secretValues: [apiKey.token] };
+    const errorText = sanitizeProviderErrorText(error, redactions);
     if (error instanceof DebridLinkApiError) {
       const code = String(error.code || "").trim() || `HTTP ${error.status}`;
-      const description = error.message || code;
+      const safeCode = sanitizeDiagnosticText(code, redactions);
+      const description = sanitizeDiagnosticText(error.message || code, redactions);
 
       if (DEBRID_LINK_INVALID_TOKEN_ERRORS.has(code)) {
         return {
           fatal: false,
           cooldownMs: DEBRID_LINK_INVALID_KEY_COOLDOWN_MS,
-          message: `ungueltiger oder deaktivierter API-Key (${code}: ${description})`,
+          message: `ungueltiger oder deaktivierter API-Key (${safeCode}: ${description})`,
           category: "invalid"
         };
       }
@@ -3249,7 +3291,7 @@ class DebridLinkClient {
         return {
           fatal: false,
           cooldownMs: error.retryAfterMs || DEBRID_LINK_RATE_LIMIT_COOLDOWN_MS,
-          message: `API-Rate-Limit erreicht (${code}: ${description})`,
+          message: `API-Rate-Limit erreicht (${safeCode}: ${description})`,
           category: "rate_limit"
         };
       }
@@ -3260,7 +3302,7 @@ class DebridLinkClient {
         return {
           fatal: false,
           cooldownMs,
-          message: `Quota erreicht fuer ${hosterLabel} (${code}: ${description})`,
+          message: `Quota erreicht fuer ${hosterLabel} (${safeCode}: ${description})`,
           category: "quota",
           hostOnly: true,
           hoster: hosterRaw
@@ -3271,7 +3313,7 @@ class DebridLinkClient {
         return {
           fatal: false,
           cooldownMs,
-          message: `Quota erreicht (${code}: ${description})`,
+          message: `Quota erreicht (${safeCode}: ${description})`,
           category: "quota"
         };
       }
@@ -3279,7 +3321,7 @@ class DebridLinkClient {
         return {
           fatal: false,
           cooldownMs: DEBRID_LINK_KEY_COOLDOWN_MS,
-          message: `Link kann aktuell nicht generiert werden (${code}: ${description})`,
+          message: `Link kann aktuell nicht generiert werden (${safeCode}: ${description})`,
           category: "temporary",
           providerWide: true
         };
@@ -3288,7 +3330,7 @@ class DebridLinkClient {
         return {
           fatal: false,
           cooldownMs: 0,
-          message: `Key kann Link aktuell nicht verarbeiten (${code}: ${description})`,
+          message: `Key kann Link aktuell nicht verarbeiten (${safeCode}: ${description})`,
           category: "skip"
         };
       }
@@ -3304,7 +3346,7 @@ class DebridLinkClient {
         return {
           fatal: false,
           cooldownMs: DEBRID_LINK_KEY_COOLDOWN_MS,
-          message: `temporärer API-Fehler (${code}: ${description})`
+          message: `temporärer API-Fehler (${safeCode}: ${description})`
         };
       }
       return {
@@ -3748,7 +3790,19 @@ export class DebridService {
     const prev = this.settings;
     this.settings = cloneSettings(next);
 
-    if (prev.debridLinkApiKeys !== next.debridLinkApiKeys) {
+    const previousDebridLinkDisabled = new Set(prev.debridLinkDisabledKeyIds || []);
+    const nextDebridLinkDisabled = new Set(next.debridLinkDisabledKeyIds || []);
+    const changedDebridLinkKeys = new Set<string>();
+    for (const keyId of new Set([...previousDebridLinkDisabled, ...nextDebridLinkDisabled])) {
+      if (previousDebridLinkDisabled.has(keyId) !== nextDebridLinkDisabled.has(keyId)) {
+        changedDebridLinkKeys.add(keyId);
+      }
+    }
+    if (changedDebridLinkKeys.size > 0) {
+      clearDebridLinkRuntimeStateForKeys(changedDebridLinkKeys);
+    }
+
+    if (prev.debridLinkApiKeys !== next.debridLinkApiKeys || changedDebridLinkKeys.size > 0) {
       this.cachedDebridLinkClient = null;
       this.cachedDebridLinkKey = "";
     }

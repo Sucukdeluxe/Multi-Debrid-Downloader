@@ -226,6 +226,10 @@ describe("disk write recovery", () => {
       availableBytes: 384,
       deficitBytes: 640
     }));
+    expect(manager.getSnapshot().diskWaitEvents?.[0]).toEqual(expect.objectContaining({
+      state: "waiting",
+      at: expect.any(Number)
+    }));
   });
 
   it("keeps disk-wait downloads out of the scheduler until their capacity retry is due", async () => {
@@ -320,6 +324,33 @@ describe("disk write recovery", () => {
     expect(session.items[itemId].status).toBe("completed");
     expect(fs.statSync(path.join(outputDir, "reserve-resume.bin")).size).toBe(1_024);
     expect((manager as any).diskReservations.getReservedBytesByVolume().get("download-volume")).toBe(0);
+    expect(manager.getSnapshot().diskWaitEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ownerId: itemId, state: "waiting" }),
+      expect.objectContaining({ ownerId: itemId, state: "resolved", resolvedAt: expect.any(Number) })
+    ]));
+  });
+
+  it("keeps multiple disk-wait events instead of replacing the previous cause", () => {
+    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(os.tmpdir(), `rd-disk-ring-${Date.now()}`)));
+    const first = {
+      phase: "download" as const,
+      ownerId: "item-one",
+      volumeKey: "volume-one",
+      requiredBytes: 200,
+      availableBytes: 100,
+      deficitBytes: 100,
+      safetyBytes: 0,
+      retryAt: Date.now() + 1000
+    };
+    const second = { ...first, ownerId: "item-two", volumeKey: "volume-two" };
+
+    (manager as any).recordDiskWait(first, { itemId: "item-one", packageId: "package-one" });
+    (manager as any).recordDiskWait(second, { itemId: "item-two", packageId: "package-two" });
+
+    expect(manager.getSnapshot().diskWaitEvents).toEqual([
+      expect.objectContaining({ ownerId: "item-one", state: "waiting" }),
+      expect.objectContaining({ ownerId: "item-two", state: "waiting" })
+    ]);
   });
 
   it("marks a fully downloaded package as failed when post-processing failed", () => {
@@ -631,6 +662,28 @@ describe("download start account gate", () => {
     expect(disabledMegaManager.getSnapshot().canStart).toBe(false);
   });
 
+  it("treats configured Mega-Debrid pools with both modes disabled as unavailable", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-disabled-mega-modes-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        megaLogin: "legacy@example.test",
+        megaPassword: "legacy-secret",
+        megaCredentials: "legacy@example.test:legacy-secret",
+        megaDebridApiCredentials: "api@example.test:api-secret",
+        megaDebridWebCredentials: "web@example.test:web-secret",
+        megaDebridApiEnabled: false,
+        megaDebridWebEnabled: false,
+        providerOrder: ["megadebrid-api", "megadebrid-web"]
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    expect(manager.getSnapshot().canStart).toBe(false);
+  });
+
   it("allows start when an active account is available", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-active-account-gate-"));
     tempDirs.push(root);
@@ -859,14 +912,16 @@ describe("download manager", () => {
     expect(itemLogPath).not.toBeNull();
     shutdownItemLogs();
     const content = fs.readFileSync(itemLogPath!, "utf8");
-    const firstTest = content.indexOf("Account 1/3 (al***ha)");
+    const firstTest = content.indexOf("accountLabel=Account 1/3");
     const firstFailure = content.indexOf("event=FAILED");
-    const secondTest = content.indexOf("Account 2/3 (be***ta)");
+    const secondTest = content.indexOf("accountLabel=Account 2/3");
     const secondSuccess = content.indexOf("event=OK");
     expect(firstTest).toBeGreaterThanOrEqual(0);
     expect(firstFailure).toBeGreaterThan(firstTest);
     expect(secondTest).toBeGreaterThan(firstFailure);
     expect(secondSuccess).toBeGreaterThan(secondTest);
+    expect(content).not.toContain("al***ha");
+    expect(content).not.toContain("be***ta");
   });
 
   it("stores RapidGator metadata before a download starts", () => {
@@ -956,6 +1011,26 @@ describe("download manager", () => {
     expect(invalidateMegaSession).toHaveBeenCalledTimes(1);
   });
 
+  it("refreshes the Mega-Debrid runtime pool when a mode is toggled with unchanged credentials", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-mega-mode-refresh-"));
+    tempDirs.push(root);
+    const settings = {
+      ...defaultSettings(),
+      megaDebridWebCredentials: "web-user:web-pass",
+      megaDebridWebEnabled: true,
+      megaDebridApiEnabled: false
+    };
+    const invalidateMegaSession = vi.fn();
+    const manager = new DownloadManager(settings, emptySession(), createStoragePaths(path.join(root, "state")), { invalidateMegaSession });
+    const accountId = getMegaDebridAccountId("web-user");
+    primeMegaDebridRuntimeCooldownForTests(`${accountId}:web`, 120_000);
+
+    manager.setSettings({ ...settings, megaDebridWebEnabled: false });
+
+    expect(invalidateMegaSession).toHaveBeenCalledTimes(1);
+    expect(getMegaDebridAccountCooldownState(`${accountId}:web`)).toBeNull();
+  });
+
   it("refreshes an active Mega-Debrid account pool without restarting the application", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-mega-live-pool-refresh-"));
     tempDirs.push(root);
@@ -998,6 +1073,112 @@ describe("download manager", () => {
     expect(failures.has("megadebrid-web:rapidgator.net")).toBe(false);
     expect(failures.has("megadebrid-api:rapidgator.net")).toBe(false);
     expect(failures.has("realdebrid:rapidgator.net")).toBe(true);
+  });
+
+  it("refreshes an active Debrid-Link key pool without restarting the application", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-debrid-link-live-pool-refresh-"));
+    tempDirs.push(root);
+    const keys = parseDebridLinkApiKeys("first-key\nsecond-key");
+    const settings = {
+      ...defaultSettings(),
+      debridLinkApiKeys: "first-key\nsecond-key",
+      debridLinkDisabledKeyIds: [keys[1].id],
+      providerOrder: ["debridlink" as const]
+    };
+    const manager = new DownloadManager(settings, emptySession(), createStoragePaths(path.join(root, "state")));
+    manager.addPackages([{ name: "debrid-link-pool-refresh", links: ["https://rapidgator.net/file/debrid-link-pool-refresh"] }]);
+    const session = (manager as any).session;
+    const item = Object.values(session.items)[0] as any;
+    item.provider = "debridlink";
+    item.status = "validating";
+    session.running = true;
+    const active = {
+      itemId: item.id,
+      packageId: item.packageId,
+      abortController: new AbortController(),
+      abortReason: "none",
+      resumable: true,
+      nonResumableCounted: false
+    };
+    (manager as any).activeTasks.set(item.id, active);
+
+    manager.setSettings({ ...settings, debridLinkDisabledKeyIds: [keys[0].id] });
+
+    expect(active.abortController.signal.aborted).toBe(true);
+    expect(active.abortReason).toBe("settings_refresh");
+  });
+
+  it("pauses a running queue when the last account is disabled and resumes after reactivation", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-last-account-live-toggle-"));
+    tempDirs.push(root);
+    const login = "only-user";
+    const accountId = getMegaDebridAccountId(login);
+    const settings = {
+      ...defaultSettings(),
+      megaDebridWebCredentials: `${login}:only-pass`,
+      megaDebridWebEnabled: true,
+      megaDebridApiEnabled: false,
+      megaDebridPreferApi: false,
+      providerOrder: ["megadebrid-web" as const]
+    };
+    const manager = new DownloadManager(settings, emptySession(), createStoragePaths(path.join(root, "state")));
+    manager.addPackages([{ name: "last-account-toggle", links: ["https://rapidgator.net/file/last-account-toggle"] }]);
+    const item = Object.values((manager as any).session.items)[0] as any;
+    item.provider = "megadebrid-web";
+    item.status = "validating";
+    (manager as any).session.running = true;
+    const active = {
+      itemId: item.id,
+      packageId: item.packageId,
+      abortController: new AbortController(),
+      abortReason: "none",
+      resumable: true,
+      nonResumableCounted: false
+    };
+    (manager as any).activeTasks.set(item.id, active);
+    const schedulerSpy = vi.spyOn(manager as any, "ensureScheduler").mockResolvedValue(undefined);
+
+    manager.setSettings({ ...settings, megaDebridWebDisabledAccountIds: [accountId] });
+
+    expect(manager.getSnapshot().session.paused).toBe(true);
+    expect(manager.getSnapshot().canStart).toBe(false);
+    expect(active.abortController.signal.aborted).toBe(true);
+    expect(active.abortReason).toBe("settings_refresh");
+
+    (manager as any).activeTasks.clear();
+    item.status = "queued";
+    manager.setSettings({ ...settings, megaDebridWebDisabledAccountIds: [] });
+    await Promise.resolve();
+
+    expect(manager.getSnapshot().session.paused).toBe(false);
+    expect(manager.getSnapshot().canStart).toBe(false);
+    expect(schedulerSpy).toHaveBeenCalled();
+  });
+
+  it("preserves a manual pause when the last account is disabled and reactivated", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-manual-pause-account-toggle-"));
+    tempDirs.push(root);
+    const login = "manual-pause-user";
+    const accountId = getMegaDebridAccountId(login);
+    const settings = {
+      ...defaultSettings(),
+      megaDebridWebCredentials: `${login}:only-pass`,
+      megaDebridWebEnabled: true,
+      megaDebridApiEnabled: false,
+      megaDebridPreferApi: false,
+      providerOrder: ["megadebrid-web" as const]
+    };
+    const manager = new DownloadManager(settings, emptySession(), createStoragePaths(path.join(root, "state")));
+    (manager as any).session.running = true;
+    (manager as any).session.paused = true;
+    const schedulerSpy = vi.spyOn(manager as any, "ensureScheduler").mockResolvedValue(undefined);
+
+    manager.setSettings({ ...settings, megaDebridWebDisabledAccountIds: [accountId] });
+    manager.setSettings({ ...settings, megaDebridWebDisabledAccountIds: [] });
+    await Promise.resolve();
+
+    expect(manager.getSnapshot().session.paused).toBe(true);
+    expect(schedulerSpy).not.toHaveBeenCalled();
   });
 
   it("continues a running Mega-Web download with the next enabled account after a live settings change", async () => {
@@ -3447,6 +3628,132 @@ describe("download manager", () => {
     expect(fs.statSync(item.targetPath).size).toBe(binary.length);
   });
 
+  it("keeps a locked in-session HTTP 416 partial until the clean reset can remove it", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-416-locked-session-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    manager.addPackages([{ name: "locked-session-416", links: ["https://dummy/locked-session-416"] }]);
+    const item = Object.values((manager as any).session.items)[0] as any;
+    const targetPath = path.join(root, "downloads", "locked-session-416.part01.rar");
+    const partialBytes = 96 * 1024;
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.writeFileSync(targetPath, Buffer.alloc(partialBytes, 7));
+    item.targetPath = targetPath;
+    item.downloadedBytes = partialBytes;
+    item.totalBytes = partialBytes * 2;
+    item.progressPercent = 50;
+    item.http416FreshRestarts = 2;
+    const active = {
+      itemId: item.id,
+      packageId: item.packageId,
+      abortController: new AbortController(),
+      abortReason: "none",
+      resumable: true,
+      nonResumableCounted: false,
+      genericErrorRetries: 0
+    };
+    const originalRmSync = fs.rmSync;
+    const rmSpy = vi.spyOn(fs, "rmSync").mockImplementation(((candidate, options) => {
+      if (path.resolve(String(candidate)) === path.resolve(targetPath)) {
+        const error = new Error("locked") as NodeJS.ErrnoException;
+        error.code = "EBUSY";
+        throw error;
+      }
+      return originalRmSync(candidate as fs.PathLike, options as fs.RmDirOptions);
+    }) as typeof fs.rmSync);
+
+    try {
+      await (manager as any).scheduleHttp416Retry(item, active, "3", "HTTP 416", targetPath);
+
+      expect(item).toMatchObject({
+        status: "queued",
+        downloadedBytes: partialBytes,
+        totalBytes: partialBytes * 2,
+        progressPercent: 50,
+        resumeResetPending: true,
+        http416FreshRestarts: 2,
+        fullStatus: "Warte auf Teildatei-Freigabe"
+      });
+      expect(fs.existsSync(targetPath)).toBe(true);
+      expect(fs.statSync(targetPath).size).toBe(partialBytes);
+    } finally {
+      rmSpy.mockRestore();
+    }
+  });
+
+  it("keeps a locked HTTP 416 fresh-restart partial instead of reporting a false zero", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-416-locked-fresh-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    manager.addPackages([{ name: "locked-fresh-416", links: ["https://dummy/locked-fresh-416"] }]);
+    const item = Object.values((manager as any).session.items)[0] as any;
+    const targetPath = path.join(root, "downloads", "locked-fresh-416.part01.rar");
+    const partialBytes = 128 * 1024;
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.writeFileSync(targetPath, Buffer.alloc(partialBytes, 11));
+    item.targetPath = targetPath;
+    item.downloadedBytes = partialBytes;
+    item.totalBytes = partialBytes * 2;
+    item.progressPercent = 50;
+    const active = {
+      itemId: item.id,
+      packageId: item.packageId,
+      abortController: new AbortController(),
+      abortReason: "none",
+      resumable: true,
+      nonResumableCounted: false,
+      genericErrorRetries: 3
+    };
+    const originalRmSync = fs.rmSync;
+    const rmSpy = vi.spyOn(fs, "rmSync").mockImplementation(((candidate, options) => {
+      if (path.resolve(String(candidate)) === path.resolve(targetPath)) {
+        const error = new Error("locked") as NodeJS.ErrnoException;
+        error.code = "EBUSY";
+        throw error;
+      }
+      return originalRmSync(candidate as fs.PathLike, options as fs.RmDirOptions);
+    }) as typeof fs.rmSync);
+
+    try {
+      await (manager as any).escalateHttp416OrFail(item, active, targetPath, "HTTP 416");
+
+      expect(item).toMatchObject({
+        status: "queued",
+        downloadedBytes: partialBytes,
+        totalBytes: partialBytes * 2,
+        progressPercent: 50,
+        resumeResetPending: true,
+        fullStatus: "Warte auf Teildatei-Freigabe"
+      });
+      expect(fs.existsSync(targetPath)).toBe(true);
+      expect(fs.statSync(targetPath).size).toBe(partialBytes);
+    } finally {
+      rmSpy.mockRestore();
+    }
+  });
+
   it("recovers an HTTP 416 item with a clean fresh restart after the in-budget retries are exhausted", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-416-fresh-"));
     tempDirs.push(root);
@@ -3533,11 +3840,75 @@ describe("download manager", () => {
       expect(item?.status).toBe("failed");
       expect(downloadCalls).toBeGreaterThan(4);
       expect(downloadCalls).toBeLessThan(30);
-      expect((manager as any).http416FreshRestartByItem.get(item.id)).toBeUndefined();
+      expect(item.http416FreshRestarts).toBeUndefined();
     } finally {
       if (prevDelay === undefined) { delete process.env.RD_HTTP416_FRESH_RESTART_DELAY_MS; } else { process.env.RD_HTTP416_FRESH_RESTART_DELAY_MS = prevDelay; }
     }
   }, 25000);
+
+  it("honors a persisted HTTP 416 fresh-restart budget after manager recreation", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-416-persisted-cap-"));
+    tempDirs.push(root);
+    const paths = createStoragePaths(path.join(root, "state"));
+    const session = emptySession();
+    const createdAt = Date.now();
+    session.packageOrder = ["persisted-416-package"];
+    session.packages["persisted-416-package"] = {
+      id: "persisted-416-package",
+      name: "persisted-416",
+      outputDir: path.join(root, "downloads", "persisted-416"),
+      extractDir: path.join(root, "extract", "persisted-416"),
+      status: "queued",
+      itemIds: ["persisted-416-item"],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items["persisted-416-item"] = {
+      id: "persisted-416-item",
+      packageId: "persisted-416-package",
+      url: "https://rapidgator.net/file/persisted-416",
+      provider: "realdebrid",
+      status: "queued",
+      retries: 5,
+      speedBps: 0,
+      downloadedBytes: 0,
+      totalBytes: null,
+      progressPercent: 0,
+      fileName: "persisted-416.bin",
+      targetPath: "",
+      resumable: true,
+      attempts: 0,
+      lastError: "HTTP 416",
+      fullStatus: "Wartet",
+      http416FreshRestarts: 2,
+      createdAt,
+      updatedAt: createdAt
+    };
+    saveSession(paths, session);
+    const restored = loadSession(paths);
+    const manager = new DownloadManager(
+      { ...defaultSettings(), token: "rd-token", outputDir: path.join(root, "downloads"), extractDir: path.join(root, "extract"), autoExtract: false },
+      restored,
+      paths
+    );
+    const item = (manager as any).session.items["persisted-416-item"];
+    const active = {
+      itemId: item.id,
+      packageId: item.packageId,
+      abortController: new AbortController(),
+      abortReason: "none",
+      resumable: true,
+      nonResumableCounted: false,
+      genericErrorRetries: 3
+    };
+
+    await (manager as any).escalateHttp416OrFail(item, active, "", "HTTP 416");
+
+    expect(item.status).toBe("failed");
+    expect(item.http416FreshRestarts).toBeUndefined();
+  });
 
   it("retries HTTP 416 in-session when using Debrid-Link API and then completes", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
@@ -4913,6 +5284,120 @@ describe("download manager", () => {
     }
   }, 45000);
 
+  it.each(["write", "end"] as const)("recovers when a stream reports an asynchronous disk-full error during %s", async (failurePhase) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-async-write-error-"));
+    tempDirs.push(root);
+    const binary = Buffer.alloc(192 * 1024, 23);
+    let directCalls = 0;
+    const server = http.createServer((req, res) => {
+      if ((req.url || "") !== "/async-write-error") {
+        res.statusCode = 404;
+        res.end("not-found");
+        return;
+      }
+      directCalls += 1;
+      res.writeHead(200, {
+        "Accept-Ranges": "bytes",
+        "Content-Length": String(binary.length)
+      });
+      res.end(binary);
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/async-write-error`;
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/unrestrict/link")) {
+        return new Response(JSON.stringify({
+          download: directUrl,
+          filename: "async-write-error.bin",
+          filesize: binary.length
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return originalFetch(input, init);
+    };
+
+    const originalCreateWriteStream = fs.createWriteStream;
+    const fsMutable = fs as unknown as { createWriteStream: typeof fs.createWriteStream };
+    let injectedFailure = false;
+    fsMutable.createWriteStream = ((...args: Parameters<typeof fs.createWriteStream>) => {
+      const targetPath = String(args[0]);
+      if (!injectedFailure && targetPath.endsWith("async-write-error.bin")) {
+        injectedFailure = true;
+        class AsyncFailingWriteStream extends EventEmitter {
+          public closed = false;
+          public destroyed = false;
+          public writableLength = 0;
+          public bytesWritten = 0;
+
+          public write(): boolean {
+            if (failurePhase === "write") {
+              queueMicrotask(() => {
+                const error = Object.assign(new Error("disk full"), { code: "ENOSPC" });
+                this.emit("error", error);
+              });
+            }
+            return true;
+          }
+
+          public end(): void {
+            if (failurePhase === "end") {
+              queueMicrotask(() => {
+                const error = Object.assign(new Error("disk full on close"), { code: "ENOSPC" });
+                this.emit("error", error);
+              });
+              return;
+            }
+            this.closed = true;
+            this.emit("close");
+          }
+
+          public destroy(): void {
+            this.destroyed = true;
+          }
+        }
+        return new AsyncFailingWriteStream() as unknown as ReturnType<typeof fs.createWriteStream>;
+      }
+      return originalCreateWriteStream(...args);
+    }) as typeof fs.createWriteStream;
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          token: "rd-token",
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false,
+          autoReconnect: false
+        },
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+      manager.addPackages([{ name: "async-write-error", links: ["https://dummy/async-write-error"] }]);
+
+      await manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 30_000);
+
+      const item = Object.values(manager.getSnapshot().session.items)[0];
+      expect(item?.status).toBe("completed");
+      expect(injectedFailure).toBe(true);
+      expect(directCalls).toBeGreaterThan(1);
+      expect(fs.readFileSync(item.targetPath)).toEqual(binary);
+    } finally {
+      fsMutable.createWriteStream = originalCreateWriteStream;
+      server.close();
+      await once(server, "close");
+    }
+  }, 35_000);
+
   it("uses content-disposition filename when provider filename is opaque", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
@@ -5129,6 +5614,7 @@ describe("download manager", () => {
     const existingTargetPath = path.join(pkgDir, "complete.mkv");
     fs.writeFileSync(existingTargetPath, binary);
     let saw416 = false;
+    let directCalls = 0;
 
     const server = http.createServer((req, res) => {
       if ((req.url || "") !== "/complete") {
@@ -5136,6 +5622,7 @@ describe("download manager", () => {
         res.end("not-found");
         return;
       }
+      directCalls += 1;
       const range = String(req.headers.range || "");
       const match = range.match(/bytes=(\d+)-/i);
       const start = match ? Number(match[1]) : 0;
@@ -5175,7 +5662,7 @@ describe("download manager", () => {
           JSON.stringify({
             download: directUrl,
             filename: "complete.mkv",
-            filesize: binary.length
+            filesize: null
           }),
           {
             status: 200,
@@ -5214,8 +5701,8 @@ describe("download manager", () => {
         retries: 0,
         speedBps: 0,
         downloadedBytes: binary.length,
-        totalBytes: binary.length,
-        progressPercent: 100,
+        totalBytes: null,
+        progressPercent: 0,
         fileName: "complete.mkv",
         targetPath: existingTargetPath,
         resumable: true,
@@ -5247,6 +5734,8 @@ describe("download manager", () => {
       expect(item?.status).toBe("completed");
       expect(item?.targetPath).toBe(existingTargetPath);
       expect(item?.downloadedBytes).toBe(binary.length);
+      expect(item?.totalBytes).toBe(binary.length);
+      expect(directCalls).toBe(1);
       expect(fs.statSync(existingTargetPath).size).toBe(binary.length);
     } finally {
       server.close();
@@ -5858,6 +6347,7 @@ describe("download manager", () => {
       attempts: 3,
       lastError: "Error: HTTP 416",
       fullStatus: "Fehler: Error: HTTP 416",
+      http416FreshRestarts: 2,
       createdAt,
       updatedAt: createdAt
     };
@@ -5874,7 +6364,7 @@ describe("download manager", () => {
       createStoragePaths(path.join(root, "state"))
     );
 
-    await waitFor(() => manager.getSnapshot().session.items[itemId]?.status === "queued", 12000);
+    await manager.waitForStartupRecovery();
 
     const snapshot = manager.getSnapshot();
     const item = snapshot.session.items[itemId];
@@ -5883,8 +6373,99 @@ describe("download manager", () => {
     expect(item?.downloadedBytes).toBe(0);
     expect(item?.progressPercent).toBe(0);
     expect(item?.fullStatus).toContain("Auto-Retry");
+    expect(item?.http416FreshRestarts).toBe(2);
     expect(snapshot.session.packages[packageId]?.status).toBe("queued");
     expect(fs.existsSync(targetPath)).toBe(false);
+  });
+
+  it("keeps a locked HTTP 416 partial intact and persists a pending clean reset", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+
+    const session = emptySession();
+    const packageId = "retry-416-locked-pkg";
+    const itemId = "retry-416-locked-item";
+    const createdAt = Date.now() - 20_000;
+    const outputDir = path.join(root, "downloads", "retry-416-locked");
+    const targetPath = path.join(outputDir, "locked.part03.rar");
+    const partialBytes = 12 * 1024;
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.writeFileSync(targetPath, Buffer.alloc(partialBytes, 1));
+
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "retry-416-locked",
+      outputDir,
+      extractDir: path.join(root, "extract", "retry-416-locked"),
+      status: "failed",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/retry-416-locked",
+      provider: "megadebrid-web",
+      status: "failed",
+      retries: 4,
+      speedBps: 0,
+      downloadedBytes: partialBytes,
+      totalBytes: partialBytes * 2,
+      progressPercent: 50,
+      fileName: "locked.part03.rar",
+      targetPath,
+      resumable: true,
+      attempts: 3,
+      lastError: "Error: HTTP 416",
+      fullStatus: "Fehler: Error: HTTP 416",
+      http416FreshRestarts: 2,
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    const originalRmSync = fs.rmSync;
+    const rmSpy = vi.spyOn(fs, "rmSync").mockImplementation(((candidate, options) => {
+      if (path.resolve(String(candidate)) === path.resolve(targetPath)) {
+        throw Object.assign(new Error("target busy"), { code: "EBUSY" });
+      }
+      return originalRmSync(candidate, options);
+    }) as typeof fs.rmSync);
+
+    try {
+      const manager = new DownloadManager(
+        {
+          ...defaultSettings(),
+          megaDebridWebCredentials: "mega-user:mega-pass",
+          megaDebridWebEnabled: true,
+          megaDebridApiEnabled: false,
+          outputDir: path.join(root, "downloads"),
+          extractDir: path.join(root, "extract"),
+          autoExtract: false
+        },
+        session,
+        createStoragePaths(path.join(root, "state"))
+      );
+
+      await waitFor(() => manager.getSnapshot().session.items[itemId]?.status === "queued", 2000);
+
+      const item = manager.getSnapshot().session.items[itemId];
+      expect(item).toMatchObject({
+        status: "queued",
+        downloadedBytes: partialBytes,
+        totalBytes: partialBytes * 2,
+        progressPercent: 50,
+        resumeResetPending: true,
+        fullStatus: "Warte auf Teildatei-Freigabe"
+      });
+      expect(fs.existsSync(targetPath)).toBe(true);
+      expect(fs.statSync(targetPath).size).toBe(partialBytes);
+    } finally {
+      rmSpy.mockRestore();
+    }
   });
 
   it("requeues completed zero-byte archive items automatically on startup", () => {
@@ -8320,6 +8901,76 @@ describe("download manager", () => {
     }
   }, 20000);
 
+  it.each(["items", "package"] as const)("restarts a reset item after a %s reset when its previous link conversion ignores abort", async (resetMode) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `rd-reset-stuck-conversion-${resetMode}-`));
+    tempDirs.push(root);
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false,
+        maxParallel: 1
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+    manager.addPackages([{ name: "reset-stuck-conversion", links: ["https://rapidgator.net/file/reset-stuck-conversion"] }]);
+    const itemId = Object.keys((manager as any).session.items)[0];
+    let calls = 0;
+    let releaseFirst: (value: UnrestrictedLink) => void = () => undefined;
+    (manager as any).debridService.unrestrictLink = vi.fn(async (_link: string, signal?: AbortSignal) => {
+      calls += 1;
+      if (calls === 1) {
+        return await new Promise<UnrestrictedLink>((resolve) => {
+          releaseFirst = resolve;
+        });
+      }
+      return await new Promise<UnrestrictedLink>((_resolve, reject) => {
+        const onAbort = (): void => reject(new Error("aborted"));
+        if (signal?.aborted) {
+          onAbort();
+          return;
+        }
+        signal?.addEventListener("abort", onAbort, { once: true });
+      });
+    });
+
+    try {
+      await manager.start();
+      await waitFor(() => calls === 1, 2_000);
+      const firstActive = (manager as any).activeTasks.get(itemId);
+
+      if (resetMode === "items") {
+        await manager.resetItems([itemId]);
+      } else {
+        await manager.resetPackage((manager as any).session.items[itemId].packageId);
+      }
+      await waitFor(() => calls === 2, 2_000);
+      const replacementActive = (manager as any).activeTasks.get(itemId);
+
+      expect(replacementActive).toBeDefined();
+      expect(replacementActive).not.toBe(firstActive);
+      releaseFirst({
+        fileName: "ignored-first.bin",
+        directUrl: "https://dummy/ignored-first.bin",
+        fileSize: 1,
+        retriesUsed: 0
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect((manager as any).activeTasks.get(itemId)).toBe(replacementActive);
+    } finally {
+      manager.stop();
+      releaseFirst({
+        fileName: "ignored-first.bin",
+        directUrl: "https://dummy/ignored-first.bin",
+        fileSize: 1,
+        retriesUsed: 0
+      });
+    }
+  });
+
   it("retries a transient Mega-Debrid resolve failure fast (no long cooldown) with a German reason", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
@@ -8772,6 +9423,80 @@ describe("download manager", () => {
       fullStatus: "Wartet",
       onlineStatus: "online"
     }));
+  });
+
+  it("keeps a locked target attached and pending instead of reporting a successful item reset", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-reset-locked-target-"));
+    tempDirs.push(root);
+    const packageId = "reset-locked-target";
+    const itemId = "reset-locked-target-item";
+    const targetPath = path.join(root, "downloads", "reset-locked-target", "locked.part1.rar");
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.writeFileSync(targetPath, Buffer.alloc(4_096, 7));
+    const session = emptySession();
+    const createdAt = Date.now();
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "reset-locked-target",
+      outputDir: path.dirname(targetPath),
+      extractDir: path.join(root, "extract", "reset-locked-target"),
+      status: "completed",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/reset-locked-target",
+      provider: "megadebrid-web",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 4_096,
+      totalBytes: 8_192,
+      progressPercent: 50,
+      fileName: "locked.part1.rar",
+      targetPath,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Fertig",
+      onlineStatus: "online",
+      createdAt,
+      updatedAt: createdAt
+    };
+    const manager = new DownloadManager(
+      { ...defaultSettings(), outputDir: path.join(root, "downloads"), extractDir: path.join(root, "extract") },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+    await manager.waitForStartupRecovery();
+    const originalRmSync = fs.rmSync;
+    const fsMutable = fs as unknown as { rmSync: typeof fs.rmSync };
+    fsMutable.rmSync = ((candidate: fs.PathLike, options?: fs.RmDirOptions) => {
+      if (path.resolve(String(candidate)) === path.resolve(targetPath)) {
+        throw Object.assign(new Error("locked"), { code: "EBUSY" });
+      }
+      return originalRmSync(candidate, options as fs.RmDirOptions);
+    }) as typeof fs.rmSync;
+
+    try {
+      await expect(manager.resetItems([itemId])).rejects.toThrow("Teildatei");
+    } finally {
+      fsMutable.rmSync = originalRmSync;
+    }
+
+    const item = manager.getSnapshot().session.items[itemId];
+    expect(fs.existsSync(targetPath)).toBe(true);
+    expect(item.targetPath).toBe(targetPath);
+    expect(item.downloadedBytes).toBe(4_096);
+    expect(item.resumeResetPending).toBe(true);
+    expect(item.fullStatus).toBe("Warte auf Teildatei-Freigabe");
+    expect(item.onlineStatus).toBe("online");
   });
 
   it("does not freeze the scheduler when a reset item's old task is parked in a non-abort-observing await", async () => {
@@ -13782,6 +14507,126 @@ describe("download manager", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("limits running small-queue telemetry to one update per 500 ms", async () => {
+    vi.useFakeTimers();
+    try {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-state-small-cadence-"));
+      tempDirs.push(root);
+      const manager = new DownloadManager(
+        defaultSettings(),
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+      const internal = manager as unknown as {
+        session: { running: boolean };
+        itemCount: number;
+        emitState: () => void;
+      };
+      internal.session.running = true;
+      internal.itemCount = 12;
+      let emitted = 0;
+      manager.on("state", () => {
+        emitted += 1;
+      });
+
+      internal.emitState();
+      await vi.advanceTimersByTimeAsync(499);
+      expect(emitted).toBe(0);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(emitted).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("coalesces account-rotation state events into the running 500 ms cadence", async () => {
+    vi.useFakeTimers();
+    try {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-rotation-state-cadence-"));
+      tempDirs.push(root);
+      const manager = new DownloadManager(
+        defaultSettings(),
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+      (manager as any).session.running = true;
+      let emitted = 0;
+      manager.on("state", () => {
+        emitted += 1;
+      });
+
+      logAccountRotation("INFO", "Mega-Debrid Web", "Account 1/3", "TEST");
+      await vi.advanceTimersByTimeAsync(120);
+      logAccountRotation("WARN", "Mega-Debrid Web", "Account 1/3", "FAILED");
+      await vi.advanceTimersByTimeAsync(120);
+      logAccountRotation("INFO", "Mega-Debrid Web", "Account 2/3", "TEST");
+      await vi.advanceTimersByTimeAsync(259);
+      expect(emitted).toBe(0);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(emitted).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("coalesces forced running state events into the same 500 ms cadence", async () => {
+    vi.useFakeTimers();
+    try {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-forced-state-cadence-"));
+      tempDirs.push(root);
+      const manager = new DownloadManager(
+        defaultSettings(),
+        emptySession(),
+        createStoragePaths(path.join(root, "state"))
+      );
+      const internal = manager as unknown as {
+        session: { running: boolean };
+        emitState: (force?: boolean) => void;
+      };
+      internal.session.running = true;
+      let emitted = 0;
+      manager.on("state", () => {
+        emitted += 1;
+      });
+
+      internal.emitState(true);
+      expect(emitted).toBe(1);
+      await vi.advanceTimersByTimeAsync(120);
+      internal.emitState(true);
+      await vi.advanceTimersByTimeAsync(120);
+      internal.emitState(true);
+      await vi.advanceTimersByTimeAsync(259);
+      expect(emitted).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(emitted).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refreshes running large-queue statistics after 500 ms", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-stats-cadence-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager(
+      defaultSettings(),
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+    const internal = manager as unknown as {
+      session: { running: boolean };
+      itemCount: number;
+      sessionDownloadedBytes: number;
+    };
+    internal.session.running = true;
+    internal.itemCount = 500;
+    internal.sessionDownloadedBytes = 100;
+
+    expect(manager.getStats(1_000).totalDownloaded).toBe(100);
+    internal.sessionDownloadedBytes = 200;
+    expect(manager.getStats(1_499).totalDownloaded).toBe(100);
+    expect(manager.getStats(1_500).totalDownloaded).toBe(200);
   });
 
   it("serializes parallel auto-rename invocations for the same package (no Ziel existiert / ENOENT race)", async () => {

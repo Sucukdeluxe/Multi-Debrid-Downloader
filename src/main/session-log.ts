@@ -101,16 +101,20 @@ export function getSessionLogPath(): string | null {
   return sessionLogPath;
 }
 
-export function shutdownSessionLog(): void {
-  if (!sessionLogPath) {
-    return;
-  }
-
+export function flushSessionLog(): void {
   if (flushTimer) {
     clearTimeout(flushTimer);
     flushTimer = null;
   }
   flushPending();
+}
+
+export function shutdownSessionLog(): void {
+  if (!sessionLogPath) {
+    return;
+  }
+
+  flushSessionLog();
 
   const isoTimestamp = logTimestamp();
   try {

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { logTimestamp } from "./log-timestamp";
+import { formatDiagnosticLink, sanitizeDiagnosticAccountLabel, sanitizeDiagnosticFields, sanitizeDiagnosticText } from "./diagnostic-sanitizer";
 
 export interface ConversionPhase {
   atMs: number;
@@ -17,7 +18,9 @@ export interface ConversionPhase {
 
 export interface ConversionTrace {
   startedAt: number;
+  attemptId?: string;
   itemId: string;
+  packageId?: string;
   itemName: string;
   link: string;
   providerOrder: string;
@@ -27,9 +30,18 @@ export interface ConversionTrace {
 
 const conversionContext = new AsyncLocalStorage<ConversionTrace>();
 
-function shortLink(link: string): string {
-  const raw = String(link || "").trim();
-  return raw.length > 90 ? `${raw.slice(0, 90)}…` : raw;
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function sanitizeConversionText(value: unknown, itemName = ""): string {
+  let safeValue = sanitizeDiagnosticText(value)
+    .replace(/\b(?:[a-z0-9-]+\.)+[a-z]{2,63}#[a-f0-9]{10}\b/gi, "<redacted-link>");
+  const safeItemName = sanitizeDiagnosticText(itemName).trim();
+  if (safeItemName) {
+    safeValue = safeValue.replace(new RegExp(escapeRegExp(safeItemName), "gi"), "<redacted-item>");
+  }
+  return safeValue;
 }
 
 export function traceConversionPhase(phase: Omit<ConversionPhase, "atMs">): void {
@@ -37,7 +49,16 @@ export function traceConversionPhase(phase: Omit<ConversionPhase, "atMs">): void
   if (!trace) {
     return;
   }
-  trace.phases.push({ ...phase, atMs: Date.now() - trace.startedAt });
+  trace.phases.push({
+    ...phase,
+    phase: sanitizeDiagnosticText(phase.phase),
+    provider: phase.provider ? sanitizeDiagnosticText(phase.provider) : undefined,
+    account: phase.account ? sanitizeDiagnosticAccountLabel(phase.account) : undefined,
+    tokenState: phase.tokenState ? sanitizeDiagnosticText(phase.tokenState) : undefined,
+    outcome: phase.outcome ? sanitizeDiagnosticText(phase.outcome) : undefined,
+    detail: phase.detail ? sanitizeDiagnosticText(phase.detail) : undefined,
+    atMs: Date.now() - trace.startedAt
+  });
 }
 
 export function traceConversionNote(key: string, value: string | number): void {
@@ -45,7 +66,9 @@ export function traceConversionNote(key: string, value: string | number): void {
   if (!trace) {
     return;
   }
-  trace.notes[key] = value;
+  const safeKey = sanitizeDiagnosticText(key);
+  const safeValue = sanitizeDiagnosticFields({ [key]: value })?.[key];
+  trace.notes[safeKey] = typeof safeValue === "number" ? safeValue : sanitizeDiagnosticText(safeValue);
 }
 
 export function hasActiveConversionTrace(): boolean {
@@ -58,22 +81,30 @@ export function formatConversionBlock(
   detail: string,
   totalMs: number
 ): string {
-  const noteParts = Object.entries(trace.notes)
-    .map(([key, value]) => `${key}=${value}`)
+  const safeNotes = sanitizeDiagnosticFields(trace.notes) || {};
+  const noteParts = Object.entries(safeNotes)
+    .map(([key, value]) => `${sanitizeConversionText(key, trace.itemName)}=${sanitizeConversionText(value, trace.itemName)}`)
     .join(" ");
-  const header = `${logTimestamp()} [CONV] item=${trace.itemName || trace.itemId} | order=${trace.providerOrder || "?"}`
-    + ` | result=${outcome}${detail ? ` (${detail})` : ""} | total=${totalMs}ms${noteParts ? ` | ${noteParts}` : ""}`
-    + ` | link=${shortLink(trace.link)}`;
+  const safeOrder = sanitizeConversionText(trace.providerOrder || "?", trace.itemName);
+  const safeOutcome = sanitizeConversionText(outcome, trace.itemName);
+  const safeDetail = sanitizeConversionText(detail, trace.itemName);
+  const correlation = [
+    trace.attemptId ? `attemptId=${sanitizeConversionText(trace.attemptId)}` : "",
+    `itemId=${sanitizeConversionText(trace.itemId)}`,
+    trace.packageId ? `packageId=${sanitizeConversionText(trace.packageId)}` : ""
+  ].filter(Boolean).join(" | ");
+  const header = `${logTimestamp()} [CONV] ${correlation} | order=${safeOrder}`
+    + ` | result=${safeOutcome}${safeDetail ? ` (${safeDetail})` : ""} | total=${totalMs}ms${noteParts ? ` | ${noteParts}` : ""}`;
   const lines = trace.phases.map((p) => {
     const parts: string[] = [];
-    if (p.provider) parts.push(`provider=${p.provider}`);
-    if (p.account) parts.push(`account=${p.account}`);
-    if (p.tokenState) parts.push(`token=${p.tokenState}`);
+    if (p.provider) parts.push(`provider=${sanitizeConversionText(p.provider, trace.itemName)}`);
+    if (p.account) parts.push(`account=${sanitizeDiagnosticAccountLabel(p.account)}`);
+    if (p.tokenState) parts.push(`token=${sanitizeConversionText(p.tokenState, trace.itemName)}`);
     if (typeof p.queueWaitMs === "number") parts.push(`queueWaitMs=${p.queueWaitMs}`);
     if (typeof p.workMs === "number") parts.push(`workMs=${p.workMs}`);
-    if (p.outcome) parts.push(`outcome=${p.outcome}`);
-    if (p.detail) parts.push(`detail=${String(p.detail).replace(/\r?\n/g, "\\n")}`);
-    return `    +${p.atMs}ms ${p.phase}${parts.length ? ` | ${parts.join(" | ")}` : ""}`;
+    if (p.outcome) parts.push(`outcome=${sanitizeConversionText(p.outcome, trace.itemName)}`);
+    if (p.detail) parts.push(`detail=${sanitizeConversionText(p.detail, trace.itemName)}`);
+    return `    +${p.atMs}ms ${sanitizeConversionText(p.phase, trace.itemName)}${parts.length ? ` | ${parts.join(" | ")}` : ""}`;
   });
   return [header, ...lines].join("\n");
 }
@@ -162,15 +193,17 @@ function writeConversionBlock(block: string): void {
 }
 
 export async function runWithConversionTrace<T>(
-  meta: { itemId: string; itemName: string; link: string; providerOrder: string },
+  meta: { attemptId?: string; itemId: string; packageId?: string; itemName: string; link: string; providerOrder: string },
   fn: () => Promise<T>
 ): Promise<T> {
   const trace: ConversionTrace = {
     startedAt: Date.now(),
-    itemId: meta.itemId,
-    itemName: meta.itemName,
-    link: meta.link,
-    providerOrder: meta.providerOrder,
+    attemptId: meta.attemptId ? sanitizeDiagnosticText(meta.attemptId) : undefined,
+    itemId: sanitizeDiagnosticText(meta.itemId),
+    packageId: meta.packageId ? sanitizeDiagnosticText(meta.packageId) : undefined,
+    itemName: sanitizeDiagnosticText(meta.itemName),
+    link: formatDiagnosticLink(meta.link),
+    providerOrder: sanitizeDiagnosticText(meta.providerOrder),
     notes: {},
     phases: []
   };
@@ -181,7 +214,7 @@ export async function runWithConversionTrace<T>(
     return result;
   } catch (error) {
     outcome = "FAIL";
-    detail = String((error as { message?: string })?.message || error || "").replace(/^Error:\s*/i, "").slice(0, 160);
+    detail = sanitizeDiagnosticText(String((error as { message?: string })?.message || error || "").replace(/^Error:\s*/i, "").slice(0, 160));
     throw error;
   } finally {
     const totalMs = Date.now() - trace.startedAt;

@@ -63,6 +63,7 @@ import { getRenameLogPath, initRenameLog, shutdownRenameLog } from "./rename-log
 import { getDesktopRenameLogPath, initDesktopRenameLogAt, shutdownDesktopRenameLog } from "./desktop-rename-log";
 import { buildAccountSummary, diffAccountSummary } from "./support-data";
 import { buildSupportBundle, getSupportBundleDefaultFileName } from "./support-bundle";
+import type { SupportBundleExportLifecycleEvent } from "./support-bundle";
 import { getTraceConfig, getTraceLogPath, initTraceLog, logTraceEvent, setTraceEnabled, shutdownTraceLog } from "./trace-log";
 import type { DebugSetupCheckResult, SupportTraceConfig } from "../shared/types";
 import { createOnlineBackup, downloadOnlineBackup, uploadOnlineBackup } from "./online-backup";
@@ -193,16 +194,9 @@ export class AppController {
     this.runtimeStatsTimer.unref?.();
 
     if (this.settings.autoResumeOnStart) {
-      const snapshot = this.manager.getSnapshot();
-      const hasPending = Object.values(snapshot.session.items).some((item) => item.status === "queued" || item.status === "reconnect_wait");
-      if (hasPending && this.hasAnyProviderToken(this.settings)) {
-        if (this.onStateHandler) {
-          this.beginAutoResume();
-        } else {
-          this.autoResumePending = true;
-          logger.info("Auto-Resume beim Start vorgemerkt");
-        }
-      }
+      void this.manager.waitForStartupRecovery().then(() => {
+        this.prepareAutoResume();
+      }).catch((err) => logger.warn(`Auto-Resume Startup-Recovery Fehler: ${String(err)}`));
     }
   }
 
@@ -234,18 +228,33 @@ export class AppController {
     }
   }
 
-  private hasAnyProviderToken(settings: AppSettings): boolean {
-    return Boolean(
-      settings.token.trim()
-      || settings.realDebridUseWebLogin
-      || (settings.megaLogin.trim() && settings.megaPassword.trim())
-      || settings.bestToken.trim()
-      || settings.bestDebridUseWebLogin
-      || settings.allDebridUseWebLogin
-      || settings.allDebridToken.trim()
-      || (settings.ddownloadLogin.trim() && settings.ddownloadPassword.trim())
-      || settings.oneFichierApiKey.trim()
-    );
+  private prepareAutoResume(): void {
+    const snapshot = this.manager.getSnapshot();
+    const items = Object.values(snapshot.session.items);
+    const pendingCount = items.filter((item) => item.status === "queued" || item.status === "reconnect_wait").length;
+    if (pendingCount === 0) {
+      this.audit("INFO", "Auto-Resume übersprungen", {
+        reason: "no_pending",
+        itemCount: items.length
+      });
+      return;
+    }
+    if (!snapshot.canStart) {
+      this.audit("WARN", "Auto-Resume übersprungen", {
+        reason: "cannot_start",
+        pendingCount,
+        running: snapshot.session.running,
+        paused: snapshot.session.paused,
+        configuredAccounts: snapshot.accounts.length
+      });
+      return;
+    }
+    if (this.onStateHandler) {
+      this.beginAutoResume();
+      return;
+    }
+    this.autoResumePending = true;
+    logger.info("Auto-Resume beim Start vorgemerkt");
   }
 
   public get onState(): ((snapshot: UiSnapshot) => void) | null {
@@ -709,14 +718,39 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
   }
 
   public stop(): void {
-    this.audit("INFO", "Session-Stopp ausgelöst");
+    const before = this.manager.getSnapshot();
+    const startedAt = Date.now();
+    this.audit("INFO", "Session-Stopp angefordert", this.sessionControlFields(before));
     this.manager.stop();
+    this.audit("INFO", "Session-Stopp angewendet", {
+      ...this.sessionControlFields(this.manager.getSnapshot()),
+      durationMs: Date.now() - startedAt
+    });
   }
 
   public togglePause(): boolean {
+    const before = this.manager.getSnapshot();
+    const startedAt = Date.now();
+    this.audit("INFO", "Pause angefordert", this.sessionControlFields(before));
     const paused = this.manager.togglePause();
-    this.audit("INFO", "Pause umgeschaltet", { paused });
+    this.audit("INFO", "Pause angewendet", {
+      ...this.sessionControlFields(this.manager.getSnapshot()),
+      paused,
+      durationMs: Date.now() - startedAt
+    });
     return paused;
+  }
+
+  private sessionControlFields(snapshot: UiSnapshot): Record<string, unknown> {
+    const items = Object.values(snapshot.session.items);
+    return {
+      running: snapshot.session.running,
+      paused: snapshot.session.paused,
+      packageCount: Object.keys(snapshot.session.packages).length,
+      itemCount: items.length,
+      activeItemCount: items.filter((item) => item.status === "validating" || item.status === "downloading").length,
+      queuedItemCount: items.filter((item) => item.status === "queued" || item.status === "reconnect_wait").length
+    };
   }
 
   public retryExtraction(packageId: string): void {
@@ -729,9 +763,20 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     this.manager.extractNow(packageId);
   }
 
-  public resetPackage(packageId: string): void {
-    this.audit("INFO", "Paket zurückgesetzt", { packageId });
-    this.manager.resetPackage(packageId);
+  public async resetPackage(packageId: string): Promise<void> {
+    const startedAt = Date.now();
+    this.audit("INFO", "Paket-Reset angefordert", { packageId });
+    try {
+      await this.manager.resetPackage(packageId);
+      this.audit("INFO", "Paket-Reset abgeschlossen", { packageId, durationMs: Date.now() - startedAt });
+    } catch (error) {
+      this.audit("ERROR", "Paket-Reset fehlgeschlagen", {
+        packageId,
+        durationMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      throw error;
+    }
   }
 
   public cancelPackage(packageId: string): void {
@@ -761,7 +806,7 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
 
   public exportPackageSelection(packageIds: string[]): { text: string; defaultFileName: string; packageCount: number; linkCount: number } {
     const selection = buildLinkExportSelection(this.manager.getSnapshot(), packageIds, []);
-    this.audit("INFO", "Paket-Auswahl exportiert", {
+    this.audit("INFO", "Paket-Auswahl für Export vorbereitet", {
       packageCount: selection.packageCount,
       linkCount: selection.linkCount,
       packageIds
@@ -776,7 +821,7 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
 
   public exportItemSelection(itemIds: string[]): { text: string; defaultFileName: string; packageCount: number; linkCount: number } {
     const selection = buildLinkExportSelection(this.manager.getSnapshot(), [], itemIds);
-    this.audit("INFO", "Item-Auswahl exportiert", {
+    this.audit("INFO", "Item-Auswahl für Export vorbereitet", {
       packageCount: selection.packageCount,
       linkCount: selection.linkCount,
       itemIds
@@ -870,24 +915,31 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     };
   }
 
-  public recordSupportBundleExported(filePath: string, bytes: number): void {
+  public recordSupportBundleExportSelected(): void {
     const snapshot = this.manager.getSnapshot();
+    const items = Object.values(snapshot.session.items);
     const fields = {
-      fileName: path.basename(filePath),
-      bytes,
+      phase: "selected",
+      running: snapshot.session.running,
+      paused: snapshot.session.paused,
       packageCount: Object.keys(snapshot.session.packages).length,
-      itemCount: Object.keys(snapshot.session.items).length
+      itemCount: items.length,
+      activeItemCount: items.filter((item) => item.status === "validating" || item.status === "downloading").length
     };
-    this.audit("INFO", "Support-Bundle exportiert", fields);
-    logTraceEvent("INFO", "support", "Support-Bundle exportiert", fields);
+    this.audit("INFO", "Support-Bundle-Ziel ausgewählt", fields);
   }
 
-  public recordSupportBundleExportFailed(error: unknown): void {
-    const fields = {
-      error: error instanceof Error ? error.message : String(error)
+  public recordSupportBundleExportLifecycle(event: SupportBundleExportLifecycleEvent): void {
+    const messages: Record<SupportBundleExportLifecycleEvent["phase"], string> = {
+      busy: "Support-Bundle-Export bereits aktiv",
+      cancel: "Support-Bundle-Export abgebrochen",
+      build: "Support-Bundle aufgebaut",
+      write: "Support-Bundle geschrieben",
+      success: "Support-Bundle-Export abgeschlossen",
+      failure: "Support-Bundle-Export fehlgeschlagen"
     };
-    this.audit("ERROR", "Support-Bundle-Export fehlgeschlagen", fields);
-    logTraceEvent("ERROR", "support", "Support-Bundle-Export fehlgeschlagen", fields);
+    const level = event.phase === "failure" ? "ERROR" : event.phase === "busy" ? "WARN" : "INFO";
+    this.audit(level, messages[event.phase], { ...event });
   }
 
   public getSupportBundleDefaultFileName(): string {
@@ -1113,9 +1165,25 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     this.manager.skipItems(itemIds);
   }
 
-  public resetItems(itemIds: string[]): void {
-    this.audit("INFO", "Items zurückgesetzt", { itemIds });
-    this.manager.resetItems(itemIds);
+  public async resetItems(itemIds: string[]): Promise<void> {
+    const startedAt = Date.now();
+    this.audit("INFO", "Item-Reset angefordert", { itemIds, itemCount: itemIds.length });
+    try {
+      await this.manager.resetItems(itemIds);
+      this.audit("INFO", "Item-Reset abgeschlossen", {
+        itemIds,
+        itemCount: itemIds.length,
+        durationMs: Date.now() - startedAt
+      });
+    } catch (error) {
+      this.audit("ERROR", "Item-Reset fehlgeschlagen", {
+        itemIds,
+        itemCount: itemIds.length,
+        durationMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      throw error;
+    }
   }
 
   public removeHistoryEntry(entryId: string): void {

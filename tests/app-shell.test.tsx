@@ -5,7 +5,7 @@ import { AvatarMenu, getAvatarMenuKeyboardAction } from "../src/renderer/shell/A
 import { AppHeader } from "../src/renderer/shell/AppHeader";
 import { AppShell } from "../src/renderer/shell/AppShell";
 import { buildMainNavigation } from "../src/renderer/shell/shell-model";
-import { getSnapshotRenderDelay, runSupportBundleExportUi, SupportBundleToast } from "../src/renderer/App";
+import { getSnapshotRenderDelay, runResetUiAction, runSupportBundleExportUi, SupportBundleToast } from "../src/renderer/App";
 
 describe("desktop shell", () => {
   it("uses keyboard-focusable controls for every copy target", () => {
@@ -35,9 +35,78 @@ describe("desktop shell", () => {
     expect(removal).toContain('title: "Ausgewählte Links löschen"');
   });
 
-  it("renders active download telemetry at a stable half-second cadence", () => {
-    expect(getSnapshotRenderDelay(2_470, true, "downloads")).toBe(500);
-    expect(getSnapshotRenderDelay(2_470, true, "statistics")).toBe(500);
+  it("does not add a second renderer debounce after main-process telemetry throttling", () => {
+    expect(getSnapshotRenderDelay(2_470, true, "downloads")).toBe(0);
+    expect(getSnapshotRenderDelay(2_470, true, "statistics")).toBe(0);
+  });
+
+  it("guards a pending reset, reconciles the snapshot, and releases the busy state", async () => {
+    let finishReset: () => void = () => undefined;
+    const pendingReset = new Promise<void>((resolve) => { finishReset = resolve; });
+    const gate = { busy: false };
+    const busyStates: boolean[] = [];
+    const events: string[] = [];
+    let resetCalls = 0;
+
+    const first = runResetUiAction({
+      gate,
+      reset: async () => {
+        resetCalls += 1;
+        await pendingReset;
+        events.push("reset");
+      },
+      reconcile: async () => { events.push("reconcile"); },
+      setBusy: (busy) => { busyStates.push(busy); },
+      onError: () => { events.push("error"); }
+    });
+    const duplicate = await runResetUiAction({
+      gate,
+      reset: async () => { resetCalls += 1; },
+      reconcile: async () => { events.push("duplicate-reconcile"); },
+      setBusy: (busy) => { busyStates.push(busy); },
+      onError: () => { events.push("duplicate-error"); }
+    });
+
+    expect(duplicate).toBe("busy");
+    expect(gate.busy).toBe(true);
+    expect(resetCalls).toBe(1);
+    expect(busyStates).toEqual([true]);
+
+    finishReset();
+    await expect(first).resolves.toBe("completed");
+    expect(events).toEqual(["reset", "reconcile"]);
+    expect(busyStates).toEqual([true, false]);
+    expect(gate.busy).toBe(false);
+  });
+
+  it("reports reset failures and still reconciles the authoritative snapshot", async () => {
+    const gate = { busy: false };
+    const busyStates: boolean[] = [];
+    const errors: unknown[] = [];
+    const events: string[] = [];
+    const failure = new Error("Teildatei ist gesperrt");
+
+    await expect(runResetUiAction({
+      gate,
+      reset: async () => { throw failure; },
+      reconcile: async () => { events.push("reconcile"); },
+      setBusy: (busy) => { busyStates.push(busy); },
+      onError: (error) => { errors.push(error); }
+    })).resolves.toBe("failed");
+
+    expect(errors).toEqual([failure]);
+    expect(events).toEqual(["reconcile"]);
+    expect(busyStates).toEqual([true, false]);
+    expect(gate.busy).toBe(false);
+  });
+
+  it("routes every renderer reset through the guarded authoritative workflow", () => {
+    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
+
+    expect(source).not.toMatch(/window\.rd\.reset(?:Package|Items)\([^\n]*\.catch\(\(\) => \{\}\)/);
+    expect(source.match(/performReset\(/g)).toHaveLength(3);
+    expect(source).toContain('disabled={resetBusy}');
+    expect(source).toContain('actionBusy: actionBusy || resetBusy');
   });
 
   it("keeps support bundle progress tied to the unresolved export", async () => {

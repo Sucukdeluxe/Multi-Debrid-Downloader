@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { logTimestamp } from "./log-timestamp";
 import path from "node:path";
+import { sanitizeDiagnosticFields, sanitizeDiagnosticText } from "./diagnostic-sanitizer";
 
 type AuditLevel = "INFO" | "WARN" | "ERROR";
 
@@ -27,10 +28,11 @@ function sanitizeFieldValue(value: unknown): string {
 }
 
 function formatFields(fields?: Record<string, unknown>): string {
-  if (!fields) {
+  const safeFields = sanitizeDiagnosticFields(fields);
+  if (!safeFields) {
     return "";
   }
-  const parts = Object.entries(fields)
+  const parts = Object.entries(safeFields)
     .filter(([, value]) => value !== undefined && value !== null && sanitizeFieldValue(value) !== "")
     .map(([key, value]) => `${key}=${sanitizeFieldValue(value)}`);
   return parts.length > 0 ? ` | ${parts.join(" | ")}` : "";
@@ -93,7 +95,7 @@ export function logAuditEvent(level: AuditLevel, message: string, fields?: Recor
     }
     fs.appendFileSync(
       auditLogPath,
-      `${logTimestamp()} [${level}] ${message}${formatFields(fields)}\n`,
+      `${logTimestamp()} [${level}] ${sanitizeDiagnosticText(message)}${formatFields(fields)}\n`,
       "utf8"
     );
   } catch {

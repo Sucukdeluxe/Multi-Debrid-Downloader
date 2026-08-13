@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { logTimestamp } from "./log-timestamp";
 import path from "node:path";
 import crypto from "node:crypto";
+import { sanitizeDiagnosticFields, sanitizeDiagnosticText } from "./diagnostic-sanitizer";
 
 const PACKAGE_LOG_FLUSH_INTERVAL_MS = 200;
 const PACKAGE_LOG_RETENTION_DAYS = 30;
@@ -53,10 +54,11 @@ function sanitizeFieldValue(value: unknown): string {
 }
 
 function formatFields(fields?: Record<string, unknown>): string {
-  if (!fields) {
+  const safeFields = sanitizeDiagnosticFields(fields);
+  if (!safeFields) {
     return "";
   }
-  const parts = Object.entries(fields)
+  const parts = Object.entries(safeFields)
     .filter(([, value]) => value !== undefined && value !== null && sanitizeFieldValue(value) !== "")
     .map(([key, value]) => `${key}=${sanitizeFieldValue(value)}`);
   return parts.length > 0 ? ` | ${parts.join(" | ")}` : "";
@@ -164,9 +166,14 @@ export function ensurePackageLog(meta: PackageLogMeta): string | null {
     if (!initializedThisProcess.has(normalizedPackageId)) {
       initializedThisProcess.add(normalizedPackageId);
       const startedAt = logTimestamp();
+      const headerFields = sanitizeDiagnosticFields({
+        packageId: String(meta.packageId || ""),
+        logKey: normalizedPackageId,
+        name: meta.name
+      }) || {};
       fs.appendFileSync(
         logPath,
-        `=== Paket-Log Start: ${startedAt} | packageId=${sanitizeFieldValue(String(meta.packageId || ""))} | logKey=${normalizedPackageId} | name=${sanitizeFieldValue(meta.name)} ===\n`,
+        `=== Paket-Log Start: ${startedAt} | packageId=${sanitizeFieldValue(headerFields.packageId)} | logKey=${sanitizeFieldValue(headerFields.logKey)} | name=${sanitizeFieldValue(headerFields.name)} ===\n`,
         "utf8"
       );
       fs.appendFileSync(
@@ -195,7 +202,7 @@ export function logPackageEvent(
   if (!logPath) {
     return;
   }
-  const line = `${logTimestamp()} [${level}] ${message}${formatFields(fields)}\n`;
+  const line = `${logTimestamp()} [${level}] ${sanitizeDiagnosticText(message)}${formatFields(fields)}\n`;
   appendLine(packageId, line);
 }
 
@@ -207,12 +214,16 @@ export function getPackageLogPath(packageId: string): string | null {
   return fs.existsSync(logPath) ? logPath : null;
 }
 
-export function shutdownPackageLogs(): void {
+export function flushPackageLogs(): void {
   if (flushTimer) {
     clearTimeout(flushTimer);
     flushTimer = null;
   }
   flushPending();
+}
+
+export function shutdownPackageLogs(): void {
+  flushPackageLogs();
   for (const packageId of knownLogPaths.keys()) {
     const logPath = getPackageLogFilePathFromNormalized(packageId);
     if (!logPath) {

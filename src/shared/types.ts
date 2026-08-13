@@ -366,6 +366,7 @@ export interface DownloadItem {
   resumeLinkRenewalFailures?: number;
   resumeHardResetUsed?: boolean;
   resumeResetPending?: boolean;
+  http416FreshRestarts?: number;
   createdAt: number;
   updatedAt: number;
   onlineStatus?: "online" | "offline" | "checking";
@@ -460,6 +461,9 @@ export interface RotationEvent {
   category?: string;
   cooldownSec?: number;
   next?: string;
+  attemptId?: string;
+  itemId?: string;
+  packageId?: string;
 }
 
 export interface UiSnapshot {
@@ -485,7 +489,11 @@ export interface UiSnapshot {
     requiredBytes: number;
     availableBytes: number;
     deficitBytes: number;
+    safetyBytes: number;
     retryAt: number;
+    at: number;
+    state: "waiting" | "resolved";
+    resolvedAt?: number;
   }>;
   payloadKind?: "full" | "delta";
   removedItemIds?: string[];
