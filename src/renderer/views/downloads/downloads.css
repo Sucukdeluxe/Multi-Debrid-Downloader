@@ -290,7 +290,7 @@
   position: relative;
   height: var(--downloads-virtual-total-height);
   min-height: 0;
-  transition: height 600ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition: height 1500ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .downloads-virtual-row {
@@ -299,7 +299,7 @@
   height: var(--downloads-virtual-row-height);
   transform: translateY(var(--downloads-virtual-row-top));
   overflow: hidden;
-  transition: height 600ms cubic-bezier(0.22, 1, 0.36, 1), transform 600ms cubic-bezier(0.22, 1, 0.36, 1), opacity 600ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition: height 1500ms cubic-bezier(0.22, 1, 0.36, 1), transform 1500ms cubic-bezier(0.22, 1, 0.36, 1), opacity 1500ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .downloads-virtual-row > .downloads-package-card {
@@ -584,11 +584,11 @@
 
 @media (prefers-reduced-motion: reduce) {
   .downloads-virtual-spacer {
-    transition-duration: 600ms !important;
+    transition-duration: 1500ms !important;
   }
 
   .downloads-virtual-row {
-    transition-duration: 600ms, 600ms, 600ms !important;
+    transition-duration: 1500ms, 1500ms, 1500ms !important;
   }
 
   .downloads-table.is-column-drag-active [data-download-column],
