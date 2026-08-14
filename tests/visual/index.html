@@ -4,10 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Multi Debrid Downloader Visual Harness</title>
+    <script>
+      if (new URLSearchParams(location.search).has("motion")) document.documentElement.dataset.visualMotion = "true";
+    </script>
     <style>
-      *,
-      *::before,
-      *::after {
+      html:not([data-visual-motion="true"]) *,
+      html:not([data-visual-motion="true"]) *::before,
+      html:not([data-visual-motion="true"]) *::after {
         animation: none !important;
         caret-color: transparent !important;
         transition: none !important;

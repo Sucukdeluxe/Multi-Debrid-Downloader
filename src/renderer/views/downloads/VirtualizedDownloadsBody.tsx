@@ -5,6 +5,7 @@ import {
   DOWNLOAD_DISCLOSURE_DURATION_MS,
   mergeDownloadDisclosureRows,
   prepareDownloadDisclosureTransition,
+  scheduleDownloadDisclosureActivation,
   type DownloadDisclosureRow
 } from "./download-disclosure-transition";
 import type { DownloadsViewActions, DownloadsViewModel } from "./DownloadsView";
@@ -114,7 +115,7 @@ export function VirtualizedDownloadsBody({ actions, model, state }: { actions: D
     transitionRowsRef.current = prepared.rows;
     setTransitionRows(prepared.rows);
     let settleTimer = 0;
-    const animationFrame = window.requestAnimationFrame(() => {
+    const cancelActivation = scheduleDownloadDisclosureActivation(window.requestAnimationFrame.bind(window), window.cancelAnimationFrame.bind(window), () => {
       const active = activateDownloadDisclosureTransition(transitionRowsRef.current ?? prepared.rows);
       transitionRowsRef.current = active;
       setTransitionRows(active);
@@ -125,7 +126,7 @@ export function VirtualizedDownloadsBody({ actions, model, state }: { actions: D
       }, DOWNLOAD_DISCLOSURE_DURATION_MS);
     });
     return () => {
-      window.cancelAnimationFrame(animationFrame);
+      cancelActivation();
       if (settleTimer) window.clearTimeout(settleTimer);
     };
   }, [model.disclosureRevision, model.displayMode]);

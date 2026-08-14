@@ -4,6 +4,22 @@ import { DOWNLOAD_FILE_ROW_HEIGHT } from "./download-virtualizer";
 export const DOWNLOAD_DISCLOSURE_DURATION_MS = 300;
 export const DOWNLOAD_DISCLOSURE_MAX_ANIMATED_ITEMS = 64;
 
+export function scheduleDownloadDisclosureActivation(
+  requestFrame: (callback: FrameRequestCallback) => number,
+  cancelFrame: (frame: number) => void,
+  activate: () => void
+): () => void {
+  let paintFrame = 0;
+  let activationFrame = 0;
+  paintFrame = requestFrame(() => {
+    activationFrame = requestFrame(activate);
+  });
+  return () => {
+    cancelFrame(paintFrame);
+    if (activationFrame) cancelFrame(activationFrame);
+  };
+}
+
 export type DownloadDisclosurePhase = "stable" | "entering" | "leaving";
 
 export type DownloadDisclosureRow = DownloadLogicalRow & {

@@ -23,6 +23,7 @@ import {
   activateDownloadDisclosureTransition,
   mergeDownloadDisclosureRows,
   prepareDownloadDisclosureTransition,
+  scheduleDownloadDisclosureActivation,
   stableDownloadDisclosureRows
 } from "../src/renderer/views/downloads/download-disclosure-transition";
 import {
@@ -224,6 +225,32 @@ describe("virtualisierte Paketanimation", () => {
     renderLimit: 100
   }));
 
+  it("zeichnet den Startzustand in einem eigenen Frame vor der Aktivierung", () => {
+    const frames: FrameRequestCallback[] = [];
+    const cancelled: number[] = [];
+    const activated = vi.fn();
+    let frameId = 0;
+    const requestFrame = vi.fn((callback: FrameRequestCallback) => {
+      frames.push(callback);
+      frameId += 1;
+      return frameId;
+    });
+    const cancelFrame = vi.fn((frame: number) => cancelled.push(frame));
+
+    const cancel = scheduleDownloadDisclosureActivation(requestFrame, cancelFrame, activated);
+
+    expect(activated).not.toHaveBeenCalled();
+    expect(frames).toHaveLength(1);
+    frames.shift()?.(16);
+    expect(activated).not.toHaveBeenCalled();
+    expect(frames).toHaveLength(1);
+    frames.shift()?.(32);
+    expect(activated).toHaveBeenCalledTimes(1);
+
+    cancel();
+    expect(cancelled).toContain(2);
+  });
+
   it("fährt neue Unterzeilen von null auf ihre feste Höhe aus und verschiebt Folgepakete unter stabilen IDs", () => {
     const collapsed = logicalRows([packageA.id]);
     const expanded = logicalRows([]);
@@ -244,6 +271,13 @@ describe("virtualisierte Paketanimation", () => {
       ["package-b", 40, 1],
       ["b-1", 38, 1]
     ]);
+  });
+
+  it("behält die ausdrücklich gewünschte Paketbewegung auch bei reduzierten Systemanimationen bei", () => {
+    const css = fs.readFileSync(path.join(process.cwd(), "src/renderer/views/downloads/downloads.css"), "utf8");
+
+    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.downloads-virtual-spacer\s*\{[^}]*transition-duration:\s*300ms !important;/s);
+    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.downloads-virtual-row\s*\{[^}]*transition-duration:\s*300ms, 300ms, 300ms !important;/s);
   });
 
   it("behält ausfahrende Unterzeilen bis zum Animationsende und reduziert ihre Höhe auf null", () => {

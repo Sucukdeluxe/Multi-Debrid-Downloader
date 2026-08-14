@@ -583,6 +583,14 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .downloads-virtual-spacer {
+    transition-duration: 300ms !important;
+  }
+
+  .downloads-virtual-row {
+    transition-duration: 300ms, 300ms, 300ms !important;
+  }
+
   .downloads-table.is-column-drag-active [data-download-column],
   .downloads-table.is-column-drag-settling [data-download-column] {
     transition-duration: 220ms !important;
