@@ -164,7 +164,7 @@ export function VirtualizedDownloadsBody({ actions, model, state }: { actions: D
   const spacerStyle = { "--downloads-virtual-total-height": `${virtualWindow.totalHeight}px` } as CSSProperties;
 
   return (
-    <div className="downloads-table-body" data-visual-region="downloads-table-body" ref={bodyRef} role="rowgroup">
+    <div className={`downloads-table-body${model.animatePackageDisclosure ? "" : " is-disclosure-motion-disabled"}`} data-visual-region="downloads-table-body" ref={bodyRef} role="rowgroup">
       {state}
       {!state ? (
         <div className="downloads-virtual-spacer" style={spacerStyle}>

@@ -240,6 +240,14 @@ describe("virtualisierte Paketanimation", () => {
     expect(prepared.rows.some((row) => row.type === "item-group")).toBe(false);
   });
 
+  it("deaktiviert auch die CSS-Bewegung der virtuellen Folgezeilen", () => {
+    const html = renderToStaticMarkup(<DownloadsContent actions={createActions()} model={withRuntime(createInput(), { animatePackageDisclosure: false })} />);
+    const css = readFileSync(path.join(process.cwd(), "src/renderer/views/downloads/downloads.css"), "utf8");
+
+    expect(html).toContain('class="downloads-table-body is-disclosure-motion-disabled"');
+    expect(css).toMatch(/\.downloads-table-body\.is-disclosure-motion-disabled \.downloads-virtual-spacer,\s*\.downloads-table-body\.is-disclosure-motion-disabled \.downloads-virtual-row\s*\{[^}]*transition:\s*none !important;/s);
+  });
+
   it("zeichnet den Startzustand in einem eigenen Frame vor der Aktivierung", () => {
     const frames: FrameRequestCallback[] = [];
     const cancelled: number[] = [];
