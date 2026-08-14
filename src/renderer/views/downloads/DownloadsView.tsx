@@ -109,8 +109,8 @@ export function DownloadsSidebarStatus({ model }: { model: DownloadsViewModel })
     { label: "Pakete", metric: "packages", numericValue: model.status.packages, value: integerFormatter.format(model.status.packages) },
     { label: "Links", metric: "links", numericValue: model.status.links, value: integerFormatter.format(model.status.links) },
     { label: "Sitzung", metric: "session", numericValue: model.status.sessionBytes, value: model.status.session },
-    { label: "Gesamt", metric: "total", numericValue: model.status.totalBytes, value: model.status.total },
     { label: "Verbleibend", metric: "remaining", numericValue: model.status.remainingBytes, value: model.status.remaining },
+    { label: "Gesamt", metric: "total", numericValue: model.status.totalBytes, value: model.status.total },
     { label: "Hoster", metric: "hosters", numericValue: model.status.hosters, value: integerFormatter.format(model.status.hosters) }
   ];
   return <section className="downloads-sidebar-status" data-visual-region="downloads-sidebar-status" aria-label="Downloadstatus">{entries.map((entry) => <div key={entry.metric}><span>{entry.label}</span><RollingMetricValue numericValue={entry.numericValue} value={entry.value} /></div>)}<div><span>Geschwindigkeit</span><strong data-status-metric="speed">{speed}</strong></div><div><span>ETA</span><strong data-status-metric="eta">{eta}</strong></div></section>;

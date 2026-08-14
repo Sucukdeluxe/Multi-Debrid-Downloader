@@ -114,6 +114,7 @@ describe("rollende Downloadkennzahlen", () => {
     const html = renderToStaticMarkup(<DownloadsSidebarStatus model={withRuntime(createInput())} />);
     expect(html.match(/class="downloads-rolling-value"/g)).toHaveLength(6);
     expect(html).toContain("Verbleibend");
+    expect(html.indexOf("Verbleibend")).toBeLessThan(html.indexOf("Gesamt"));
     expect(html).toContain('data-status-metric="speed"');
     expect(html).toContain('data-status-metric="eta"');
   });
