@@ -2,6 +2,13 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.40] - 2026-08-15
+
+### Interface
+
+- Fixed package rows continuing to slide after package expand and collapse motion was disabled in Settings.
+- Applied the no-motion preference immediately to virtual row positions, heights, and opacity.
+
 ## [2.0.39] - 2026-08-15
 
 ### Settings
