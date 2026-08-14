@@ -14,6 +14,17 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 - Limited failed conversion messages to providers that were actually attempted.
 - Prevented aggregated fallback details from being mislabeled as a Debrid-Link failure.
 
+### Interface
+
+- Replaced the application and documentation artwork with the refreshed Multi-Debrid Downloader icon.
+- Made populated username and email cells copy their value to the clipboard with a single click while keeping empty cells inactive.
+
+### Downloads
+
+- Restored smooth package expand and collapse motion without disabling large-queue virtualization.
+- Kept package contents mounted throughout collapse transitions, including packages crossing the visible viewport boundary.
+- Added a Remaining metric for unfinished download volume, with a lower-bound indicator when some file sizes are still unknown.
+
 ## [2.0.36] - 2026-08-14
 
 ### Download performance
