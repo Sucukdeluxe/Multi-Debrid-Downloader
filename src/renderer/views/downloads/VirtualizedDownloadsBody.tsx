@@ -3,6 +3,7 @@ import { buildDownloadLogicalRows, type DownloadLogicalRow } from "./downloads-m
 import {
   activateDownloadDisclosureTransition,
   DOWNLOAD_DISCLOSURE_DURATION_MS,
+  getDownloadDisclosurePinnedIds,
   mergeDownloadDisclosureRows,
   prepareDownloadDisclosureTransition,
   scheduleDownloadDisclosureActivation,
@@ -98,6 +99,7 @@ export function VirtualizedDownloadsBody({ actions, model, state }: { actions: D
   desiredRowsRef.current = desiredRows;
   const previousRowsRef = useRef<readonly DownloadLogicalRow[]>(desiredRows);
   const transitionRowsRef = useRef<DownloadDisclosureRow[] | null>(null);
+  const transitionPinnedIdsRef = useRef<string[]>([]);
   const [transitionRows, setTransitionRows] = useState<DownloadDisclosureRow[] | null>(null);
 
   useEffect(() => {
@@ -108,10 +110,16 @@ export function VirtualizedDownloadsBody({ actions, model, state }: { actions: D
     const prepared = prepareDownloadDisclosureTransition(transitionRowsRef.current ?? previousRowsRef.current, desiredRowsRef.current);
     if (!prepared.animated) {
       transitionRowsRef.current = null;
+      transitionPinnedIdsRef.current = [];
       previousRowsRef.current = desiredRowsRef.current;
       setTransitionRows(null);
       return;
     }
+    transitionPinnedIdsRef.current = getDownloadDisclosurePinnedIds(prepared.rows, {
+      scrollTop: viewport.scrollTop,
+      viewportHeight: viewport.viewportHeight,
+      overscan: DOWNLOAD_VIRTUAL_OVERSCAN_ROWS
+    });
     transitionRowsRef.current = prepared.rows;
     setTransitionRows(prepared.rows);
     let settleTimer = 0;
@@ -122,6 +130,7 @@ export function VirtualizedDownloadsBody({ actions, model, state }: { actions: D
       settleTimer = window.setTimeout(() => {
         previousRowsRef.current = desiredRowsRef.current;
         transitionRowsRef.current = null;
+        transitionPinnedIdsRef.current = [];
         setTransitionRows(null);
       }, DOWNLOAD_DISCLOSURE_DURATION_MS);
     });
@@ -136,7 +145,7 @@ export function VirtualizedDownloadsBody({ actions, model, state }: { actions: D
     scrollTop: viewport.scrollTop,
     viewportHeight: viewport.viewportHeight,
     overscan: DOWNLOAD_VIRTUAL_OVERSCAN_ROWS,
-    pinnedIds: [model.editingPackageId]
+    pinnedIds: [model.editingPackageId, ...transitionPinnedIdsRef.current]
   }), [model.editingPackageId, renderedRows, viewport.scrollTop, viewport.viewportHeight]);
   const spacerStyle = { "--downloads-virtual-total-height": `${virtualWindow.totalHeight}px` } as CSSProperties;
 

@@ -1,5 +1,9 @@
 import type { DownloadLogicalRow } from "./downloads-model";
-import { DOWNLOAD_FILE_ROW_HEIGHT } from "./download-virtualizer";
+import {
+  DOWNLOAD_FILE_ROW_HEIGHT,
+  calculateDownloadVirtualWindow,
+  type DownloadVirtualWindowOptions
+} from "./download-virtualizer";
 
 export const DOWNLOAD_DISCLOSURE_DURATION_MS = 300;
 export const DOWNLOAD_DISCLOSURE_MAX_ANIMATED_ITEMS = 64;
@@ -148,4 +152,14 @@ export function activateDownloadDisclosureTransition(rows: readonly DownloadDisc
       ? { ...row, height: DOWNLOAD_FILE_ROW_HEIGHT, disclosureOpacity: 1 }
       : { ...row, height: 0, disclosureOpacity: 0 };
   });
+}
+
+export function getDownloadDisclosurePinnedIds(
+  preparedRows: readonly DownloadDisclosureRow[],
+  options: DownloadVirtualWindowOptions
+): string[] {
+  const windowOptions = { ...options, pinnedIds: [] };
+  const startRows = calculateDownloadVirtualWindow(preparedRows, windowOptions).rows;
+  const targetRows = calculateDownloadVirtualWindow(activateDownloadDisclosureTransition(preparedRows), windowOptions).rows;
+  return [...new Set([...startRows, ...targetRows].map((entry) => entry.id))];
 }

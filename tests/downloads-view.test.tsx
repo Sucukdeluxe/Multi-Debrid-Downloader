@@ -21,6 +21,7 @@ import {
 import {
   DOWNLOAD_DISCLOSURE_MAX_ANIMATED_ITEMS,
   activateDownloadDisclosureTransition,
+  getDownloadDisclosurePinnedIds,
   mergeDownloadDisclosureRows,
   prepareDownloadDisclosureTransition,
   scheduleDownloadDisclosureActivation,
@@ -300,6 +301,45 @@ describe("virtualisierte Paketanimation", () => {
       ["b-1", 38, 1]
     ]);
     expect(stableDownloadDisclosureRows(collapsed).map((row) => row.id)).toEqual(["package-a", "package-b", "b-1"]);
+  });
+
+  it("mountet beim Zuklappen auch erst im Ziel-Viewport sichtbare Folgepakete vor der Bewegung", () => {
+    const childIds = Array.from({ length: 26 }, (_, index) => `first-${index}`);
+    const followingPackages = Array.from({ length: 36 }, (_, index) => pkg(`following-${index}`, `Folge ${index}`, [`following-item-${index}`]));
+    const firstPackage = pkg("first", "Erstes Paket", childIds);
+    const packageOrder = [firstPackage.id, ...followingPackages.map((entry) => entry.id)];
+    const packages = Object.fromEntries([firstPackage, ...followingPackages].map((entry) => [entry.id, entry]));
+    const queueItems = Object.fromEntries([
+      ...childIds.map((id) => [id, item(id, firstPackage.id, "queued")] as const),
+      ...followingPackages.map((entry, index) => [`following-item-${index}`, item(`following-item-${index}`, entry.id, "queued")] as const)
+    ]);
+    const buildRows = (collapsed: boolean) => buildDownloadLogicalRows(buildDownloadsViewModel({
+      packageOrder,
+      packages,
+      items: queueItems,
+      displayMode: "packages",
+      filter: "all",
+      providerFilter: "all",
+      query: "",
+      collapsedPackageIds: collapsed ? packageOrder : followingPackages.map((entry) => entry.id),
+      selectedIds: [],
+      hideExtractedItems: false,
+      showAllPackages: true,
+      renderLimit: 100
+    }));
+    const prepared = prepareDownloadDisclosureTransition(stableDownloadDisclosureRows(buildRows(false)), buildRows(true));
+    const options = { scrollTop: 0, viewportHeight: 720, overscan: 8 };
+    const startWindow = calculateDownloadVirtualWindow(prepared.rows, options);
+    const targetWindow = calculateDownloadVirtualWindow(activateDownloadDisclosureTransition(prepared.rows), options);
+    const startIds = new Set(startWindow.rows.map((entry) => entry.id));
+    const targetOnlyIds = targetWindow.rows.map((entry) => entry.id).filter((id) => !startIds.has(id));
+    const pinnedIds = getDownloadDisclosurePinnedIds(prepared.rows, options);
+    const mountedStartWindow = calculateDownloadVirtualWindow(prepared.rows, { ...options, pinnedIds });
+    const mountedStartIds = new Set(mountedStartWindow.rows.map((entry) => entry.id));
+
+    expect(targetOnlyIds.length).toBeGreaterThan(10);
+    expect(targetOnlyIds.every((id) => mountedStartIds.has(id))).toBe(true);
+    expect(pinnedIds.length).toBeLessThan(80);
   });
 
   it("überspringt die Bewegung bei riesigen Einzelpaketen und hält das DOM-Fenster begrenzt", () => {
