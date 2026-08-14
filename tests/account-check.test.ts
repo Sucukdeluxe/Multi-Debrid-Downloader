@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { checkMegaDebridAccount, checkDebridLinkKey, checkAllDebridAccounts, checkRealDebridAccount, REAL_DEBRID_STATUS_ID } from "../src/main/account-check";
 import type { MegaDebridAccountEntry } from "../src/shared/mega-debrid-accounts";
-import type { DebridLinkApiKeyEntry } from "../src/shared/debrid-link-keys";
+import { getDebridLinkApiKeyId, type DebridLinkApiKeyEntry } from "../src/shared/debrid-link-keys";
 import type { AppSettings } from "../src/shared/types";
+import { defaultSettings } from "../src/main/constants";
+import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 
 function megaAccount(login = "user@example.com"): MegaDebridAccountEntry {
   return { id: "mda_test", login, password: "pw", index: 0, label: "Account 1", maskedLogin: "us**le" };
@@ -184,6 +186,44 @@ describe("checkAllDebridAccounts", () => {
     expect(result.filter((r) => r.provider === "megadebrid")).toHaveLength(2);
     expect(result.filter((r) => r.provider === "debridlink")).toHaveLength(3);
     expect(result.every((r) => r.valid)).toBe(true);
+  });
+
+  it("checks only enabled accounts in active scope and every account in all scope", async () => {
+    const megaCredentials = [
+      "one@example.test:pw1",
+      "two@example.test:pw2",
+      "three@example.test:pw3",
+      "four@example.test:pw4"
+    ].join("\n");
+    const settings: AppSettings = {
+      ...defaultSettings(),
+      realDebridUseWebLogin: true,
+      megaCredentials,
+      megaDebridWebCredentials: megaCredentials,
+      megaDebridWebEnabled: true,
+      debridLinkApiKeys: "disabled-debrid-link-key",
+      debridLinkDisabledKeyIds: [getDebridLinkApiKeyId("disabled-debrid-link-key")],
+      megaDebridWebDisabledAccountIds: [
+        getMegaDebridAccountId("one@example.test"),
+        getMegaDebridAccountId("two@example.test"),
+        getMegaDebridAccountId("three@example.test"),
+        getMegaDebridAccountId("four@example.test")
+      ]
+    };
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ response_code: "ok", token: "t", vip_end: "4102444800" })
+    }));
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    const probe = vi.fn(async () => ({ valid: true, isPremium: true, username: "rd-user" }));
+
+    const active = await checkAllDebridAccounts(settings, undefined, probe, "active");
+    const all = await checkAllDebridAccounts(settings, undefined, probe, "all");
+
+    expect(active.map((status) => status.accountId)).toEqual([REAL_DEBRID_STATUS_ID]);
+    expect(all).toHaveLength(6);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
   });
 
   it("caps concurrency (never more than 4 in flight) and preserves result order", async () => {

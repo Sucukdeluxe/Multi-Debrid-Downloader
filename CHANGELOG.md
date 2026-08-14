@@ -2,6 +2,14 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [Unreleased]
+
+### Accounts
+
+- Split account refresh into active-account and all-account checks with matching result counts.
+- Show failed check results for disabled accounts when all configured accounts are refreshed.
+- Apply individual and bulk account enablement changes immediately while settings are saved, with automatic rollback after a failed save.
+
 ## [2.0.40] - 2026-08-15
 
 ### Interface

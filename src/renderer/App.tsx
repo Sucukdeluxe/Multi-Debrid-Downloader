@@ -40,7 +40,7 @@ import {
 } from "../shared/provider-daily-limits";
 import { preservePackageOrderForDisplay, sortPackageOrderByName } from "./package-order";
 import { pruneSelection, shouldClearDownloadSelection, shouldClearDownloadSelectionOnEscape } from "./selection";
-import { buildBulkAccountEnabledState, buildConfiguredProviderOrder, getAccountDialogSelectableOptions, matchesAccountModeFilter, pruneAccountRowSelection, resolveAccountUsername, resolveVisibleAccountKind } from "./account-ui";
+import { buildBulkAccountEnabledState, buildConfiguredProviderOrder, getAccountDialogSelectableOptions, matchesAccountModeFilter, pruneAccountRowSelection, resolveAccountStatusState, resolveAccountUsername, resolveVisibleAccountKind, runOptimisticAccountUpdate } from "./account-ui";
 import type { AccountModeFilter } from "./account-ui";
 import { buildAccountDeleteCommand, buildAccountReplaceCommand, createAccountEditState, validateAccountEdit } from "./account-edit";
 import type { AccountEditState, AccountEditTarget, AccountKind, AccountService, SingleAccountKind } from "./account-edit";
@@ -2245,7 +2245,7 @@ export function App(): ReactElement {
             label: `Key ${index + 1}`,
             token: "",
             masked: account.maskedIdentity,
-            disabled: !account.enabled,
+            disabled: settingsDraft.debridLinkDisabledKeyIds.includes(account.accountId),
             dailyUsedBytes: keyDailyUsedBytes,
             totalUsedBytes: account.totalUsageBytes,
             dailyLimitBytes: keyDailyLimitBytes,
@@ -2318,7 +2318,9 @@ export function App(): ReactElement {
             credentialLabel: "••••••",
             accountId: acc.accountId,
             checkable: true,
-            disabled: !acc.enabled,
+            disabled: entry.disabled || (entry.kind === "megadebrid-api"
+              ? settingsDraft.megaDebridApiDisabledAccountIds.includes(acc.accountId)
+              : settingsDraft.megaDebridWebDisabledAccountIds.includes(acc.accountId)),
             dailyUsedBytes: used,
             dailyLimitBytes: limit,
             dailyRemainingBytes: limit > 0 ? Math.max(0, limit - used) : 0,
@@ -2344,7 +2346,7 @@ export function App(): ReactElement {
             credentialLabel: "API-Key",
             accountId: key.id,
             checkable: true,
-            disabled: key.disabled,
+            disabled: entry.disabled || settingsDraft.debridLinkDisabledKeyIds.includes(key.id),
             dailyUsedBytes: key.dailyUsedBytes,
             dailyLimitBytes: key.dailyLimitBytes,
             dailyRemainingBytes: key.dailyLimitBytes > 0 ? Math.max(0, key.dailyLimitBytes - key.dailyUsedBytes) : 0,
@@ -2388,7 +2390,7 @@ export function App(): ReactElement {
       }
     }
     return rows;
-  }, [configuredAccounts, snapshot.accounts]);
+  }, [configuredAccounts, settingsDraft, snapshot.accounts]);
 
   const [accountStatusSort, setAccountStatusSort] = useState<"none" | "desc" | "asc">("none");
   const cycleAccountStatusSort = (): void => setAccountStatusSort((s) => (s === "none" ? "desc" : s === "desc" ? "asc" : "none"));
@@ -2651,16 +2653,17 @@ export function App(): ReactElement {
     }
   };
 
-  const checkAllAccounts = useCallback(async (): Promise<void> => {
+  const checkAccounts = useCallback(async (scope: "active" | "all"): Promise<void> => {
     setAccountCheckBusy(true);
     try {
-      const statuses = await window.rd.checkDebridAccounts();
+      const statuses = await window.rd.checkDebridAccounts(scope);
       if (!statuses || statuses.length === 0) {
-        showToast("Keine prüfbaren Accounts konfiguriert.", 3200);
+        showToast(scope === "active" ? "Keine aktiven prüfbaren Accounts konfiguriert." : "Keine prüfbaren Accounts konfiguriert.", 3200);
       } else {
         const valid = statuses.filter((st) => st.valid).length;
         const premium = statuses.filter((st) => st.isPremium).length;
-        showToast(`Account-Check: ${valid}/${statuses.length} Login gültig, ${premium} mit Premium.`, 3600);
+        const label = scope === "active" ? "Aktive Accounts" : "Alle Accounts";
+        showToast(`${label}: ${valid}/${statuses.length} Login gültig, ${premium} mit Premium.`, 3600);
       }
     } catch (error) {
       showToast(`Account-Check fehlgeschlagen: ${String(error)}`, 3600);
@@ -2767,7 +2770,7 @@ export function App(): ReactElement {
       } else if (selectedOption) {
         showToast(`${selectedOption.title} gespeichert`, 2200);
       }
-      void checkAllAccounts();
+      void checkAccounts("active");
     }, (error) => {
       showToast(`Account konnte nicht gespeichert werden: ${String(error)}`, 3200);
     });
@@ -2793,19 +2796,44 @@ export function App(): ReactElement {
     });
   };
 
+  const persistAccountToggle = async (nextDraft: RendererSettingsDraft): Promise<RendererSettings> => {
+    const previousDraft = settingsDraft;
+    const previousDirty = settingsDirtyRef.current;
+    const previousSaveState = settingsSaveState;
+    const revision = ++settingsDraftRevisionRef.current;
+    return runOptimisticAccountUpdate(
+      () => {
+        settingsDirtyRef.current = true;
+        setSettingsDirty(true);
+        setSettingsSaveState("saving");
+        setSettingsDraft(nextDraft);
+      },
+      () => persistSpecificSettings(nextDraft),
+      () => {
+        if (settingsDraftRevisionRef.current !== revision) return;
+        settingsDraftRevisionRef.current += 1;
+        settingsDirtyRef.current = previousDirty;
+        setSettingsDirty(previousDirty);
+        setSettingsSaveState(previousSaveState);
+        setSettingsDraft(previousDraft);
+      }
+    );
+  };
+
   const onToggleDebridLinkApiKeyEnabled = async (entry: ConfiguredAccountEntry, key: DebridLinkAccountKeyEntry): Promise<void> => {
     await performQuickAction(async () => {
       const currentDisabledIds = settingsDraft.debridLinkDisabledKeyIds || [];
-      const nextDisabledIds = key.disabled
+      const currentlyDisabled = currentDisabledIds.includes(key.id);
+      const nextDisabledIds = currentlyDisabled
         ? currentDisabledIds.filter((existingId) => existingId !== key.id)
         : [...currentDisabledIds, key.id];
       const nextDraft: RendererSettingsDraft = {
         ...settingsDraft,
         debridLinkDisabledKeyIds: nextDisabledIds
       };
-      await persistSpecificSettings(nextDraft);
+      await persistAccountToggle(nextDraft);
       showToast(
-        key.disabled
+        currentlyDisabled
           ? `${entry.serviceLabel} ${key.label} aktiviert`
           : `${entry.serviceLabel} ${key.label} deaktiviert`,
         2200
@@ -2834,7 +2862,7 @@ export function App(): ReactElement {
       const next = currentlyDisabled ? current.filter((id) => id !== accountId) : [...current, accountId];
       const apiDisabledIds = mode === "api" ? next : settingsDraft.megaDebridApiDisabledAccountIds;
       const webDisabledIds = mode === "web" ? next : settingsDraft.megaDebridWebDisabledAccountIds;
-      await persistSpecificSettings({
+      await persistAccountToggle({
         ...settingsDraft,
         megaDebridDisabledAccountIds: [...new Set([...apiDisabledIds, ...webDisabledIds])],
         megaDebridApiDisabledAccountIds: apiDisabledIds,
@@ -2868,7 +2896,7 @@ export function App(): ReactElement {
         ...settingsDraft,
         disabledProviders: nextDisabledProviders
       };
-      await persistSpecificSettings(nextDraft);
+      await persistAccountToggle(nextDraft);
       showToast(
         nextDisabledProviders.includes(provider)
           ? `${entry.serviceLabel} deaktiviert`
@@ -2907,7 +2935,7 @@ export function App(): ReactElement {
         megaDebridApiDisabledAccountIds: enabled ? [] : accountRows.filter((row) => row.entry.kind === "megadebrid-api" && row.accountId).map((row) => row.accountId as string),
         megaDebridWebDisabledAccountIds: enabled ? [] : accountRows.filter((row) => row.entry.kind === "megadebrid-web" && row.accountId).map((row) => row.accountId as string)
       };
-      await persistSpecificSettings(nextDraft);
+      await persistAccountToggle(nextDraft);
       showToast(enabled ? "Accounts aktiviert" : "Accounts deaktiviert", 2200);
     }, (error) => {
       showToast(`Accounts konnten nicht umgeschaltet werden: ${String(error)}`, 3200);
@@ -2944,7 +2972,7 @@ export function App(): ReactElement {
   const checkAccountTableRow = (row: AccountTableRow): void => {
     setAccountContextMenu(null);
     if (row.checkable) {
-      void checkAllAccounts();
+      void checkAccounts("all");
       return;
     }
     if (getAccountQuickActionMeta(row.entry.kind)) {
@@ -4831,15 +4859,7 @@ export function App(): ReactElement {
     : null;
   const accountSources = useMemo<AccountRowSource[]>(() => accountRows.map((row) => {
     const checkedStatus = row.accountId ? snapshot.settings.debridAccountStatuses?.[row.accountId] : undefined;
-    const state: AccountRowSource["status"]["state"] = row.disabled
-      ? "disabled"
-      : !checkedStatus
-        ? "unchecked"
-        : checkedStatus && !checkedStatus.valid
-          ? "invalid"
-          : checkedStatus && !checkedStatus.isPremium
-            ? "free"
-            : "premium";
+    const state: AccountRowSource["status"]["state"] = resolveAccountStatusState(row.disabled, checkedStatus);
     return {
       identityId: row.accountId || row.rowKey,
       service: row.entry.service,
@@ -4940,7 +4960,8 @@ export function App(): ReactElement {
       const row = selectedAccountViewId ? accountRowBindings.get(selectedAccountViewId) : null;
       if (row) removeAccountTableRow(row);
     },
-    onCheckAll: () => { void checkAllAccounts(); },
+    onCheckActive: () => { void checkAccounts("active"); },
+    onCheckAll: () => { void checkAccounts("all"); },
     onSetAllEnabled: (enabled) => { void setAllAccountsEnabled(enabled); },
     onStatusSort: cycleAccountStatusSort,
     onMoveProvider: (index, direction) => {

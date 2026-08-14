@@ -8,7 +8,9 @@ import { buildAccountAddFields, createAccountDialogState } from "../src/renderer
 import { buildAccountReplaceCommand, createAccountEditState, type AccountEditTarget } from "../src/renderer/account-edit";
 import {
   buildBulkAccountEnabledState,
-  buildConfiguredProviderOrder
+  buildConfiguredProviderOrder,
+  resolveAccountStatusState,
+  runOptimisticAccountUpdate
 } from "../src/renderer/account-ui";
 import { getDebridLinkApiKeyId } from "../src/shared/debrid-link-keys";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
@@ -304,6 +306,7 @@ function workspaceActions(overrides: Partial<AccountWorkspaceActions> = {}): Acc
     onCopyIdentity: () => {},
     onAdd: () => {},
     onRemoveSelected: () => {},
+    onCheckActive: () => {},
     onCheckAll: () => {},
     ...overrides
   };
@@ -727,6 +730,15 @@ describe("account workspace", () => {
     expect(html).not.toContain("role=\"toolbar\"");
   });
 
+  it("offers separate checks for active accounts and every configured account", () => {
+    const html = renderToStaticMarkup(<AccountWorkspace actions={workspaceActions()} model={workspaceModel()} />);
+
+    expect(html).toContain("Aktive aktualisieren");
+    expect(html).toContain("Alle aktualisieren");
+    expect(html).toContain('title="Prüft nur aktivierte Accounts."');
+    expect(html).toContain('title="Prüft alle angelegten Accounts, auch deaktivierte."');
+  });
+
   it("keeps row selection, enable toggles, edit and context actions separate", () => {
     const calls: string[] = [];
     const tree = AccountWorkspace({
@@ -946,6 +958,34 @@ describe("account workspace", () => {
 });
 
 describe("settings App integration", () => {
+  it("shows a failed all-account check even when the account is disabled", () => {
+    expect(resolveAccountStatusState(true, { valid: false, isPremium: false })).toBe("invalid");
+    expect(resolveAccountStatusState(true, { valid: true, isPremium: true })).toBe("disabled");
+    expect(resolveAccountStatusState(false, undefined)).toBe("unchecked");
+  });
+
+  it("applies account switches before persistence settles and rolls back failed saves", async () => {
+    const events: string[] = [];
+    let resolvePersist: (value: string) => void = () => { throw new Error("persist resolver missing"); };
+    const pending = runOptimisticAccountUpdate(
+      () => events.push("apply"),
+      () => new Promise<string>((resolve) => { resolvePersist = resolve; }),
+      () => events.push("rollback")
+    );
+
+    expect(events).toEqual(["apply"]);
+    resolvePersist("saved");
+    await expect(pending).resolves.toBe("saved");
+    expect(events).toEqual(["apply"]);
+
+    await expect(runOptimisticAccountUpdate(
+      () => events.push("apply-failed"),
+      async () => { throw new Error("save failed"); },
+      () => events.push("rollback")
+    )).rejects.toThrow("save failed");
+    expect(events.slice(-2)).toEqual(["apply-failed", "rollback"]);
+  });
+
   it("keeps new Mega-Debrid credentials empty and never exposes stored accounts as an API key", () => {
     const settings = {
       ...defaultSettings(),
@@ -974,7 +1014,7 @@ describe("settings App integration", () => {
 
   it("keeps unchecked single accounts honest without a positive status", () => {
     const block = sourceBlock(appSource, "const accountSources", "const selectedAccountViewId");
-    expect(block).toMatch(/:\s*!checkedStatus\s*\?\s*"unchecked"/s);
+    expect(block).toContain("resolveAccountStatusState(row.disabled, checkedStatus)");
   });
 
   it("stores only the stable account row id in context-menu state", () => {

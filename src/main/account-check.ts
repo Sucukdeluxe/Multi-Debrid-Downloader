@@ -1,5 +1,5 @@
-import type { AppSettings, DebridAccountStatus } from "../shared/types";
-import { parseMegaDebridAccounts, type MegaDebridAccountEntry } from "../shared/mega-debrid-accounts";
+import type { AccountCheckScope, AppSettings, DebridAccountStatus, DebridProvider } from "../shared/types";
+import { getMegaDebridAccountsForMode, getMegaDebridDisabledAccountIdsForMode, parseMegaDebridAccounts, type MegaDebridAccountEntry } from "../shared/mega-debrid-accounts";
 import { parseDebridLinkApiKeys, type DebridLinkApiKeyEntry } from "../shared/debrid-link-keys";
 import { logger } from "./logger";
 import { compactErrorText } from "./utils";
@@ -270,14 +270,35 @@ export async function checkDebridLinkKey(
 export async function checkAllDebridAccounts(
   settings: AppSettings,
   signal?: AbortSignal,
-  probeRealDebridWebSession?: RealDebridSessionProbe
+  probeRealDebridWebSession?: RealDebridSessionProbe,
+  scope: AccountCheckScope = "all"
 ): Promise<DebridAccountStatus[]> {
   const now = Date.now();
-  const megaAccounts = parseMegaDebridAccounts(settings.megaCredentials || "", settings.megaPassword || "");
-  const debridLinkKeys = parseDebridLinkApiKeys(settings.debridLinkApiKeys || "");
+  const providerEnabled = (provider: DebridProvider): boolean => !(settings.disabledProviders || []).includes(provider);
+  const configuredMegaAccounts = parseMegaDebridAccounts(settings.megaCredentials || "", settings.megaPassword || "");
+  const activeMegaAccounts = (["api", "web"] as const).flatMap((mode) => {
+    const provider: DebridProvider = mode === "api" ? "megadebrid-api" : "megadebrid-web";
+    const modeEnabled = mode === "api" ? settings.megaDebridApiEnabled : settings.megaDebridWebEnabled;
+    if (!modeEnabled || !providerEnabled(provider) || !providerEnabled("megadebrid")) {
+      return [];
+    }
+    const disabledIds = new Set(getMegaDebridDisabledAccountIdsForMode(settings, mode));
+    return getMegaDebridAccountsForMode(settings, mode).filter((account) => !disabledIds.has(account.id));
+  });
+  const megaAccounts = scope === "all"
+    ? configuredMegaAccounts
+    : [...new Map(activeMegaAccounts.map((account) => [account.id, account])).values()];
+  const configuredDebridLinkKeys = parseDebridLinkApiKeys(settings.debridLinkApiKeys || "");
+  const debridLinkKeys = scope === "all"
+    ? configuredDebridLinkKeys
+    : providerEnabled("debridlink")
+      ? configuredDebridLinkKeys.filter((key) => !(settings.debridLinkDisabledKeyIds || []).includes(key.id))
+      : [];
+  const checkRealDebrid = Boolean(settings.realDebridUseWebLogin || String(settings.token || "").trim())
+    && (scope === "all" || providerEnabled("realdebrid"));
 
   const taskFns: Array<() => Promise<DebridAccountStatus>> = [
-    ...(settings.realDebridUseWebLogin || String(settings.token || "").trim()
+    ...(checkRealDebrid
       ? [() => checkRealDebridAccount(settings, signal, now, probeRealDebridWebSession)]
       : []),
     ...megaAccounts.map((account) => () => checkMegaDebridAccount(account, signal, now)),
@@ -286,7 +307,7 @@ export async function checkAllDebridAccounts(
 
   const results = await runWithConcurrency(taskFns, CHECK_CONCURRENCY);
   logger.info(
-    `Account-Check abgeschlossen: ${results.length} Accounts geprueft ` +
+    `Account-Check abgeschlossen: scope=${scope}, ${results.length} Accounts geprueft ` +
     `(${results.filter((r) => r.valid).length} gueltig, ${results.filter((r) => r.isPremium).length} premium)`
   );
   return results;

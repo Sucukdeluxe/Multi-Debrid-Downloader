@@ -47,7 +47,7 @@ const pairs = [
   ["Integritätsprüfung und Aufräumen nach Downloads und Entpacken.", "Integrity checks and cleanup after downloading and extraction."], ["Prüfung", "Verification"], ["Dateien auf Fehler prüfen", "Check files for errors"],
   ["Nach dem Entpacken", "After extraction"], ["Link-Dateien danach entfernen", "Remove link files afterward"], ["Vorschau-Dateien danach entfernen", "Remove sample files afterward"], ["Archive nach dem Entpacken", "Archives after extraction"],
   ["Fertige Downloads und Konflikte", "Completed downloads and conflicts"], ["Fertige Downloads aus der Liste", "Completed downloads in the list"], ["Bei gleichnamigen Dateien", "When files have the same name"],
-  ["Hinzufügen", "Add"], ["Aktualisieren", "Refresh"], ["＋ Hinzufügen", "＋ Add"], ["− Entfernen", "− Remove"], ["↻ Aktualisieren", "↻ Refresh"], ["Provider-Reihenfolge", "Provider order"], ["Lege fest, in welcher Reihenfolge verfügbare Provider verwendet werden.", "Choose the order in which available providers are used."],
+  ["Hinzufügen", "Add"], ["Aktualisieren", "Refresh"], ["＋ Hinzufügen", "＋ Add"], ["− Entfernen", "− Remove"], ["↻ Aktualisieren", "↻ Refresh"], ["↻ Aktive aktualisieren", "↻ Refresh active"], ["↻ Alle aktualisieren", "↻ Refresh all"], ["Prüft nur aktivierte Accounts.", "Checks enabled accounts only."], ["Prüft alle angelegten Accounts, auch deaktivierte.", "Checks all configured accounts, including disabled accounts."], ["Provider-Reihenfolge", "Provider order"], ["Lege fest, in welcher Reihenfolge verfügbare Provider verwendet werden.", "Choose the order in which available providers are used."],
   ["Automatischer Fallback", "Automatic fallback"], ["Zugangsdaten lokal speichern", "Store credentials locally"], ["Hoster-Routing", "Hoster routing"], ["Eigene Zuordnungen überschreiben für den jeweiligen Hoster die Standardreihenfolge.", "Custom assignments override the default order for each hoster."],
   ["Rotations-Verlauf", "Rotation history"], ["Sammlung", "Collection"], ["URL oder Rohzeile", "URL or raw line"], ["Zeile", "Line"], ["Paket / Datei", "Package / file"], ["Größe", "Size"], ["Gestartet", "Started"], ["Beendet", "Finished"],
   ["Alle Einträge", "All entries"], ["Heute", "Today"], ["Letzte 7 Tage", "Last 7 days"], ["Älter", "Older"], ["Gelöscht", "Deleted"], ["Fehlgeschlagen", "Failed"],
@@ -122,7 +122,7 @@ const pairs = [
   ["Rapidgator-Status kann direkt aus der Liste geladen werden.", "RapidGator status can be loaded directly from the list."], ["Status basiert auf den zuletzt gespeicherten AllDebrid-Daten.", "Status is based on the last saved AllDebrid data."],
   ["Update wird vorbereitet", "Preparing update"], ["Stilles Update gestartet - App wird neu gestartet", "Silent update started - the app will restart"], ["Einstellungen gespeichert", "Settings saved"],
   ["Real-Debrid Login-Fenster geöffnet", "Real-Debrid login window opened"], ["AllDebrid Login-Fenster geöffnet", "AllDebrid login window opened"], ["Keine Cookie-Datei ausgewählt", "No cookie file selected"],
-  ["Keine Mega-Debrid-/Debrid-Link-Accounts zum Prüfen konfiguriert.", "No Mega-Debrid or Debrid-Link accounts configured for checking."], ["Account aktiviert", "Account enabled"], ["Account deaktiviert", "Account disabled"],
+  ["Keine Mega-Debrid-/Debrid-Link-Accounts zum Prüfen konfiguriert.", "No Mega-Debrid or Debrid-Link accounts configured for checking."], ["Keine prüfbaren Accounts konfiguriert.", "No checkable accounts configured."], ["Keine aktiven prüfbaren Accounts konfiguriert.", "No active checkable accounts configured."], ["Account aktiviert", "Account enabled"], ["Account deaktiviert", "Account disabled"],
   ["Account entfernen", "Remove account"], ["Account entfernt", "Account removed"], ["Key entfernen", "Remove key"], ["Key entfernt", "Key removed"], ["Accounts aktiviert", "Accounts enabled"], ["Accounts deaktiviert", "Accounts disabled"],
   ["Für diesen Account ist keine direkte Statusprüfung verfügbar.", "Direct status checking is not available for this account."], ["Keine gespeicherten Links vorhanden", "No saved links available"], ["Keine Links hinzugefügt", "No links added"],
   ["Fehler beim Hinzufügen", "Error while adding"], ["Verlaufseintrag entfernen", "Remove history entry"], ["Verlaufseinträge entfernen", "Remove history entries"], ["Diesen Eintrag aus dem Verlauf entfernen?", "Remove this entry from history?"],
@@ -288,6 +288,8 @@ function translateDynamic(value: string, language: AppLanguage): string {
     if (disabledKeys) return `${disabledKeys[1]} API keys disabled.`;
     const accountCheck = value.match(/^Account-Check: (\d+\/\d+) Login gültig, (\d+) mit Premium\.$/);
     if (accountCheck) return `Account check: ${accountCheck[1]} logins valid, ${accountCheck[2]} with premium.`;
+    const scopedAccountCheck = value.match(/^(Aktive|Alle) Accounts: (\d+\/\d+) Login gültig, (\d+) mit Premium\.$/);
+    if (scopedAccountCheck) return `${scopedAccountCheck[1] === "Aktive" ? "Active" : "All"} accounts: ${scopedAccountCheck[2]} logins valid, ${scopedAccountCheck[3]} with premium.`;
     const removeAccount = value.match(/^Soll (.+) wirklich aus der Accountliste entfernt werden\?$/);
     if (removeAccount) return `Remove ${removeAccount[1]} from the account list?`;
     const resolved = value.match(/^Konflikte gelöst: (\d+) überschrieben, (\d+) übersprungen$/);
@@ -441,6 +443,8 @@ function translateDynamic(value: string, language: AppLanguage): string {
     if (disabledKeys) return `${disabledKeys[1]} API-Keys deaktiviert.`;
     const accountCheck = value.match(/^Account check: (\d+\/\d+) logins valid, (\d+) with premium\.$/);
     if (accountCheck) return `Account-Check: ${accountCheck[1]} Login gültig, ${accountCheck[2]} mit Premium.`;
+    const scopedAccountCheck = value.match(/^(Active|All) accounts: (\d+\/\d+) logins valid, (\d+) with premium\.$/);
+    if (scopedAccountCheck) return `${scopedAccountCheck[1] === "Active" ? "Aktive" : "Alle"} Accounts: ${scopedAccountCheck[2]} Login gültig, ${scopedAccountCheck[3]} mit Premium.`;
     const removeAccount = value.match(/^Remove (.+) from the account list\?$/);
     if (removeAccount) return `Soll ${removeAccount[1]} wirklich aus der Accountliste entfernt werden?`;
     const resolved = value.match(/^Conflicts resolved: (\d+) overwritten, (\d+) skipped$/);

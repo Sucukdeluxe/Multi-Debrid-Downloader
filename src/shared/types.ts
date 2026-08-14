@@ -174,6 +174,8 @@ export interface AppSettings {
   scheduledStartEpochMs: number;
 }
 
+export type AccountCheckScope = "active" | "all";
+
 export type RendererAccountKind =
   | "realdebrid-api"
   | "realdebrid-web"

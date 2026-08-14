@@ -843,8 +843,12 @@ function registerIpcHandlers(): void {
     return controller.getDebridLinkHostLimits();
   });
 
-  handleTrusted(IPC_CHANNELS.CHECK_DEBRID_ACCOUNTS, async () => {
-    return controller.checkDebridAccounts();
+  handleTrusted(IPC_CHANNELS.CHECK_DEBRID_ACCOUNTS, async (_event, rawScope: unknown) => {
+    const scope = rawScope === undefined ? "active" : validateString(rawScope, "scope");
+    if (scope !== "active" && scope !== "all") {
+      throw new Error("scope ist ungültig");
+    }
+    return controller.checkDebridAccounts(scope);
   });
 
   handleTrusted(IPC_CHANNELS.CHECK_ACCOUNT_CREDENTIALS, async (_event, rawInput: unknown) => {

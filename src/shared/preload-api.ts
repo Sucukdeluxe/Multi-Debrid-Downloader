@@ -1,5 +1,6 @@
 import type {
   AddLinksPayload,
+  AccountCheckScope,
   AccountCommandResult,
   AccountCredentialCheckInput,
   AccountCreateCommand,
@@ -100,7 +101,7 @@ export interface ElectronApi {
   importBestDebridCookies: () => Promise<number>;
   getAllDebridHostInfo: () => Promise<AllDebridHostInfo>;
   getDebridLinkHostLimits: () => Promise<DebridLinkHostLimitInfo[]>;
-  checkDebridAccounts: () => Promise<DebridAccountStatus[]>;
+  checkDebridAccounts: (scope?: AccountCheckScope) => Promise<DebridAccountStatus[]>;
   checkAccountCredentials: (input: AccountCredentialCheckInput) => Promise<DebridAccountStatus>;
   retryExtraction: (packageId: string) => Promise<void>;
   extractNow: (packageId: string) => Promise<void>;

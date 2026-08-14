@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 import {
   AddLinksPayload,
+  AccountCheckScope,
   AccountCommandResult,
   AccountCredentialCheckInput,
   AccountCreateCommand,
@@ -103,7 +104,7 @@ const api: ElectronApi = {
   importBestDebridCookies: (): Promise<number> => ipcRenderer.invoke(IPC_CHANNELS.IMPORT_BESTDEBRID_COOKIES),
   getAllDebridHostInfo: (): Promise<AllDebridHostInfo> => ipcRenderer.invoke(IPC_CHANNELS.GET_ALLDEBRID_HOST_INFO),
   getDebridLinkHostLimits: (): Promise<DebridLinkHostLimitInfo[]> => ipcRenderer.invoke(IPC_CHANNELS.GET_DEBRIDLINK_HOST_LIMITS),
-  checkDebridAccounts: (): Promise<DebridAccountStatus[]> => ipcRenderer.invoke(IPC_CHANNELS.CHECK_DEBRID_ACCOUNTS),
+  checkDebridAccounts: (scope: AccountCheckScope = "active"): Promise<DebridAccountStatus[]> => ipcRenderer.invoke(IPC_CHANNELS.CHECK_DEBRID_ACCOUNTS, scope),
   checkAccountCredentials: (input: AccountCredentialCheckInput): Promise<DebridAccountStatus> => ipcRenderer.invoke(IPC_CHANNELS.CHECK_ACCOUNT_CREDENTIALS, input),
   retryExtraction: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.RETRY_EXTRACTION, packageId),
   extractNow: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.EXTRACT_NOW, packageId),

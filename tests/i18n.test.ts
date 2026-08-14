@@ -188,6 +188,8 @@ describe("renderer localization", () => {
     ["Zwischenablage: 3 Link(s) erkannt", "Clipboard: 3 link(s) detected"],
     ["2/4 API-Keys deaktiviert.", "2/4 API keys disabled."],
     ["Account-Check: 3/4 Login gültig, 2 mit Premium.", "Account check: 3/4 logins valid, 2 with premium."],
+    ["Aktive Accounts: 1/1 Login gültig, 1 mit Premium.", "Active accounts: 1/1 logins valid, 1 with premium."],
+    ["Alle Accounts: 2/5 Login gültig, 2 mit Premium.", "All accounts: 2/5 logins valid, 2 with premium."],
     ["Soll RapidGator wirklich aus der Accountliste entfernt werden?", "Remove RapidGator from the account list?"],
     ["Konflikte gelöst: 2 überschrieben, 3 übersprungen", "Conflicts resolved: 2 overwritten, 3 skipped"],
     ["DLC importiert: 2 Paket(e), 5 Link(s)", "DLC imported: 2 package(s), 5 link(s)"],

@@ -61,4 +61,16 @@ describe("account preload contract", () => {
       IPC_CHANNELS.DELETE_ACCOUNT
     ]);
   });
+
+  it("forwards the selected bulk account-check scope", async () => {
+    electron.invoke.mockResolvedValue([]);
+
+    await electron.api?.checkDebridAccounts("active");
+    await electron.api?.checkDebridAccounts("all");
+
+    expect(electron.invoke.mock.calls).toEqual([
+      [IPC_CHANNELS.CHECK_DEBRID_ACCOUNTS, "active"],
+      [IPC_CHANNELS.CHECK_DEBRID_ACCOUNTS, "all"]
+    ]);
+  });
 });

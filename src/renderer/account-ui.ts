@@ -59,6 +59,36 @@ export function resolveAccountUsername(storedUsername: string, checkedEmail?: st
   return checkedEmail?.trim() || storedUsername.trim() || "—";
 }
 
+export function resolveAccountStatusState(
+  disabled: boolean,
+  checkedStatus?: { valid: boolean; isPremium: boolean }
+): "disabled" | "unchecked" | "invalid" | "free" | "premium" {
+  if (checkedStatus && !checkedStatus.valid) {
+    return "invalid";
+  }
+  if (disabled) {
+    return "disabled";
+  }
+  if (!checkedStatus) {
+    return "unchecked";
+  }
+  return checkedStatus.isPremium ? "premium" : "free";
+}
+
+export async function runOptimisticAccountUpdate<T>(
+  apply: () => void,
+  persist: () => Promise<T>,
+  rollback: () => void
+): Promise<T> {
+  apply();
+  try {
+    return await persist();
+  } catch (error) {
+    rollback();
+    throw error;
+  }
+}
+
 export function buildBulkAccountEnabledState(
   currentDisabledProviders: DebridProvider[],
   configuredProviders: DebridProvider[],

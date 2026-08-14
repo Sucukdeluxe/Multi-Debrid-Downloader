@@ -77,6 +77,7 @@ export interface AccountWorkspaceActions {
   onCopyIdentity: (label: "Benutzername" | "E-Mail", value: string) => void;
   onAdd: () => void;
   onRemoveSelected: () => void;
+  onCheckActive: () => void;
   onCheckAll: () => void;
   onSetAllEnabled?: (enabled: boolean) => void;
   onStatusSort?: () => void;
@@ -336,7 +337,8 @@ function AccountOverview({ model, actions }: AccountWorkspaceProps): ReactElemen
         <div>
           <button className="settings-button settings-button-secondary" disabled={model.busy} onClick={actions.onAdd} type="button">＋ Hinzufügen</button>
           <button className="settings-button settings-button-secondary" disabled={model.busy || model.selectedIds.length === 0} onClick={actions.onRemoveSelected} type="button">− Entfernen</button>
-          <button className="settings-button settings-button-secondary" disabled={model.busy} onClick={actions.onCheckAll} type="button">↻ Aktualisieren</button>
+          <button className="settings-button settings-button-secondary" disabled={model.busy} onClick={actions.onCheckActive} title="Prüft nur aktivierte Accounts." type="button">↻ Aktive aktualisieren</button>
+          <button className="settings-button settings-button-secondary" disabled={model.busy} onClick={actions.onCheckAll} title="Prüft alle angelegten Accounts, auch deaktivierte." type="button">↻ Alle aktualisieren</button>
         </div>
         <span>{model.rows.length} {model.rows.length === 1 ? "Account" : "Accounts"}</span>
       </div>

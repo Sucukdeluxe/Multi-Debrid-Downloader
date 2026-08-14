@@ -4,6 +4,7 @@ import v8 from "node:v8";
 import { app } from "electron";
 import {
   AddLinksPayload,
+  AccountCheckScope,
   AllDebridHostInfo,
   AppSettings,
   AccountCommand,
@@ -647,18 +648,20 @@ export class AppController {
     return fetchDebridLinkHostLimits(this.settings.debridLinkApiKeys, host);
   }
 
-public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
+  public async checkDebridAccounts(scope: AccountCheckScope = "active"): Promise<DebridAccountStatus[]> {
     const statuses = sanitizeDebridAccountStatuses(
       await checkAllDebridAccounts(
         this.settings,
         undefined,
-        (signal) => this.realDebridWebFallback.probeLoginState(signal)
+        (signal) => this.realDebridWebFallback.probeLoginState(signal),
+        scope
       ),
       collectAccountStatusRedactionValues(this.settings)
     );
     this.manager.applyDebridAccountStatuses(statuses);
     this.audit("INFO", "Debrid-Accounts geprueft", {
       total: statuses.length,
+      scope,
       valid: statuses.filter((s) => s.valid).length,
       premium: statuses.filter((s) => s.isPremium).length
     });
