@@ -117,6 +117,7 @@ function createSettings(): AppSettings {
     theme: "dark",
     logStorageLocation: "appdata",
     collapseNewPackages: false,
+    animatePackageDisclosure: true,
     historyRetentionMode: "permanent",
     historyMaxEntries: 500,
     historyMaxAgeDays: 0,

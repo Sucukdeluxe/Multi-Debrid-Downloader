@@ -181,6 +181,7 @@ export function createRendererSettings(settings: AppSettings): RendererSettings 
     theme: settings.theme,
     logStorageLocation: settings.logStorageLocation,
     collapseNewPackages: settings.collapseNewPackages,
+    animatePackageDisclosure: settings.animatePackageDisclosure,
     historyRetentionMode: settings.historyRetentionMode,
     historyMaxEntries: settings.historyMaxEntries,
     historyMaxAgeDays: settings.historyMaxAgeDays,

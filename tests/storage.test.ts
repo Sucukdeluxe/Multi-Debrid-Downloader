@@ -36,6 +36,14 @@ afterEach(() => {
 });
 
 describe("settings storage", () => {
+  it("enables package disclosure motion by default and preserves an explicit opt-out", () => {
+    const legacy = { ...defaultSettings() } as Partial<AppSettings>;
+    delete legacy.animatePackageDisclosure;
+
+    expect(normalizeSettings(legacy as AppSettings).animatePackageDisclosure).toBe(true);
+    expect(normalizeSettings({ ...defaultSettings(), animatePackageDisclosure: false }).animatePackageDisclosure).toBe(false);
+  });
+
   it("repairs a persisted version-2 column order that lost availability during default merging", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
     tempDirs.push(dir);

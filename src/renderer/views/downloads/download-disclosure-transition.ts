@@ -92,9 +92,10 @@ function groupRowsByPackage(rows: readonly DownloadDisclosureSourceRow[]): Map<s
 
 export function prepareDownloadDisclosureTransition(
   current: readonly DownloadDisclosureSourceRow[],
-  desired: readonly DownloadLogicalRow[]
+  desired: readonly DownloadLogicalRow[],
+  enabled = true
 ): { animated: boolean; rows: DownloadDisclosureRow[] } {
-  if (!desired.some((row) => row.type === "package")) {
+  if (!enabled || !desired.some((row) => row.type === "package")) {
     return { animated: false, rows: stableDownloadDisclosureRows(desired) };
   }
 

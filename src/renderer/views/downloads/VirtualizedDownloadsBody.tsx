@@ -117,7 +117,11 @@ export function VirtualizedDownloadsBody({ actions, model, state }: { actions: D
   }, [desiredRows]);
 
   useRendererLayoutEffect(() => {
-    const prepared = prepareDownloadDisclosureTransition(transitionRowsRef.current ?? previousRowsRef.current, desiredRowsRef.current);
+    const prepared = prepareDownloadDisclosureTransition(
+      transitionRowsRef.current ?? previousRowsRef.current,
+      desiredRowsRef.current,
+      model.animatePackageDisclosure
+    );
     if (!prepared.animated) {
       transitionRowsRef.current = null;
       transitionPinnedIdsRef.current = [];
@@ -148,7 +152,7 @@ export function VirtualizedDownloadsBody({ actions, model, state }: { actions: D
       cancelActivation();
       if (settleTimer) window.clearTimeout(settleTimer);
     };
-  }, [model.disclosureRevision, model.displayMode]);
+  }, [model.animatePackageDisclosure, model.disclosureRevision, model.displayMode]);
 
   const renderedRows = useMemo<DownloadDisclosureRow[]>(() => transitionRows ? mergeDownloadDisclosureRows(transitionRows, desiredRows) : stableDownloadDisclosureRows(desiredRows), [desiredRows, transitionRows]);
   const virtualWindow = useMemo(() => calculateDownloadVirtualWindow(renderedRows, {

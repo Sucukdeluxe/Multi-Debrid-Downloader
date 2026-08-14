@@ -131,6 +131,7 @@ export interface AppSettings {
   theme: AppTheme;
   logStorageLocation: LogStorageLocation;
   collapseNewPackages: boolean;
+  animatePackageDisclosure: boolean;
   historyRetentionMode: HistoryRetentionMode;
   historyMaxEntries: number;
   historyMaxAgeDays: number;
@@ -250,6 +251,7 @@ export interface RendererSettings {
   theme: AppTheme;
   logStorageLocation: LogStorageLocation;
   collapseNewPackages: boolean;
+  animatePackageDisclosure: boolean;
   historyRetentionMode: HistoryRetentionMode;
   historyMaxEntries: number;
   historyMaxAgeDays: number;

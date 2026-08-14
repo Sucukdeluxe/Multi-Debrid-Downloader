@@ -12,7 +12,7 @@ const pairs = [
   ["Download-Ordner", "Download folder"], ["Paketname (optional)", "Package name (optional)"], ["Max. gleichzeitige Downloads", "Max. concurrent downloads"], ["Automatische Wiederholungen", "Automatic retries"],
   ["Zielordner für heruntergeladene Dateien.", "Destination folder for downloaded files."],
   ["Beim Start automatisch fortsetzen", "Resume automatically on startup"], ["Zwischenablage überwachen", "Monitor clipboard"], ["Verlauf speichern", "Save history"], ["Nur aktuelle Session", "Current session only"], ["Nur letzte 100 Einträge", "Last 100 entries only"], ["Nur letzte 250 Einträge", "Last 250 entries only"], ["Dauerhaft", "Permanent"],
-  ["Maximale Verlauf-Einträge", "Maximum history entries"], ["Einträge löschen älter als (Tage)", "Delete entries older than (days)"], ["Neue Pakete eingeklappt zeigen", "Show new packages collapsed"],
+  ["Maximale Verlauf-Einträge", "Maximum history entries"], ["Einträge löschen älter als (Tage)", "Delete entries older than (days)"], ["Neue Pakete eingeklappt zeigen", "Show new packages collapsed"], ["Paket-Ein-/Ausklappen animieren", "Animate package expand/collapse"],
   ["In den Infobereich minimieren", "Minimize to tray"], ["Vor dem Löschen nachfragen", "Confirm before deleting"], ["Download-Liste mitsichern", "Include download list in backup"],
   ["Ferndiagnose-Einstellungen mitsichern", "Include remote diagnostics settings in backup"], ["Webhook-Adresse", "Webhook address"], ["Discord-Erwähnung (optional)", "Discord mention (optional)"],
   ["Melden, wenn ein Paket fertig ist", "Notify when a package completes"], ["Melden, wenn ein Paket fehlschlägt", "Notify when a package fails"], ["Melden, wenn alles fertig ist", "Notify when everything completes"],

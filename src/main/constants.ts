@@ -105,6 +105,7 @@ export function defaultSettings(): AppSettings {
     theme: "dark" as const,
     logStorageLocation: "appdata",
     collapseNewPackages: true,
+    animatePackageDisclosure: true,
     historyRetentionMode: "permanent",
     historyMaxEntries: 500,
     historyMaxAgeDays: 0,

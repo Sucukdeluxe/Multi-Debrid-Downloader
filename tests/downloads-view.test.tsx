@@ -227,6 +227,19 @@ describe("virtualisierte Paketanimation", () => {
     renderLimit: 100
   }));
 
+  it("überspringt die Paketbewegung, wenn sie in den Einstellungen deaktiviert ist", () => {
+    const expanded = logicalRows([]);
+    const prepared = prepareDownloadDisclosureTransition(
+      stableDownloadDisclosureRows(logicalRows([packageA.id])),
+      expanded,
+      false
+    );
+
+    expect(prepared.animated).toBe(false);
+    expect(prepared.rows).toEqual(stableDownloadDisclosureRows(expanded));
+    expect(prepared.rows.some((row) => row.type === "item-group")).toBe(false);
+  });
+
   it("zeichnet den Startzustand in einem eigenen Frame vor der Aktivierung", () => {
     const frames: FrameRequestCallback[] = [];
     const cancelled: number[] = [];
@@ -659,6 +672,7 @@ function withRuntime(input: DownloadsModelInput, overrides: Record<string, unkno
     scheduleLabel: "",
     packageSpeedBps: { "package-a": 12_000_000 },
     disclosureRevision: 0,
+    animatePackageDisclosure: true,
     editingPackageId: null,
     editingName: "",
     columnOrder: ["name", "size", "hoster", "progress"] as const,

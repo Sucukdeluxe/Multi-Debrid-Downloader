@@ -527,6 +527,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
       ? settings.logStorageLocation
       : defaults.logStorageLocation,
     collapseNewPackages: settings.collapseNewPackages !== undefined ? Boolean(settings.collapseNewPackages) : defaults.collapseNewPackages,
+    animatePackageDisclosure: settings.animatePackageDisclosure !== undefined ? Boolean(settings.animatePackageDisclosure) : defaults.animatePackageDisclosure,
     historyRetentionMode: VALID_HISTORY_RETENTION_MODES.has(settings.historyRetentionMode)
       ? settings.historyRetentionMode
       : defaults.historyRetentionMode,

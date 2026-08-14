@@ -506,6 +506,24 @@ describe("settings views", () => {
     expect(settingsCss).toMatch(/\.settings-select\.is-open\s+\.settings-select-options\s*\{[^}]*opacity:\s*1[^}]*transform:\s*translateY\(0\)/s);
   });
 
+  it("offers a general switch for package expand and collapse motion", () => {
+    const form = buildSettingsFormViewModel({
+      settings: { ...createRendererSettings(defaultSettings()), archivePasswordList: "", notifyUrl: "" },
+      section: "allgemein",
+      speedLimitInput: "0",
+      scheduleSpeedInputs: {}
+    });
+    const animation = form.groups.flatMap((group) => group.fields)
+      .find((field) => field.id === "animatePackageDisclosure");
+
+    expect(animation).toEqual({
+      id: "animatePackageDisclosure",
+      kind: "switch",
+      label: "Paket-Ein-/Ausklappen animieren",
+      value: true
+    });
+  });
+
   it("supports keyboard navigation in animated settings selects", () => {
     expect(getSettingsSelectNavigationIndex(1, 3, "ArrowDown")).toBe(2);
     expect(getSettingsSelectNavigationIndex(2, 3, "ArrowDown")).toBe(0);
