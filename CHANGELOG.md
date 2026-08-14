@@ -2,6 +2,19 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.36] - 2026-08-14
+
+### Download performance
+
+- Restored the proven 2.0.28 download-processing baseline after later builds caused severe throughput drops and prolonged disk-wait states during large parallel queues.
+- Removed the per-chunk stream failure race that accumulated pending promise reactions throughout long-running downloads.
+- Preserved the startup reliability, credential protection, storage safeguards, large-queue virtualization, and updater behavior included in 2.0.28.
+
+### Release safety
+
+- Rebuilt the Windows installer and portable package from the verified rollback branch.
+- Revalidated the complete client and backup API test suites before publication.
+
 ## [2.0.28] - 2026-08-12
 
 ### Startup reliability
