@@ -108,7 +108,6 @@ export interface AccountWorkspaceViewModel {
 export interface AccountWorkspaceActions {
   onPanelChange: (panel: AccountWorkspacePanel) => void;
   onSelect: (rowId: string, additive: boolean) => void;
-  onClearSelection: () => void;
   onToggleEnabled: (rowId: string) => void;
   onEdit: (rowId: string) => void;
   onContextMenu: (rowId: string, x: number, y: number) => void;
@@ -583,16 +582,7 @@ function AccountRules({ model, actions }: AccountWorkspaceProps): ReactElement {
 
 export function AccountWorkspace({ model, actions }: AccountWorkspaceProps): ReactElement {
   return (
-    <div
-      className="settings-account-workspace"
-      onKeyDown={(event) => {
-        if (event.key !== "Escape" || model.selectedIds.length === 0) {
-          return;
-        }
-        event.preventDefault();
-        actions.onClearSelection();
-      }}
-    >
+    <div className="settings-account-workspace">
       {model.busy ? <span aria-live="polite" className="settings-visually-hidden" role="status">Accountdaten werden aktualisiert.</span> : null}
       {model.error ? <span className="settings-visually-hidden" role="alert">{model.error}</span> : null}
       <header className="settings-account-heading">

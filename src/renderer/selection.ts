@@ -13,6 +13,21 @@ export function shouldClearDownloadSelectionOnEscape(tagName: string, inputType 
   return ["checkbox", "radio", "button"].includes(inputType.toLowerCase());
 }
 
+export function resolveEscapeSelectionScope(
+  view: string,
+  settingsSection: string,
+  tagName: string,
+  inputType = ""
+): "downloads" | "history" | "accounts" | null {
+  if (!shouldClearDownloadSelectionOnEscape(tagName, inputType)) {
+    return null;
+  }
+  if (view === "downloads" || view === "history") {
+    return view;
+  }
+  return view === "settings" && settingsSection === "accounts" ? "accounts" : null;
+}
+
 /**
  * Drop selected ids whose package OR item no longer exists in the session.
  * The selection set mixes package and item ids; when entries vanish (delta

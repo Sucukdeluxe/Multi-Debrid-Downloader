@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { pruneSelection, shouldClearDownloadSelection, shouldClearDownloadSelectionOnEscape } from "../src/renderer/selection";
+import * as selection from "../src/renderer/selection";
 import type { SessionState } from "../src/shared/types";
 
 function session(packageIds: string[], itemIds: string[]): Pick<SessionState, "packages" | "items"> {
@@ -60,5 +61,19 @@ describe("download selection clearing", () => {
     expect(shouldClearDownloadSelectionOnEscape("DIV")).toBe(true);
     expect(shouldClearDownloadSelectionOnEscape("INPUT", "text")).toBe(false);
     expect(shouldClearDownloadSelectionOnEscape("TEXTAREA")).toBe(false);
+  });
+});
+
+describe("global Escape selection routing", () => {
+  it("routes Escape to the account selection even when focus is outside the account workspace", () => {
+    const api = selection as typeof selection & {
+      resolveEscapeSelectionScope?: (view: string, settingsSection: string, tagName: string, inputType?: string) => string | null;
+    };
+
+    expect(api.resolveEscapeSelectionScope).toBeTypeOf("function");
+    expect(api.resolveEscapeSelectionScope?.("settings", "accounts", "BODY")).toBe("accounts");
+    expect(api.resolveEscapeSelectionScope?.("settings", "accounts", "INPUT", "text")).toBeNull();
+    expect(api.resolveEscapeSelectionScope?.("downloads", "allgemein", "DIV")).toBe("downloads");
+    expect(api.resolveEscapeSelectionScope?.("history", "accounts", "DIV")).toBe("history");
   });
 });

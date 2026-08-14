@@ -301,7 +301,6 @@ function workspaceActions(overrides: Partial<AccountWorkspaceActions> = {}): Acc
   return {
     onPanelChange: () => {},
     onSelect: () => {},
-    onClearSelection: () => {},
     onToggleEnabled: () => {},
     onEdit: () => {},
     onContextMenu: () => {},
@@ -799,18 +798,15 @@ describe("account workspace", () => {
     ]);
   });
 
-  it("shows the selected account count and clears the selection with Escape", () => {
-    let cleared = 0;
+  it("shows the selected account count", () => {
     const model = workspaceModel();
     const tree = AccountWorkspace({
-      actions: workspaceActions({ onClearSelection: () => { cleared += 1; } }),
+      actions: workspaceActions(),
       model: { ...model, selectedIds: model.rows.slice(0, 3).map((row) => row.id) }
     });
     const html = renderToStaticMarkup(tree);
 
     expect(html).toContain("− Entfernen (3)");
-    tree.props.onKeyDown({ key: "Escape", preventDefault: () => {} });
-    expect(cleared).toBe(1);
   });
 
   it("removes the redundant global account activation switch", () => {

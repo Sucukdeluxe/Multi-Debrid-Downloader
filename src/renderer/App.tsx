@@ -39,7 +39,7 @@ import {
   getProviderUsageDayKey
 } from "../shared/provider-daily-limits";
 import { preservePackageOrderForDisplay, sortPackageOrderByName } from "./package-order";
-import { pruneSelection, shouldClearDownloadSelection, shouldClearDownloadSelectionOnEscape } from "./selection";
+import { pruneSelection, resolveEscapeSelectionScope, shouldClearDownloadSelection } from "./selection";
 import { buildConfiguredProviderOrder, buildScopedAccountEnabledState, getAccountDialogSelectableOptions, matchesAccountModeFilter, pruneAccountRowSelections, resolveAccountStatusState, resolveAccountUsername, resolveVisibleAccountKind, runOptimisticAccountUpdate, updateAccountRowSelection } from "./account-ui";
 import type { AccountModeFilter } from "./account-ui";
 import { buildAccountDeleteCommand, buildAccountReplaceCommand, buildAccountSecretRequest, createAccountEditState, validateAccountEdit } from "./account-edit";
@@ -4156,10 +4156,12 @@ export function App(): ReactElement {
       if (e.key === "Escape") {
         const target = e.target as HTMLElement;
         const inputType = target.tagName === "INPUT" ? (target as HTMLInputElement).type : "";
-        if (shouldClearDownloadSelectionOnEscape(target.tagName, inputType)) {
+        const selectionScope = resolveEscapeSelectionScope(tabRef.current, settingsSubTab, target.tagName, inputType);
+        if (selectionScope) {
           if (document.querySelector(".ctx-menu") || document.querySelector(".modal-backdrop")) return;
-          if (tabRef.current === "downloads") setSelectedIds(new Set());
-          else if (tabRef.current === "history") setSelectedHistoryIds(new Set());
+          if (selectionScope === "downloads") setSelectedIds(new Set());
+          else if (selectionScope === "history") setSelectedHistoryIds(new Set());
+          else setSelectedAccountRowKeys(new Set());
         }
       }
       if (e.key === "Delete" && tabRef.current === "downloads" && selectedIds.size > 0) {
@@ -4177,7 +4179,7 @@ export function App(): ReactElement {
     window.addEventListener("keydown", onKey);
     window.addEventListener("mousedown", onDown);
     return () => { window.removeEventListener("keydown", onKey); window.removeEventListener("mousedown", onDown); };
-  }, [selectedIds, requestDeleteSelection]);
+  }, [requestDeleteSelection, selectedIds, settingsSubTab]);
 
   const onExportBackup = async (): Promise<void> => {
     closeMenus();
@@ -4959,7 +4961,6 @@ export function App(): ReactElement {
       }
       setSelectedAccountRowKeys((current) => new Set(updateAccountRowSelection([...current], rowKey, additive)));
     },
-    onClearSelection: () => setSelectedAccountRowKeys(new Set()),
     onToggleEnabled: (rowId) => {
       const row = accountRowBindings.get(rowId);
       if (row) toggleAccountTableRow(row);
