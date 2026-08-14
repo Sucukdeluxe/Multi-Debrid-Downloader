@@ -253,7 +253,7 @@ describe("virtualisierte Paketanimation", () => {
     expect(cancelled).toContain(2);
   });
 
-  it("fährt neue Unterzeilen von null auf ihre feste Höhe aus und verschiebt Folgepakete unter stabilen IDs", () => {
+  it("fährt einen gemeinsamen Paketbereich aus und lässt seine Unterzeilen auf fester Höhe", () => {
     const collapsed = logicalRows([packageA.id]);
     const expanded = logicalRows([]);
     const prepared = prepareDownloadDisclosureTransition(stableDownloadDisclosureRows(collapsed), expanded);
@@ -261,15 +261,18 @@ describe("virtualisierte Paketanimation", () => {
     expect(prepared.animated).toBe(true);
     expect(prepared.rows.map((row) => [row.id, row.height, row.disclosurePhase, row.disclosureOpacity])).toEqual([
       ["package-a", 40, "stable", 1],
-      ["a-1", 0, "entering", 0],
-      ["a-2", 0, "entering", 0],
+      ["package-a:items", 0, "entering", 1],
       ["package-b", 40, "stable", 1],
       ["b-1", 38, "stable", 1]
     ]);
+    const preparedGroup = prepared.rows.find((row) => row.type === "item-group");
+    expect(preparedGroup?.type === "item-group" ? preparedGroup.items.map((row) => [row.id, row.height]) : []).toEqual([
+      ["a-1", 38],
+      ["a-2", 38]
+    ]);
     expect(activateDownloadDisclosureTransition(prepared.rows).map((row) => [row.id, row.height, row.disclosureOpacity])).toEqual([
       ["package-a", 40, 1],
-      ["a-1", 38, 1],
-      ["a-2", 38, 1],
+      ["package-a:items", 76, 1],
       ["package-b", 40, 1],
       ["b-1", 38, 1]
     ]);
@@ -283,22 +286,22 @@ describe("virtualisierte Paketanimation", () => {
     expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.downloads-virtual-row\s*\{[^}]*transition-duration:\s*1500ms, 1500ms, 1500ms !important;/s);
   });
 
-  it("behält ausfahrende Unterzeilen bis zum Animationsende und reduziert ihre Höhe auf null", () => {
+  it("schneidet beim Einfahren den gemeinsamen Paketbereich ab statt Unterzeilen zusammenzuziehen", () => {
     const expanded = logicalRows([]);
     const collapsed = logicalRows([packageA.id]);
     const prepared = prepareDownloadDisclosureTransition(stableDownloadDisclosureRows(expanded), collapsed);
 
     expect(prepared.rows.map((row) => [row.id, row.height, row.disclosurePhase, row.disclosureOpacity])).toEqual([
       ["package-a", 40, "stable", 1],
-      ["a-1", 38, "leaving", 1],
-      ["a-2", 38, "leaving", 1],
+      ["package-a:items", 76, "leaving", 1],
       ["package-b", 40, "stable", 1],
       ["b-1", 38, "stable", 1]
     ]);
+    const preparedGroup = prepared.rows.find((row) => row.type === "item-group");
+    expect(preparedGroup?.type === "item-group" ? preparedGroup.items.map((row) => row.height) : []).toEqual([38, 38]);
     expect(activateDownloadDisclosureTransition(prepared.rows).map((row) => [row.id, row.height, row.disclosureOpacity])).toEqual([
       ["package-a", 40, 1],
-      ["a-1", 0, 0],
-      ["a-2", 0, 0],
+      ["package-a:items", 0, 1],
       ["package-b", 40, 1],
       ["b-1", 38, 1]
     ]);
@@ -402,15 +405,59 @@ describe("virtualisierte Paketanimation", () => {
     const entering = activateDownloadDisclosureTransition(prepareDownloadDisclosureTransition(stableDownloadDisclosureRows(logicalRows([packageA.id])), logicalRows([])).rows);
     const updated = logicalRows([]).map((row) => row.type === "item" && row.id === "a-1" ? { ...row, item: { ...row.item, downloadedBytes: 987_654_321 } } : row);
     const merged = mergeDownloadDisclosureRows(entering, updated);
-    const updatedItem = merged.find((row) => row.type === "item" && row.id === "a-1");
-    expect(updatedItem?.type === "item" ? updatedItem.item.downloadedBytes : 0).toBe(987_654_321);
-    expect(updatedItem).toEqual(expect.objectContaining({ disclosurePhase: "entering", height: 38, disclosureOpacity: 1 }));
+    const enteringGroup = merged.find((row) => row.type === "item-group");
+    const updatedItem = enteringGroup?.type === "item-group" ? enteringGroup.items.find((row) => row.id === "a-1") : null;
+    expect(updatedItem?.item.downloadedBytes).toBe(987_654_321);
+    expect(enteringGroup).toEqual(expect.objectContaining({ disclosurePhase: "entering", height: 76, disclosureOpacity: 1 }));
 
     const collapsed = logicalRows([packageA.id]);
     const leaving = activateDownloadDisclosureTransition(prepareDownloadDisclosureTransition(stableDownloadDisclosureRows(logicalRows([])), collapsed).rows);
     const reversed = prepareDownloadDisclosureTransition(leaving, logicalRows([]));
     expect(reversed.animated).toBe(true);
-    expect(reversed.rows.filter((row) => row.packageId === packageA.id && row.type === "item").every((row) => row.disclosurePhase === "entering")).toBe(true);
+    expect(reversed.rows.find((row) => row.packageId === packageA.id && row.type === "item-group")).toEqual(expect.objectContaining({ disclosurePhase: "entering", height: 0 }));
+  });
+
+  it("gleicht die Unterzeilenmenge einer laufenden Paketbewegung sofort mit dem aktuellen Modell ab", () => {
+    const entering = activateDownloadDisclosureTransition(prepareDownloadDisclosureTransition(stableDownloadDisclosureRows(logicalRows([packageA.id])), logicalRows([])).rows);
+    const current = logicalRows([]);
+    const replacement = item("a-3", packageA.id, "queued");
+    const updated = current.flatMap((row) => {
+      if (row.type === "item" && row.id === "a-2") {
+        return [{ ...row, id: replacement.id, item: replacement }];
+      }
+      return [row];
+    });
+    const merged = mergeDownloadDisclosureRows(entering, updated);
+    const group = merged.find((row) => row.type === "item-group");
+
+    expect(group?.type === "item-group" ? group.items.map((row) => row.id) : []).toEqual(["a-1", "a-3"]);
+    expect(group).toEqual(expect.objectContaining({ height: 76 }));
+  });
+
+  it("bricht eine laufende Gruppenbewegung ab wenn ein Filterwechsel die Virtualisierungsgrenze überschreitet", () => {
+    const entering = activateDownloadDisclosureTransition(prepareDownloadDisclosureTransition(stableDownloadDisclosureRows(logicalRows([packageA.id])), logicalRows([])).rows);
+    const itemIds = Array.from({ length: DOWNLOAD_DISCLOSURE_MAX_ANIMATED_ITEMS + 100 }, (_, index) => `expanded-${index}`);
+    const expandedPackage = pkg(packageA.id, packageA.name, itemIds);
+    const expandedItems = Object.fromEntries(itemIds.map((id) => [id, item(id, packageA.id, "queued")]));
+    const expandedRows = buildDownloadLogicalRows(buildDownloadsViewModel({
+      packageOrder: [expandedPackage.id],
+      packages: { [expandedPackage.id]: expandedPackage },
+      items: expandedItems,
+      displayMode: "packages",
+      filter: "all",
+      providerFilter: "all",
+      query: "",
+      collapsedPackageIds: [],
+      selectedIds: [],
+      hideExtractedItems: false,
+      showAllPackages: true,
+      renderLimit: itemIds.length + 1
+    }));
+    const merged = mergeDownloadDisclosureRows(entering, expandedRows);
+    const window = calculateDownloadVirtualWindow(merged, { scrollTop: 0, viewportHeight: 720, overscan: 8 });
+
+    expect(merged.some((row) => row.type === "item-group")).toBe(false);
+    expect(window.rows.length).toBeLessThan(40);
   });
 });
 

@@ -306,6 +306,10 @@
   height: var(--downloads-virtual-row-height);
 }
 
+.downloads-disclosure-item-group {
+  width: 100%;
+}
+
 .downloads-package-card {
   box-sizing: border-box;
   width: 100%;

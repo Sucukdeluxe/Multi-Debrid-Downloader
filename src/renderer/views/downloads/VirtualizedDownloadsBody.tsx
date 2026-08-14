@@ -7,6 +7,7 @@ import {
   mergeDownloadDisclosureRows,
   prepareDownloadDisclosureTransition,
   scheduleDownloadDisclosureActivation,
+  stableDownloadDisclosureRows,
   type DownloadDisclosureRow
 } from "./download-disclosure-transition";
 import type { DownloadsViewActions, DownloadsViewModel } from "./DownloadsView";
@@ -69,7 +70,16 @@ function disclosureOpacity(row: DownloadLogicalRow | DownloadDisclosureRow): num
   return "disclosureOpacity" in row && typeof row.disclosureOpacity === "number" ? row.disclosureOpacity : 1;
 }
 
-function renderVirtualRow(row: DownloadLogicalRow, model: DownloadsViewModel, actions: DownloadsViewActions): ReactElement {
+function renderVirtualRow(row: DownloadLogicalRow | DownloadDisclosureRow, model: DownloadsViewModel, actions: DownloadsViewActions): ReactElement {
+  if (row.type === "item-group") {
+    return (
+      <div className="downloads-disclosure-item-group">
+        {row.items.map((entry) => (
+          <ItemRow actions={actions} columnOrder={model.columnOrder} gridTemplate={model.gridTemplate} item={entry.item} key={entry.id} selected={model.selectedIds.has(entry.item.id)} sessionRunning={model.running} />
+        ))}
+      </div>
+    );
+  }
   if (row.type === "item") {
     return (
       <ItemRow actions={actions} columnOrder={model.columnOrder} gridTemplate={model.gridTemplate} item={row.item} selected={model.selectedIds.has(row.item.id)} sessionRunning={model.running} />
@@ -140,7 +150,7 @@ export function VirtualizedDownloadsBody({ actions, model, state }: { actions: D
     };
   }, [model.disclosureRevision, model.displayMode]);
 
-  const renderedRows = useMemo(() => transitionRows ? mergeDownloadDisclosureRows(transitionRows, desiredRows) : desiredRows, [desiredRows, transitionRows]);
+  const renderedRows = useMemo<DownloadDisclosureRow[]>(() => transitionRows ? mergeDownloadDisclosureRows(transitionRows, desiredRows) : stableDownloadDisclosureRows(desiredRows), [desiredRows, transitionRows]);
   const virtualWindow = useMemo(() => calculateDownloadVirtualWindow(renderedRows, {
     scrollTop: viewport.scrollTop,
     viewportHeight: viewport.viewportHeight,
@@ -155,7 +165,7 @@ export function VirtualizedDownloadsBody({ actions, model, state }: { actions: D
       {!state ? (
         <div className="downloads-virtual-spacer" style={spacerStyle}>
           {virtualWindow.rows.map((entry) => (
-            <div className={`downloads-virtual-row${disclosureClassName(entry.source)}`} data-download-virtual-index={entry.index} key={`${entry.source.type}:${entry.id}`} style={rowStyle(entry.top, entry.height, disclosureOpacity(entry.source))}>
+            <div className={`downloads-virtual-row${entry.source.type === "item-group" ? " is-disclosure-group" : ""}${disclosureClassName(entry.source)}`} data-download-virtual-index={entry.index} key={`${entry.source.type}:${entry.id}`} style={rowStyle(entry.top, entry.height, disclosureOpacity(entry.source))}>
               {renderVirtualRow(entry.source, model, actions)}
             </div>
           ))}
