@@ -7,6 +7,7 @@ import { createRendererSettings, createRendererState } from "../src/main/rendere
 import { buildAccountAddFields, createAccountDialogState } from "../src/renderer/App";
 import { buildAccountReplaceCommand, createAccountEditState, type AccountEditTarget } from "../src/renderer/account-edit";
 import {
+  buildScopedAccountEnabledState,
   buildBulkAccountEnabledState,
   buildConfiguredProviderOrder,
   resolveAccountStatusState,
@@ -958,6 +959,31 @@ describe("account workspace", () => {
 });
 
 describe("settings App integration", () => {
+  it("enables an account by clearing both its row-level and provider-level locks", () => {
+    expect(buildScopedAccountEnabledState(
+      ["debridlink", "linksnappy"],
+      ["debridlink"],
+      ["key-disabled", "key-other"],
+      "key-disabled",
+      true
+    )).toEqual({
+      disabledProviders: ["linksnappy"],
+      disabledAccountIds: ["key-other"]
+    });
+
+    expect(buildScopedAccountEnabledState([], ["debridlink"], [], "key-active", false)).toEqual({
+      disabledProviders: [],
+      disabledAccountIds: ["key-active"]
+    });
+
+    const debridLinkBlock = sourceBlock(appSource, "const onToggleDebridLinkApiKeyEnabled", "const onAccountRowQuickAction");
+    const megaBlock = sourceBlock(appSource, "const onToggleMegaAccountEnabled", "const onRemoveDebridLinkKey");
+    expect(debridLinkBlock).toContain("buildScopedAccountEnabledState");
+    expect(megaBlock).toContain("buildScopedAccountEnabledState");
+    expect(megaBlock).toContain('megaDebridApiEnabled: mode === "api" && enabled ? true');
+    expect(megaBlock).toContain('megaDebridWebEnabled: mode === "web" && enabled ? true');
+  });
+
   it("shows a failed all-account check even when the account is disabled", () => {
     expect(resolveAccountStatusState(true, { valid: false, isPremium: false })).toBe("invalid");
     expect(resolveAccountStatusState(true, { valid: true, isPremium: true })).toBe("disabled");

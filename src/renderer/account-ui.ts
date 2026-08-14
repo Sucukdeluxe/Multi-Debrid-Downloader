@@ -89,6 +89,24 @@ export async function runOptimisticAccountUpdate<T>(
   }
 }
 
+export function buildScopedAccountEnabledState(
+  currentDisabledProviders: DebridProvider[],
+  providerIds: DebridProvider[],
+  currentDisabledAccountIds: string[],
+  accountId: string,
+  enabled: boolean
+): { disabledProviders: DebridProvider[]; disabledAccountIds: string[] } {
+  const providers = new Set(providerIds);
+  return {
+    disabledProviders: enabled
+      ? currentDisabledProviders.filter((provider) => !providers.has(provider))
+      : [...currentDisabledProviders],
+    disabledAccountIds: enabled
+      ? currentDisabledAccountIds.filter((id) => id !== accountId)
+      : [...new Set([...currentDisabledAccountIds, accountId])]
+  };
+}
+
 export function buildBulkAccountEnabledState(
   currentDisabledProviders: DebridProvider[],
   configuredProviders: DebridProvider[],

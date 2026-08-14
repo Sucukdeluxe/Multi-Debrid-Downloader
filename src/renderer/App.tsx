@@ -40,7 +40,7 @@ import {
 } from "../shared/provider-daily-limits";
 import { preservePackageOrderForDisplay, sortPackageOrderByName } from "./package-order";
 import { pruneSelection, shouldClearDownloadSelection, shouldClearDownloadSelectionOnEscape } from "./selection";
-import { buildBulkAccountEnabledState, buildConfiguredProviderOrder, getAccountDialogSelectableOptions, matchesAccountModeFilter, pruneAccountRowSelection, resolveAccountStatusState, resolveAccountUsername, resolveVisibleAccountKind, runOptimisticAccountUpdate } from "./account-ui";
+import { buildBulkAccountEnabledState, buildConfiguredProviderOrder, buildScopedAccountEnabledState, getAccountDialogSelectableOptions, matchesAccountModeFilter, pruneAccountRowSelection, resolveAccountStatusState, resolveAccountUsername, resolveVisibleAccountKind, runOptimisticAccountUpdate } from "./account-ui";
 import type { AccountModeFilter } from "./account-ui";
 import { buildAccountDeleteCommand, buildAccountReplaceCommand, createAccountEditState, validateAccountEdit } from "./account-edit";
 import type { AccountEditState, AccountEditTarget, AccountKind, AccountService, SingleAccountKind } from "./account-edit";
@@ -2319,8 +2319,8 @@ export function App(): ReactElement {
             accountId: acc.accountId,
             checkable: true,
             disabled: entry.disabled || (entry.kind === "megadebrid-api"
-              ? settingsDraft.megaDebridApiDisabledAccountIds.includes(acc.accountId)
-              : settingsDraft.megaDebridWebDisabledAccountIds.includes(acc.accountId)),
+              ? !settingsDraft.megaDebridApiEnabled || settingsDraft.megaDebridApiDisabledAccountIds.includes(acc.accountId)
+              : !settingsDraft.megaDebridWebEnabled || settingsDraft.megaDebridWebDisabledAccountIds.includes(acc.accountId)),
             dailyUsedBytes: used,
             dailyLimitBytes: limit,
             dailyRemainingBytes: limit > 0 ? Math.max(0, limit - used) : 0,
@@ -2820,20 +2820,23 @@ export function App(): ReactElement {
     );
   };
 
-  const onToggleDebridLinkApiKeyEnabled = async (entry: ConfiguredAccountEntry, key: DebridLinkAccountKeyEntry): Promise<void> => {
+  const onToggleDebridLinkApiKeyEnabled = async (entry: ConfiguredAccountEntry, key: DebridLinkAccountKeyEntry, enabled: boolean): Promise<void> => {
     await performQuickAction(async () => {
-      const currentDisabledIds = settingsDraft.debridLinkDisabledKeyIds || [];
-      const currentlyDisabled = currentDisabledIds.includes(key.id);
-      const nextDisabledIds = currentlyDisabled
-        ? currentDisabledIds.filter((existingId) => existingId !== key.id)
-        : [...currentDisabledIds, key.id];
+      const nextState = buildScopedAccountEnabledState(
+        settingsDraft.disabledProviders || [],
+        ["debridlink"],
+        settingsDraft.debridLinkDisabledKeyIds || [],
+        key.id,
+        enabled
+      );
       const nextDraft: RendererSettingsDraft = {
         ...settingsDraft,
-        debridLinkDisabledKeyIds: nextDisabledIds
+        disabledProviders: nextState.disabledProviders,
+        debridLinkDisabledKeyIds: nextState.disabledAccountIds
       };
       await persistAccountToggle(nextDraft);
       showToast(
-        currentlyDisabled
+        enabled
           ? `${entry.serviceLabel} ${key.label} aktiviert`
           : `${entry.serviceLabel} ${key.label} deaktiviert`,
         2200
@@ -2855,20 +2858,30 @@ export function App(): ReactElement {
     });
   };
 
-  const onToggleMegaAccountEnabled = async (kind: "megadebrid-api" | "megadebrid-web", accountId: string, currentlyDisabled: boolean): Promise<void> => {
+  const onToggleMegaAccountEnabled = async (kind: "megadebrid-api" | "megadebrid-web", accountId: string, enabled: boolean): Promise<void> => {
     await performQuickAction(async () => {
       const mode = kind === "megadebrid-web" ? "web" : "api";
       const current = mode === "api" ? settingsDraft.megaDebridApiDisabledAccountIds : settingsDraft.megaDebridWebDisabledAccountIds;
-      const next = currentlyDisabled ? current.filter((id) => id !== accountId) : [...current, accountId];
+      const nextState = buildScopedAccountEnabledState(
+        settingsDraft.disabledProviders || [],
+        ["megadebrid", kind],
+        current,
+        accountId,
+        enabled
+      );
+      const next = nextState.disabledAccountIds;
       const apiDisabledIds = mode === "api" ? next : settingsDraft.megaDebridApiDisabledAccountIds;
       const webDisabledIds = mode === "web" ? next : settingsDraft.megaDebridWebDisabledAccountIds;
       await persistAccountToggle({
         ...settingsDraft,
+        disabledProviders: nextState.disabledProviders,
+        megaDebridApiEnabled: mode === "api" && enabled ? true : settingsDraft.megaDebridApiEnabled,
+        megaDebridWebEnabled: mode === "web" && enabled ? true : settingsDraft.megaDebridWebEnabled,
         megaDebridDisabledAccountIds: [...new Set([...apiDisabledIds, ...webDisabledIds])],
         megaDebridApiDisabledAccountIds: apiDisabledIds,
         megaDebridWebDisabledAccountIds: webDisabledIds
       });
-      showToast(currentlyDisabled ? "Account aktiviert" : "Account deaktiviert", 2000);
+      showToast(enabled ? "Account aktiviert" : "Account deaktiviert", 2000);
     }, (error) => {
       showToast(`Umschalten fehlgeschlagen: ${String(error)}`, 3200);
     });
@@ -2913,7 +2926,7 @@ export function App(): ReactElement {
     if (row.toggleKind === "mega" && row.accountId) {
       void onToggleMegaAccountEnabled(row.entry.kind as "megadebrid-api" | "megadebrid-web", row.accountId, row.disabled);
     } else if (row.toggleKind === "dl" && row.dlKey) {
-      void onToggleDebridLinkApiKeyEnabled(row.entry, row.dlKey);
+      void onToggleDebridLinkApiKeyEnabled(row.entry, row.dlKey, row.disabled);
     } else {
       void onToggleAccountEnabled(row.entry);
     }
@@ -6175,7 +6188,7 @@ export function App(): ReactElement {
                   <span className="col-action"></span>
                 </div>
                 {entry.debridLinkKeys.map((key, ki) => (
-                  <div key={key.id} className={`account-subkey-table-row${key.dailyLimitReached || (debridLinkHostLimits[key.id] && debridLinkHostLimits[key.id].state !== "ready") ? " warning" : ""}${key.disabled ? " disabled" : ""}`}>
+                  <div key={key.id} className={`account-subkey-table-row${key.dailyLimitReached || (debridLinkHostLimits[key.id] && debridLinkHostLimits[key.id].state !== "ready") ? " warning" : ""}${entry.disabled || key.disabled ? " disabled" : ""}`}>
                     {(() => {
                       const hostInfo = debridLinkHostLimits[key.id];
                       const statusDisplay = getDebridLinkKeyStatusDisplay(key, hostInfo);
@@ -6196,17 +6209,17 @@ export function App(): ReactElement {
                       {key.masked}
                     </button>
                     <span className="col-usage">{humanSize(key.dailyUsedBytes)}</span>
-                    <span className="col-limit">{key.disabled ? "Deaktiviert" : key.dailyLimitBytes > 0 ? humanSize(key.dailyLimitBytes) : "Kein Limit"}</span>
+                    <span className="col-limit">{entry.disabled || key.disabled ? "Deaktiviert" : key.dailyLimitBytes > 0 ? humanSize(key.dailyLimitBytes) : "Kein Limit"}</span>
                     <span className={`col-status status-pill status-pill-${statusDisplay.tone}`} title={statusDisplay.title}>{statusDisplay.label}</span>
                     <span className="col-traffic" title={hostInfo?.note || ""}>{formatDebridLinkTraffic(hostInfo)}</span>
                     <span className="col-links" title={hostInfo?.note || ""}>{formatDebridLinkCountQuota(hostInfo)}</span>
                     <span className="col-action">
                       <button
-                        className={`btn btn-sm ${key.disabled ? "success" : "danger"}`}
+                        className={`btn btn-sm ${entry.disabled || key.disabled ? "success" : "danger"}`}
                         disabled={actionBusy}
-                        onClick={() => { void onToggleDebridLinkApiKeyEnabled(entry, key); }}
+                        onClick={() => { void onToggleDebridLinkApiKeyEnabled(entry, key, entry.disabled || key.disabled); }}
                       >
-                        {key.disabled ? "Aktivieren" : "Deaktivieren"}
+                        {entry.disabled || key.disabled ? "Aktivieren" : "Deaktivieren"}
                       </button>
                       <button
                         className="btn btn-sm"
