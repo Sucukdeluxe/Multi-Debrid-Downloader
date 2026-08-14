@@ -651,6 +651,35 @@ describe("settings storage", () => {
     expect(normalizedDisabled.realDebridUseWebLogin).toBe(false);
   });
 
+  it("keeps the Real-Debrid service status while web login remains configured", () => {
+    const checkedAt = Date.now();
+    const normalized = normalizeSettings({
+      ...defaultSettings(),
+      realDebridUseWebLogin: true,
+      debridAccountStatuses: {
+        "svc-realdebrid": {
+          accountId: "svc-realdebrid",
+          provider: "realdebrid",
+          label: "Real-Debrid",
+          maskedLogin: "Browser-Login",
+          valid: true,
+          isPremium: true,
+          premiumUntilMs: checkedAt + 1000,
+          email: "web-user",
+          message: "Premium aktiv",
+          checkedAt
+        }
+      }
+    });
+
+    expect(normalized.debridAccountStatuses["svc-realdebrid"]).toMatchObject({
+      accountId: "svc-realdebrid",
+      provider: "realdebrid",
+      valid: true,
+      checkedAt
+    });
+  });
+
   it("defaults AllDebrid web login to disabled and normalizes the flag", () => {
     expect(defaultSettings().allDebridUseWebLogin).toBe(false);
 

@@ -2,6 +2,18 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.37] - 2026-08-14
+
+### Account status
+
+- Added persistent Real-Debrid API and browser-session account checks with premium status and account identity details.
+- Updated the Real-Debrid account row automatically after a successful browser login and preserved the result across settings saves and restarts.
+
+### Provider errors
+
+- Limited failed conversion messages to providers that were actually attempted.
+- Prevented aggregated fallback details from being mislabeled as a Debrid-Link failure.
+
 ## [2.0.36] - 2026-08-14
 
 ### Download performance

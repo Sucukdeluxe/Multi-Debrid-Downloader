@@ -6,9 +6,23 @@ import { compactErrorText } from "./utils";
 
 const MEGA_DEBRID_API = "https://www.mega-debrid.eu/api.php";
 const DEBRID_LINK_API = "https://debrid-link.com/api/v2";
+const REAL_DEBRID_USER_API = "https://api.real-debrid.com/rest/1.0/user";
 const CHECK_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 const CHECK_TIMEOUT_MS = 20000;
+
+export const REAL_DEBRID_STATUS_ID = "svc-realdebrid";
+
+export interface RealDebridSessionProbeResult {
+  valid: boolean;
+  isPremium?: boolean;
+  premiumUntilMs?: number | null;
+  username?: string;
+  email?: string;
+  message?: string;
+}
+
+export type RealDebridSessionProbe = (signal?: AbortSignal) => Promise<RealDebridSessionProbeResult>;
 
 function timeoutSignal(signal: AbortSignal | undefined, ms: number): AbortSignal {
   const timeout = AbortSignal.timeout(ms);
@@ -41,6 +55,101 @@ function formatRemaining(premiumUntilMs: number | null, now: number): string {
   }
   const hours = Math.max(1, Math.floor(remainingMs / (60 * 60 * 1000)));
   return `Premium noch ${hours} Std`;
+}
+
+function maskSecret(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (trimmed.length <= 6) {
+    return "*".repeat(trimmed.length);
+  }
+  return `${trimmed.slice(0, 3)}${"*".repeat(Math.max(4, trimmed.length - 6))}${trimmed.slice(-3)}`;
+}
+
+export async function checkRealDebridAccount(
+  settings: AppSettings,
+  signal?: AbortSignal,
+  now = Date.now(),
+  probeWebSession?: RealDebridSessionProbe
+): Promise<DebridAccountStatus> {
+  const token = String(settings.token || "").trim();
+  const useWebLogin = Boolean(settings.realDebridUseWebLogin);
+  const base: DebridAccountStatus = {
+    accountId: REAL_DEBRID_STATUS_ID,
+    provider: "realdebrid",
+    label: "Real-Debrid",
+    maskedLogin: useWebLogin ? "Browser-Login" : maskSecret(token),
+    valid: false,
+    isPremium: false,
+    premiumUntilMs: null,
+    message: "",
+    checkedAt: now
+  };
+
+  if (useWebLogin) {
+    if (!probeWebSession) {
+      return { ...base, message: "Browser-Sitzung ist nicht prüfbar" };
+    }
+    try {
+      const result = await probeWebSession(signal);
+      if (!result.valid) {
+        return { ...base, message: result.message || "Browser-Sitzung abgelaufen" };
+      }
+      const premiumUntilMs = typeof result.premiumUntilMs === "number" ? result.premiumUntilMs : null;
+      return {
+        ...base,
+        valid: true,
+        isPremium: Boolean(result.isPremium),
+        premiumUntilMs,
+        email: String(result.email || result.username || "").trim() || undefined,
+        message: result.message || (result.isPremium ? formatRemaining(premiumUntilMs, now) : "Kein Premium (Free)")
+      };
+    } catch (error) {
+      const errText = compactErrorText(error);
+      const aborted = signal?.aborted || /aborted/i.test(errText);
+      return { ...base, message: aborted ? "Prüfung abgebrochen" : `Prüfung fehlgeschlagen: ${errText}` };
+    }
+  }
+
+  if (!token) {
+    return { ...base, message: "Kein API-Token hinterlegt" };
+  }
+
+  try {
+    const response = await fetch(REAL_DEBRID_USER_API, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "User-Agent": CHECK_USER_AGENT
+      },
+      signal: timeoutSignal(signal, CHECK_TIMEOUT_MS)
+    });
+    const text = await response.text();
+    const payload = parseJsonSafe(text);
+    if (!response.ok || !payload) {
+      if (response.status === 401 || response.status === 403) {
+        return { ...base, message: "Ungültiger API-Token" };
+      }
+      return { ...base, message: `Prüfung fehlgeschlagen (HTTP ${response.status})` };
+    }
+    const expiration = Date.parse(String(payload.expiration || ""));
+    const premiumUntilMs = Number.isFinite(expiration) ? expiration : null;
+    const isPremium = String(payload.type || "").toLowerCase() === "premium"
+      && (premiumUntilMs == null || premiumUntilMs > now);
+    return {
+      ...base,
+      valid: true,
+      isPremium,
+      premiumUntilMs,
+      email: String(payload.email || payload.username || "").trim() || undefined,
+      message: isPremium ? formatRemaining(premiumUntilMs, now) : "Kein Premium (Free)"
+    };
+  } catch (error) {
+    const errText = compactErrorText(error);
+    const aborted = signal?.aborted || /aborted/i.test(errText);
+    return { ...base, message: aborted ? "Prüfung abgebrochen" : `Prüfung fehlgeschlagen: ${errText}` };
+  }
 }
 
 export async function checkMegaDebridAccount(
@@ -160,13 +269,17 @@ export async function checkDebridLinkKey(
 
 export async function checkAllDebridAccounts(
   settings: AppSettings,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  probeRealDebridWebSession?: RealDebridSessionProbe
 ): Promise<DebridAccountStatus[]> {
   const now = Date.now();
   const megaAccounts = parseMegaDebridAccounts(settings.megaCredentials || "", settings.megaPassword || "");
   const debridLinkKeys = parseDebridLinkApiKeys(settings.debridLinkApiKeys || "");
 
   const taskFns: Array<() => Promise<DebridAccountStatus>> = [
+    ...(settings.realDebridUseWebLogin || String(settings.token || "").trim()
+      ? [() => checkRealDebridAccount(settings, signal, now, probeRealDebridWebSession)]
+      : []),
     ...megaAccounts.map((account) => () => checkMegaDebridAccount(account, signal, now)),
     ...debridLinkKeys.map((key) => () => checkDebridLinkKey(key, signal, now))
   ];

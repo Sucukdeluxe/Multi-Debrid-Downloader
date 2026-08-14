@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyAccountCommand, validateAccountCommand } from "../src/main/account-commands";
+import { applyAccountCommand, validateAccountCommand, validateAccountCredentialCheckInput } from "../src/main/account-commands";
 import { defaultSettings } from "../src/main/constants";
 import { getDebridLinkApiKeyId } from "../src/shared/debrid-link-keys";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
@@ -42,6 +42,15 @@ const ACCOUNT_KINDS: RendererAccountKind[] = [
 ];
 
 describe("write-only account commands", () => {
+  it.each(["realdebrid-api", "realdebrid-web"] as const)("accepts %s credential checks at the IPC boundary", (kind) => {
+    expect(validateAccountCredentialCheckInput({ kind, accountId: "svc-realdebrid" })).toEqual({
+      kind,
+      accountId: "svc-realdebrid",
+      identity: undefined,
+      secret: undefined
+    });
+  });
+
   it.each([
     ["realdebrid-api", "", "fixture-rd-provider-secret-1fA4", "token"],
     ["realdebrid-web", "", "", "realDebridUseWebLogin"],

@@ -3964,8 +3964,8 @@ export class DebridService {
     }
 
     let configuredFound = false;
-    let limitReachedFound = false;
     const attempts: string[] = [];
+    const unavailableProviders: string[] = [];
 
     for (const provider of order) {
       if (!this.isProviderConfiguredFor(settings, provider)) {
@@ -3973,9 +3973,8 @@ export class DebridService {
       }
       configuredFound = true;
       if (this.isProviderDailyLimited(settings, provider)) {
-        limitReachedFound = true;
         logger.info(`Provider-Kette: ${PROVIDER_LABELS[provider]} uebersprungen (${this.formatProviderLimitMessage(settings, provider)})`);
-        attempts.push(this.formatProviderLimitMessage(settings, provider));
+        unavailableProviders.push(this.formatProviderLimitMessage(settings, provider));
         continue;
       }
 
@@ -4024,8 +4023,10 @@ export class DebridService {
     if (!configuredFound) {
       throw new Error("Kein Debrid-Provider konfiguriert");
     }
-    if (limitReachedFound && attempts.every((entry) => /Tageslimit erreicht$/i.test(entry))) {
-      throw new Error("Alle konfigurierten Provider haben ihr Tageslimit erreicht");
+    if (attempts.length === 0 && unavailableProviders.length > 0) {
+      throw new Error(unavailableProviders.length === 1
+        ? unavailableProviders[0]
+        : `Alle konfigurierten Provider sind nicht verfügbar: ${unavailableProviders.join(" | ")}`);
     }
 
     throw new Error(`Unrestrict fehlgeschlagen: ${attempts.join(" | ")}`);

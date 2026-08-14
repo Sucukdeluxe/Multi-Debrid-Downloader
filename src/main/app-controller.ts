@@ -30,7 +30,7 @@ import { importDlcContainers } from "./container";
 import { APP_VERSION, ONLINE_BACKUP_API_URL } from "./constants";
 import { DownloadManager } from "./download-manager";
 import { fetchAllDebridHostInfo, fetchDebridLinkHostLimits } from "./debrid";
-import { checkAllDebridAccounts, checkDebridLinkKey, checkMegaDebridAccount } from "./account-check";
+import { checkAllDebridAccounts, checkDebridLinkKey, checkMegaDebridAccount, checkRealDebridAccount } from "./account-check";
 import { parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
 import { getMegaDebridAccountsForMode } from "../shared/mega-debrid-accounts";
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
@@ -133,7 +133,10 @@ export class AppController {
       login: this.settings.megaLogin,
       password: this.settings.megaPassword
     }));
-    this.realDebridWebFallback = new RealDebridWebFallback(() => this.settings.rememberToken);
+    this.realDebridWebFallback = new RealDebridWebFallback(
+      () => this.settings.rememberToken,
+      () => { void this.refreshRealDebridWebStatus(); }
+    );
     this.allDebridWebFallback = new AllDebridWebFallback(() => this.settings.rememberToken);
     this.bestDebridWebFallback = new BestDebridWebFallback(() => this.settings.rememberToken);
     this.manager = new DownloadManager(this.settings, session, this.storagePaths, {
@@ -532,6 +535,25 @@ export class AppController {
 
   public async checkAccountCredentials(input: AccountCredentialCheckInput): Promise<DebridAccountStatus> {
     const redactions = collectAccountStatusRedactionValues(this.settings, input);
+    if (input.kind === "realdebrid-api" || input.kind === "realdebrid-web") {
+      const useWebLogin = input.kind === "realdebrid-web";
+      const settings = input.secret?.trim()
+        ? { ...this.settings, token: input.secret.trim(), realDebridUseWebLogin: useWebLogin }
+        : { ...this.settings, realDebridUseWebLogin: useWebLogin };
+      const status = sanitizeDebridAccountStatus(
+        await checkRealDebridAccount(
+          settings,
+          undefined,
+          Date.now(),
+          useWebLogin ? (signal) => this.realDebridWebFallback.probeLoginState(signal) : undefined
+        ),
+        redactions
+      );
+      if (!input.secret && useWebLogin === this.settings.realDebridUseWebLogin) {
+        this.manager.applyDebridAccountStatuses([status]);
+      }
+      return status;
+    }
     if (input.kind === "megadebrid-api" || input.kind === "megadebrid-web") {
       const mode = input.kind === "megadebrid-web" ? "web" : "api";
       const account = input.identity?.trim() && input.secret
@@ -580,6 +602,22 @@ export class AppController {
     await this.realDebridWebFallback.openLoginWindow();
   }
 
+  private async refreshRealDebridWebStatus(): Promise<void> {
+    if (!this.settings.realDebridUseWebLogin) {
+      return;
+    }
+    const status = sanitizeDebridAccountStatus(
+      await checkRealDebridAccount(
+        this.settings,
+        undefined,
+        Date.now(),
+        (signal) => this.realDebridWebFallback.probeLoginState(signal)
+      ),
+      collectAccountStatusRedactionValues(this.settings)
+    );
+    this.manager.applyDebridAccountStatuses([status]);
+  }
+
   public async openAllDebridLoginWindow(): Promise<void> {
     this.audit("INFO", "AllDebrid Login-Fenster geöffnet");
     await this.allDebridWebFallback.openLoginWindow();
@@ -611,7 +649,11 @@ export class AppController {
 
 public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     const statuses = sanitizeDebridAccountStatuses(
-      await checkAllDebridAccounts(this.settings),
+      await checkAllDebridAccounts(
+        this.settings,
+        undefined,
+        (signal) => this.realDebridWebFallback.probeLoginState(signal)
+      ),
       collectAccountStatusRedactionValues(this.settings)
     );
     this.manager.applyDebridAccountStatuses(statuses);

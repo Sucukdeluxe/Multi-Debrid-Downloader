@@ -269,9 +269,10 @@ function normalizeNamedByteMap(raw: unknown, allowedKeys: readonly string[]): Re
 function normalizeDebridAccountStatuses(
   value: unknown,
   megaIds: string[],
-  debridLinkIds: string[]
+  debridLinkIds: string[],
+  realDebridConfigured: boolean
 ): Record<string, DebridAccountStatus> {
-  const allowed = new Set([...megaIds, ...debridLinkIds]);
+  const allowed = new Set([...megaIds, ...debridLinkIds, ...(realDebridConfigured ? ["svc-realdebrid"] : [])]);
   const result: Record<string, DebridAccountStatus> = {};
   if (value && typeof value === "object" && !Array.isArray(value)) {
     for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
@@ -284,7 +285,11 @@ function normalizeDebridAccountStatuses(
       }
       result[key] = {
         accountId: entry.accountId,
-        provider: entry.provider === "debridlink" ? "debridlink" : "megadebrid",
+        provider: entry.provider === "debridlink"
+          ? "debridlink"
+          : entry.provider === "realdebrid"
+            ? "realdebrid"
+            : "megadebrid",
         label: String(entry.label || ""),
         maskedLogin: String(entry.maskedLogin || ""),
         valid: Boolean(entry.valid),
@@ -570,7 +575,12 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
       ? normalizeNamedByteMap(settings.megaDebridAccountDailyUsageBytes, megaDebridAccountIds)
       : {},
     megaDebridAccountTotalUsageBytes: normalizeNamedByteMap(settings.megaDebridAccountTotalUsageBytes, megaDebridAccountIds),
-    debridAccountStatuses: normalizeDebridAccountStatuses(settings.debridAccountStatuses, megaDebridAccountIds, debridLinkApiKeyIds),
+    debridAccountStatuses: normalizeDebridAccountStatuses(
+      settings.debridAccountStatuses,
+      megaDebridAccountIds,
+      debridLinkApiKeyIds,
+      Boolean(settings.realDebridUseWebLogin || asText(settings.token))
+    ),
     providerDailyUsageDay: providerDailyUsageDay === currentUsageDay ? providerDailyUsageDay : currentUsageDay,
     scheduledStartEpochMs: clampNumber(settings.scheduledStartEpochMs, defaults.scheduledStartEpochMs, 0, Number.MAX_SAFE_INTEGER)
   };

@@ -2360,6 +2360,7 @@ export function App(): ReactElement {
           });
         }
       } else {
+        const serviceAccountId = entry.service === "realdebrid" ? "svc-realdebrid" : null;
         rows.push({
           rowKey: `svc-${entry.service}`,
           entry,
@@ -2367,8 +2368,8 @@ export function App(): ReactElement {
           modeLabel: entry.modeLabel,
           username: getStoredAccountUsername(entry.kind, snapshot.accounts),
           credentialLabel: getAccountCredentialLabel(entry.kind),
-          accountId: null,
-          checkable: false,
+          accountId: serviceAccountId,
+          checkable: serviceAccountId !== null,
           disabled: entry.disabled,
           dailyUsedBytes: entry.dailyUsedBytes,
           dailyLimitBytes: entry.dailyLimitBytes,
@@ -2654,7 +2655,7 @@ export function App(): ReactElement {
     try {
       const statuses = await window.rd.checkDebridAccounts();
       if (!statuses || statuses.length === 0) {
-        showToast("Keine Mega-Debrid-/Debrid-Link-Accounts zum Prüfen konfiguriert.", 3200);
+        showToast("Keine prüfbaren Accounts konfiguriert.", 3200);
       } else {
         const valid = statuses.filter((st) => st.valid).length;
         const premium = statuses.filter((st) => st.isPremium).length;
@@ -2941,7 +2942,7 @@ export function App(): ReactElement {
 
   const checkAccountTableRow = (row: AccountTableRow): void => {
     setAccountContextMenu(null);
-    if (row.toggleKind === "mega" || row.toggleKind === "dl") {
+    if (row.checkable) {
       void checkAllAccounts();
       return;
     }

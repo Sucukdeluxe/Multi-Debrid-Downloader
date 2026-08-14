@@ -44,4 +44,31 @@ describe("live settings overlay", () => {
     expect(Object.keys(target.debridAccountStatuses).sort()).toEqual([keepKeyId, keepMegaId].sort());
     expect(target.totalRuntimeAllTimeMs).toBe(9_000);
   });
+
+  it("keeps the Real-Debrid service status while the browser account remains configured", () => {
+    const target = {
+      ...defaultSettings(),
+      realDebridUseWebLogin: true
+    };
+    const live = {
+      ...target,
+      debridAccountStatuses: {
+        "svc-realdebrid": {
+          accountId: "svc-realdebrid",
+          provider: "realdebrid" as const,
+          label: "Real-Debrid",
+          maskedLogin: "Browser-Login",
+          valid: true,
+          isPremium: true,
+          premiumUntilMs: null,
+          message: "Premium aktiv",
+          checkedAt: 1
+        }
+      }
+    };
+
+    overlayLiveUsageCounters(target, live, 9_000);
+
+    expect(target.debridAccountStatuses["svc-realdebrid"]).toEqual(live.debridAccountStatuses["svc-realdebrid"]);
+  });
 });

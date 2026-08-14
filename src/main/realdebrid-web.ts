@@ -8,6 +8,7 @@ const RD_BASE_URL = "https://real-debrid.com";
 const RD_LOGIN_URL = RD_BASE_URL;
 const RD_APITOKEN_URL = `${RD_BASE_URL}/apitoken`;
 const RD_UNRESTRICT_API = `${API_BASE_URL}/unrestrict/link`;
+const RD_USER_API = `${API_BASE_URL}/user`;
 const RD_PERSISTENT_PARTITION = "persist:realdebrid-web";
 const RD_TRANSIENT_PARTITION = "realdebrid-web";
 const RD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
@@ -15,6 +16,19 @@ const RD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537
 type GenerateOutcome =
   | { kind: "success"; value: UnrestrictedLink }
   | { kind: "login_required" };
+
+export interface RealDebridLoginState {
+  valid: boolean;
+  username: string;
+  email: string;
+  isPremium: boolean;
+  premiumUntilMs: number | null;
+  message: string;
+}
+
+function loginFailure(message: string): RealDebridLoginState {
+  return { valid: false, username: "", email: "", isPremium: false, premiumUntilMs: null, message };
+}
 
 function abortError(): Error {
   return new Error("aborted:realdebrid-web");
@@ -118,8 +132,11 @@ export class RealDebridWebFallback {
 
   private getRememberSession: () => boolean;
 
-  public constructor(getRememberSession: () => boolean) {
+  private onAuthenticated?: () => void;
+
+  public constructor(getRememberSession: () => boolean, onAuthenticated?: () => void) {
     this.getRememberSession = getRememberSession;
+    this.onAuthenticated = onAuthenticated;
   }
 
   public async unrestrict(link: string, signal?: AbortSignal): Promise<UnrestrictedLink | null> {
@@ -146,6 +163,60 @@ export class RealDebridWebFallback {
     window.show();
     window.focus();
     void this.primeTokenFromWindow(window);
+  }
+
+  public async probeLoginState(signal?: AbortSignal): Promise<RealDebridLoginState> {
+    let token: string | null = null;
+    try {
+      token = await this.extractApiToken(signal);
+    } catch (error) {
+      if (signal?.aborted) {
+        throw abortError();
+      }
+      return loginFailure(`Sitzung nicht prüfbar: ${String(error)}`);
+    }
+    if (!token) {
+      return loginFailure("Nicht angemeldet");
+    }
+    try {
+      const response = await fetch(RD_USER_API, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "User-Agent": RD_USER_AGENT
+        },
+        signal: withTimeoutSignal(signal, 30_000)
+      });
+      const text = await response.text();
+      if (response.status === 401 || response.status === 403) {
+        this.cachedToken = "";
+        this.cachedTokenAt = 0;
+        return loginFailure("Sitzung abgelaufen");
+      }
+      if (!response.ok) {
+        return loginFailure(`Real-Debrid Web HTTP ${response.status}`);
+      }
+      const payload = parseJson(text);
+      if (!payload) {
+        return loginFailure("Ungültige Antwort von Real-Debrid");
+      }
+      const expiration = Date.parse(String(payload.expiration || ""));
+      const premiumUntilMs = Number.isFinite(expiration) ? expiration : null;
+      const isPremium = String(payload.type || "").toLowerCase() === "premium"
+        && (premiumUntilMs == null || premiumUntilMs > Date.now());
+      return {
+        valid: true,
+        username: String(payload.username || "").trim(),
+        email: String(payload.email || "").trim(),
+        isPremium,
+        premiumUntilMs,
+        message: isPremium ? "Premium aktiv" : "Kein Premium (Free)"
+      };
+    } catch (error) {
+      if (signal?.aborted) {
+        throw abortError();
+      }
+      return loginFailure(`Sitzung nicht prüfbar: ${String(error)}`);
+    }
   }
 
   public async clearSessions(): Promise<void> {
@@ -248,8 +319,12 @@ export class RealDebridWebFallback {
   }
 
   private rememberToken(token: string): string {
+    const changed = token !== this.cachedToken;
     this.cachedToken = token;
     this.cachedTokenAt = Date.now();
+    if (changed && this.onAuthenticated) {
+      void Promise.resolve().then(() => this.onAuthenticated?.());
+    }
     return token;
   }
 

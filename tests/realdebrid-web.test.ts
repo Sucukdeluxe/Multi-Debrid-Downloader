@@ -162,4 +162,44 @@ describe("realdebrid-web", () => {
     expect(apiFetch.mock.calls[0]?.[0]).toBe("https://api.real-debrid.com/rest/1.0/unrestrict/link");
     expect(mockBrowserWindow.webContents.executeJavaScript).toHaveBeenCalled();
   });
+
+  it("checks the logged-in browser account without exposing its token", async () => {
+    mockExecuteJavaScript.mockResolvedValue("token-from-window");
+    const apiFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      username: "web-user",
+      email: "web-user@example.test",
+      type: "premium",
+      expiration: "2030-01-02T03:04:05.000Z"
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", apiFetch);
+
+    const fallback = new RealDebridWebFallback(() => true);
+    await fallback.openLoginWindow();
+    const status = await fallback.probeLoginState();
+
+    expect(status).toEqual({
+      valid: true,
+      username: "web-user",
+      email: "web-user@example.test",
+      isPremium: true,
+      premiumUntilMs: Date.parse("2030-01-02T03:04:05.000Z"),
+      message: "Premium aktiv"
+    });
+    expect(JSON.stringify(status)).not.toContain("token-from-window");
+    expect(apiFetch).toHaveBeenCalledWith(
+      "https://api.real-debrid.com/rest/1.0/user",
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer token-from-window" })
+      })
+    );
+  });
+
+  it("notifies the controller when a new browser token is detected", async () => {
+    mockExecuteJavaScript.mockResolvedValue("new-browser-token");
+    const onAuthenticated = vi.fn();
+    const fallback = new RealDebridWebFallback(() => true, onAuthenticated);
+
+    await fallback.openLoginWindow();
+    await vi.waitFor(() => expect(onAuthenticated).toHaveBeenCalledTimes(1));
+  });
 });

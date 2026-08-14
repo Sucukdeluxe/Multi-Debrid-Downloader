@@ -121,7 +121,11 @@ export function validateAccountCredentialCheckInput(value: unknown): AccountCred
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid();
   const raw = value as Record<string, unknown>;
   if (Object.keys(raw).some((key) => !new Set(["kind", "accountId", "identity", "secret"]).has(key))) invalid();
-  if (raw.kind !== "megadebrid-api" && raw.kind !== "megadebrid-web" && raw.kind !== "debridlink-api") invalid();
+  if (raw.kind !== "realdebrid-api"
+    && raw.kind !== "realdebrid-web"
+    && raw.kind !== "megadebrid-api"
+    && raw.kind !== "megadebrid-web"
+    && raw.kind !== "debridlink-api") invalid();
   return {
     kind: raw.kind,
     accountId: optionalString(raw.accountId, 256),

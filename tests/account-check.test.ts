@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { checkMegaDebridAccount, checkDebridLinkKey, checkAllDebridAccounts } from "../src/main/account-check";
+import { checkMegaDebridAccount, checkDebridLinkKey, checkAllDebridAccounts, checkRealDebridAccount, REAL_DEBRID_STATUS_ID } from "../src/main/account-check";
 import type { MegaDebridAccountEntry } from "../src/shared/mega-debrid-accounts";
 import type { DebridLinkApiKeyEntry } from "../src/shared/debrid-link-keys";
 import type { AppSettings } from "../src/shared/types";
@@ -110,11 +110,58 @@ describe("checkDebridLinkKey", () => {
   });
 });
 
+describe("checkRealDebridAccount", () => {
+  it("uses the browser-session probe and returns a stable service status", async () => {
+    const premiumUntilMs = NOW + 30 * 24 * 60 * 60 * 1000;
+    const probe = vi.fn(async () => ({
+      valid: true,
+      isPremium: true,
+      premiumUntilMs,
+      username: "web-user"
+    }));
+
+    const status = await checkRealDebridAccount({
+      token: "",
+      realDebridUseWebLogin: true
+    } as AppSettings, undefined, NOW, probe);
+
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(status).toMatchObject({
+      accountId: REAL_DEBRID_STATUS_ID,
+      provider: "realdebrid",
+      valid: true,
+      isPremium: true,
+      premiumUntilMs,
+      email: "web-user"
+    });
+  });
+});
+
 describe("checkAllDebridAccounts", () => {
   it("returns empty array when nothing configured", async () => {
     const settings = { megaCredentials: "", megaPassword: "", debridLinkApiKeys: "" } as unknown as AppSettings;
     const result = await checkAllDebridAccounts(settings);
     expect(result).toEqual([]);
+  });
+
+  it("includes Real-Debrid web login in the bulk account check", async () => {
+    const settings = {
+      token: "",
+      realDebridUseWebLogin: true,
+      megaCredentials: "",
+      megaPassword: "",
+      debridLinkApiKeys: ""
+    } as AppSettings;
+    const probe = vi.fn(async () => ({ valid: true, isPremium: true, username: "web-user" }));
+
+    const result = await checkAllDebridAccounts(settings, undefined, probe);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      accountId: REAL_DEBRID_STATUS_ID,
+      provider: "realdebrid",
+      valid: true
+    });
   });
 
   it("checks every configured mega account + debrid-link key", async () => {

@@ -696,11 +696,11 @@ export function parseMegaDebridResetPark(errorText: string): { delayMs: number; 
   return { delayMs, detail: String(match[2] || "").trim() };
 }
 
-function parseDebridLinkTerminalFailure(errorText: string): { kind: "invalid_all" | "no_active_key"; detail: string } | null {
+export function parseDebridLinkTerminalFailure(errorText: string): { kind: "invalid_all" | "no_active_key"; detail: string } | null {
   const raw = String(errorText || "");
   const match = raw.match(/debrid_link_(invalid_all|no_active_key):(.*)$/i);
   if (!match) {
-    if (/debrid-link.+(deaktiviert|ausgeschopft|kein aktiver api-key)/i.test(raw)) {
+    if (/^(?:Error:\s*)?Debrid-Link.+(?:deaktiviert|ausgeschopft|kein aktiver api-key)/i.test(raw)) {
       return {
         kind: "no_active_key",
         detail: raw.trim()

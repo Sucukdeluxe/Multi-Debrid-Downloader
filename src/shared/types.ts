@@ -57,7 +57,7 @@ export interface DownloadStats {
 
 export interface DebridAccountStatus {
   accountId: string;
-  provider: "megadebrid" | "debridlink";
+  provider: DebridProvider;
   label: string;
   maskedLogin: string;
   valid: boolean;
@@ -337,7 +337,7 @@ export interface AccountCommandResult {
 }
 
 export interface AccountCredentialCheckInput {
-  kind: "megadebrid-api" | "megadebrid-web" | "debridlink-api";
+  kind: "realdebrid-api" | "realdebrid-web" | "megadebrid-api" | "megadebrid-web" | "debridlink-api";
   accountId?: string;
   identity?: string;
   secret?: string;

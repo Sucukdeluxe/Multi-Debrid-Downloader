@@ -105,6 +105,51 @@ describe("debrid service", () => {
     expect(megaWeb).toHaveBeenCalledTimes(0);
   });
 
+  it("reports only providers that were actually attempted", async () => {
+    const megaLogin = "disabled@example.test";
+    const debridLinkKeys = parseDebridLinkApiKeys("disabled-dl-key");
+    const settings = {
+      ...defaultSettings(),
+      token: "rd-token",
+      megaDebridApiCredentials: `${megaLogin}:password`,
+      megaDebridApiEnabled: true,
+      megaDebridApiDisabledAccountIds: [getMegaDebridAccountId(megaLogin)],
+      debridLinkApiKeys: "disabled-dl-key",
+      debridLinkApiKeyDailyLimitBytes: { [debridLinkKeys[0].id]: 1 },
+      debridLinkApiKeyDailyUsageBytes: { [debridLinkKeys[0].id]: 1 },
+      providerDailyUsageDay: getProviderUsageDayKey(),
+      providerOrder: ["megadebrid-api", "debridlink", "realdebrid"] as const,
+      providerPrimary: "megadebrid-api" as const,
+      providerSecondary: "debridlink" as const,
+      providerTertiary: "realdebrid" as const,
+      autoProviderFallback: true
+    };
+
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("api.real-debrid.com/rest/1.0/unrestrict/link")) {
+        return new Response(JSON.stringify({ error: "traffic_exhausted" }), {
+          status: 429,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const service = new DebridService(settings);
+    let message = "";
+    try {
+      await service.unrestrictLink("https://hoster.example/realdebrid-limit.bin");
+    } catch (error) {
+      message = String(error);
+    }
+
+    expect(message).toContain("Real-Debrid");
+    expect(message).toContain("traffic_exhausted");
+    expect(message).not.toContain("Mega-Debrid nicht verfuegbar");
+    expect(message).not.toContain("Debrid-Link nicht verfuegbar");
+  });
+
   it("skips a provider whose daily limit is already reached and uses the next provider", async () => {
     const calledUrls: string[] = [];
     const settings = {
