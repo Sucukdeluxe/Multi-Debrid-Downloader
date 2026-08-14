@@ -2,6 +2,12 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.38] - 2026-08-15
+
+### Interface
+
+- Added a general setting to disable package expand and collapse motion on remote or lower-performance systems while keeping it enabled by default.
+
 ## [2.0.37] - 2026-08-14
 
 ### Account status
