@@ -301,6 +301,7 @@ function workspaceActions(overrides: Partial<AccountWorkspaceActions> = {}): Acc
     onToggleEnabled: () => {},
     onEdit: () => {},
     onContextMenu: () => {},
+    onCopyIdentity: () => {},
     onAdd: () => {},
     onRemoveSelected: () => {},
     onCheckAll: () => {},
@@ -738,6 +739,31 @@ describe("account workspace", () => {
       `edit:${rowId}`,
       `context:${rowId}`
     ]);
+  });
+
+  it("copies only populated username and email cells without triggering the row", () => {
+    const copies: string[] = [];
+    const tree = AccountWorkspace({
+      model: workspaceModel(),
+      actions: workspaceActions({
+        onCopyIdentity: (label, value) => copies.push(`${label}:${value}`)
+      })
+    });
+    const buttons = findElements(tree, (element) => String(element.props.className || "").includes("settings-account-copy-button"));
+    const username = buttons.find((button) => button.props["aria-label"] === "Benutzername kopieren");
+    const email = buttons.find((button) => button.props["aria-label"] === "E-Mail kopieren");
+    let stopped = 0;
+
+    username?.props.onClick({ stopPropagation: () => { stopped += 1; } });
+    email?.props.onClick({ stopPropagation: () => { stopped += 1; } });
+    username?.props.onDoubleClick({ stopPropagation: () => { stopped += 1; } });
+
+    expect(buttons.some((button) => button.props.children === "—")).toBe(false);
+    expect(copies).toEqual([
+      "Benutzername:stored-user",
+      "E-Mail:verified@example.test"
+    ]);
+    expect(stopped).toBe(3);
   });
 
   it("keeps overview and rules in the same workspace while only one panel is active", () => {

@@ -732,6 +732,27 @@
   white-space: nowrap;
 }
 
+.settings-account-copy-button {
+  display: block;
+  width: 100%;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: copy;
+  font: inherit;
+  text-align: left;
+  text-overflow: ellipsis;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.settings-account-copy-button:hover,
+.settings-account-copy-button:focus-visible {
+  color: var(--ui-accent);
+}
+
 .settings-account-action-button {
   display: grid;
   width: 30px;

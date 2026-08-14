@@ -4922,6 +4922,11 @@ export function App(): ReactElement {
       const row = accountRowBindings.get(rowId);
       if (row) setAccountContextMenu({ x, y, rowId });
     },
+    onCopyIdentity: (label, value) => {
+      void window.rd.writeClipboardText(value)
+        .then(() => showToast(`${label} kopiert`))
+        .catch(() => showToast("Kopieren fehlgeschlagen"));
+    },
     onAdd: openCreateAccountDialog,
     onRemoveSelected: () => {
       const row = selectedAccountViewId ? accountRowBindings.get(selectedAccountViewId) : null;

@@ -62,6 +62,7 @@ export interface ElectronApi {
   exportQueue: () => Promise<{ saved: boolean }>;
   importQueue: (json: string) => Promise<{ addedPackages: number; addedLinks: number }>;
   toggleClipboard: () => Promise<boolean>;
+  writeClipboardText: (text: string) => Promise<boolean>;
   pickFolder: () => Promise<string | null>;
   pickContainers: () => Promise<string[]>;
   getSessionStats: () => Promise<SessionStats>;

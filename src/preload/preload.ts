@@ -65,6 +65,7 @@ const api: ElectronApi = {
   exportQueue: (): Promise<{ saved: boolean }> => ipcRenderer.invoke(IPC_CHANNELS.EXPORT_QUEUE),
   importQueue: (json: string): Promise<{ addedPackages: number; addedLinks: number }> => ipcRenderer.invoke(IPC_CHANNELS.IMPORT_QUEUE, json),
   toggleClipboard: (): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.TOGGLE_CLIPBOARD),
+  writeClipboardText: (text: string): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.WRITE_CLIPBOARD_TEXT, text),
   pickFolder: (): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.PICK_FOLDER),
   pickContainers: (): Promise<string[]> => ipcRenderer.invoke(IPC_CHANNELS.PICK_CONTAINERS),
   getSessionStats: (): Promise<SessionStats> => ipcRenderer.invoke(IPC_CHANNELS.GET_SESSION_STATS),

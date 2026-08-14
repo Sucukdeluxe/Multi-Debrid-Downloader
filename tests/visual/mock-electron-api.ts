@@ -139,6 +139,7 @@ export function createVisualElectronApi(
       fixture.snapshot.settings.clipboardWatch = fixture.snapshot.clipboardActive;
       return fixture.snapshot.clipboardActive;
     },
+    writeClipboardText: async () => true,
     pickFolder: async () => "C:\\Visual\\Selected",
     pickContainers: async () => ["C:\\Visual\\Containers\\visual.dlc"],
     getSessionStats: async () => ({

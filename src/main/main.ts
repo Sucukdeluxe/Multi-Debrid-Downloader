@@ -37,6 +37,7 @@ function validatePlainObject(value: unknown, name: string): Record<string, unkno
 }
 
 const IMPORT_QUEUE_MAX_BYTES = 10 * 1024 * 1024;
+const CLIPBOARD_WRITE_MAX_BYTES = 4096;
 const RENAME_PACKAGE_MAX_CHARS = 240;
 const RESETTABLE_PROVIDER_KEYS = new Set<DebridProvider>([
   "realdebrid",
@@ -610,6 +611,23 @@ function registerIpcHandlers(): void {
     controller.updateSettings({ clipboardWatch: next });
     updateClipboardWatcher();
     return next;
+  });
+  handleTrusted(IPC_CHANNELS.WRITE_CLIPBOARD_TEXT, (_event: IpcMainInvokeEvent, rawText: unknown) => {
+    const text = validateString(rawText, "text");
+    const bytes = Buffer.byteLength(text, "utf8");
+    if (!text.trim()) {
+      throw new Error("text darf nicht leer sein");
+    }
+    if (bytes > CLIPBOARD_WRITE_MAX_BYTES) {
+      throw new Error(`text ist zu groß (max ${CLIPBOARD_WRITE_MAX_BYTES} Bytes)`);
+    }
+    try {
+      clipboard.writeText(text);
+      return true;
+    } catch (error) {
+      logger.warn(`Zwischenablage-Schreibfehler: bytes=${bytes}, error=${String(error)}`);
+      throw error;
+    }
   });
   handleTrusted(IPC_CHANNELS.PICK_FOLDER, async () => {
     const options = {

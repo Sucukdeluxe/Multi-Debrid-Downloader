@@ -74,6 +74,7 @@ export interface AccountWorkspaceActions {
   onToggleEnabled: (rowId: string) => void;
   onEdit: (rowId: string) => void;
   onContextMenu: (rowId: string, x: number, y: number) => void;
+  onCopyIdentity: (label: "Benutzername" | "E-Mail", value: string) => void;
   onAdd: () => void;
   onRemoveSelected: () => void;
   onCheckAll: () => void;
@@ -89,6 +90,36 @@ export interface AccountWorkspaceActions {
   onRoutingProviderChange?: (hosterId: string, provider: string) => void;
   onRoutingRemove?: (hosterId: string) => void;
   onRoutingAdd?: (hosterId: string) => void;
+}
+
+function renderAccountIdentityCell({
+  className,
+  label,
+  value,
+  onCopy
+}: {
+  className: string;
+  label: "Benutzername" | "E-Mail";
+  value: string;
+  onCopy: (label: "Benutzername" | "E-Mail", value: string) => void;
+}): ReactElement {
+  const copyable = value.trim() !== "" && value !== "—";
+  return (
+    <span className={className} role="cell" title={copyable ? `${value}\nKlicken zum Kopieren` : value}>
+      {copyable ? (
+        <button
+          aria-label={`${label} kopieren`}
+          className="settings-account-copy-button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onCopy(label, value);
+          }}
+          onDoubleClick={(event) => event.stopPropagation()}
+          type="button"
+        >{value}</button>
+      ) : value}
+    </span>
+  );
 }
 
 export interface AccountWorkspaceProps {
@@ -240,8 +271,8 @@ function AccountRow({
         <span className={`settings-account-status-badge is-${row.status.tone}`}>{row.status.text}</span>
       </span>
       <span className="settings-account-traffic" role="cell">{row.traffic}</span>
-      <span className="settings-account-username settings-copyable" role="cell" title={row.username}>{row.username}</span>
-      <span className="settings-account-email settings-copyable" role="cell" title={row.email}>{row.email}</span>
+      {renderAccountIdentityCell({ className: "settings-account-username", label: "Benutzername", onCopy: actions.onCopyIdentity, value: row.username })}
+      {renderAccountIdentityCell({ className: "settings-account-email", label: "E-Mail", onCopy: actions.onCopyIdentity, value: row.email })}
       <span className="settings-account-expires" role="cell">{row.expires}</span>
       <span className="settings-account-credential" role="cell">{row.credential}</span>
       <span className="settings-account-column-actions" role="cell">

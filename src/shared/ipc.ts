@@ -35,6 +35,7 @@ export const IPC_CHANNELS = {
   STATE_UPDATE: "state:update",
   CLIPBOARD_DETECTED: "clipboard:detected",
   TOGGLE_CLIPBOARD: "clipboard:toggle",
+  WRITE_CLIPBOARD_TEXT: "clipboard:write-text",
   GET_SESSION_STATS: "stats:get-session-stats",
   RESET_SESSION_STATS: "stats:reset-session",
   RESET_DOWNLOAD_STATS: "stats:reset-download",
