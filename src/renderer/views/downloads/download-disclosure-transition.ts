@@ -5,7 +5,7 @@ import {
   type DownloadVirtualWindowOptions
 } from "./download-virtualizer";
 
-export const DOWNLOAD_DISCLOSURE_DURATION_MS = 300;
+export const DOWNLOAD_DISCLOSURE_DURATION_MS = 600;
 export const DOWNLOAD_DISCLOSURE_MAX_ANIMATED_ITEMS = 64;
 
 export function scheduleDownloadDisclosureActivation(

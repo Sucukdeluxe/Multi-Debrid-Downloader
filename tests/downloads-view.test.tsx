@@ -19,6 +19,7 @@ import {
   type DownloadsModelInput
 } from "../src/renderer/views/downloads/downloads-model";
 import {
+  DOWNLOAD_DISCLOSURE_DURATION_MS,
   DOWNLOAD_DISCLOSURE_MAX_ANIMATED_ITEMS,
   activateDownloadDisclosureTransition,
   getDownloadDisclosurePinnedIds,
@@ -277,8 +278,9 @@ describe("virtualisierte Paketanimation", () => {
   it("behält die ausdrücklich gewünschte Paketbewegung auch bei reduzierten Systemanimationen bei", () => {
     const css = fs.readFileSync(path.join(process.cwd(), "src/renderer/views/downloads/downloads.css"), "utf8");
 
-    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.downloads-virtual-spacer\s*\{[^}]*transition-duration:\s*300ms !important;/s);
-    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.downloads-virtual-row\s*\{[^}]*transition-duration:\s*300ms, 300ms, 300ms !important;/s);
+    expect(DOWNLOAD_DISCLOSURE_DURATION_MS).toBe(600);
+    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.downloads-virtual-spacer\s*\{[^}]*transition-duration:\s*600ms !important;/s);
+    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.downloads-virtual-row\s*\{[^}]*transition-duration:\s*600ms, 600ms, 600ms !important;/s);
   });
 
   it("behält ausfahrende Unterzeilen bis zum Animationsende und reduziert ihre Höhe auf null", () => {
@@ -1046,8 +1048,8 @@ describe("downloads view", () => {
     expect(css).toMatch(/:is\(\.downloads-status-full, \.downloads-status-compact, \.downloads-service-full, \.downloads-service-compact\)\s*\{[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s);
     expect(css).toMatch(/@container\s*\(max-width:\s*150px\)[\s\S]*\.downloads-status-full[^{]*\{[^}]*display:\s*none;[\s\S]*\.downloads-status-compact[^{]*\{[^}]*display:\s*block;/s);
     expect(css).toMatch(/@container\s*\(max-width:\s*150px\)[\s\S]*\.downloads-service-full[^{]*\{[^}]*display:\s*none;[\s\S]*\.downloads-service-compact[^{]*\{[^}]*display:\s*block;/s);
-    expect(css).toMatch(/\.downloads-virtual-spacer\s*\{[^}]*transition:\s*height 300ms cubic-bezier\(0\.22, 1, 0\.36, 1\);/s);
-    expect(css).toMatch(/\.downloads-virtual-row\s*\{[^}]*transition:\s*height 300ms[^;]*transform 300ms[^;]*opacity 300ms/s);
+    expect(css).toMatch(/\.downloads-virtual-spacer\s*\{[^}]*transition:\s*height 600ms cubic-bezier\(0\.22, 1, 0\.36, 1\);/s);
+    expect(css).toMatch(/\.downloads-virtual-row\s*\{[^}]*transition:\s*height 600ms[^;]*transform 600ms[^;]*opacity 600ms/s);
     expect(css).toMatch(/\.downloads-footer\s*\{[^}]*height:\s*60px;[^}]*padding:\s*0 12px 0 60px;/s);
     expect(css).toMatch(/\.downloads-package-card\s*\{[^}]*border:\s*0;[^}]*border-bottom:\s*1px solid color-mix\(in srgb, var\(--ui-border\) 72%, transparent\);[^}]*padding:\s*0;/s);
     expect(css).toMatch(/\.downloads-package-card\s*\{[^}]*box-shadow:\s*none;/s);
