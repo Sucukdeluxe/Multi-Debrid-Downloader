@@ -1,4 +1,5 @@
 import type { DownloadItem, DownloadStatus, PackageEntry } from "../../../shared/types";
+import { humanSize } from "../../download-format";
 import { DOWNLOAD_FILE_ROW_HEIGHT, DOWNLOAD_PACKAGE_ROW_HEIGHT, type DownloadVirtualRowInput } from "./download-virtualizer";
 
 export type DownloadDisplayMode = "packages" | "files";
@@ -89,12 +90,35 @@ export function getDownloadQueueTotalBytes(items: Iterable<DownloadItem>): numbe
   return total;
 }
 
+function isPendingDownloadItem(item: DownloadItem): boolean {
+  return item.status !== "completed" && item.status !== "cancelled" && item.status !== "failed";
+}
+
 export function getPendingDownloadItemCount(items: Iterable<DownloadItem>): number {
   let count = 0;
   for (const item of items) {
-    if (item.status !== "completed" && item.status !== "cancelled" && item.status !== "failed") count += 1;
+    if (isPendingDownloadItem(item)) count += 1;
   }
   return count;
+}
+
+export function getRemainingDownloadBytes(items: Iterable<DownloadItem>): { bytes: number; unknownItems: number } {
+  let bytes = 0;
+  let unknownItems = 0;
+  for (const item of items) {
+    if (!isPendingDownloadItem(item)) continue;
+    if (!item.totalBytes || item.totalBytes <= 0) {
+      unknownItems += 1;
+      continue;
+    }
+    bytes += Math.max(0, item.totalBytes - Math.max(0, item.downloadedBytes));
+  }
+  return { bytes, unknownItems };
+}
+
+export function formatRemainingDownloadBytes(summary: { bytes: number; unknownItems: number }): string {
+  if (summary.unknownItems <= 0) return humanSize(summary.bytes);
+  return summary.bytes > 0 ? `≥ ${humanSize(summary.bytes)}` : "Unbekannt";
 }
 
 export function getDownloadSpeedBps(packageSpeeds: Record<string, number>): number {

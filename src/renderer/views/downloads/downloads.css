@@ -290,6 +290,7 @@
   position: relative;
   height: var(--downloads-virtual-total-height);
   min-height: 0;
+  transition: height 300ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .downloads-virtual-row {
@@ -297,6 +298,8 @@
   inset: 0 0 auto 0;
   height: var(--downloads-virtual-row-height);
   transform: translateY(var(--downloads-virtual-row-top));
+  overflow: hidden;
+  transition: height 300ms cubic-bezier(0.22, 1, 0.36, 1), transform 300ms cubic-bezier(0.22, 1, 0.36, 1), opacity 300ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .downloads-virtual-row > .downloads-package-card {

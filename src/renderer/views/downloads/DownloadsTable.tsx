@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactElement } from "react";
+import { memo, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactElement } from "react";
 import type { DownloadItem } from "../../../shared/types";
 import {
   compactProviderLabels,
@@ -19,7 +19,6 @@ export type DownloadSortColumn = "name" | "size" | "hoster" | "progress";
 const DOWNLOAD_SELECTION_COLUMN_WIDTH = "36px";
 const DOWNLOAD_ACTION_COLUMN_WIDTH = "60px";
 const PACKAGE_ROW_DISCLOSURE_EXCLUSION_SELECTOR = "button, input, select, textarea, a, [contenteditable='true'], .downloads-copyable, .downloads-meter";
-const useRendererLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 type HosterLabel = ReturnType<typeof formatHosterLabel>;
 
@@ -314,73 +313,6 @@ export function areItemRowPropsEqual(previous: ItemRowProps, next: ItemRowProps)
 
 export const ItemRow = memo(ItemRowContent, areItemRowPropsEqual);
 
-interface PackageItemsTransitionProps {
-  actions: DownloadsTableActions;
-  collapsed: boolean;
-  columnOrder: readonly string[];
-  gridTemplate: string;
-  id: string;
-  items: DownloadItem[];
-  selectedIds: ReadonlySet<string>;
-  sessionRunning: boolean;
-}
-
-function PackageItemsTransition({ actions, collapsed, columnOrder, gridTemplate, id, items, selectedIds, sessionRunning }: PackageItemsTransitionProps): ReactElement | null {
-  const [renderItems, setRenderItems] = useState(!collapsed);
-  const animationRef = useRef<Animation | null>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const innerRef = useRef<HTMLDivElement>(null);
-  const initialRenderRef = useRef(true);
-
-  useRendererLayoutEffect(() => {
-    if (initialRenderRef.current) {
-      initialRenderRef.current = false;
-      return;
-    }
-    if (!renderItems) {
-      if (!collapsed) setRenderItems(true);
-      return;
-    }
-    const container = containerRef.current;
-    const inner = innerRef.current;
-    if (!container || !inner) return;
-    animationRef.current?.cancel();
-    const targetHeight = inner.scrollHeight;
-    const animation = collapsed
-      ? container.animate([{ height: `${targetHeight}px`, opacity: 1 }, { height: "0px", opacity: 0 }], { duration: 300, easing: "cubic-bezier(0.22, 1, 0.36, 1)", fill: "forwards" })
-      : container.animate([{ height: "0px", opacity: 0 }, { height: `${targetHeight}px`, opacity: 1 }], { duration: 300, easing: "cubic-bezier(0.22, 1, 0.36, 1)", fill: "forwards" });
-    animationRef.current = animation;
-    animation.onfinish = () => {
-      if (animationRef.current !== animation) return;
-      animationRef.current = null;
-      if (collapsed) {
-        setRenderItems(false);
-      } else {
-        animation.cancel();
-      }
-    };
-    return () => {
-      animation.onfinish = null;
-      animation.cancel();
-      if (animationRef.current === animation) animationRef.current = null;
-    };
-  }, [collapsed, renderItems]);
-
-  if (!renderItems) return null;
-  return (
-    <div
-      aria-hidden={collapsed}
-      className={`downloads-package-items ${collapsed ? "is-collapsed" : "is-expanded"}`}
-      id={id}
-      ref={containerRef}
-    >
-      <div className="downloads-package-items-inner" ref={innerRef}>
-        {items.map((item) => <ItemRow actions={actions} columnOrder={columnOrder} gridTemplate={gridTemplate} item={item} key={item.id} selected={selectedIds.has(item.id)} sessionRunning={sessionRunning} />)}
-      </div>
-    </div>
-  );
-}
-
 export function getPackageProgress(row: DownloadPackageRow): { done: number; failed: number; cancelled: number; total: number; value: number } {
   let done = Math.max(0, Number(row.package.cleanedCompletedItemCount || 0));
   let failed = 0;
@@ -429,7 +361,7 @@ function packageCell(row: DownloadPackageRow, column: string, packageSpeedBps: n
   if (column === "name") {
     return (
       <span className="downloads-cell downloads-name-cell">
-        <button aria-controls={`downloads-package-items-${entry.id}`} aria-expanded={!row.collapsed} aria-label={row.collapsed ? `${entry.name} ausklappen` : `${entry.name} einklappen`} className="downloads-collapse-button" onClick={(event) => { event.stopPropagation(); actions.onTogglePackageCollapse(entry.id); }} type="button">{row.collapsed ? "+" : "−"}</button>
+        <button aria-expanded={!row.collapsed} aria-label={row.collapsed ? `${entry.name} ausklappen` : `${entry.name} einklappen`} className="downloads-collapse-button" onClick={(event) => { event.stopPropagation(); actions.onTogglePackageCollapse(entry.id); }} type="button">{row.collapsed ? "+" : "−"}</button>
         {editing
           ? <input autoFocus className="downloads-rename-input" value={editingName} onBlur={() => finishRename(editingName)} onChange={(event) => actions.onPackageRenameChange(event.target.value)} onKeyDown={(event: ReactKeyboardEvent<HTMLInputElement>) => {
             if (event.key === "Enter") {
@@ -502,11 +434,10 @@ export interface PackageCardProps {
   sessionRunning?: boolean;
   columnOrder: readonly string[];
   gridTemplate: string;
-  renderItems?: boolean;
   actions: DownloadsTableActions;
 }
 
-export function PackageCardContent({ row, selectedIds, editing, editingName, packageSpeedBps, sessionRunning = true, columnOrder, gridTemplate, renderItems = true, actions }: PackageCardProps): ReactElement {
+export function PackageCardContent({ row, selectedIds, editing, editingName, packageSpeedBps, sessionRunning = true, columnOrder, gridTemplate, actions }: PackageCardProps): ReactElement {
   const entry = row.package;
   let renameFinished = false;
   const finishRename = (value: string): void => {
@@ -547,7 +478,6 @@ export function PackageCardContent({ row, selectedIds, editing, editingName, pac
         {columnOrder.map((column) => <span className="downloads-cell-slot" data-download-column={column} key={column} role="cell">{packageCell(row, column, packageSpeedBps, editing, editingName, actions, finishRename)}</span>)}
         <span className="downloads-action-cell" role="cell"><button aria-label={`${entry.name} Aktionen`} onClick={(event) => { event.stopPropagation(); actions.onOpenContextMenu(entry.id, event.clientX, event.clientY, entry.id); }} type="button">⋮</button></span>
       </div>
-      {renderItems ? <PackageItemsTransition actions={actions} collapsed={row.collapsed} columnOrder={columnOrder} gridTemplate={gridTemplate} id={`downloads-package-items-${entry.id}`} items={row.items} selectedIds={selectedIds} sessionRunning={sessionRunning} /> : null}
     </article>
   );
 }
@@ -556,7 +486,7 @@ export function arePackageCardPropsEqual(previous: PackageCardProps, next: Packa
   const a = previous.row.package;
   const b = next.row.package;
   if (a.id !== b.id || a.updatedAt !== b.updatedAt || a.status !== b.status || a.enabled !== b.enabled || a.name !== b.name || a.priority !== b.priority || a.createdAt !== b.createdAt) return false;
-  if (previous.packageSpeedBps !== next.packageSpeedBps || previous.editing !== next.editing || previous.editingName !== next.editingName || previous.row.collapsed !== next.row.collapsed || previous.sessionRunning !== next.sessionRunning || previous.columnOrder !== next.columnOrder || previous.gridTemplate !== next.gridTemplate || previous.renderItems !== next.renderItems || previous.actions !== next.actions) return false;
+  if (previous.packageSpeedBps !== next.packageSpeedBps || previous.editing !== next.editing || previous.editingName !== next.editingName || previous.row.collapsed !== next.row.collapsed || previous.sessionRunning !== next.sessionRunning || previous.columnOrder !== next.columnOrder || previous.gridTemplate !== next.gridTemplate || previous.actions !== next.actions) return false;
   if (previous.selectedVersion !== next.selectedVersion || previous.selectedIds !== next.selectedIds) {
     if (previous.selectedIds.has(a.id) !== next.selectedIds.has(a.id)) return false;
     for (const itemId of b.itemIds) {

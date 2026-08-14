@@ -94,7 +94,7 @@ import {
   StatisticsSidebarStatus,
   type StatisticsViewActions
 } from "./views/statistics/StatisticsView";
-import { buildDownloadsViewModel, getDownloadQueueTotalBytes, getDownloadSpeedBps, getPendingDownloadItemCount, type DownloadDisplayMode, type DownloadSidebarFilter } from "./views/downloads/downloads-model";
+import { buildDownloadsViewModel, formatRemainingDownloadBytes, getDownloadQueueTotalBytes, getDownloadSpeedBps, getPendingDownloadItemCount, getRemainingDownloadBytes, type DownloadDisplayMode, type DownloadSidebarFilter } from "./views/downloads/downloads-model";
 import { downloadColumnDefinitions, type DownloadSortColumn } from "./views/downloads/DownloadsTable";
 import { beginDownloadColumnDrag, clearDownloadColumnDrag, settleDownloadColumnDrag, updateDownloadColumnDrag, type DownloadColumnDragSession } from "./views/downloads/column-drag";
 import {
@@ -1562,6 +1562,7 @@ export function App(): ReactElement {
   const pendingPackageOrderRef = useRef<string[] | null>(null);
   const pendingPackageOrderAtRef = useRef(0);
   const [collapsedPackages, setCollapsedPackages] = useState<Record<string, boolean>>({});
+  const [downloadDisclosureRevision, setDownloadDisclosureRevision] = useState(0);
   const [downloadSearch, setDownloadSearch] = useState("");
   const [downloadDisplayMode, setDownloadDisplayMode] = useState<DownloadDisplayMode>("packages");
   const [downloadFilter, setDownloadFilter] = useState<DownloadSidebarFilter>("all");
@@ -3673,6 +3674,7 @@ export function App(): ReactElement {
   }, [showToast]);
 
   const onPackageToggleCollapse = useCallback((packageId: string): void => {
+    setDownloadDisclosureRevision((current) => current + 1);
     setCollapsedPackages((prev) => {
       const nextCollapsed = !(prev[packageId] ?? false);
       return { ...prev, [packageId]: nextCollapsed };
@@ -4571,6 +4573,7 @@ export function App(): ReactElement {
     speedHistoryRef.current = appendBandwidthSample(speedHistoryRef.current, liveDownloadSpeedBps);
   }, [liveDownloadSpeedBps, snapshot.packageSpeedBps, snapshot.session.paused, snapshot.session.running]);
   const downloadQueueTotalBytes = useMemo(() => getDownloadQueueTotalBytes(Object.values(snapshot.session.items)), [snapshot.session.items]);
+  const downloadRemaining = useMemo(() => getRemainingDownloadBytes(Object.values(snapshot.session.items)), [snapshot.session.items]);
   const downloadsViewModel = useMemo<DownloadsViewModel>(() => ({
     ...downloadsViewCore,
     running: snapshot.session.running,
@@ -4593,6 +4596,7 @@ export function App(): ReactElement {
     gridTemplate,
     sortColumn: downloadsSortColumn,
     sortDirection: downloadsSortDescending ? "desc" : "asc",
+    disclosureRevision: downloadDisclosureRevision,
     status: {
       packages: snapshot.stats.totalPackages,
       links: getPendingDownloadItemCount(Object.values(snapshot.session.items)),
@@ -4600,11 +4604,13 @@ export function App(): ReactElement {
       sessionBytes: snapshot.stats.totalDownloaded,
       total: humanSize(downloadQueueTotalBytes),
       totalBytes: downloadQueueTotalBytes,
+      remaining: formatRemainingDownloadBytes(downloadRemaining),
+      remainingBytes: downloadRemaining.bytes,
       hosters: providerStats.length,
       speed: liveDownloadSpeedBps > 0 ? formatSpeedMbps(liveDownloadSpeedBps) : "0 B/s",
       eta: snapshot.etaText
     }
-  }), [actionBusy, columnOrder, downloadPackageSpeeds, downloadQueueTotalBytes, downloadsSortColumn, downloadsSortDescending, downloadsViewCore, editingName, editingPackageId, gridTemplate, liveDownloadSpeedBps, providerStats.length, scheduleCountdown, schedulePickerOpen, scheduleTimeInput, snapshot.canPause, snapshot.canStart, snapshot.canStop, snapshot.clipboardActive, snapshot.etaText, snapshot.reconnectSeconds, snapshot.session.items, snapshot.session.paused, snapshot.session.reconnectReason, snapshot.session.running, snapshot.settings.scheduledStartEpochMs, snapshot.stats.totalDownloaded, snapshot.stats.totalPackages]);
+  }), [actionBusy, columnOrder, downloadDisclosureRevision, downloadPackageSpeeds, downloadQueueTotalBytes, downloadRemaining, downloadsSortColumn, downloadsSortDescending, downloadsViewCore, editingName, editingPackageId, gridTemplate, liveDownloadSpeedBps, providerStats.length, scheduleCountdown, schedulePickerOpen, scheduleTimeInput, snapshot.canPause, snapshot.canStart, snapshot.canStop, snapshot.clipboardActive, snapshot.etaText, snapshot.reconnectSeconds, snapshot.session.items, snapshot.session.paused, snapshot.session.reconnectReason, snapshot.session.running, snapshot.settings.scheduledStartEpochMs, snapshot.stats.totalDownloaded, snapshot.stats.totalPackages]);
 
   const downloadsActions: DownloadsViewActions = {
     onDisplayModeChange: setDownloadDisplayMode,
@@ -4647,6 +4653,7 @@ export function App(): ReactElement {
     onClearAll: clearDownloadQueue,
     onToggleAllPackages: () => {
       const targetState = !allPackagesCollapsed;
+      setDownloadDisclosureRevision((current) => current + 1);
       setCollapsedPackages((current) => {
         const next = { ...current };
         for (const entry of packages) {

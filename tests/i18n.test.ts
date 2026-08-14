@@ -148,7 +148,8 @@ describe("renderer localization", () => {
     ["3 ausgewählt", "3 selected"],
     ["vor 4 Std", "4 hr ago"],
     ["Zeitregel 4", "Schedule rule 4"],
-    ["1.5 GB von 10 GB übrig", "1.5 GB of 10 GB remaining"]
+    ["1.5 GB von 10 GB übrig", "1.5 GB of 10 GB remaining"],
+    ["Verbleibend", "Remaining"]
   ])("translates composed renderer text %s without changing its payload", (german, english) => {
     expect(translateUiText(german, "en")).toBe(english);
     expect(translateUiText(english, "de")).toBe(german);

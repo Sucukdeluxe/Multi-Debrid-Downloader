@@ -27,7 +27,7 @@ const pairs = [
   ["Umbenennen", "Rename"], ["Entfernen", "Remove"], ["Name", "Name"], ["Geladen / Größe", "Downloaded / size"], ["Fortschritt", "Progress"], ["Hoster", "Hoster"], ["Service", "Service"],
   ["Priorität", "Priority"], ["Status", "Status"], ["Aktion", "Action"], ["Alle Services", "All services"], ["Paket, Datei oder Service", "Package, file or service"], ["Alle ein-/ausklappen", "Expand/collapse all"],
   ["Hoch", "High"], ["Normal", "Normal"], ["Niedrig", "Low"], ["In Warteschlange", "Queued"], ["Abgeschlossen", "Completed"], ["Entpackt", "Extracted"], ["Automatisch entpacken", "Extract automatically"],
-  ["Liste leeren", "Clear list"], ["Sitzung", "Session"], ["Gesamt", "Total"], ["Bereit", "Ready"], ["Download läuft", "Download running"], ["Wartet", "Waiting"], ["Offline", "Offline"],
+  ["Liste leeren", "Clear list"], ["Sitzung", "Session"], ["Gesamt", "Total"], ["Verbleibend", "Remaining"], ["Bereit", "Ready"], ["Download läuft", "Download running"], ["Wartet", "Waiting"], ["Offline", "Offline"],
   ["Übersicht", "Overview"], ["Verwendungsregeln", "Usage rules"], ["Accountverwaltung", "Account management"], ["Accounts hinzufügen, prüfen und verwalten.", "Add, check and manage accounts."],
   ["Accounts zum Herunterladen verwenden", "Use accounts for downloads"], ["Download-Traffic übrig", "Download traffic remaining"], ["Benutzername", "Username"], ["E-Mail", "Email"], ["Verfallsdatum", "Expiration date"], ["Passwort/Zugang", "Password/access"],
   ["Account hinzufügen", "Add account"], ["Ausgewählte prüfen", "Check selected"], ["Ausgewählte entfernen", "Remove selected"], ["Aktivieren", "Enable"], ["Deaktivieren", "Disable"], ["Noch nicht geprüft", "Not checked yet"],

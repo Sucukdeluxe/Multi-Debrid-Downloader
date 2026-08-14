@@ -9,13 +9,22 @@ import {
   buildDownloadSidebarCounts,
   buildDownloadsViewModel,
   classifyDownloadStatus,
+  formatRemainingDownloadBytes,
   getDownloadQueueTotalBytes,
+  getRemainingDownloadBytes,
   getPendingDownloadItemCount,
   getDownloadSpeedBps,
   buildDownloadLogicalRows,
   type DownloadSidebarFilter,
   type DownloadsModelInput
 } from "../src/renderer/views/downloads/downloads-model";
+import {
+  DOWNLOAD_DISCLOSURE_MAX_ANIMATED_ITEMS,
+  activateDownloadDisclosureTransition,
+  mergeDownloadDisclosureRows,
+  prepareDownloadDisclosureTransition,
+  stableDownloadDisclosureRows
+} from "../src/renderer/views/downloads/download-disclosure-transition";
 import {
   DownloadsContent,
   DownloadsFooter,
@@ -98,9 +107,10 @@ describe("rollende Downloadkennzahlen", () => {
     expect(getRollingMetricDirection(300, 300)).toBe("none");
   });
 
-  it("animates exactly the five stable sidebar metrics", () => {
+  it("animates exactly the six stable sidebar metrics including the remaining volume", () => {
     const html = renderToStaticMarkup(<DownloadsSidebarStatus model={withRuntime(createInput())} />);
-    expect(html.match(/class="downloads-rolling-value"/g)).toHaveLength(5);
+    expect(html.match(/class="downloads-rolling-value"/g)).toHaveLength(6);
+    expect(html).toContain("Verbleibend");
     expect(html).toContain('data-status-metric="speed"');
     expect(html).toContain('data-status-metric="eta"');
   });
@@ -160,6 +170,171 @@ describe("Download-Gesamtgröße", () => {
 
     expect(getPackageSizeProgress(row)).toEqual({ downloaded: 2_500, total: 3_000, value: 83 });
     expect(getPackageProgress(row)).toEqual(expect.objectContaining({ done: 2, total: 3, value: 83 }));
+  });
+});
+
+describe("verbleibendes Downloadvolumen", () => {
+  it("summiert nur offene bekannte Restbytes und klemmt überladene Fortschritte bei null", () => {
+    const items = [
+      item("partial", "remaining", "downloading", { downloadedBytes: 750_000_000, totalBytes: 2_000_000_000 }),
+      item("queued", "remaining", "queued", { downloadedBytes: 0, totalBytes: 3_000_000_000 }),
+      item("overshot", "remaining", "downloading", { downloadedBytes: 2_100_000_000, totalBytes: 2_000_000_000 }),
+      item("done", "remaining", "completed", { downloadedBytes: 9_000_000_000, totalBytes: 10_000_000_000 }),
+      item("failed", "remaining", "failed", { downloadedBytes: 0, totalBytes: 8_000_000_000 }),
+      item("cancelled", "remaining", "cancelled", { downloadedBytes: 0, totalBytes: 7_000_000_000 })
+    ];
+
+    expect(getRemainingDownloadBytes(items)).toEqual({ bytes: 4_250_000_000, unknownItems: 0 });
+  });
+
+  it("meldet unbekannte Größen nur für noch offene Downloads", () => {
+    const items = [
+      item("known", "remaining", "queued", { downloadedBytes: 250_000_000, totalBytes: 1_000_000_000 }),
+      item("unknown-open", "remaining", "queued", { downloadedBytes: 120_000_000, totalBytes: null }),
+      item("unknown-done", "remaining", "completed", { totalBytes: null })
+    ];
+
+    expect(getRemainingDownloadBytes(items)).toEqual({ bytes: 750_000_000, unknownItems: 1 });
+    expect(formatRemainingDownloadBytes({ bytes: 750_000_000, unknownItems: 1 })).toBe("≥ 715.26 MB");
+    expect(formatRemainingDownloadBytes({ bytes: 0, unknownItems: 1 })).toBe("Unbekannt");
+    expect(formatRemainingDownloadBytes({ bytes: 0, unknownItems: 0 })).toBe("0 B");
+  });
+});
+
+describe("virtualisierte Paketanimation", () => {
+  const packageA = pkg("package-a", "A", ["a-1", "a-2"]);
+  const packageB = pkg("package-b", "B", ["b-1"]);
+  const items = {
+    "a-1": item("a-1", "package-a", "queued"),
+    "a-2": item("a-2", "package-a", "queued"),
+    "b-1": item("b-1", "package-b", "queued")
+  };
+  const logicalRows = (collapsedPackageIds: string[]) => buildDownloadLogicalRows(buildDownloadsViewModel({
+    packageOrder: [packageA.id, packageB.id],
+    packages: { [packageA.id]: packageA, [packageB.id]: packageB },
+    items,
+    displayMode: "packages",
+    filter: "all",
+    providerFilter: "all",
+    query: "",
+    collapsedPackageIds,
+    selectedIds: [],
+    hideExtractedItems: false,
+    showAllPackages: true,
+    renderLimit: 100
+  }));
+
+  it("fährt neue Unterzeilen von null auf ihre feste Höhe aus und verschiebt Folgepakete unter stabilen IDs", () => {
+    const collapsed = logicalRows([packageA.id]);
+    const expanded = logicalRows([]);
+    const prepared = prepareDownloadDisclosureTransition(stableDownloadDisclosureRows(collapsed), expanded);
+
+    expect(prepared.animated).toBe(true);
+    expect(prepared.rows.map((row) => [row.id, row.height, row.disclosurePhase, row.disclosureOpacity])).toEqual([
+      ["package-a", 40, "stable", 1],
+      ["a-1", 0, "entering", 0],
+      ["a-2", 0, "entering", 0],
+      ["package-b", 40, "stable", 1],
+      ["b-1", 38, "stable", 1]
+    ]);
+    expect(activateDownloadDisclosureTransition(prepared.rows).map((row) => [row.id, row.height, row.disclosureOpacity])).toEqual([
+      ["package-a", 40, 1],
+      ["a-1", 38, 1],
+      ["a-2", 38, 1],
+      ["package-b", 40, 1],
+      ["b-1", 38, 1]
+    ]);
+  });
+
+  it("behält ausfahrende Unterzeilen bis zum Animationsende und reduziert ihre Höhe auf null", () => {
+    const expanded = logicalRows([]);
+    const collapsed = logicalRows([packageA.id]);
+    const prepared = prepareDownloadDisclosureTransition(stableDownloadDisclosureRows(expanded), collapsed);
+
+    expect(prepared.rows.map((row) => [row.id, row.height, row.disclosurePhase, row.disclosureOpacity])).toEqual([
+      ["package-a", 40, "stable", 1],
+      ["a-1", 38, "leaving", 1],
+      ["a-2", 38, "leaving", 1],
+      ["package-b", 40, "stable", 1],
+      ["b-1", 38, "stable", 1]
+    ]);
+    expect(activateDownloadDisclosureTransition(prepared.rows).map((row) => [row.id, row.height, row.disclosureOpacity])).toEqual([
+      ["package-a", 40, 1],
+      ["a-1", 0, 0],
+      ["a-2", 0, 0],
+      ["package-b", 40, 1],
+      ["b-1", 38, 1]
+    ]);
+    expect(stableDownloadDisclosureRows(collapsed).map((row) => row.id)).toEqual(["package-a", "package-b", "b-1"]);
+  });
+
+  it("überspringt die Bewegung bei riesigen Einzelpaketen und hält das DOM-Fenster begrenzt", () => {
+    const count = DOWNLOAD_DISCLOSURE_MAX_ANIMATED_ITEMS + 10_000;
+    const hugePackage = pkg("huge-package", "Groß", Array.from({ length: count }, (_, index) => `huge-${index}`));
+    const hugeItems = Object.fromEntries(hugePackage.itemIds.map((id) => [id, item(id, hugePackage.id, "queued")]));
+    const buildRows = (collapsed: boolean) => buildDownloadLogicalRows(buildDownloadsViewModel({
+      packageOrder: [hugePackage.id],
+      packages: { [hugePackage.id]: hugePackage },
+      items: hugeItems,
+      displayMode: "packages",
+      filter: "all",
+      providerFilter: "all",
+      query: "",
+      collapsedPackageIds: collapsed ? [hugePackage.id] : [],
+      selectedIds: [],
+      hideExtractedItems: false,
+      showAllPackages: true,
+      renderLimit: count + 1
+    }));
+    const prepared = prepareDownloadDisclosureTransition(stableDownloadDisclosureRows(buildRows(true)), buildRows(false));
+    const window = calculateDownloadVirtualWindow(prepared.rows, { scrollTop: 0, viewportHeight: 720, overscan: 8 });
+
+    expect(prepared.animated).toBe(false);
+    expect(window.rows.length).toBeLessThan(40);
+  });
+
+  it("begrenzt gleichzeitig animierte Unterzeilen über alle Pakete hinweg", () => {
+    const manyItems = Object.fromEntries(Array.from({ length: 80 }, (_, index) => {
+      const packageId = index < 40 ? "many-a" : "many-b";
+      const id = `${packageId}-${index}`;
+      return [id, item(id, packageId, "queued")];
+    }));
+    const manyPackages = {
+      "many-a": pkg("many-a", "Viele A", Object.keys(manyItems).filter((id) => id.startsWith("many-a"))),
+      "many-b": pkg("many-b", "Viele B", Object.keys(manyItems).filter((id) => id.startsWith("many-b")))
+    };
+    const buildRows = (collapsedPackageIds: string[]) => buildDownloadLogicalRows(buildDownloadsViewModel({
+      packageOrder: ["many-a", "many-b"],
+      packages: manyPackages,
+      items: manyItems,
+      displayMode: "packages",
+      filter: "all",
+      providerFilter: "all",
+      query: "",
+      collapsedPackageIds,
+      selectedIds: [],
+      hideExtractedItems: false,
+      showAllPackages: true,
+      renderLimit: 100
+    }));
+
+    const prepared = prepareDownloadDisclosureTransition(stableDownloadDisclosureRows(buildRows(["many-a", "many-b"])), buildRows([]));
+    expect(prepared.animated).toBe(false);
+  });
+
+  it("übernimmt Laufzeitupdates während der Bewegung und kehrt schnelle Gegenklicks um", () => {
+    const entering = activateDownloadDisclosureTransition(prepareDownloadDisclosureTransition(stableDownloadDisclosureRows(logicalRows([packageA.id])), logicalRows([])).rows);
+    const updated = logicalRows([]).map((row) => row.type === "item" && row.id === "a-1" ? { ...row, item: { ...row.item, downloadedBytes: 987_654_321 } } : row);
+    const merged = mergeDownloadDisclosureRows(entering, updated);
+    const updatedItem = merged.find((row) => row.type === "item" && row.id === "a-1");
+    expect(updatedItem?.type === "item" ? updatedItem.item.downloadedBytes : 0).toBe(987_654_321);
+    expect(updatedItem).toEqual(expect.objectContaining({ disclosurePhase: "entering", height: 38, disclosureOpacity: 1 }));
+
+    const collapsed = logicalRows([packageA.id]);
+    const leaving = activateDownloadDisclosureTransition(prepareDownloadDisclosureTransition(stableDownloadDisclosureRows(logicalRows([])), collapsed).rows);
+    const reversed = prepareDownloadDisclosureTransition(leaving, logicalRows([]));
+    expect(reversed.animated).toBe(true);
+    expect(reversed.rows.filter((row) => row.packageId === packageA.id && row.type === "item").every((row) => row.disclosurePhase === "entering")).toBe(true);
   });
 });
 
@@ -360,6 +535,7 @@ function withRuntime(input: DownloadsModelInput, overrides: Record<string, unkno
     scheduleTime: "23:30",
     scheduleLabel: "",
     packageSpeedBps: { "package-a": 12_000_000 },
+    disclosureRevision: 0,
     editingPackageId: null,
     editingName: "",
     columnOrder: ["name", "size", "hoster", "progress"] as const,
@@ -371,6 +547,8 @@ function withRuntime(input: DownloadsModelInput, overrides: Record<string, unkno
       sessionBytes: 3_000_000_000,
       total: "10,00 GB",
       totalBytes: 10_000_000_000,
+      remaining: "6,50 GB",
+      remainingBytes: 6_500_000_000,
       hosters: 3,
       speed: "96,00 Mbit/s",
       eta: "00:05:00"
@@ -794,7 +972,8 @@ describe("downloads view", () => {
     expect(css).toMatch(/:is\(\.downloads-status-full, \.downloads-status-compact, \.downloads-service-full, \.downloads-service-compact\)\s*\{[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s);
     expect(css).toMatch(/@container\s*\(max-width:\s*150px\)[\s\S]*\.downloads-status-full[^{]*\{[^}]*display:\s*none;[\s\S]*\.downloads-status-compact[^{]*\{[^}]*display:\s*block;/s);
     expect(css).toMatch(/@container\s*\(max-width:\s*150px\)[\s\S]*\.downloads-service-full[^{]*\{[^}]*display:\s*none;[\s\S]*\.downloads-service-compact[^{]*\{[^}]*display:\s*block;/s);
-    expect(readFileSync(new URL("../src/renderer/views/downloads/DownloadsTable.tsx", import.meta.url), "utf8")).toMatch(/\.animate\(\[\{ height: "0px", opacity: 0 \}, \{ height: `\$\{targetHeight\}px`, opacity: 1 \}\]/);
+    expect(css).toMatch(/\.downloads-virtual-spacer\s*\{[^}]*transition:\s*height 300ms cubic-bezier\(0\.22, 1, 0\.36, 1\);/s);
+    expect(css).toMatch(/\.downloads-virtual-row\s*\{[^}]*transition:\s*height 300ms[^;]*transform 300ms[^;]*opacity 300ms/s);
     expect(css).toMatch(/\.downloads-footer\s*\{[^}]*height:\s*60px;[^}]*padding:\s*0 12px 0 60px;/s);
     expect(css).toMatch(/\.downloads-package-card\s*\{[^}]*border:\s*0;[^}]*border-bottom:\s*1px solid color-mix\(in srgb, var\(--ui-border\) 72%, transparent\);[^}]*padding:\s*0;/s);
     expect(css).toMatch(/\.downloads-package-card\s*\{[^}]*box-shadow:\s*none;/s);
@@ -821,7 +1000,7 @@ describe("downloads view", () => {
     expect(css).toMatch(/\.downloads-selection-cell\s+input\[type="checkbox"\]\s*\{[^}]*width:\s*18px;[^}]*height:\s*18px;/s);
     expect(css).toMatch(/\.downloads-hoster-icon\s*\{[^}]*width:\s*18px;[^}]*height:\s*18px;[^}]*object-fit:\s*contain;/s);
     expect(css).toMatch(/\.downloads-hoster-icon\[data-hoster="rapidgator"\]\s*\{[^}]*transform:\s*translateY\(-4px\) scale\(2\);/s);
-    expect(source.match(/duration:\s*300/g)).toHaveLength(2);
+    expect(source).not.toContain("PackageItemsTransition");
   });
 
   it("keeps the action column visible at 1366px and 1120px through the production wrapper contract", () => {
@@ -1277,7 +1456,7 @@ describe("download table row contracts", () => {
 
     expect(calls).toEqual(["select", "prevent", "collapse", "collapse"]);
     expect(collapseButton.props["aria-expanded"]).toBe(true);
-    expect(collapseButton.props["aria-controls"]).toBe(`downloads-package-items-${row.package.id}`);
+    expect(collapseButton.props["aria-controls"]).toBeUndefined();
   });
 
   it("does not collapse a package when a row double click starts on interactive content", () => {
