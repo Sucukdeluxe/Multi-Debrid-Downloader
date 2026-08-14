@@ -2,6 +2,13 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.39] - 2026-08-15
+
+### Settings
+
+- Fixed settings saves after upgrades when account status records or legacy renderer data omit optional fields.
+- Restored download starts and account actions that persist settings before continuing.
+
 ## [2.0.38] - 2026-08-15
 
 ### Interface
