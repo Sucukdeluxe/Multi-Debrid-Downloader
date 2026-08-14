@@ -101,14 +101,14 @@ export interface AccountWorkspaceViewModel {
   selectedIds: readonly string[];
   busy: boolean;
   error?: string;
-  allEnabled?: boolean;
   statusSort?: "none" | "desc" | "asc";
   rules: AccountRulesViewModel;
 }
 
 export interface AccountWorkspaceActions {
   onPanelChange: (panel: AccountWorkspacePanel) => void;
-  onSelect: (rowId: string) => void;
+  onSelect: (rowId: string, additive: boolean) => void;
+  onClearSelection: () => void;
   onToggleEnabled: (rowId: string) => void;
   onEdit: (rowId: string) => void;
   onContextMenu: (rowId: string, x: number, y: number) => void;
@@ -117,7 +117,6 @@ export interface AccountWorkspaceActions {
   onRemoveSelected: () => void;
   onCheckActive: () => void;
   onCheckAll: () => void;
-  onSetAllEnabled?: (enabled: boolean) => void;
   onStatusSort?: () => void;
   onMoveProvider?: (index: number, direction: -1 | 1) => void;
   onProviderDragStart?: (event: DragEvent<HTMLElement>, index: number) => void;
@@ -302,14 +301,14 @@ function AccountRow({
   gridTemplateColumns: string;
   minWidth: number;
 }): ReactElement {
-  const selectRow = (): void => actions.onSelect(row.id);
-  const onClick = (): void => selectRow();
+  const selectRow = (additive = false): void => actions.onSelect(row.id, additive);
+  const onClick = (event: MouseEvent<HTMLDivElement>): void => selectRow(event.ctrlKey || event.metaKey);
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
     if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) {
       return;
     }
     event.preventDefault();
-    selectRow();
+    selectRow(event.ctrlKey || event.metaKey);
   };
   const openContextMenu = (event: MouseEvent<HTMLElement>): void => {
     event.preventDefault();
@@ -455,7 +454,7 @@ function AccountOverview({ model, actions }: AccountWorkspaceProps): ReactElemen
       <div className="settings-account-local-actions">
         <div>
           <button className="settings-button settings-button-secondary" disabled={model.busy} onClick={actions.onAdd} type="button">＋ Hinzufügen</button>
-          <button className="settings-button settings-button-secondary" disabled={model.busy || model.selectedIds.length === 0} onClick={actions.onRemoveSelected} type="button">− Entfernen</button>
+          <button className="settings-button settings-button-secondary" disabled={model.busy || model.selectedIds.length === 0} onClick={actions.onRemoveSelected} type="button">− Entfernen{model.selectedIds.length > 1 ? ` (${model.selectedIds.length})` : ""}</button>
           <button className="settings-button settings-button-secondary" disabled={model.busy || !model.rows.some((row) => row.enabled && row.canCheck)} onClick={actions.onCheckActive} title="Prüft nur aktivierte Accounts." type="button">↻ Aktive aktualisieren</button>
           <button className="settings-button settings-button-secondary" disabled={model.busy} onClick={actions.onCheckAll} title="Prüft alle angelegten Accounts, auch deaktivierte." type="button">↻ Alle aktualisieren</button>
         </div>
@@ -584,7 +583,16 @@ function AccountRules({ model, actions }: AccountWorkspaceProps): ReactElement {
 
 export function AccountWorkspace({ model, actions }: AccountWorkspaceProps): ReactElement {
   return (
-    <div className="settings-account-workspace">
+    <div
+      className="settings-account-workspace"
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || model.selectedIds.length === 0) {
+          return;
+        }
+        event.preventDefault();
+        actions.onClearSelection();
+      }}
+    >
       {model.busy ? <span aria-live="polite" className="settings-visually-hidden" role="status">Accountdaten werden aktualisiert.</span> : null}
       {model.error ? <span className="settings-visually-hidden" role="alert">{model.error}</span> : null}
       <header className="settings-account-heading">
@@ -592,17 +600,6 @@ export function AccountWorkspace({ model, actions }: AccountWorkspaceProps): Rea
           <h2>Accountverwaltung</h2>
           <p>Accounts hinzufügen, prüfen und verwalten.</p>
         </div>
-        {typeof model.allEnabled === "boolean" && actions.onSetAllEnabled ? (
-          <label className="settings-rule-toggle settings-account-all-enabled">
-            <input
-              checked={model.allEnabled}
-              disabled={model.busy || model.rows.length === 0}
-              onChange={(event) => actions.onSetAllEnabled?.(event.target.checked)}
-              type="checkbox"
-            />
-            <span>Accounts zum Herunterladen verwenden</span>
-          </label>
-        ) : null}
       </header>
       <SlidingSelection activeKey={model.activePanel} aria-label="Accountverwaltung" aria-orientation="horizontal" axis="horizontal" className="settings-account-tabs" role="tablist">
         {ACCOUNT_WORKSPACE_PANELS.map((panel, index) => (

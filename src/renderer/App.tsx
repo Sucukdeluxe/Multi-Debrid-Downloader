@@ -40,7 +40,7 @@ import {
 } from "../shared/provider-daily-limits";
 import { preservePackageOrderForDisplay, sortPackageOrderByName } from "./package-order";
 import { pruneSelection, shouldClearDownloadSelection, shouldClearDownloadSelectionOnEscape } from "./selection";
-import { buildBulkAccountEnabledState, buildConfiguredProviderOrder, buildScopedAccountEnabledState, getAccountDialogSelectableOptions, matchesAccountModeFilter, pruneAccountRowSelection, resolveAccountStatusState, resolveAccountUsername, resolveVisibleAccountKind, runOptimisticAccountUpdate } from "./account-ui";
+import { buildConfiguredProviderOrder, buildScopedAccountEnabledState, getAccountDialogSelectableOptions, matchesAccountModeFilter, pruneAccountRowSelections, resolveAccountStatusState, resolveAccountUsername, resolveVisibleAccountKind, runOptimisticAccountUpdate, updateAccountRowSelection } from "./account-ui";
 import type { AccountModeFilter } from "./account-ui";
 import { buildAccountDeleteCommand, buildAccountReplaceCommand, buildAccountSecretRequest, createAccountEditState, validateAccountEdit } from "./account-edit";
 import type { AccountEditState, AccountEditTarget, AccountKind, AccountService, SingleAccountKind } from "./account-edit";
@@ -1583,7 +1583,7 @@ export function App(): ReactElement {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [settingsSubTab, setSettingsSubTab] = useState<SettingsSection>("allgemein");
   const [accountManagementTab, setAccountManagementTab] = useState<"overview" | "rules">("overview");
-  const [selectedAccountRowKey, setSelectedAccountRowKey] = useState<string | null>(null);
+  const [selectedAccountRowKeys, setSelectedAccountRowKeys] = useState<Set<string>>(() => new Set());
   const [openSubmenu, setOpenSubmenu] = useState<string | null>(null);
   const [startConflictPrompt, setStartConflictPrompt] = useState<StartConflictPromptState | null>(null);
   const startConflictResolverRef = useRef<((result: { policy: Extract<DuplicatePolicy, "skip" | "overwrite">; applyToAll: boolean } | null) => void) | null>(null);
@@ -2398,7 +2398,14 @@ export function App(): ReactElement {
   const cycleAccountStatusSort = (): void => setAccountStatusSort((s) => (s === "none" ? "desc" : s === "desc" ? "asc" : "none"));
 
   useEffect(() => {
-    setSelectedAccountRowKey((current) => pruneAccountRowSelection(current, accountRows.map((row) => row.rowKey)));
+    const existingRowKeys = accountRows.map((row) => row.rowKey);
+    setSelectedAccountRowKeys((current) => {
+      const next = pruneAccountRowSelections([...current], existingRowKeys);
+      if (next.length === current.size && next.every((rowKey) => current.has(rowKey))) {
+        return current;
+      }
+      return new Set(next);
+    });
   }, [accountRows]);
   const availableAccountOptions = useMemo(() => (
     ACCOUNT_OPTIONS.filter((option) => option.kind === "megadebrid-api"
@@ -2938,36 +2945,21 @@ export function App(): ReactElement {
     }
   };
 
-  const setAllAccountsEnabled = async (enabled: boolean): Promise<void> => {
-    await performQuickAction(async () => {
-      const configuredProviderIds = [...new Set(configuredAccounts.map((entry) => entry.service as DebridProvider))];
-      const nextEnabledState = buildBulkAccountEnabledState(
-        settingsDraft.disabledProviders || [],
-        configuredProviderIds,
-        accountRows.filter((row) => row.toggleKind === "mega" && row.accountId).map((row) => row.accountId as string),
-        accountRows.filter((row) => row.toggleKind === "dl" && row.accountId).map((row) => row.accountId as string),
-        enabled
-      );
-      const nextDraft: RendererSettingsDraft = {
-        ...settingsDraft,
-        ...nextEnabledState,
-        megaDebridApiDisabledAccountIds: enabled ? [] : accountRows.filter((row) => row.entry.kind === "megadebrid-api" && row.accountId).map((row) => row.accountId as string),
-        megaDebridWebDisabledAccountIds: enabled ? [] : accountRows.filter((row) => row.entry.kind === "megadebrid-web" && row.accountId).map((row) => row.accountId as string)
-      };
-      await persistAccountToggle(nextDraft);
-      showToast(enabled ? "Accounts aktiviert" : "Accounts deaktiviert", 2200);
-    }, (error) => {
-      showToast(`Accounts konnten nicht umgeschaltet werden: ${String(error)}`, 3200);
-    });
-  };
-
-  const removeAccountTableRow = (row: AccountTableRow): void => {
+  const removeAccountTableRows = (rows: readonly AccountTableRow[]): void => {
+    if (rows.length === 0) {
+      return;
+    }
     setAccountContextMenu(null);
     void (async () => {
-      const username = resolveAccountUsername(row.username, row.accountId ? snapshot.settings.debridAccountStatuses?.[row.accountId]?.email : undefined);
+      const row = rows[0];
+      const username = rows.length === 1
+        ? resolveAccountUsername(row.username, row.accountId ? snapshot.settings.debridAccountStatuses?.[row.accountId]?.email : undefined)
+        : "—";
       const confirmed = await askConfirmPrompt({
-        title: `${row.hosterLabel} entfernen`,
-        message: `Soll ${row.hosterLabel}${username !== "—" ? ` (${username})` : ""} wirklich entfernt werden?`,
+        title: rows.length === 1 ? `${row.hosterLabel} entfernen` : `${rows.length} Accounts entfernen`,
+        message: rows.length === 1
+          ? `Soll ${row.hosterLabel}${username !== "—" ? ` (${username})` : ""} wirklich entfernt werden?`
+          : `Sollen die ausgewählten ${rows.length} Accounts wirklich entfernt werden?`,
         confirmLabel: "Entfernen",
         danger: true
       });
@@ -2975,18 +2967,24 @@ export function App(): ReactElement {
         return;
       }
       await performQuickAction(async () => {
-        const result = await window.rd.deleteAccount(buildAccountDeleteCommand(row.editTarget));
-        setSnapshot((current) => ({ ...current, settings: result.settings, accounts: result.accounts }));
-        applyPersistedSettings(result.settings);
-        if (row.entry.service === "alldebrid") {
-          setAllDebridHostInfo(null);
+        for (const selectedRow of rows) {
+          const result = await window.rd.deleteAccount(buildAccountDeleteCommand(selectedRow.editTarget));
+          setSnapshot((current) => ({ ...current, settings: result.settings, accounts: result.accounts }));
+          applyPersistedSettings(result.settings);
+          if (selectedRow.entry.service === "alldebrid") {
+            setAllDebridHostInfo(null);
+          }
         }
-        showToast(`${row.hosterLabel} entfernt`, 2200);
+        const removedRowKeys = new Set(rows.map((selectedRow) => selectedRow.rowKey));
+        setSelectedAccountRowKeys((current) => new Set([...current].filter((rowKey) => !removedRowKeys.has(rowKey))));
+        showToast(rows.length === 1 ? `${row.hosterLabel} entfernt` : `${rows.length} Accounts entfernt`, 2200);
       }, (error) => {
-        showToast(`Account konnte nicht entfernt werden: ${String(error)}`, 3200);
+        showToast(`${rows.length === 1 ? "Account" : "Accounts"} konnte${rows.length === 1 ? "" : "n"} nicht entfernt werden: ${String(error)}`, 3200);
       });
     })();
   };
+
+  const removeAccountTableRow = (row: AccountTableRow): void => removeAccountTableRows([row]);
 
   const checkAccountTableRow = (row: AccountTableRow): void => {
     setAccountContextMenu(null);
@@ -4899,15 +4897,14 @@ export function App(): ReactElement {
       canCheck: row.checkable
     };
   }), [accountRows, snapshot.settings.debridAccountStatuses]);
-  const selectedAccountViewId = useMemo(() => {
-    const selectedRow = selectedAccountRowKey ? accountRows.find((row) => row.rowKey === selectedAccountRowKey) : null;
-    return selectedRow ? accountRowViewId(selectedRow) : null;
-  }, [accountRows, selectedAccountRowKey]);
+  const selectedAccountViewIds = useMemo(() => accountRows
+    .filter((row) => selectedAccountRowKeys.has(row.rowKey))
+    .map(accountRowViewId), [accountRows, selectedAccountRowKeys]);
   const projectedAccountRows = useMemo(() => projectAccountRows(
     accountSources,
-    selectedAccountViewId ? [selectedAccountViewId] : [],
+    selectedAccountViewIds,
     runtimeNow
-  ), [accountSources, runtimeNow, selectedAccountViewId]);
+  ), [accountSources, runtimeNow, selectedAccountViewIds]);
   const visibleAccountRows = useMemo(() => accountStatusSort === "none"
     ? projectedAccountRows
     : sortAccountRows(projectedAccountRows, accountStatusSort), [accountStatusSort, projectedAccountRows]);
@@ -4920,9 +4917,8 @@ export function App(): ReactElement {
   const accountWorkspaceModel: AccountWorkspaceViewModel = {
     activePanel: accountManagementTab,
     rows: visibleAccountRows,
-    selectedIds: selectedAccountViewId ? [selectedAccountViewId] : [],
+    selectedIds: selectedAccountViewIds,
     busy: actionBusy || accountCheckBusy,
-    allEnabled: accountRows.length > 0 && accountRows.some((row) => !row.disabled),
     statusSort: accountStatusSort,
     rules: {
       providerOrder: activeProviderOrder.map((provider) => providerLabelWithMode(provider, settingsDraft)),
@@ -4956,7 +4952,14 @@ export function App(): ReactElement {
   };
   const accountWorkspaceActions: AccountWorkspaceActions = {
     onPanelChange: setAccountManagementTab,
-    onSelect: (rowId) => setSelectedAccountRowKey(accountRowBindings.get(rowId)?.rowKey ?? null),
+    onSelect: (rowId, additive) => {
+      const rowKey = accountRowBindings.get(rowId)?.rowKey;
+      if (!rowKey) {
+        return;
+      }
+      setSelectedAccountRowKeys((current) => new Set(updateAccountRowSelection([...current], rowKey, additive)));
+    },
+    onClearSelection: () => setSelectedAccountRowKeys(new Set()),
     onToggleEnabled: (rowId) => {
       const row = accountRowBindings.get(rowId);
       if (row) toggleAccountTableRow(row);
@@ -4976,12 +4979,13 @@ export function App(): ReactElement {
     },
     onAdd: openCreateAccountDialog,
     onRemoveSelected: () => {
-      const row = selectedAccountViewId ? accountRowBindings.get(selectedAccountViewId) : null;
-      if (row) removeAccountTableRow(row);
+      const rows = selectedAccountViewIds
+        .map((rowId) => accountRowBindings.get(rowId))
+        .filter((row): row is AccountTableRow => Boolean(row));
+      removeAccountTableRows(rows);
     },
     onCheckActive: () => { void checkAccounts("active"); },
     onCheckAll: () => { void checkAccounts("all"); },
-    onSetAllEnabled: (enabled) => { void setAllAccountsEnabled(enabled); },
     onStatusSort: cycleAccountStatusSort,
     onMoveProvider: (index, direction) => {
       const target = index + direction;

@@ -647,11 +647,20 @@
 }
 
 .settings-account-row.is-selected {
-  background: var(--ui-active);
+  background: color-mix(in srgb, #5b8cff 22%, var(--ui-panel));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #5b8cff 58%, transparent);
+  color: var(--ui-text);
 }
 
 .settings-account-row.is-selected::before {
+  width: 4px;
+  background: #5b8cff;
+  box-shadow: 0 0 10px color-mix(in srgb, #5b8cff 72%, transparent);
   opacity: 1;
+}
+
+.settings-account-row.is-selected.is-disabled {
+  opacity: 0.9;
 }
 
 .settings-account-row.is-disabled {

@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildBulkAccountEnabledState,
   buildConfiguredProviderOrder,
   getAccountDialogSelectableOptions,
   isAccountRowSelectionKey,
@@ -9,6 +8,7 @@ import {
   resolveAccountUsername,
   resolveVisibleAccountKind
 } from "../src/renderer/account-ui";
+import * as accountUi from "../src/renderer/account-ui";
 
 describe("account mode filter", () => {
   it("shows only API options for the API filter", () => {
@@ -22,35 +22,7 @@ describe("account mode filter", () => {
   });
 });
 
-describe("bulk account activation", () => {
-  it("disables each configured provider and account exactly once", () => {
-    expect(buildBulkAccountEnabledState(
-      ["alldebrid"],
-      ["megadebrid-api", "alldebrid"],
-      ["mega-1", "mega-1", "mega-2"],
-      ["debrid-link-1", "debrid-link-1"],
-      false
-    )).toEqual({
-      disabledProviders: ["alldebrid", "megadebrid-api"],
-      megaDebridDisabledAccountIds: ["mega-1", "mega-2"],
-      debridLinkDisabledKeyIds: ["debrid-link-1"]
-    });
-  });
-
-  it("enables configured providers without changing unrelated provider state", () => {
-    expect(buildBulkAccountEnabledState(
-      ["realdebrid", "alldebrid", "megadebrid-api"],
-      ["alldebrid", "megadebrid-api"],
-      ["mega-1"],
-      ["debrid-link-1"],
-      true
-    )).toEqual({
-      disabledProviders: ["realdebrid"],
-      megaDebridDisabledAccountIds: [],
-      debridLinkDisabledKeyIds: []
-    });
-  });
-
+describe("account provider order", () => {
   it("preserves the custom provider order while accounts are disabled", () => {
     expect(buildConfiguredProviderOrder(
       ["debridlink", "realdebrid", "alldebrid"],
@@ -60,6 +32,21 @@ describe("bulk account activation", () => {
 });
 
 describe("account selection", () => {
+  it("replaces a single selection and toggles rows only for additive selection", () => {
+    const api = accountUi as typeof accountUi & {
+      updateAccountRowSelection?: (selected: readonly string[], rowKey: string, additive: boolean) => string[];
+      pruneAccountRowSelections?: (selected: readonly string[], existing: readonly string[]) => string[];
+    };
+
+    expect(api.updateAccountRowSelection).toBeTypeOf("function");
+    expect(api.pruneAccountRowSelections).toBeTypeOf("function");
+    expect(api.updateAccountRowSelection?.(["account-a"], "account-b", false)).toEqual(["account-b"]);
+    expect(api.updateAccountRowSelection?.(["account-a"], "account-b", true)).toEqual(["account-a", "account-b"]);
+    expect(api.updateAccountRowSelection?.(["account-a", "account-b"], "account-a", true)).toEqual(["account-b"]);
+    expect(api.pruneAccountRowSelections?.(["account-a", "missing", "account-a"], ["account-a", "account-b"]))
+      .toEqual(["account-a"]);
+  });
+
   it("clears a selected row after that account disappears", () => {
     expect(pruneAccountRowSelection("account-a", ["account-b"])).toBeNull();
     expect(pruneAccountRowSelection("account-a", ["account-a", "account-b"])).toBe("account-a");

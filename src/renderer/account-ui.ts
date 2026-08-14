@@ -36,6 +36,24 @@ export function pruneAccountRowSelection(selectedRowKey: string | null, existing
   return selectedRowKey && existingRowKeys.includes(selectedRowKey) ? selectedRowKey : null;
 }
 
+export function updateAccountRowSelection(selectedRowKeys: readonly string[], rowKey: string, additive: boolean): string[] {
+  if (!additive) {
+    return [rowKey];
+  }
+  const next = new Set(selectedRowKeys);
+  if (next.has(rowKey)) {
+    next.delete(rowKey);
+  } else {
+    next.add(rowKey);
+  }
+  return [...next];
+}
+
+export function pruneAccountRowSelections(selectedRowKeys: readonly string[], existingRowKeys: readonly string[]): string[] {
+  const existing = new Set(existingRowKeys);
+  return [...new Set(selectedRowKeys)].filter((rowKey) => existing.has(rowKey));
+}
+
 export function resolveVisibleAccountKind<T extends string>(currentKind: T | null, visibleKinds: readonly T[]): T | null {
   return currentKind && visibleKinds.includes(currentKind) ? currentKind : visibleKinds[0] ?? null;
 }
@@ -104,26 +122,5 @@ export function buildScopedAccountEnabledState(
     disabledAccountIds: enabled
       ? currentDisabledAccountIds.filter((id) => id !== accountId)
       : [...new Set([...currentDisabledAccountIds, accountId])]
-  };
-}
-
-export function buildBulkAccountEnabledState(
-  currentDisabledProviders: DebridProvider[],
-  configuredProviders: DebridProvider[],
-  megaAccountIds: string[],
-  debridLinkKeyIds: string[],
-  enabled: boolean
-): {
-  disabledProviders: DebridProvider[];
-  megaDebridDisabledAccountIds: string[];
-  debridLinkDisabledKeyIds: string[];
-} {
-  const configured = new Set(configuredProviders);
-  return {
-    disabledProviders: enabled
-      ? currentDisabledProviders.filter((provider) => !configured.has(provider))
-      : [...new Set([...currentDisabledProviders, ...configuredProviders])],
-    megaDebridDisabledAccountIds: enabled ? [] : [...new Set(megaAccountIds)],
-    debridLinkDisabledKeyIds: enabled ? [] : [...new Set(debridLinkKeyIds)]
   };
 }

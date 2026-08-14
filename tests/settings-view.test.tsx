@@ -8,7 +8,6 @@ import { buildAccountAddFields, createAccountDialogState } from "../src/renderer
 import { buildAccountReplaceCommand, createAccountEditState, type AccountEditTarget } from "../src/renderer/account-edit";
 import {
   buildScopedAccountEnabledState,
-  buildBulkAccountEnabledState,
   buildConfiguredProviderOrder,
   resolveAccountStatusState,
   runOptimisticAccountUpdate
@@ -302,6 +301,7 @@ function workspaceActions(overrides: Partial<AccountWorkspaceActions> = {}): Acc
   return {
     onPanelChange: () => {},
     onSelect: () => {},
+    onClearSelection: () => {},
     onToggleEnabled: () => {},
     onEdit: () => {},
     onContextMenu: () => {},
@@ -397,22 +397,11 @@ describe("settings model", () => {
     expect(buildTargetedAccountCheck(options[1], "ddownload-new")).toBeNull();
   });
 
-  it("preserves provider order and deduplicates bulk account identities", () => {
+  it("preserves provider order", () => {
     expect(buildConfiguredProviderOrder(
       ["debridlink", "realdebrid", "alldebrid"],
       ["realdebrid", "alldebrid", "debridlink", "bestdebrid"]
     )).toEqual(["debridlink", "realdebrid", "alldebrid", "bestdebrid"]);
-    expect(buildBulkAccountEnabledState(
-      ["alldebrid"],
-      ["megadebrid-api", "alldebrid"],
-      ["mega-1", "mega-1"],
-      ["dl-1", "dl-1"],
-      false
-    )).toEqual({
-      disabledProviders: ["alldebrid", "megadebrid-api"],
-      megaDebridDisabledAccountIds: ["mega-1"],
-      debridLinkDisabledKeyIds: ["dl-1"]
-    });
   });
 
   it("keeps exact rounded limits and migrates edited identity metadata", () => {
@@ -781,7 +770,7 @@ describe("account workspace", () => {
     const tree = AccountWorkspace({
       model: workspaceModel(),
       actions: workspaceActions({
-        onSelect: (id) => calls.push(`select:${id}`),
+        onSelect: (id, additive) => calls.push(`select:${id}:${additive}`),
         onToggleEnabled: (id) => calls.push(`toggle:${id}`),
         onEdit: (id) => calls.push(`edit:${id}`),
         onContextMenu: (id) => calls.push(`context:${id}`)
@@ -792,7 +781,8 @@ describe("account workspace", () => {
     const actionButton = findElement(row, (element) => element.type === "button" && String(element.props["aria-label"] || "").includes("Aktionen"));
     const rowId = workspaceModel().rows[0].id;
 
-    row.props.onClick({ target: { role: "cell" }, currentTarget: row });
+    row.props.onClick({ target: { role: "cell" }, currentTarget: row, ctrlKey: false, metaKey: false });
+    row.props.onClick({ target: { role: "cell" }, currentTarget: row, ctrlKey: true, metaKey: false });
     row.props.onKeyDown({ key: "Enter", target: row, currentTarget: row, preventDefault: () => {} });
     row.props.onKeyDown({ key: " ", target: checkbox, currentTarget: row, preventDefault: () => {} });
     checkbox.props.onChange();
@@ -800,12 +790,41 @@ describe("account workspace", () => {
     actionButton.props.onClick({ stopPropagation: () => {}, currentTarget: { getBoundingClientRect: () => ({ right: 20, bottom: 30 }) } });
 
     expect(calls).toEqual([
-      `select:${rowId}`,
-      `select:${rowId}`,
+      `select:${rowId}:false`,
+      `select:${rowId}:true`,
+      `select:${rowId}:false`,
       `toggle:${rowId}`,
       `edit:${rowId}`,
       `context:${rowId}`
     ]);
+  });
+
+  it("shows the selected account count and clears the selection with Escape", () => {
+    let cleared = 0;
+    const model = workspaceModel();
+    const tree = AccountWorkspace({
+      actions: workspaceActions({ onClearSelection: () => { cleared += 1; } }),
+      model: { ...model, selectedIds: model.rows.slice(0, 3).map((row) => row.id) }
+    });
+    const html = renderToStaticMarkup(tree);
+
+    expect(html).toContain("− Entfernen (3)");
+    tree.props.onKeyDown({ key: "Escape", preventDefault: () => {} });
+    expect(cleared).toBe(1);
+  });
+
+  it("removes the redundant global account activation switch", () => {
+    const legacyActions = { ...workspaceActions(), onSetAllEnabled: () => {} } as AccountWorkspaceActions;
+    const legacyModel = { ...workspaceModel(), allEnabled: true } as AccountWorkspaceViewModel;
+    const html = renderToStaticMarkup(
+      <AccountWorkspace
+        actions={legacyActions}
+        model={legacyModel}
+      />
+    );
+
+    expect(html).not.toContain("Accounts zum Herunterladen verwenden");
+    expect(settingsCss).toMatch(/\.settings-account-row\.is-selected\s*{[^}]*#5b8cff[^}]*box-shadow:/s);
   });
 
   it("copies only populated username and email cells without triggering the row", () => {
