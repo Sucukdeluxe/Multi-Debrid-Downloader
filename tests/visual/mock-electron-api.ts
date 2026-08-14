@@ -38,6 +38,7 @@ export function createVisualElectronApi(
     createAccount: async () => ({ accountId: null, settings: clone(fixture.snapshot.settings), accounts: clone(fixture.snapshot.accounts) }),
     replaceAccount: async () => ({ accountId: null, settings: clone(fixture.snapshot.settings), accounts: clone(fixture.snapshot.accounts) }),
     updateAccountSecret: async () => ({ accountId: null, settings: clone(fixture.snapshot.settings), accounts: clone(fixture.snapshot.accounts) }),
+    revealAccountSecret: async () => ({ secret: "" }),
     deleteAccount: async () => ({ accountId: null, settings: clone(fixture.snapshot.settings), accounts: clone(fixture.snapshot.accounts) }),
     addLinks: async () => ({ addedPackages: 0, addedLinks: 0, invalidCount: 0 }),
     addContainers: async () => ({ addedPackages: 0, addedLinks: 0 }),

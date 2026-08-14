@@ -10,6 +10,8 @@ import {
   AccountCommand,
   AccountCommandResult,
   AccountCredentialCheckInput,
+  AccountSecretRequest,
+  AccountSecretResult,
   DebridAccountStatus,
   DebridProvider,
   DuplicatePolicy,
@@ -35,7 +37,7 @@ import { checkAllDebridAccounts, checkDebridLinkKey, checkMegaDebridAccount, che
 import { parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
 import { getMegaDebridAccountsForMode } from "../shared/mega-debrid-accounts";
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
-import { applyAccountCommand } from "./account-commands";
+import { applyAccountCommand, resolveStoredAccountSecret } from "./account-commands";
 import { collectAccountStatusRedactionValues, sanitizeDebridAccountStatus, sanitizeDebridAccountStatuses } from "./account-status-sanitizer";
 import { createRendererState } from "./renderer-state";
 import { parseCollectorInput } from "./link-parser";
@@ -532,6 +534,12 @@ export class AppController {
     const state = createRendererState(this.settings);
     this.audit("INFO", "Account aktualisiert", { action: command.action, kind: command.kind, accountId: applied.response.accountId });
     return { ...applied.response, ...state };
+  }
+
+  public revealAccountSecret(request: AccountSecretRequest): AccountSecretResult {
+    const secret = resolveStoredAccountSecret(this.settings, request);
+    this.audit("INFO", "Gespeicherter Account-Zugang explizit angezeigt", { kind: request.kind });
+    return { secret };
   }
 
   public async checkAccountCredentials(input: AccountCredentialCheckInput): Promise<DebridAccountStatus> {

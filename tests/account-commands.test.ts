@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { applyAccountCommand, validateAccountCommand, validateAccountCredentialCheckInput } from "../src/main/account-commands";
+import * as accountCommands from "../src/main/account-commands";
 import { defaultSettings } from "../src/main/constants";
 import { getDebridLinkApiKeyId } from "../src/shared/debrid-link-keys";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
@@ -42,6 +43,41 @@ const ACCOUNT_KINDS: RendererAccountKind[] = [
 ];
 
 describe("write-only account commands", () => {
+  it("reveals only the exact explicitly requested stored account secret", () => {
+    const api = accountCommands as typeof accountCommands & {
+      resolveStoredAccountSecret?: (settings: AppSettings, request: { kind: RendererAccountKind; accountId: string }) => string;
+      validateAccountSecretRequest?: (value: unknown) => { kind: RendererAccountKind; accountId: string };
+    };
+    const megaIdentity = "reveal-mega@example.test";
+    const megaId = getMegaDebridAccountId(megaIdentity);
+    const settings = {
+      ...defaultSettings(),
+      token: "fixture-reveal-rd-1aB2",
+      megaDebridApiCredentials: `${megaIdentity}:fixture-reveal-mega-3cD4`,
+      debridLinkApiKeys: "fixture-reveal-dl-5eF6",
+      bestToken: "fixture-reveal-best-7gH8",
+      allDebridToken: "fixture-reveal-all-9iJ1",
+      ddownloadLogin: "reveal-dd@example.test",
+      ddownloadPassword: "fixture-reveal-dd-2kL3",
+      oneFichierApiKey: "fixture-reveal-one-4mN5",
+      linkSnappyLogin: "reveal-ls@example.test",
+      linkSnappyPassword: "fixture-reveal-ls-6pQ7"
+    };
+
+    expect(api.resolveStoredAccountSecret).toBeTypeOf("function");
+    expect(api.validateAccountSecretRequest).toBeTypeOf("function");
+    expect(api.resolveStoredAccountSecret?.(settings, { kind: "realdebrid-api", accountId: "svc-realdebrid" })).toBe("fixture-reveal-rd-1aB2");
+    expect(api.resolveStoredAccountSecret?.(settings, { kind: "megadebrid-api", accountId: megaId })).toBe("fixture-reveal-mega-3cD4");
+    expect(api.resolveStoredAccountSecret?.(settings, { kind: "debridlink-api", accountId: getDebridLinkApiKeyId("fixture-reveal-dl-5eF6") })).toBe("fixture-reveal-dl-5eF6");
+    expect(api.resolveStoredAccountSecret?.(settings, { kind: "bestdebrid-api", accountId: "svc-bestdebrid" })).toBe("fixture-reveal-best-7gH8");
+    expect(api.resolveStoredAccountSecret?.(settings, { kind: "alldebrid-api", accountId: "svc-alldebrid" })).toBe("fixture-reveal-all-9iJ1");
+    expect(api.resolveStoredAccountSecret?.(settings, { kind: "ddownload-login", accountId: "svc-ddownload" })).toBe("fixture-reveal-dd-2kL3");
+    expect(api.resolveStoredAccountSecret?.(settings, { kind: "onefichier-api", accountId: "svc-onefichier" })).toBe("fixture-reveal-one-4mN5");
+    expect(api.resolveStoredAccountSecret?.(settings, { kind: "linksnappy-login", accountId: "svc-linksnappy" })).toBe("fixture-reveal-ls-6pQ7");
+    expect(() => api.resolveStoredAccountSecret?.(settings, { kind: "megadebrid-api", accountId: "missing" })).toThrow(/nicht gefunden/i);
+    expect(() => api.validateAccountSecretRequest?.({ kind: "realdebrid-api", accountId: "svc-realdebrid", secret: "not-allowed" })).toThrow(/ungültig/i);
+  });
+
   it.each(["realdebrid-api", "realdebrid-web"] as const)("accepts %s credential checks at the IPC boundary", (kind) => {
     expect(validateAccountCredentialCheckInput({ kind, accountId: "svc-realdebrid" })).toEqual({
       kind,

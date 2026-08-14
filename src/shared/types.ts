@@ -347,6 +347,15 @@ export interface AccountCredentialCheckInput {
   secret?: string;
 }
 
+export interface AccountSecretRequest {
+  kind: RendererAccountKind;
+  accountId: string;
+}
+
+export interface AccountSecretResult {
+  secret: string;
+}
+
 export interface DownloadItem {
   id: string;
   packageId: string;

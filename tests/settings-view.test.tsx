@@ -33,6 +33,7 @@ import {
   type AccountRowSource,
   type SettingsFormViewModel
 } from "../src/renderer/views/settings/settings-model";
+import * as settingsModel from "../src/renderer/views/settings/settings-model";
 import {
   AccountAddDialog,
   AccountEditDialog,
@@ -729,6 +730,9 @@ describe("account workspace", () => {
     expect(html).not.toContain("test-token");
     expect(html).not.toContain("table-pagination");
     expect(html).not.toContain("role=\"toolbar\"");
+    expect(count(html, 'role="separator"')).toBe(ACCOUNT_COLUMNS.length);
+    expect(html).toContain('aria-label="Status Spaltenbreite ändern"');
+    expect(settingsCss).toMatch(/\.settings-account-column-actions\s*{[^}]*padding-right:\s*18px/s);
   });
 
   it("offers separate checks for active accounts and every configured account", () => {
@@ -738,6 +742,38 @@ describe("account workspace", () => {
     expect(html).toContain("Alle aktualisieren");
     expect(html).toContain('title="Prüft nur aktivierte Accounts."');
     expect(html).toContain('title="Prüft alle angelegten Accounts, auch deaktivierte."');
+  });
+
+  it("disables the active account check when no enabled account can be checked", () => {
+    const model = workspaceModel();
+    const html = renderToStaticMarkup(
+      <AccountWorkspace
+        actions={workspaceActions()}
+        model={{ ...model, rows: model.rows.map((row) => ({ ...row, enabled: false })) }}
+      />
+    );
+
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>↻ Aktive aktualisieren<\/button>/);
+    expect(html).toMatch(/<button[^>]*>↻ Alle aktualisieren<\/button>/);
+  });
+
+  it("clamps and serializes persistent account table column widths", () => {
+    const api = settingsModel as typeof settingsModel & {
+      createAccountTableColumnWidths?: () => Record<string, number>;
+      resizeAccountTableColumn?: (widths: Record<string, number>, column: string, delta: number) => Record<string, number>;
+      getAccountTableGridTemplate?: (widths: Record<string, number>) => string;
+    };
+
+    expect(api.createAccountTableColumnWidths).toBeTypeOf("function");
+    expect(api.resizeAccountTableColumn).toBeTypeOf("function");
+    expect(api.getAccountTableGridTemplate).toBeTypeOf("function");
+    const initial = api.createAccountTableColumnWidths?.() || {};
+    const widened = api.resizeAccountTableColumn?.(initial, "status", 120) || {};
+    const narrowed = api.resizeAccountTableColumn?.(widened, "status", -10_000) || {};
+
+    expect(widened.status).toBeGreaterThan(initial.status);
+    expect(narrowed.status).toBeGreaterThanOrEqual(120);
+    expect(api.getAccountTableGridTemplate?.(widened)).toContain(`${widened.status}px`);
   });
 
   it("keeps row selection, enable toggles, edit and context actions separate", () => {
@@ -841,7 +877,9 @@ describe("account workspace", () => {
           onCheck: () => {},
           onSave: () => {},
           onRemove: () => {},
-          onToggleEnabled: () => {}
+          onToggleEnabled: () => {},
+          onToggleSecret: () => {},
+          onCopySecret: () => {}
         }}
         model={{
           open: true,
@@ -851,8 +889,9 @@ describe("account workspace", () => {
           enabled: true,
           fields: [
             { id: "login", label: "Login", type: "text", value: "member@example.test" },
-            { id: "password", label: "Passwort", type: "password", value: "test-password" },
-            { id: "token", label: "Token", type: "password", value: "test-token" }
+            { id: "password", label: "Passwort", type: "password", value: "", storedSecret: true, secretVisible: false },
+            { id: "token", label: "Token", type: "password", value: "", storedSecret: true, secretVisible: false },
+            { id: "dailyLimitGb", label: "Tageslimit (GB, optional)", type: "number", value: "" }
           ],
           error: "",
           busy: false
@@ -884,6 +923,9 @@ describe("account workspace", () => {
     expect(editHtml).toContain("Prüfen");
     expect(count(addHtml, "type=\"password\"")).toBe(1);
     expect(count(editHtml, "type=\"password\"")).toBe(2);
+    expect(editHtml).toContain('aria-label="Passwort anzeigen"');
+    expect(editHtml).toContain('aria-label="Token anzeigen"');
+    expect(editHtml.indexOf("Tageslimit (GB, optional)")).toBeLessThan(editHtml.indexOf("Account aktiviert"));
   });
 
   it("selects the account option through the compact service table", () => {

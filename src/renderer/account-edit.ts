@@ -1,4 +1,4 @@
-import type { AccountDeleteCommand, AccountReplaceCommand, DebridProvider, RendererAccount, RendererAccountKind } from "../shared/types";
+import type { AccountDeleteCommand, AccountReplaceCommand, AccountSecretRequest, DebridProvider, RendererAccount, RendererAccountKind } from "../shared/types";
 
 export type AccountService = "realdebrid" | "megadebrid-api" | "megadebrid-web" | "bestdebrid" | "alldebrid" | "ddownload" | "onefichier" | "debridlink" | "linksnappy";
 export type AccountKind = RendererAccountKind;
@@ -96,4 +96,8 @@ export function buildAccountReplaceCommand(state: AccountEditState): AccountRepl
 
 export function buildAccountDeleteCommand(target: AccountEditTarget): AccountDeleteCommand {
   return { action: "delete", kind: target.kind, accountId: targetAccountId(target) };
+}
+
+export function buildAccountSecretRequest(target: AccountEditTarget): AccountSecretRequest {
+  return { kind: target.kind, accountId: targetAccountId(target) };
 }

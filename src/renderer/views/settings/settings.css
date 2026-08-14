@@ -557,8 +557,6 @@
 .settings-account-table-grid,
 .settings-account-row {
   display: grid;
-  grid-template-columns: 42px minmax(170px, 1.1fr) minmax(150px, 0.9fr) minmax(190px, 1.2fr) minmax(145px, 0.9fr) minmax(190px, 1.1fr) minmax(130px, 0.8fr) minmax(145px, 0.85fr) 44px;
-  min-width: 1260px;
   align-items: center;
 }
 
@@ -579,6 +577,45 @@
 .settings-account-row > span {
   min-width: 0;
   padding: 0 11px;
+}
+
+.settings-account-resizable-header {
+  position: relative;
+  height: 100%;
+  display: flex;
+  align-items: center;
+}
+
+.settings-account-column-resizer {
+  position: absolute;
+  top: 7px;
+  right: -4px;
+  bottom: 7px;
+  z-index: 2;
+  width: 9px;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.settings-account-column-resizer::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 1px;
+  background: var(--ui-border);
+  content: "";
+  opacity: 0;
+}
+
+.settings-account-column-resizer:hover::after,
+.settings-account-column-resizer:focus-visible::after {
+  background: var(--ui-accent);
+  opacity: 1;
 }
 
 .settings-account-table-body {
@@ -626,6 +663,10 @@
 .settings-account-column-actions {
   display: grid;
   place-items: center;
+}
+
+.settings-account-column-actions {
+  padding-right: 18px !important;
 }
 
 .settings-account-hoster {
@@ -999,6 +1040,48 @@
   gap: 7px;
 }
 
+.settings-account-secret-control {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px 38px;
+}
+
+.settings-account-secret-control .settings-control {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  padding-right: 84px;
+}
+
+.settings-account-secret-button {
+  z-index: 1;
+  grid-row: 1;
+  align-self: stretch;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid var(--ui-control-border);
+  background: transparent;
+  color: var(--ui-text-secondary);
+  cursor: pointer;
+}
+
+.settings-account-secret-button:first-of-type {
+  grid-column: 2;
+}
+
+.settings-account-secret-button:last-of-type {
+  grid-column: 3;
+}
+
+.settings-account-secret-button:hover:not(:disabled),
+.settings-account-secret-button:focus-visible {
+  color: var(--ui-accent);
+}
+
+.settings-account-secret-button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
 .settings-account-dialog-textarea {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
 }
@@ -1037,6 +1120,11 @@
   min-height: 30px;
 }
 
+.settings-account-edit-enabled-row {
+  display: flex;
+  justify-content: flex-end;
+}
+
 @media (max-width: 1366px) {
   .settings-view {
     grid-template-columns: 56px minmax(0, 1fr);
@@ -1050,11 +1138,6 @@
     padding: 20px;
   }
 
-  .settings-account-table-grid,
-  .settings-account-row {
-    grid-template-columns: 40px 160px 140px 180px 135px 170px 120px 140px 42px;
-    min-width: 1127px;
-  }
 }
 
 @media (max-width: 1120px) {

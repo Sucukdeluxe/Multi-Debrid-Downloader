@@ -24,6 +24,54 @@ export const ACCOUNT_COLUMNS = [
   "Passwort/Zugang"
 ] as const;
 
+export const ACCOUNT_TABLE_COLUMN_IDS = [
+  "hoster",
+  "status",
+  "traffic",
+  "username",
+  "email",
+  "expires",
+  "credential"
+] as const;
+
+export type AccountTableColumnId = typeof ACCOUNT_TABLE_COLUMN_IDS[number];
+export type AccountTableColumnWidths = Record<AccountTableColumnId, number>;
+
+const ACCOUNT_TABLE_COLUMN_LIMITS: Record<AccountTableColumnId, { initial: number; min: number; max: number }> = {
+  hoster: { initial: 210, min: 140, max: 520 },
+  status: { initial: 250, min: 120, max: 520 },
+  traffic: { initial: 210, min: 150, max: 420 },
+  username: { initial: 170, min: 120, max: 420 },
+  email: { initial: 200, min: 140, max: 480 },
+  expires: { initial: 150, min: 120, max: 280 },
+  credential: { initial: 170, min: 130, max: 320 }
+};
+
+export function createAccountTableColumnWidths(value?: unknown): AccountTableColumnWidths {
+  const raw = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  return Object.fromEntries(ACCOUNT_TABLE_COLUMN_IDS.map((id) => {
+    const limits = ACCOUNT_TABLE_COLUMN_LIMITS[id];
+    const candidate = typeof raw[id] === "number" && Number.isFinite(raw[id]) ? Math.round(raw[id]) : limits.initial;
+    return [id, Math.max(limits.min, Math.min(limits.max, candidate))];
+  })) as AccountTableColumnWidths;
+}
+
+export function resizeAccountTableColumn(
+  widths: AccountTableColumnWidths,
+  column: AccountTableColumnId,
+  delta: number
+): AccountTableColumnWidths {
+  return createAccountTableColumnWidths({ ...widths, [column]: widths[column] + delta });
+}
+
+export function getAccountTableGridTemplate(widths: AccountTableColumnWidths): string {
+  return `42px ${ACCOUNT_TABLE_COLUMN_IDS.map((id) => `${widths[id]}px`).join(" ")} 64px`;
+}
+
+export function getAccountTableMinWidth(widths: AccountTableColumnWidths): number {
+  return 42 + 64 + ACCOUNT_TABLE_COLUMN_IDS.reduce((sum, id) => sum + widths[id], 0);
+}
+
 export function getSettingsSaveLabel(state: SettingsSaveState): string {
   switch (state) {
     case "dirty":

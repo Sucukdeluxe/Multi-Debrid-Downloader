@@ -73,4 +73,18 @@ describe("account preload contract", () => {
       [IPC_CHANNELS.CHECK_DEBRID_ACCOUNTS, "all"]
     ]);
   });
+
+  it("reveals a stored secret only through the explicit account channel", async () => {
+    electron.invoke.mockResolvedValueOnce({ secret: "fixture-revealed-secret-7gH8" });
+
+    const result = await (electron.api as ElectronApi & {
+      revealAccountSecret: (request: { kind: "realdebrid-api"; accountId: string }) => Promise<{ secret: string }>;
+    }).revealAccountSecret({ kind: "realdebrid-api", accountId: "svc-realdebrid" });
+
+    expect(electron.invoke).toHaveBeenCalledWith(
+      IPC_CHANNELS.REVEAL_ACCOUNT_SECRET,
+      { kind: "realdebrid-api", accountId: "svc-realdebrid" }
+    );
+    expect(result).toEqual({ secret: "fixture-revealed-secret-7gH8" });
+  });
 });

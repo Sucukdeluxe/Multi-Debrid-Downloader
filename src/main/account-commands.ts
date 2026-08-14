@@ -9,7 +9,7 @@ import {
   serializeMegaDebridAccounts,
   type MegaDebridAccountMode
 } from "../shared/mega-debrid-accounts";
-import type { AccountCommand, AccountCredentialCheckInput, AppSettings, DebridProvider, RendererAccountKind } from "../shared/types";
+import type { AccountCommand, AccountCredentialCheckInput, AccountSecretRequest, AppSettings, DebridProvider, RendererAccountKind } from "../shared/types";
 
 export interface AppliedAccountCommand {
   settings: AppSettings;
@@ -132,6 +132,44 @@ export function validateAccountCredentialCheckInput(value: unknown): AccountCred
     identity: optionalString(raw.identity, 512),
     secret: optionalString(raw.secret, 100_000)
   };
+}
+
+export function validateAccountSecretRequest(value: unknown): AccountSecretRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) invalid();
+  const raw = value as Record<string, unknown>;
+  if (Object.keys(raw).some((key) => key !== "kind" && key !== "accountId")) invalid();
+  if (typeof raw.kind !== "string" || !ACCOUNT_KINDS.has(raw.kind as RendererAccountKind)) invalid();
+  return {
+    kind: raw.kind as RendererAccountKind,
+    accountId: requiredString(raw.accountId, 256).trim()
+  };
+}
+
+function storedSecretMissing(): never {
+  throw new Error("Der gespeicherte Zugang wurde nicht gefunden.");
+}
+
+export function resolveStoredAccountSecret(settings: AppSettings, request: AccountSecretRequest): string {
+  if (request.kind === "megadebrid-api" || request.kind === "megadebrid-web") {
+    const mode = request.kind === "megadebrid-web" ? "web" : "api";
+    const account = getMegaDebridAccountsForMode(settings, mode).find((entry) => entry.id === request.accountId);
+    if (!account?.password) storedSecretMissing();
+    return account.password;
+  }
+  if (request.kind === "debridlink-api") {
+    const key = parseDebridLinkApiKeys(settings.debridLinkApiKeys).find((entry) => entry.id === request.accountId);
+    if (!key?.token) storedSecretMissing();
+    return key.token;
+  }
+  const provider = singleProvider(request.kind);
+  if (request.accountId !== `svc-${provider}` || !singleConfigured(settings, request.kind)) storedSecretMissing();
+  if (request.kind === "realdebrid-api" && settings.token) return settings.token;
+  if (request.kind === "bestdebrid-api" && settings.bestToken) return settings.bestToken;
+  if (request.kind === "alldebrid-api" && settings.allDebridToken) return settings.allDebridToken;
+  if (request.kind === "ddownload-login" && settings.ddownloadPassword) return settings.ddownloadPassword;
+  if (request.kind === "onefichier-api" && settings.oneFichierApiKey) return settings.oneFichierApiKey;
+  if (request.kind === "linksnappy-login" && settings.linkSnappyPassword) return settings.linkSnappyPassword;
+  return storedSecretMissing();
 }
 
 function withoutKeys<T>(record: Record<string, T>, ...keys: string[]): Record<string, T> {

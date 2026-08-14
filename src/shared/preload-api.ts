@@ -3,6 +3,8 @@ import type {
   AccountCheckScope,
   AccountCommandResult,
   AccountCredentialCheckInput,
+  AccountSecretRequest,
+  AccountSecretResult,
   AccountCreateCommand,
   AccountDeleteCommand,
   AccountReplaceCommand,
@@ -103,6 +105,7 @@ export interface ElectronApi {
   getDebridLinkHostLimits: () => Promise<DebridLinkHostLimitInfo[]>;
   checkDebridAccounts: (scope?: AccountCheckScope) => Promise<DebridAccountStatus[]>;
   checkAccountCredentials: (input: AccountCredentialCheckInput) => Promise<DebridAccountStatus>;
+  revealAccountSecret: (input: AccountSecretRequest) => Promise<AccountSecretResult>;
   retryExtraction: (packageId: string) => Promise<void>;
   extractNow: (packageId: string) => Promise<void>;
   resetPackage: (packageId: string) => Promise<void>;

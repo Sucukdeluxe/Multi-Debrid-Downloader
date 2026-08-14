@@ -16,7 +16,7 @@ import { DEV_SERVER_URL } from "./dev-server-url";
 import { resolveAppIconPath } from "./app-icon";
 import { configureCredentialProtector } from "./credential-protection";
 import { isMdd2Backup } from "./backup-crypto";
-import { validateAccountCommand, validateAccountCredentialCheckInput } from "./account-commands";
+import { validateAccountCommand, validateAccountCredentialCheckInput, validateAccountSecretRequest } from "./account-commands";
 import { createRendererSettings } from "./renderer-state";
 import { validateRendererSettingsUpdate } from "./renderer-settings";
 import { applyMainWindowSecurity, createMainWindowWebPreferences, MAIN_WINDOW_EXTERNAL_HOSTS, openAllowedExternalUrl } from "./browser-security";
@@ -440,6 +440,9 @@ function registerIpcHandlers(): void {
     const command = validateAccountCommand(rawCommand);
     if (command.action !== "delete") throw new Error("Account-Payload ist ungültig");
     return controller.executeAccountCommand(command);
+  });
+  handleTrusted(IPC_CHANNELS.REVEAL_ACCOUNT_SECRET, (_event: IpcMainInvokeEvent, rawRequest: unknown) => {
+    return controller.revealAccountSecret(validateAccountSecretRequest(rawRequest));
   });
   handleTrusted(IPC_CHANNELS.ADD_LINKS, (_event: IpcMainInvokeEvent, payload: AddLinksPayload) => {
     validatePlainObject(payload ?? {}, "payload");

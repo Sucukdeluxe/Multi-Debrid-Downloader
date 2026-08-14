@@ -42,7 +42,7 @@ import { preservePackageOrderForDisplay, sortPackageOrderByName } from "./packag
 import { pruneSelection, shouldClearDownloadSelection, shouldClearDownloadSelectionOnEscape } from "./selection";
 import { buildBulkAccountEnabledState, buildConfiguredProviderOrder, buildScopedAccountEnabledState, getAccountDialogSelectableOptions, matchesAccountModeFilter, pruneAccountRowSelection, resolveAccountStatusState, resolveAccountUsername, resolveVisibleAccountKind, runOptimisticAccountUpdate } from "./account-ui";
 import type { AccountModeFilter } from "./account-ui";
-import { buildAccountDeleteCommand, buildAccountReplaceCommand, createAccountEditState, validateAccountEdit } from "./account-edit";
+import { buildAccountDeleteCommand, buildAccountReplaceCommand, buildAccountSecretRequest, createAccountEditState, validateAccountEdit } from "./account-edit";
 import type { AccountEditState, AccountEditTarget, AccountKind, AccountService, SingleAccountKind } from "./account-edit";
 import { ACCOUNT_SERVICE_ICONS } from "./account-service-icons";
 import { DOWNLOAD_SPEED_MAX_SAMPLES, updateDownloadSpeedHistory } from "./download-speed-state";
@@ -1609,6 +1609,8 @@ export function App(): ReactElement {
   const [linkPopup, setLinkPopup] = useState<LinkPopupState | null>(null);
   const [accountDialog, setAccountDialog] = useState<AccountDialogState | null>(null);
   const [accountEditDialog, setAccountEditDialog] = useState<AccountEditState | null>(null);
+  const [accountEditSecretVisible, setAccountEditSecretVisible] = useState<Record<string, boolean>>({});
+  const [accountEditSecretBusy, setAccountEditSecretBusy] = useState<string | null>(null);
   const [accountDialogSearch, setAccountDialogSearch] = useState("");
   const [accountDialogModeFilter, setAccountDialogModeFilter] = useState<AccountModeFilter>("all");
   const [keyStatsPopup, setKeyStatsPopup] = useState<string | null>(null);
@@ -2680,6 +2682,8 @@ export function App(): ReactElement {
 
   const openEditAccountDialog = (row: AccountTableRow): void => {
     try {
+      setAccountEditSecretVisible({});
+      setAccountEditSecretBusy(null);
       setAccountEditDialog(createAccountEditState(row.editTarget, snapshot.accounts));
     } catch (error) {
       showToast(String(error), 3200);
@@ -2716,6 +2720,8 @@ export function App(): ReactElement {
 
   const closeAccountEditDialog = useCallback((): void => {
     setAccountEditDialog(null);
+    setAccountEditSecretVisible({});
+    setAccountEditSecretBusy(null);
   }, []);
 
   const onSaveAccountEditDialog = async (quickAction?: AccountQuickAction): Promise<void> => {
@@ -5188,13 +5194,75 @@ export function App(): ReactElement {
       }}
     />
   );
+  const accountEditSecretRequest = accountEditDialog ? buildAccountSecretRequest(accountEditDialog.target) : null;
+  const accountEditHasStoredSecret = accountEditSecretRequest
+    ? snapshot.accounts.some((account) => account.kind === accountEditSecretRequest.kind
+      && account.accountId === accountEditSecretRequest.accountId
+      && account.hasSecret)
+    : false;
+  const toggleAccountEditSecret = async (fieldId: string): Promise<void> => {
+    if (fieldId !== "password" && fieldId !== "token") return;
+    const dialog = accountEditDialog;
+    if (!dialog) return;
+    if (accountEditSecretVisible[fieldId]) {
+      setAccountEditSecretVisible((current) => ({ ...current, [fieldId]: false }));
+      return;
+    }
+    if (dialog[fieldId]) {
+      setAccountEditSecretVisible((current) => ({ ...current, [fieldId]: true }));
+      return;
+    }
+    const request = buildAccountSecretRequest(dialog.target);
+    setAccountEditSecretBusy(fieldId);
+    try {
+      const result = await window.rd.revealAccountSecret(request);
+      setAccountEditDialog((current) => {
+        if (!current) return current;
+        const currentRequest = buildAccountSecretRequest(current.target);
+        if (currentRequest.kind !== request.kind || currentRequest.accountId !== request.accountId) return current;
+        return { ...current, [fieldId]: result.secret };
+      });
+      setAccountEditSecretVisible((current) => ({ ...current, [fieldId]: true }));
+    } catch (error) {
+      showToast(`Gespeicherter Zugang konnte nicht angezeigt werden: ${String(error)}`, 3200);
+    } finally {
+      setAccountEditSecretBusy((current) => current === fieldId ? null : current);
+    }
+  };
+  const copyAccountEditSecret = async (fieldId: string): Promise<void> => {
+    if (fieldId !== "password" && fieldId !== "token") return;
+    const secret = accountEditDialog?.[fieldId] || "";
+    if (!secret) return;
+    try {
+      const copied = await window.rd.writeClipboardText(secret);
+      showToast(copied ? "Zugang in die Zwischenablage kopiert" : "Zugang konnte nicht kopiert werden", 2200);
+    } catch (error) {
+      showToast(`Zugang konnte nicht kopiert werden: ${String(error)}`, 3200);
+    }
+  };
   const accountEditFields: AccountDialogField[] = accountEditDialog && accountEditOption ? [
     ...((accountEditDialog.target.type === "mega" || accountEditOption.needsCredentials) ? [
       { id: "login", label: "Login / E-Mail", type: "text" as const, value: accountEditDialog.login },
-      { id: "password", label: "Passwort", type: "password" as const, value: accountEditDialog.password }
+      {
+        id: "password",
+        label: "Passwort",
+        type: "password" as const,
+        value: accountEditDialog.password,
+        storedSecret: accountEditHasStoredSecret,
+        secretVisible: Boolean(accountEditSecretVisible.password),
+        secretBusy: accountEditSecretBusy === "password"
+      }
     ] : []),
     ...((accountEditDialog.target.type === "debridlink" || accountEditOption.needsToken) ? [
-      { id: "token", label: accountEditDialog.target.type === "debridlink" ? "API-Key" : "Token / API-Key", type: "password" as const, value: accountEditDialog.token }
+      {
+        id: "token",
+        label: accountEditDialog.target.type === "debridlink" ? "API-Key" : "Token / API-Key",
+        type: "password" as const,
+        value: accountEditDialog.token,
+        storedSecret: accountEditHasStoredSecret,
+        secretVisible: Boolean(accountEditSecretVisible.token),
+        secretBusy: accountEditSecretBusy === "token"
+      }
     ] : []),
     {
       id: "dailyLimitGb",
@@ -5247,7 +5315,9 @@ export function App(): ReactElement {
         },
         onToggleEnabled: () => {
           if (accountEditRow) toggleAccountTableRow(accountEditRow);
-        }
+        },
+        onToggleSecret: (fieldId) => { void toggleAccountEditSecret(fieldId); },
+        onCopySecret: (fieldId) => { void copyAccountEditSecret(fieldId); }
       }}
       model={{
         open: true,
