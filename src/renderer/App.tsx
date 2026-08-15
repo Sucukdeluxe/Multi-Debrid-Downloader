@@ -114,6 +114,7 @@ import {
   projectAccountRows,
   resolveHistoryRetentionSelection,
   sortAccountRows,
+  formatAccountContextHeading,
   type AccountAddOption,
   type AccountRowSource,
   type SettingsFormViewModel,
@@ -5982,8 +5983,7 @@ export function App(): ReactElement {
           y={accountContextMenu.y}
         >
           <div className="account-context-heading">
-            <strong>{activeAccountContextRow.hosterLabel}</strong>
-            <span>{activeAccountContextRow.modeLabel} · {activeAccountContextRow.username}</span>
+            <strong>{formatAccountContextHeading(activeAccountContextRow.hosterLabel, activeAccountContextRow.modeLabel)}</strong>
           </div>
           <div className="ctx-menu-sep" />
           <button className="ctx-menu-item" onClick={() => { setAccountContextMenu(null); openEditAccountDialog(activeAccountContextRow); }}>

@@ -794,6 +794,7 @@ describe("account workspace", () => {
     checkbox.props.onChange();
     row.props.onDoubleClick();
     actionButton.props.onClick({ stopPropagation: () => {}, currentTarget: { getBoundingClientRect: () => ({ right: 20, bottom: 30 }) } });
+    actionButton.props.onDoubleClick({ stopPropagation: () => calls.push("action-double-click-stopped") });
 
     expect(calls).toEqual([
       `select:${rowId}:false`,
@@ -801,8 +802,19 @@ describe("account workspace", () => {
       `select:${rowId}:false`,
       `toggle:${rowId}`,
       `edit:${rowId}`,
-      `context:${rowId}`
+      `context:${rowId}`,
+      "action-double-click-stopped"
     ]);
+  });
+
+  it("formats the account action heading as hoster and access type without a dangling marker", () => {
+    const api = settingsModel as typeof settingsModel & {
+      formatAccountContextHeading?: (hoster: string, mode: string) => string;
+    };
+
+    expect(api.formatAccountContextHeading).toBeTypeOf("function");
+    expect(api.formatAccountContextHeading?.("Debrid-Link", "API")).toBe("Debrid-Link | API");
+    expect(api.formatAccountContextHeading?.("Mega-Debrid", "Web-Login")).toBe("Mega-Debrid | Web-Login");
   });
 
   it("shows the selected account count", () => {

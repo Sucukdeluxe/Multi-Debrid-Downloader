@@ -72,6 +72,10 @@ export function getAccountTableMinWidth(widths: AccountTableColumnWidths): numbe
   return 42 + 64 + ACCOUNT_TABLE_COLUMN_IDS.reduce((sum, id) => sum + widths[id], 0);
 }
 
+export function formatAccountContextHeading(hoster: string, mode: string): string {
+  return `${hoster} | ${mode}`;
+}
+
 export function getSettingsSaveLabel(state: SettingsSaveState): string {
   switch (state) {
     case "dirty":

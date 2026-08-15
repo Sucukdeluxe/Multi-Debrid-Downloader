@@ -361,6 +361,7 @@ function AccountRow({
             const rect = event.currentTarget.getBoundingClientRect();
             actions.onContextMenu(row.id, rect.right, rect.bottom);
           }}
+          onDoubleClick={(event) => event.stopPropagation()}
           type="button"
         >⋯</button>
       </span>
