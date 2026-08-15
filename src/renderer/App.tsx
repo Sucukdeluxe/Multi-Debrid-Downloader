@@ -2952,8 +2952,9 @@ export function App(): ReactElement {
     setAccountContextMenu(null);
     void (async () => {
       const row = rows[0];
+      const checkedStatus = row.accountId ? snapshot.settings.debridAccountStatuses?.[row.accountId] : undefined;
       const username = rows.length === 1
-        ? resolveAccountUsername(row.username, row.accountId ? snapshot.settings.debridAccountStatuses?.[row.accountId]?.email : undefined)
+        ? resolveAccountUsername(row.username, checkedStatus?.username || checkedStatus?.email)
         : "—";
       const confirmed = await askConfirmPrompt({
         title: rows.length === 1 ? `${row.hosterLabel} entfernen` : `${rows.length} Accounts entfernen`,
@@ -4893,6 +4894,7 @@ export function App(): ReactElement {
         state,
         message: checkedStatus?.message || row.entry.statusLabel,
         premiumUntilMs: checkedStatus?.premiumUntilMs ?? null,
+        username: checkedStatus?.username,
         email: checkedStatus?.email
       },
       dailyLimitBytes: row.dailyLimitBytes,
@@ -5331,7 +5333,7 @@ export function App(): ReactElement {
         open: true,
         hoster: accountEditOption.serviceLabel,
         mode: accountEditOption.modeLabel,
-        identity: resolveAccountUsername(accountEditRow?.username || accountEditDialog.login, accountEditStatus?.email),
+        identity: resolveAccountUsername(accountEditRow?.username || accountEditDialog.login, accountEditStatus?.username || accountEditStatus?.email),
         enabled: !accountEditRow?.disabled,
         fields: accountEditFields,
         error: "",

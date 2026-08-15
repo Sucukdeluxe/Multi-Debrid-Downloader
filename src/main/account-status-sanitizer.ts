@@ -103,6 +103,7 @@ export function sanitizeDebridAccountStatus(status: DebridAccountStatus, redacti
     accountId: sanitizeAccountStatusText(status.accountId, redactions),
     label: sanitizeAccountStatusText(status.label, redactions),
     maskedLogin: sanitizeAccountStatusText(status.maskedLogin, redactions),
+    username: status.username ? sanitizeAccountStatusText(status.username, redactions) : undefined,
     email: status.email ? sanitizeAccountStatusText(status.email, redactions) : undefined,
     message: sanitizeAccountStatusText(status.message, redactions)
   };

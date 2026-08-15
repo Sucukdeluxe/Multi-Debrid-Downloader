@@ -136,6 +136,7 @@ export interface AccountRowSource {
     state: AccountStatusSourceState;
     message: string;
     premiumUntilMs: number | null;
+    username?: string;
     email?: string;
   };
   dailyLimitBytes?: number;
@@ -654,8 +655,9 @@ function projectCredential(kind: AccountRowSource["credentialKind"]): string {
   return kind === "password" ? "••••••" : "Geschützter Zugang";
 }
 
-function projectAccountIdentity(username: string, checkedEmail?: string): { username: string; email: string } {
-  const stored = username.trim();
+function projectAccountIdentity(username: string, checkedUsername?: string, checkedEmail?: string): { username: string; email: string } {
+  const verifiedUsername = checkedUsername?.trim() || "";
+  const stored = verifiedUsername || username.trim();
   const verifiedEmail = checkedEmail?.trim() || "";
   const storedIsEmail = stored.includes("@");
   return {
@@ -676,7 +678,7 @@ export function projectAccountRows(
     const premiumUntilMs = source.status.premiumUntilMs && source.status.premiumUntilMs > nowMs
       ? source.status.premiumUntilMs
       : null;
-    const identity = projectAccountIdentity(source.username, source.status.email);
+    const identity = projectAccountIdentity(source.username, source.status.username, source.status.email);
     return {
       id,
       service: source.service,

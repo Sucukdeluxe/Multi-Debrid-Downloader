@@ -247,12 +247,14 @@ export async function checkDebridLinkKey(
     const premiumUntilMs = Number.isFinite(premiumLeftSec) && premiumLeftSec > 0 ? now + premiumLeftSec * 1000 : 0;
     const isPremium = premiumUntilMs > now || accountType > 0;
     const username = String(value.username || "").trim() || undefined;
+    const email = String(value.email || "").trim() || undefined;
     return {
       ...base,
       valid: true,
       isPremium,
       premiumUntilMs: premiumUntilMs > 0 ? premiumUntilMs : (accountType > 0 ? null : 0),
-      email: username,
+      username,
+      email,
       message: premiumUntilMs > 0
         ? formatRemaining(premiumUntilMs, now)
         : (accountType > 0 ? "Premium aktiv" : "Kein Premium (Free)")

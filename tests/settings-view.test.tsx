@@ -153,10 +153,10 @@ function accountSources(): AccountRowSource[] {
       mode: "API-Key",
       icon: "./provider-icons/debrid-link.ico",
       enabled: true,
-      status: { state: "free", message: "Free Account", premiumUntilMs: null },
+      status: { state: "free", message: "Free Account", premiumUntilMs: null, username: "xsucukde5" },
       dailyLimitBytes: 0,
       dailyUsageBytes: 0,
-      username: "free-user",
+      username: "",
       credentialKind: "api-key",
       canCheck: true
     },
@@ -352,6 +352,8 @@ describe("settings model", () => {
     expect(rows[0].username).toBe("stored-user");
     expect(rows[0].email).toBe("verified@example.test");
     expect(rows[0].credential).toBe("••••••");
+    expect(rows[1].username).toBe("xsucukde5");
+    expect(rows[1].email).toBe("—");
     expect(rows[1].credential).toBe("API-Key");
     expect(rows.map((row) => row.status.tone)).toEqual(["ok", "free", "invalid", "unknown", "disabled"]);
     expect(rows.map((row) => row.status.text)).toEqual([

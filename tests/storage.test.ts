@@ -673,7 +673,8 @@ describe("settings storage", () => {
           valid: true,
           isPremium: true,
           premiumUntilMs: checkedAt + 1000,
-          email: "web-user",
+          username: "web-user",
+          email: "w***r@example.test",
           message: "Premium aktiv",
           checkedAt
         }
@@ -684,8 +685,35 @@ describe("settings storage", () => {
       accountId: "svc-realdebrid",
       provider: "realdebrid",
       valid: true,
+      username: "web-user",
+      email: "w***r@example.test",
       checkedAt
     });
+  });
+
+  it("migrates a legacy Debrid-Link username out of the email field", () => {
+    const [key] = parseDebridLinkApiKeys("dl-key-one");
+    const normalized = normalizeSettings({
+      ...defaultSettings(),
+      debridLinkApiKeys: "dl-key-one",
+      debridAccountStatuses: {
+        [key.id]: {
+          accountId: key.id,
+          provider: "debridlink",
+          label: "Key 1",
+          maskedLogin: key.masked,
+          valid: true,
+          isPremium: false,
+          premiumUntilMs: 0,
+          email: "xsucukde5",
+          message: "Kein Premium (Free)",
+          checkedAt: Date.now()
+        }
+      }
+    });
+
+    expect(normalized.debridAccountStatuses[key.id].username).toBe("xsucukde5");
+    expect(normalized.debridAccountStatuses[key.id].email).toBeUndefined();
   });
 
   it("defaults AllDebrid web login to disabled and normalizes the flag", () => {

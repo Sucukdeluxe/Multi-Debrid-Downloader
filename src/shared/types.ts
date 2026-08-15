@@ -63,6 +63,7 @@ export interface DebridAccountStatus {
   valid: boolean;
   isPremium: boolean;
   premiumUntilMs: number | null;
+  username?: string;
   email?: string;
   message: string;
   checkedAt: number;

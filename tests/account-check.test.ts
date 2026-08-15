@@ -83,11 +83,20 @@ describe("checkMegaDebridAccount", () => {
 describe("checkDebridLinkKey", () => {
   it("reports valid + premium from premiumLeft seconds", async () => {
     const premiumLeft = 60 * 24 * 60 * 60;
-    mockFetchOnce(200, { success: true, value: { username: "u", accountType: 1, premiumLeft } });
+    mockFetchOnce(200, { success: true, value: { username: "u", email: "u@example.test", accountType: 1, premiumLeft } });
     const st = await checkDebridLinkKey(debridLinkKey(), undefined, NOW);
     expect(st.valid).toBe(true);
     expect(st.isPremium).toBe(true);
     expect(st.premiumUntilMs).toBe(NOW + premiumLeft * 1000);
+    expect(st.username).toBe("u");
+    expect(st.email).toBe("u@example.test");
+  });
+
+  it("does not present a Debrid-Link username as an email address", async () => {
+    mockFetchOnce(200, { success: true, value: { username: "xsucukde5", accountType: 0, premiumLeft: 0 } });
+    const st = await checkDebridLinkKey(debridLinkKey(), undefined, NOW);
+    expect(st.username).toBe("xsucukde5");
+    expect(st.email).toBeUndefined();
   });
 
   it("reports valid but free (premiumLeft 0, accountType 0)", async () => {

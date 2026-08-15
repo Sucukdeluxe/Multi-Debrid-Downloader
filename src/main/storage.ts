@@ -283,19 +283,27 @@ function normalizeDebridAccountStatuses(
       if (typeof entry.accountId !== "string" || typeof entry.checkedAt !== "number") {
         continue;
       }
+      const provider = entry.provider === "debridlink"
+        ? "debridlink"
+        : entry.provider === "realdebrid"
+          ? "realdebrid"
+          : "megadebrid";
+      let username = typeof entry.username === "string" ? entry.username : undefined;
+      let email = typeof entry.email === "string" ? entry.email : undefined;
+      if (provider === "debridlink" && !username && email && !email.includes("@")) {
+        username = email;
+        email = undefined;
+      }
       result[key] = {
         accountId: entry.accountId,
-        provider: entry.provider === "debridlink"
-          ? "debridlink"
-          : entry.provider === "realdebrid"
-            ? "realdebrid"
-            : "megadebrid",
+        provider,
         label: String(entry.label || ""),
         maskedLogin: String(entry.maskedLogin || ""),
         valid: Boolean(entry.valid),
         isPremium: Boolean(entry.isPremium),
         premiumUntilMs: typeof entry.premiumUntilMs === "number" ? entry.premiumUntilMs : null,
-        email: typeof entry.email === "string" ? entry.email : undefined,
+        username,
+        email,
         message: String(entry.message || ""),
         checkedAt: entry.checkedAt
       };

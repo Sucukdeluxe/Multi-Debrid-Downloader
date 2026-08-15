@@ -15,6 +15,7 @@ describe("renderer settings validation", () => {
         valid: true,
         isPremium: true,
         premiumUntilMs: null,
+        username: "web-user",
         message: "Premium aktiv",
         checkedAt: 1_700_000_000_000
       }
@@ -22,6 +23,7 @@ describe("renderer settings validation", () => {
     const rendererSettings = createRendererSettings(current);
 
     expect(rendererSettings.debridAccountStatuses["svc-realdebrid"]).toHaveProperty("email", undefined);
+    expect(rendererSettings.debridAccountStatuses["svc-realdebrid"]).toHaveProperty("username", "web-user");
     const validated = validateRendererSettingsUpdate(rendererSettings, current);
 
     expect(validated.debridAccountStatuses).toEqual(rendererSettings.debridAccountStatuses);
