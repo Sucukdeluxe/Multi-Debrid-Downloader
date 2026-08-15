@@ -568,7 +568,7 @@ export function buildSettingsFormViewModel({
         title: "Oberfläche und Bedienung",
         fields: [
           { id: "collapseNewPackages", kind: "switch", label: "Neue Pakete eingeklappt zeigen", value: settings.collapseNewPackages },
-          { id: "animatePackageDisclosure", kind: "switch", label: "Paket-Ein-/Ausklappen animieren", value: settings.animatePackageDisclosure },
+          { id: "animatePackageDisclosure", kind: "switch", label: "Animationen", value: settings.animatePackageDisclosure },
           { id: "minimizeToTray", kind: "switch", label: "In den Infobereich minimieren", value: settings.minimizeToTray },
           { id: "confirmDeleteSelection", kind: "switch", label: "Vor dem Löschen nachfragen", value: settings.confirmDeleteSelection },
           { id: "backupIncludeDownloads", kind: "switch", label: "Download-Liste mitsichern", value: settings.backupIncludeDownloads },

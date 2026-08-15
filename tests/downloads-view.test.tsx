@@ -29,6 +29,12 @@ import {
   stableDownloadDisclosureRows
 } from "../src/renderer/views/downloads/download-disclosure-transition";
 import {
+  DOWNLOAD_ORDER_TRANSITION_DURATION_MS,
+  getDownloadOrderTransitionPinnedIds,
+  getDownloadOrderTransformKeyframes,
+  isDownloadPackageOrderChange
+} from "../src/renderer/views/downloads/download-order-transition";
+import {
   DownloadsContent,
   DownloadsFooter,
   DownloadsSidebar,
@@ -241,12 +247,36 @@ describe("virtualisierte Paketanimation", () => {
     expect(prepared.rows.some((row) => row.type === "item-group")).toBe(false);
   });
 
-  it("deaktiviert auch die CSS-Bewegung der virtuellen Folgezeilen", () => {
-    const html = renderToStaticMarkup(<DownloadsContent actions={createActions()} model={withRuntime(createInput(), { animatePackageDisclosure: false })} />);
+  it("deaktiviert alle Downloadbewegungen über den allgemeinen Animationsschalter", () => {
+    const html = renderToStaticMarkup(<DownloadsContent actions={createActions()} model={withRuntime(createInput(), { animationsEnabled: false })} />);
     const css = readFileSync(path.join(process.cwd(), "src/renderer/views/downloads/downloads.css"), "utf8");
 
-    expect(html).toContain('class="downloads-table-body is-disclosure-motion-disabled"');
-    expect(css).toMatch(/\.downloads-table-body\.is-disclosure-motion-disabled \.downloads-virtual-spacer,\s*\.downloads-table-body\.is-disclosure-motion-disabled \.downloads-virtual-row\s*\{[^}]*transition:\s*none !important;/s);
+    expect(html).toContain('class="downloads-table-body is-download-motion-disabled"');
+    expect(css).toMatch(/\.downloads-table-body\.is-download-motion-disabled \.downloads-virtual-spacer,\s*\.downloads-table-body\.is-download-motion-disabled \.downloads-virtual-row\s*\{[^}]*transition:\s*none !important;/s);
+  });
+
+  it("pins only previously visible rows for a real priority reorder", () => {
+    expect(DOWNLOAD_ORDER_TRANSITION_DURATION_MS).toBe(1500);
+    expect(isDownloadPackageOrderChange(["a", "b", "c"], ["b", "c", "a"])).toBe(true);
+    expect(isDownloadPackageOrderChange(["a", "b"], ["a", "c"])).toBe(false);
+    expect(getDownloadOrderTransitionPinnedIds({
+      enabled: true,
+      previousOrder: ["a", "b", "c"],
+      nextOrder: ["b", "c", "a"],
+      previousVisibleIds: ["a", "a:items", "b"],
+      activePinnedIds: []
+    })).toEqual(["a", "a:items", "b"]);
+    expect(getDownloadOrderTransitionPinnedIds({
+      enabled: false,
+      previousOrder: ["a", "b", "c"],
+      nextOrder: ["b", "c", "a"],
+      previousVisibleIds: ["a", "b"],
+      activePinnedIds: ["c"]
+    })).toEqual([]);
+    expect(getDownloadOrderTransformKeyframes(240, 159, 315)).toEqual([
+      { transform: "translateY(84px)" },
+      { transform: "translateY(240px)" }
+    ]);
   });
 
   it("zeichnet den Startzustand in einem eigenen Frame vor der Aktivierung", () => {
@@ -681,7 +711,7 @@ function withRuntime(input: DownloadsModelInput, overrides: Record<string, unkno
     scheduleLabel: "",
     packageSpeedBps: { "package-a": 12_000_000 },
     disclosureRevision: 0,
-    animatePackageDisclosure: true,
+    animationsEnabled: true,
     editingPackageId: null,
     editingName: "",
     columnOrder: ["name", "size", "hoster", "progress"] as const,
@@ -1175,6 +1205,16 @@ describe("downloads App integration", () => {
     const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8").replaceAll("\r\n", "\n");
 
     expect(source).toMatch(/disabled=\{allMatch\}[\s\S]{0,260}window\.rd\.setPackagePriority/);
+  });
+
+  it("keeps previously visible package rows mounted while priority order glides", () => {
+    const source = readFileSync(new URL("../src/renderer/views/downloads/VirtualizedDownloadsBody.tsx", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+
+    expect(source).toContain("getDownloadOrderTransitionPinnedIds");
+    expect(source).toContain("animateDownloadOrderRows");
+    expect(source).toContain("orderTransitionPinnedIdsRef.current");
+    expect(source).toContain("data-download-row-id={entry.id}");
+    expect(source).toContain("DOWNLOAD_ORDER_TRANSITION_DURATION_MS");
   });
 
   it("updates the clipboard checkbox optimistically before IPC reconciliation", () => {

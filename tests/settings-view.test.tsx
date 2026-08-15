@@ -501,7 +501,7 @@ describe("settings views", () => {
     expect(settingsCss).toMatch(/\.settings-select\.is-open\s+\.settings-select-options\s*\{[^}]*opacity:\s*1[^}]*transform:\s*translateY\(0\)/s);
   });
 
-  it("offers a general switch for package expand and collapse motion", () => {
+  it("offers one general switch for interface animations", () => {
     const form = buildSettingsFormViewModel({
       settings: { ...createRendererSettings(defaultSettings()), archivePasswordList: "", notifyUrl: "" },
       section: "allgemein",
@@ -514,7 +514,7 @@ describe("settings views", () => {
     expect(animation).toEqual({
       id: "animatePackageDisclosure",
       kind: "switch",
-      label: "Paket-Ein-/Ausklappen animieren",
+      label: "Animationen",
       value: true
     });
   });

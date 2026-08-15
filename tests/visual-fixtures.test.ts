@@ -192,6 +192,27 @@ describe("visual fixtures", () => {
     expect(dense).toHaveProperty("remoteDiagnostics.status.running", false);
   });
 
+  it("emits the priority-sorted snapshot so visual tests can observe package motion", async () => {
+    const dense = createVisualFixture("dense");
+    const api = createVisualElectronApi(dense);
+    const snapshots: string[][] = [];
+    const unsubscribe = api.onStateUpdate((snapshot) => snapshots.push([...snapshot.session.packageOrder]));
+    const target = dense.snapshot.session.packageOrder[0];
+
+    await api.setPackagePriority(target, "low");
+
+    expect(dense.snapshot.session.packageOrder.at(-1)).toBe(target);
+    expect(snapshots.at(-1)?.at(-1)).toBe(target);
+    unsubscribe();
+  });
+
+  it("can boot the isolated renderer with animations disabled", async () => {
+    const dense = createVisualFixture("dense");
+    const api = createVisualElectronApi(dense, "?animations=off");
+
+    expect((await api.getSnapshot()).settings.animatePackageDisclosure).toBe(false);
+  });
+
   it("boots the dense query once and waits for both visible package names", async () => {
     expect(typeof window).toBe("undefined");
     const harness = createTestVisualBootstrap(

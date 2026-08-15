@@ -302,8 +302,8 @@
   transition: height 1500ms cubic-bezier(0.22, 1, 0.36, 1), transform 1500ms cubic-bezier(0.22, 1, 0.36, 1), opacity 1500ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.downloads-table-body.is-disclosure-motion-disabled .downloads-virtual-spacer,
-.downloads-table-body.is-disclosure-motion-disabled .downloads-virtual-row {
+.downloads-table-body.is-download-motion-disabled .downloads-virtual-spacer,
+.downloads-table-body.is-download-motion-disabled .downloads-virtual-row {
   transition: none !important;
 }
 

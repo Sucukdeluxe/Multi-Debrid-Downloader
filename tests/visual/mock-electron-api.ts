@@ -12,11 +12,19 @@ export function createVisualElectronApi(
   fixture: VisualFixture,
   search = typeof window === "undefined" ? "" : window.location.search
 ): ElectronApi {
-  const historyState = new URLSearchParams(search).get("history-state");
+  const searchParams = new URLSearchParams(search);
+  const historyState = searchParams.get("history-state");
+  if (searchParams.get("animations") === "off") fixture.snapshot.settings.animatePackageDisclosure = false;
   let historyRequestCount = 0;
+  const stateUpdateListeners = new Set<Parameters<ElectronApi["onStateUpdate"]>[0]>();
+  const emitStateUpdate = (): void => {
+    const snapshot = clone(fixture.snapshot);
+    for (const listener of stateUpdateListeners) listener(snapshot);
+  };
   const updateSettings = (settings: RendererSettingsUpdate): RendererSettings => {
     const { archivePasswordList: _archivePasswordList, notifyUrl: _notifyUrl, ...safe } = settings;
     Object.assign(fixture.snapshot.settings, safe);
+    emitStateUpdate();
     return clone(fixture.snapshot.settings);
   };
 
@@ -376,9 +384,24 @@ export function createVisualElectronApi(
       : { ok: false, reason: "entry-not-found" },
     setPackagePriority: async (packageId, priority) => {
       const entry = fixture.snapshot.session.packages[packageId];
-      if (entry) {
-        entry.priority = priority;
+      if (!entry || entry.priority === priority) return;
+      entry.priority = priority;
+      const order = fixture.snapshot.session.packageOrder;
+      const currentIndex = order.indexOf(packageId);
+      if (currentIndex >= 0) {
+        order.splice(currentIndex, 1);
+        const priorityRank = { high: 0, normal: 1, low: 2 } as const;
+        let insertAt = order.length;
+        for (let index = 0; index < order.length; index += 1) {
+          const otherPriority = fixture.snapshot.session.packages[order[index]]?.priority || "normal";
+          if (priorityRank[otherPriority] > priorityRank[priority]) {
+            insertAt = index;
+            break;
+          }
+        }
+        order.splice(insertAt, 0, packageId);
       }
+      emitStateUpdate();
     },
     skipItems: async (itemIds) => {
       for (const itemId of itemIds) {
@@ -413,7 +436,10 @@ export function createVisualElectronApi(
       fixture.snapshot.session.running = true;
     },
     reportRendererError: () => {},
-    onStateUpdate: () => stableNoopUnsubscribe,
+    onStateUpdate: (callback) => {
+      stateUpdateListeners.add(callback);
+      return () => stateUpdateListeners.delete(callback);
+    },
     onClipboardDetected: () => stableNoopUnsubscribe,
     onUpdateInstallProgress: () => stableNoopUnsubscribe
   };

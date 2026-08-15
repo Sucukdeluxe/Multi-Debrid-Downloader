@@ -12,6 +12,8 @@ describe("renderer localization", () => {
     expect(translateUiText("Einstellungen speichern", "en")).toBe("Save settings");
     expect(translateUiText("Save settings", "de")).toBe("Einstellungen speichern");
     expect(translateUiText("Passwort/Zugang", "en")).toBe("Password/access");
+    expect(translateUiText("Animationen", "en")).toBe("Animations");
+    expect(translateUiText("Animations", "de")).toBe("Animationen");
   });
 
   it("translates dynamic update and pagination text", () => {

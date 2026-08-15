@@ -4649,7 +4649,7 @@ export function App(): ReactElement {
     sortColumn: downloadsSortColumn,
     sortDirection: downloadsSortDescending ? "desc" : "asc",
     disclosureRevision: downloadDisclosureRevision,
-    animatePackageDisclosure: snapshot.settings.animatePackageDisclosure,
+    animationsEnabled: snapshot.settings.animatePackageDisclosure,
     status: {
       packages: snapshot.stats.totalPackages,
       links: getPendingDownloadItemCount(Object.values(snapshot.session.items)),

@@ -48,7 +48,7 @@ export interface DownloadsViewModel extends DownloadsViewModelCore {
   sortColumn?: DownloadSortColumn;
   sortDirection?: "asc" | "desc";
   disclosureRevision: number;
-  animatePackageDisclosure: boolean;
+  animationsEnabled: boolean;
   status: DownloadsStatusModel;
 }
 

@@ -10,6 +10,14 @@ import {
   stableDownloadDisclosureRows,
   type DownloadDisclosureRow
 } from "./download-disclosure-transition";
+import {
+  DOWNLOAD_ORDER_TRANSITION_DURATION_MS,
+  animateDownloadOrderRows,
+  captureDownloadOrderRowTops,
+  getDownloadOrderTransitionPinnedIds,
+  getDownloadPackageOrder,
+  isDownloadPackageOrderChange
+} from "./download-order-transition";
 import type { DownloadsViewActions, DownloadsViewModel } from "./DownloadsView";
 import { ItemRow, PackageCard } from "./DownloadsTable";
 import { calculateDownloadVirtualWindow, DOWNLOAD_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT, DOWNLOAD_VIRTUAL_OVERSCAN_ROWS } from "./download-virtualizer";
@@ -111,6 +119,22 @@ export function VirtualizedDownloadsBody({ actions, model, state }: { actions: D
   const transitionRowsRef = useRef<DownloadDisclosureRow[] | null>(null);
   const transitionPinnedIdsRef = useRef<string[]>([]);
   const [transitionRows, setTransitionRows] = useState<DownloadDisclosureRow[] | null>(null);
+  const packageOrder = getDownloadPackageOrder(desiredRows);
+  const previousPackageOrderRef = useRef<readonly string[]>(packageOrder);
+  const previousVisibleIdsRef = useRef<readonly string[]>([]);
+  const orderTransitionPinnedIdsRef = useRef<string[]>([]);
+  const orderTransitionTimerRef = useRef(0);
+  const orderAnimationsRef = useRef<Animation[]>([]);
+  const orderRowTopsRef = useRef<Map<string, number>>(new Map());
+  const [, setOrderTransitionRevision] = useState(0);
+  const packageOrderChanged = isDownloadPackageOrderChange(previousPackageOrderRef.current, packageOrder);
+  const orderTransitionPinnedIds = getDownloadOrderTransitionPinnedIds({
+    enabled: model.animationsEnabled,
+    previousOrder: previousPackageOrderRef.current,
+    nextOrder: packageOrder,
+    previousVisibleIds: previousVisibleIdsRef.current,
+    activePinnedIds: orderTransitionPinnedIdsRef.current
+  });
 
   useEffect(() => {
     if (!transitionRowsRef.current) previousRowsRef.current = desiredRows;
@@ -120,7 +144,7 @@ export function VirtualizedDownloadsBody({ actions, model, state }: { actions: D
     const prepared = prepareDownloadDisclosureTransition(
       transitionRowsRef.current ?? previousRowsRef.current,
       desiredRowsRef.current,
-      model.animatePackageDisclosure
+      model.animationsEnabled
     );
     if (!prepared.animated) {
       transitionRowsRef.current = null;
@@ -152,24 +176,64 @@ export function VirtualizedDownloadsBody({ actions, model, state }: { actions: D
       cancelActivation();
       if (settleTimer) window.clearTimeout(settleTimer);
     };
-  }, [model.animatePackageDisclosure, model.disclosureRevision, model.displayMode]);
+  }, [model.animationsEnabled, model.disclosureRevision, model.displayMode]);
 
   const renderedRows = useMemo<DownloadDisclosureRow[]>(() => transitionRows ? mergeDownloadDisclosureRows(transitionRows, desiredRows) : stableDownloadDisclosureRows(desiredRows), [desiredRows, transitionRows]);
   const virtualWindow = useMemo(() => calculateDownloadVirtualWindow(renderedRows, {
     scrollTop: viewport.scrollTop,
     viewportHeight: viewport.viewportHeight,
     overscan: DOWNLOAD_VIRTUAL_OVERSCAN_ROWS,
-    pinnedIds: [model.editingPackageId, ...transitionPinnedIdsRef.current]
-  }), [model.editingPackageId, renderedRows, viewport.scrollTop, viewport.viewportHeight]);
+    pinnedIds: [model.editingPackageId, ...transitionPinnedIdsRef.current, ...orderTransitionPinnedIds]
+  }), [model.editingPackageId, orderTransitionPinnedIds, renderedRows, viewport.scrollTop, viewport.viewportHeight]);
+
+  useRendererLayoutEffect(() => {
+    previousPackageOrderRef.current = packageOrder;
+    previousVisibleIdsRef.current = virtualWindow.rows.map((entry) => entry.id);
+    const body = bodyRef.current;
+    if (!body) return;
+    if (!model.animationsEnabled) {
+      for (const animation of orderAnimationsRef.current) animation.cancel();
+      orderAnimationsRef.current = [];
+      orderRowTopsRef.current = captureDownloadOrderRowTops(body);
+      if (orderTransitionTimerRef.current) window.clearTimeout(orderTransitionTimerRef.current);
+      orderTransitionTimerRef.current = 0;
+      orderTransitionPinnedIdsRef.current = [];
+      return;
+    }
+    if (!packageOrderChanged) {
+      if (orderAnimationsRef.current.every((animation) => animation.playState === "finished" || animation.playState === "idle")) {
+        orderAnimationsRef.current = [];
+        orderRowTopsRef.current = captureDownloadOrderRowTops(body);
+      }
+      return;
+    }
+    const previousTops = orderAnimationsRef.current.length > 0 ? captureDownloadOrderRowTops(body) : orderRowTopsRef.current;
+    for (const animation of orderAnimationsRef.current) animation.cancel();
+    const animated = animateDownloadOrderRows(body, previousTops);
+    orderAnimationsRef.current = animated.animations;
+    orderRowTopsRef.current = animated.targetTops;
+    orderTransitionPinnedIdsRef.current = orderTransitionPinnedIds;
+    if (orderTransitionTimerRef.current) window.clearTimeout(orderTransitionTimerRef.current);
+    orderTransitionTimerRef.current = window.setTimeout(() => {
+      orderTransitionPinnedIdsRef.current = [];
+      orderTransitionTimerRef.current = 0;
+      setOrderTransitionRevision((revision) => revision + 1);
+    }, DOWNLOAD_ORDER_TRANSITION_DURATION_MS);
+  }, [model.animationsEnabled, orderTransitionPinnedIds, packageOrder, packageOrderChanged, virtualWindow.rows]);
+
+  useEffect(() => () => {
+    if (orderTransitionTimerRef.current) window.clearTimeout(orderTransitionTimerRef.current);
+    for (const animation of orderAnimationsRef.current) animation.cancel();
+  }, []);
   const spacerStyle = { "--downloads-virtual-total-height": `${virtualWindow.totalHeight}px` } as CSSProperties;
 
   return (
-    <div className={`downloads-table-body${model.animatePackageDisclosure ? "" : " is-disclosure-motion-disabled"}`} data-visual-region="downloads-table-body" ref={bodyRef} role="rowgroup">
+    <div className={`downloads-table-body${model.animationsEnabled ? "" : " is-download-motion-disabled"}`} data-visual-region="downloads-table-body" ref={bodyRef} role="rowgroup">
       {state}
       {!state ? (
         <div className="downloads-virtual-spacer" style={spacerStyle}>
           {virtualWindow.rows.map((entry) => (
-            <div className={`downloads-virtual-row${entry.source.type === "item-group" ? " is-disclosure-group" : ""}${disclosureClassName(entry.source)}`} data-download-virtual-index={entry.index} key={`${entry.source.type}:${entry.id}`} style={rowStyle(entry.top, entry.height, disclosureOpacity(entry.source))}>
+            <div className={`downloads-virtual-row${entry.source.type === "item-group" ? " is-disclosure-group" : ""}${disclosureClassName(entry.source)}`} data-download-row-id={entry.id} data-download-virtual-index={entry.index} key={`${entry.source.type}:${entry.id}`} style={rowStyle(entry.top, entry.height, disclosureOpacity(entry.source))}>
               {renderVirtualRow(entry.source, model, actions)}
             </div>
           ))}
