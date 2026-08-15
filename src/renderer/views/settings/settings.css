@@ -674,6 +674,11 @@
   place-items: center;
 }
 
+.settings-account-table-grid > .settings-account-column-actions,
+.settings-account-row > .settings-account-column-actions {
+  padding-left: 27px;
+}
+
 .settings-account-hoster {
   display: flex;
   align-items: center;
