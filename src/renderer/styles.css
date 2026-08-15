@@ -89,14 +89,6 @@
   transform: translate3d(var(--ui-sliding-selection-x, 0px), 0, 0);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .ui-sliding-selection::before {
-    transition-property: transform, width, height !important;
-    transition-duration: var(--ui-sliding-selection-duration, 0ms), var(--ui-sliding-selection-duration, 0ms), var(--ui-sliding-selection-duration, 0ms) !important;
-    transition-timing-function: cubic-bezier(0.22, 0.76, 0.22, 1), cubic-bezier(0.22, 0.76, 0.22, 1), cubic-bezier(0.22, 0.76, 0.22, 1) !important;
-  }
-}
-
 html,
 body,
 #root {

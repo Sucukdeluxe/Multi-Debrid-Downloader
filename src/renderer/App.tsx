@@ -1122,12 +1122,13 @@ export function appendBandwidthSample(
 }
 
 interface BandwidthChartProps {
+  animationsEnabled: boolean;
   running: boolean;
   paused: boolean;
   speedHistoryRef: React.MutableRefObject<{ time: number; speed: number }[]>;
 }
 
-const BandwidthChart = memo(function BandwidthChart({ running, paused, speedHistoryRef }: BandwidthChartProps): ReactElement {
+const BandwidthChart = memo(function BandwidthChart({ animationsEnabled, running, paused, speedHistoryRef }: BandwidthChartProps): ReactElement {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -1260,12 +1261,11 @@ const BandwidthChart = memo(function BandwidthChart({ running, paused, speedHist
     if (!running || paused) {
       return;
     }
-    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const interval = setInterval(() => {
       drawChart();
-    }, reducedMotion ? 1000 : 250);
+    }, animationsEnabled ? 250 : 1000);
     return () => clearInterval(interval);
-  }, [drawChart, running, paused]);
+  }, [animationsEnabled, drawChart, running, paused]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -5347,7 +5347,7 @@ export function App(): ReactElement {
 
   return (
     <div
-      className={`md-runtime-root${dragOver ? " drag-over" : ""}${tab === "settings" ? " settings-active" : ""}`}
+      className={`md-runtime-root${snapshot.settings.animatePackageDisclosure ? " is-runtime-motion-enabled" : " is-runtime-motion-disabled"}${dragOver ? " drag-over" : ""}${tab === "settings" ? " settings-active" : ""}`}
       onDragEnter={(event) => {
         event.preventDefault();
         const hasFiles = event.dataTransfer.types.includes("Files");
@@ -5373,6 +5373,7 @@ export function App(): ReactElement {
     >
       <AppShell
         activeView={tab}
+        animationsEnabled={snapshot.settings.animatePackageDisclosure}
         contextInfo={tab === "downloads" ? (
           <div>
             Paket- und Linkstatus werden laufend aktualisiert. Auswahl, Reihenfolge und aktive Filter bleiben beim Ansichtswechsel erhalten.
@@ -5730,7 +5731,7 @@ export function App(): ReactElement {
         {tab === "statistics" && (
           <StatisticsContent
             actions={statisticsActions}
-            chart={<BandwidthChart running={snapshot.session.running} paused={snapshot.session.paused} speedHistoryRef={speedHistoryRef} />}
+            chart={<BandwidthChart animationsEnabled={snapshot.settings.animatePackageDisclosure} running={snapshot.session.running} paused={snapshot.session.paused} speedHistoryRef={speedHistoryRef} />}
             model={statisticsViewModel}
           />
         )}

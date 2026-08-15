@@ -58,7 +58,6 @@ describe("desktop shell", () => {
     expect(source.match(/menu-dropdown\$\{openMenu ===/g)).toHaveLength(3);
     expect(css).toMatch(/\.menu-dropdown\s*\{[^}]*opacity:\s*0;[^}]*transform:\s*translateY\(-8px\);[^}]*visibility:\s*hidden;/s);
     expect(css).toMatch(/\.menu-dropdown\.is-open\s*\{[^}]*opacity:\s*1;[^}]*transform:\s*translateY\(0\);[^}]*visibility:\s*visible;/s);
-    expect(shellCss).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.md-application-menu-tree \.menu-dropdown\s*\{[^}]*transition-duration:\s*150ms, 180ms, 0s !important;/);
   });
 
   it("anchors every top-level application dropdown to the right header edge", () => {
@@ -78,7 +77,6 @@ describe("desktop shell", () => {
     expect(shellCss).toMatch(/\.md-application-menu-tree :where\(\.menu-dropdown, \.menu-submenu-dropdown\)\s*\{[^}]*overflow:\s*visible;/s);
     expect(shellCss).toMatch(/\.md-application-menu-tree \.menu-submenu-dropdown\s*\{[^}]*right:\s*100%;[^}]*left:\s*auto;[^}]*opacity:\s*0;[^}]*transform:\s*translateX\(8px\);[^}]*visibility:\s*hidden;[^}]*pointer-events:\s*none;[^}]*transition:[^}]*transform 220ms cubic-bezier\(0\.22, 0\.76, 0\.22, 1\)/s);
     expect(shellCss).toMatch(/\.md-application-menu-tree \.menu-submenu-dropdown\.is-open\s*\{[^}]*opacity:\s*1;[^}]*transform:\s*translateX\(0\);[^}]*visibility:\s*visible;[^}]*pointer-events:\s*auto;/s);
-    expect(shellCss).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.md-application-menu-tree \.menu-submenu-dropdown\s*\{[^}]*transition-duration:\s*0\.01ms !important;[^}]*transition-delay:\s*0s !important;/);
   });
 
   it("uses the product asset in the header brand", () => {
@@ -101,7 +99,6 @@ describe("desktop shell", () => {
     expect(html).toContain("data-main-view=\"downloads\"");
     expect(source).toContain("ResizeObserver");
     expect(css).toMatch(/\.md-shell-navigation::before\s*\{[^}]*transform:\s*translate3d\(var\(--md-navigation-active-x[^}]*transition:\s*transform 420ms cubic-bezier\(0\.22, 0\.76, 0\.22, 1\), width 420ms cubic-bezier\(0\.22, 0\.76, 0\.22, 1\)/s);
-    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.md-shell-navigation::before\s*\{[^}]*transition-duration:\s*420ms, 420ms, 420ms, 120ms !important;/);
     expect(css).toMatch(/\.md-shell-navigation-item\.is-active\s*\{[^}]*background:\s*transparent;/s);
   });
 
@@ -127,6 +124,29 @@ describe("desktop shell", () => {
     expect(html).toContain("data-ui-region=\"sidebar-status\"");
     expect(html).toContain("data-ui-region=\"main\"");
     expect(html).toContain("1–1 von 1");
+  });
+
+  it("uses the explicit application animation setting instead of the Windows motion preference", () => {
+    const renderShell = (animationsEnabled: boolean): string => renderToStaticMarkup(
+      <AppShell
+        activeView="downloads"
+        animationsEnabled={animationsEnabled}
+        onViewChange={() => {}}
+        sidebar={null}
+        sidebarStatus={null}
+        headerActions={null}
+        toolbar={null}
+        footer={null}
+        contextInfo={null}
+        sidebarCollapsed={false}
+        onSidebarCollapsedChange={() => {}}
+      >
+        <div>Downloads</div>
+      </AppShell>
+    );
+
+    expect(renderShell(true)).toContain("is-runtime-motion-enabled");
+    expect(renderShell(false)).toContain("is-runtime-motion-disabled");
   });
 
   it("does not reserve a collapsed sidebar column when sidebar slots are empty", () => {
@@ -184,13 +204,6 @@ describe("desktop shell", () => {
     expect(shellCss).toMatch(/\.md-shell-sidebar-panel\s*\{[^}]*transform:\s*translate3d\(0, 0, 0\);[^}]*transition:[^}]*transform 520ms cubic-bezier\(0\.22, 0\.76, 0\.22, 1\)/s);
     expect(shellCss).toMatch(/\.md-shell-sidebar\.is-collapsed \.md-shell-sidebar-panel\s*\{[^}]*transform:\s*translate3d\(calc\(-100% - 8px\), 0, 0\);[^}]*pointer-events:\s*none;/s);
     expect(shellCss).toMatch(/\.md-shell-sidebar:hover \.md-shell-sidebar-toggle,\s*\.md-shell-sidebar\.is-collapsed \.md-shell-sidebar-toggle,\s*\.md-shell-sidebar-toggle:focus-visible\s*\{[^}]*opacity:\s*1;/s);
-  });
-
-  it("keeps the explicitly requested sidebar motion active when Windows animations are disabled", () => {
-    const shellCss = readFileSync(new URL("../src/renderer/shell/shell.css", import.meta.url), "utf8");
-
-    expect(shellCss).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.md-shell-workspace\s*\{[^}]*transition-duration:\s*520ms !important;/s);
-    expect(shellCss).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.md-shell-sidebar-panel\s*\{[^}]*transition-duration:\s*260ms, 520ms, 0s !important;/s);
   });
 
   it("keeps every view sidebar on the same content axis", () => {
