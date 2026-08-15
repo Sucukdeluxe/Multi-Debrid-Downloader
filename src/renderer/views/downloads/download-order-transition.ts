@@ -1,6 +1,6 @@
 import type { DownloadLogicalRow } from "./downloads-model";
 
-export const DOWNLOAD_ORDER_TRANSITION_DURATION_MS = 1500;
+export const DOWNLOAD_ORDER_TRANSITION_DURATION_MS = 3000;
 export const DOWNLOAD_ORDER_TRANSITION_MAX_PINNED_ROWS = 96;
 const DOWNLOAD_ORDER_TRANSITION_EASING = "cubic-bezier(0.22, 1, 0.36, 1)";
 

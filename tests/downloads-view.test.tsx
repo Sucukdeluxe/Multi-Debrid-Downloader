@@ -256,7 +256,7 @@ describe("virtualisierte Paketanimation", () => {
   });
 
   it("pins only previously visible rows for a real priority reorder", () => {
-    expect(DOWNLOAD_ORDER_TRANSITION_DURATION_MS).toBe(1500);
+    expect(DOWNLOAD_ORDER_TRANSITION_DURATION_MS).toBe(3000);
     expect(isDownloadPackageOrderChange(["a", "b", "c"], ["b", "c", "a"])).toBe(true);
     expect(isDownloadPackageOrderChange(["a", "b"], ["a", "c"])).toBe(false);
     expect(getDownloadOrderTransitionPinnedIds({
