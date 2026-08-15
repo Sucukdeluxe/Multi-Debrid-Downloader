@@ -2861,7 +2861,7 @@ export function App(): ReactElement {
 
   const persistAccountToggle = async (
     nextDraft: RendererSettingsDraft,
-    refreshBeforePersist?: () => Promise<void>
+    refreshBeforePersist?: () => ReturnType<typeof window.rd.checkAccountCredentials>
   ): Promise<RendererSettings> => {
     const previousDraft = settingsDraft;
     const previousDirty = settingsDirtyRef.current;
@@ -2905,7 +2905,7 @@ export function App(): ReactElement {
       };
       await persistAccountToggle(
         nextDraft,
-        enabled ? async () => { await window.rd.checkAccountCredentials({ kind: "debridlink-api", accountId: key.id }); } : undefined
+        enabled ? () => window.rd.checkAccountCredentials({ kind: "debridlink-api", accountId: key.id }) : undefined
       );
       showToast(
         enabled
@@ -2953,7 +2953,7 @@ export function App(): ReactElement {
         megaDebridApiDisabledAccountIds: apiDisabledIds,
         megaDebridWebDisabledAccountIds: webDisabledIds
       }, enabled
-        ? async () => { await window.rd.checkAccountCredentials({ kind, accountId }); }
+        ? () => window.rd.checkAccountCredentials({ kind, accountId })
         : undefined
       );
       showToast(enabled ? "Account aktiviert" : "Account deaktiviert", 2000);
@@ -3010,7 +3010,7 @@ export function App(): ReactElement {
         disabledProviders: nextState.disabledProviders,
         realDebridDisabledAccountIds: nextState.disabledAccountIds
       }, enabled
-        ? async () => { await window.rd.checkAccountCredentials({ kind, accountId }); }
+        ? () => window.rd.checkAccountCredentials({ kind, accountId })
         : undefined
       );
       showToast(enabled ? "Account aktiviert" : "Account deaktiviert", 2000);

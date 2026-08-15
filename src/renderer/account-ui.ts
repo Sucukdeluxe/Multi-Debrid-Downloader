@@ -146,11 +146,14 @@ export async function runOptimisticAccountUpdate<T>(
 }
 
 export async function runAccountEnableRefresh<T>(
-  refresh: (() => Promise<void>) | undefined,
+  refresh: (() => Promise<{ valid: boolean; message?: string }>) | undefined,
   persist: () => Promise<T>
 ): Promise<T> {
   if (refresh) {
-    await refresh();
+    const status = await refresh();
+    if (!status.valid) {
+      throw new Error(status.message || "Accountprüfung fehlgeschlagen");
+    }
   }
   return persist();
 }

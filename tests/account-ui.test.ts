@@ -141,7 +141,7 @@ describe("account activation refresh", () => {
     const events: string[] = [];
 
     await runAccountEnableRefresh(
-      async () => { events.push("check"); },
+      async () => { events.push("check"); return { valid: true, message: "Premium aktiv" }; },
       async () => { events.push("persist"); }
     );
 
@@ -157,5 +157,16 @@ describe("account activation refresh", () => {
     );
 
     expect(events).toEqual(["persist"]);
+  });
+
+  it("does not enable an account whose silent refresh is invalid", async () => {
+    const events: string[] = [];
+
+    await expect(runAccountEnableRefresh(
+      async () => { events.push("check"); return { valid: false, message: "Sitzung abgelaufen" }; },
+      async () => { events.push("persist"); }
+    )).rejects.toThrow("Sitzung abgelaufen");
+
+    expect(events).toEqual(["check"]);
   });
 });
