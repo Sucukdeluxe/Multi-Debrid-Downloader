@@ -103,7 +103,8 @@ export async function checkRealDebridAccount(
         valid: true,
         isPremium: Boolean(result.isPremium),
         premiumUntilMs,
-        email: String(result.email || result.username || "").trim() || undefined,
+        username: String(result.username || "").trim() || undefined,
+        email: String(result.email || "").trim() || undefined,
         message: result.message || (result.isPremium ? formatRemaining(premiumUntilMs, now) : "Kein Premium (Free)")
       };
     } catch (error) {
@@ -142,7 +143,8 @@ export async function checkRealDebridAccount(
       valid: true,
       isPremium,
       premiumUntilMs,
-      email: String(payload.email || payload.username || "").trim() || undefined,
+      username: String(payload.username || "").trim() || undefined,
+      email: String(payload.email || "").trim() || undefined,
       message: isPremium ? formatRemaining(premiumUntilMs, now) : "Kein Premium (Free)"
     };
   } catch (error) {

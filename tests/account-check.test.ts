@@ -122,13 +122,14 @@ describe("checkDebridLinkKey", () => {
 });
 
 describe("checkRealDebridAccount", () => {
-  it("uses the browser-session probe and returns a stable service status", async () => {
+  it("keeps browser-session username and email in separate status fields", async () => {
     const premiumUntilMs = NOW + 30 * 24 * 60 * 60 * 1000;
     const probe = vi.fn(async () => ({
       valid: true,
       isPremium: true,
       premiumUntilMs,
-      username: "web-user"
+      username: "web-user",
+      email: "web-user@example.test"
     }));
 
     const status = await checkRealDebridAccount({
@@ -143,7 +144,30 @@ describe("checkRealDebridAccount", () => {
       valid: true,
       isPremium: true,
       premiumUntilMs,
-      email: "web-user"
+      username: "web-user",
+      email: "web-user@example.test"
+    });
+  });
+
+  it("keeps API username and email in separate status fields", async () => {
+    mockFetchOnce(200, {
+      username: "api-user",
+      email: "api-user@example.test",
+      type: "premium",
+      expiration: new Date(NOW + 30 * 24 * 60 * 60 * 1000).toISOString()
+    });
+
+    const status = await checkRealDebridAccount({
+      token: "rd-api-token",
+      realDebridUseWebLogin: false
+    } as AppSettings, undefined, NOW);
+
+    expect(status).toMatchObject({
+      accountId: REAL_DEBRID_STATUS_ID,
+      provider: "realdebrid",
+      valid: true,
+      username: "api-user",
+      email: "api-user@example.test"
     });
   });
 });
