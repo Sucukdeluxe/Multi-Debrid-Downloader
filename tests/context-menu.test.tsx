@@ -112,4 +112,9 @@ describe("ContextMenu", () => {
     expect(stylesSource).toMatch(/\.ctx-menu-sub:hover\s*>\s*\.ctx-menu-sub-items\.is-positioned/s);
     expect(contextMenuSource).toContain('window.addEventListener("pointerdown", onOutside, true)');
   });
+
+  it("keeps hidden submenus outside the root menu scroll area before hover", () => {
+    expect(stylesSource).toMatch(/\.ctx-menu-sub-items\s*{[^}]*position:\s*fixed;/s);
+    expect(stylesSource).not.toMatch(/\.ctx-menu-sub-items\s*{[^}]*position:\s*absolute;/s);
+  });
 });

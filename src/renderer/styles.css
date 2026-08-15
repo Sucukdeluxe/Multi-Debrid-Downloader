@@ -243,7 +243,7 @@ body,
 .menu-submenu-dropdown {
   position: absolute;
   top: -4px;
-  left: 100%;
+  left: 0;
   z-index: 1001;
   min-width: max-content;
   background: var(--card);
@@ -2712,7 +2712,7 @@ td {
 
 .ctx-menu-sub-items {
   display: block;
-  position: absolute;
+  position: fixed;
   left: 100%;
   top: 0;
   min-width: 120px;
