@@ -722,7 +722,8 @@ describe("account workspace", () => {
     expect(html).not.toContain("role=\"toolbar\"");
     expect(count(html, 'role="separator"')).toBe(ACCOUNT_COLUMNS.length);
     expect(html).toContain('aria-label="Status Spaltenbreite ändern"');
-    expect(settingsCss).toMatch(/\.settings-account-column-actions\s*{[^}]*padding-right:\s*18px/s);
+    expect(html).toMatch(/class="settings-account-column-actions" role="columnheader">Aktion<\/span>/);
+    expect(settingsCss).not.toMatch(/\.settings-account-column-actions\s*{[^}]*padding-right:/s);
   });
 
   it("offers separate checks for active accounts and every configured account", () => {

@@ -674,10 +674,6 @@
   place-items: center;
 }
 
-.settings-account-column-actions {
-  padding-right: 18px !important;
-}
-
 .settings-account-hoster {
   display: flex;
   align-items: center;

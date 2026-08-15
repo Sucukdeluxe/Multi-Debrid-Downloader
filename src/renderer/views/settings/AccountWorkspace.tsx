@@ -434,7 +434,7 @@ function AccountOverview({ model, actions }: AccountWorkspaceProps): ReactElemen
                 />
               </span>
             ))}
-            <span aria-label="Aktionen" className="settings-account-column-actions" role="columnheader" />
+            <span className="settings-account-column-actions" role="columnheader">Aktion</span>
           </div>
         </DataTableHeader>
         <DataTableBody className="settings-account-table-body" data-visual-region="accounts-table-body" onScroll={syncAccountTableScroll}>
