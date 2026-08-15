@@ -76,4 +76,21 @@ describe("global Escape selection routing", () => {
     expect(api.resolveEscapeSelectionScope?.("downloads", "allgemein", "DIV")).toBe("downloads");
     expect(api.resolveEscapeSelectionScope?.("history", "accounts", "DIV")).toBe("history");
   });
+
+  it("releases the focused account row when Escape leaves account selection", () => {
+    const api = selection as typeof selection & {
+      releaseAccountSelectionFocus?: (activeElement: { closest: (selector: string) => unknown; blur: () => void } | null) => boolean;
+    };
+    let blurred = false;
+    const accountRow = {
+      closest: (selector: string) => selector === ".settings-account-row" ? {} : null,
+      blur: () => { blurred = true; }
+    };
+
+    expect(api.releaseAccountSelectionFocus).toBeTypeOf("function");
+    expect(api.releaseAccountSelectionFocus?.(accountRow)).toBe(true);
+    expect(blurred).toBe(true);
+    expect(api.releaseAccountSelectionFocus?.({ closest: () => null, blur: () => {} })).toBe(false);
+    expect(api.releaseAccountSelectionFocus?.(null)).toBe(false);
+  });
 });

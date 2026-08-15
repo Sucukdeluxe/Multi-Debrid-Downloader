@@ -28,6 +28,16 @@ export function resolveEscapeSelectionScope(
   return view === "settings" && settingsSection === "accounts" ? "accounts" : null;
 }
 
+export function releaseAccountSelectionFocus(
+  activeElement: { closest: (selector: string) => unknown; blur: () => void } | null
+): boolean {
+  if (!activeElement?.closest(".settings-account-row")) {
+    return false;
+  }
+  activeElement.blur();
+  return true;
+}
+
 /**
  * Drop selected ids whose package OR item no longer exists in the session.
  * The selection set mixes package and item ids; when entries vanish (delta

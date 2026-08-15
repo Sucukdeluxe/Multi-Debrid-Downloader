@@ -39,7 +39,7 @@ import {
   getProviderUsageDayKey
 } from "../shared/provider-daily-limits";
 import { preservePackageOrderForDisplay, sortPackageOrderByName } from "./package-order";
-import { pruneSelection, resolveEscapeSelectionScope, shouldClearDownloadSelection } from "./selection";
+import { pruneSelection, releaseAccountSelectionFocus, resolveEscapeSelectionScope, shouldClearDownloadSelection } from "./selection";
 import { buildConfiguredProviderOrder, buildScopedAccountEnabledState, getAccountDialogSelectableOptions, matchesAccountModeFilter, pruneAccountRowSelections, resolveAccountStatusState, resolveAccountUsername, resolveVisibleAccountKind, runOptimisticAccountUpdate, updateAccountRowSelection } from "./account-ui";
 import type { AccountModeFilter } from "./account-ui";
 import { buildAccountDeleteCommand, buildAccountReplaceCommand, buildAccountSecretRequest, createAccountEditState, validateAccountEdit } from "./account-edit";
@@ -4161,7 +4161,10 @@ export function App(): ReactElement {
           if (document.querySelector(".ctx-menu") || document.querySelector(".modal-backdrop")) return;
           if (selectionScope === "downloads") setSelectedIds(new Set());
           else if (selectionScope === "history") setSelectedHistoryIds(new Set());
-          else setSelectedAccountRowKeys(new Set());
+          else if (selectedAccountRowKeys.size > 0) {
+            setSelectedAccountRowKeys(new Set());
+            releaseAccountSelectionFocus(document.activeElement instanceof HTMLElement ? document.activeElement : null);
+          }
         }
       }
       if (e.key === "Delete" && tabRef.current === "downloads" && selectedIds.size > 0) {
@@ -4179,7 +4182,7 @@ export function App(): ReactElement {
     window.addEventListener("keydown", onKey);
     window.addEventListener("mousedown", onDown);
     return () => { window.removeEventListener("keydown", onKey); window.removeEventListener("mousedown", onDown); };
-  }, [requestDeleteSelection, selectedIds, settingsSubTab]);
+  }, [requestDeleteSelection, selectedAccountRowKeys, selectedIds, settingsSubTab]);
 
   const onExportBackup = async (): Promise<void> => {
     closeMenus();
