@@ -4,6 +4,39 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.42] - 2026-08-15
+
+### Real-Debrid accounts
+
+- Added support for multiple Real-Debrid API-token and browser-login accounts in the same account pool.
+- Kept every browser account in an isolated persistent or transient session so cookies, tokens, login windows, and queued actions cannot leak between accounts.
+- Added independent account activation, daily limits, daily usage, lifetime usage, status records, identity details, editing, removal, and credential reveal controls.
+- Migrated existing single-account Real-Debrid settings and browser sessions into the new pool without discarding saved credentials or account status.
+- Assigned opaque account identifiers and kept API tokens, browser tokens, cookies, and credential-derived fingerprints out of renderer state and diagnostics.
+
+### Rotation and recovery
+
+- Rotated eligible Real-Debrid API and browser accounts with fair ordering, sticky reuse, in-flight exclusion, account cooldowns, and daily-limit enforcement.
+- Continued within the same conversion request after account-specific authentication, rate-limit, timeout, and transport failures.
+- Kept provider-wide hoster failures and permanent link failures from cooling down or rotating otherwise healthy accounts.
+- Attributed downloaded traffic to the exact account that generated the unrestricted link while preserving provider-wide totals.
+- Rebuilt account rotation state immediately after live account, credential, enablement, or limit changes.
+
+### Account checks and login behavior
+
+- Refreshed an account before enabling it and rolled the toggle back when the account is invalid or cannot be checked.
+- Preserved Real-Debrid usernames and email addresses independently in browser-account status rows.
+- Prevented manually closed Real-Debrid login windows from reopening through queued or repeated work.
+- Restricted browser window creation to explicit login actions so activation, status checks, downloads, missing sessions, and fair-use failures remain noninteractive.
+- Cleaned up aborted, failed, deleted, and superseded browser sessions without allowing delayed probes to restore stale tokens or status records.
+
+### Interface and downloads
+
+- Added precise service filtering and alphabetical service ordering to the account-add dialog.
+- Kept Real-Debrid API and browser-login choices available after another Real-Debrid account has already been configured.
+- Continued link availability checks after downloads start so items cannot remain stuck on Checking while actively downloading.
+- Added account-specific login, check, edit, enable, disable, remove, and reveal actions throughout the settings interface.
+
 ## [2.0.41] - 2026-08-15
 
 ### Accounts
