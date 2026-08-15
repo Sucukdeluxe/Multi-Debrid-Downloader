@@ -723,7 +723,9 @@ describe("account workspace", () => {
     expect(count(html, 'role="separator"')).toBe(ACCOUNT_COLUMNS.length);
     expect(html).toContain('aria-label="Status Spaltenbreite ändern"');
     expect(html).toMatch(/class="settings-account-column-actions" role="columnheader">Aktion<\/span>/);
-    expect(settingsCss).toMatch(/\.settings-account-column-actions\s*{[^}]*padding-left:\s*27px/s);
+    expect(settingsCss).toMatch(/\.settings-account-column-actions\s*{[^}]*place-items:\s*center end/s);
+    expect(settingsCss).not.toMatch(/\.settings-account-column-actions\s*{[^}]*padding-left:/s);
+    expect(settingsCss).toMatch(/\.settings-account-row > \.settings-account-column-actions\s*{[^}]*padding-right:\s*19px/s);
     expect(settingsCss).not.toMatch(/\.settings-account-column-actions\s*{[^}]*transform:/s);
   });
 

@@ -668,15 +668,18 @@
   opacity: 0.72;
 }
 
-.settings-account-column-enable,
-.settings-account-column-actions {
+.settings-account-column-enable {
   display: grid;
   place-items: center;
 }
 
-.settings-account-table-grid > .settings-account-column-actions,
+.settings-account-column-actions {
+  display: grid;
+  place-items: center end;
+}
+
 .settings-account-row > .settings-account-column-actions {
-  padding-left: 27px;
+  padding-right: 19px;
 }
 
 .settings-account-hoster {
