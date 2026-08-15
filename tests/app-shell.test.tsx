@@ -35,6 +35,16 @@ describe("desktop shell", () => {
     expect(removal).toContain('title: "Ausgewählte Links löschen"');
   });
 
+  it("places the delete confirmation opt-out below the right-aligned actions", () => {
+    const source = readFileSync(new URL("../src/renderer/views/downloads/DeleteConfirmationDialog.tsx", import.meta.url), "utf8");
+    const css = readFileSync(new URL("../src/renderer/styles.css", import.meta.url), "utf8");
+
+    expect(source).toContain('className="delete-confirm-footer"');
+    expect(source.indexOf('className="modal-actions"')).toBeLessThan(source.indexOf("Nicht mehr anzeigen"));
+    expect(source).toContain('className="toggle-line delete-confirm-dont-ask"');
+    expect(css).toMatch(/\.delete-confirm-footer\s*{[^}]*display:\s*grid;[^}]*justify-items:\s*end;/s);
+  });
+
   it("does not stack renderer latency on the manager cadence for large active queues", () => {
     expect(getSnapshotRenderDelay(2_470, true, "downloads")).toBe(0);
     expect(getSnapshotRenderDelay(2_470, true, "statistics")).toBe(800);

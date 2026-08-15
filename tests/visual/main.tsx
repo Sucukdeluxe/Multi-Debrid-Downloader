@@ -1,6 +1,7 @@
 import type { ReactElement } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "../../src/renderer/App";
+import { DeleteConfirmationDialog } from "../../src/renderer/views/downloads/DeleteConfirmationDialog";
 import type { ElectronApi } from "../../src/shared/preload-api";
 import "../../src/renderer/theme.css";
 import "../../src/renderer/styles.css";
@@ -73,6 +74,19 @@ function waitForVisualFrame(
 
 export function renderVisualApp(render: (element: ReactElement) => void): void {
   render(<App />);
+}
+
+export function renderDeleteConfirmationDialog(render: (element: ReactElement) => void): void {
+  render(
+    <DeleteConfirmationDialog
+      dontAsk
+      parts={["2 Paket(e)"]}
+      totalRemaining={0}
+      onCancel={() => {}}
+      onConfirm={() => {}}
+      onDontAskChange={() => {}}
+    />
+  );
 }
 
 export async function markVisualReady(
@@ -154,6 +168,12 @@ export async function startVisualHarness(
     runtime.marker.visualScenario = scenario;
 
     const root = runtime.createRoot(rootElement);
+    if (new URLSearchParams(runtime.search).get("dialog") === "delete-confirmation") {
+      renderDeleteConfirmationDialog((element) => root.render(element));
+      await waitForVisualFrames(runtime.requestFrame);
+      runtime.marker.visualReady = "true";
+      return;
+    }
     renderVisualApp((element) => root.render(element));
 
     const readyOptions = {

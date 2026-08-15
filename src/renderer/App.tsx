@@ -96,6 +96,7 @@ import {
 } from "./views/statistics/StatisticsView";
 import { buildDownloadsViewModel, formatRemainingDownloadBytes, getDownloadQueueTotalBytes, getDownloadSpeedBps, getPendingDownloadItemCount, getRemainingDownloadBytes, type DownloadDisplayMode, type DownloadSidebarFilter } from "./views/downloads/downloads-model";
 import { downloadColumnDefinitions, type DownloadSortColumn } from "./views/downloads/DownloadsTable";
+import { DeleteConfirmationDialog } from "./views/downloads/DeleteConfirmationDialog";
 import { beginDownloadColumnDrag, clearDownloadColumnDrag, settleDownloadColumnDrag, updateDownloadColumnDrag, type DownloadColumnDragSession } from "./views/downloads/column-drag";
 import {
   DownloadsContent,
@@ -5911,25 +5912,21 @@ export function App(): ReactElement {
         if (pkgCount > 0) parts.push(`${pkgCount} Paket(e)`);
         if (itemCount > 0) parts.push(`${itemCount} Link(s)`);
         return (
-          <Dialog actions={null} danger onClose={() => setDeleteConfirm(null)} open title="Bist Du Dir sicher?">
-              <p>Möchtest Du wirklich diese Aufräumaktion(en) durchführen?<br />Ausgewählte Links löschen</p>
-              <p><strong>Zu erledigende Aufgaben:</strong><br />{parts.join(" + ")} löschen ? {totalRemaining} Link(s) verbleiben!</p>
-              <label className="toggle-line">
-                <input type="checkbox" checked={deleteConfirm.dontAsk} onChange={(e) => setDeleteConfirm((prev) => prev ? { ...prev, dontAsk: e.target.checked } : prev)} />
-                Nicht mehr anzeigen
-              </label>
-              <div className="modal-actions">
-                <button className="btn" onClick={() => setDeleteConfirm(null)}>Abbrechen</button>
-                <button className="btn danger" onClick={() => {
-                  if (deleteConfirm.dontAsk) {
-                    setSettingsDraft((prev) => ({ ...prev, confirmDeleteSelection: false }));
-                    void window.rd.updateSettings({ confirmDeleteSelection: false }).catch(() => {});
-                  }
-                  executeDeleteSelection(deleteConfirm.ids);
-                  setDeleteConfirm(null);
-                }}>Fortfahren</button>
-              </div>
-          </Dialog>
+          <DeleteConfirmationDialog
+            dontAsk={deleteConfirm.dontAsk}
+            parts={parts}
+            totalRemaining={totalRemaining}
+            onCancel={() => setDeleteConfirm(null)}
+            onConfirm={() => {
+              if (deleteConfirm.dontAsk) {
+                setSettingsDraft((prev) => ({ ...prev, confirmDeleteSelection: false }));
+                void window.rd.updateSettings({ confirmDeleteSelection: false }).catch(() => {});
+              }
+              executeDeleteSelection(deleteConfirm.ids);
+              setDeleteConfirm(null);
+            }}
+            onDontAskChange={(checked) => setDeleteConfirm((prev) => prev ? { ...prev, dontAsk: checked } : prev)}
+          />
         );
         })() : null}
 

@@ -3253,6 +3253,16 @@ td {
   flex-wrap: wrap;
 }
 
+.delete-confirm-footer {
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+}
+
+.delete-confirm-dont-ask {
+  justify-content: flex-end;
+}
+
 .account-modal-actions {
   justify-content: space-between;
   position: sticky;
