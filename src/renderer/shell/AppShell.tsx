@@ -29,7 +29,6 @@ function getServerShellMode(): ResponsiveShellMode {
 
 export interface AppShellProps {
   activeView: MainView;
-  animationsEnabled?: boolean;
   onViewChange: (view: MainView) => void;
   sidebar: ReactNode;
   sidebarStatus: ReactNode;
@@ -44,7 +43,6 @@ export interface AppShellProps {
 
 export function AppShell({
   activeView,
-  animationsEnabled = true,
   onViewChange,
   sidebar,
   sidebarStatus,
@@ -76,7 +74,7 @@ export function AppShell({
 
   return (
     <div
-      className={`md-shell is-${responsiveMode}${animationsEnabled ? " is-runtime-motion-enabled" : " is-runtime-motion-disabled"}${hasSidebar ? " has-sidebar" : ""}${hasSidebar && effectiveSidebarCollapsed ? " has-collapsed-sidebar" : ""}`}
+      className={`md-shell is-${responsiveMode}${hasSidebar ? " has-sidebar" : ""}${hasSidebar && effectiveSidebarCollapsed ? " has-collapsed-sidebar" : ""}`}
       data-responsive-mode={responsiveMode}
     >
       <AppHeader activeView={activeView} actions={headerActions} onViewChange={onViewChange} />

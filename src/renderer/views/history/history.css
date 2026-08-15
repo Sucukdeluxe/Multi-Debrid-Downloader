@@ -499,3 +499,9 @@
   }
 
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .history-detail-disclosure:not(.is-history-motion-disabled) {
+    transition-duration: 520ms, 260ms !important;
+  }
+}

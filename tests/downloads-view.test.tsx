@@ -98,6 +98,7 @@ describe("Downloadtabellen-Spalten", () => {
     expect(css).toMatch(/\.downloads-table\.is-column-drag-active \[data-download-column\]\s*\{[^}]*transform:\s*translate3d\(var\(--downloads-column-drag-x, 0px\), 0, 0\);[^}]*transition:\s*transform 220ms/s);
     expect(css).toMatch(/\.downloads-table\.is-column-drag-active \[data-column-dragging="true"\]\s*\{[^}]*transition:\s*none;/s);
     expect(css).not.toMatch(/\.downloads-table\.is-column-drag-active \[data-column-dragging="true"\]\s*\{[^}]*background:/s);
+    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.downloads-table\.is-column-drag-active \[data-download-column\][^{]*\{[^}]*transition-duration:\s*220ms !important;/s);
   });
 
   it("changes package collapse state only through user actions", () => {
@@ -333,8 +334,8 @@ describe("virtualisierte Paketanimation", () => {
     const css = fs.readFileSync(path.join(process.cwd(), "src/renderer/views/downloads/downloads.css"), "utf8");
 
     expect(DOWNLOAD_DISCLOSURE_DURATION_MS).toBe(1500);
-    expect(css).toMatch(/\.downloads-virtual-spacer\s*\{[^}]*transition:\s*height 1500ms/s);
-    expect(css).toMatch(/\.downloads-virtual-row\s*\{[^}]*transition:\s*height 1500ms[^}]*transform 1500ms[^}]*opacity 1500ms/s);
+    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.downloads-virtual-spacer\s*\{[^}]*transition-duration:\s*1500ms !important;/s);
+    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.downloads-virtual-row\s*\{[^}]*transition-duration:\s*1500ms, 1500ms, 1500ms !important;/s);
   });
 
   it("schneidet beim Einfahren den gemeinsamen Paketbereich ab statt Unterzeilen zusammenzuziehen", () => {
