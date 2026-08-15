@@ -4,12 +4,56 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.41] - 2026-08-15
+
 ### Accounts
 
 - Split account refresh into active-account and all-account checks with matching result counts.
 - Show failed check results for disabled accounts when all configured accounts are refreshed.
 - Apply individual and bulk account enablement changes immediately while settings are saved, with automatic rollback after a failed save.
 - Re-enable parent providers and Mega-Debrid modes when an individual disabled account or API key is enabled.
+- Disable the active-account refresh action when no enabled checkable account exists.
+- Added Windows-style account selection with Ctrl or Command, selected-account counts, batch removal, and global Escape clearing.
+- Removed the redundant global account activation switch so individual account toggles remain authoritative.
+- Added persistent, resizable account-table columns and retained their widths across restarts.
+- Moved the account-enabled control below the daily limit field in the account editor.
+- Added an explicit reveal action for stored credentials while keeping secrets out of renderer snapshots, diagnostics, and copied account details.
+- Kept credential reveal requests scoped to the selected account and validated through the trusted application boundary.
+- Stored Debrid-Link usernames and email addresses separately and migrated legacy cached identities that placed usernames in the email column.
+- Kept missing Debrid-Link email addresses empty instead of duplicating another identity field.
+- Simplified username and email tooltips to show only the copy action while preserving accessible labels.
+- Added a dedicated Action column with stable edge alignment across window sizes and resizable table layouts.
+- Kept account selections visually distinct without leaving a stale focus outline after Escape.
+- Prevented double-clicking an account action button from opening the account editor behind its context menu.
+- Simplified account menu headings to one hoster and access-type label without dangling separators or empty identity fields.
+
+### Downloads and queue controls
+
+- Moved the Remaining metric above the all-time Total value in the download summary.
+- Kept the currently selected priority as a disabled no-op so choosing it does not close the package context menu.
+- Reordered high, standard, and low priority packages consistently while preserving stable order inside each priority group.
+- Added smooth package movement when priority changes and extended the reorder transition to three seconds for easier visual tracking.
+- Renamed the package-only motion preference to a general animation setting shared by package disclosure, priority movement, and history details.
+- Cancelled active package movement immediately when animations are disabled.
+- Removed phantom horizontal and vertical scrollbars from newly opened package context menus.
+- Moved the cleanup confirmation opt-out below the dialog actions and aligned the decision controls consistently.
+
+### Statistics
+
+- Added a durable daily statistics ledger for downloaded data, completed files, failed results, active transfer duration, and provider outcomes.
+- Made Today, Seven Days, and 30 Days aggregate every available day immediately instead of waiting for a complete calendar window.
+- Preserved existing all-time counters while extending totals with newly recorded success, failure, duration, and provider result metrics.
+- Added real file counts, success rates, average transfer speed, failure counts, and provider result totals to ranged statistics.
+- Kept daily statistics bounded and normalized during load, save, backup export, and restore.
+
+### History and interface
+
+- Rebuilt the history table around one shared resizable grid so headers, rows, expanded details, and horizontal scrolling stay aligned.
+- Persisted history column widths and kept them responsive across compact and wide windows.
+- Anchored the history Action column to the table edge and aligned size values directly below their header.
+- Reworked expanded history details into a cleaner grouped surface for provider, files, duration, average speed, target folder, and source URLs.
+- Added smooth history expand and collapse motion governed by the general animation preference.
+- Kept history disclosure immediate when animations are disabled.
 
 ## [2.0.40] - 2026-08-15
 
