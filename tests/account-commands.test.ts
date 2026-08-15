@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { applyAccountCommand, validateAccountCommand, validateAccountCredentialCheckInput } from "../src/main/account-commands";
+import { applyAccountCommand, resolveStoredAccountSecret, setRealDebridAccountEnabled, validateAccountCommand, validateAccountCredentialCheckInput } from "../src/main/account-commands";
 import * as accountCommands from "../src/main/account-commands";
 import { defaultSettings } from "../src/main/constants";
 import { getDebridLinkApiKeyId } from "../src/shared/debrid-link-keys";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
+import { parseRealDebridApiAccounts, serializeRealDebridApiAccounts } from "../src/shared/real-debrid-accounts";
 import type { AppSettings, RendererAccountKind } from "../src/shared/types";
 
 const ORIGINAL_SECRET = "fixture-original-secret-4qV8";
@@ -43,6 +44,63 @@ const ACCOUNT_KINDS: RendererAccountKind[] = [
 ];
 
 describe("write-only account commands", () => {
+  it("manages multiple Real-Debrid API accounts without touching siblings", () => {
+    const firstToken = "fixture-rd-pool-first-1aB2";
+    const secondToken = "fixture-rd-pool-second-3cD4";
+    const replacementToken = "fixture-rd-pool-replacement-5eF6";
+    const first = applyAccountCommand(defaultSettings(), validateAccountCommand({ action: "create", kind: "realdebrid-api", secret: firstToken, dailyLimitBytes: 2 * GIB }));
+    const second = applyAccountCommand(first.settings, validateAccountCommand({ action: "create", kind: "realdebrid-api", secret: secondToken, dailyLimitBytes: 3 * GIB }));
+
+    expect(parseRealDebridApiAccounts(second.settings.realDebridApiTokens).map((entry) => entry.token)).toEqual([firstToken, secondToken]);
+    expect(second.response.accountId).toMatch(/^rda_[A-Za-z0-9_-]+$/);
+    expect(() => applyAccountCommand(second.settings, validateAccountCommand({ action: "create", kind: "realdebrid-api", secret: secondToken }))).toThrow(/ungültig/i);
+    expect(resolveStoredAccountSecret(second.settings, { kind: "realdebrid-api", accountId: first.response.accountId! })).toBe(firstToken);
+    expect(resolveStoredAccountSecret(second.settings, { kind: "realdebrid-api", accountId: second.response.accountId! })).toBe(secondToken);
+
+    const replaced = applyAccountCommand(second.settings, validateAccountCommand({
+      action: "replace",
+      kind: "realdebrid-api",
+      accountId: second.response.accountId,
+      secret: replacementToken,
+      dailyLimitBytes: 4 * GIB
+    }));
+    const replacementId = second.response.accountId!;
+    expect(parseRealDebridApiAccounts(replaced.settings.realDebridApiTokens).map((entry) => entry.token)).toEqual([firstToken, replacementToken]);
+    expect(replaced.settings.realDebridAccountDailyLimitBytes).toEqual({ [first.response.accountId!]: 2 * GIB, [replacementId]: 4 * GIB });
+
+    const deleted = applyAccountCommand(replaced.settings, validateAccountCommand({ action: "delete", kind: "realdebrid-api", accountId: first.response.accountId }));
+    expect(parseRealDebridApiAccounts(deleted.settings.realDebridApiTokens).map((entry) => entry.token)).toEqual([replacementToken]);
+    expect(deleted.response.accountId).toBe(replacementId);
+  });
+
+  it("creates, updates and deletes one Real-Debrid Web account by opaque ID", () => {
+    const first = applyAccountCommand(defaultSettings(), validateAccountCommand({ action: "create", kind: "realdebrid-web", identity: "rdw_first", dailyLimitBytes: GIB }));
+    const second = applyAccountCommand(first.settings, validateAccountCommand({ action: "create", kind: "realdebrid-web", identity: "rdw_second", dailyLimitBytes: 2 * GIB }));
+    expect(second.settings.realDebridWebAccountIds).toEqual(["rdw_first", "rdw_second"]);
+    expect(() => applyAccountCommand(second.settings, validateAccountCommand({ action: "create", kind: "realdebrid-web", identity: "rdw_second" }))).toThrow(/ungültig/i);
+
+    const replaced = applyAccountCommand(second.settings, validateAccountCommand({ action: "replace", kind: "realdebrid-web", accountId: "rdw_second", dailyLimitBytes: 3 * GIB }));
+    expect(replaced.settings.realDebridAccountDailyLimitBytes).toEqual({ rdw_first: GIB, rdw_second: 3 * GIB });
+
+    const deleted = applyAccountCommand(replaced.settings, validateAccountCommand({ action: "delete", kind: "realdebrid-web", accountId: "rdw_first" }));
+    expect(deleted.settings.realDebridWebAccountIds).toEqual(["rdw_second"]);
+    expect(deleted.settings.realDebridAccountDailyLimitBytes).toEqual({ rdw_second: 3 * GIB });
+  });
+
+  it("toggles only the selected Real-Debrid account ID", () => {
+    const firstToken = "fixture-rd-toggle-first";
+    const secondToken = "fixture-rd-toggle-second";
+    const firstId = "rda_toggleFirst";
+    const secondId = "rda_toggleSecond";
+    const settings = { ...defaultSettings(), realDebridApiTokens: serializeRealDebridApiAccounts([{ id: firstId, token: firstToken }, { id: secondId, token: secondToken }]) };
+
+    const disabled = setRealDebridAccountEnabled(settings, secondId, false);
+    expect(disabled.realDebridDisabledAccountIds).toEqual([secondId]);
+    expect(parseRealDebridApiAccounts(disabled.realDebridApiTokens).find((account) => account.id === firstId)?.enabled).toBe(true);
+
+    const enabled = setRealDebridAccountEnabled(disabled, secondId, true);
+    expect(enabled.realDebridDisabledAccountIds).toEqual([]);
+  });
   it("reveals only the exact explicitly requested stored account secret", () => {
     const api = accountCommands as typeof accountCommands & {
       resolveStoredAccountSecret?: (settings: AppSettings, request: { kind: RendererAccountKind; accountId: string }) => string;
@@ -67,6 +125,11 @@ describe("write-only account commands", () => {
     expect(api.resolveStoredAccountSecret).toBeTypeOf("function");
     expect(api.validateAccountSecretRequest).toBeTypeOf("function");
     expect(api.resolveStoredAccountSecret?.(settings, { kind: "realdebrid-api", accountId: "svc-realdebrid" })).toBe("fixture-reveal-rd-1aB2");
+    const pooled = {
+      ...settings,
+      realDebridApiTokens: serializeRealDebridApiAccounts([{ id: "rda_revealOpaque", token: "fixture-reveal-rd-1aB2" }])
+    };
+    expect(() => api.resolveStoredAccountSecret?.(pooled, { kind: "realdebrid-api", accountId: "svc-realdebrid" })).toThrow(/nicht gefunden/i);
     expect(api.resolveStoredAccountSecret?.(settings, { kind: "megadebrid-api", accountId: megaId })).toBe("fixture-reveal-mega-3cD4");
     expect(api.resolveStoredAccountSecret?.(settings, { kind: "debridlink-api", accountId: getDebridLinkApiKeyId("fixture-reveal-dl-5eF6") })).toBe("fixture-reveal-dl-5eF6");
     expect(api.resolveStoredAccountSecret?.(settings, { kind: "bestdebrid-api", accountId: "svc-bestdebrid" })).toBe("fixture-reveal-best-7gH8");

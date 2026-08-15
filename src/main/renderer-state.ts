@@ -1,5 +1,6 @@
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
 import { getMegaDebridAccountsForMode, getMegaDebridDisabledAccountIdsForMode } from "../shared/mega-debrid-accounts";
+import { getRealDebridAccounts } from "../shared/real-debrid-accounts";
 import type { AppSettings, DebridAccountStatus, DebridProvider, RendererAccount, RendererAccountKind, RendererSettings } from "../shared/types";
 import { collectAccountStatusRedactionValues, sanitizeDebridAccountStatus } from "./account-status-sanitizer";
 
@@ -51,7 +52,24 @@ function singleAccount(
 export function createRendererAccounts(settings: AppSettings): RendererAccount[] {
   const accounts: RendererAccount[] = [];
   const redactions = collectAccountStatusRedactionValues(settings);
-  if (settings.realDebridUseWebLogin || settings.token.trim()) {
+  const realDebridAccounts = getRealDebridAccounts(settings);
+  for (const account of realDebridAccounts) {
+    const status = safeStatus(settings.debridAccountStatuses[account.id], redactions);
+    accounts.push({
+      accountId: account.id,
+      kind: account.kind === "web" ? "realdebrid-web" : "realdebrid-api",
+      provider: "realdebrid",
+      identity: status?.username || "",
+      maskedIdentity: account.maskedLogin,
+      hasSecret: true,
+      enabled: providerEnabled(settings, "realdebrid") && account.enabled,
+      dailyLimitBytes: settings.realDebridAccountDailyLimitBytes[account.id] || 0,
+      dailyUsageBytes: settings.realDebridAccountDailyUsageBytes[account.id] || 0,
+      totalUsageBytes: settings.realDebridAccountTotalUsageBytes[account.id] || 0,
+      status
+    });
+  }
+  if (realDebridAccounts.length === 0 && (settings.realDebridUseWebLogin || settings.token.trim())) {
     accounts.push(singleAccount(
       settings,
       settings.realDebridUseWebLogin ? "realdebrid-web" : "realdebrid-api",

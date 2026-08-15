@@ -1,6 +1,7 @@
 import type { AccountCheckScope, AppSettings, DebridAccountStatus, DebridProvider } from "../shared/types";
 import { getMegaDebridAccountsForMode, getMegaDebridDisabledAccountIdsForMode, parseMegaDebridAccounts, type MegaDebridAccountEntry } from "../shared/mega-debrid-accounts";
 import { parseDebridLinkApiKeys, type DebridLinkApiKeyEntry } from "../shared/debrid-link-keys";
+import { getRealDebridAccounts, type RealDebridAccountEntry } from "../shared/real-debrid-accounts";
 import { logger } from "./logger";
 import { compactErrorText } from "./utils";
 
@@ -23,6 +24,15 @@ export interface RealDebridSessionProbeResult {
 }
 
 export type RealDebridSessionProbe = (signal?: AbortSignal) => Promise<RealDebridSessionProbeResult>;
+export type RealDebridSessionProbeResolver = (accountId: string, signal?: AbortSignal) => Promise<RealDebridSessionProbeResult>;
+
+export function retainConfiguredRealDebridStatuses(settings: AppSettings, statuses: readonly DebridAccountStatus[]): DebridAccountStatus[] {
+  const accountIds = new Set(getRealDebridAccounts(settings).map((account) => account.id));
+  if (accountIds.size === 0 && (settings.realDebridUseWebLogin || settings.token.trim())) {
+    accountIds.add(REAL_DEBRID_STATUS_ID);
+  }
+  return statuses.filter((status) => status.provider !== "realdebrid" || accountIds.has(status.accountId));
+}
 
 function timeoutSignal(signal: AbortSignal | undefined, ms: number): AbortSignal {
   const timeout = AbortSignal.timeout(ms);
@@ -69,18 +79,30 @@ function maskSecret(value: string): string {
 }
 
 export async function checkRealDebridAccount(
-  settings: AppSettings,
+  accountOrSettings: RealDebridAccountEntry | AppSettings,
   signal?: AbortSignal,
   now = Date.now(),
   probeWebSession?: RealDebridSessionProbe
 ): Promise<DebridAccountStatus> {
-  const token = String(settings.token || "").trim();
-  const useWebLogin = Boolean(settings.realDebridUseWebLogin);
+  const isAccount = typeof (accountOrSettings as RealDebridAccountEntry).kind === "string";
+  const account = isAccount
+    ? accountOrSettings as RealDebridAccountEntry
+    : {
+      id: REAL_DEBRID_STATUS_ID,
+      kind: (accountOrSettings as AppSettings).realDebridUseWebLogin ? "web" as const : "api" as const,
+      index: 0,
+      label: "Real-Debrid",
+      maskedLogin: (accountOrSettings as AppSettings).realDebridUseWebLogin ? "Browser-Login" : maskSecret(String((accountOrSettings as AppSettings).token || "")),
+      enabled: true,
+      ...((accountOrSettings as AppSettings).realDebridUseWebLogin ? {} : { token: String((accountOrSettings as AppSettings).token || "").trim() })
+    } as RealDebridAccountEntry;
+  const token = account.kind === "api" ? account.token.trim() : "";
+  const useWebLogin = account.kind === "web";
   const base: DebridAccountStatus = {
-    accountId: REAL_DEBRID_STATUS_ID,
+    accountId: account.id,
     provider: "realdebrid",
-    label: "Real-Debrid",
-    maskedLogin: useWebLogin ? "Browser-Login" : maskSecret(token),
+    label: account.label,
+    maskedLogin: account.maskedLogin,
     valid: false,
     isPremium: false,
     premiumUntilMs: null,
@@ -274,7 +296,7 @@ export async function checkDebridLinkKey(
 export async function checkAllDebridAccounts(
   settings: AppSettings,
   signal?: AbortSignal,
-  probeRealDebridWebSession?: RealDebridSessionProbe,
+  probeRealDebridWebSession?: RealDebridSessionProbeResolver,
   scope: AccountCheckScope = "all"
 ): Promise<DebridAccountStatus[]> {
   const now = Date.now();
@@ -298,13 +320,33 @@ export async function checkAllDebridAccounts(
     : providerEnabled("debridlink")
       ? configuredDebridLinkKeys.filter((key) => !(settings.debridLinkDisabledKeyIds || []).includes(key.id))
       : [];
-  const checkRealDebrid = Boolean(settings.realDebridUseWebLogin || String(settings.token || "").trim())
-    && (scope === "all" || providerEnabled("realdebrid"));
+  const configuredRealDebridAccounts = getRealDebridAccounts(settings);
+  const legacyRealDebridAccounts: RealDebridAccountEntry[] = configuredRealDebridAccounts.length === 0
+    && (settings.realDebridUseWebLogin || String(settings.token || "").trim())
+    ? [{
+      id: REAL_DEBRID_STATUS_ID,
+      kind: settings.realDebridUseWebLogin ? "web" : "api",
+      index: 0,
+      label: "Real-Debrid",
+      maskedLogin: settings.realDebridUseWebLogin ? "Browser-Login" : maskSecret(settings.token),
+      enabled: true,
+      ...(settings.realDebridUseWebLogin ? {} : { token: settings.token.trim() })
+    } as RealDebridAccountEntry]
+    : [];
+  const allRealDebridAccounts = configuredRealDebridAccounts.length > 0 ? configuredRealDebridAccounts : legacyRealDebridAccounts;
+  const realDebridAccounts = scope === "all"
+    ? allRealDebridAccounts
+    : providerEnabled("realdebrid") ? allRealDebridAccounts.filter((account) => account.enabled) : [];
 
   const taskFns: Array<() => Promise<DebridAccountStatus>> = [
-    ...(checkRealDebrid
-      ? [() => checkRealDebridAccount(settings, signal, now, probeRealDebridWebSession)]
-      : []),
+    ...realDebridAccounts.map((account) => () => checkRealDebridAccount(
+      account,
+      signal,
+      now,
+      account.kind === "web" && probeRealDebridWebSession
+        ? (probeSignal) => probeRealDebridWebSession(account.id, probeSignal)
+        : undefined
+    )),
     ...megaAccounts.map((account) => () => checkMegaDebridAccount(account, signal, now)),
     ...debridLinkKeys.map((key) => () => checkDebridLinkKey(key, signal, now))
   ];

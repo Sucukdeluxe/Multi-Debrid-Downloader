@@ -2,6 +2,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { getDebridLinkApiKeyIds } from "../shared/debrid-link-keys";
 import { getMegaDebridAccountIds, mergeMegaDebridCredentialPools, parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
 import { AppSettings, AudioStripSummary, BandwidthScheduleEntry, DebridAccountStatus, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, HistoryEntry, HistoryRetentionMode, LogStorageLocation, PackageEntry, PackagePriority, SessionState } from "../shared/types";
@@ -447,12 +448,13 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
   const megaDebridDisabledAccountIds = [...new Set([...megaDebridApiDisabledAccountIds, ...megaDebridWebDisabledAccountIds])];
   const legacyRealDebridToken = asText(settings.token);
   const hasRealDebridApiPool = Object.prototype.hasOwnProperty.call(settings, "realDebridApiTokens");
-  const storedRealDebridApiTokens = serializeRealDebridApiAccounts(
-    parseRealDebridApiAccounts(String(settings.realDebridApiTokens ?? "")).map((entry) => entry.token)
-  );
-  const realDebridApiTokens = hasRealDebridApiPool
-    ? storedRealDebridApiTokens
-    : serializeRealDebridApiAccounts([legacyRealDebridToken]);
+  const rawRealDebridApiAccounts = hasRealDebridApiPool
+    ? parseRealDebridApiAccounts(String(settings.realDebridApiTokens ?? ""))
+    : legacyRealDebridToken ? parseRealDebridApiAccounts(legacyRealDebridToken) : [];
+  const realDebridApiTokens = serializeRealDebridApiAccounts(rawRealDebridApiAccounts.map((account) => ({
+    id: account.id.startsWith("rda_legacy_") ? `rda_${randomUUID().replace(/-/g, "")}` : account.id,
+    token: account.token
+  })));
   const hasRealDebridWebPool = Object.prototype.hasOwnProperty.call(settings, "realDebridWebAccountIds");
   let realDebridWebAccountIds = normalizeRealDebridWebAccountIds(settings.realDebridWebAccountIds);
   if (!hasRealDebridWebPool && Boolean(settings.realDebridUseWebLogin)) {

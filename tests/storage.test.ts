@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
-import { getRealDebridApiAccountId } from "../src/shared/real-debrid-accounts";
+import { parseRealDebridApiAccounts, serializeRealDebridApiAccounts } from "../src/shared/real-debrid-accounts";
 import { AppSettings } from "../src/shared/types";
 import { defaultSettings } from "../src/main/constants";
 import { configureCredentialProtector } from "../src/main/credential-protection";
@@ -663,7 +663,6 @@ describe("settings storage", () => {
   it("migrates legacy Real-Debrid API and Web accounts with their existing status", () => {
     const checkedAt = Date.now();
     const apiToken = "legacy-real-debrid-token";
-    const apiId = getRealDebridApiAccountId(apiToken);
     const legacyApi = {
       ...defaultSettings(),
       token: apiToken,
@@ -685,8 +684,11 @@ describe("settings storage", () => {
     delete legacyApi.realDebridApiTokens;
     delete legacyApi.realDebridWebAccountIds;
     const normalizedApi = normalizeSettings(legacyApi as AppSettings);
+    const [migratedApiAccount] = parseRealDebridApiAccounts(normalizedApi.realDebridApiTokens);
+    const apiId = migratedApiAccount.id;
 
-    expect(normalizedApi.realDebridApiTokens).toBe(apiToken);
+    expect(migratedApiAccount.token).toBe(apiToken);
+    expect(apiId).toMatch(/^rda_[A-Za-z0-9_-]+$/);
     expect(normalizedApi.realDebridWebAccountIds).toEqual([]);
     expect(normalizedApi.debridAccountStatuses[apiId]).toMatchObject({
       accountId: apiId,
@@ -739,9 +741,30 @@ describe("settings storage", () => {
     expect(normalized.realDebridWebAccountIds).toEqual([]);
   });
 
+  it("keeps two opaque Real-Debrid API IDs across normalize, save and load", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-opaque-rd-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const expected = [
+      { id: "rda_persistedFirst", token: "persisted-first-token" },
+      { id: "rda_persistedSecond", token: "persisted-second-token" }
+    ];
+    const normalized = normalizeSettings({
+      ...defaultSettings(),
+      realDebridApiTokens: serializeRealDebridApiAccounts(expected)
+    });
+
+    saveSettings(paths, normalized);
+    const loaded = loadSettings(paths);
+
+    expect(parseRealDebridApiAccounts(normalized.realDebridApiTokens).map(({ id, token }) => ({ id, token }))).toEqual(expected);
+    expect(parseRealDebridApiAccounts(loaded.realDebridApiTokens).map(({ id, token }) => ({ id, token }))).toEqual(expected);
+    expect(normalizeSettings(loaded)).toEqual(loaded);
+  });
+
   it("prefers a concrete Real-Debrid status over the legacy status regardless of object order", () => {
     const token = "status-order-token";
-    const accountId = getRealDebridApiAccountId(token);
+    const accountId = "rda_statusOrder";
     const checkedAt = Date.now();
     const legacyStatus = {
       accountId: "svc-realdebrid",
@@ -767,7 +790,7 @@ describe("settings storage", () => {
     };
     const normalizeWithOrder = (entries: [string, typeof legacyStatus][]) => normalizeSettings({
       ...defaultSettings(),
-      realDebridApiTokens: token,
+      realDebridApiTokens: serializeRealDebridApiAccounts([{ id: accountId, token }]),
       debridAccountStatuses: Object.fromEntries(entries)
     }).debridAccountStatuses[accountId];
 
@@ -782,11 +805,16 @@ describe("settings storage", () => {
   });
 
   it("normalizes the Real-Debrid pool idempotently and prunes stale account maps", () => {
-    const apiId = getRealDebridApiAccountId("api-token");
+    const apiId = "rda_apiPrimary";
+    const secondApiId = "rda_apiSecond";
     const today = getProviderUsageDayKey();
     const once = normalizeSettings({
       ...defaultSettings(),
-      realDebridApiTokens: "api-token\napi-token\nsecond-token",
+      realDebridApiTokens: serializeRealDebridApiAccounts([
+        { id: apiId, token: "api-token" },
+        { id: "rda_duplicate", token: "api-token" },
+        { id: secondApiId, token: "second-token" }
+      ]),
       realDebridWebAccountIds: ["rdw_legacy", "rdw_second", "broken", "rdw_second"],
       realDebridDisabledAccountIds: [apiId, "rdw_second", "stale"],
       realDebridAccountDailyLimitBytes: { [apiId]: 1000, rdw_second: 2000, stale: 3000 },
@@ -796,7 +824,10 @@ describe("settings storage", () => {
     });
     const twice = normalizeSettings(once);
 
-    expect(once.realDebridApiTokens).toBe("api-token\nsecond-token");
+    expect(parseRealDebridApiAccounts(once.realDebridApiTokens).map((account) => ({ id: account.id, token: account.token }))).toEqual([
+      { id: apiId, token: "api-token" },
+      { id: secondApiId, token: "second-token" }
+    ]);
     expect(once.realDebridWebAccountIds).toEqual(["rdw_legacy", "rdw_second"]);
     expect(once.realDebridDisabledAccountIds).toEqual([apiId, "rdw_second"]);
     expect(once.realDebridAccountDailyLimitBytes).toEqual({ [apiId]: 1000, rdw_second: 2000 });
@@ -806,10 +837,10 @@ describe("settings storage", () => {
   });
 
   it("resets stale per-account Real-Debrid daily usage", () => {
-    const apiId = getRealDebridApiAccountId("api-token");
+    const apiId = "rda_staleUsage";
     const normalized = normalizeSettings({
       ...defaultSettings(),
-      realDebridApiTokens: "api-token",
+      realDebridApiTokens: serializeRealDebridApiAccounts([{ id: apiId, token: "api-token" }]),
       providerDailyUsageDay: "2001-01-01",
       realDebridAccountDailyUsageBytes: { [apiId]: 4000 },
       realDebridAccountTotalUsageBytes: { [apiId]: 9000 }

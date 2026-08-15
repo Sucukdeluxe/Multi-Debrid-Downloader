@@ -3,8 +3,30 @@ import { defaultSettings } from "../src/main/constants";
 import { overlayLiveUsageCounters } from "../src/main/settings-live-overlay";
 import { getDebridLinkApiKeyId } from "../src/shared/debrid-link-keys";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
+import { serializeRealDebridApiAccounts } from "../src/shared/real-debrid-accounts";
 
 describe("live settings overlay", () => {
+  it("keeps only live Real-Debrid status and usage for accounts still configured", () => {
+    const keepToken = "fixture-overlay-rd-keep";
+    const removedToken = "fixture-overlay-rd-removed";
+    const keepId = "rda_overlayKeep";
+    const removedId = "rda_overlayRemoved";
+    const target = { ...defaultSettings(), realDebridApiTokens: serializeRealDebridApiAccounts([{ id: keepId, token: keepToken }]) };
+    const status = (accountId: string) => ({ accountId, provider: "realdebrid" as const, label: "Real-Debrid", maskedLogin: "Geschützt", valid: true, isPremium: true, premiumUntilMs: null, message: "Premium aktiv", checkedAt: 1 });
+    const live = {
+      ...defaultSettings(),
+      realDebridApiTokens: serializeRealDebridApiAccounts([{ id: keepId, token: keepToken }, { id: removedId, token: removedToken }]),
+      realDebridAccountDailyUsageBytes: { [keepId]: 10, [removedId]: 20 },
+      realDebridAccountTotalUsageBytes: { [keepId]: 100, [removedId]: 200 },
+      debridAccountStatuses: { [keepId]: status(keepId), [removedId]: status(removedId) }
+    };
+
+    overlayLiveUsageCounters(target, live, 1);
+
+    expect(target.realDebridAccountDailyUsageBytes).toEqual({ [keepId]: 10 });
+    expect(target.realDebridAccountTotalUsageBytes).toEqual({ [keepId]: 100 });
+    expect(target.debridAccountStatuses).toEqual({ [keepId]: status(keepId) });
+  });
   it("keeps current Mega-Debrid counters and drops data for identities no longer configured", () => {
     const keepMegaId = getMegaDebridAccountId("keep@example.com");
     const removedMegaId = getMegaDebridAccountId("removed@example.com");

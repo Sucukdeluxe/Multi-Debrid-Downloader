@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import crypto from "node:crypto";
 import { defaultSettings } from "../src/main/constants";
 import { createRendererState } from "../src/main/renderer-state";
 import { getDebridLinkApiKeyId } from "../src/shared/debrid-link-keys";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
+import { serializeRealDebridApiAccounts } from "../src/shared/real-debrid-accounts";
 import type { AppSettings, RendererAccountKind } from "../src/shared/types";
 
 const SECRETS = {
@@ -38,6 +40,35 @@ const ACCOUNT_FIXTURES: Array<{
 ];
 
 describe("renderer state serialization", () => {
+  it("projects distinct Real-Debrid API and Web rows with per-account state", () => {
+    const firstToken = "fixture-renderer-rd-first-1aB2";
+    const secondToken = "fixture-renderer-rd-second-3cD4";
+    const firstId = "rda_rendererFirst";
+    const secondId = "rda_rendererSecond";
+    const settings = {
+      ...defaultSettings(),
+      realDebridApiTokens: serializeRealDebridApiAccounts([{ id: firstId, token: firstToken }, { id: secondId, token: secondToken }]),
+      realDebridWebAccountIds: ["rdw_first"],
+      realDebridDisabledAccountIds: [secondId],
+      realDebridAccountDailyLimitBytes: { [firstId]: 100 },
+      realDebridAccountDailyUsageBytes: { [firstId]: 25 },
+      realDebridAccountTotalUsageBytes: { [firstId]: 500 },
+      debridAccountStatuses: {
+        [firstId]: { accountId: firstId, provider: "realdebrid" as const, label: "API-Token 1", maskedLogin: "Geschützter API-Token", valid: true, isPremium: true, premiumUntilMs: null, message: "Premium aktiv", checkedAt: 1 }
+      }
+    };
+    const state = createRendererState(settings);
+    const realDebridRows = state.accounts.filter((account) => account.provider === "realdebrid");
+
+    expect(realDebridRows).toEqual([
+      expect.objectContaining({ accountId: firstId, kind: "realdebrid-api", enabled: true, dailyLimitBytes: 100, dailyUsageBytes: 25, totalUsageBytes: 500, status: expect.objectContaining({ accountId: firstId }) }),
+      expect.objectContaining({ accountId: secondId, kind: "realdebrid-api", enabled: false }),
+      expect.objectContaining({ accountId: "rdw_first", kind: "realdebrid-web", enabled: true })
+    ]);
+    expect(JSON.stringify(state)).not.toContain(firstToken);
+    expect(JSON.stringify(state)).not.toContain(secondToken);
+    expect(realDebridRows[0].accountId).not.toBe(`rda_${crypto.createHash("sha256").update(firstToken).digest("hex").slice(0, 32)}`);
+  });
   it.each(ACCOUNT_FIXTURES)("serializes $kind without its representative secret", ({ kind, secret, settings }) => {
     const state = createRendererState({ ...defaultSettings(), ...settings });
 

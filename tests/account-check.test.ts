@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { checkMegaDebridAccount, checkDebridLinkKey, checkAllDebridAccounts, checkRealDebridAccount, REAL_DEBRID_STATUS_ID } from "../src/main/account-check";
+import { checkMegaDebridAccount, checkDebridLinkKey, checkAllDebridAccounts, checkRealDebridAccount, REAL_DEBRID_STATUS_ID, retainConfiguredRealDebridStatuses } from "../src/main/account-check";
 import type { MegaDebridAccountEntry } from "../src/shared/mega-debrid-accounts";
 import { getDebridLinkApiKeyId, type DebridLinkApiKeyEntry } from "../src/shared/debrid-link-keys";
 import type { AppSettings } from "../src/shared/types";
 import { defaultSettings } from "../src/main/constants";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
+import { getRealDebridAccounts, serializeRealDebridApiAccounts } from "../src/shared/real-debrid-accounts";
 
 function megaAccount(login = "user@example.com"): MegaDebridAccountEntry {
   return { id: "mda_test", login, password: "pw", index: 0, label: "Account 1", maskedLogin: "us**le" };
@@ -122,6 +123,13 @@ describe("checkDebridLinkKey", () => {
 });
 
 describe("checkRealDebridAccount", () => {
+  it("keys every API account status by its concrete pool identity", async () => {
+    const token = "rd-api-pool-token";
+    mockFetchOnce(200, { username: "api-user", type: "premium", expiration: new Date(NOW + 100_000).toISOString() });
+    const account = getRealDebridAccounts({ realDebridApiTokens: serializeRealDebridApiAccounts([{ id: "rda_checkOpaque", token }]) })[0];
+    const status = await checkRealDebridAccount(account, undefined, NOW);
+    expect(status.accountId).toBe("rda_checkOpaque");
+  });
   it("keeps browser-session username and email in separate status fields", async () => {
     const premiumUntilMs = NOW + 30 * 24 * 60 * 60 * 1000;
     const probe = vi.fn(async () => ({
@@ -173,6 +181,36 @@ describe("checkRealDebridAccount", () => {
 });
 
 describe("checkAllDebridAccounts", () => {
+  it("discards a late Real-Debrid result after its account was removed", () => {
+    const removedId = "rda_removedAfterCheck";
+    const lateStatus = { accountId: removedId, provider: "realdebrid" as const, label: "API-Token 1", maskedLogin: "Geschützt", valid: true, isPremium: true, premiumUntilMs: null, message: "Premium aktiv", checkedAt: NOW };
+    expect(retainConfiguredRealDebridStatuses(defaultSettings(), [lateStatus])).toEqual([]);
+  });
+  it("checks only enabled Real-Debrid pool entries in active scope and all entries in all scope", async () => {
+    const firstToken = "rd-pool-active";
+    const secondToken = "rd-pool-disabled";
+    const activeId = "rda_poolActive";
+    const disabledId = "rda_poolDisabled";
+    const settings = {
+      ...defaultSettings(),
+      realDebridApiTokens: serializeRealDebridApiAccounts([{ id: activeId, token: firstToken }, { id: disabledId, token: secondToken }]),
+      realDebridWebAccountIds: ["rdw_first", "rdw_second"],
+      realDebridDisabledAccountIds: [disabledId, "rdw_second"]
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ username: "api", type: "premium" }) })) as unknown as typeof fetch);
+    const probedAccountIds: string[] = [];
+    const probe = vi.fn(async (accountId: string) => {
+      probedAccountIds.push(accountId);
+      return { valid: true, isPremium: true, username: "web" };
+    });
+
+    const active = await checkAllDebridAccounts(settings, undefined, probe, "active");
+    const all = await checkAllDebridAccounts(settings, undefined, probe, "all");
+
+    expect(active.map((status) => status.accountId)).toEqual([activeId, "rdw_first"]);
+    expect(all.map((status) => status.accountId)).toEqual([activeId, disabledId, "rdw_first", "rdw_second"]);
+    expect(probedAccountIds).toEqual(["rdw_first", "rdw_first", "rdw_second"]);
+  });
   it("returns empty array when nothing configured", async () => {
     const settings = { megaCredentials: "", megaPassword: "", debridLinkApiKeys: "" } as unknown as AppSettings;
     const result = await checkAllDebridAccounts(settings);

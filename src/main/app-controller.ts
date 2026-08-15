@@ -1,6 +1,7 @@
 import path from "node:path";
 import os from "node:os";
 import v8 from "node:v8";
+import { randomUUID } from "node:crypto";
 import { app } from "electron";
 import {
   AddLinksPayload,
@@ -33,10 +34,11 @@ import { importDlcContainers } from "./container";
 import { APP_VERSION, ONLINE_BACKUP_API_URL } from "./constants";
 import { DownloadManager } from "./download-manager";
 import { fetchAllDebridHostInfo, fetchDebridLinkHostLimits } from "./debrid";
-import { checkAllDebridAccounts, checkDebridLinkKey, checkMegaDebridAccount, checkRealDebridAccount } from "./account-check";
+import { checkAllDebridAccounts, checkDebridLinkKey, checkMegaDebridAccount, checkRealDebridAccount, retainConfiguredRealDebridStatuses } from "./account-check";
 import { parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
 import { getMegaDebridAccountsForMode } from "../shared/mega-debrid-accounts";
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
+import { getRealDebridAccounts } from "../shared/real-debrid-accounts";
 import { applyAccountCommand, resolveStoredAccountSecret } from "./account-commands";
 import { collectAccountStatusRedactionValues, sanitizeDebridAccountStatus, sanitizeDebridAccountStatuses } from "./account-status-sanitizer";
 import { createRendererState } from "./renderer-state";
@@ -524,6 +526,11 @@ export class AppController {
       if (!key) throw new Error("Account-Payload ist ungültig");
       checkedStatus = await checkDebridLinkKey(key);
     }
+    if (command.action !== "delete" && applied.response.accountId && command.kind === "realdebrid-api") {
+      const account = getRealDebridAccounts(applied.settings).find((entry) => entry.id === applied.response.accountId && entry.kind === "api");
+      if (!account) throw new Error("Account-Payload ist ungültig");
+      checkedStatus = await checkRealDebridAccount(account);
+    }
     if (checkedStatus) {
       checkedStatus = sanitizeDebridAccountStatus(checkedStatus, redactions);
     }
@@ -547,19 +554,28 @@ export class AppController {
     const redactions = collectAccountStatusRedactionValues(this.settings, input);
     if (input.kind === "realdebrid-api" || input.kind === "realdebrid-web") {
       const useWebLogin = input.kind === "realdebrid-web";
-      const settings = input.secret?.trim()
-        ? { ...this.settings, token: input.secret.trim(), realDebridUseWebLogin: useWebLogin }
-        : { ...this.settings, realDebridUseWebLogin: useWebLogin };
+      const account = input.secret?.trim() && !useWebLogin
+        ? {
+          id: `rda_${randomUUID().replace(/-/g, "")}`,
+          kind: "api" as const,
+          index: 0,
+          label: "Real-Debrid",
+          maskedLogin: "Geschützter API-Token",
+          enabled: true,
+          token: input.secret.trim()
+        }
+        : getRealDebridAccounts(this.settings).find((entry) => entry.id === input.accountId && entry.kind === (useWebLogin ? "web" : "api"));
+      if (!account) throw new Error("Account-Payload ist ungültig");
       const status = sanitizeDebridAccountStatus(
         await checkRealDebridAccount(
-          settings,
+          account,
           undefined,
           Date.now(),
           useWebLogin ? (signal) => this.realDebridWebFallback.probeLoginState(signal) : undefined
         ),
         redactions
       );
-      if (!input.secret && useWebLogin === this.settings.realDebridUseWebLogin) {
+      if (!input.secret && getRealDebridAccounts(this.settings).some((entry) => entry.id === status.accountId)) {
         this.manager.applyDebridAccountStatuses([status]);
       }
       return status;
@@ -613,12 +629,13 @@ export class AppController {
   }
 
   private async refreshRealDebridWebStatus(): Promise<void> {
-    if (!this.settings.realDebridUseWebLogin) {
+    const account = getRealDebridAccounts(this.settings).find((entry) => entry.kind === "web");
+    if (!account) {
       return;
     }
     const status = sanitizeDebridAccountStatus(
       await checkRealDebridAccount(
-        this.settings,
+        account,
         undefined,
         Date.now(),
         (signal) => this.realDebridWebFallback.probeLoginState(signal)
@@ -658,15 +675,16 @@ export class AppController {
   }
 
   public async checkDebridAccounts(scope: AccountCheckScope = "active"): Promise<DebridAccountStatus[]> {
-    const statuses = sanitizeDebridAccountStatuses(
+    const checkedStatuses = sanitizeDebridAccountStatuses(
       await checkAllDebridAccounts(
         this.settings,
         undefined,
-        (signal) => this.realDebridWebFallback.probeLoginState(signal),
+        (_accountId, signal) => this.realDebridWebFallback.probeLoginState(signal),
         scope
       ),
       collectAccountStatusRedactionValues(this.settings)
     );
+    const statuses = retainConfiguredRealDebridStatuses(this.settings, checkedStatuses);
     this.manager.applyDebridAccountStatuses(statuses);
     this.audit("INFO", "Debrid-Accounts geprueft", {
       total: statuses.length,
