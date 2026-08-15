@@ -13785,3 +13785,86 @@ describe("mega-debrid api/web resolution overlap gate", () => {
     expect((manager as any).shouldDelayStartForItem(candidate)).toBe(true);
   });
 });
+
+describe("package priority ordering", () => {
+  function buildPriorityManager(priorities: Array<[string, "high" | "normal" | "low"]>): {
+    manager: DownloadManager;
+    session: ReturnType<typeof emptySession>;
+  } {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-priority-order-"));
+    tempDirs.push(root);
+    const session = emptySession();
+    const createdAt = Date.now();
+    for (const [id, priority] of priorities) {
+      session.packageOrder.push(id);
+      session.packages[id] = {
+        id,
+        name: id,
+        outputDir: path.join(root, "downloads", id),
+        extractDir: path.join(root, "extract", id),
+        status: "queued",
+        itemIds: [],
+        cancelled: false,
+        enabled: true,
+        priority,
+        createdAt,
+        updatedAt: createdAt
+      };
+    }
+    return {
+      manager: new DownloadManager(defaultSettings(), session, createStoragePaths(path.join(root, "state"))),
+      session
+    };
+  }
+
+  it("moves a package set to low priority behind every normal package", () => {
+    const { manager, session } = buildPriorityManager([
+      ["high-a", "high"],
+      ["target", "normal"],
+      ["normal-b", "normal"],
+      ["low-a", "low"]
+    ]);
+
+    manager.setPackagePriority("target", "low");
+
+    expect(session.packageOrder).toEqual(["high-a", "normal-b", "low-a", "target"]);
+  });
+
+  it("moves a package set to high priority ahead of every normal package", () => {
+    const { manager, session } = buildPriorityManager([
+      ["high-a", "high"],
+      ["normal-a", "normal"],
+      ["target", "normal"],
+      ["low-a", "low"]
+    ]);
+
+    manager.setPackagePriority("target", "high");
+
+    expect(session.packageOrder).toEqual(["high-a", "target", "normal-a", "low-a"]);
+  });
+
+  it("moves a package returned to normal between high and low priority groups", () => {
+    const { manager, session } = buildPriorityManager([
+      ["high-a", "high"],
+      ["normal-a", "normal"],
+      ["low-a", "low"],
+      ["target", "low"]
+    ]);
+
+    manager.setPackagePriority("target", "normal");
+
+    expect(session.packageOrder).toEqual(["high-a", "normal-a", "target", "low-a"]);
+  });
+
+  it("keeps an unchanged priority in place", () => {
+    const { manager, session } = buildPriorityManager([
+      ["high-a", "high"],
+      ["high-b", "high"],
+      ["normal-a", "normal"]
+    ]);
+
+    manager.setPackagePriority("high-a", "high");
+
+    expect(session.packageOrder).toEqual(["high-a", "high-b", "normal-a"]);
+  });
+});

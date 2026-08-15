@@ -6114,7 +6114,7 @@ export function App(): ReactElement {
                   const label = p === "high" ? "Hoch" : p === "low" ? "Niedrig" : "Standard";
                   const pkgIds = selectedPackageIds;
                   const allMatch = pkgIds.every((id) => (snapshot.session.packages[id]?.priority || "normal") === p);
-                  return <button key={p} className={`ctx-menu-item${allMatch ? " ctx-menu-active" : ""}`} onClick={() => { for (const id of pkgIds) void window.rd.setPackagePriority(id, p).catch(() => {}); setContextMenu(null); }}>{allMatch ? `[Aktiv] ${label}` : label}</button>;
+                  return <button key={p} className={`ctx-menu-item${allMatch ? " ctx-menu-active" : ""}`} disabled={allMatch} onClick={() => { for (const id of pkgIds) void window.rd.setPackagePriority(id, p).catch(() => {}); setContextMenu(null); }}>{allMatch ? `[Aktiv] ${label}` : label}</button>;
                 })}
               </div>
             </div>

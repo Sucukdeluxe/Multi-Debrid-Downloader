@@ -1171,6 +1171,12 @@ describe("downloads view", () => {
 });
 
 describe("downloads App integration", () => {
+  it("keeps the priority menu open when the selected priority is already active", () => {
+    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+
+    expect(source).toMatch(/disabled=\{allMatch\}[\s\S]{0,260}window\.rd\.setPackagePriority/);
+  });
+
   it("updates the clipboard checkbox optimistically before IPC reconciliation", () => {
     const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8").replaceAll("\r\n", "\n");
 

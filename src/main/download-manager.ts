@@ -5504,23 +5504,25 @@ export class DownloadManager extends EventEmitter {
     const pkg = this.session.packages[packageId];
     if (!pkg) return;
     if (priority !== "high" && priority !== "normal" && priority !== "low") return;
+    if ((pkg.priority || "normal") === priority) return;
     pkg.priority = priority;
     pkg.updatedAt = nowMs();
 
-    if (priority === "high") {
-      const order = this.session.packageOrder;
-      const idx = order.indexOf(packageId);
-      if (idx > 0) {
-        order.splice(idx, 1);
-        let insertAt = 0;
-        for (let i = 0; i < order.length; i++) {
-          const p = this.session.packages[order[i]];
-          if (p && p.priority === "high") {
-            insertAt = i + 1;
-          }
+    const order = this.session.packageOrder;
+    const currentIndex = order.indexOf(packageId);
+    if (currentIndex >= 0) {
+      order.splice(currentIndex, 1);
+      const priorityRank: Record<PackagePriority, number> = { high: 0, normal: 1, low: 2 };
+      let insertAt = order.length;
+      for (let index = 0; index < order.length; index += 1) {
+        const other = this.session.packages[order[index]];
+        const otherPriority = other?.priority || "normal";
+        if (priorityRank[otherPriority] > priorityRank[priority]) {
+          insertAt = index;
+          break;
         }
-        order.splice(insertAt, 0, packageId);
       }
+      order.splice(insertAt, 0, packageId);
     }
 
     this.persistSoon();
