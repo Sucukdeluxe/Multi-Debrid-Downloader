@@ -65,7 +65,7 @@ export function resizeAccountTableColumn(
 }
 
 export function getAccountTableGridTemplate(widths: AccountTableColumnWidths): string {
-  return `42px ${ACCOUNT_TABLE_COLUMN_IDS.map((id) => `${widths[id]}px`).join(" ")} 64px`;
+  return `42px ${ACCOUNT_TABLE_COLUMN_IDS.map((id) => `${widths[id]}px`).join(" ")} minmax(64px, 1fr)`;
 }
 
 export function getAccountTableMinWidth(widths: AccountTableColumnWidths): number {

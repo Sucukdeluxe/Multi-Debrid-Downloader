@@ -724,7 +724,7 @@ describe("account workspace", () => {
     expect(html).toContain('aria-label="Status Spaltenbreite ändern"');
     expect(html).toMatch(/class="settings-account-column-actions" role="columnheader">Aktion<\/span>/);
     expect(settingsCss).not.toMatch(/\.settings-account-column-actions\s*{[^}]*padding-right:/s);
-    expect(settingsCss).toMatch(/\.settings-account-column-actions\s*{[^}]*transform:\s*translateX\(20px\)/s);
+    expect(settingsCss).not.toMatch(/\.settings-account-column-actions\s*{[^}]*transform:/s);
   });
 
   it("offers separate checks for active accounts and every configured account", () => {
@@ -766,6 +766,7 @@ describe("account workspace", () => {
     expect(widened.status).toBeGreaterThan(initial.status);
     expect(narrowed.status).toBeGreaterThanOrEqual(120);
     expect(api.getAccountTableGridTemplate?.(widened)).toContain(`${widened.status}px`);
+    expect(api.getAccountTableGridTemplate?.(widened)).toMatch(/minmax\(64px, 1fr\)$/);
   });
 
   it("keeps row selection, enable toggles, edit and context actions separate", () => {
