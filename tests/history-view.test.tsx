@@ -8,9 +8,13 @@ import {
   deriveHistoryHoster,
   deriveHistoryStartAt,
   filterHistoryRows,
+  createHistoryTableColumnWidths,
+  getHistoryTableGridTemplate,
+  getHistoryTableMinWidth,
   HISTORY_PAGE_SIZE,
   paginateHistoryRows,
   pruneHistoryIds,
+  resizeHistoryTableColumn,
   selectVisibleHistoryIds,
   type HistoryFilter,
   type HistoryViewEntry
@@ -234,6 +238,28 @@ describe("history model", () => {
 });
 
 describe("HistoryView", () => {
+  it("uses bounded persistent widths and one exact grid for history headers and rows", () => {
+    const defaults = createHistoryTableColumnWidths();
+    const resized = resizeHistoryTableColumn(defaults, "status", 80);
+    const clamped = createHistoryTableColumnWidths({ ...defaults, name: -500, completed: 9000 });
+
+    expect(resized.status).toBe(defaults.status + 80);
+    expect(clamped.name).toBeGreaterThan(0);
+    expect(clamped.completed).toBeLessThan(9000);
+    expect(getHistoryTableGridTemplate(resized)).toContain(`${resized.status}px`);
+    expect(getHistoryTableMinWidth(resized)).toBeGreaterThan(getHistoryTableMinWidth(defaults));
+
+    const html = renderToStaticMarkup(
+      <HistoryView
+        actions={createActions()}
+        model={buildHistoryViewModel(entries.slice(0, 2), "all", "", [], [], false, "", now)}
+      />
+    );
+    const template = getHistoryTableGridTemplate(defaults).replaceAll(" ", " ");
+    expect(html.match(new RegExp(`grid-template-columns:${template.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "g"))).toHaveLength(3);
+    expect(html.match(/Spaltenbreite ändern/g)).toHaveLength(6);
+  });
+
   it("builds the complete page status as one localizable text value", () => {
     expect(historyPageStatusLabel({ page: 2, pageSize: 100, rangeLabel: "101–200 von 250", rows: [], totalItems: 250, totalPages: 3 }))
       .toBe("Seite 2 von 3");
@@ -320,7 +346,7 @@ describe("HistoryView", () => {
     expect(html.match(/data-sliding-selection-active="true"/g)).toHaveLength(1);
   });
 
-  it("keeps the header and rows inside the same internal horizontal scroll context", () => {
+  it("keeps one clipped header synchronized with the scrollable history rows", () => {
     const html = renderToStaticMarkup(
       <HistoryView
         actions={createActions()}
@@ -335,10 +361,9 @@ describe("HistoryView", () => {
     expect(tableStart).toBeGreaterThan(-1);
     expect(headerStart).toBeGreaterThan(tableStart);
     expect(bodyStart).toBeGreaterThan(headerStart);
-    expect(css).toMatch(/\.history-content \.history-table\s*\{[^}]*overflow:\s*auto;/s);
-    expect(css).toMatch(/\.history-table > \.history-table-header\s*\{[^}]*position:\s*sticky;[^}]*top:\s*0;/s);
-    expect(css).toMatch(/\.history-table > \.history-table-body\s*\{[^}]*overflow:\s*visible;/s);
-    expect(css).not.toMatch(/\.history-table > \.history-table-body\s*\{[^}]*overflow:\s*auto;/s);
+    expect(css).toMatch(/\.history-content \.history-table\s*\{[^}]*overflow:\s*hidden;/s);
+    expect(css).toMatch(/\.history-table > \.history-table-header\s*\{[^}]*overflow:\s*hidden;/s);
+    expect(css).toMatch(/\.history-table > \.history-table-body\s*\{[^}]*overflow:\s*auto;/s);
   });
 
   it("keeps every real AppShell history surface non-selectable while allowing text selection only for detail values", () => {
@@ -393,7 +418,7 @@ describe("HistoryView", () => {
     expect(html).not.toMatch(/>Start<|>Pause<|>Stop<|Priorität/);
   });
 
-  it("matches the download action control and centers every header except package and file", () => {
+  it("matches the download action control and aligns every header with its data column", () => {
     const model = buildHistoryViewModel(entries.slice(0, 1), "all", "", [], [], false, "", now);
     const content = HistoryContentPage({
       actions: createActions(),
@@ -406,8 +431,9 @@ describe("HistoryView", () => {
 
     expect(actionCell.props.children.props.children).toBe("⋮");
     expect(styles).toMatch(/\.history-row-action button\s*\{[^}]*background:\s*var\(--ui-input\);[^}]*border:\s*1px solid var\(--ui-border\);[^}]*height:\s*30px;[^}]*width:\s*30px;/s);
-    expect(styles).toMatch(/\.history-table-header-row > span\s*\{[^}]*text-align:\s*center;/s);
-    expect(styles).toMatch(/\.history-table-header-row > span:nth-child\(2\)\s*\{[^}]*text-align:\s*left;/s);
+    expect(styles).toMatch(/\.history-table-header-row > span,\s*\.history-row > span\s*\{[^}]*text-align:\s*left;/s);
+    expect(styles).toMatch(/\.history-table-header-row > span:nth-child\(4\),\s*\.history-row > span:nth-child\(4\)\s*\{[^}]*text-align:\s*right;/s);
+    expect(styles).toMatch(/\.history-row-action\s*\{[^}]*place-items:\s*center;/s);
   });
 
   it("renders each visual marker once, occupied main rows separately from closed detail rows and an honest footer", () => {

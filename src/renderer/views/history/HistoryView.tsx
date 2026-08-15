@@ -1,4 +1,13 @@
-import { useEffect, useState, type ChangeEvent, type MouseEvent, type ReactElement } from "react";
+import {
+  useEffect,
+  useState,
+  type ChangeEvent,
+  type KeyboardEvent,
+  type MouseEvent,
+  type PointerEvent,
+  type ReactElement,
+  type UIEvent
+} from "react";
 import {
   DataTable,
   DataTableBody,
@@ -7,7 +16,20 @@ import {
 } from "../../ui/DataTable";
 import { Toolbar, ToolbarGroup, ToolbarSearch } from "../../ui/Toolbar";
 import { SlidingSelection } from "../../ui/SlidingSelection";
-import { paginateHistoryRows, type HistoryFilter, type HistoryPage, type HistoryRow, type HistoryViewModel } from "./history-model";
+import {
+  createHistoryTableColumnWidths,
+  getHistoryTableGridTemplate,
+  getHistoryTableMinWidth,
+  HISTORY_TABLE_COLUMN_IDS,
+  paginateHistoryRows,
+  resizeHistoryTableColumn,
+  type HistoryFilter,
+  type HistoryPage,
+  type HistoryRow,
+  type HistoryTableColumnId,
+  type HistoryTableColumnWidths,
+  type HistoryViewModel
+} from "./history-model";
 import "./history.css";
 
 export interface HistoryViewActions {
@@ -39,9 +61,49 @@ const filterItems: Array<{ id: HistoryFilter; label: string }> = [
   { id: "failed", label: "Fehlgeschlagen" }
 ];
 
-function HistoryRowDetails({ row }: { row: HistoryRow }): ReactElement {
+const HISTORY_TABLE_COLUMNS = ["Paket / Datei", "Status", "Größe", "Hoster", "Gestartet", "Beendet"] as const;
+const HISTORY_TABLE_COLUMN_STORAGE_KEY = "mdd.history-table-columns.v1";
+let historyTableResizeSession: { column: HistoryTableColumnId; startX: number; initial: HistoryTableColumnWidths } | null = null;
+
+function loadHistoryTableColumnWidths(): HistoryTableColumnWidths {
+  try {
+    const stored = typeof window === "undefined" ? null : window.localStorage.getItem(HISTORY_TABLE_COLUMN_STORAGE_KEY);
+    return createHistoryTableColumnWidths(stored ? JSON.parse(stored) : undefined);
+  } catch {
+    return createHistoryTableColumnWidths();
+  }
+}
+
+function applyHistoryTableColumnWidths(source: HTMLElement, widths: HistoryTableColumnWidths): void {
+  const table = source.closest(".history-table");
+  if (!table) return;
+  const template = getHistoryTableGridTemplate(widths);
+  const minWidth = `${getHistoryTableMinWidth(widths)}px`;
+  table.querySelectorAll<HTMLElement>(".history-table-header-row, .history-row, .history-detail-row").forEach((row) => {
+    if (!row.classList.contains("history-detail-row")) {
+      row.style.gridTemplateColumns = template;
+    }
+    row.style.minWidth = minWidth;
+  });
+}
+
+function persistHistoryTableColumnWidths(widths: HistoryTableColumnWidths): void {
+  try {
+    window.localStorage.setItem(HISTORY_TABLE_COLUMN_STORAGE_KEY, JSON.stringify(widths));
+  } catch {
+  }
+}
+
+function syncHistoryTableScroll(event: UIEvent<HTMLDivElement>): void {
+  const header = event.currentTarget.parentElement?.querySelector<HTMLElement>(".history-table-header");
+  if (header) {
+    header.scrollLeft = event.currentTarget.scrollLeft;
+  }
+}
+
+function HistoryRowDetails({ row, minWidth }: { row: HistoryRow; minWidth: number }): ReactElement {
   return (
-    <div className="history-detail-row" role="row">
+    <div className="history-detail-row" role="row" style={{ minWidth }}>
       <div className="history-detail-cell" role="cell">
         <dl className="history-details-grid">
           <div><dt>Provider</dt><dd>{row.providerLabel}</dd></div>
@@ -164,13 +226,42 @@ export function HistoryContentPage({ model, actions, page, onPageChange }: Histo
     : model.error
       ? { role: "alert" as const, live: "assertive" as const, message: `${model.error}. Öffne die Ansicht erneut, um es noch einmal zu versuchen.` }
       : null;
+  const columnWidths = loadHistoryTableColumnWidths();
+  const gridTemplateColumns = getHistoryTableGridTemplate(columnWidths);
+  const minWidth = getHistoryTableMinWidth(columnWidths);
+  const beginResize = (event: PointerEvent<HTMLButtonElement>, column: HistoryTableColumnId): void => {
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    historyTableResizeSession = { column, startX: event.clientX, initial: loadHistoryTableColumnWidths() };
+  };
+  const continueResize = (event: PointerEvent<HTMLButtonElement>): void => {
+    const active = historyTableResizeSession;
+    if (!active) return;
+    const next = resizeHistoryTableColumn(active.initial, active.column, event.clientX - active.startX);
+    applyHistoryTableColumnWidths(event.currentTarget, next);
+    persistHistoryTableColumnWidths(next);
+  };
+  const finishResize = (event: PointerEvent<HTMLButtonElement>): void => {
+    if (!historyTableResizeSession) return;
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    historyTableResizeSession = null;
+  };
+  const resizeWithKeyboard = (event: KeyboardEvent<HTMLButtonElement>, column: HistoryTableColumnId): void => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    event.stopPropagation();
+    const next = resizeHistoryTableColumn(loadHistoryTableColumnWidths(), column, event.key === "ArrowRight" ? 16 : -16);
+    applyHistoryTableColumnWidths(event.currentTarget, next);
+    persistHistoryTableColumnWidths(next);
+  };
 
   return (
     <section aria-label="Verlaufstabelle" className="history-content">
       <h1 className="history-main-title">Verlauf</h1>
       <DataTable className="history-table" label="Verlauf">
         <DataTableHeader className="history-table-header">
-          <div className="history-table-header-row" role="row">
+          <div className="history-table-header-row" role="row" style={{ gridTemplateColumns, minWidth }}>
             <span className="history-column-select" role="columnheader">
               <input
                 aria-label="Alle sichtbaren Einträge auswählen"
@@ -180,16 +271,28 @@ export function HistoryContentPage({ model, actions, page, onPageChange }: Histo
                 type="checkbox"
               />
             </span>
-            <span role="columnheader">Paket / Datei</span>
-            <span role="columnheader">Status</span>
-            <span role="columnheader">Größe</span>
-            <span role="columnheader">Hoster</span>
-            <span role="columnheader">Gestartet</span>
-            <span role="columnheader">Beendet</span>
+            {HISTORY_TABLE_COLUMNS.map((column, index) => (
+              <span className="history-resizable-header" key={column} role="columnheader">
+                {column}
+                <button
+                  aria-label={`${column} Spaltenbreite ändern`}
+                  aria-orientation="vertical"
+                  className="history-column-resizer"
+                  onClick={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => resizeWithKeyboard(event, HISTORY_TABLE_COLUMN_IDS[index])}
+                  onPointerCancel={finishResize}
+                  onPointerDown={(event) => beginResize(event, HISTORY_TABLE_COLUMN_IDS[index])}
+                  onPointerMove={continueResize}
+                  onPointerUp={finishResize}
+                  role="separator"
+                  type="button"
+                />
+              </span>
+            ))}
             <span role="columnheader">Aktion</span>
           </div>
         </DataTableHeader>
-        <DataTableBody className="history-table-body" data-visual-region="history-table-body">
+        <DataTableBody className="history-table-body" data-visual-region="history-table-body" onScroll={syncHistoryTableScroll}>
           {model.loading ? (
             <DataTableEmpty description="Die gespeicherten Einträge werden geladen." title="Verlauf wird geladen" />
           ) : model.error ? (
@@ -213,6 +316,7 @@ export function HistoryContentPage({ model, actions, page, onPageChange }: Histo
                     data-history-row-id={row.id}
                     onContextMenu={onContextMenu}
                     role="row"
+                    style={{ gridTemplateColumns, minWidth }}
                   >
                     <span className="history-column-select" role="cell">
                       <input
@@ -252,7 +356,7 @@ export function HistoryContentPage({ model, actions, page, onPageChange }: Histo
                       >⋮</button>
                     </span>
                   </div>
-                  {isExpanded ? <HistoryRowDetails row={row} /> : null}
+                  {isExpanded ? <HistoryRowDetails minWidth={minWidth} row={row} /> : null}
                 </div>
               );
             })

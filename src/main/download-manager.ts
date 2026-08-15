@@ -18,6 +18,7 @@ import {
   PackagePriority,
   ParsedPackageInput,
   SessionState,
+  StatisticsLedger,
   StartConflictEntry,
   StartConflictResolutionResult,
   UiSnapshot, DebridAccountStatus } from "../shared/types";
@@ -73,6 +74,16 @@ import { compactErrorText, ensureDirPath, filenameFromUrl, formatEta, humanSize,
 import { mergeKnownTotalBytes } from "./download-size";
 import { DiskCapacityError, DiskReservationCoordinator, type DiskReservationLease } from "./disk-space";
 import { createRendererState } from "./renderer-state";
+import {
+  addStatisticsActiveIntervalInPlace,
+  addStatisticsBytesInPlace,
+  addStatisticsOutcomeInPlace,
+  createStatisticsLedger,
+  loadStatisticsLedger,
+  normalizeStatisticsLedger,
+  saveStatisticsLedger,
+  seedStatisticsDayProviderBytes
+} from "./statistics-ledger";
 
 type ActiveTask = {
   itemId: string;
@@ -1771,6 +1782,18 @@ export class DownloadManager extends EventEmitter {
 
   private statsCacheAt = 0;
 
+  private statisticsLedger: StatisticsLedger;
+
+  private statisticsDirty = false;
+
+  private statisticsUrgent = false;
+
+  private lastStatisticsPersistAt = 0;
+
+  private statisticsActivityAt = 0;
+
+  private statisticsActivityWasActive = false;
+
   private settingsSnapshotCache: ReturnType<typeof createRendererState> | null = null;
   private settingsSnapshotCacheAt = 0;
   private invalidateSettingsSnapshotCache(): void {
@@ -1899,6 +1922,11 @@ export class DownloadManager extends EventEmitter {
     this.session = session;
     this.itemCount = Object.keys(this.session.items).length;
     this.storagePaths = storagePaths;
+    this.statisticsLedger = seedStatisticsDayProviderBytes(
+      loadStatisticsLedger(storagePaths.statisticsFile, startedAt),
+      settings.providerDailyUsageBytes,
+      startedAt
+    );
     this.protectAgainstEmptyClobber = Boolean(options.protectEmptyClobber);
     if (this.protectAgainstEmptyClobber) {
       logger.warn("Session-Schutz aktiv: Start mit unlesbarer Session — leere Speicherungen blockiert, bis echte Daten vorliegen");
@@ -2545,7 +2573,8 @@ export class DownloadManager extends EventEmitter {
       appSessionStartedAt: this.appSessionStartedAt,
       sessionRuntimeMs: this.getAppSessionRuntimeMs(now),
       totalRuntimeMs: this.getLiveTotalRuntimeMs(now),
-      runtimeMeasuredAt: now
+      runtimeMeasuredAt: now,
+      statistics: normalizeStatisticsLedger(this.statisticsLedger, now)
     };
     this.statsCache = stats;
     this.statsCacheAt = now;
@@ -2749,6 +2778,10 @@ export class DownloadManager extends EventEmitter {
     this.settings.totalCompletedFilesAllTime = 0;
     this.settings.providerTotalUsageBytes = {};
     this.settings.debridLinkApiKeyTotalUsageBytes = {};
+    this.statisticsLedger = createStatisticsLedger();
+    this.statisticsDirty = false;
+    this.statisticsUrgent = false;
+    saveStatisticsLedger(this.storagePaths.statisticsFile, this.statisticsLedger);
     this.lastSettingsPersistAt = nowMs();
     saveSettings(this.storagePaths, this.settings);
     this.invalidateStatsCache();
@@ -5994,6 +6027,7 @@ export class DownloadManager extends EventEmitter {
 
   public prepareForShutdown(): void {
     logger.info(`Shutdown-Vorbereitung gestartet: active=${this.activeTasks.size}, running=${this.session.running}, paused=${this.session.paused}`);
+    this.updateStatisticsActivity(nowMs());
     this.rotationListenerActive = false;
     this.clearPersistTimer();
     if (this.stateEmitTimer) {
@@ -6071,6 +6105,7 @@ export class DownloadManager extends EventEmitter {
         saveSession(this.storagePaths, this.session);
       }
       saveSettings(this.storagePaths, this.settings);
+      saveStatisticsLedger(this.storagePaths.statisticsFile, this.statisticsLedger);
     } else {
       logger.info(`Shutdown-Save übersprungen: skipShutdownPersist=${this.skipShutdownPersist}, blockAllPersistence=${this.blockAllPersistence}`);
     }
@@ -6403,6 +6438,17 @@ export class DownloadManager extends EventEmitter {
       this.lastSettingsPersistAt = now;
       void saveSettingsAsync(this.storagePaths, this.settings).catch((err) => logger.warn(`saveSettingsAsync Fehler: ${compactErrorText(err as Error)}`));
     }
+    if (this.statisticsDirty && (this.statisticsUrgent || now - this.lastStatisticsPersistAt >= 10000)) {
+      this.lastStatisticsPersistAt = now;
+      this.statisticsDirty = false;
+      this.statisticsUrgent = false;
+      try {
+        saveStatisticsLedger(this.storagePaths.statisticsFile, this.statisticsLedger);
+      } catch (error) {
+        this.statisticsDirty = true;
+        logger.warn(`Statistik konnte nicht gespeichert werden: ${compactErrorText(error)}`);
+      }
+    }
   }
 
   public persistNowSync(): void {
@@ -6415,6 +6461,7 @@ export class DownloadManager extends EventEmitter {
       saveSession(this.storagePaths, this.session);
     }
     saveSettings(this.storagePaths, this.settings);
+    saveStatisticsLedger(this.storagePaths.statisticsFile, this.statisticsLedger);
   }
 
   private emitState(force = false): void {
@@ -6509,6 +6556,13 @@ export class DownloadManager extends EventEmitter {
     }
     const previous = this.runOutcomes.get(itemId);
     this.runOutcomes.set(itemId, status);
+    const item = this.session.items[itemId];
+    const provider = item?.provider ? resolveMegaDebridProvider(this.settings, item.provider) : null;
+    if ((status === "completed" || status === "failed") && previous !== status) {
+      addStatisticsOutcomeInPlace(this.statisticsLedger, provider, status);
+      this.statisticsDirty = true;
+      this.statisticsUrgent = true;
+    }
     if (status === "completed" && previous !== "completed") {
       this.sessionCompletedFiles += 1;
       this.settings.totalCompletedFilesAllTime = Math.max(0, Number(this.settings.totalCompletedFilesAllTime || 0)) + 1;
@@ -8106,6 +8160,8 @@ export class DownloadManager extends EventEmitter {
       return;
     }
     const effectiveProvider = resolveMegaDebridProvider(this.settings, provider) || provider;
+    addStatisticsBytesInPlace(this.statisticsLedger, effectiveProvider, byteDelta);
+    this.statisticsDirty = true;
     const nextUsage = addProviderDailyUsageBytes(this.settings, effectiveProvider, byteDelta);
     const nextTotalUsage = addProviderTotalUsageBytes(this.settings, effectiveProvider, byteDelta);
     this.settings.providerDailyUsageDay = nextUsage.providerDailyUsageDay;
@@ -8167,6 +8223,17 @@ export class DownloadManager extends EventEmitter {
       return Boolean(this.settings.linkSnappyLogin.trim() && this.settings.linkSnappyPassword.trim());
     }
     return false;
+  }
+
+  private updateStatisticsActivity(now: number): void {
+    if (this.statisticsActivityAt > 0 && this.statisticsActivityWasActive && now > this.statisticsActivityAt) {
+      addStatisticsActiveIntervalInPlace(this.statisticsLedger, this.statisticsActivityAt, now);
+      this.statisticsDirty = true;
+    }
+    this.statisticsActivityAt = now;
+    this.statisticsActivityWasActive = this.session.running
+      && !this.session.paused
+      && [...this.activeTasks.values()].some((task) => this.session.items[task.itemId]?.status === "downloading");
   }
 
   private hasUsableDownloadAccount(): boolean {
@@ -8592,6 +8659,7 @@ export class DownloadManager extends EventEmitter {
     try {
       while (this.session.running && this.schedulerGeneration === myGeneration) {
         const now = nowMs();
+        this.updateStatisticsActivity(now);
         if (now - this.lastSchedulerHeartbeatAt >= 60000) {
           this.lastSchedulerHeartbeatAt = now;
           logger.info(`Scheduler Heartbeat: active=${this.activeTasks.size}, queued=${this.countQueuedItems()}, reconnect=${this.reconnectActive()}, paused=${this.session.paused}, postProcess=${this.packagePostProcessTasks.size}`);
@@ -8627,6 +8695,8 @@ export class DownloadManager extends EventEmitter {
           this.startItem(next.packageId, next.itemId);
         }
 
+        this.updateStatisticsActivity(nowMs());
+
         this.runGlobalStallWatchdog(now);
 
         const queuePresence = this.activeTasks.size === 0 ? this.getQueuePresence(now) : { hasImmediate: true, hasDelayed: false };
@@ -8642,6 +8712,7 @@ export class DownloadManager extends EventEmitter {
         await sleep(schedulerSleepMs);
       }
     } finally {
+      this.updateStatisticsActivity(nowMs());
       this.scheduleRunning = false;
       logger.info(`Scheduler beendet (gen=${myGeneration})`);
       // Stop->Start race: a new run can begin while this loop sleeps (start()'s

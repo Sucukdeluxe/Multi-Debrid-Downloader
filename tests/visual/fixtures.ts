@@ -459,7 +459,37 @@ function createDenseSnapshot(): UiSnapshot {
     appSessionStartedAt: 1786309200000,
     sessionRuntimeMs: 3600000,
     totalRuntimeMs: 172800000,
-    runtimeMeasuredAt: 1786312800000
+    runtimeMeasuredAt: 1786312800000,
+    statistics: {
+      version: 1,
+      startedAt: 1786053600000,
+      days: [
+        {
+          day: "2026-08-08",
+          downloadedBytes: 182536110080,
+          measuredBytes: 182536110080,
+          completedFiles: 124,
+          failedFiles: 3,
+          activeDownloadMs: 21600000,
+          providers: {
+            realdebrid: { bytes: 123480309760, completed: 86, failed: 1 },
+            debridlink: { bytes: 59055800320, completed: 38, failed: 2 }
+          }
+        },
+        {
+          day: "2026-08-10",
+          downloadedBytes: 541165879488,
+          measuredBytes: 541165879488,
+          completedFiles: 310,
+          failedFiles: 2,
+          activeDownloadMs: 32400000,
+          providers: {
+            realdebrid: { bytes: 328565653504, completed: 192, failed: 1 },
+            debridlink: { bytes: 212600225984, completed: 118, failed: 1 }
+          }
+        }
+      ]
+    }
   };
   snapshot.speedText = "12,0 MB/s";
   snapshot.etaText = "00:17:24";

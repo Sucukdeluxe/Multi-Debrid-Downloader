@@ -6,8 +6,7 @@ import type { DownloadItem, DownloadStatus, UiSnapshot } from "../src/shared/typ
 import { appendBandwidthSample, readBandwidthChartPalette, readDownloadSpeedSparklinePalette } from "../src/renderer/App";
 import {
   buildStatisticsViewModel,
-  type StatisticsMetric,
-  type StatisticsRange
+  type StatisticsMetric
 } from "../src/renderer/views/statistics/statistics-model";
 import {
   StatisticsContent,
@@ -16,6 +15,12 @@ import {
   type StatisticsViewActions
 } from "../src/renderer/views/statistics/StatisticsView";
 import { createVisualFixture } from "./visual/fixtures";
+import {
+  createStatisticsLedger,
+  recordStatisticsActiveInterval,
+  recordStatisticsBytes,
+  recordStatisticsOutcome
+} from "../src/main/statistics-ledger";
 
 const now = new Date(2026, 7, 10, 12, 0, 0, 0).getTime();
 
@@ -183,23 +188,28 @@ describe("statistics model", () => {
     expect(model.providers.some((row) => row.id.includes("host"))).toBe(false);
   });
 
-  it("uses daily provider usage only for the matching local day", () => {
+  it("uses persisted daily bytes, results and active time for every statistic shown today", () => {
     const snapshot = createSnapshot();
-    snapshot.stats.totalDownloaded = 999_999;
-    snapshot.settings.providerDailyUsageDay = "2026-08-10";
-    snapshot.settings.providerDailyUsageBytes = { realdebrid: 500, alldebrid: 1_500 };
+    let ledger = createStatisticsLedger(now);
+    ledger = recordStatisticsBytes(ledger, "realdebrid", 500, now);
+    ledger = recordStatisticsOutcome(ledger, "realdebrid", "completed", now);
+    ledger = recordStatisticsBytes(ledger, "alldebrid", 1_500, now);
+    ledger = recordStatisticsOutcome(ledger, "alldebrid", "failed", now);
+    ledger = recordStatisticsActiveInterval(ledger, now - 2_000, now);
+    snapshot.stats.statistics = ledger;
 
     const model = buildStatisticsViewModel(snapshot, "today", now);
 
     expect(model.metrics.downloadedBytes).toMatchObject({ value: 2_000, available: true });
+    expect(model.metrics.files).toMatchObject({ value: 1, available: true });
+    expect(model.metrics.successRate).toMatchObject({ value: 50, available: true });
+    expect(model.metrics.errors).toMatchObject({ value: 1, available: true });
+    expect(model.metrics.averageSpeedBps).toMatchObject({ value: 1_000, available: true });
     expect(model.providers.map((row) => [row.id, row.bytes])).toEqual([
       ["alldebrid", 1_500],
       ["realdebrid", 500]
     ]);
-    expectUnavailable(model.metrics.files);
-    expectUnavailable(model.metrics.successRate);
-    expectUnavailable(model.metrics.errors);
-    expectUnavailable(model.metrics.averageSpeedBps);
+    expect(model.providers.map((row) => [row.completed, row.failed])).toEqual([[0, 1], [1, 0]]);
   });
 
   it("treats a stale daily key as a genuine zero today without stale provider rows", () => {
@@ -213,28 +223,42 @@ describe("statistics model", () => {
     expect(model.providers).toEqual([]);
   });
 
-  it.each(["week", "month"] satisfies StatisticsRange[])("keeps %s unavailable without inventing historical buckets", (range) => {
+  it("sums every available day in seven-day and 30-day windows without waiting for a full period", () => {
     const snapshot = createSnapshot();
-    snapshot.stats.totalDownloaded = 5_000;
-    snapshot.stats.totalDownloadedAllTime = 50_000;
-    snapshot.settings.providerDailyUsageDay = "2026-08-10";
-    snapshot.settings.providerDailyUsageBytes = { realdebrid: 4_000 };
-    snapshot.settings.providerTotalUsageBytes = { realdebrid: 40_000 };
+    let ledger = createStatisticsLedger(new Date(2026, 7, 3, 12).getTime());
+    ledger = recordStatisticsBytes(ledger, "realdebrid", 300, new Date(2026, 7, 3, 12).getTime());
+    ledger = recordStatisticsOutcome(ledger, "realdebrid", "completed", new Date(2026, 7, 3, 12).getTime());
+    ledger = recordStatisticsBytes(ledger, "debridlink", 700, new Date(2026, 7, 8, 12).getTime());
+    ledger = recordStatisticsOutcome(ledger, "debridlink", "failed", new Date(2026, 7, 8, 12).getTime());
+    ledger = recordStatisticsBytes(ledger, "realdebrid", 500, now);
+    ledger = recordStatisticsOutcome(ledger, "realdebrid", "completed", now);
+    snapshot.stats.statistics = ledger;
 
-    const model = buildStatisticsViewModel(snapshot, range, now);
+    const week = buildStatisticsViewModel(snapshot, "week", now);
+    const month = buildStatisticsViewModel(snapshot, "month", now);
 
-    expect(model.coverage).toBe("unavailable");
-    expect(model.message).toBe("Für diesen Zeitraum werden noch keine historischen Daten gespeichert.");
-    expect(model.providers).toEqual([]);
-    expect(model.providerScope).toBeNull();
-    Object.values(model.metrics).forEach(expectUnavailable);
+    expect(week.metrics.downloadedBytes.value).toBe(1_200);
+    expect(week.metrics.files.value).toBe(1);
+    expect(week.metrics.errors.value).toBe(1);
+    expect(week.message).toContain("2 erfasste Tage");
+    expect(month.metrics.downloadedBytes.value).toBe(1_500);
+    expect(month.metrics.files.value).toBe(2);
+    expect(month.metrics.errors.value).toBe(1);
+    expect(month.message).toContain("3 erfasste Tage");
   });
 
-  it("uses all-time counters and provider totals without inventing historical outcomes", () => {
+  it("combines existing all-time counters with persisted outcomes, provider results and measured average speed", () => {
     const snapshot = createSnapshot();
     snapshot.stats.totalDownloadedAllTime = 25_000;
     snapshot.stats.totalFilesAllTime = 42;
     snapshot.settings.providerTotalUsageBytes = { realdebrid: 5_000, debridlink: 20_000 };
+    let ledger = createStatisticsLedger(now - 10_000);
+    ledger = recordStatisticsBytes(ledger, "realdebrid", 2_000, now);
+    ledger = recordStatisticsActiveInterval(ledger, now - 2_000, now);
+    ledger = recordStatisticsOutcome(ledger, "realdebrid", "completed", now);
+    ledger = recordStatisticsOutcome(ledger, "realdebrid", "completed", now);
+    ledger = recordStatisticsOutcome(ledger, "debridlink", "failed", now);
+    snapshot.stats.statistics = ledger;
     snapshot.summary = {
       total: 10,
       success: 9,
@@ -253,10 +277,11 @@ describe("statistics model", () => {
       ["debridlink", 20_000],
       ["realdebrid", 5_000]
     ]);
-    expect(model.providers.every((row) => row.completed === null && row.failed === null)).toBe(true);
-    expectUnavailable(model.metrics.successRate);
-    expectUnavailable(model.metrics.errors);
-    expectUnavailable(model.metrics.averageSpeedBps);
+    expect(model.providers.map((row) => [row.completed, row.failed])).toEqual([[0, 1], [2, 0]]);
+    expect(model.metrics.successRate.available).toBe(true);
+    expect(model.metrics.successRate.value).toBeCloseTo(200 / 3);
+    expect(model.metrics.errors).toMatchObject({ value: 1, available: true });
+    expect(model.metrics.averageSpeedBps).toMatchObject({ value: 1_000, available: true });
   });
 
   it("prefers live queue outcomes over an old summary and uses the summary only after the run ends", () => {

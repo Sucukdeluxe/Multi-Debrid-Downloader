@@ -71,6 +71,7 @@ import type { DebugSetupCheckResult, SupportTraceConfig } from "../shared/types"
 import { createOnlineBackup, downloadOnlineBackup, uploadOnlineBackup } from "./online-backup";
 import { overlayLiveUsageCounters } from "./settings-live-overlay";
 import { getLegacyDesktopLogDirectory, migrateLogDirectories, prepareLogDirectory, resolveLogDirectory } from "./log-storage";
+import { normalizeStatisticsLedger, saveStatisticsLedger } from "./statistics-ledger";
 
 function sanitizeSettingsPatch(partial: Partial<AppSettings>): Partial<AppSettings> {
   const entries = Object.entries(partial || {}).filter(([, value]) => value !== undefined);
@@ -883,6 +884,7 @@ export class AppController {
       exportedAt: new Date().toISOString(),
       session: this.manager.getSession(),
       history: loadHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode, this.historyLimits()),
+      statistics: this.manager.getStats().statistics!,
       remoteDiagnostics
     });
     const encrypted = encryptBackup(JSON.stringify(payloadObj), passphrase);
@@ -1002,6 +1004,10 @@ export class AppController {
       normalizeLoadedSession(parsed.session)
     );
     saveSession(this.storagePaths, restoredSession);
+
+    if (parsed.statistics) {
+      saveStatisticsLedger(this.storagePaths.statisticsFile, normalizeStatisticsLedger(parsed.statistics));
+    }
 
     if (Array.isArray(parsed.history) && parsed.history.length > 0) {
       const normalizedHistory = (parsed.history as unknown[])

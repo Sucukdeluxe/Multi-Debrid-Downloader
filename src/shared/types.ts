@@ -41,6 +41,28 @@ export interface BandwidthScheduleEntry {
   enabled: boolean;
 }
 
+export interface StatisticsProviderBucket {
+  bytes: number;
+  completed: number;
+  failed: number;
+}
+
+export interface StatisticsDayBucket {
+  day: string;
+  downloadedBytes: number;
+  measuredBytes: number;
+  completedFiles: number;
+  failedFiles: number;
+  activeDownloadMs: number;
+  providers: Partial<Record<DebridProvider, StatisticsProviderBucket>>;
+}
+
+export interface StatisticsLedger {
+  version: 1;
+  startedAt: number;
+  days: StatisticsDayBucket[];
+}
+
 export interface DownloadStats {
   totalDownloaded: number;
   totalDownloadedAllTime: number;
@@ -53,6 +75,7 @@ export interface DownloadStats {
   sessionRuntimeMs: number;
   totalRuntimeMs: number;
   runtimeMeasuredAt: number;
+  statistics?: StatisticsLedger;
 }
 
 export interface DebridAccountStatus {

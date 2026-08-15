@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildBackupPayload, planBackupImport } from "../src/main/backup-payload";
-import type { AppSettings, SessionState, HistoryEntry } from "../src/shared/types";
+import type { AppSettings, SessionState, HistoryEntry, StatisticsLedger } from "../src/shared/types";
 
 function settings(overrides: Partial<AppSettings> = {}): AppSettings {
   return { backupIncludeDownloads: false, token: "secret", outputDir: "C:\\dl" } as unknown as AppSettings;
@@ -12,8 +12,9 @@ const session: SessionState = {
   reconnectReason: "", paused: false, running: true, updatedAt: 0
 };
 const history: HistoryEntry[] = [{ id: "h1" } as unknown as HistoryEntry];
+const statistics: StatisticsLedger = { version: 1, startedAt: 1, days: [] };
 
-const baseInput = { appVersion: "1.7.183", exportedAt: "2026-06-07T00:00:00Z", session, history };
+const baseInput = { appVersion: "1.7.183", exportedAt: "2026-06-07T00:00:00Z", session, history, statistics };
 
 describe("buildBackupPayload — default is settings-only", () => {
   it("omits session AND history when backupIncludeDownloads is false (default)", () => {
@@ -21,6 +22,7 @@ describe("buildBackupPayload — default is settings-only", () => {
     expect(p.kind).toBe("settings-only");
     expect(p.session).toBeUndefined();
     expect(p.history).toBeUndefined();
+    expect(p.statistics).toBeUndefined();
     expect(p.settings).toBeDefined();
   });
 
@@ -29,6 +31,7 @@ describe("buildBackupPayload — default is settings-only", () => {
     expect(p.kind).toBe("full");
     expect(p.session).toBe(session);
     expect(p.history).toBe(history);
+    expect(p.statistics).toBe(statistics);
   });
 
   it("treats a missing flag as settings-only (safe default)", () => {

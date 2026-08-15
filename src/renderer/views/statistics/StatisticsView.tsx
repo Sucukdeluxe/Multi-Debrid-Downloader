@@ -69,6 +69,12 @@ function providerScopeLabel(scope: StatisticsProviderScope | null): string {
   if (scope === "today") {
     return "Heute";
   }
+  if (scope === "week") {
+    return "Sieben Tage";
+  }
+  if (scope === "month") {
+    return "30 Tage";
+  }
   if (scope === "all") {
     return "Gesamt";
   }
@@ -81,6 +87,9 @@ function emptyProviderMessage(model: StatisticsViewModel): string {
   }
   if (model.providerScope === "today") {
     return "Heute wurden noch keine Providerbytes erfasst.";
+  }
+  if (model.providerScope === "week" || model.providerScope === "month") {
+    return "In diesem Zeitraum wurden noch keine Providerwerte erfasst.";
   }
   if (model.providerScope === "all") {
     return "Noch keine gespeicherten Providerbytes vorhanden.";

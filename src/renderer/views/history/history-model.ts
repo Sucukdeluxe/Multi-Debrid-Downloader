@@ -49,6 +49,44 @@ export interface HistoryPage {
 
 export const HISTORY_PAGE_SIZE = 100;
 
+export const HISTORY_TABLE_COLUMN_IDS = ["name", "status", "size", "hoster", "started", "completed"] as const;
+export type HistoryTableColumnId = typeof HISTORY_TABLE_COLUMN_IDS[number];
+export type HistoryTableColumnWidths = Record<HistoryTableColumnId, number>;
+
+const HISTORY_TABLE_COLUMN_LIMITS: Record<HistoryTableColumnId, { initial: number; min: number; max: number }> = {
+  name: { initial: 320, min: 220, max: 680 },
+  status: { initial: 150, min: 120, max: 280 },
+  size: { initial: 190, min: 140, max: 320 },
+  hoster: { initial: 180, min: 120, max: 360 },
+  started: { initial: 185, min: 150, max: 280 },
+  completed: { initial: 185, min: 150, max: 280 }
+};
+
+export function createHistoryTableColumnWidths(value?: unknown): HistoryTableColumnWidths {
+  const raw = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  return Object.fromEntries(HISTORY_TABLE_COLUMN_IDS.map((id) => {
+    const limits = HISTORY_TABLE_COLUMN_LIMITS[id];
+    const candidate = typeof raw[id] === "number" && Number.isFinite(raw[id]) ? Math.round(raw[id]) : limits.initial;
+    return [id, Math.max(limits.min, Math.min(limits.max, candidate))];
+  })) as HistoryTableColumnWidths;
+}
+
+export function resizeHistoryTableColumn(
+  widths: HistoryTableColumnWidths,
+  column: HistoryTableColumnId,
+  delta: number
+): HistoryTableColumnWidths {
+  return createHistoryTableColumnWidths({ ...widths, [column]: widths[column] + delta });
+}
+
+export function getHistoryTableGridTemplate(widths: HistoryTableColumnWidths): string {
+  return `48px ${HISTORY_TABLE_COLUMN_IDS.map((id) => `${widths[id]}px`).join(" ")} minmax(72px, 1fr)`;
+}
+
+export function getHistoryTableMinWidth(widths: HistoryTableColumnWidths): number {
+  return 48 + 72 + HISTORY_TABLE_COLUMN_IDS.reduce((sum, id) => sum + widths[id], 0);
+}
+
 const providerLabels: Record<DebridProvider, string> = {
   realdebrid: "Real-Debrid",
   megadebrid: "Mega-Debrid",
