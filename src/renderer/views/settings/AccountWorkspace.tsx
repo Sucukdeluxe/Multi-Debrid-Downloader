@@ -142,7 +142,7 @@ function renderAccountIdentityCell({
 }): ReactElement {
   const copyable = value.trim() !== "" && value !== "—";
   return (
-    <span className={className} role="cell" title={copyable ? `${value}\nKlicken zum Kopieren` : value}>
+    <span className={className} role="cell" title={copyable ? "Klicken zum Kopieren" : value}>
       {copyable ? (
         <button
           aria-label={`${label} kopieren`}

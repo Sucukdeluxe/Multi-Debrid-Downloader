@@ -834,6 +834,8 @@ describe("account workspace", () => {
       })
     });
     const buttons = findElements(tree, (element) => String(element.props.className || "").includes("settings-account-copy-button"));
+    const copyableCells = findElements(tree, (element) => ["settings-account-username", "settings-account-email"].includes(String(element.props.className || "")))
+      .filter((element) => element.props.title === "Klicken zum Kopieren");
     const username = buttons.find((button) => button.props["aria-label"] === "Benutzername kopieren");
     const email = buttons.find((button) => button.props["aria-label"] === "E-Mail kopieren");
     let stopped = 0;
@@ -843,6 +845,7 @@ describe("account workspace", () => {
     username?.props.onDoubleClick({ stopPropagation: () => { stopped += 1; } });
 
     expect(buttons.some((button) => button.props.children === "—")).toBe(false);
+    expect(copyableCells).toHaveLength(buttons.length);
     expect(copies).toEqual([
       "Benutzername:stored-user",
       "E-Mail:verified@example.test"

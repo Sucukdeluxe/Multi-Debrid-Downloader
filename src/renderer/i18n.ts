@@ -184,7 +184,7 @@ const pairs = [
   ["· API-Quota konnte nicht geladen werden", "· API quota could not be loaded"], ["Name kopiert", "Name copied"], ["Link kopiert", "Link copied"],
   ["Download-Ziel", "Download destination"], ["Support-Logs:", "Support logs:"], ["Session-Logs", "Session logs"], ["Paket-Logs", "Package logs"], ["Support-Bundle:", "Support bundle:"], ["Warnungen:", "Warnings:"],
   ["Web-Login", "Web login"], ["API-Token", "API token"], ["erfolgreich", "successful"], ["Unbekannt", "Unknown"], ["Abgebrochen", "Cancelled"], ["Passwort", "Password"],
-  ["Sicherung", "Backup"], ["Session-Log", "Session log"], ["Remote-Support", "Remote support"], ["Kopieren", "Copy"], ["Verbindungscode", "Connection code"], ["deaktiviert", "disabled"]
+  ["Sicherung", "Backup"], ["Session-Log", "Session log"], ["Remote-Support", "Remote support"], ["Kopieren", "Copy"], ["Klicken zum Kopieren", "Click to copy"], ["Verbindungscode", "Connection code"], ["deaktiviert", "disabled"]
 ] as const;
 
 const deToEn = new Map<string, string>(pairs);
