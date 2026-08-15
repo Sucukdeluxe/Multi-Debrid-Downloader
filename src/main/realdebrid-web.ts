@@ -135,6 +135,8 @@ export class RealDebridWebFallback {
 
   private onClosed?: () => void;
 
+  private interactiveLoginDismissed = false;
+
   private persistentPartition: string;
 
   private transientPartition: string;
@@ -176,6 +178,7 @@ export class RealDebridWebFallback {
 
   public async openLoginWindow(): Promise<void> {
     this.throwIfDisposed();
+    this.interactiveLoginDismissed = false;
     const window = await this.ensureLoginWindow();
     if (window.isMinimized()) {
       window.restore();
@@ -340,6 +343,7 @@ export class RealDebridWebFallback {
     let closingTokenProbe: Promise<void> = Promise.resolve();
     window.on("close", () => {
       if (!this.programmaticClosures.has(window)) {
+        this.interactiveLoginDismissed = true;
         closingTokenProbe = this.primeTokenFromWindow(window, windowGeneration);
       }
     });
@@ -372,6 +376,7 @@ export class RealDebridWebFallback {
     const changed = token !== this.cachedToken;
     this.cachedToken = token;
     this.cachedTokenAt = Date.now();
+    this.interactiveLoginDismissed = false;
     if (changed && this.onAuthenticated) {
       void Promise.resolve().then(() => this.onAuthenticated?.());
     }
@@ -582,6 +587,9 @@ export class RealDebridWebFallback {
   }
 
   private async waitForLoginAndGenerate(link: string, signal?: AbortSignal): Promise<UnrestrictedLink | null> {
+    if (this.interactiveLoginDismissed) {
+      throw new Error("Real-Debrid Web-Login abgebrochen");
+    }
     const window = await this.ensureLoginWindow();
     if (window.isMinimized()) {
       window.restore();
@@ -599,6 +607,7 @@ export class RealDebridWebFallback {
       const outcome = await this.generate(link, signal);
       if (outcome.kind === "success") {
         if (!window.isDestroyed()) {
+          this.programmaticClosures.add(window);
           window.close();
         }
         return outcome.value;

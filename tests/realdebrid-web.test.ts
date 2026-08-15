@@ -197,6 +197,30 @@ describe("realdebrid-web", () => {
     );
   });
 
+  it("does not reopen an automatically required login after the user closed it", async () => {
+    mockExecuteJavaScript.mockResolvedValue("");
+    mockSessionFetch.mockImplementation(async () => new Response("<html>login</html>", { status: 200 }));
+    const fallback = new RealDebridWebFallback("persist:realdebrid-web-rdw_dismissed", () => true);
+
+    await fallback.openLoginWindow();
+    mockBrowserWindow.close();
+
+    await expect(fallback.unrestrict("https://rapidgator.net/file/first")).rejects.toThrow("abgebrochen");
+    await expect(fallback.unrestrict("https://rapidgator.net/file/second")).rejects.toThrow("abgebrochen");
+    expect(mockBrowserWindowCtor).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows an explicitly requested login after the user closed the previous window", async () => {
+    mockExecuteJavaScript.mockResolvedValue("");
+    const fallback = new RealDebridWebFallback("persist:realdebrid-web-rdw_reopen", () => true);
+
+    await fallback.openLoginWindow();
+    mockBrowserWindow.close();
+    await fallback.openLoginWindow();
+
+    expect(mockBrowserWindowCtor).toHaveBeenCalledTimes(2);
+  });
+
   it("notifies the controller when a new browser token is detected", async () => {
     mockExecuteJavaScript.mockResolvedValue("new-browser-token");
     const onAuthenticated = vi.fn();
