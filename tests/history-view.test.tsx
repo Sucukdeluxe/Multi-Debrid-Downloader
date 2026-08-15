@@ -432,8 +432,9 @@ describe("HistoryView", () => {
     expect(actionCell.props.children.props.children).toBe("⋮");
     expect(styles).toMatch(/\.history-row-action button\s*\{[^}]*background:\s*var\(--ui-input\);[^}]*border:\s*1px solid var\(--ui-border\);[^}]*height:\s*30px;[^}]*width:\s*30px;/s);
     expect(styles).toMatch(/\.history-table-header-row > span,\s*\.history-row > span\s*\{[^}]*text-align:\s*left;/s);
-    expect(styles).toMatch(/\.history-table-header-row > span:nth-child\(4\),\s*\.history-row > span:nth-child\(4\)\s*\{[^}]*text-align:\s*right;/s);
-    expect(styles).toMatch(/\.history-row-action\s*\{[^}]*place-items:\s*center;/s);
+    expect(styles).not.toMatch(/\.history-table-header-row > span:nth-child\(4\),\s*\.history-row > span:nth-child\(4\)\s*\{[^}]*text-align:\s*right;/s);
+    expect(styles).toMatch(/\.history-table-header-row > span:last-child\s*\{[^}]*justify-items:\s*end;/s);
+    expect(styles).toMatch(/\.history-row-action\s*\{[^}]*place-items:\s*center end;/s);
   });
 
   it("renders each visual marker once, occupied main rows separately from closed detail rows and an honest footer", () => {
@@ -567,9 +568,24 @@ describe("HistoryView", () => {
     );
 
     expect(html).toContain("history-detail-row");
+    expect(html).toContain("history-detail-disclosure is-expanded");
+    expect(html).toContain('aria-hidden="false"');
     expect(html).toContain("history-copyable");
     expect(html).toContain("C:\\Downloads\\Heute Paket");
     expect(html).toContain("https://rapidgator.net/file/test");
+  });
+
+  it("uses the global animation setting for the history disclosure surface", () => {
+    const animated = buildHistoryViewModel(entries.slice(0, 1), "all", "", [], ["today"], false, "", now, true);
+    const immediate = buildHistoryViewModel(entries.slice(0, 1), "all", "", [], ["today"], false, "", now, false);
+    const animatedHtml = renderToStaticMarkup(<HistoryView actions={createActions()} model={animated} />);
+    const immediateHtml = renderToStaticMarkup(<HistoryView actions={createActions()} model={immediate} />);
+
+    expect(animated.animationsEnabled).toBe(true);
+    expect(immediate.animationsEnabled).toBe(false);
+    expect(animatedHtml).toContain("history-detail-disclosure is-expanded");
+    expect(animatedHtml).not.toContain("is-history-motion-disabled");
+    expect(immediateHtml).toContain("history-detail-disclosure is-expanded is-history-motion-disabled");
   });
 });
 

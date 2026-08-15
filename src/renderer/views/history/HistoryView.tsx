@@ -1,5 +1,7 @@
 import {
   useEffect,
+  useLayoutEffect,
+  useRef,
   useState,
   type ChangeEvent,
   type KeyboardEvent,
@@ -63,6 +65,8 @@ const filterItems: Array<{ id: HistoryFilter; label: string }> = [
 
 const HISTORY_TABLE_COLUMNS = ["Paket / Datei", "Status", "Größe", "Hoster", "Gestartet", "Beendet"] as const;
 const HISTORY_TABLE_COLUMN_STORAGE_KEY = "mdd.history-table-columns.v1";
+const HISTORY_DISCLOSURE_DURATION_MS = 520;
+const useRendererLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 let historyTableResizeSession: { column: HistoryTableColumnId; startX: number; initial: HistoryTableColumnWidths } | null = null;
 
 function loadHistoryTableColumnWidths(): HistoryTableColumnWidths {
@@ -101,18 +105,91 @@ function syncHistoryTableScroll(event: UIEvent<HTMLDivElement>): void {
   }
 }
 
-function HistoryRowDetails({ row, minWidth }: { row: HistoryRow; minWidth: number }): ReactElement {
+function HistoryRowDetails({
+  row,
+  minWidth,
+  expanded,
+  animationsEnabled
+}: {
+  row: HistoryRow;
+  minWidth: number;
+  expanded: boolean;
+  animationsEnabled: boolean;
+}): ReactElement | null {
+  const [rendered, setRendered] = useState(expanded);
+  const [height, setHeight] = useState<number | null>(null);
+  const disclosureRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const detailRef = useRef<HTMLDivElement>(null);
+  const previousExpanded = useRef(expanded);
+
+  useRendererLayoutEffect(() => {
+    const wasExpanded = previousExpanded.current;
+    previousExpanded.current = expanded;
+    let moveTimer: ReturnType<typeof setTimeout> | null = null;
+    let settleTimer: ReturnType<typeof setTimeout> | null = null;
+
+    if (!animationsEnabled) {
+      setRendered(expanded);
+      setHeight(null);
+      return;
+    }
+
+    if (expanded) {
+      setRendered(true);
+      if (wasExpanded) {
+        setHeight(null);
+      } else {
+        const targetHeight = detailRef.current?.scrollHeight ?? contentRef.current?.scrollHeight ?? 0;
+        const currentHeight = disclosureRef.current?.getBoundingClientRect().height ?? 0;
+        setHeight(currentHeight);
+        moveTimer = setTimeout(() => setHeight(targetHeight), 20);
+        settleTimer = setTimeout(() => setHeight(null), HISTORY_DISCLOSURE_DURATION_MS + 40);
+      }
+    } else if (wasExpanded) {
+      const currentHeight = disclosureRef.current?.getBoundingClientRect().height
+        ?? detailRef.current?.scrollHeight
+        ?? contentRef.current?.scrollHeight
+        ?? 0;
+      setHeight(currentHeight);
+      moveTimer = setTimeout(() => setHeight(0), 20);
+      settleTimer = setTimeout(() => {
+        setRendered(false);
+        setHeight(null);
+      }, HISTORY_DISCLOSURE_DURATION_MS + 40);
+    }
+
+    return () => {
+      if (moveTimer) clearTimeout(moveTimer);
+      if (settleTimer) clearTimeout(settleTimer);
+    };
+  }, [animationsEnabled, expanded]);
+
+  if (!expanded && (!animationsEnabled || !rendered)) {
+    return null;
+  }
+
+  const animatedHeight = animationsEnabled && expanded && !rendered ? 0 : height;
   return (
-    <div className="history-detail-row" role="row" style={{ minWidth }}>
-      <div className="history-detail-cell" role="cell">
-        <dl className="history-details-grid">
-          <div><dt>Provider</dt><dd>{row.providerLabel}</dd></div>
-          <div><dt>Dateien</dt><dd>{row.fileCount}</dd></div>
-          <div><dt>Dauer</dt><dd>{row.durationLabel}</dd></div>
-          <div><dt>Durchschnitt</dt><dd>{row.averageSpeedLabel}</dd></div>
-          <div className="history-detail-wide"><dt>Zielordner</dt><dd className="history-copyable">{row.outputDir || "—"}</dd></div>
-          <div className="history-detail-wide"><dt>URLs</dt><dd className="history-copyable">{row.urls?.length ? row.urls.join("\n") : "—"}</dd></div>
-        </dl>
+    <div
+      aria-hidden={!expanded}
+      className={`history-detail-disclosure ${expanded ? "is-expanded" : "is-collapsed"}${animationsEnabled ? "" : " is-history-motion-disabled"}`}
+      ref={disclosureRef}
+      style={{ height: animatedHeight === null ? undefined : `${animatedHeight}px`, minWidth }}
+    >
+      <div className="history-detail-clip" ref={contentRef}>
+        <div className="history-detail-row" ref={detailRef} role="row">
+          <div className="history-detail-cell" role="cell">
+            <dl className="history-details-grid">
+              <div><dt>Provider</dt><dd>{row.providerLabel}</dd></div>
+              <div><dt>Dateien</dt><dd>{row.fileCount}</dd></div>
+              <div><dt>Dauer</dt><dd>{row.durationLabel}</dd></div>
+              <div><dt>Durchschnitt</dt><dd>{row.averageSpeedLabel}</dd></div>
+              <div className="history-detail-wide"><dt>Zielordner</dt><dd className="history-copyable">{row.outputDir || "—"}</dd></div>
+              <div className="history-detail-wide"><dt>URLs</dt><dd className="history-copyable">{row.urls?.length ? row.urls.join("\n") : "—"}</dd></div>
+            </dl>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -356,7 +433,12 @@ export function HistoryContentPage({ model, actions, page, onPageChange }: Histo
                       >⋮</button>
                     </span>
                   </div>
-                  {isExpanded ? <HistoryRowDetails minWidth={minWidth} row={row} /> : null}
+                  <HistoryRowDetails
+                    animationsEnabled={model.animationsEnabled}
+                    expanded={isExpanded}
+                    minWidth={minWidth}
+                    row={row}
+                  />
                 </div>
               );
             })

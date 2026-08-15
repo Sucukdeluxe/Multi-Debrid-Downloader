@@ -36,6 +36,7 @@ export interface HistoryViewModel {
   loading: boolean;
   error: string;
   totalCount: number;
+  animationsEnabled: boolean;
 }
 
 export interface HistoryPage {
@@ -289,7 +290,8 @@ export function buildHistoryViewModel(
   expandedIds: Iterable<string>,
   loading: boolean,
   error: string,
-  now = Date.now()
+  now = Date.now(),
+  animationsEnabled = true
 ): HistoryViewModel {
   const rows = filterHistoryRows(entries, filter, query, now);
   const visibleIds = new Set(rows.map((row) => row.id));
@@ -302,7 +304,8 @@ export function buildHistoryViewModel(
     counts: countHistoryFilters(entries, now),
     loading,
     error,
-    totalCount: entries.length
+    totalCount: entries.length,
+    animationsEnabled
   };
 }
 

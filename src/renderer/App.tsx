@@ -1676,8 +1676,9 @@ export function App(): ReactElement {
     historyExpandedIds,
     historyLoading,
     historyError,
-    runtimeNow
-  ), [historyEntries, historyError, historyExpandedIds, historyFilter, historyLoading, historyQuery, runtimeNow, selectedHistoryIds]);
+    runtimeNow,
+    snapshot.settings.animatePackageDisclosure
+  ), [historyEntries, historyError, historyExpandedIds, historyFilter, historyLoading, historyQuery, runtimeNow, selectedHistoryIds, snapshot.settings.animatePackageDisclosure]);
   historyVisibleIdsRef.current = historyViewModel.rows.map((entry) => entry.id);
   const statisticsViewModel = useMemo(
     () => buildStatisticsViewModel(snapshot, statisticsRange, runtimeNow),
