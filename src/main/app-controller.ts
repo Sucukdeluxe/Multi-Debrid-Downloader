@@ -598,15 +598,21 @@ export class AppController {
         ? parseMegaDebridAccounts(`${input.identity.trim()}:${input.secret}`)[0]
         : getMegaDebridAccountsForMode(this.settings, mode).find((entry) => entry.id === input.accountId);
       if (!account) throw new Error("Account-Payload ist ungültig");
-      const status = await checkMegaDebridAccount(account);
-      return sanitizeDebridAccountStatus(status, redactions);
+      const status = sanitizeDebridAccountStatus(await checkMegaDebridAccount(account), redactions);
+      if (!input.secret && getMegaDebridAccountsForMode(this.settings, mode).some((entry) => entry.id === status.accountId)) {
+        this.manager.applyDebridAccountStatuses([status]);
+      }
+      return status;
     }
     const key = input.secret?.trim()
       ? parseDebridLinkApiKeys(input.secret)[0]
       : parseDebridLinkApiKeys(this.settings.debridLinkApiKeys).find((entry) => entry.id === input.accountId);
     if (!key) throw new Error("Account-Payload ist ungültig");
-    const status = await checkDebridLinkKey(key);
-    return sanitizeDebridAccountStatus(status, redactions);
+    const status = sanitizeDebridAccountStatus(await checkDebridLinkKey(key), redactions);
+    if (!input.secret && parseDebridLinkApiKeys(this.settings.debridLinkApiKeys).some((entry) => entry.id === status.accountId)) {
+      this.manager.applyDebridAccountStatuses([status]);
+    }
+    return status;
   }
 
   public resetProviderDailyUsage(provider: DebridProvider): AppSettings {

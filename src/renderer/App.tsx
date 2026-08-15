@@ -41,7 +41,7 @@ import {
 } from "../shared/provider-daily-limits";
 import { preservePackageOrderForDisplay, sortPackageOrderByName } from "./package-order";
 import { pruneSelection, releaseAccountSelectionFocus, resolveEscapeSelectionScope, shouldClearDownloadSelection } from "./selection";
-import { buildConfiguredProviderOrder, buildScopedAccountEnabledState, filterAccountDialogOptions, getAccountDialogSelectableOptions, getAvailableAccountOptions, pruneAccountRowSelections, resolveAccountStatusState, resolveAccountUsername, resolveVisibleAccountKind, runOptimisticAccountUpdate, sortAccountServices, updateAccountRowSelection } from "./account-ui";
+import { buildConfiguredProviderOrder, buildScopedAccountEnabledState, filterAccountDialogOptions, getAccountDialogSelectableOptions, getAvailableAccountOptions, pruneAccountRowSelections, resolveAccountStatusState, resolveAccountUsername, resolveVisibleAccountKind, runAccountEnableRefresh, runOptimisticAccountUpdate, sortAccountServices, updateAccountRowSelection } from "./account-ui";
 import { buildAccountDeleteCommand, buildAccountReplaceCommand, buildAccountSecretRequest, createAccountEditState, validateAccountEdit } from "./account-edit";
 import type { AccountEditState, AccountEditTarget, AccountKind, AccountService, SingleAccountKind } from "./account-edit";
 import { ACCOUNT_SERVICE_ICONS } from "./account-service-icons";
@@ -2859,7 +2859,10 @@ export function App(): ReactElement {
     });
   };
 
-  const persistAccountToggle = async (nextDraft: RendererSettingsDraft): Promise<RendererSettings> => {
+  const persistAccountToggle = async (
+    nextDraft: RendererSettingsDraft,
+    refreshBeforePersist?: () => Promise<void>
+  ): Promise<RendererSettings> => {
     const previousDraft = settingsDraft;
     const previousDirty = settingsDirtyRef.current;
     const previousSaveState = settingsSaveState;
@@ -2871,7 +2874,10 @@ export function App(): ReactElement {
         setSettingsSaveState("saving");
         setSettingsDraft(nextDraft);
       },
-      () => persistSpecificSettings(nextDraft),
+      () => runAccountEnableRefresh(
+        refreshBeforePersist,
+        () => persistSpecificSettings(nextDraft)
+      ),
       () => {
         if (settingsDraftRevisionRef.current !== revision) return;
         settingsDraftRevisionRef.current += 1;
@@ -2897,7 +2903,10 @@ export function App(): ReactElement {
         disabledProviders: nextState.disabledProviders,
         debridLinkDisabledKeyIds: nextState.disabledAccountIds
       };
-      await persistAccountToggle(nextDraft);
+      await persistAccountToggle(
+        nextDraft,
+        enabled ? async () => { await window.rd.checkAccountCredentials({ kind: "debridlink-api", accountId: key.id }); } : undefined
+      );
       showToast(
         enabled
           ? `${entry.serviceLabel} ${key.label} aktiviert`
@@ -2943,7 +2952,10 @@ export function App(): ReactElement {
         megaDebridDisabledAccountIds: [...new Set([...apiDisabledIds, ...webDisabledIds])],
         megaDebridApiDisabledAccountIds: apiDisabledIds,
         megaDebridWebDisabledAccountIds: webDisabledIds
-      });
+      }, enabled
+        ? async () => { await window.rd.checkAccountCredentials({ kind, accountId }); }
+        : undefined
+      );
       showToast(enabled ? "Account aktiviert" : "Account deaktiviert", 2000);
     }, (error) => {
       showToast(`Umschalten fehlgeschlagen: ${String(error)}`, 3200);
@@ -2984,7 +2996,7 @@ export function App(): ReactElement {
     });
   };
 
-  const onToggleRealDebridAccountEnabled = async (accountId: string, enabled: boolean): Promise<void> => {
+  const onToggleRealDebridAccountEnabled = async (kind: "realdebrid-api" | "realdebrid-web", accountId: string, enabled: boolean): Promise<void> => {
     await performQuickAction(async () => {
       const nextState = buildScopedAccountEnabledState(
         settingsDraft.disabledProviders || [],
@@ -2997,7 +3009,10 @@ export function App(): ReactElement {
         ...settingsDraft,
         disabledProviders: nextState.disabledProviders,
         realDebridDisabledAccountIds: nextState.disabledAccountIds
-      });
+      }, enabled
+        ? async () => { await window.rd.checkAccountCredentials({ kind, accountId }); }
+        : undefined
+      );
       showToast(enabled ? "Account aktiviert" : "Account deaktiviert", 2000);
     }, (error) => {
       showToast(`Umschalten fehlgeschlagen: ${String(error)}`, 3200);
@@ -3007,7 +3022,7 @@ export function App(): ReactElement {
   const toggleAccountTableRow = (row: AccountTableRow): void => {
     setAccountContextMenu(null);
     if (row.toggleKind === "rd" && row.accountId) {
-      void onToggleRealDebridAccountEnabled(row.accountId, row.disabled);
+      void onToggleRealDebridAccountEnabled(row.entry.kind as "realdebrid-api" | "realdebrid-web", row.accountId, row.disabled);
     } else if (row.toggleKind === "mega" && row.accountId) {
       void onToggleMegaAccountEnabled(row.entry.kind as "megadebrid-api" | "megadebrid-web", row.accountId, row.disabled);
     } else if (row.toggleKind === "dl" && row.dlKey) {

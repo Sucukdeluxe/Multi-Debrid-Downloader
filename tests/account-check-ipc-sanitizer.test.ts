@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppController } from "../src/main/app-controller";
 import { defaultSettings } from "../src/main/constants";
+import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import type { AppSettings, DebridAccountStatus } from "../src/shared/types";
 
 vi.mock("electron", () => ({
@@ -87,5 +88,19 @@ Backup-Passphrase=${echoedPassphrase}`;
 
     expectNoSecret(status, [secret, encodedSecret, echoedHeaderSecret, echoedPassphrase]);
     expect((status as DebridAccountStatus).message).toContain("[geschützt]");
+  });
+
+  it("persists a direct status refresh for an existing account", async () => {
+    const settings = defaultSettings();
+    settings.debridLinkApiKeys = "existing-account-token";
+    const accountId = parseDebridLinkApiKeys(settings.debridLinkApiKeys)[0].id;
+    mockFetchOnce(200, { success: true, value: { username: "active-user", accountType: 1 } });
+    const controller = createController(settings);
+
+    const status = await controller.checkAccountCredentials({ kind: "debridlink-api", accountId });
+
+    expect(status).toEqual(expect.objectContaining({ accountId, valid: true, username: "active-user" }));
+    expect((controller as unknown as { manager: { applyDebridAccountStatuses: ReturnType<typeof vi.fn> } }).manager.applyDebridAccountStatuses)
+      .toHaveBeenCalledWith([expect.objectContaining({ accountId, valid: true })]);
   });
 });

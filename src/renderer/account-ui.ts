@@ -145,6 +145,16 @@ export async function runOptimisticAccountUpdate<T>(
   }
 }
 
+export async function runAccountEnableRefresh<T>(
+  refresh: (() => Promise<void>) | undefined,
+  persist: () => Promise<T>
+): Promise<T> {
+  if (refresh) {
+    await refresh();
+  }
+  return persist();
+}
+
 export function buildScopedAccountEnabledState(
   currentDisabledProviders: DebridProvider[],
   providerIds: DebridProvider[],

@@ -9,6 +9,7 @@ import {
   pruneAccountRowSelection,
   resolveAccountUsername,
   resolveVisibleAccountKind,
+  runAccountEnableRefresh,
   sortAccountServices
 } from "../src/renderer/account-ui";
 import * as accountUi from "../src/renderer/account-ui";
@@ -132,5 +133,29 @@ describe("account usernames", () => {
     expect(resolveAccountUsername("member@example.com", undefined)).toBe("member@example.com");
     expect(resolveAccountUsername("stored@example.com", "verified@example.com")).toBe("verified@example.com");
     expect(resolveAccountUsername("", undefined)).toBe("—");
+  });
+});
+
+describe("account activation refresh", () => {
+  it("checks an account before enabling it", async () => {
+    const events: string[] = [];
+
+    await runAccountEnableRefresh(
+      async () => { events.push("check"); },
+      async () => { events.push("persist"); }
+    );
+
+    expect(events).toEqual(["check", "persist"]);
+  });
+
+  it("does not check an account while disabling it", async () => {
+    const events: string[] = [];
+
+    await runAccountEnableRefresh(
+      undefined,
+      async () => { events.push("persist"); }
+    );
+
+    expect(events).toEqual(["persist"]);
   });
 });
