@@ -3,6 +3,7 @@ import path from "node:path";
 import { AppSettings } from "../shared/types";
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
 import { parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
+import { getRealDebridAccounts } from "../shared/real-debrid-accounts";
 import { StoragePaths } from "./storage";
 
 export type HealthCheckSeverity = "INFO" | "WARN" | "ERROR";
@@ -73,7 +74,10 @@ function getFreeDiskSpaceBytes(target: string): number | null {
 
 function countConfiguredProviders(settings: AppSettings): { count: number; providers: string[] } {
   const providers: string[] = [];
-  if (settings.token?.trim() || settings.realDebridUseWebLogin) {
+  const realDebridAccounts = getRealDebridAccounts(settings);
+  if (realDebridAccounts.length > 0) {
+    providers.push(`Real-Debrid (${realDebridAccounts.length} Account${realDebridAccounts.length === 1 ? "" : "s"})`);
+  } else if (settings.token?.trim() || settings.realDebridUseWebLogin) {
     providers.push("Real-Debrid");
   }
   if (settings.allDebridToken?.trim() || settings.allDebridUseWebLogin) {

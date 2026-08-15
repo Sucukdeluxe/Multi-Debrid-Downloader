@@ -151,7 +151,7 @@ export class AppController {
     this.manager = new DownloadManager(this.settings, session, this.storagePaths, {
       megaWebUnrestrict: (link: string, signal?: AbortSignal, account?: { login: string; password: string }) => this.megaWebFallback.unrestrict(link, signal, account),
       allDebridWebUnrestrict: (link: string, signal?: AbortSignal) => this.allDebridWebFallback.unrestrict(link, signal),
-      realDebridWebUnrestrict: (link: string, signal?: AbortSignal) => this.unrestrictWithFirstRealDebridWebAccount(link, signal),
+      realDebridWebUnrestrict: (accountId: string, link: string, signal?: AbortSignal) => this.unrestrictRealDebridWebAccount(accountId, link, signal),
       bestDebridWebUnrestrict: (link: string, signal?: AbortSignal) => this.bestDebridWebFallback.unrestrict(link, signal),
       invalidateMegaSession: () => this.megaWebFallback.invalidateSession(),
       protectEmptyClobber: loadResult.status === "empty-unreadable",
@@ -715,11 +715,6 @@ export class AppController {
         logger.warn(`Real-Debrid Web-Session konnte nicht gelöscht werden (${accountId}): ${String(error)}`);
       });
     }
-  }
-
-  private async unrestrictWithFirstRealDebridWebAccount(link: string, signal?: AbortSignal) {
-    const account = getRealDebridAccounts(this.settings).find((entry) => entry.kind === "web" && entry.enabled);
-    return account ? this.unrestrictRealDebridWebAccount(account.id, link, signal) : null;
   }
 
   public async openRealDebridLoginWindow(request: RealDebridLoginRequest): Promise<void> {

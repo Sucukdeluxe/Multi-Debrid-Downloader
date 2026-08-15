@@ -26,6 +26,7 @@ import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
 import { extractHosterFromUrl } from "../shared/hoster";
 import { isMegaDebridTransientResolveFailure, germanMegaDebridResolveReason } from "../shared/mega-debrid-errors";
 import { getMegaDebridAccountsForMode } from "../shared/mega-debrid-accounts";
+import { getRealDebridAccounts } from "../shared/real-debrid-accounts";
 import {
   addDebridLinkApiKeyDailyUsageBytes,
   addDebridLinkApiKeyTotalUsageBytes,
@@ -33,6 +34,8 @@ import {
   addMegaDebridAccountTotalUsageBytes,
   addProviderDailyUsageBytes,
   addProviderTotalUsageBytes,
+  addRealDebridAccountDailyUsageBytes,
+  addRealDebridAccountTotalUsageBytes,
   getProviderUsageDayKey,
   isProviderDailyLimitReached
 } from "../shared/provider-daily-limits";
@@ -55,7 +58,7 @@ function releaseTlsSkip(): void {
 }
 import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 import { planDownloadCompletion, reconcileFinalizedSize, validateDownloadedFileCompletion } from "./download-completion";
-import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline, fetchAllDebridHostInfo, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState } from "./debrid";
+import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline, fetchAllDebridHostInfo, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState } from "./debrid";
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { classifyDiskError } from "./fs-error";
@@ -359,6 +362,48 @@ function getUnrestrictTimeoutMs(): number {
     return Math.floor(fromEnv);
   }
   return DEFAULT_UNRESTRICT_TIMEOUT_MS;
+}
+
+export function resolveUnrestrictTimeoutBudgetMs(
+  baseTimeoutMs: number,
+  preferredLeadProvider: DebridProvider | null,
+  settings: AppSettings,
+  link: string,
+  realDebridAccountAttemptTimeoutMs = getRealDebridAccountAttemptTimeoutMs()
+): number {
+  const configuredOrder = settings.providerOrder?.length > 0
+    ? [...settings.providerOrder]
+    : [settings.providerPrimary, settings.providerSecondary, settings.providerTertiary]
+      .filter((provider): provider is DebridProvider => provider !== "none");
+  const orderedProviders = preferredLeadProvider
+    ? [preferredLeadProvider, ...configuredOrder.filter((provider) => provider !== preferredLeadProvider)]
+    : configuredOrder;
+  const hosterKey = extractHosterFromUrl(link);
+  const routedProvider = hosterKey ? settings.hosterRouting?.[hosterKey] : undefined;
+  const routedPlan = routedProvider
+    ? [routedProvider, ...orderedProviders.filter((provider) => provider !== routedProvider)]
+    : orderedProviders;
+  const plan = settings.autoProviderFallback || routedProvider ? routedPlan : routedPlan.slice(0, 1);
+  const uniqueProviders: DebridProvider[] = [];
+  const seen = new Set<DebridProvider>();
+  for (const provider of plan) {
+    const effectiveProvider = resolveMegaDebridProvider(settings, provider) || provider;
+    if (!seen.has(effectiveProvider)) {
+      seen.add(effectiveProvider);
+      uniqueProviders.push(effectiveProvider);
+    }
+  }
+  const accountCount = getAvailableRealDebridAccounts(settings).length;
+  const budgetMs = uniqueProviders.reduce((total, provider) => {
+    if (provider !== "realdebrid") {
+      return total + baseTimeoutMs;
+    }
+    if (accountCount === 0) {
+      return total;
+    }
+    return total + Math.max(baseTimeoutMs, realDebridAccountAttemptTimeoutMs * accountCount);
+  }, 0);
+  return Math.max(baseTimeoutMs, Math.min(Number.MAX_SAFE_INTEGER, budgetMs));
 }
 
 function getLowThroughputTimeoutMs(): number {
@@ -2280,7 +2325,11 @@ export class DownloadManager extends EventEmitter {
     }
 
     const credChanges: Array<{ prev: string; next: string; providers: string[] }> = [
-      { prev: previous.token || "", next: next.token || "", providers: ["realdebrid"] },
+      {
+        prev: `${previous.token || ""}|${previous.realDebridApiTokens || ""}|${(previous.realDebridWebAccountIds || []).join(",")}|${(previous.realDebridDisabledAccountIds || []).join(",")}`,
+        next: `${next.token || ""}|${next.realDebridApiTokens || ""}|${(next.realDebridWebAccountIds || []).join(",")}|${(next.realDebridDisabledAccountIds || []).join(",")}`,
+        providers: ["realdebrid"]
+      },
       { prev: previous.allDebridToken || "", next: next.allDebridToken || "", providers: ["alldebrid"] },
       { prev: previous.bestToken || "", next: next.bestToken || "", providers: ["bestdebrid"] },
       { prev: previous.debridLinkApiKeys || "", next: next.debridLinkApiKeys || "", providers: ["debridlink"] },
@@ -8151,6 +8200,7 @@ export class DownloadManager extends EventEmitter {
     this.settings.providerDailyUsageBytes = {};
     this.settings.debridLinkApiKeyDailyUsageBytes = {};
     this.settings.megaDebridAccountDailyUsageBytes = {};
+    this.settings.realDebridAccountDailyUsageBytes = {};
     this.statsCache = null;
     this.statsCacheAt = 0;
     if (persist) {
@@ -8185,6 +8235,19 @@ export class DownloadManager extends EventEmitter {
       this.settings.megaDebridAccountDailyUsageBytes = nextAcctUsage.megaDebridAccountDailyUsageBytes;
       this.settings.megaDebridAccountTotalUsageBytes = nextAcctTotalUsage.megaDebridAccountTotalUsageBytes;
     }
+    const realDebridAccounts = effectiveProvider === "realdebrid" ? getRealDebridAccounts(this.settings) : [];
+    const realDebridAccountStillConfigured = Boolean(providerAccountId) && (
+      realDebridAccounts.some((account) => account.id === providerAccountId)
+      || (realDebridAccounts.length === 0 && providerAccountId === "rda_legacy_1" && Boolean(this.settings.token.trim()))
+      || (realDebridAccounts.length === 0 && providerAccountId === "rdw_legacy" && this.settings.realDebridUseWebLogin)
+    );
+    if (effectiveProvider === "realdebrid" && providerAccountId && realDebridAccountStillConfigured) {
+      const nextAcctUsage = addRealDebridAccountDailyUsageBytes(this.settings, providerAccountId, byteDelta);
+      const nextAcctTotalUsage = addRealDebridAccountTotalUsageBytes(this.settings, providerAccountId, byteDelta);
+      this.settings.providerDailyUsageDay = nextAcctUsage.providerDailyUsageDay;
+      this.settings.realDebridAccountDailyUsageBytes = nextAcctUsage.realDebridAccountDailyUsageBytes;
+      this.settings.realDebridAccountTotalUsageBytes = nextAcctTotalUsage.realDebridAccountTotalUsageBytes;
+    }
   }
 
   private isProviderConfigured(provider: DebridProvider): boolean {
@@ -8197,7 +8260,9 @@ export class DownloadManager extends EventEmitter {
       return false;
     }
     if (effectiveProvider === "realdebrid") {
-      return Boolean(this.settings.realDebridUseWebLogin || this.settings.token.trim());
+      return getRealDebridAccounts(this.settings).some((account) => account.enabled)
+        ? getAvailableRealDebridAccounts(this.settings).length > 0
+        : Boolean(this.settings.realDebridUseWebLogin || this.settings.token.trim());
     }
     if (effectiveProvider === "megadebrid-api") {
       const hasMegaCreds = getAvailableMegaDebridAccounts(this.settings, "api").length > 0;
@@ -8648,8 +8713,9 @@ export class DownloadManager extends EventEmitter {
     }
     const dlPruned = pruneExpiredDebridLinkRuntimeState(now);
     const mdPruned = pruneExpiredMegaDebridRuntimeState(now);
-    if (allDebridPruned > 0 || dlPruned > 0 || mdPruned > 0) {
-      logger.info(`Soft-Reset: pruned ${allDebridPruned} AllDebrid host entries, ${dlPruned} Debrid-Link entries, ${mdPruned} Mega-Debrid entries`);
+    const rdPruned = pruneExpiredRealDebridRuntimeState(now);
+    if (allDebridPruned > 0 || dlPruned > 0 || mdPruned > 0 || rdPruned > 0) {
+      logger.info(`Soft-Reset: pruned ${allDebridPruned} AllDebrid host entries, ${dlPruned} Debrid-Link entries, ${mdPruned} Mega-Debrid entries, ${rdPruned} Real-Debrid entries`);
     }
   }
 
@@ -9249,7 +9315,13 @@ export class DownloadManager extends EventEmitter {
           this.emitState();
           return;
         }
-        const unrestrictTimeoutSignal = AbortSignal.timeout(getUnrestrictTimeoutMs());
+        const unrestrictTimeoutMs = resolveUnrestrictTimeoutBudgetMs(
+          getUnrestrictTimeoutMs(),
+          preferredLeadProvider,
+          this.settings,
+          item.url
+        );
+        const unrestrictTimeoutSignal = AbortSignal.timeout(unrestrictTimeoutMs);
         const unrestrictedSignal = AbortSignal.any([active.abortController.signal, unrestrictTimeoutSignal]);
         let unrestricted;
         try {
@@ -9270,7 +9342,7 @@ export class DownloadManager extends EventEmitter {
                   traceConversionPhase({
                     phase: "caller-timeout",
                     outcome: "timeout",
-                    detail: `Caller-Budget ${Math.ceil(getUnrestrictTimeoutMs() / 1000)}s erschoepft (siehe letzte Phase fuer in-flight Provider/Account)`
+                    detail: `Caller-Budget ${Math.ceil(unrestrictTimeoutMs / 1000)}s erschoepft (siehe letzte Phase fuer in-flight Provider/Account)`
                   });
                 }
                 throw innerError;
@@ -9280,7 +9352,7 @@ export class DownloadManager extends EventEmitter {
         } catch (unrestrictError) {
           if (!active.abortController.signal.aborted && unrestrictTimeoutSignal.aborted) {
             this.recordProviderFailure(cooldownProvider);
-            throw new Error(`Unrestrict Timeout nach ${Math.ceil(getUnrestrictTimeoutMs() / 1000)}s`);
+            throw new Error(`Unrestrict Timeout nach ${Math.ceil(unrestrictTimeoutMs / 1000)}s`);
           }
           const errText = compactErrorText(unrestrictError);
           if (isUnrestrictFailure(errText) && !isHosterUnavailableError(errText)) {

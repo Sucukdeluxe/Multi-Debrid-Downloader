@@ -7,12 +7,13 @@ export type DebridLinkKeyByteMap = Record<string, number>;
 type ProviderDailySettings =
   Pick<AppSettings, "providerDailyLimitBytes" | "providerDailyUsageBytes" | "providerDailyUsageDay">
   & Partial<Pick<AppSettings, "debridLinkApiKeyDailyLimitBytes" | "debridLinkApiKeyDailyUsageBytes">>
-  & Partial<Pick<AppSettings, "megaDebridDisabledAccountIds" | "megaDebridApiDisabledAccountIds" | "megaDebridWebDisabledAccountIds" | "megaDebridAccountDailyLimitBytes" | "megaDebridAccountDailyUsageBytes">>;
+  & Partial<Pick<AppSettings, "megaDebridDisabledAccountIds" | "megaDebridApiDisabledAccountIds" | "megaDebridWebDisabledAccountIds" | "megaDebridAccountDailyLimitBytes" | "megaDebridAccountDailyUsageBytes">>
+  & Partial<Pick<AppSettings, "realDebridAccountDailyLimitBytes" | "realDebridAccountDailyUsageBytes">>;
 
 type ProviderUsageSettings =
   ProviderDailySettings
   & Partial<Pick<AppSettings, "providerTotalUsageBytes" | "debridLinkApiKeyTotalUsageBytes">>
-  & Partial<Pick<AppSettings, "megaDebridAccountTotalUsageBytes">>;
+  & Partial<Pick<AppSettings, "megaDebridAccountTotalUsageBytes" | "realDebridAccountTotalUsageBytes">>;
 
 function normalizePositiveBytes(value: unknown): number {
   const numeric = Number(value);
@@ -330,4 +331,93 @@ export function addMegaDebridAccountTotalUsageBytes(
   return {
     megaDebridAccountTotalUsageBytes: currentUsageBytes
   };
+}
+
+export function getRealDebridAccountDailyLimitBytes(settings: ProviderDailySettings, accountId: string): number {
+  return normalizePositiveBytes(settings.realDebridAccountDailyLimitBytes?.[accountId]);
+}
+
+export function getRealDebridAccountDailyUsageBytes(
+  settings: ProviderDailySettings,
+  accountId: string,
+  epochMs = Date.now()
+): number {
+  if (settings.providerDailyUsageDay !== getProviderUsageDayKey(epochMs)) {
+    return 0;
+  }
+  return normalizePositiveBytes(settings.realDebridAccountDailyUsageBytes?.[accountId]);
+}
+
+export function isRealDebridAccountDailyLimitReached(
+  settings: ProviderDailySettings,
+  accountId: string,
+  epochMs = Date.now()
+): boolean {
+  const limit = getRealDebridAccountDailyLimitBytes(settings, accountId);
+  return limit > 0 && getRealDebridAccountDailyUsageBytes(settings, accountId, epochMs) >= limit;
+}
+
+export function getRealDebridAccountDailyRemainingBytes(
+  settings: ProviderDailySettings,
+  accountId: string,
+  epochMs = Date.now()
+): number | null {
+  const limit = getRealDebridAccountDailyLimitBytes(settings, accountId);
+  if (limit <= 0) {
+    return null;
+  }
+  return Math.max(0, limit - getRealDebridAccountDailyUsageBytes(settings, accountId, epochMs));
+}
+
+export function getRealDebridAccountTotalUsageBytes(settings: ProviderUsageSettings, accountId: string): number {
+  return normalizePositiveBytes(settings.realDebridAccountTotalUsageBytes?.[accountId]);
+}
+
+export function resetRealDebridAccountDailyUsage(
+  settings: ProviderDailySettings,
+  accountId?: string,
+  epochMs = Date.now()
+): Pick<AppSettings, "providerDailyUsageDay" | "realDebridAccountDailyUsageBytes"> {
+  const dayKey = getProviderUsageDayKey(epochMs);
+  if (!accountId) {
+    return { providerDailyUsageDay: dayKey, realDebridAccountDailyUsageBytes: {} };
+  }
+  const currentUsageBytes = settings.providerDailyUsageDay === dayKey
+    ? { ...(settings.realDebridAccountDailyUsageBytes || {}) }
+    : {};
+  delete currentUsageBytes[accountId];
+  return { providerDailyUsageDay: dayKey, realDebridAccountDailyUsageBytes: currentUsageBytes };
+}
+
+export function addRealDebridAccountDailyUsageBytes(
+  settings: ProviderDailySettings,
+  accountId: string,
+  byteDelta: number,
+  epochMs = Date.now()
+): Pick<AppSettings, "providerDailyUsageDay" | "realDebridAccountDailyUsageBytes"> {
+  const increment = normalizePositiveBytes(byteDelta);
+  const dayKey = getProviderUsageDayKey(epochMs);
+  const currentUsageBytes = settings.providerDailyUsageDay === dayKey
+    ? { ...(settings.realDebridAccountDailyUsageBytes || {}) }
+    : {};
+  if (increment > 0) {
+    currentUsageBytes[accountId] = normalizePositiveBytes(currentUsageBytes[accountId]) + increment;
+  }
+  return {
+    providerDailyUsageDay: dayKey,
+    realDebridAccountDailyUsageBytes: currentUsageBytes
+  };
+}
+
+export function addRealDebridAccountTotalUsageBytes(
+  settings: ProviderUsageSettings,
+  accountId: string,
+  byteDelta: number
+): Pick<AppSettings, "realDebridAccountTotalUsageBytes"> {
+  const increment = normalizePositiveBytes(byteDelta);
+  const currentUsageBytes = { ...(settings.realDebridAccountTotalUsageBytes || {}) };
+  if (increment > 0) {
+    currentUsageBytes[accountId] = normalizePositiveBytes(currentUsageBytes[accountId]) + increment;
+  }
+  return { realDebridAccountTotalUsageBytes: currentUsageBytes };
 }

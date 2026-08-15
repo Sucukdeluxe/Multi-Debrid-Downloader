@@ -113,12 +113,40 @@ function looksLikeHtmlResponse(contentType: string, body: string): boolean {
   return /^\s*<(!doctype\s+html|html\b)/i.test(String(body || ""));
 }
 
-function parseErrorBody(status: number, body: string, contentType: string): string {
+function parseErrorBody(status: number, body: string, contentType: string): RealDebridApiError {
   if (looksLikeHtmlResponse(contentType, body)) {
-    return `Real-Debrid lieferte HTML statt JSON (HTTP ${status})`;
+    return new RealDebridApiError(status, "html_response", null, "Real-Debrid lieferte HTML statt JSON");
+  }
+  if (String(contentType || "").toLowerCase().includes("json") || /^\s*\{/.test(body)) {
+    try {
+      const payload = JSON.parse(body) as Record<string, unknown>;
+      const apiError = String(payload.error || "").trim();
+      const codeValue = Number(payload.error_code ?? NaN);
+      const apiErrorCode = Number.isFinite(codeValue) ? Math.floor(codeValue) : null;
+      if (apiError || apiErrorCode !== null) {
+        return new RealDebridApiError(status, apiError, apiErrorCode);
+      }
+    } catch {
+    }
   }
   const clean = compactErrorText(body);
-  return clean || `HTTP ${status}`;
+  return new RealDebridApiError(status, "", null, clean || `HTTP ${status}`);
+}
+
+export class RealDebridApiError extends Error {
+  public readonly status: number;
+  public readonly apiError: string;
+  public readonly apiErrorCode: number | null;
+
+  public constructor(status: number, apiError: string, apiErrorCode: number | null, fallbackMessage = "") {
+    const normalizedError = String(apiError || "").trim();
+    const codeText = apiErrorCode === null ? "" : ` (${apiErrorCode})`;
+    super(fallbackMessage || `Real-Debrid HTTP ${status}: ${normalizedError || "API-Fehler"}${codeText}`);
+    this.name = "RealDebridApiError";
+    this.status = status;
+    this.apiError = normalizedError;
+    this.apiErrorCode = apiErrorCode;
+  }
 }
 
 export class RealDebridClient {
@@ -129,7 +157,7 @@ export class RealDebridClient {
   }
 
   public async unrestrictLink(link: string, signal?: AbortSignal): Promise<UnrestrictedLink> {
-    let lastError = "";
+    let lastError: unknown = null;
     for (let attempt = 1; attempt <= REQUEST_RETRIES; attempt += 1) {
       try {
         const body = new URLSearchParams({ link });
@@ -152,7 +180,7 @@ export class RealDebridClient {
             await sleepWithSignal(retryDelayForResponse(response, attempt), signal);
             continue;
           }
-          throw new Error(parsed);
+          throw parsed;
         }
 
         if (looksLikeHtmlResponse(contentType, text)) {
@@ -188,17 +216,21 @@ export class RealDebridClient {
           retriesUsed: attempt - 1
         };
       } catch (error) {
-        lastError = compactErrorText(error);
-        if (signal?.aborted || (/aborted/i.test(lastError) && !/timeout/i.test(lastError))) {
+        lastError = error;
+        const lastErrorText = compactErrorText(error);
+        if (signal?.aborted || (/aborted/i.test(lastErrorText) && !/timeout/i.test(lastErrorText))) {
           break;
         }
-        if (attempt >= REQUEST_RETRIES || !isRetryableErrorText(lastError)) {
+        if (attempt >= REQUEST_RETRIES || !isRetryableErrorText(lastErrorText)) {
           break;
         }
         await sleepWithSignal(retryDelay(attempt), signal);
       }
     }
 
-    throw new Error(String(lastError || "Unrestrict fehlgeschlagen").replace(/^Error:\s*/i, ""));
+    if (lastError instanceof Error) {
+      throw lastError;
+    }
+    throw new Error(compactErrorText(lastError) || "Unrestrict fehlgeschlagen");
   }
 }

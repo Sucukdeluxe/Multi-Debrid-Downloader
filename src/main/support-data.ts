@@ -1,4 +1,5 @@
 import { getDebridLinkApiKeyIds } from "../shared/debrid-link-keys";
+import { getRealDebridAccounts } from "../shared/real-debrid-accounts";
 import { isNotifyUrlValid } from "./notify";
 import type { AppSettings, HistoryEntry, UiSnapshot } from "../shared/types";
 
@@ -9,12 +10,19 @@ function hasText(value: unknown): boolean {
 export function buildAccountSummary(settings: AppSettings): Record<string, unknown> {
   const debridLinkKeyIds = getDebridLinkApiKeyIds(settings.debridLinkApiKeys);
   const disabledDebridLinkIds = new Set(settings.debridLinkDisabledKeyIds || []);
+  const realDebridAccounts = getRealDebridAccounts(settings);
+  const enabledRealDebridAccounts = realDebridAccounts.filter((account) => account.enabled);
 
   return {
     realDebrid: {
-      configured: hasText(settings.token) || settings.realDebridUseWebLogin,
-      tokenConfigured: hasText(settings.token),
-      webLoginEnabled: settings.realDebridUseWebLogin,
+      configured: realDebridAccounts.length > 0 || hasText(settings.token) || settings.realDebridUseWebLogin,
+      accountCount: realDebridAccounts.length,
+      enabledAccountCount: enabledRealDebridAccounts.length,
+      disabledAccountCount: realDebridAccounts.length - enabledRealDebridAccounts.length,
+      apiAccountCount: realDebridAccounts.filter((account) => account.kind === "api").length,
+      webAccountCount: realDebridAccounts.filter((account) => account.kind === "web").length,
+      tokenConfigured: realDebridAccounts.some((account) => account.kind === "api") || hasText(settings.token),
+      webLoginEnabled: realDebridAccounts.some((account) => account.kind === "web") || settings.realDebridUseWebLogin,
       rememberToken: settings.rememberToken
     },
     megaDebrid: {

@@ -6,7 +6,7 @@ import crypto from "node:crypto";
 import { EventEmitter, once } from "node:events";
 import AdmZip from "adm-zip";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DownloadManager, buildAutoRenameBaseNameFromFoldersWithOptions, extractArchiveNameFromExtractorLogMessage, getAuthoritativeRealDebridTotal, getDiskWriteWaitReason, resolveArchiveItemsFromList, runWithLimitedConcurrency } from "../src/main/download-manager";
+import { DownloadManager, buildAutoRenameBaseNameFromFoldersWithOptions, extractArchiveNameFromExtractorLogMessage, getAuthoritativeRealDebridTotal, getDiskWriteWaitReason, resolveArchiveItemsFromList, resolveUnrestrictTimeoutBudgetMs, runWithLimitedConcurrency } from "../src/main/download-manager";
 import { planDownloadCompletion, validateDownloadedFileCompletion } from "../src/main/download-completion";
 import { DiskReservationCoordinator } from "../src/main/disk-space";
 import { defaultSettings } from "../src/main/constants";
@@ -15,8 +15,9 @@ import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
 import { getItemLogPath, initItemLogs, shutdownItemLogs } from "../src/main/item-log";
 import { initPackageLogs, shutdownPackageLogs } from "../src/main/package-log";
 import { createStoragePaths, emptySession } from "../src/main/storage";
-import { primeDebridLinkRuntimeCooldownForTests, resetDebridLinkRuntimeStateForTests, primeMegaDebridRuntimeCooldownForTests, resetMegaDebridRuntimeStateForTests, primeMegaDebridInFlightForTests } from "../src/main/debrid";
+import { getProviderRuntimeSnapshot, primeDebridLinkRuntimeCooldownForTests, resetDebridLinkRuntimeStateForTests, primeMegaDebridRuntimeCooldownForTests, resetMegaDebridRuntimeStateForTests, primeMegaDebridInFlightForTests, primeRealDebridRuntimeCooldownForTests, resetRealDebridRuntimeStateForTests } from "../src/main/debrid";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
+import { serializeRealDebridApiAccounts } from "../src/shared/real-debrid-accounts";
 import { getRenameLogPath, initRenameLog, shutdownRenameLog } from "../src/main/rename-log";
 import { UnrestrictedLink } from "../src/main/realdebrid";
 import { resetVideoToolingCache } from "../src/main/video-processor";
@@ -41,6 +42,48 @@ describe("runWithLimitedConcurrency", () => {
 
     expect(peak).toBe(3);
     expect(completed.sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+});
+
+describe("resolveUnrestrictTimeoutBudgetMs", () => {
+  it("covers the complete provider plan and each later Real-Debrid account attempt", () => {
+    const settings = {
+      ...defaultSettings(),
+      debridLinkApiKeys: "dl-key",
+      bestToken: "best-token",
+      realDebridApiTokens: serializeRealDebridApiAccounts([
+        { id: "rda_one", token: "token-one" },
+        { id: "rda_two", token: "token-two" },
+        { id: "rda_three", token: "token-three" }
+      ]),
+      realDebridDisabledAccountIds: ["rda_three"],
+      providerOrder: ["debridlink", "realdebrid", "bestdebrid"] as const,
+      autoProviderFallback: true
+    };
+
+    expect(resolveUnrestrictTimeoutBudgetMs(5_000, "debridlink", settings, "https://hoster.example/file", 35_000)).toBe(80_000);
+  });
+
+  it("includes a Real-Debrid pool selected only by hoster routing", () => {
+    const settings = {
+      ...defaultSettings(),
+      debridLinkApiKeys: "dl-key",
+      realDebridApiTokens: serializeRealDebridApiAccounts([
+        { id: "rda_one", token: "token-one" },
+        { id: "rda_two", token: "token-two" }
+      ]),
+      providerOrder: ["debridlink"] as const,
+      hosterRouting: { rapidgator: "realdebrid" as const },
+      autoProviderFallback: true
+    };
+
+    expect(resolveUnrestrictTimeoutBudgetMs(
+      5_000,
+      null,
+      settings,
+      "https://rapidgator.net/file/abc123/file.rar.html",
+      35_000
+    )).toBeGreaterThanOrEqual(70_000);
   });
 });
 
@@ -765,6 +808,7 @@ afterEach(async () => {
   resetVideoToolingCache();
   resetDebridLinkRuntimeStateForTests();
   resetMegaDebridRuntimeStateForTests();
+  resetRealDebridRuntimeStateForTests();
   shutdownItemLogs();
   shutdownPackageLogs();
   shutdownRenameLog();
@@ -13190,6 +13234,74 @@ describe("download manager", () => {
     expect(internal.settings.debridLinkApiKeyDailyUsageBytes[secondKey.id]).toBe(512);
     expect(internal.settings.debridLinkApiKeyTotalUsageBytes[firstKey.id]).toBe(1024);
     expect(internal.settings.debridLinkApiKeyTotalUsageBytes[secondKey.id]).toBe(2048);
+  });
+
+  it("tracks Real-Debrid traffic only on the account that produced the direct link", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const settings = {
+      ...defaultSettings(),
+      providerDailyUsageDay: getProviderUsageDayKey(),
+      realDebridApiTokens: serializeRealDebridApiAccounts([
+        { id: "rda_one", token: "token-one" },
+        { id: "rda_two", token: "token-two" }
+      ]),
+      realDebridAccountDailyUsageBytes: { rda_one: 100, rda_two: 200 },
+      realDebridAccountTotalUsageBytes: { rda_one: 1000, rda_two: 2000 }
+    };
+    const manager = new DownloadManager(settings, emptySession(), createStoragePaths(path.join(root, "state")));
+    const internal = manager as unknown as {
+      recordProviderDownloadedBytes: (provider: "realdebrid", bytes: number, providerAccountId?: string) => void;
+      settings: typeof settings;
+    };
+
+    internal.recordProviderDownloadedBytes("realdebrid", 50, "rda_two");
+
+    expect(internal.settings.realDebridAccountDailyUsageBytes).toEqual({ rda_one: 100, rda_two: 250 });
+    expect(internal.settings.realDebridAccountTotalUsageBytes).toEqual({ rda_one: 1000, rda_two: 2050 });
+  });
+
+  it("does not recreate account usage when the source account was removed during the download", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const settings = {
+      ...defaultSettings(),
+      providerDailyUsageDay: getProviderUsageDayKey(),
+      providerDailyUsageBytes: { realdebrid: 100 },
+      providerTotalUsageBytes: { realdebrid: 1000 },
+      realDebridApiTokens: serializeRealDebridApiAccounts([{ id: "rda_one", token: "token-one" }]),
+      realDebridAccountDailyUsageBytes: {},
+      realDebridAccountTotalUsageBytes: {}
+    };
+    const manager = new DownloadManager(settings, emptySession(), createStoragePaths(path.join(root, "state")));
+    manager.setSettings({ ...settings, realDebridApiTokens: "" });
+    const internal = manager as unknown as {
+      recordProviderDownloadedBytes: (provider: "realdebrid", bytes: number, providerAccountId?: string) => void;
+      settings: typeof settings;
+    };
+
+    internal.recordProviderDownloadedBytes("realdebrid", 50, "rda_one");
+
+    expect(internal.settings.providerDailyUsageBytes.realdebrid).toBe(150);
+    expect(internal.settings.providerTotalUsageBytes.realdebrid).toBe(1050);
+    expect(internal.settings.realDebridAccountDailyUsageBytes).toEqual({});
+    expect(internal.settings.realDebridAccountTotalUsageBytes).toEqual({});
+  });
+
+  it("prunes removed Real-Debrid account runtime state on a live settings update", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const settings = {
+      ...defaultSettings(),
+      realDebridApiTokens: serializeRealDebridApiAccounts([{ id: "rda_one", token: "token-one" }])
+    };
+    const manager = new DownloadManager(settings, emptySession(), createStoragePaths(path.join(root, "state")));
+    primeRealDebridRuntimeCooldownForTests("rda_one", 60_000);
+    expect(getProviderRuntimeSnapshot().realDebrid.cooldownCount).toBe(1);
+
+    manager.setSettings({ ...settings, realDebridApiTokens: "" });
+
+    expect(getProviderRuntimeSnapshot().realDebrid.cooldownCount).toBe(0);
   });
 
   it("does not hang when rapid stop is followed by disabling the last provider", async () => {

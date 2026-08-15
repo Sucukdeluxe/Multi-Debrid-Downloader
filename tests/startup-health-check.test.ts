@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { defaultSettings } from "../src/main/constants";
+import { serializeRealDebridApiAccounts } from "../src/shared/real-debrid-accounts";
 import { createStoragePaths } from "../src/main/storage";
 import { runStartupHealthCheck } from "../src/main/startup-health-check";
 
@@ -82,6 +83,26 @@ describe("runStartupHealthCheck", () => {
     expect(providersFinding?.message).toContain("Real-Debrid");
     expect(providersFinding?.message).toContain("Debrid-Link");
     expect(providersFinding?.message).toContain("2 Keys");
+  });
+
+  it("recognizes a Real-Debrid account pool without legacy singleton fields", () => {
+    const { outputDir, paths } = makeTempBase();
+    fs.mkdirSync(paths.baseDir, { recursive: true });
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      realDebridUseWebLogin: false,
+      outputDir,
+      realDebridApiTokens: serializeRealDebridApiAccounts([
+        { id: "rda_one", token: "token-one" },
+        { id: "rda_two", token: "token-two" }
+      ])
+    };
+
+    const report = runStartupHealthCheck(settings, paths);
+    const providersFinding = report.findings.find((finding) => finding.code === "providers_configured");
+
+    expect(providersFinding?.message).toContain("Real-Debrid (2 Accounts)");
   });
 
   it("flags large state files", () => {

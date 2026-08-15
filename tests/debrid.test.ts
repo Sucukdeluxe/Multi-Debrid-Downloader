@@ -2,9 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultSettings, REQUEST_RETRIES } from "../src/main/constants";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
+import { serializeRealDebridApiAccounts } from "../src/shared/real-debrid-accounts";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
 import { isMegaDebridTransientResolveFailure } from "../src/shared/mega-debrid-errors";
-import { checkRapidgatorOnline, classifyMegaDebridAccountFailureForTests, clearMegaDebridEmptyResponseStreak, DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, getDebridLinkKeyCooldownStateForTests, getDebridLinkKeyRuntimeStateForTests, getMegaDebridAccountCooldownState, getProviderRuntimeSnapshot, leadProviderChainWith, MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART, MEGA_DEBRID_STICKY_LINKS, normalizeResolvedFilename, parseRapidgatorFileSize, primeMegaDebridRuntimeCooldownForTests, primeMegaDebridUntilRestartForTests, recordMegaDebridEmptyResponseStreak, resetDebridLinkRuntimeStateForTests, resetMegaDebridRuntimeStateForTests } from "../src/main/debrid";
+import { checkRapidgatorOnline, classifyMegaDebridAccountFailureForTests, clearMegaDebridEmptyResponseStreak, DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, getAvailableRealDebridAccounts, getDebridLinkKeyCooldownStateForTests, getDebridLinkKeyRuntimeStateForTests, getMegaDebridAccountCooldownState, getProviderRuntimeSnapshot, leadProviderChainWith, MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART, MEGA_DEBRID_STICKY_LINKS, normalizeResolvedFilename, parseRapidgatorFileSize, primeMegaDebridRuntimeCooldownForTests, primeMegaDebridUntilRestartForTests, recordMegaDebridEmptyResponseStreak, resetDebridLinkRuntimeStateForTests, resetMegaDebridRuntimeStateForTests, resetRealDebridRuntimeStateForTests } from "../src/main/debrid";
 
 const originalFetch = globalThis.fetch;
 
@@ -12,6 +13,7 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
   resetDebridLinkRuntimeStateForTests();
   resetMegaDebridRuntimeStateForTests();
+  resetRealDebridRuntimeStateForTests();
   delete process.env.RD_MEGA_ABORT_MIN_RUN_MS;
   vi.restoreAllMocks();
 });
@@ -2825,6 +2827,276 @@ describe("checkRapidgatorOnline", () => {
       fileName: "episode.part01.rar",
       fileSizeBytes: 1_610_612_736
     });
+  });
+});
+
+describe("Real-Debrid account rotation", () => {
+  const accountSettings = (accounts: Array<{ id: string; token: string }>) => ({
+    ...defaultSettings(),
+    token: "",
+    realDebridUseWebLogin: false,
+    realDebridApiTokens: serializeRealDebridApiAccounts(accounts),
+    providerPrimary: "realdebrid" as const,
+    providerSecondary: "none" as const,
+    providerTertiary: "none" as const,
+    providerOrder: ["realdebrid"] as const,
+    autoProviderFallback: false
+  });
+
+  const successResponse = (accountId: string) => new Response(JSON.stringify({
+    download: `https://download.example/${accountId}.bin`,
+    filename: `${accountId}.bin`,
+    filesize: 1234
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
+
+  it("returns the concrete account identity when the first API account succeeds", async () => {
+    globalThis.fetch = (async () => successResponse("rda_one")) as typeof fetch;
+    const service = new DebridService(accountSettings([{ id: "rda_one", token: "token-one" }]));
+
+    const result = await service.unrestrictLink("https://hoster.example/first.bin");
+
+    expect(result.sourceAccountId).toBe("rda_one");
+    expect(result.sourceAccountLabel).toBe("API-Token 1");
+  });
+
+  it("fails over from a rejected API account to the next account in the same call", async () => {
+    const usedTokens: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      const token = String((init?.headers as Record<string, string>)?.Authorization || "").replace("Bearer ", "");
+      usedTokens.push(token);
+      return token === "token-one"
+        ? new Response(JSON.stringify({ error: "bad_token", error_code: 8 }), { status: 401, headers: { "Content-Type": "application/json" } })
+        : successResponse("rda_two");
+    }) as typeof fetch;
+    const settings = accountSettings([
+      { id: "rda_one", token: "token-one" },
+      { id: "rda_two", token: "token-two" }
+    ]);
+    const service = new DebridService(settings);
+
+    const result = await service.unrestrictLink("https://hoster.example/failover.bin");
+
+    expect(result.sourceAccountId).toBe("rda_two");
+    expect(usedTokens).toEqual(["token-one", "token-two"]);
+    expect(getAvailableRealDebridAccounts(settings, Date.now() + 3 * 60 * 1000).map((account) => account.id)).toEqual(["rda_two"]);
+  });
+
+  it("cools down a rate-limited account and skips it on the next call", async () => {
+    const usedTokens: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      const token = String((init?.headers as Record<string, string>)?.Authorization || "").replace("Bearer ", "");
+      usedTokens.push(token);
+      return token === "token-one"
+        ? new Response(JSON.stringify({ error: "too_many_requests", error_code: 34 }), { status: 429, headers: { "Content-Type": "application/json" } })
+        : successResponse("rda_two");
+    }) as typeof fetch;
+    const settings = accountSettings([
+      { id: "rda_one", token: "token-one" },
+      { id: "rda_two", token: "token-two" }
+    ]);
+    const service = new DebridService(settings);
+
+    await service.unrestrictLink("https://hoster.example/limited-one.bin");
+    const firstCallCount = usedTokens.length;
+    await service.unrestrictLink("https://hoster.example/limited-two.bin");
+
+    expect(usedTokens.slice(firstCallCount)).toEqual(["token-two"]);
+    expect(getAvailableRealDebridAccounts(settings, Date.now() + 3 * 60 * 1000).map((account) => account.id)).toEqual(["rda_two"]);
+  });
+
+  it("rotates from a timed-out API account to an isolated web account", async () => {
+    globalThis.fetch = (async () => { throw new Error("Timeout"); }) as typeof fetch;
+    const webAccounts: string[] = [];
+    const settings = {
+      ...accountSettings([{ id: "rda_one", token: "token-one" }]),
+      realDebridWebAccountIds: ["rdw_two"]
+    };
+    const service = new DebridService(settings, {
+      realDebridWebUnrestrict: async (accountId) => {
+        webAccounts.push(accountId);
+        return {
+          fileName: "web.bin",
+          directUrl: "https://download.example/web.bin",
+          fileSize: 4321,
+          retriesUsed: 0
+        };
+      }
+    });
+
+    const result = await service.unrestrictLink("https://hoster.example/web-failover.bin");
+
+    expect(result.sourceAccountId).toBe("rdw_two");
+    expect(webAccounts).toEqual(["rdw_two"]);
+  });
+
+  it("treats a pool with only disabled accounts as not configured", async () => {
+    const settings = {
+      ...accountSettings([
+        { id: "rda_one", token: "token-one" },
+        { id: "rda_two", token: "token-two" }
+      ]),
+      realDebridDisabledAccountIds: ["rda_one", "rda_two"]
+    };
+    const service = new DebridService(settings);
+
+    await expect(service.unrestrictLink("https://hoster.example/disabled.bin")).rejects.toThrow(/nicht konfiguriert/i);
+  });
+
+  it("reports an exhausted pool when every active account reached its own daily limit", async () => {
+    const settings = {
+      ...accountSettings([
+        { id: "rda_one", token: "token-one" },
+        { id: "rda_two", token: "token-two" }
+      ]),
+      providerDailyUsageDay: getProviderUsageDayKey(),
+      realDebridAccountDailyLimitBytes: { rda_one: 100, rda_two: 200 },
+      realDebridAccountDailyUsageBytes: { rda_one: 100, rda_two: 200 }
+    };
+    const service = new DebridService(settings);
+
+    await expect(service.unrestrictLink("https://hoster.example/daily-limit.bin")).rejects.toThrow(/Real-Debrid.*Accounts.*ausgesch/i);
+  });
+
+  it("propagates a caller abort without trying another account", async () => {
+    const controller = new AbortController();
+    const attempted: string[] = [];
+    const settings = {
+      ...accountSettings([]),
+      realDebridWebAccountIds: ["rdw_one", "rdw_two"]
+    };
+    const service = new DebridService(settings, {
+      realDebridWebUnrestrict: async (accountId) => {
+        attempted.push(accountId);
+        controller.abort("stop");
+        throw new Error("aborted:stop");
+      }
+    });
+
+    await expect(service.unrestrictLink("https://hoster.example/abort.bin", controller.signal)).rejects.toThrow(/aborted/i);
+    expect(attempted).toEqual(["rdw_one"]);
+  });
+
+  it("shares sequential successes fairly across the available API accounts", async () => {
+    const usedTokens: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      const token = String((init?.headers as Record<string, string>)?.Authorization || "").replace("Bearer ", "");
+      usedTokens.push(token);
+      return successResponse(token === "token-one" ? "rda_one" : "rda_two");
+    }) as typeof fetch;
+    const service = new DebridService(accountSettings([
+      { id: "rda_one", token: "token-one" },
+      { id: "rda_two", token: "token-two" }
+    ]));
+
+    for (let index = 0; index < 8; index += 1) {
+      await service.unrestrictLink(`https://hoster.example/fair-${index}.bin`);
+    }
+
+    expect(usedTokens.filter((token) => token === "token-one")).toHaveLength(4);
+    expect(usedTokens.filter((token) => token === "token-two")).toHaveLength(4);
+  });
+
+  it("keeps round-robin fair when the middle configured account is disabled", async () => {
+    const usedTokens: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      const token = String((init?.headers as Record<string, string>)?.Authorization || "").replace("Bearer ", "");
+      usedTokens.push(token);
+      return successResponse(token === "token-one" ? "rda_one" : "rda_three");
+    }) as typeof fetch;
+    const settings = {
+      ...accountSettings([
+        { id: "rda_one", token: "token-one" },
+        { id: "rda_two", token: "token-two" },
+        { id: "rda_three", token: "token-three" }
+      ]),
+      realDebridDisabledAccountIds: ["rda_two"]
+    };
+    const service = new DebridService(settings);
+
+    for (let index = 0; index < 16; index += 1) {
+      await service.unrestrictLink(`https://hoster.example/filtered-fair-${index}.bin`);
+    }
+
+    expect(usedTokens.filter((token) => token === "token-one")).toHaveLength(8);
+    expect(usedTokens.filter((token) => token === "token-three")).toHaveLength(8);
+    expect(usedTokens).not.toContain("token-two");
+  });
+
+  it("does not rotate or cool down an account for a permanent link error", async () => {
+    const usedTokens: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      const token = String((init?.headers as Record<string, string>)?.Authorization || "").replace("Bearer ", "");
+      usedTokens.push(token);
+      return new Response(JSON.stringify({ error: "file_unavailable", error_code: 22 }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" }
+      });
+    }) as typeof fetch;
+    const service = new DebridService(accountSettings([
+      { id: "rda_one", token: "token-one" },
+      { id: "rda_two", token: "token-two" }
+    ]));
+
+    await expect(service.unrestrictLink("https://hoster.example/missing.bin")).rejects.toThrow(/file_unavailable/i);
+
+    expect(usedTokens).toEqual(["token-one"]);
+    expect(getProviderRuntimeSnapshot().realDebrid.cooldownCount).toBe(0);
+  });
+
+  it("does not rotate or cool down accounts for a provider-wide hoster_unavailable response", async () => {
+    const usedTokens: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      const token = String((init?.headers as Record<string, string>)?.Authorization || "").replace("Bearer ", "");
+      const link = String((init?.body as URLSearchParams)?.get("link") || "");
+      usedTokens.push(token);
+      if (link.includes("hoster-down")) {
+        return new Response(JSON.stringify({ error: "hoster_unavailable", error_code: 19 }), {
+          status: 503,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return successResponse("rda_one");
+    }) as typeof fetch;
+    const service = new DebridService(accountSettings([
+      { id: "rda_one", token: "token-one" },
+      { id: "rda_two", token: "token-two" }
+    ]));
+
+    await expect(service.unrestrictLink("https://hoster-down.example/file.bin")).rejects.toThrow(/hoster_unavailable/i);
+
+    expect(new Set(usedTokens)).toEqual(new Set(["token-one"]));
+    expect(getProviderRuntimeSnapshot().realDebrid.cooldownCount).toBe(0);
+
+    usedTokens.length = 0;
+    const result = await service.unrestrictLink("https://hoster-up.example/file.bin");
+    expect(result.sourceAccountId).toBe("rda_one");
+    expect(usedTokens).toEqual(["token-one"]);
+  });
+
+  it("routes concurrent unrestrict calls to the least busy accounts", async () => {
+    const usedTokens: string[] = [];
+    let releaseResponses: (() => void) | null = null;
+    const responseGate = new Promise<void>((resolve) => { releaseResponses = resolve; });
+    globalThis.fetch = (async (_input, init) => {
+      const token = String((init?.headers as Record<string, string>)?.Authorization || "").replace("Bearer ", "");
+      usedTokens.push(token);
+      if (usedTokens.length === 2) {
+        releaseResponses?.();
+      }
+      await responseGate;
+      return successResponse(token === "token-one" ? "rda_one" : "rda_two");
+    }) as typeof fetch;
+    const service = new DebridService(accountSettings([
+      { id: "rda_one", token: "token-one" },
+      { id: "rda_two", token: "token-two" }
+    ]));
+
+    await Promise.all([
+      service.unrestrictLink("https://hoster.example/concurrent-one.bin"),
+      service.unrestrictLink("https://hoster.example/concurrent-two.bin")
+    ]);
+
+    expect(usedTokens).toEqual(["token-one", "token-two"]);
   });
 });
 
