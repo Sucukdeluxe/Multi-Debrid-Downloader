@@ -674,6 +674,10 @@
   place-items: center;
 }
 
+.settings-account-column-actions {
+  transform: translateX(6px);
+}
+
 .settings-account-hoster {
   display: flex;
   align-items: center;
