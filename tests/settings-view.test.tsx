@@ -885,7 +885,7 @@ describe("account workspace", () => {
       <AccountAddDialog
         actions={{
           onQueryChange: () => {},
-          onFilterChange: () => {},
+          onServiceFilterChange: () => {},
           onOptionSelect: () => {},
           onFieldChange: () => {},
           onClose: () => {},
@@ -894,7 +894,8 @@ describe("account workspace", () => {
         model={{
           open: true,
           query: "",
-          filter: "all",
+          serviceFilter: "all",
+          serviceFilters: ["Real-Debrid", "DDownload", "Mega-Debrid", "Debrid-Link"],
           options,
           selectedOptionId: "megadebrid-api",
           fields: [
@@ -938,7 +939,9 @@ describe("account workspace", () => {
 
     expect(addHtml).toContain("Account hinzufügen");
     expect(addHtml).toContain("Prüfen und speichern");
-    expect(count(addHtml, "<select")).toBe(0);
+    expect(count(addHtml, "<select")).toBe(1);
+    expect(addHtml).toContain('aria-label="Dienst filtern"');
+    expect(addHtml).toContain("Alle Dienste");
     expect(addHtml).toContain('aria-label="Dienst oder Zugangstyp suchen"');
     expect(addHtml).toContain('role="listbox"');
     expect(addHtml).toContain('class="settings-account-picker-header"');
@@ -970,7 +973,7 @@ describe("account workspace", () => {
     const tree = AccountAddDialog({
       actions: {
         onQueryChange: () => {},
-        onFilterChange: () => {},
+        onServiceFilterChange: () => {},
         onOptionSelect: (optionId) => selected.push(optionId),
         onFieldChange: () => {},
         onClose: () => {},
@@ -979,7 +982,8 @@ describe("account workspace", () => {
       model: {
         open: true,
         query: "",
-        filter: "all",
+        serviceFilter: "all",
+        serviceFilters: ["Real-Debrid", "DDownload", "Mega-Debrid", "Debrid-Link"],
         options: accountOptions(),
         selectedOptionId: "megadebrid-api",
         fields: [],
@@ -994,12 +998,47 @@ describe("account workspace", () => {
     expect(selected).toEqual(["debridlink-api"]);
   });
 
+  it("filters by service and selects the first visible option with Enter", () => {
+    const selected: string[] = [];
+    const serviceFilters: string[] = [];
+    const options = accountOptions().filter((option) => option.title === "Mega-Debrid");
+    const tree = AccountAddDialog({
+      actions: {
+        onQueryChange: () => {},
+        onServiceFilterChange: (service) => serviceFilters.push(service),
+        onOptionSelect: (optionId) => selected.push(optionId),
+        onFieldChange: () => {},
+        onClose: () => {},
+        onSubmit: () => {}
+      },
+      model: {
+        open: true,
+        query: "api",
+        serviceFilter: "Mega-Debrid",
+        serviceFilters: ["Real-Debrid", "Mega-Debrid"],
+        options,
+        selectedOptionId: options[0].id,
+        fields: [],
+        error: "",
+        busy: false
+      }
+    });
+    const serviceSelect = findElement(tree, (element) => element.props["aria-label"] === "Dienst filtern");
+    const search = findElement(tree, (element) => element.props["aria-label"] === "Dienst oder Zugangstyp suchen");
+
+    serviceSelect.props.onChange({ target: { value: "Real-Debrid" } });
+    search.props.onKeyDown({ key: "Enter", preventDefault: () => selected.push("prevented") });
+
+    expect(serviceFilters).toEqual(["Real-Debrid"]);
+    expect(selected).toEqual(["prevented", "megadebrid-api"]);
+  });
+
   it("shows an accessible empty result when account search has no matches", () => {
     const html = renderToStaticMarkup(
       <AccountAddDialog
         actions={{
           onQueryChange: () => {},
-          onFilterChange: () => {},
+          onServiceFilterChange: () => {},
           onOptionSelect: () => {},
           onFieldChange: () => {},
           onClose: () => {},
@@ -1008,7 +1047,8 @@ describe("account workspace", () => {
         model={{
           open: true,
           query: "nicht vorhanden",
-          filter: "all",
+          serviceFilter: "all",
+          serviceFilters: ["Real-Debrid"],
           options: [],
           selectedOptionId: null,
           fields: [],
@@ -1149,6 +1189,8 @@ describe("settings geometry", () => {
 
   it("keeps the specified form, table, switch, overflow and selection geometry", () => {
     const css = readFileSync(new URL("../src/renderer/views/settings/settings.css", import.meta.url), "utf8");
+    expect(css).toMatch(/\.settings-account-picker-list\s*{[^}]*height:\s*190px;[^}]*scrollbar-gutter:\s*stable;/s);
+    expect(css).toMatch(/\.settings-account-picker-empty\s*{[^}]*height:\s*190px;/s);
     expect(css).toMatch(/\.settings-content\s*{[^}]*padding:\s*24px;/s);
     expect(css).toMatch(
       /\.md-runtime-view-content\s*>\s*\.settings-content\s*{[^}]*height:\s*100%;[^}]*padding:\s*24px;/s

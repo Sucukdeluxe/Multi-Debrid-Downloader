@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildConfiguredProviderOrder,
+  filterAccountDialogOptions,
   getAccountDialogSelectableOptions,
   isAccountRowSelectionKey,
   matchesAccountModeFilter,
@@ -19,6 +20,19 @@ describe("account mode filter", () => {
   it("shows Web-Login options for the Web filter", () => {
     expect(matchesAccountModeFilter({ modeLabel: "Web-Login" }, "web")).toBe(true);
     expect(matchesAccountModeFilter({ modeLabel: "API" }, "web")).toBe(false);
+  });
+});
+
+describe("account dialog filter", () => {
+  const options = [
+    { id: "rd-api", serviceLabel: "Real-Debrid", title: "Real-Debrid API", modeLabel: "API", pickerDescription: "API-Token" },
+    { id: "rd-web", serviceLabel: "Real-Debrid", title: "Real-Debrid Web-Login", modeLabel: "Web-Login", pickerDescription: "Browserfenster" },
+    { id: "md-api", serviceLabel: "Mega-Debrid", title: "Mega-Debrid API", modeLabel: "API", pickerDescription: "Login:Passwort" }
+  ];
+
+  it("combines an exact service choice with an access-type search", () => {
+    expect(filterAccountDialogOptions(options, "web", "Real-Debrid").map((option) => option.id)).toEqual(["rd-web"]);
+    expect(filterAccountDialogOptions(options, "api", "all").map((option) => option.id)).toEqual(["rd-api", "md-api"]);
   });
 });
 

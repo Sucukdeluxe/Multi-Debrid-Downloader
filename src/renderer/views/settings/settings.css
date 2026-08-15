@@ -936,6 +936,16 @@
   line-height: 18px;
 }
 
+.settings-account-picker-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 190px;
+  gap: 8px;
+}
+
+.settings-account-picker-service-filter {
+  cursor: pointer;
+}
+
 .settings-account-picker-table {
   overflow: hidden;
   border: 1px solid var(--ui-border);
@@ -968,13 +978,14 @@
 }
 
 .settings-account-picker-list {
-  max-height: 190px;
+  height: 190px;
   overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 .settings-account-picker-empty {
   display: grid;
-  min-height: 72px;
+  height: 190px;
   padding: 16px;
   place-items: center;
   color: var(--ui-text-muted);
@@ -1159,6 +1170,7 @@
   }
 
   .settings-theme-options,
+  .settings-account-picker-controls,
   .settings-account-picker-header,
   .settings-account-picker-row {
     grid-template-columns: minmax(0, 1fr);

@@ -23,7 +23,6 @@ import {
   getAccountTableMinWidth,
   getSettingsSelectNavigationIndex,
   resizeAccountTableColumn,
-  type AccountAddFilter,
   type AccountAddOption,
   type AccountRowViewModel,
   type AccountTableColumnId,
@@ -179,7 +178,8 @@ export interface AccountDialogField {
 export interface AccountAddDialogModel {
   open: boolean;
   query: string;
-  filter: AccountAddFilter;
+  serviceFilter: string;
+  serviceFilters: readonly string[];
   options: readonly AccountAddOption[];
   selectedOptionId: string | null;
   fields: readonly AccountDialogField[];
@@ -189,7 +189,7 @@ export interface AccountAddDialogModel {
 
 export interface AccountAddDialogActions {
   onQueryChange: (value: string) => void;
-  onFilterChange: (filter: AccountAddFilter) => void;
+  onServiceFilterChange: (service: string) => void;
   onOptionSelect: (optionId: string) => void;
   onFieldChange: (fieldId: string, value: string) => void;
   onClose: () => void;
@@ -667,16 +667,34 @@ export function AccountAddDialog({
     >
       <div className="settings-account-picker-selector">
         <span>Dienst / Zugangstyp</span>
-        <input
-          aria-controls={model.options.length === 0 ? "settings-account-picker-empty" : "settings-account-picker-results"}
-          aria-describedby={model.options.length === 0 ? "settings-account-picker-empty" : undefined}
-          aria-label="Dienst oder Zugangstyp suchen"
-          className="settings-control"
-          onChange={(event) => actions.onQueryChange(event.target.value)}
-          placeholder="Dienst oder Zugangstyp suchen"
-          type="search"
-          value={model.query}
-        />
+        <div className="settings-account-picker-controls">
+          <input
+            aria-controls={model.options.length === 0 ? "settings-account-picker-empty" : "settings-account-picker-results"}
+            aria-describedby={model.options.length === 0 ? "settings-account-picker-empty" : undefined}
+            aria-label="Dienst oder Zugangstyp suchen"
+            className="settings-control"
+            onChange={(event) => actions.onQueryChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" || !model.options[0]) {
+                return;
+              }
+              event.preventDefault();
+              actions.onOptionSelect(model.options[0].id);
+            }}
+            placeholder="Zugangstyp suchen, z. B. API oder Web"
+            type="search"
+            value={model.query}
+          />
+          <select
+            aria-label="Dienst filtern"
+            className="settings-control settings-account-picker-service-filter"
+            onChange={(event) => actions.onServiceFilterChange(event.target.value)}
+            value={model.serviceFilter}
+          >
+            <option value="all">Alle Dienste</option>
+            {model.serviceFilters.map((service) => <option key={service} value={service}>{service}</option>)}
+          </select>
+        </div>
       </div>
       <div className="settings-account-picker-table">
         <div aria-hidden="true" className="settings-account-picker-header">

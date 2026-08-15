@@ -16,6 +16,27 @@ export function matchesAccountModeFilter(option: AccountModeOption, filter: Acco
   return option.modeLabel.startsWith("Web");
 }
 
+export function filterAccountDialogOptions<T extends {
+  serviceLabel: string;
+  title: string;
+  modeLabel: string;
+  pickerDescription: string;
+}>(options: readonly T[], query: string, serviceFilter: string): T[] {
+  const normalizedQuery = query.trim().toLocaleLowerCase("de-DE");
+  return options.filter((option) => {
+    if (serviceFilter !== "all" && option.serviceLabel !== serviceFilter) {
+      return false;
+    }
+    if (!normalizedQuery) {
+      return true;
+    }
+    return [option.title, option.modeLabel, option.pickerDescription]
+      .join(" ")
+      .toLocaleLowerCase("de-DE")
+      .includes(normalizedQuery);
+  });
+}
+
 export function buildConfiguredProviderOrder(
   currentOrder: readonly DebridProvider[],
   configuredProviders: readonly DebridProvider[]

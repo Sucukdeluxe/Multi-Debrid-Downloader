@@ -40,8 +40,7 @@ import {
 } from "../shared/provider-daily-limits";
 import { preservePackageOrderForDisplay, sortPackageOrderByName } from "./package-order";
 import { pruneSelection, releaseAccountSelectionFocus, resolveEscapeSelectionScope, shouldClearDownloadSelection } from "./selection";
-import { buildConfiguredProviderOrder, buildScopedAccountEnabledState, getAccountDialogSelectableOptions, matchesAccountModeFilter, pruneAccountRowSelections, resolveAccountStatusState, resolveAccountUsername, resolveVisibleAccountKind, runOptimisticAccountUpdate, updateAccountRowSelection } from "./account-ui";
-import type { AccountModeFilter } from "./account-ui";
+import { buildConfiguredProviderOrder, buildScopedAccountEnabledState, filterAccountDialogOptions, getAccountDialogSelectableOptions, pruneAccountRowSelections, resolveAccountStatusState, resolveAccountUsername, resolveVisibleAccountKind, runOptimisticAccountUpdate, updateAccountRowSelection } from "./account-ui";
 import { buildAccountDeleteCommand, buildAccountReplaceCommand, buildAccountSecretRequest, createAccountEditState, validateAccountEdit } from "./account-edit";
 import type { AccountEditState, AccountEditTarget, AccountKind, AccountService, SingleAccountKind } from "./account-edit";
 import { ACCOUNT_SERVICE_ICONS } from "./account-service-icons";
@@ -1614,7 +1613,7 @@ export function App(): ReactElement {
   const [accountEditSecretVisible, setAccountEditSecretVisible] = useState<Record<string, boolean>>({});
   const [accountEditSecretBusy, setAccountEditSecretBusy] = useState<string | null>(null);
   const [accountDialogSearch, setAccountDialogSearch] = useState("");
-  const [accountDialogModeFilter, setAccountDialogModeFilter] = useState<AccountModeFilter>("all");
+  const [accountDialogServiceFilter, setAccountDialogServiceFilter] = useState("all");
   const [keyStatsPopup, setKeyStatsPopup] = useState<string | null>(null);
   const [debridLinkHostLimits, setDebridLinkHostLimits] = useState<Record<string, DebridLinkHostLimitInfo>>({});
   const [debridLinkHostLimitsLoading, setDebridLinkHostLimitsLoading] = useState(false);
@@ -2432,28 +2431,12 @@ export function App(): ReactElement {
       accountDialog.service
     );
   }, [accountDialog, availableAccountOptions]);
-  const accountDialogSearchQuery = accountDialogSearch.trim().toLowerCase();
+  const accountDialogServiceFilters = useMemo(() => (
+    [...new Set(accountDialogSelectableOptions.map((option) => option.serviceLabel))]
+  ), [accountDialogSelectableOptions]);
   const filteredAccountDialogOptions = useMemo(() => (
-    accountDialogSelectableOptions.filter((option) => {
-      const matchesMode = accountDialogModeFilter === "all"
-        || (accountDialogModeFilter === "api" && option.modeLabel === "API")
-        || (accountDialogModeFilter === "web" && (option.modeLabel.startsWith("Web") || option.kind === "ddownload-login" || option.kind === "linksnappy-login"));
-      if (!matchesMode) {
-        return false;
-      }
-      if (!accountDialogSearchQuery) {
-        return true;
-      }
-      const haystack = [
-        option.title,
-        option.serviceLabel,
-        option.modeLabel,
-        option.pickerDescription,
-        getAccountPickerFunctionLabel(option)
-      ].join(" ").toLowerCase();
-      return haystack.includes(accountDialogSearchQuery);
-    })
-  ), [accountDialogModeFilter, accountDialogSearchQuery, accountDialogSelectableOptions]);
+    filterAccountDialogOptions(accountDialogSelectableOptions, accountDialogSearch, accountDialogServiceFilter)
+  ), [accountDialogSearch, accountDialogSelectableOptions, accountDialogServiceFilter]);
   const handleUpdateResult = async (
     result: UpdateCheckResult,
     source: "manual" | "startup",
@@ -2686,7 +2669,7 @@ export function App(): ReactElement {
 
   const openCreateAccountDialog = (): void => {
     setAccountDialogSearch("");
-    setAccountDialogModeFilter("all");
+    setAccountDialogServiceFilter("all");
     setAccountDialog(createAccountDialogState("create", availableAccountOptions[0]?.kind ?? null, settingsDraft));
   };
 
@@ -2725,7 +2708,7 @@ export function App(): ReactElement {
   const closeAccountDialog = useCallback((): void => {
     setAccountDialog(null);
     setAccountDialogSearch("");
-    setAccountDialogModeFilter("all");
+    setAccountDialogServiceFilter("all");
   }, []);
 
   const closeAccountEditDialog = useCallback((): void => {
@@ -5186,7 +5169,7 @@ export function App(): ReactElement {
     <AccountAddDialog
       actions={{
         onQueryChange: setAccountDialogSearch,
-        onFilterChange: setAccountDialogModeFilter,
+        onServiceFilterChange: setAccountDialogServiceFilter,
         onOptionSelect: (optionId) => updateAccountDialogKind(optionId as AccountKind),
         onFieldChange: (fieldId, value) => setAccountDialog((current) => current ? { ...current, [fieldId]: value } : current),
         onClose: closeAccountDialog,
@@ -5198,7 +5181,8 @@ export function App(): ReactElement {
       model={{
         open: Boolean(accountDialog),
         query: accountDialogSearch,
-        filter: accountDialogModeFilter,
+        serviceFilter: accountDialogServiceFilter,
+        serviceFilters: accountDialogServiceFilters,
         options: accountAddOptions,
         selectedOptionId: accountDialog?.kind ?? null,
         fields: accountAddFields,
