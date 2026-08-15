@@ -3488,7 +3488,11 @@ export class DownloadManager extends EventEmitter {
       }
       return;
     }
-    if (item.status !== "queued") return;
+    if (item.status !== "queued") {
+      item.onlineStatus = result.online ? "online" : "offline";
+      item.updatedAt = nowMs();
+      return;
+    }
 
     if (!result.online) {
       item.status = "failed";

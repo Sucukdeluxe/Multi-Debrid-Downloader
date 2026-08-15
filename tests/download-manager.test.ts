@@ -796,6 +796,33 @@ describe("download manager", () => {
     expect(internal.session.items[itemId].status).toBe("queued");
   });
 
+  it("finishes a RapidGator availability check after the download has started", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-availability-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(root, "state")));
+    manager.addPackages([{ name: "availability", links: ["https://example.com/file.bin"] }]);
+    const snapshot = manager.getSnapshot();
+    const itemId = snapshot.session.packages[snapshot.session.packageOrder[0]].itemIds[0];
+    const internal = manager as unknown as {
+      session: typeof snapshot.session;
+      applyRapidgatorCheckResult: (item: typeof snapshot.session.items[string], result: { online: boolean; fileName: string; fileSizeBytes: number | null }) => void;
+    };
+    const item = internal.session.items[itemId];
+    item.status = "downloading";
+    item.fullStatus = "Download läuft";
+    item.onlineStatus = "checking";
+
+    internal.applyRapidgatorCheckResult(item, {
+      online: true,
+      fileName: "episode.part01.rar",
+      fileSizeBytes: 524_288_000
+    });
+
+    expect(item.status).toBe("downloading");
+    expect(item.fullStatus).toBe("Download läuft");
+    expect(item.onlineStatus).toBe("online");
+  });
+
   it("applies an imported settings snapshot without touching queued items or filesystem workflows", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-settings-import-"));
     tempDirs.push(root);
