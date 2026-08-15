@@ -159,4 +159,25 @@ describe("renderer state serialization", () => {
       expect(serialized).not.toContain(secret);
     }
   });
+
+  it("exposes only non-secret Real-Debrid account controls to the renderer", () => {
+    const settings = {
+      ...defaultSettings(),
+      realDebridApiTokens: JSON.stringify({ version: 1, accounts: [{ id: "rda_visible", token: "fixture-rd-secret" }] }),
+      realDebridDisabledAccountIds: ["rda_visible"],
+      realDebridAccountDailyLimitBytes: { rda_visible: 10_000 },
+      realDebridAccountDailyUsageBytes: { rda_visible: 2_000 },
+      realDebridAccountTotalUsageBytes: { rda_visible: 8_000 }
+    };
+
+    const renderer = createRendererState(settings).settings;
+
+    expect(renderer.realDebridDisabledAccountIds).toEqual(["rda_visible"]);
+    expect(renderer.realDebridAccountDailyLimitBytes).toEqual({ rda_visible: 10_000 });
+    expect(renderer.realDebridAccountDailyUsageBytes).toEqual({ rda_visible: 2_000 });
+    expect(renderer.realDebridAccountTotalUsageBytes).toEqual({ rda_visible: 8_000 });
+    expect(JSON.stringify(renderer)).not.toContain("fixture-rd-secret");
+    expect(renderer).not.toHaveProperty("realDebridApiTokens");
+    expect(renderer).not.toHaveProperty("realDebridWebAccountIds");
+  });
 });

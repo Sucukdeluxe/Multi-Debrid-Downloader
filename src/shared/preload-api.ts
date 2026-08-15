@@ -37,6 +37,7 @@ import { isRealDebridWebAccountId } from "./real-debrid-accounts";
 export interface RealDebridLoginRequest {
   accountId: string;
   create?: boolean;
+  dailyLimitBytes?: number;
 }
 
 export function validateRealDebridLoginRequest(value: unknown): Required<RealDebridLoginRequest> {
@@ -44,13 +45,22 @@ export function validateRealDebridLoginRequest(value: unknown): Required<RealDeb
     throw new Error("Account-Payload ist ungültig");
   }
   const raw = value as Record<string, unknown>;
-  if (Object.keys(raw).some((key) => key !== "accountId" && key !== "create")
+  if (Object.keys(raw).some((key) => key !== "accountId" && key !== "create" && key !== "dailyLimitBytes")
     || typeof raw.accountId !== "string"
     || !isRealDebridWebAccountId(raw.accountId)
-    || (raw.create !== undefined && typeof raw.create !== "boolean")) {
+    || (raw.create !== undefined && typeof raw.create !== "boolean")
+    || (raw.dailyLimitBytes !== undefined && (typeof raw.dailyLimitBytes !== "number"
+      || !Number.isFinite(raw.dailyLimitBytes)
+      || raw.dailyLimitBytes < 0
+      || raw.dailyLimitBytes > Number.MAX_SAFE_INTEGER))) {
     throw new Error("Account-Payload ist ungültig");
   }
-  return { accountId: raw.accountId.trim(), create: raw.create === true };
+  const create = raw.create === true;
+  const dailyLimitBytes = Math.floor(Number(raw.dailyLimitBytes) || 0);
+  if (!create && dailyLimitBytes !== 0) {
+    throw new Error("Account-Payload ist ungültig");
+  }
+  return { accountId: raw.accountId.trim(), create, dailyLimitBytes: create ? dailyLimitBytes : 0 };
 }
 
 export interface ElectronApi {

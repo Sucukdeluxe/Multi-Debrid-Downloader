@@ -6,6 +6,22 @@ export interface AccountModeOption {
   modeLabel: string;
 }
 
+export function sortAccountServices(labels: readonly string[]): string[] {
+  return [...new Set(labels)].sort((left, right) => left.localeCompare(right, "de-DE", { sensitivity: "base" }));
+}
+
+export function getAvailableAccountOptions<T extends { service: string }>(
+  options: readonly T[],
+  configuredServices: readonly string[]
+): T[] {
+  const configured = new Set(configuredServices);
+  return options.filter((option) => option.service === "realdebrid"
+    || option.service === "megadebrid-api"
+    || option.service === "megadebrid-web"
+    || option.service === "debridlink"
+    || !configured.has(option.service));
+}
+
 export function matchesAccountModeFilter(option: AccountModeOption, filter: AccountModeFilter): boolean {
   if (filter === "all") {
     return true;
@@ -34,7 +50,8 @@ export function filterAccountDialogOptions<T extends {
       .join(" ")
       .toLocaleLowerCase("de-DE")
       .includes(normalizedQuery);
-  });
+  }).sort((left, right) => left.serviceLabel.localeCompare(right.serviceLabel, "de-DE", { sensitivity: "base" })
+    || left.title.localeCompare(right.title, "de-DE", { sensitivity: "base" }));
 }
 
 export function buildConfiguredProviderOrder(

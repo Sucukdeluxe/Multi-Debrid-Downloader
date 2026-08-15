@@ -174,6 +174,7 @@ describe("renderer localization", () => {
     ["Schätzwert", "Estimate"],
     ["ist verfügbar. Installierte Version:", "is available. Installed version:"],
     ["Tageslimit erreicht. Neue Links wechseln auf den nächsten Hoster.", "Daily limit reached. New links will switch to the next hoster."],
+    ["Der ausgewählte Real-Debrid-Account wurde nicht gefunden.", "The selected Real-Debrid account was not found."],
     ["Nur lokal", "Local only"],
     ["Name kopiert", "Name copied"],
     ["Link kopiert", "Link copied"],

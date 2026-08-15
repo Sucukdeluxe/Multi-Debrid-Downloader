@@ -237,6 +237,10 @@ export interface RendererAccount {
 export interface RendererSettings {
   language: AppLanguage;
   realDebridUseWebLogin: boolean;
+  realDebridDisabledAccountIds: string[];
+  realDebridAccountDailyLimitBytes: Record<string, number>;
+  realDebridAccountDailyUsageBytes: Record<string, number>;
+  realDebridAccountTotalUsageBytes: Record<string, number>;
   megaDebridApiEnabled: boolean;
   megaDebridWebEnabled: boolean;
   megaDebridPreferApi: boolean;

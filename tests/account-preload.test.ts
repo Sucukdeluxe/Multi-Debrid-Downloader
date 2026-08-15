@@ -76,11 +76,11 @@ describe("account preload contract", () => {
 
   it("forwards account-bound existing and create browser logins", async () => {
     await electron.api?.openRealDebridLogin({ accountId: "rdw_existing" });
-    await electron.api?.openRealDebridLogin({ accountId: "rdw_reserved", create: true });
+    await electron.api?.openRealDebridLogin({ accountId: "rdw_reserved", create: true, dailyLimitBytes: 10_000 });
 
     expect(electron.invoke.mock.calls).toEqual([
       [IPC_CHANNELS.OPEN_REALDEBRID_LOGIN, { accountId: "rdw_existing" }],
-      [IPC_CHANNELS.OPEN_REALDEBRID_LOGIN, { accountId: "rdw_reserved", create: true }]
+      [IPC_CHANNELS.OPEN_REALDEBRID_LOGIN, { accountId: "rdw_reserved", create: true, dailyLimitBytes: 10_000 }]
     ]);
   });
 

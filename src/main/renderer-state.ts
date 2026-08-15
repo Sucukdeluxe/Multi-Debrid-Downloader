@@ -153,6 +153,10 @@ export function createRendererSettings(settings: AppSettings): RendererSettings 
   return {
     language: settings.language,
     realDebridUseWebLogin: settings.realDebridUseWebLogin,
+    realDebridDisabledAccountIds: [...settings.realDebridDisabledAccountIds],
+    realDebridAccountDailyLimitBytes: { ...settings.realDebridAccountDailyLimitBytes },
+    realDebridAccountDailyUsageBytes: { ...settings.realDebridAccountDailyUsageBytes },
+    realDebridAccountTotalUsageBytes: { ...settings.realDebridAccountTotalUsageBytes },
     megaDebridApiEnabled: settings.megaDebridApiEnabled,
     megaDebridWebEnabled: settings.megaDebridWebEnabled,
     megaDebridPreferApi: settings.megaDebridPreferApi,

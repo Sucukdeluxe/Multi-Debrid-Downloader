@@ -15,11 +15,14 @@ function eventFor(url: string) {
 
 describe("ipc-security", () => {
   it("accepts only opaque Real-Debrid browser account login requests", () => {
-    expect(validateRealDebridLoginRequest({ accountId: "rdw_existing" })).toEqual({ accountId: "rdw_existing", create: false });
-    expect(validateRealDebridLoginRequest({ accountId: "rdw_reserved", create: true })).toEqual({ accountId: "rdw_reserved", create: true });
+    expect(validateRealDebridLoginRequest({ accountId: "rdw_existing" })).toEqual({ accountId: "rdw_existing", create: false, dailyLimitBytes: 0 });
+    expect(validateRealDebridLoginRequest({ accountId: "rdw_reserved", create: true, dailyLimitBytes: 12_345.9 })).toEqual({ accountId: "rdw_reserved", create: true, dailyLimitBytes: 12_345 });
     expect(() => validateRealDebridLoginRequest({ accountId: "../shared", create: true })).toThrow(/Account-Payload/i);
     expect(() => validateRealDebridLoginRequest({ accountId: "rdw_valid", create: "yes" })).toThrow(/Account-Payload/i);
     expect(() => validateRealDebridLoginRequest({ accountId: "rdw_valid", create: false, token: "secret" })).toThrow(/Account-Payload/i);
+    expect(() => validateRealDebridLoginRequest({ accountId: "rdw_valid", create: true, dailyLimitBytes: -1 })).toThrow(/Account-Payload/i);
+    expect(() => validateRealDebridLoginRequest({ accountId: "rdw_valid", create: true, dailyLimitBytes: Number.MAX_SAFE_INTEGER + 1 })).toThrow(/Account-Payload/i);
+    expect(() => validateRealDebridLoginRequest({ accountId: "rdw_existing", dailyLimitBytes: 1 })).toThrow(/Account-Payload/i);
   });
 
   it("accepts IPC from the configured Vite development renderer origin", () => {

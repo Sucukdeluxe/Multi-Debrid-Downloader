@@ -22,6 +22,39 @@ function megaTarget(identity: string): AccountEditTarget {
 }
 
 describe("renderer-safe account editing", () => {
+  it("targets one concrete Real-Debrid API account for replace and delete", () => {
+    const settings = defaultSettings();
+    settings.realDebridApiTokens = JSON.stringify({
+      version: 1,
+      accounts: [
+        { id: "rda_first", token: "fixture-token-first" },
+        { id: "rda_second", token: "fixture-token-second" }
+      ]
+    });
+    const renderer = createRendererState(settings);
+    const target: AccountEditTarget = {
+      type: "single",
+      rowKey: "rd-rda_second",
+      kind: "realdebrid-api",
+      service: "realdebrid",
+      provider: "realdebrid",
+      accountId: "rda_second"
+    };
+    const edit = createAccountEditState(target, renderer.accounts);
+
+    expect(buildAccountReplaceCommand({ ...edit, token: "replacement-token" })).toEqual(expect.objectContaining({
+      action: "replace",
+      kind: "realdebrid-api",
+      accountId: "rda_second",
+      secret: "replacement-token"
+    }));
+    expect(buildAccountDeleteCommand(target)).toEqual({
+      action: "delete",
+      kind: "realdebrid-api",
+      accountId: "rda_second"
+    });
+  });
+
   it("opens an existing account without reading its stored secret", () => {
     const identity = "safe-edit@example.test";
     const state = createRendererState({

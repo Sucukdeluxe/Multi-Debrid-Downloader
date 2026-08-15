@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   buildConfiguredProviderOrder,
   filterAccountDialogOptions,
+  getAvailableAccountOptions,
   getAccountDialogSelectableOptions,
   isAccountRowSelectionKey,
   matchesAccountModeFilter,
   pruneAccountRowSelection,
   resolveAccountUsername,
-  resolveVisibleAccountKind
+  resolveVisibleAccountKind,
+  sortAccountServices
 } from "../src/renderer/account-ui";
 import * as accountUi from "../src/renderer/account-ui";
 
@@ -32,7 +34,40 @@ describe("account dialog filter", () => {
 
   it("combines an exact service choice with an access-type search", () => {
     expect(filterAccountDialogOptions(options, "web", "Real-Debrid").map((option) => option.id)).toEqual(["rd-web"]);
-    expect(filterAccountDialogOptions(options, "api", "all").map((option) => option.id)).toEqual(["rd-api", "md-api"]);
+    expect(filterAccountDialogOptions(options, "api", "all").map((option) => option.id)).toEqual(["md-api", "rd-api"]);
+  });
+
+  it("sorts services alphabetically in German without duplicates", () => {
+    expect(sortAccountServices([
+      "Real-Debrid",
+      "Mega-Debrid",
+      "BestDebrid",
+      "Debrid-Link",
+      "1Fichier",
+      "AllDebrid",
+      "DDownload",
+      "LinkSnappy",
+      "Mega-Debrid"
+    ])).toEqual([
+      "1Fichier",
+      "AllDebrid",
+      "BestDebrid",
+      "DDownload",
+      "Debrid-Link",
+      "LinkSnappy",
+      "Mega-Debrid",
+      "Real-Debrid"
+    ]);
+  });
+
+  it("keeps both Real-Debrid access types addable after existing Real-Debrid accounts", () => {
+    const choices = [
+      { kind: "realdebrid-api", service: "realdebrid" },
+      { kind: "realdebrid-web", service: "realdebrid" },
+      { kind: "bestdebrid-api", service: "bestdebrid" }
+    ];
+    expect(getAvailableAccountOptions(choices, ["realdebrid", "bestdebrid"]).map((option) => option.kind))
+      .toEqual(["realdebrid-api", "realdebrid-web"]);
   });
 });
 

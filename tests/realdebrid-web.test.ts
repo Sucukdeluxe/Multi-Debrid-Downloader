@@ -255,7 +255,7 @@ describe("realdebrid-web", () => {
       dispose: vi.fn()
     };
     controller.settings = defaultSettings();
-    controller.pendingRealDebridWebAccountIds = new Map([["rdw_reserved", 0]]);
+    controller.pendingRealDebridWebAccountIds = new Map([["rdw_reserved", { generation: 0, dailyLimitBytes: 987_654 }]]);
     controller.realDebridWebGenerations = new Map([["rdw_reserved", 0]]);
     controller.realDebridWebFallbacks = new Map([["rdw_reserved", fallback]]);
     controller.manager = { applyDebridAccountStatuses: applyStatuses };
@@ -272,6 +272,7 @@ describe("realdebrid-web", () => {
 
     expect(updateSettings).toHaveBeenCalledTimes(1);
     expect(controller.settings.realDebridWebAccountIds).toEqual(["rdw_reserved"]);
+    expect(controller.settings.realDebridAccountDailyLimitBytes).toEqual({ rdw_reserved: 987_654 });
     expect(applyStatuses).toHaveBeenCalledWith([
       expect.objectContaining({ accountId: "rdw_reserved", valid: true, username: "fixture-user" })
     ]);
@@ -334,7 +335,7 @@ describe("realdebrid-web", () => {
     controller.realDebridWebAuthenticationTasks = new Map();
     controller.audit = vi.fn();
 
-    await expect(controller.openRealDebridLoginWindow({ accountId: "rdw_failed", create: true })).rejects.toThrow("load failed");
+    await expect(controller.openRealDebridLoginWindow({ accountId: "rdw_failed", create: true, dailyLimitBytes: 123_456 })).rejects.toThrow("load failed");
 
     expect(controller.pendingRealDebridWebAccountIds.size).toBe(0);
     expect(controller.realDebridWebFallbacks.size).toBe(0);
@@ -353,11 +354,12 @@ describe("realdebrid-web", () => {
     controller.realDebridWebAuthenticationTasks = new Map();
     controller.audit = vi.fn();
 
-    await controller.openRealDebridLoginWindow({ accountId: "rdw_closed", create: true });
+    await controller.openRealDebridLoginWindow({ accountId: "rdw_closed", create: true, dailyLimitBytes: 123_456 });
     mockBrowserWindow.close();
     await vi.waitFor(() => expect(controller.realDebridWebFallbacks.size).toBe(0));
 
     expect(controller.pendingRealDebridWebAccountIds.size).toBe(0);
+    expect(controller.settings.realDebridAccountDailyLimitBytes).toEqual({});
     expect(mockFromPartition).toHaveBeenCalledWith("persist:realdebrid-web-rdw_closed");
     expect(mockFromPartition).toHaveBeenCalledWith("realdebrid-web-rdw_closed");
   });
@@ -404,13 +406,14 @@ describe("realdebrid-web", () => {
     });
     controller.audit = vi.fn();
 
-    await controller.openRealDebridLoginWindow({ accountId: "rdw_close_auth", create: true });
+    await controller.openRealDebridLoginWindow({ accountId: "rdw_close_auth", create: true, dailyLimitBytes: 123_456 });
     await vi.waitFor(() => expect(mockExecuteJavaScript).toHaveBeenCalledTimes(1));
     mockBrowserWindow.close();
     resolveClosingToken("close-time-token");
     await vi.waitFor(() => expect(controller.settings.realDebridWebAccountIds).toEqual(["rdw_close_auth"]));
 
     expect(controller.pendingRealDebridWebAccountIds.size).toBe(0);
+    expect(controller.settings.realDebridAccountDailyLimitBytes).toEqual({ rdw_close_auth: 123_456 });
     expect(mockFromPartition).not.toHaveBeenCalledWith("persist:realdebrid-web-rdw_close_auth");
     expect(controller.manager.applyDebridAccountStatuses).toHaveBeenCalledWith([
       expect.objectContaining({ accountId: "rdw_close_auth", valid: true, username: "close-user" })

@@ -85,6 +85,11 @@ function settingsFingerprint(settings: AppSettings): string {
   return JSON.stringify(normalizeSettings(settings));
 }
 
+type PendingRealDebridWebAccount = {
+  generation: number;
+  dailyLimitBytes: number;
+};
+
 export class AppController {
   private settings: AppSettings;
 
@@ -94,7 +99,7 @@ export class AppController {
 
   private realDebridWebFallbacks = new Map<string, RealDebridWebFallback>();
 
-  private pendingRealDebridWebAccountIds = new Map<string, number>();
+  private pendingRealDebridWebAccountIds = new Map<string, PendingRealDebridWebAccount>();
 
   private realDebridWebGenerations = new Map<string, number>();
 
@@ -732,7 +737,10 @@ export class AppController {
     if (!existing) {
       const generation = (this.realDebridWebGenerations.get(accountId) || 0) + 1;
       this.realDebridWebGenerations.set(accountId, generation);
-      this.pendingRealDebridWebAccountIds.set(accountId, generation);
+      this.pendingRealDebridWebAccountIds.set(accountId, {
+        generation,
+        dailyLimitBytes: request.create ? Math.floor(request.dailyLimitBytes || 0) : 0
+      });
     }
     this.audit("INFO", "Real-Debrid Login-Fenster geöffnet", { accountId, create: !existing });
     try {
@@ -789,7 +797,8 @@ export class AppController {
       return;
     }
     if (!account) {
-      if (this.pendingRealDebridWebAccountIds.get(accountId) !== generation) {
+      const pending = this.pendingRealDebridWebAccountIds.get(accountId);
+      if (!pending || pending.generation !== generation) {
         return;
       }
       const applied = applyAccountCommand(this.settings, {
@@ -797,7 +806,7 @@ export class AppController {
         kind: "realdebrid-web",
         identity: accountId,
         secret: "",
-        dailyLimitBytes: 0
+        dailyLimitBytes: pending.dailyLimitBytes
       });
       this.pendingRealDebridWebAccountIds.delete(accountId);
       this.updateSettings(applied.settings);

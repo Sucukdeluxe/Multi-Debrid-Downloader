@@ -1,6 +1,7 @@
 import { DragEvent, ReactElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
+import type { RealDebridLoginRequest } from "../shared/preload-api";
 import type {
   AccountCreateCommand,
   AllDebridHostInfo,
@@ -40,7 +41,7 @@ import {
 } from "../shared/provider-daily-limits";
 import { preservePackageOrderForDisplay, sortPackageOrderByName } from "./package-order";
 import { pruneSelection, releaseAccountSelectionFocus, resolveEscapeSelectionScope, shouldClearDownloadSelection } from "./selection";
-import { buildConfiguredProviderOrder, buildScopedAccountEnabledState, filterAccountDialogOptions, getAccountDialogSelectableOptions, pruneAccountRowSelections, resolveAccountStatusState, resolveAccountUsername, resolveVisibleAccountKind, runOptimisticAccountUpdate, updateAccountRowSelection } from "./account-ui";
+import { buildConfiguredProviderOrder, buildScopedAccountEnabledState, filterAccountDialogOptions, getAccountDialogSelectableOptions, getAvailableAccountOptions, pruneAccountRowSelections, resolveAccountStatusState, resolveAccountUsername, resolveVisibleAccountKind, runOptimisticAccountUpdate, sortAccountServices, updateAccountRowSelection } from "./account-ui";
 import { buildAccountDeleteCommand, buildAccountReplaceCommand, buildAccountSecretRequest, createAccountEditState, validateAccountEdit } from "./account-edit";
 import type { AccountEditState, AccountEditTarget, AccountKind, AccountService, SingleAccountKind } from "./account-edit";
 import { ACCOUNT_SERVICE_ICONS } from "./account-service-icons";
@@ -308,7 +309,7 @@ interface AccountTableRow {
   dailyLimitBytes: number;
   dailyRemainingBytes: number;
   totalUsedBytes: number;
-  toggleKind: "mega" | "dl" | "single";
+  toggleKind: "rd" | "mega" | "dl" | "single";
   dlKey?: DebridLinkAccountKeyEntry;
   editTarget: AccountEditTarget;
 }
@@ -794,6 +795,15 @@ export function buildAccountCreateCommand(dialog: AccountDialogState): AccountCr
   };
 }
 
+export function buildRealDebridWebCreateLoginRequest(dialog: AccountDialogState, accountId: string): RealDebridLoginRequest | null {
+  if (dialog.kind !== "realdebrid-web") return null;
+  return {
+    accountId,
+    create: true,
+    dailyLimitBytes: parseAccountDailyLimitInputBytes(dialog.dailyLimitGb) || 0
+  };
+}
+
 const emptyStats = (): DownloadStats => ({
   totalDownloaded: 0,
   totalDownloadedAllTime: 0,
@@ -810,7 +820,7 @@ const emptyStats = (): DownloadStats => ({
 
 const emptySnapshot = (): UiSnapshot => ({
   settings: {
-    language: "en", realDebridUseWebLogin: false, megaDebridApiEnabled: false, megaDebridWebEnabled: false, megaDebridPreferApi: true, bestDebridUseWebLogin: false, allDebridUseWebLogin: false,
+    language: "en", realDebridUseWebLogin: false, realDebridDisabledAccountIds: [], realDebridAccountDailyLimitBytes: {}, realDebridAccountDailyUsageBytes: {}, realDebridAccountTotalUsageBytes: {}, megaDebridApiEnabled: false, megaDebridWebEnabled: false, megaDebridPreferApi: true, bestDebridUseWebLogin: false, allDebridUseWebLogin: false,
     debridLinkDisabledKeyIds: [],
     archivePasswordListConfigured: false, notifyUrlConfigured: false,
     rememberToken: true, configuredProviders: [], providerOrder: [], providerPrimary: "realdebrid", providerSecondary: "none",
@@ -2308,7 +2318,54 @@ export function App(): ReactElement {
   const accountRows = useMemo(() => {
     const rows: AccountTableRow[] = [];
     for (const entry of configuredAccounts) {
-      if (entry.kind === "megadebrid-api" || entry.kind === "megadebrid-web") {
+      if (entry.service === "realdebrid") {
+        const accounts = snapshot.accounts.filter((account): account is RendererAccount & { kind: "realdebrid-api" | "realdebrid-web" } => (
+          account.provider === "realdebrid" && (account.kind === "realdebrid-api" || account.kind === "realdebrid-web")
+        ));
+        for (const account of accounts) {
+          const option = findAccountOption(account.kind);
+          const disabled = (settingsDraft.disabledProviders || []).includes("realdebrid")
+            || (settingsDraft.realDebridDisabledAccountIds || []).includes(account.accountId);
+          const rowEntry: ConfiguredAccountEntry = {
+            ...entry,
+            kind: account.kind,
+            modeLabel: option.modeLabel,
+            statusLabel: disabled ? "Deaktiviert" : "Aktiviert",
+            summary: account.maskedIdentity,
+            summaryLines: [account.maskedIdentity],
+            disabled,
+            dailyUsedBytes: account.dailyUsageBytes,
+            totalUsedBytes: account.totalUsageBytes,
+            dailyLimitBytes: account.dailyLimitBytes,
+            dailyRemainingBytes: account.dailyLimitBytes > 0 ? Math.max(0, account.dailyLimitBytes - account.dailyUsageBytes) : 0,
+            dailyLimitReached: account.dailyLimitBytes > 0 && account.dailyUsageBytes >= account.dailyLimitBytes
+          };
+          rows.push({
+            rowKey: `rd-${account.accountId}`,
+            entry: rowEntry,
+            hosterLabel: option.serviceLabel,
+            modeLabel: option.modeLabel,
+            username: account.identity,
+            credentialLabel: getAccountCredentialLabel(account.kind),
+            accountId: account.accountId,
+            checkable: true,
+            disabled,
+            dailyUsedBytes: account.dailyUsageBytes,
+            dailyLimitBytes: account.dailyLimitBytes,
+            dailyRemainingBytes: account.dailyLimitBytes > 0 ? Math.max(0, account.dailyLimitBytes - account.dailyUsageBytes) : 0,
+            totalUsedBytes: account.totalUsageBytes,
+            toggleKind: "rd",
+            editTarget: {
+              type: "single",
+              rowKey: `rd-${account.accountId}`,
+              kind: account.kind,
+              service: "realdebrid",
+              provider: "realdebrid",
+              accountId: account.accountId
+            }
+          });
+        }
+      } else if (entry.kind === "megadebrid-api" || entry.kind === "megadebrid-web") {
         const accounts = accountsOfKind(entry.kind, snapshot.accounts);
         for (const acc of accounts) {
           const used = acc.dailyUsageBytes;
@@ -2367,7 +2424,7 @@ export function App(): ReactElement {
           });
         }
       } else {
-        const serviceAccountId = entry.service === "realdebrid" ? "svc-realdebrid" : null;
+        const serviceAccountId = null;
         rows.push({
           rowKey: `svc-${entry.service}`,
           entry,
@@ -2410,10 +2467,7 @@ export function App(): ReactElement {
     });
   }, [accountRows]);
   const availableAccountOptions = useMemo(() => (
-    ACCOUNT_OPTIONS.filter((option) => option.kind === "megadebrid-api"
-      || option.kind === "megadebrid-web"
-      || option.kind === "debridlink-api"
-      || !configuredAccountServices.has(option.service))
+    getAvailableAccountOptions(ACCOUNT_OPTIONS, [...configuredAccountServices])
   ), [configuredAccountServices]);
   const accountEditOption = accountEditDialog ? findAccountOption(accountEditDialog.target.kind) : null;
   const accountEditRow = accountEditDialog ? accountRows.find((row) => row.rowKey === accountEditDialog.target.rowKey) ?? null : null;
@@ -2432,7 +2486,7 @@ export function App(): ReactElement {
     );
   }, [accountDialog, availableAccountOptions]);
   const accountDialogServiceFilters = useMemo(() => (
-    [...new Set(accountDialogSelectableOptions.map((option) => option.serviceLabel))]
+    sortAccountServices(accountDialogSelectableOptions.map((option) => option.serviceLabel))
   ), [accountDialogSelectableOptions]);
   const filteredAccountDialogOptions = useMemo(() => (
     filterAccountDialogOptions(accountDialogSelectableOptions, accountDialogSearch, accountDialogServiceFilter)
@@ -2625,10 +2679,11 @@ export function App(): ReactElement {
     return result;
   };
 
-  const runAccountQuickAction = async (action: AccountQuickAction): Promise<void> => {
+  const runAccountQuickAction = async (action: AccountQuickAction, accountId?: string | null): Promise<void> => {
     switch (action) {
       case "realdebrid-login":
-        await window.rd.openRealDebridLogin();
+        if (!accountId) throw new Error("Der ausgewählte Real-Debrid-Account wurde nicht gefunden.");
+        await window.rd.openRealDebridLogin({ accountId });
         showToast("Real-Debrid Login-Fenster geöffnet", 2200);
         return;
       case "bestdebrid-cookies": {
@@ -2733,7 +2788,7 @@ export function App(): ReactElement {
       applyPersistedSettings(result.settings);
       closeAccountEditDialog();
       if (quickAction) {
-        await runAccountQuickAction(quickAction);
+        await runAccountQuickAction(quickAction, editSnapshot.target.type === "single" ? editSnapshot.target.accountId : null);
       } else {
         showToast(`${findAccountOption(editSnapshot.target.kind).title} gespeichert`, 2200);
       }
@@ -2758,6 +2813,15 @@ export function App(): ReactElement {
     }
     const selectedOption = dialogSnapshot.kind ? findAccountOption(dialogSnapshot.kind) : null;
     await performQuickAction(async () => {
+      if (dialogSnapshot.kind === "realdebrid-web") {
+        const accountId = `rdw_${crypto.randomUUID().replace(/-/g, "")}`;
+        const request = buildRealDebridWebCreateLoginRequest(dialogSnapshot, accountId);
+        if (!request) throw new Error("Account-Payload ist ungültig");
+        await window.rd.openRealDebridLogin(request);
+        closeAccountDialog();
+        showToast("Real-Debrid Login-Fenster geöffnet", 2200);
+        return;
+      }
       const command = buildAccountCreateCommand(dialogSnapshot);
       if (!command) throw new Error("Account-Payload ist ungültig");
       const result = await window.rd.createAccount(command);
@@ -2765,7 +2829,7 @@ export function App(): ReactElement {
       applyPersistedSettings(result.settings);
       closeAccountDialog();
       if (quickAction) {
-        await runAccountQuickAction(quickAction);
+        await runAccountQuickAction(quickAction, result.accountId);
       } else if (selectedOption) {
         showToast(`${selectedOption.title} gespeichert`, 2200);
       }
@@ -2845,15 +2909,15 @@ export function App(): ReactElement {
     });
   };
 
-  const onAccountRowQuickAction = async (entry: ConfiguredAccountEntry): Promise<void> => {
-    const meta = getAccountQuickActionMeta(entry.kind);
+  const onAccountRowQuickAction = async (row: AccountTableRow): Promise<void> => {
+    const meta = getAccountQuickActionMeta(row.entry.kind);
     if (!meta) {
       return;
     }
     await performQuickAction(async () => {
-      await runAccountQuickAction(meta.action);
+      await runAccountQuickAction(meta.action, row.accountId);
     }, (error) => {
-      showToast(`${entry.serviceLabel}: Aktion fehlgeschlagen: ${String(error)}`, 3200);
+      showToast(`${row.entry.serviceLabel}: Aktion fehlgeschlagen: ${String(error)}`, 3200);
     });
   };
 
@@ -2920,9 +2984,31 @@ export function App(): ReactElement {
     });
   };
 
+  const onToggleRealDebridAccountEnabled = async (accountId: string, enabled: boolean): Promise<void> => {
+    await performQuickAction(async () => {
+      const nextState = buildScopedAccountEnabledState(
+        settingsDraft.disabledProviders || [],
+        ["realdebrid"],
+        settingsDraft.realDebridDisabledAccountIds || [],
+        accountId,
+        enabled
+      );
+      await persistAccountToggle({
+        ...settingsDraft,
+        disabledProviders: nextState.disabledProviders,
+        realDebridDisabledAccountIds: nextState.disabledAccountIds
+      });
+      showToast(enabled ? "Account aktiviert" : "Account deaktiviert", 2000);
+    }, (error) => {
+      showToast(`Umschalten fehlgeschlagen: ${String(error)}`, 3200);
+    });
+  };
+
   const toggleAccountTableRow = (row: AccountTableRow): void => {
     setAccountContextMenu(null);
-    if (row.toggleKind === "mega" && row.accountId) {
+    if (row.toggleKind === "rd" && row.accountId) {
+      void onToggleRealDebridAccountEnabled(row.accountId, row.disabled);
+    } else if (row.toggleKind === "mega" && row.accountId) {
       void onToggleMegaAccountEnabled(row.entry.kind as "megadebrid-api" | "megadebrid-web", row.accountId, row.disabled);
     } else if (row.toggleKind === "dl" && row.dlKey) {
       void onToggleDebridLinkApiKeyEnabled(row.entry, row.dlKey, row.disabled);
@@ -2975,12 +3061,21 @@ export function App(): ReactElement {
 
   const checkAccountTableRow = (row: AccountTableRow): void => {
     setAccountContextMenu(null);
+    if ((row.entry.kind === "realdebrid-api" || row.entry.kind === "realdebrid-web") && row.accountId) {
+      const kind = row.entry.kind;
+      const accountId = row.accountId;
+      void performQuickAction(async () => {
+        const status = await window.rd.checkAccountCredentials({ kind, accountId });
+        showToast(status.valid ? "Account erfolgreich geprüft" : status.message || "Zugangsdaten ungültig", 2600);
+      }, (error) => showToast(`Prüfung fehlgeschlagen: ${String(error)}`, 3200));
+      return;
+    }
     if (row.checkable) {
       void checkAccounts("all");
       return;
     }
     if (getAccountQuickActionMeta(row.entry.kind)) {
-      void onAccountRowQuickAction(row.entry);
+      void onAccountRowQuickAction(row);
       return;
     }
     showToast("Für diesen Account ist keine direkte Statusprüfung verfügbar.", 2800);
@@ -5161,7 +5256,7 @@ export function App(): ReactElement {
     description: option.pickerDescription,
     functionLabel: getAccountPickerFunctionLabel(option),
     filter: option.modeLabel === "API" ? "api" : "web",
-    multi: option.kind === "megadebrid-api" || option.kind === "megadebrid-web" || option.kind === "debridlink-api",
+    multi: option.kind === "realdebrid-api" || option.kind === "realdebrid-web" || option.kind === "megadebrid-api" || option.kind === "megadebrid-web" || option.kind === "debridlink-api",
     icon: ACCOUNT_SERVICE_ICONS[option.service]
   }));
   const accountAddFields = buildAccountAddFields(accountDialog);
@@ -5278,11 +5373,17 @@ export function App(): ReactElement {
     }
     const editSnapshot = accountEditDialog;
     void performQuickAction(async () => {
-      if (editSnapshot.target.type === "mega" || editSnapshot.target.type === "debridlink") {
+      if (editSnapshot.target.type === "mega" || editSnapshot.target.type === "debridlink"
+        || editSnapshot.target.kind === "realdebrid-api" || editSnapshot.target.kind === "realdebrid-web") {
         const secret = editSnapshot.target.type === "mega" ? editSnapshot.password : editSnapshot.token;
+        const kind = editSnapshot.target.kind as "realdebrid-api" | "realdebrid-web" | "megadebrid-api" | "megadebrid-web" | "debridlink-api";
         const status = await window.rd.checkAccountCredentials({
-          kind: editSnapshot.target.kind,
-          accountId: editSnapshot.target.type === "mega" ? editSnapshot.target.accountId : editSnapshot.target.keyId,
+          kind,
+          accountId: editSnapshot.target.type === "mega"
+            ? editSnapshot.target.accountId
+            : editSnapshot.target.type === "debridlink"
+              ? editSnapshot.target.keyId
+              : editSnapshot.target.accountId,
           identity: secret ? editSnapshot.login : undefined,
           secret: secret || undefined
         });
@@ -5292,7 +5393,7 @@ export function App(): ReactElement {
       }
       const quickAction = getAccountQuickActionMeta(editSnapshot.target.kind);
       if (quickAction) {
-        await runAccountQuickAction(quickAction.action);
+        await runAccountQuickAction(quickAction.action, editSnapshot.target.type === "single" ? editSnapshot.target.accountId : null);
       } else {
         showToast("Für diesen Dienst ist keine direkte Statusprüfung verfügbar.", 2800);
       }
@@ -5977,7 +6078,7 @@ export function App(): ReactElement {
             Account prüfen
           </button>
           {getAccountQuickActionMeta(activeAccountContextRow.entry.kind) && (
-            <button className="ctx-menu-item" onClick={() => { setAccountContextMenu(null); void onAccountRowQuickAction(activeAccountContextRow.entry); }}>
+            <button className="ctx-menu-item" onClick={() => { setAccountContextMenu(null); void onAccountRowQuickAction(activeAccountContextRow); }}>
               {getAccountQuickActionMeta(activeAccountContextRow.entry.kind)?.label}
             </button>
           )}
