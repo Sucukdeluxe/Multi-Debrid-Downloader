@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
+import { getRealDebridApiAccountId } from "../src/shared/real-debrid-accounts";
 import { AppSettings } from "../src/shared/types";
 import { defaultSettings } from "../src/main/constants";
 import { configureCredentialProtector } from "../src/main/credential-protection";
@@ -659,9 +660,168 @@ describe("settings storage", () => {
     expect(normalizedDisabled.realDebridUseWebLogin).toBe(false);
   });
 
-  it("keeps the Real-Debrid service status while web login remains configured", () => {
+  it("migrates legacy Real-Debrid API and Web accounts with their existing status", () => {
     const checkedAt = Date.now();
+    const apiToken = "legacy-real-debrid-token";
+    const apiId = getRealDebridApiAccountId(apiToken);
+    const legacyApi = {
+      ...defaultSettings(),
+      token: apiToken,
+      debridAccountStatuses: {
+        "svc-realdebrid": {
+          accountId: "svc-realdebrid",
+          provider: "realdebrid",
+          label: "Real-Debrid",
+          maskedLogin: "API-Token",
+          valid: true,
+          isPremium: true,
+          premiumUntilMs: checkedAt + 1000,
+          username: "api-user",
+          message: "Premium aktiv",
+          checkedAt
+        }
+      }
+    } as Partial<AppSettings>;
+    delete legacyApi.realDebridApiTokens;
+    delete legacyApi.realDebridWebAccountIds;
+    const normalizedApi = normalizeSettings(legacyApi as AppSettings);
+
+    expect(normalizedApi.realDebridApiTokens).toBe(apiToken);
+    expect(normalizedApi.realDebridWebAccountIds).toEqual([]);
+    expect(normalizedApi.debridAccountStatuses[apiId]).toMatchObject({
+      accountId: apiId,
+      provider: "realdebrid",
+      username: "api-user"
+    });
+    expect(normalizedApi.debridAccountStatuses["svc-realdebrid"]).toBeUndefined();
+
+    const legacyWeb = {
+      ...defaultSettings(),
+      realDebridUseWebLogin: true,
+      debridAccountStatuses: {
+        "svc-realdebrid": {
+          accountId: "svc-realdebrid",
+          provider: "realdebrid",
+          label: "Real-Debrid",
+          maskedLogin: "Browser-Login",
+          valid: true,
+          isPremium: true,
+          premiumUntilMs: checkedAt + 1000,
+          username: "web-user",
+          message: "Premium aktiv",
+          checkedAt
+        }
+      }
+    } as Partial<AppSettings>;
+    delete legacyWeb.realDebridApiTokens;
+    delete legacyWeb.realDebridWebAccountIds;
+    const normalizedWeb = normalizeSettings(legacyWeb as AppSettings);
+
+    expect(normalizedWeb.realDebridApiTokens).toBe("");
+    expect(normalizedWeb.realDebridWebAccountIds).toEqual(["rdw_legacy"]);
+    expect(normalizedWeb.debridAccountStatuses.rdw_legacy).toMatchObject({
+      accountId: "rdw_legacy",
+      provider: "realdebrid",
+      username: "web-user"
+    });
+  });
+
+  it("keeps authoritative empty Real-Debrid pools empty instead of restoring legacy accounts", () => {
     const normalized = normalizeSettings({
+      ...defaultSettings(),
+      token: "deleted-legacy-api-token",
+      realDebridUseWebLogin: true,
+      realDebridApiTokens: "",
+      realDebridWebAccountIds: []
+    });
+
+    expect(normalized.realDebridApiTokens).toBe("");
+    expect(normalized.realDebridWebAccountIds).toEqual([]);
+  });
+
+  it("prefers a concrete Real-Debrid status over the legacy status regardless of object order", () => {
+    const token = "status-order-token";
+    const accountId = getRealDebridApiAccountId(token);
+    const checkedAt = Date.now();
+    const legacyStatus = {
+      accountId: "svc-realdebrid",
+      provider: "realdebrid" as const,
+      label: "Legacy",
+      maskedLogin: "Legacy",
+      valid: false,
+      isPremium: false,
+      premiumUntilMs: null,
+      username: "legacy-user",
+      message: "Legacy status",
+      checkedAt: checkedAt - 1000
+    };
+    const concreteStatus = {
+      ...legacyStatus,
+      accountId,
+      label: "Concrete",
+      valid: true,
+      isPremium: true,
+      username: "concrete-user",
+      message: "Concrete status",
+      checkedAt
+    };
+    const normalizeWithOrder = (entries: [string, typeof legacyStatus][]) => normalizeSettings({
+      ...defaultSettings(),
+      realDebridApiTokens: token,
+      debridAccountStatuses: Object.fromEntries(entries)
+    }).debridAccountStatuses[accountId];
+
+    expect(normalizeWithOrder([["svc-realdebrid", legacyStatus], [accountId, concreteStatus]])).toMatchObject({
+      valid: true,
+      username: "concrete-user"
+    });
+    expect(normalizeWithOrder([[accountId, concreteStatus], ["svc-realdebrid", legacyStatus]])).toMatchObject({
+      valid: true,
+      username: "concrete-user"
+    });
+  });
+
+  it("normalizes the Real-Debrid pool idempotently and prunes stale account maps", () => {
+    const apiId = getRealDebridApiAccountId("api-token");
+    const today = getProviderUsageDayKey();
+    const once = normalizeSettings({
+      ...defaultSettings(),
+      realDebridApiTokens: "api-token\napi-token\nsecond-token",
+      realDebridWebAccountIds: ["rdw_legacy", "rdw_second", "broken", "rdw_second"],
+      realDebridDisabledAccountIds: [apiId, "rdw_second", "stale"],
+      realDebridAccountDailyLimitBytes: { [apiId]: 1000, rdw_second: 2000, stale: 3000 },
+      realDebridAccountDailyUsageBytes: { [apiId]: 4000, stale: 5000 },
+      realDebridAccountTotalUsageBytes: { rdw_second: 6000, stale: 7000 },
+      providerDailyUsageDay: today
+    });
+    const twice = normalizeSettings(once);
+
+    expect(once.realDebridApiTokens).toBe("api-token\nsecond-token");
+    expect(once.realDebridWebAccountIds).toEqual(["rdw_legacy", "rdw_second"]);
+    expect(once.realDebridDisabledAccountIds).toEqual([apiId, "rdw_second"]);
+    expect(once.realDebridAccountDailyLimitBytes).toEqual({ [apiId]: 1000, rdw_second: 2000 });
+    expect(once.realDebridAccountDailyUsageBytes).toEqual({ [apiId]: 4000 });
+    expect(once.realDebridAccountTotalUsageBytes).toEqual({ rdw_second: 6000 });
+    expect(twice).toEqual(once);
+  });
+
+  it("resets stale per-account Real-Debrid daily usage", () => {
+    const apiId = getRealDebridApiAccountId("api-token");
+    const normalized = normalizeSettings({
+      ...defaultSettings(),
+      realDebridApiTokens: "api-token",
+      providerDailyUsageDay: "2001-01-01",
+      realDebridAccountDailyUsageBytes: { [apiId]: 4000 },
+      realDebridAccountTotalUsageBytes: { [apiId]: 9000 }
+    });
+
+    expect(normalized.realDebridAccountDailyUsageBytes).toEqual({});
+    expect(normalized.realDebridAccountTotalUsageBytes).toEqual({ [apiId]: 9000 });
+  });
+
+  it("moves the Real-Debrid service status to the migrated Web account", () => {
+    const checkedAt = Date.now();
+    const legacy = {
       ...defaultSettings(),
       realDebridUseWebLogin: true,
       debridAccountStatuses: {
@@ -679,10 +839,13 @@ describe("settings storage", () => {
           checkedAt
         }
       }
-    });
+    } as Partial<AppSettings>;
+    delete legacy.realDebridApiTokens;
+    delete legacy.realDebridWebAccountIds;
+    const normalized = normalizeSettings(legacy as AppSettings);
 
-    expect(normalized.debridAccountStatuses["svc-realdebrid"]).toMatchObject({
-      accountId: "svc-realdebrid",
+    expect(normalized.debridAccountStatuses.rdw_legacy).toMatchObject({
+      accountId: "rdw_legacy",
       provider: "realdebrid",
       valid: true,
       username: "web-user",

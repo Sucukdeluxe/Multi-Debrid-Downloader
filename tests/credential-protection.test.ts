@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultSettings } from "../src/main/constants";
 import { logger } from "../src/main/logger";
+import { collectAccountStatusRedactionValues, sanitizeAccountStatusText } from "../src/main/account-status-sanitizer";
 import {
   configureCredentialProtector,
   CredentialProtector,
@@ -31,6 +32,7 @@ describe("credential protection", () => {
       ...defaultSettings(),
       rememberToken: true,
       token: "value-to-protect",
+      realDebridApiTokens: "first-real-debrid-token\nsecond-real-debrid-token",
       megaLogin: "account@example.invalid",
       megaPassword: "password-value"
     };
@@ -38,10 +40,13 @@ describe("credential protection", () => {
     const persisted = protectPersistedSettings(input);
 
     expect(persisted.token).not.toBe(input.token);
+    expect(persisted.realDebridApiTokens).not.toBe(input.realDebridApiTokens);
     expect(persisted.megaLogin).not.toBe(input.megaLogin);
     expect(JSON.stringify(persisted)).not.toContain(input.token);
+    expect(JSON.stringify(persisted)).not.toContain("first-real-debrid-token");
     expect(restorePersistedSettings(persisted)).toMatchObject({
       token: input.token,
+      realDebridApiTokens: input.realDebridApiTokens,
       megaLogin: input.megaLogin,
       megaPassword: input.megaPassword
     });
@@ -135,6 +140,7 @@ describe("credential protection", () => {
       ...defaultSettings(),
       rememberToken: true,
       token: "value-to-protect",
+      realDebridApiTokens: "pool-value-to-protect",
       megaDebridApiCredentials: "account@example.invalid:password-value",
       debridLinkApiKeys: "key-value"
     };
@@ -143,11 +149,28 @@ describe("credential protection", () => {
     const serialized = JSON.stringify(projected);
 
     expect(serialized).not.toContain(input.token);
+    expect(serialized).not.toContain(input.realDebridApiTokens);
     expect(serialized).not.toContain("account@example.invalid");
     expect(serialized).not.toContain("password-value");
     expect(serialized).not.toContain("key-value");
     expect(projected.token).not.toBe("");
+    expect(projected.realDebridApiTokens).not.toBe("");
     expect(projected.megaDebridApiCredentials).not.toBe("");
     expect(projected.debridLinkApiKeys).not.toBe("");
+  });
+
+  it("redacts every Real-Debrid pool token from account status text", () => {
+    const settings = {
+      ...defaultSettings(),
+      realDebridApiTokens: "first-private-token\nsecond-private-token"
+    };
+    const redactions = collectAccountStatusRedactionValues(settings);
+    const sanitized = sanitizeAccountStatusText(
+      "Unrestrict first-private-token schlug fehl; Fallback second-private-token ebenfalls",
+      redactions
+    );
+
+    expect(sanitized).not.toContain("first-private-token");
+    expect(sanitized).not.toContain("second-private-token");
   });
 });

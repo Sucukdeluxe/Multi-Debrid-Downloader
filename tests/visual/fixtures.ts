@@ -57,6 +57,12 @@ function createSettings(): AppSettings {
   return {
     token: "visual-real-debrid-token",
     realDebridUseWebLogin: false,
+    realDebridApiTokens: "visual-real-debrid-token",
+    realDebridWebAccountIds: [],
+    realDebridDisabledAccountIds: [],
+    realDebridAccountDailyLimitBytes: {},
+    realDebridAccountDailyUsageBytes: {},
+    realDebridAccountTotalUsageBytes: {},
     megaLogin,
     megaPassword: "visual-password",
     language: "de",

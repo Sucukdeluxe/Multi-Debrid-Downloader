@@ -6,6 +6,7 @@ import { getDebridLinkApiKeyIds } from "../shared/debrid-link-keys";
 import { getMegaDebridAccountIds, mergeMegaDebridCredentialPools, parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
 import { AppSettings, AudioStripSummary, BandwidthScheduleEntry, DebridAccountStatus, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, HistoryEntry, HistoryRetentionMode, LogStorageLocation, PackageEntry, PackagePriority, SessionState } from "../shared/types";
 import { getProviderUsageDayKey } from "../shared/provider-daily-limits";
+import { getRealDebridAccountIds, normalizeRealDebridWebAccountIds, parseRealDebridApiAccounts, serializeRealDebridApiAccounts } from "../shared/real-debrid-accounts";
 import { defaultSettings } from "./constants";
 import { needsPersistedSettingsRewrite, protectPersistedSettings, restorePersistedSettings } from "./credential-protection";
 import { logger } from "./logger";
@@ -270,13 +271,18 @@ function normalizeDebridAccountStatuses(
   value: unknown,
   megaIds: string[],
   debridLinkIds: string[],
-  realDebridConfigured: boolean
+  realDebridIds: string[],
+  legacyRealDebridTargetId: string | null
 ): Record<string, DebridAccountStatus> {
-  const allowed = new Set([...megaIds, ...debridLinkIds, ...(realDebridConfigured ? ["svc-realdebrid"] : [])]);
+  const allowed = new Set([...megaIds, ...debridLinkIds, ...realDebridIds]);
   const result: Record<string, DebridAccountStatus> = {};
   if (value && typeof value === "object" && !Array.isArray(value)) {
-    for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
-      if (!allowed.has(key) || !raw || typeof raw !== "object") {
+    for (const [storedKey, raw] of Object.entries(value as Record<string, unknown>)) {
+      const key = storedKey === "svc-realdebrid" ? legacyRealDebridTargetId : storedKey;
+      if (!key || !allowed.has(key) || !raw || typeof raw !== "object") {
+        continue;
+      }
+      if (storedKey === "svc-realdebrid" && result[key]) {
         continue;
       }
       const entry = raw as Partial<DebridAccountStatus>;
@@ -295,7 +301,7 @@ function normalizeDebridAccountStatuses(
         email = undefined;
       }
       result[key] = {
-        accountId: entry.accountId,
+        accountId: key,
         provider,
         label: String(entry.label || ""),
         maskedLogin: String(entry.maskedLogin || ""),
@@ -439,6 +445,28 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     ? normalizeStringList(settings.megaDebridWebDisabledAccountIds, megaDebridWebAccountIds)
     : legacyMegaDisabledAccountIds.filter((id) => megaDebridWebAccountIds.includes(id));
   const megaDebridDisabledAccountIds = [...new Set([...megaDebridApiDisabledAccountIds, ...megaDebridWebDisabledAccountIds])];
+  const legacyRealDebridToken = asText(settings.token);
+  const hasRealDebridApiPool = Object.prototype.hasOwnProperty.call(settings, "realDebridApiTokens");
+  const storedRealDebridApiTokens = serializeRealDebridApiAccounts(
+    parseRealDebridApiAccounts(String(settings.realDebridApiTokens ?? "")).map((entry) => entry.token)
+  );
+  const realDebridApiTokens = hasRealDebridApiPool
+    ? storedRealDebridApiTokens
+    : serializeRealDebridApiAccounts([legacyRealDebridToken]);
+  const hasRealDebridWebPool = Object.prototype.hasOwnProperty.call(settings, "realDebridWebAccountIds");
+  let realDebridWebAccountIds = normalizeRealDebridWebAccountIds(settings.realDebridWebAccountIds);
+  if (!hasRealDebridWebPool && Boolean(settings.realDebridUseWebLogin)) {
+    realDebridWebAccountIds = ["rdw_legacy"];
+  }
+  const realDebridAccountIds = getRealDebridAccountIds({
+    realDebridApiTokens,
+    realDebridWebAccountIds,
+    realDebridDisabledAccountIds: []
+  });
+  const realDebridDisabledAccountIds = normalizeStringList(settings.realDebridDisabledAccountIds, realDebridAccountIds);
+  const legacyRealDebridTargetId = Boolean(settings.realDebridUseWebLogin) && realDebridWebAccountIds.includes("rdw_legacy")
+    ? "rdw_legacy"
+    : (parseRealDebridApiAccounts(realDebridApiTokens)[0]?.id || realDebridWebAccountIds[0] || null);
   const providerDailyUsageDayRaw = asText(settings.providerDailyUsageDay);
   const providerDailyUsageDay = /^\d{4}-\d{2}-\d{2}$/.test(providerDailyUsageDayRaw)
     ? providerDailyUsageDayRaw
@@ -471,6 +499,14 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     language: settings.language === "de" ? "de" : "en",
     token: asText(settings.token),
     realDebridUseWebLogin: Boolean(settings.realDebridUseWebLogin),
+    realDebridApiTokens,
+    realDebridWebAccountIds,
+    realDebridDisabledAccountIds,
+    realDebridAccountDailyLimitBytes: normalizeNamedByteMap(settings.realDebridAccountDailyLimitBytes, realDebridAccountIds),
+    realDebridAccountDailyUsageBytes: providerDailyUsageDay === currentUsageDay
+      ? normalizeNamedByteMap(settings.realDebridAccountDailyUsageBytes, realDebridAccountIds)
+      : {},
+    realDebridAccountTotalUsageBytes: normalizeNamedByteMap(settings.realDebridAccountTotalUsageBytes, realDebridAccountIds),
     megaLogin,
     megaPassword,
     megaCredentials,
@@ -588,7 +624,8 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
       settings.debridAccountStatuses,
       megaDebridAccountIds,
       debridLinkApiKeyIds,
-      Boolean(settings.realDebridUseWebLogin || asText(settings.token))
+      realDebridAccountIds,
+      legacyRealDebridTargetId
     ),
     providerDailyUsageDay: providerDailyUsageDay === currentUsageDay ? providerDailyUsageDay : currentUsageDay,
     scheduledStartEpochMs: clampNumber(settings.scheduledStartEpochMs, defaults.scheduledStartEpochMs, 0, Number.MAX_SAFE_INTEGER)
@@ -741,6 +778,12 @@ function readSettingsFile(filePath: string): LoadedSettingsFile | null {
     }
     if (!Object.prototype.hasOwnProperty.call(parsed, "megaDebridWebDisabledAccountIds")) {
       delete (mergedInput as Partial<AppSettings>).megaDebridWebDisabledAccountIds;
+    }
+    if (!Object.prototype.hasOwnProperty.call(parsed, "realDebridApiTokens")) {
+      delete (mergedInput as Partial<AppSettings>).realDebridApiTokens;
+    }
+    if (!Object.prototype.hasOwnProperty.call(parsed, "realDebridWebAccountIds")) {
+      delete (mergedInput as Partial<AppSettings>).realDebridWebAccountIds;
     }
     const merged = normalizeSettings(mergedInput);
     return { settings: merged, needsCredentialRewrite };

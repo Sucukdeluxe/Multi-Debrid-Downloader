@@ -1,5 +1,6 @@
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
 import { parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
+import { parseRealDebridApiAccounts } from "../shared/real-debrid-accounts";
 import type { AppSettings, DebridAccountStatus } from "../shared/types";
 
 const REDACTED = "[geschützt]";
@@ -45,6 +46,7 @@ export function collectAccountStatusRedactionValues(settings?: AppSettings, inpu
   const values = new Set<string>();
   if (settings) {
     addRedaction(values, settings.token);
+    addRedaction(values, settings.realDebridApiTokens);
     addRedaction(values, settings.megaPassword);
     addRedaction(values, settings.megaCredentials);
     addRedaction(values, settings.megaDebridApiCredentials);
@@ -65,6 +67,9 @@ export function collectAccountStatusRedactionValues(settings?: AppSettings, inpu
     }
     for (const key of parseDebridLinkApiKeys(settings.debridLinkApiKeys)) {
       addRedaction(values, key.token);
+    }
+    for (const account of parseRealDebridApiAccounts(settings.realDebridApiTokens)) {
+      addRedaction(values, account.token);
     }
   }
   const inputIdentity = getInputString(input, "identity");

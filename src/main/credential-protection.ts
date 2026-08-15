@@ -10,6 +10,7 @@ export interface CredentialProtector {
 const MASKED_CREDENTIAL = "••••••••";
 const CREDENTIAL_KEYS = [
   "token",
+  "realDebridApiTokens",
   "megaLogin",
   "megaPassword",
   "megaCredentials",

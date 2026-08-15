@@ -96,6 +96,12 @@ export interface AppSettings {
   language: AppLanguage;
   token: string;
   realDebridUseWebLogin: boolean;
+  realDebridApiTokens: string;
+  realDebridWebAccountIds: string[];
+  realDebridDisabledAccountIds: string[];
+  realDebridAccountDailyLimitBytes: Record<string, number>;
+  realDebridAccountDailyUsageBytes: Record<string, number>;
+  realDebridAccountTotalUsageBytes: Record<string, number>;
   megaLogin: string;
   megaPassword: string;
   megaCredentials: string;
