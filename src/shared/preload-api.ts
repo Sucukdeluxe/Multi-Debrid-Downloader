@@ -32,6 +32,26 @@ import type {
   UpdateInstallProgress,
   UpdateInstallResult
 } from "./types";
+import { isRealDebridWebAccountId } from "./real-debrid-accounts";
+
+export interface RealDebridLoginRequest {
+  accountId: string;
+  create?: boolean;
+}
+
+export function validateRealDebridLoginRequest(value: unknown): Required<RealDebridLoginRequest> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Account-Payload ist ungültig");
+  }
+  const raw = value as Record<string, unknown>;
+  if (Object.keys(raw).some((key) => key !== "accountId" && key !== "create")
+    || typeof raw.accountId !== "string"
+    || !isRealDebridWebAccountId(raw.accountId)
+    || (raw.create !== undefined && typeof raw.create !== "boolean")) {
+    throw new Error("Account-Payload ist ungültig");
+  }
+  return { accountId: raw.accountId.trim(), create: raw.create === true };
+}
 
 export interface ElectronApi {
   getSnapshot: () => Promise<UiSnapshot>;
@@ -98,7 +118,7 @@ export interface ElectronApi {
   enableRemoteDiagnostics: (input: EnableRemoteDiagnosticsInput) => Promise<RemoteDiagnosticsInfo>;
   disableRemoteDiagnostics: () => Promise<RemoteDiagnosticsInfo>;
   rotateRemoteDiagnosticsToken: () => Promise<RemoteDiagnosticsInfo>;
-  openRealDebridLogin: () => Promise<void>;
+  openRealDebridLogin: (request?: RealDebridLoginRequest) => Promise<void>;
   openAllDebridLogin: () => Promise<void>;
   importBestDebridCookies: () => Promise<number>;
   getAllDebridHostInfo: () => Promise<AllDebridHostInfo>;

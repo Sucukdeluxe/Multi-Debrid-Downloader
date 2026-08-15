@@ -38,7 +38,8 @@ import { checkAllDebridAccounts, checkDebridLinkKey, checkMegaDebridAccount, che
 import { parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
 import { getMegaDebridAccountsForMode } from "../shared/mega-debrid-accounts";
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
-import { getRealDebridAccounts } from "../shared/real-debrid-accounts";
+import { getRealDebridAccounts, isRealDebridWebAccountId, type RealDebridWebAccountEntry } from "../shared/real-debrid-accounts";
+import type { RealDebridLoginRequest } from "../shared/preload-api";
 import { applyAccountCommand, resolveStoredAccountSecret } from "./account-commands";
 import { collectAccountStatusRedactionValues, sanitizeDebridAccountStatus, sanitizeDebridAccountStatuses } from "./account-status-sanitizer";
 import { createRendererState } from "./renderer-state";
@@ -91,7 +92,13 @@ export class AppController {
 
   private megaWebFallback: MegaWebFallback;
 
-  private realDebridWebFallback: RealDebridWebFallback;
+  private realDebridWebFallbacks = new Map<string, RealDebridWebFallback>();
+
+  private pendingRealDebridWebAccountIds = new Map<string, number>();
+
+  private realDebridWebGenerations = new Map<string, number>();
+
+  private realDebridWebAuthenticationTasks = new Map<string, Promise<void>>();
 
   private allDebridWebFallback: AllDebridWebFallback;
 
@@ -139,16 +146,12 @@ export class AppController {
       login: this.settings.megaLogin,
       password: this.settings.megaPassword
     }));
-    this.realDebridWebFallback = new RealDebridWebFallback(
-      () => this.settings.rememberToken,
-      () => { void this.refreshRealDebridWebStatus(); }
-    );
     this.allDebridWebFallback = new AllDebridWebFallback(() => this.settings.rememberToken);
     this.bestDebridWebFallback = new BestDebridWebFallback(() => this.settings.rememberToken);
     this.manager = new DownloadManager(this.settings, session, this.storagePaths, {
       megaWebUnrestrict: (link: string, signal?: AbortSignal, account?: { login: string; password: string }) => this.megaWebFallback.unrestrict(link, signal, account),
       allDebridWebUnrestrict: (link: string, signal?: AbortSignal) => this.allDebridWebFallback.unrestrict(link, signal),
-      realDebridWebUnrestrict: (link: string, signal?: AbortSignal) => this.realDebridWebFallback.unrestrict(link, signal),
+      realDebridWebUnrestrict: (link: string, signal?: AbortSignal) => this.unrestrictWithFirstRealDebridWebAccount(link, signal),
       bestDebridWebUnrestrict: (link: string, signal?: AbortSignal) => this.bestDebridWebFallback.unrestrict(link, signal),
       invalidateMegaSession: () => this.megaWebFallback.invalidateSession(),
       protectEmptyClobber: loadResult.status === "empty-unreadable",
@@ -497,10 +500,14 @@ export class AppController {
       changedKeys: Object.keys(sanitizedPatch),
       accountChanges: diffAccountSummary(previousSettings, this.settings)
     });
+    this.pruneRealDebridWebFallbacks(previousSettings, this.settings);
     if (previousSettings.rememberToken && !this.settings.rememberToken) {
-      void this.realDebridWebFallback.clearSessions().catch((error) => {
-        logger.warn(`Real-Debrid Web-Session konnte nicht gelöscht werden: ${String(error)}`);
-      });
+      const accountIds = new Set([...this.settings.realDebridWebAccountIds, ...this.realDebridWebFallbacks.keys()]);
+      for (const accountId of accountIds) {
+        void this.cleanupRealDebridWebAccount(accountId, true).catch((error) => {
+          logger.warn(`Real-Debrid Web-Session konnte nicht gelöscht werden (${accountId}): ${String(error)}`);
+        });
+      }
       void this.allDebridWebFallback.clearSessions().catch((error) => {
         logger.warn(`AllDebrid Web-Session konnte nicht gelöscht werden: ${String(error)}`);
       });
@@ -571,7 +578,7 @@ export class AppController {
           account,
           undefined,
           Date.now(),
-          useWebLogin ? (signal) => this.realDebridWebFallback.probeLoginState(signal) : undefined
+          useWebLogin ? (signal) => this.getRealDebridWebFallback(account.id).probeLoginState(signal) : undefined
         ),
         redactions
       );
@@ -623,26 +630,189 @@ export class AppController {
     return this.settings;
   }
 
-  public async openRealDebridLoginWindow(): Promise<void> {
-    this.audit("INFO", "Real-Debrid Login-Fenster geöffnet");
-    await this.realDebridWebFallback.openLoginWindow();
+  private getRealDebridWebPartition(accountId: string): string {
+    return accountId === "rdw_legacy"
+      ? "persist:realdebrid-web"
+      : `persist:realdebrid-web-${accountId}`;
   }
 
-  private async refreshRealDebridWebStatus(): Promise<void> {
-    const account = getRealDebridAccounts(this.settings).find((entry) => entry.kind === "web");
-    if (!account) {
+  private getRealDebridWebFallback(accountId: string): RealDebridWebFallback {
+    if (!isRealDebridWebAccountId(accountId)) {
+      throw new Error("Account-Payload ist ungültig");
+    }
+    const existing = this.realDebridWebFallbacks.get(accountId);
+    if (existing) {
+      return existing;
+    }
+    const fallback = new RealDebridWebFallback(
+      this.getRealDebridWebPartition(accountId),
+      () => this.settings.rememberToken,
+      () => this.queueRealDebridWebAuthentication(accountId),
+      () => this.handleRealDebridWebWindowClosed(accountId)
+    );
+    this.realDebridWebFallbacks.set(accountId, fallback);
+    return fallback;
+  }
+
+  private queueRealDebridWebAuthentication(accountId: string): void {
+    if (this.realDebridWebAuthenticationTasks.has(accountId)) {
       return;
     }
+    const generation = this.realDebridWebGenerations.get(accountId) || 0;
+    const task = this.refreshRealDebridWebStatus(accountId, generation)
+      .catch((error) => logger.warn(`Real-Debrid Web-Status konnte nicht aktualisiert werden (${accountId}): ${String(error)}`))
+      .finally(() => {
+        if (this.realDebridWebAuthenticationTasks.get(accountId) === task) {
+          this.realDebridWebAuthenticationTasks.delete(accountId);
+        }
+      });
+    this.realDebridWebAuthenticationTasks.set(accountId, task);
+  }
+
+  private handleRealDebridWebWindowClosed(accountId: string): void {
+    if (!this.pendingRealDebridWebAccountIds.has(accountId)) {
+      return;
+    }
+    void Promise.resolve().then(async () => {
+      const authenticationTask = this.realDebridWebAuthenticationTasks.get(accountId);
+      if (authenticationTask) {
+        await authenticationTask;
+      }
+      if (!this.pendingRealDebridWebAccountIds.has(accountId)
+        || this.settings.realDebridWebAccountIds.includes(accountId)) {
+        return;
+      }
+      await this.cleanupRealDebridWebAccount(accountId, true);
+    }).catch((error) => {
+      logger.warn(`Abgebrochener Real-Debrid Web-Login konnte nicht bereinigt werden (${accountId}): ${String(error)}`);
+    });
+  }
+
+  private async cleanupRealDebridWebAccount(accountId: string, clearStorage: boolean): Promise<void> {
+    const nextGeneration = (this.realDebridWebGenerations.get(accountId) || 0) + 1;
+    this.realDebridWebGenerations.set(accountId, nextGeneration);
+    this.pendingRealDebridWebAccountIds.delete(accountId);
+    const existing = this.realDebridWebFallbacks.get(accountId);
+    this.realDebridWebFallbacks.delete(accountId);
+    const fallback = existing || new RealDebridWebFallback(
+      this.getRealDebridWebPartition(accountId),
+      () => this.settings.rememberToken
+    );
+    if (clearStorage) {
+      await fallback.clearSessions();
+    } else {
+      fallback.dispose();
+    }
+  }
+
+  private pruneRealDebridWebFallbacks(previous: AppSettings, current: AppSettings): void {
+    const currentIds = new Set(current.realDebridWebAccountIds);
+    for (const accountId of previous.realDebridWebAccountIds) {
+      if (currentIds.has(accountId)) {
+        continue;
+      }
+      void this.cleanupRealDebridWebAccount(accountId, true).catch((error) => {
+        logger.warn(`Real-Debrid Web-Session konnte nicht gelöscht werden (${accountId}): ${String(error)}`);
+      });
+    }
+  }
+
+  private async unrestrictWithFirstRealDebridWebAccount(link: string, signal?: AbortSignal) {
+    const account = getRealDebridAccounts(this.settings).find((entry) => entry.kind === "web" && entry.enabled);
+    return account ? this.unrestrictRealDebridWebAccount(account.id, link, signal) : null;
+  }
+
+  public async openRealDebridLoginWindow(request: RealDebridLoginRequest): Promise<void> {
+    const accountId = String(request.accountId || "").trim();
+    if (!isRealDebridWebAccountId(accountId)) {
+      throw new Error("Account-Payload ist ungültig");
+    }
+    const existing = getRealDebridAccounts(this.settings).find((entry) => entry.id === accountId && entry.kind === "web");
+    if (request.create && existing) {
+      throw new Error("Account-Payload ist ungültig");
+    }
+    if (!request.create && !existing && accountId !== "rdw_legacy") {
+      throw new Error("Account wurde nicht gefunden");
+    }
+    if (!existing) {
+      const generation = (this.realDebridWebGenerations.get(accountId) || 0) + 1;
+      this.realDebridWebGenerations.set(accountId, generation);
+      this.pendingRealDebridWebAccountIds.set(accountId, generation);
+    }
+    this.audit("INFO", "Real-Debrid Login-Fenster geöffnet", { accountId, create: !existing });
+    try {
+      await this.getRealDebridWebFallback(accountId).openLoginWindow();
+    } catch (error) {
+      if (!existing) {
+        await this.cleanupRealDebridWebAccount(accountId, true);
+      }
+      throw error;
+    }
+  }
+
+  public probeRealDebridWebAccount(accountId: string, signal?: AbortSignal) {
+    return this.getRealDebridWebFallback(accountId).probeLoginState(signal);
+  }
+
+  public unrestrictRealDebridWebAccount(accountId: string, link: string, signal?: AbortSignal) {
+    return this.getRealDebridWebFallback(accountId).unrestrict(link, signal);
+  }
+
+  public async clearRealDebridWebAccount(accountId: string): Promise<void> {
+    await this.cleanupRealDebridWebAccount(accountId, true);
+  }
+
+  private async refreshRealDebridWebStatus(accountId: string, generation = this.realDebridWebGenerations.get(accountId) || 0): Promise<void> {
+    const account = getRealDebridAccounts(this.settings)
+      .filter((entry): entry is RealDebridWebAccountEntry => entry.kind === "web")
+      .find((entry) => entry.id === accountId);
+    const checkedAccount: RealDebridWebAccountEntry = account || {
+      id: accountId,
+      kind: "web",
+      index: this.settings.realDebridWebAccountIds.length,
+      label: `Browser-Login ${this.settings.realDebridWebAccountIds.length + 1}`,
+      maskedLogin: "Geschützter Browser-Login",
+      enabled: true
+    };
     const status = sanitizeDebridAccountStatus(
       await checkRealDebridAccount(
-        account,
+        checkedAccount,
         undefined,
         Date.now(),
-        (signal) => this.realDebridWebFallback.probeLoginState(signal)
+        (signal) => this.getRealDebridWebFallback(accountId).probeLoginState(signal)
       ),
       collectAccountStatusRedactionValues(this.settings)
     );
+    if (!status.valid) {
+      return;
+    }
+    if ((this.realDebridWebGenerations.get(accountId) || 0) !== generation) {
+      return;
+    }
+    const currentAccount = getRealDebridAccounts(this.settings).find((entry) => entry.id === accountId && entry.kind === "web");
+    if (account && !currentAccount) {
+      return;
+    }
+    if (!account) {
+      if (this.pendingRealDebridWebAccountIds.get(accountId) !== generation) {
+        return;
+      }
+      const applied = applyAccountCommand(this.settings, {
+        action: "create",
+        kind: "realdebrid-web",
+        identity: accountId,
+        secret: "",
+        dailyLimitBytes: 0
+      });
+      this.pendingRealDebridWebAccountIds.delete(accountId);
+      this.updateSettings(applied.settings);
+    }
     this.manager.applyDebridAccountStatuses([status]);
+    const fallback = this.realDebridWebFallbacks.get(accountId);
+    if (fallback) {
+      this.realDebridWebFallbacks.delete(accountId);
+      fallback.dispose();
+    }
   }
 
   public async openAllDebridLoginWindow(): Promise<void> {
@@ -679,7 +849,7 @@ export class AppController {
       await checkAllDebridAccounts(
         this.settings,
         undefined,
-        (_accountId, signal) => this.realDebridWebFallback.probeLoginState(signal),
+        (accountId, signal) => this.getRealDebridWebFallback(accountId).probeLoginState(signal),
         scope
       ),
       collectAccountStatusRedactionValues(this.settings)
@@ -1077,7 +1247,11 @@ export class AppController {
     cancelPendingAsyncSaves();
     this.manager.prepareForShutdown();
     this.megaWebFallback.dispose();
-    this.realDebridWebFallback.dispose();
+    for (const fallback of this.realDebridWebFallbacks.values()) {
+      fallback.dispose();
+    }
+    this.realDebridWebFallbacks.clear();
+    this.pendingRealDebridWebAccountIds.clear();
     this.allDebridWebFallback.dispose();
     this.bestDebridWebFallback.dispose();
     this.shutdownLogStorage();

@@ -21,6 +21,7 @@ import { createRendererSettings } from "./renderer-state";
 import { validateRendererSettingsUpdate } from "./renderer-settings";
 import { applyMainWindowSecurity, createMainWindowWebPreferences, MAIN_WINDOW_EXTERNAL_HOSTS, openAllowedExternalUrl } from "./browser-security";
 import { assertTrustedIpcSender, type TrustedIpcOptions } from "./ipc-security";
+import { validateRealDebridLoginRequest } from "../shared/preload-api";
 
 function validateString(value: unknown, name: string): string {
   if (typeof value !== "string") {
@@ -815,8 +816,8 @@ function registerIpcHandlers(): void {
     }
   });
 
-  handleTrusted(IPC_CHANNELS.OPEN_REALDEBRID_LOGIN, async () => {
-    await controller.openRealDebridLoginWindow();
+  handleTrusted(IPC_CHANNELS.OPEN_REALDEBRID_LOGIN, async (_event: IpcMainInvokeEvent, rawRequest: unknown) => {
+    await controller.openRealDebridLoginWindow(validateRealDebridLoginRequest(rawRequest));
   });
 
   handleTrusted(IPC_CHANNELS.OPEN_ALLDEBRID_LOGIN, async () => {

@@ -74,6 +74,16 @@ describe("account preload contract", () => {
     ]);
   });
 
+  it("forwards account-bound existing and create browser logins", async () => {
+    await electron.api?.openRealDebridLogin({ accountId: "rdw_existing" });
+    await electron.api?.openRealDebridLogin({ accountId: "rdw_reserved", create: true });
+
+    expect(electron.invoke.mock.calls).toEqual([
+      [IPC_CHANNELS.OPEN_REALDEBRID_LOGIN, { accountId: "rdw_existing" }],
+      [IPC_CHANNELS.OPEN_REALDEBRID_LOGIN, { accountId: "rdw_reserved", create: true }]
+    ]);
+  });
+
   it("reveals a stored secret only through the explicit account channel", async () => {
     electron.invoke.mockResolvedValueOnce({ secret: "fixture-revealed-secret-7gH8" });
 

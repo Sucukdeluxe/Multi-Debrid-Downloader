@@ -2,6 +2,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { assertTrustedIpcSender } from "../src/main/ipc-security";
+import { validateRealDebridLoginRequest } from "../src/shared/preload-api";
 
 function eventFor(url: string) {
   return {
@@ -13,6 +14,14 @@ function eventFor(url: string) {
 }
 
 describe("ipc-security", () => {
+  it("accepts only opaque Real-Debrid browser account login requests", () => {
+    expect(validateRealDebridLoginRequest({ accountId: "rdw_existing" })).toEqual({ accountId: "rdw_existing", create: false });
+    expect(validateRealDebridLoginRequest({ accountId: "rdw_reserved", create: true })).toEqual({ accountId: "rdw_reserved", create: true });
+    expect(() => validateRealDebridLoginRequest({ accountId: "../shared", create: true })).toThrow(/Account-Payload/i);
+    expect(() => validateRealDebridLoginRequest({ accountId: "rdw_valid", create: "yes" })).toThrow(/Account-Payload/i);
+    expect(() => validateRealDebridLoginRequest({ accountId: "rdw_valid", create: false, token: "secret" })).toThrow(/Account-Payload/i);
+  });
+
   it("accepts IPC from the configured Vite development renderer origin", () => {
     expect(() => assertTrustedIpcSender(eventFor("http://localhost:5180/settings"), {
       isPackaged: false,

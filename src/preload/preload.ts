@@ -30,6 +30,7 @@ import {
   UpdateCheckResult,
   UpdateInstallProgress
 } from "../shared/types";
+import type { RealDebridLoginRequest } from "../shared/preload-api";
 import { IPC_CHANNELS } from "../shared/ipc";
 import { ElectronApi } from "../shared/preload-api";
 
@@ -101,7 +102,7 @@ const api: ElectronApi = {
   enableRemoteDiagnostics: (input: EnableRemoteDiagnosticsInput): Promise<RemoteDiagnosticsInfo> => ipcRenderer.invoke(IPC_CHANNELS.ENABLE_REMOTE_DIAGNOSTICS, input),
   disableRemoteDiagnostics: (): Promise<RemoteDiagnosticsInfo> => ipcRenderer.invoke(IPC_CHANNELS.DISABLE_REMOTE_DIAGNOSTICS),
   rotateRemoteDiagnosticsToken: (): Promise<RemoteDiagnosticsInfo> => ipcRenderer.invoke(IPC_CHANNELS.ROTATE_REMOTE_DIAGNOSTICS_TOKEN),
-  openRealDebridLogin: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_REALDEBRID_LOGIN),
+  openRealDebridLogin: (request: RealDebridLoginRequest = { accountId: "rdw_legacy" }): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_REALDEBRID_LOGIN, request),
   openAllDebridLogin: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_ALLDEBRID_LOGIN),
   importBestDebridCookies: (): Promise<number> => ipcRenderer.invoke(IPC_CHANNELS.IMPORT_BESTDEBRID_COOKIES),
   getAllDebridHostInfo: (): Promise<AllDebridHostInfo> => ipcRenderer.invoke(IPC_CHANNELS.GET_ALLDEBRID_HOST_INFO),

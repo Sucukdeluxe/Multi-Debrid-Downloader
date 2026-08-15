@@ -9,8 +9,7 @@ const RD_LOGIN_URL = RD_BASE_URL;
 const RD_APITOKEN_URL = `${RD_BASE_URL}/apitoken`;
 const RD_UNRESTRICT_API = `${API_BASE_URL}/unrestrict/link`;
 const RD_USER_API = `${API_BASE_URL}/user`;
-const RD_PERSISTENT_PARTITION = "persist:realdebrid-web";
-const RD_TRANSIENT_PARTITION = "realdebrid-web";
+const RD_PARTITION_PATTERN = /^persist:realdebrid-web(?:-rdw_[A-Za-z0-9_-]{1,96})?$/;
 const RD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
 
 type GenerateOutcome =
@@ -134,12 +133,32 @@ export class RealDebridWebFallback {
 
   private onAuthenticated?: () => void;
 
-  public constructor(getRememberSession: () => boolean, onAuthenticated?: () => void) {
+  private onClosed?: () => void;
+
+  private persistentPartition: string;
+
+  private transientPartition: string;
+
+  private lifecycleGeneration = 0;
+
+  private programmaticClosures = new WeakSet<BrowserWindow>();
+
+  private disposed = false;
+
+  public constructor(partition: string, getRememberSession: () => boolean, onAuthenticated?: () => void, onClosed?: () => void) {
+    const normalizedPartition = String(partition || "").trim();
+    if (!RD_PARTITION_PATTERN.test(normalizedPartition)) {
+      throw new Error("Real-Debrid Web-Partition ist ungültig");
+    }
+    this.persistentPartition = normalizedPartition;
+    this.transientPartition = normalizedPartition.slice("persist:".length);
     this.getRememberSession = getRememberSession;
     this.onAuthenticated = onAuthenticated;
+    this.onClosed = onClosed;
   }
 
   public async unrestrict(link: string, signal?: AbortSignal): Promise<UnrestrictedLink | null> {
+    this.throwIfDisposed();
     const overallSignal = withTimeoutSignal(signal, 10 * 60 * 1000);
     return this.runExclusive(async () => {
       throwIfAborted(overallSignal);
@@ -156,6 +175,7 @@ export class RealDebridWebFallback {
   }
 
   public async openLoginWindow(): Promise<void> {
+    this.throwIfDisposed();
     const window = await this.ensureLoginWindow();
     if (window.isMinimized()) {
       window.restore();
@@ -166,6 +186,7 @@ export class RealDebridWebFallback {
   }
 
   public async probeLoginState(signal?: AbortSignal): Promise<RealDebridLoginState> {
+    this.throwIfDisposed();
     let token: string | null = null;
     try {
       token = await this.extractApiToken(signal);
@@ -220,10 +241,11 @@ export class RealDebridWebFallback {
   }
 
   public async clearSessions(): Promise<void> {
+    this.disposed = true;
     this.disposeLoginWindow();
     this.cachedToken = "";
     this.cachedTokenAt = 0;
-    for (const partition of [RD_PERSISTENT_PARTITION, RD_TRANSIENT_PARTITION]) {
+    for (const partition of [this.persistentPartition, this.transientPartition]) {
       const currentSession = session.fromPartition(partition);
       try {
         await currentSession.clearStorageData({
@@ -239,18 +261,29 @@ export class RealDebridWebFallback {
   }
 
   public dispose(): void {
+    this.disposed = true;
     this.disposeLoginWindow();
+    this.cachedToken = "";
+    this.cachedTokenAt = 0;
   }
 
   private getPartition(): string {
-    return this.getRememberSession() ? RD_PERSISTENT_PARTITION : RD_TRANSIENT_PARTITION;
+    return this.getRememberSession() ? this.persistentPartition : this.transientPartition;
+  }
+
+  private throwIfDisposed(): void {
+    if (this.disposed) {
+      throw new Error("Real-Debrid Web-Sitzung wurde geschlossen");
+    }
   }
 
   private disposeLoginWindow(): void {
+    this.lifecycleGeneration += 1;
     const current = this.loginWindow;
     this.loginWindow = null;
     this.loginWindowPartition = "";
     if (current && !current.isDestroyed()) {
+      this.programmaticClosures.add(current);
       current.close();
     }
   }
@@ -297,28 +330,45 @@ export class RealDebridWebFallback {
     });
     window.setMenuBarVisibility(false);
     window.webContents.setUserAgent(RD_USER_AGENT);
+    const windowGeneration = this.lifecycleGeneration;
     const primeFromWindow = (): void => {
-      void this.primeTokenFromWindow(window);
+      void this.primeTokenFromWindow(window, windowGeneration);
     };
     window.webContents.on("did-finish-load", primeFromWindow);
     window.webContents.on("did-navigate", primeFromWindow);
     window.webContents.on("did-navigate-in-page", primeFromWindow);
+    let closingTokenProbe: Promise<void> = Promise.resolve();
     window.on("close", () => {
-      void this.primeTokenFromWindow(window);
+      if (!this.programmaticClosures.has(window)) {
+        closingTokenProbe = this.primeTokenFromWindow(window, windowGeneration);
+      }
     });
     window.on("closed", () => {
       if (this.loginWindow === window) {
         this.loginWindow = null;
         this.loginWindowPartition = "";
       }
+      if (!this.programmaticClosures.has(window)) {
+        void closingTokenProbe.finally(() => this.onClosed?.());
+      }
     });
     this.loginWindow = window;
     this.loginWindowPartition = partition;
-    await window.loadURL(RD_LOGIN_URL);
+    try {
+      await window.loadURL(RD_LOGIN_URL);
+    } catch (error) {
+      if (this.loginWindow === window) {
+        this.disposeLoginWindow();
+      }
+      throw error;
+    }
     return window;
   }
 
-  private rememberToken(token: string): string {
+  private rememberToken(token: string, generation = this.lifecycleGeneration): string | null {
+    if (this.disposed || generation !== this.lifecycleGeneration) {
+      return null;
+    }
     const changed = token !== this.cachedToken;
     this.cachedToken = token;
     this.cachedTokenAt = Date.now();
@@ -339,7 +389,7 @@ export class RealDebridWebFallback {
     return window;
   }
 
-  private async extractApiTokenFromWindow(window: BrowserWindow, signal?: AbortSignal): Promise<string | null> {
+  private async extractApiTokenFromWindow(window: BrowserWindow, signal?: AbortSignal, generation = this.lifecycleGeneration): Promise<string | null> {
     throwIfAborted(signal);
 
     try {
@@ -390,8 +440,8 @@ export class RealDebridWebFallback {
         })();
       `, true);
       const token = String(rawResult || "").trim();
-      if (token) {
-        return this.rememberToken(token);
+      if (token && generation === this.lifecycleGeneration && !this.programmaticClosures.has(window)) {
+        return this.rememberToken(token, generation);
       }
     } catch {
     }
@@ -399,15 +449,20 @@ export class RealDebridWebFallback {
     return null;
   }
 
-  private async primeTokenFromWindow(window: BrowserWindow): Promise<void> {
+  private async primeTokenFromWindow(window: BrowserWindow, generation = this.lifecycleGeneration): Promise<void> {
     try {
-      await this.extractApiTokenFromWindow(window);
+      await this.extractApiTokenFromWindow(window, undefined, generation);
     } catch {
     }
   }
 
   private async extractApiToken(signal?: AbortSignal): Promise<string | null> {
     throwIfAborted(signal);
+    const generation = this.lifecycleGeneration;
+
+    if (this.disposed) {
+      return null;
+    }
 
     if (this.cachedToken && Date.now() - this.cachedTokenAt < 30 * 60 * 1000) {
       return this.cachedToken;
@@ -432,13 +487,17 @@ export class RealDebridWebFallback {
     });
     const html = await response.text();
 
+    if (this.disposed || generation !== this.lifecycleGeneration) {
+      return null;
+    }
+
     if (!response.ok || response.status === 403) {
       return null;
     }
 
     const token = extractPrivateTokenFromHtml(html);
     if (token) {
-      return this.rememberToken(token);
+      return this.rememberToken(token, generation);
     }
 
     return null;
