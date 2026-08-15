@@ -166,6 +166,45 @@ describe("realdebrid-web", () => {
     expect(mockBrowserWindow.webContents.executeJavaScript).toHaveBeenCalled();
   });
 
+  it("never opens a login window from a background unrestrict request", async () => {
+    mockSessionFetch.mockImplementation(async () => new Response("<html>login</html>", { status: 200 }));
+    const first = new RealDebridWebFallback("persist:realdebrid-web-rdw_background_first", () => true);
+    const second = new RealDebridWebFallback("persist:realdebrid-web-rdw_background_second", () => true);
+
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    const abortTimer = setTimeout(() => {
+      firstController.abort();
+      secondController.abort();
+    }, 50);
+    try {
+      await Promise.all([
+        expect(first.unrestrict("https://rapidgator.net/file/background-first", firstController.signal))
+          .rejects.toThrow("Login erforderlich"),
+        expect(second.unrestrict("https://rapidgator.net/file/background-second", secondController.signal))
+          .rejects.toThrow("Login erforderlich")
+      ]);
+    } finally {
+      clearTimeout(abortTimer);
+    }
+
+    expect(mockBrowserWindowCtor).not.toHaveBeenCalled();
+  });
+
+  it("does not open a login window for an authenticated account with a fair-use error", async () => {
+    mockSessionFetch.mockResolvedValue(new Response("<input name=\"private_token\" value=\"session-token\">", { status: 200 }));
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => new Response(JSON.stringify({
+      error: "fair_usage_limit",
+      error_code: 36
+    }), { status: 440 })));
+    const fallback = new RealDebridWebFallback("persist:realdebrid-web-rdw_limited", () => true);
+
+    await expect(fallback.unrestrict("https://rapidgator.net/file/limited"))
+      .rejects.toThrow("Real-Debrid Web HTTP 440");
+
+    expect(mockBrowserWindowCtor).not.toHaveBeenCalled();
+  });
+
   it("checks the logged-in browser account without exposing its token", async () => {
     mockExecuteJavaScript.mockResolvedValue("token-from-window");
     const apiFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
@@ -197,7 +236,7 @@ describe("realdebrid-web", () => {
     );
   });
 
-  it("does not reopen an automatically required login after the user closed it", async () => {
+  it("does not reopen a login window from downloads after the user closed it", async () => {
     mockExecuteJavaScript.mockResolvedValue("");
     mockSessionFetch.mockImplementation(async () => new Response("<html>login</html>", { status: 200 }));
     const fallback = new RealDebridWebFallback("persist:realdebrid-web-rdw_dismissed", () => true);
@@ -205,8 +244,8 @@ describe("realdebrid-web", () => {
     await fallback.openLoginWindow();
     mockBrowserWindow.close();
 
-    await expect(fallback.unrestrict("https://rapidgator.net/file/first")).rejects.toThrow("abgebrochen");
-    await expect(fallback.unrestrict("https://rapidgator.net/file/second")).rejects.toThrow("abgebrochen");
+    await expect(fallback.unrestrict("https://rapidgator.net/file/first")).rejects.toThrow("Login erforderlich");
+    await expect(fallback.unrestrict("https://rapidgator.net/file/second")).rejects.toThrow("Login erforderlich");
     expect(mockBrowserWindowCtor).toHaveBeenCalledTimes(1);
   });
 

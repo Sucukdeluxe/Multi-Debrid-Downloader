@@ -135,8 +135,6 @@ export class RealDebridWebFallback {
 
   private onClosed?: () => void;
 
-  private interactiveLoginDismissed = false;
-
   private persistentPartition: string;
 
   private transientPartition: string;
@@ -172,13 +170,12 @@ export class RealDebridWebFallback {
       if (initial.kind === "success") {
         return initial.value;
       }
-      return this.waitForLoginAndGenerate(link, overallSignal);
+      throw new Error("Real-Debrid Web-Login erforderlich");
     }, overallSignal);
   }
 
   public async openLoginWindow(): Promise<void> {
     this.throwIfDisposed();
-    this.interactiveLoginDismissed = false;
     const window = await this.ensureLoginWindow();
     if (window.isMinimized()) {
       window.restore();
@@ -343,7 +340,6 @@ export class RealDebridWebFallback {
     let closingTokenProbe: Promise<void> = Promise.resolve();
     window.on("close", () => {
       if (!this.programmaticClosures.has(window)) {
-        this.interactiveLoginDismissed = true;
         closingTokenProbe = this.primeTokenFromWindow(window, windowGeneration);
       }
     });
@@ -376,7 +372,6 @@ export class RealDebridWebFallback {
     const changed = token !== this.cachedToken;
     this.cachedToken = token;
     this.cachedTokenAt = Date.now();
-    this.interactiveLoginDismissed = false;
     if (changed && this.onAuthenticated) {
       void Promise.resolve().then(() => this.onAuthenticated?.());
     }
@@ -586,36 +581,4 @@ export class RealDebridWebFallback {
     throw new Error("Real-Debrid Web: Unrestrict fehlgeschlagen");
   }
 
-  private async waitForLoginAndGenerate(link: string, signal?: AbortSignal): Promise<UnrestrictedLink | null> {
-    if (this.interactiveLoginDismissed) {
-      throw new Error("Real-Debrid Web-Login abgebrochen");
-    }
-    const window = await this.ensureLoginWindow();
-    if (window.isMinimized()) {
-      window.restore();
-    }
-    window.show();
-    window.focus();
-
-    const startedAt = Date.now();
-    while (Date.now() - startedAt < 10 * 60 * 1000) {
-      throwIfAborted(signal);
-      if (window.isDestroyed()) {
-        throw new Error("Real-Debrid Web-Login abgebrochen");
-      }
-
-      const outcome = await this.generate(link, signal);
-      if (outcome.kind === "success") {
-        if (!window.isDestroyed()) {
-          this.programmaticClosures.add(window);
-          window.close();
-        }
-        return outcome.value;
-      }
-
-      await sleepWithSignal(1_500, signal);
-    }
-
-    throw new Error("Real-Debrid Web-Login Timeout");
-  }
 }
