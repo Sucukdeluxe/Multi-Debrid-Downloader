@@ -14,7 +14,7 @@ const DOWNLOAD_BODY_IDLE_TIMEOUT_MS = 45_000;
 const RETRIES_PER_CANDIDATE = 3;
 const RETRY_DELAY_MS = 1_500;
 const MAX_DOWNLOAD_PASSES = 3;
-const USER_AGENT = `RD-Node-Downloader/${APP_VERSION}`;
+const USER_AGENT = `MDD-Node-Downloader/${APP_VERSION}`;
 
 type UpdateSource = {
   name: string;

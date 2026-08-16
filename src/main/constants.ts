@@ -37,7 +37,7 @@ export const MAX_LINK_ARTIFACT_BYTES = 256 * 1024;
 export const SPEED_WINDOW_SECONDS = 1;
 export const CLIPBOARD_POLL_INTERVAL_MS = 2000;
 
-export const DEFAULT_UPDATE_REPO = "Sucukdeluxe/multi-debrid-downloader";
+export const DEFAULT_UPDATE_REPO = "Sucukdeluxe/Multi-Debrid-Downloader";
 export const ONLINE_BACKUP_API_URL = "https://downloader.24-music.de/backup-api";
 
 export function defaultSettings(): AppSettings {

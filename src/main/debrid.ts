@@ -6,6 +6,7 @@ import { AllDebridHostInfo, AppSettings, DebridFallbackProvider, DebridLinkHostL
 import { isDebridLinkApiKeyDailyLimitReached, isMegaDebridAccountDisabled, isMegaDebridAccountDailyLimitReached, isProviderDailyLimitReached, isRealDebridAccountDailyLimitReached } from "../shared/provider-daily-limits";
 import { isMegaDebridResolveFailure, germanMegaDebridResolveReason } from "../shared/mega-debrid-errors";
 import { APP_VERSION, REQUEST_RETRIES } from "./constants";
+import { pruneAccountRuntimeSession, recordAccountRuntimeAttempt, recordAccountRuntimeFailure, recordAccountRuntimeSuccess, resetAccountRuntimeSessionForProvider } from "./account-runtime";
 import { logger } from "./logger";
 import { logAccountRotation } from "./account-rotation-log";
 import { traceConversionPhase } from "./conversion-trace";
@@ -15,7 +16,7 @@ import { isMegaFileUrl, resolveMegaFilename } from "./mega-public-api";
 import { compactErrorText, filenameFromUrl, looksLikeOpaqueFilename, sleep } from "./utils";
 
 const API_TIMEOUT_MS = 30000;
-const DEBRID_USER_AGENT = `RD-Node-Downloader/${APP_VERSION}`;
+const DEBRID_USER_AGENT = `MDD-Node-Downloader/${APP_VERSION}`;
 const RAPIDGATOR_SCAN_MAX_BYTES = 512 * 1024;
 
 const BEST_DEBRID_API_BASE = "https://bestdebrid.com/api/v1";
@@ -66,6 +67,7 @@ export function resetDebridLinkRuntimeStateForTests(): void {
   debridLinkKeyRuntimeStatuses.clear();
   debridLinkKeyHostCooldowns.clear();
   debridLinkKeyHostCooldownDetails.clear();
+  resetAccountRuntimeSessionForProvider("debridlink");
 }
 
 export function pruneDebridLinkRuntimeStateForKeys(activeKeyIds: Set<string>): void {
@@ -338,6 +340,8 @@ export function resetMegaDebridRuntimeStateForTests(): void {
   megaDebridEmptyResponseStreaks.clear();
   megaDebridRotationCursor = 0;
   megaDebridStickyCount = 0;
+  resetAccountRuntimeSessionForProvider("megadebrid-api");
+  resetAccountRuntimeSessionForProvider("megadebrid-web");
   megaDebridInFlight.clear();
 }
 
@@ -459,6 +463,11 @@ export interface ProviderRuntimeSnapshot {
     stickyCount: number;
     cooldownCount: number;
     inFlightCount: number;
+    accounts: Array<{
+      accountId: string;
+      cooldown: ProviderRuntimeCooldown | null;
+      inFlight: number;
+    }>;
   };
   megaDebrid: {
     rotationCursor: number;
@@ -481,6 +490,25 @@ export interface ProviderRuntimeSnapshot {
 }
 
 export function getProviderRuntimeSnapshot(now = Date.now()): ProviderRuntimeSnapshot {
+  const realDebridAccountIds = new Set<string>([
+    ...realDebridAccountCooldowns.keys(),
+    ...realDebridInFlight.keys()
+  ]);
+  const realDebridAccounts = [...realDebridAccountIds].sort().map((accountId) => {
+    const detail = realDebridAccountCooldowns.get(accountId);
+    return {
+      accountId,
+      cooldown: detail
+        ? {
+            untilMs: detail.until,
+            remainingMs: Math.max(0, detail.until - now),
+            message: detail.message,
+            category: detail.category
+          }
+        : null,
+      inFlight: realDebridInFlight.get(accountId) ?? 0
+    };
+  });
   const megaKeys = new Set<string>([
     ...megaDebridAccountCooldowns.keys(),
     ...megaDebridInFlight.keys(),
@@ -545,7 +573,8 @@ export function getProviderRuntimeSnapshot(now = Date.now()): ProviderRuntimeSna
       rotationCursor: realDebridRotationCursor,
       stickyCount: realDebridStickyCount,
       cooldownCount: [...realDebridAccountCooldowns.values()].filter((entry) => entry.until > now).length,
-      inFlightCount: [...realDebridInFlight.values()].reduce((total, count) => total + count, 0)
+      inFlightCount: [...realDebridInFlight.values()].reduce((total, count) => total + count, 0),
+      accounts: realDebridAccounts
     },
     megaDebrid: {
       rotationCursor: megaDebridRotationCursor,
@@ -660,6 +689,7 @@ export function resetRealDebridRuntimeStateForTests(): void {
   realDebridRotationCursor = 0;
   realDebridStickyAccountId = "";
   realDebridStickyCount = 0;
+  resetAccountRuntimeSessionForProvider("realdebrid");
 }
 
 export function pruneRealDebridRuntimeStateForAccounts(activeAccountIds: Set<string>): void {
@@ -698,9 +728,10 @@ export function pruneExpiredRealDebridRuntimeState(now = Date.now()): number {
 export function primeRealDebridRuntimeCooldownForTests(
   accountId: string,
   cooldownMs: number,
-  message = "Real-Debrid Account im Cooldown"
+  message = "Real-Debrid Account im Cooldown",
+  category: RealDebridCooldownCategory = "temporary"
 ): void {
-  setRealDebridAccountCooldown(accountId, cooldownMs, message, "temporary");
+  setRealDebridAccountCooldown(accountId, cooldownMs, message, category);
 }
 
 function setRealDebridAccountCooldown(
@@ -2272,6 +2303,8 @@ class MegaDebridClient {
       logAccountRotation("INFO", providerName, rotationLabel, "TEST", {
         link: linkShort
       });
+      const runtimeProvider: DebridProvider = mode === "api" ? "megadebrid-api" : "megadebrid-web";
+      recordAccountRuntimeAttempt(runtimeProvider, account.id);
       const testStartedAt = Date.now();
 
       usableAccountSeen = true;
@@ -2296,6 +2329,7 @@ class MegaDebridClient {
           fileName: result.fileName || "",
           link: linkShort
         });
+        recordAccountRuntimeSuccess(runtimeProvider, account.id);
         return {
           ...result,
           sourceLabel: `${result.sourceLabel ? `${result.sourceLabel} ` : ""}${account.label}`,
@@ -2355,6 +2389,7 @@ class MegaDebridClient {
           throw new Error(`Mega-Debrid${accountLabel}: ${abortText}`);
         }
         const failure = MegaDebridClient.classifyAccountFailure(error);
+        recordAccountRuntimeFailure(runtimeProvider, account.id);
         traceConversionPhase({
           phase: "mega-account",
           provider: providerName.includes("API") ? "megadebrid-api" : "megadebrid-web",
@@ -3031,6 +3066,7 @@ class DebridLinkClient {
 
       logger.info(`Debrid-Link${keyLabel}: TESTE Key fuer Link-Generierung...`);
       logAccountRotation("INFO", providerName, rotationLabel, "TEST", { link: linkShort });
+      recordAccountRuntimeAttempt("debridlink", apiKey.id);
       const testStartedAt = Date.now();
 
       usableKeySeen = true;
@@ -3045,6 +3081,7 @@ class DebridLinkClient {
           fileName: result.fileName || "",
           link: linkShort
         });
+        recordAccountRuntimeSuccess("debridlink", apiKey.id);
         return {
           ...result,
           sourceLabel: apiKey.label,
@@ -3071,6 +3108,7 @@ class DebridLinkClient {
           });
           throw new Error(`Debrid-Link${keyLabel}: ${abortText}`);
         }
+        recordAccountRuntimeFailure("debridlink", apiKey.id);
         attemptedKeyFailures.push({
           message: `Debrid-Link${keyLabel}: ${failure.message}`,
           cooldownMs: failure.cooldownMs,
@@ -3854,7 +3892,14 @@ export class DebridService {
     }
     const nextDebridLinkKeyIds = new Set<string>(parseDebridLinkApiKeys(next.debridLinkApiKeys || "").map((entry) => entry.id));
     pruneDebridLinkRuntimeStateForKeys(nextDebridLinkKeyIds);
-    pruneRealDebridRuntimeStateForAccounts(new Set(this.getConfiguredRealDebridAccounts(next).map((account) => account.id)));
+    const nextRealDebridAccountIds = new Set(this.getConfiguredRealDebridAccounts(next).map((account) => account.id));
+    pruneRealDebridRuntimeStateForAccounts(nextRealDebridAccountIds);
+    const validRuntimeKeys = new Set<string>();
+    for (const accountId of nextRealDebridAccountIds) validRuntimeKeys.add(`realdebrid:${accountId}`);
+    for (const account of getMegaDebridAccountsForMode(next, "api")) validRuntimeKeys.add(`megadebrid-api:${account.id}`);
+    for (const account of getMegaDebridAccountsForMode(next, "web")) validRuntimeKeys.add(`megadebrid-web:${account.id}`);
+    for (const keyId of nextDebridLinkKeyIds) validRuntimeKeys.add(`debridlink:${keyId}`);
+    pruneAccountRuntimeSession(validRuntimeKeys);
   }
 
   private getDebridLinkClient(apiKeysRaw: string): DebridLinkClient {
@@ -4292,6 +4337,7 @@ export class DebridService {
       const account = this.selectRealDebridAccount(available);
       attempted.add(account.id);
       realDebridInFlight.set(account.id, (realDebridInFlight.get(account.id) || 0) + 1);
+      recordAccountRuntimeAttempt("realdebrid", account.id);
       const timeoutMs = getRealDebridAccountAttemptTimeoutMs();
       const timeoutSignal = AbortSignal.timeout(timeoutMs);
       const accountSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
@@ -4313,6 +4359,7 @@ export class DebridService {
         if (realDebridStickyCount >= REAL_DEBRID_STICKY_LINKS && accountIndex >= 0) {
           realDebridRotationCursor = (accountIndex + 1) % available.length;
         }
+        recordAccountRuntimeSuccess("realdebrid", account.id);
         return {
           ...result,
           sourceLabel: account.kind === "api" ? "API" : "Web",
@@ -4324,6 +4371,7 @@ export class DebridService {
           throw error;
         }
         const failure = this.classifyRealDebridFailure(error);
+        recordAccountRuntimeFailure("realdebrid", account.id);
         if (!failure.rotateAccount) {
           throw error;
         }

@@ -94,7 +94,7 @@ function formatTimestampForFileName(date: Date): string {
 }
 
 export function getSupportBundleDefaultFileName(): string {
-  return `rd-support-bundle-${formatTimestampForFileName(new Date())}.zip`;
+  return `mdd-support-bundle-${formatTimestampForFileName(new Date())}.zip`;
 }
 
 type HostDiagnosticsMode = "full" | "cached" | "none";

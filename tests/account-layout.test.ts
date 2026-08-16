@@ -11,11 +11,12 @@ const styles = readFileSync(
 );
 
 describe("account management layout", () => {
-  it("keeps both account tabs inside the same fixed content row", () => {
+  it("keeps all account tabs inside the same fixed content row", () => {
     expect(workspaceSource).toContain('<div className="settings-account-workspace">');
-    expect(workspaceSource.match(/className="settings-account-panel"/g)).toHaveLength(2);
+    expect(workspaceSource.match(/className="settings-account-panel"/g)).toHaveLength(3);
     expect(workspaceSource).toContain('hidden={model.activePanel !== "overview"}');
     expect(workspaceSource).toContain('hidden={model.activePanel !== "rules"}');
+    expect(workspaceSource).toContain('hidden={model.activePanel !== "runtime"}');
     expect(styles).toMatch(
       /\.settings-account-workspace\s*{[^}]*grid-template-rows:\s*auto auto minmax\(0, 1fr\);[^}]*min-width:\s*0;[^}]*min-height:\s*0;/s
     );

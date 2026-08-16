@@ -6,6 +6,7 @@ import { serializeRealDebridApiAccounts } from "../src/shared/real-debrid-accoun
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
 import { isMegaDebridTransientResolveFailure } from "../src/shared/mega-debrid-errors";
 import { checkRapidgatorOnline, classifyMegaDebridAccountFailureForTests, clearMegaDebridEmptyResponseStreak, DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, getAvailableRealDebridAccounts, getDebridLinkKeyCooldownStateForTests, getDebridLinkKeyRuntimeStateForTests, getMegaDebridAccountCooldownState, getProviderRuntimeSnapshot, leadProviderChainWith, MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART, MEGA_DEBRID_STICKY_LINKS, normalizeResolvedFilename, parseRapidgatorFileSize, primeMegaDebridRuntimeCooldownForTests, primeMegaDebridUntilRestartForTests, recordMegaDebridEmptyResponseStreak, resetDebridLinkRuntimeStateForTests, resetMegaDebridRuntimeStateForTests, resetRealDebridRuntimeStateForTests } from "../src/main/debrid";
+import { getAccountRuntimeSessionStats } from "../src/main/account-runtime";
 
 const originalFetch = globalThis.fetch;
 
@@ -2857,6 +2858,12 @@ describe("Real-Debrid account rotation", () => {
 
     expect(result.sourceAccountId).toBe("rda_one");
     expect(result.sourceAccountLabel).toBe("API-Token 1");
+    expect(getAccountRuntimeSessionStats("realdebrid", "rda_one")).toEqual(expect.objectContaining({
+      attempts: 1,
+      successes: 1,
+      failures: 0,
+      lastUsedAt: expect.any(Number)
+    }));
   });
 
   it("fails over from a rejected API account to the next account in the same call", async () => {
@@ -2878,6 +2885,8 @@ describe("Real-Debrid account rotation", () => {
 
     expect(result.sourceAccountId).toBe("rda_two");
     expect(usedTokens).toEqual(["token-one", "token-two"]);
+    expect(getAccountRuntimeSessionStats("realdebrid", "rda_one")).toEqual(expect.objectContaining({ attempts: 1, successes: 0, failures: 1 }));
+    expect(getAccountRuntimeSessionStats("realdebrid", "rda_two")).toEqual(expect.objectContaining({ attempts: 1, successes: 1, failures: 0 }));
     expect(getAvailableRealDebridAccounts(settings, Date.now() + 3 * 60 * 1000).map((account) => account.id)).toEqual(["rda_two"]);
   });
 

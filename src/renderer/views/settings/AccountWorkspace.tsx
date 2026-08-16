@@ -29,11 +29,12 @@ import {
   type AccountTableColumnWidths
 } from "./settings-model";
 
-export type AccountWorkspacePanel = "overview" | "rules";
+export type AccountWorkspacePanel = "overview" | "rules" | "runtime";
 
 const ACCOUNT_WORKSPACE_PANELS: readonly { id: AccountWorkspacePanel; label: string }[] = [
   { id: "overview", label: "Übersicht" },
-  { id: "rules", label: "Verwendungsregeln" }
+  { id: "rules", label: "Verwendungsregeln" },
+  { id: "runtime", label: "Laufzeit" }
 ];
 
 const ACCOUNT_TABLE_COLUMN_STORAGE_KEY = "mdd.account-table-columns.v1";
@@ -94,6 +95,34 @@ export interface AccountRulesViewModel {
   availableRoutingHosters?: readonly { value: string; label: string }[];
 }
 
+export interface AccountRuntimeProviderViewModel {
+  id: string;
+  label: string;
+  accountCount: number;
+  availableAccountCount: number;
+  activeDownloads: number;
+  dailyUsageText: string;
+}
+
+export interface AccountRuntimeRowViewModel {
+  id: string;
+  providerLabel: string;
+  modeLabel: string;
+  identity: string;
+  stateLabel: string;
+  stateTone: "ok" | "active" | "warning" | "danger" | "muted";
+  activeDownloads: number;
+  dailyUsageText: string;
+  successRateText: string;
+  lastUsedText: string;
+  cooldownText: string;
+}
+
+export interface AccountRuntimeViewModel {
+  providers: readonly AccountRuntimeProviderViewModel[];
+  accounts: readonly AccountRuntimeRowViewModel[];
+}
+
 export interface AccountWorkspaceViewModel {
   activePanel: AccountWorkspacePanel;
   rows: readonly AccountRowViewModel[];
@@ -102,6 +131,7 @@ export interface AccountWorkspaceViewModel {
   error?: string;
   statusSort?: "none" | "desc" | "asc";
   rules: AccountRulesViewModel;
+  runtime: AccountRuntimeViewModel;
 }
 
 export interface AccountWorkspaceActions {
@@ -581,6 +611,58 @@ function AccountRules({ model, actions }: AccountWorkspaceProps): ReactElement {
   );
 }
 
+function AccountRuntime({ model }: AccountWorkspaceProps): ReactElement {
+  return (
+    <div className="settings-account-runtime">
+      <section aria-label="Provider-Laufzeit" className="settings-runtime-provider-grid">
+        {model.runtime.providers.length === 0 ? (
+          <div className="settings-runtime-empty">Noch keine Accounts konfiguriert.</div>
+        ) : model.runtime.providers.map((provider) => (
+          <article className="settings-runtime-provider-card" key={provider.id}>
+            <header>
+              <h3>{provider.label}</h3>
+              <span>{provider.availableAccountCount} von {provider.accountCount} verfügbar</span>
+            </header>
+            <div>
+              <span><strong>{provider.activeDownloads}</strong>{provider.activeDownloads === 1 ? " aktiver Download" : " aktive Downloads"}</span>
+              <span><strong>{provider.dailyUsageText}</strong> heute</span>
+            </div>
+          </article>
+        ))}
+      </section>
+      <section aria-label="Account-Laufzeit" className="settings-runtime-table" role="table">
+        <div className="settings-runtime-table-scroll">
+          <div className="settings-runtime-row settings-runtime-header" role="row">
+            <span role="columnheader">Account</span>
+            <span role="columnheader">Zustand</span>
+            <span role="columnheader">Aktive Downloads</span>
+            <span role="columnheader">Heute</span>
+            <span role="columnheader">Erfolgsquote · Diese Sitzung</span>
+            <span role="columnheader">Zuletzt verwendet</span>
+            <span role="columnheader">Cooldown / Grund</span>
+          </div>
+          {model.runtime.accounts.length === 0 ? (
+            <div className="settings-runtime-empty">Noch keine Laufzeitdaten verfügbar.</div>
+          ) : model.runtime.accounts.map((account) => (
+            <div className="settings-runtime-row" key={account.id} role="row">
+              <span className="settings-runtime-account" role="cell">
+                <strong>{account.providerLabel}</strong>
+                <small>{account.modeLabel}{account.identity && account.identity !== "—" ? ` · ${account.identity}` : ""}</small>
+              </span>
+              <span role="cell"><span className={`settings-runtime-state is-${account.stateTone}`}>{account.stateLabel}</span></span>
+              <span role="cell">{account.activeDownloads}</span>
+              <span role="cell">{account.dailyUsageText}</span>
+              <span role="cell">{account.successRateText}</span>
+              <span role="cell">{account.lastUsedText}</span>
+              <span role="cell">{account.cooldownText}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export function AccountWorkspace({ model, actions }: AccountWorkspaceProps): ReactElement {
   return (
     <div className="settings-account-workspace">
@@ -636,6 +718,15 @@ export function AccountWorkspace({ model, actions }: AccountWorkspaceProps): Rea
         role="tabpanel"
       >
         {AccountRules({ actions, model })}
+      </div>
+      <div
+        aria-labelledby="settings-account-runtime-tab"
+        className="settings-account-panel"
+        hidden={model.activePanel !== "runtime"}
+        id="settings-account-runtime"
+        role="tabpanel"
+      >
+        {AccountRuntime({ actions, model })}
       </div>
     </div>
   );

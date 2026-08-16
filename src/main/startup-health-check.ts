@@ -188,7 +188,7 @@ export function runStartupHealthCheck(settings: AppSettings, storagePaths: Stora
       severity: "ERROR",
       code: "baseDir_not_writable",
       message: `Runtime-Verzeichnis ist NICHT beschreibbar: ${storagePaths.baseDir}`,
-      hint: "Rechte auf das Runtime-Verzeichnis pruefen (%APPDATA%/Real-Debrid-Downloader/runtime)."
+      hint: "Rechte auf das Runtime-Verzeichnis pruefen (%APPDATA%/Multi-Debrid-Downloader/runtime)."
     });
   }
 

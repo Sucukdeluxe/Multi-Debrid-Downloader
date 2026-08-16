@@ -221,7 +221,7 @@ $appCrashes = @(
   Get-WinEvent -FilterHashtable @{ LogName = "Application"; StartTime = $startTime } -MaxEvents 100 |
     Where-Object {
       ($_.ProviderName -eq "Application Error" -or $_.ProviderName -eq "Windows Error Reporting") -and
-      ($_.Message -match "Real-Debrid-Downloader|electron|node\.exe|main\.js")
+      ($_.Message -match "(?:Real|Multi)-Debrid-Downloader|electron|node\.exe|main\.js")
     } |
     Select-Object -First 10 |
     ForEach-Object { Convert-EventRecord $_ }

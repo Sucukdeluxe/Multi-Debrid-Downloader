@@ -9,9 +9,9 @@ import { parse } from "yaml";
 const EXPECTED_PUBLISH = Object.freeze({
   provider: "github",
   owner: "Sucukdeluxe",
-  repo: "multi-debrid-downloader"
+  repo: "Multi-Debrid-Downloader"
 });
-const EXPECTED_PRODUCT_NAME = "Real-Debrid-Downloader";
+const EXPECTED_PRODUCT_NAME = "Multi-Debrid-Downloader";
 const EXPECTED_NSIS_ARTIFACT_NAME = "${productName}-Setup-${version}.${ext}";
 const EXPECTED_PORTABLE_ARTIFACT_NAME = "${productName}-${version}-portable.${ext}";
 const REQUIRED_BUILD_FILES = Object.freeze([

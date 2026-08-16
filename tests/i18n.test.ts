@@ -84,6 +84,10 @@ describe("renderer localization", () => {
     expect(translateUiText("Seite 2 von 7", "en")).toBe("Page 2 of 7");
     expect(translateUiText("Page 2 of 7", "de")).toBe("Seite 2 von 7");
     expect(translateUiText("Seite 1.000 von 2.500", "en")).toBe("Page 1.000 of 2.500");
+    expect(translateUiText("1 von 2 verfügbar", "en")).toBe("1 of 2 available");
+    expect(translateUiText("vor 2 Min.", "en")).toBe("2 min ago");
+    expect(translateUiText("Rate-Limit aktiv · 48 Sek.", "en")).toBe("Rate limit active · 48 sec");
+    expect(translateUiText("Rate limit active · 48 sec", "de")).toBe("Rate-Limit aktiv · 48 Sek.");
     expect(translateUiText("Accountdaten werden aktualisiert.", "en")).toBe("Account data is being updated.");
     expect(translateUiText("Keine passenden Dienste oder Zugangstypen gefunden.", "en"))
       .toBe("No matching services or access types found.");

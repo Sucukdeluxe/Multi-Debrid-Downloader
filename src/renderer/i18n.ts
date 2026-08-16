@@ -28,7 +28,10 @@ const pairs = [
   ["Priorität", "Priority"], ["Status", "Status"], ["Aktion", "Action"], ["Alle Services", "All services"], ["Paket, Datei oder Service", "Package, file or service"], ["Alle ein-/ausklappen", "Expand/collapse all"],
   ["Hoch", "High"], ["Normal", "Normal"], ["Niedrig", "Low"], ["In Warteschlange", "Queued"], ["Abgeschlossen", "Completed"], ["Entpackt", "Extracted"], ["Automatisch entpacken", "Extract automatically"],
   ["Liste leeren", "Clear list"], ["Sitzung", "Session"], ["Gesamt", "Total"], ["Verbleibend", "Remaining"], ["Bereit", "Ready"], ["Download läuft", "Download running"], ["Wartet", "Waiting"], ["Offline", "Offline"],
-  ["Übersicht", "Overview"], ["Verwendungsregeln", "Usage rules"], ["Accountverwaltung", "Account management"], ["Accounts hinzufügen, prüfen und verwalten.", "Add, check and manage accounts."],
+  ["Übersicht", "Overview"], ["Verwendungsregeln", "Usage rules"], ["Laufzeit", "Runtime"], ["Accountverwaltung", "Account management"], ["Accounts hinzufügen, prüfen und verwalten.", "Add, check and manage accounts."],
+  ["Provider-Laufzeit", "Provider runtime"], ["Account-Laufzeit", "Account runtime"], ["Aktive Downloads", "Active downloads"], ["Erfolgsquote · Diese Sitzung", "Success rate · This session"], ["Zuletzt verwendet", "Last used"], ["Cooldown / Grund", "Cooldown / reason"],
+  ["Noch keine Accounts konfiguriert.", "No accounts configured yet."], ["Noch keine Laufzeitdaten verfügbar.", "No runtime data available yet."], ["Noch nicht in dieser Sitzung", "Not yet in this session"], ["Gerade eben", "Just now"], ["Prüfung", "Checking"], ["Tageslimit", "Daily limit"], ["Cooldown", "Cooldown"],
+  ["aktiver Download", "active download"], ["aktive Downloads", "active downloads"], ["heute", "today"], ["Account deaktiviert", "Account disabled"], ["Tageslimit erreicht", "Daily limit reached"], ["Anmeldung ungültig", "Invalid login"], ["Rate-Limit aktiv", "Rate limit active"], ["Traffic- oder Kontolimit erreicht", "Traffic or account limit reached"], ["Vorübergehender Cooldown", "Temporary cooldown"], ["Provider oder Link vorübergehend nicht verfügbar", "Provider or link temporarily unavailable"],
   ["Accounts zum Herunterladen verwenden", "Use accounts for downloads"], ["Download-Traffic übrig", "Download traffic remaining"], ["Benutzername", "Username"], ["E-Mail", "Email"], ["Verfallsdatum", "Expiration date"], ["Passwort/Zugang", "Password/access"],
   ["Account hinzufügen", "Add account"], ["Ausgewählte prüfen", "Check selected"], ["Ausgewählte entfernen", "Remove selected"], ["Aktivieren", "Enable"], ["Deaktivieren", "Disable"], ["Noch nicht geprüft", "Not checked yet"],
   ["Aktiviert", "Enabled"], ["Aktionen", "Actions"], ["Deaktiviert", "Disabled"], ["Premium aktiv", "Premium active"], ["API-Key aktiv", "API key active"], ["API-Account", "API account"], ["API-Key", "API key"],
@@ -236,6 +239,16 @@ function translateDynamic(value: string, language: AppLanguage): string {
     if (pageStatus) return `Page ${pageStatus[1]} of ${pageStatus[2]}`;
     const filter = value.match(/^(Alle|Aktiv|Wartend|Pausiert|Fertig|Fehler) (\d+)$/);
     if (filter) return `${deToEn.get(filter[1]) ?? filter[1]} ${filter[2]}`;
+    const runtimeAvailability = value.match(/^(\d+) von (\d+) verfügbar$/);
+    if (runtimeAvailability) return `${runtimeAvailability[1]} of ${runtimeAvailability[2]} available`;
+    const runtimeAgo = value.match(/^vor (\d+) (Min|Std)\.$/);
+    if (runtimeAgo) return `${runtimeAgo[1]} ${runtimeAgo[2] === "Min" ? "min" : "hr"} ago`;
+    const runtimeCooldown = value.match(/^(.+) · (\d+) (Sek|Min|Std)\.$/);
+    if (runtimeCooldown) {
+      const reason = deToEn.get(runtimeCooldown[1]) ?? runtimeCooldown[1];
+      const unit = runtimeCooldown[3] === "Sek" ? "sec" : runtimeCooldown[3] === "Min" ? "min" : "hr";
+      return `${reason} · ${runtimeCooldown[2]} ${unit}`;
+    }
     const remaining = value.match(/^(.+) von (.+) übrig$/);
     if (remaining) return `${remaining[1]} of ${remaining[2]} remaining`;
     const actionsFor = value.match(/^Aktionen für (.+)$/);
@@ -391,6 +404,16 @@ function translateDynamic(value: string, language: AppLanguage): string {
     if (perPage) return `${perPage[1]} pro Seite`;
     const filter = value.match(/^(All|Active|Queued|Paused|Completed|Errors) (\d+)$/);
     if (filter) return `${enToDe.get(filter[1]) ?? filter[1]} ${filter[2]}`;
+    const runtimeAvailability = value.match(/^(\d+) of (\d+) available$/);
+    if (runtimeAvailability) return `${runtimeAvailability[1]} von ${runtimeAvailability[2]} verfügbar`;
+    const runtimeAgo = value.match(/^(\d+) (min|hr) ago$/);
+    if (runtimeAgo) return `vor ${runtimeAgo[1]} ${runtimeAgo[2] === "min" ? "Min" : "Std"}`;
+    const runtimeCooldown = value.match(/^(.+) · (\d+) (sec|min|hr)$/);
+    if (runtimeCooldown) {
+      const reason = enToDe.get(runtimeCooldown[1]) ?? runtimeCooldown[1];
+      const unit = runtimeCooldown[3] === "sec" ? "Sek" : runtimeCooldown[3] === "min" ? "Min" : "Std";
+      return `${reason} · ${runtimeCooldown[2]} ${unit}.`;
+    }
     const remaining = value.match(/^(.+) of (.+) remaining$/);
     if (remaining) return `${remaining[1]} von ${remaining[2]} übrig`;
     const actionsFor = value.match(/^Actions for (.+)$/);

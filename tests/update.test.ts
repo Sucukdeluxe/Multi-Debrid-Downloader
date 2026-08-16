@@ -46,7 +46,7 @@ afterEach(() => {
 
 describe("update", () => {
   it("normalizes update repo input", () => {
-    expect(normalizeUpdateRepo("")).toBe("Sucukdeluxe/multi-debrid-downloader");
+    expect(normalizeUpdateRepo("")).toBe("Sucukdeluxe/Multi-Debrid-Downloader");
     expect(normalizeUpdateRepo("owner/repo")).toBe("owner/repo");
     expect(normalizeUpdateRepo("https://github.com/owner/repo")).toBe("owner/repo");
     expect(normalizeUpdateRepo("https://www.github.com/owner/repo")).toBe("owner/repo");
@@ -86,11 +86,11 @@ describe("update", () => {
         html_url: "https://github.com/owner/repo/releases/tag/v9.9.9",
         assets: [
           {
-            name: "Real-Debrid-Downloader-9.9.9-portable.exe",
+            name: "Multi-Debrid-Downloader-9.9.9-portable.exe",
             browser_download_url: "https://example.invalid/portable.exe"
           },
           {
-            name: "Real-Debrid-Downloader-Setup-9.9.9.exe",
+            name: "Multi-Debrid-Downloader-Setup-9.9.9.exe",
             browser_download_url: "https://example.invalid/setup.exe",
             digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
           }
@@ -105,7 +105,7 @@ describe("update", () => {
     const result = await checkGitHubUpdate("owner/repo");
     expect(result.updateAvailable).toBe(true);
     expect(result.setupAssetUrl).toBe("https://example.invalid/setup.exe");
-    expect(result.setupAssetName).toBe("Real-Debrid-Downloader-Setup-9.9.9.exe");
+    expect(result.setupAssetName).toBe("Multi-Debrid-Downloader-Setup-9.9.9.exe");
   });
 
   it("combines every stable release note newer than the installed version", async () => {
@@ -185,7 +185,7 @@ describe("update", () => {
       latestTag: "v9.9.9",
       releaseUrl: "https://github.com/owner/repo/releases/tag/v9.9.9",
       setupAssetUrl: "https://example.invalid/stale-setup.exe",
-      setupAssetName: "Real-Debrid-Downloader-Setup-9.9.9.exe",
+      setupAssetName: "Multi-Debrid-Downloader-Setup-9.9.9.exe",
       setupAssetDigest: `sha256:${executableDigest}`
     };
 
@@ -411,7 +411,7 @@ describe("update", () => {
           prerelease: false,
           assets: [
             {
-              name: "Real-Debrid-Downloader-Setup-9.9.9.exe",
+              name: "Multi-Debrid-Downloader-Setup-9.9.9.exe",
               browser_download_url: "https://example.invalid/setup-no-digest.exe"
             },
             {
@@ -427,7 +427,7 @@ describe("update", () => {
 
       if (url.includes("latest.yml")) {
         return new Response(
-          `version: 9.9.9\npath: Real-Debrid-Downloader-Setup-9.9.9.exe\nsha512: ${digestSha512Base64}\n`,
+          `version: 9.9.9\npath: Multi-Debrid-Downloader-Setup-9.9.9.exe\nsha512: ${digestSha512Base64}\n`,
           {
             status: 200,
             headers: { "Content-Type": "text/yaml" }
@@ -455,7 +455,7 @@ describe("update", () => {
       latestTag: "v9.9.9",
       releaseUrl: "https://github.com/owner/repo/releases/tag/v9.9.9",
       setupAssetUrl: "https://example.invalid/setup-no-digest.exe",
-      setupAssetName: "Real-Debrid-Downloader-Setup-9.9.9.exe",
+      setupAssetName: "Multi-Debrid-Downloader-Setup-9.9.9.exe",
       setupAssetDigest: ""
     };
 
@@ -479,7 +479,7 @@ describe("update", () => {
           prerelease: false,
           assets: [
             {
-              name: "Real-Debrid-Downloader-Setup-9.9.9.exe",
+              name: "Multi-Debrid-Downloader-Setup-9.9.9.exe",
               browser_download_url: "https://example.invalid/setup-no-digest.exe"
             },
             {
@@ -495,7 +495,7 @@ describe("update", () => {
 
       if (url.includes("latest.yml")) {
         return new Response(
-          `version: 9.9.9\npath: Real-Debrid-Downloader-Setup-9.9.9.exe\nsha512: ${wrongDigestBase64}\n`,
+          `version: 9.9.9\npath: Multi-Debrid-Downloader-Setup-9.9.9.exe\nsha512: ${wrongDigestBase64}\n`,
           {
             status: 200,
             headers: { "Content-Type": "text/yaml" }
@@ -523,7 +523,7 @@ describe("update", () => {
       latestTag: "v9.9.9",
       releaseUrl: "https://github.com/owner/repo/releases/tag/v9.9.9",
       setupAssetUrl: "https://example.invalid/setup-no-digest.exe",
-      setupAssetName: "Real-Debrid-Downloader-Setup-9.9.9.exe",
+      setupAssetName: "Multi-Debrid-Downloader-Setup-9.9.9.exe",
       setupAssetDigest: ""
     };
 
@@ -593,14 +593,14 @@ describe("normalizeUpdateRepo extended", () => {
   });
 
   it("returns default for malformed inputs", () => {
-    expect(normalizeUpdateRepo("just-one-part")).toBe("Sucukdeluxe/multi-debrid-downloader");
-    expect(normalizeUpdateRepo("   ")).toBe("Sucukdeluxe/multi-debrid-downloader");
+    expect(normalizeUpdateRepo("just-one-part")).toBe("Sucukdeluxe/Multi-Debrid-Downloader");
+    expect(normalizeUpdateRepo("   ")).toBe("Sucukdeluxe/Multi-Debrid-Downloader");
   });
 
   it("rejects traversal-like owner or repo segments", () => {
-    expect(normalizeUpdateRepo("../owner/repo")).toBe("Sucukdeluxe/multi-debrid-downloader");
-    expect(normalizeUpdateRepo("owner/../repo")).toBe("Sucukdeluxe/multi-debrid-downloader");
-    expect(normalizeUpdateRepo("https://github.com/owner/../../repo")).toBe("Sucukdeluxe/multi-debrid-downloader");
+    expect(normalizeUpdateRepo("../owner/repo")).toBe("Sucukdeluxe/Multi-Debrid-Downloader");
+    expect(normalizeUpdateRepo("owner/../repo")).toBe("Sucukdeluxe/Multi-Debrid-Downloader");
+    expect(normalizeUpdateRepo("https://github.com/owner/../../repo")).toBe("Sucukdeluxe/Multi-Debrid-Downloader");
   });
 
   it("handles www prefix", () => {

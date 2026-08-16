@@ -2,8 +2,8 @@
 
 Fast package-based downloading for Windows with multiple debrid services, automatic fallback, link availability checks, extraction, queue recovery, history, statistics, and built-in updates.
 
-[![Latest release](https://img.shields.io/github/v/release/Sucukdeluxe/multi-debrid-downloader?display_name=tag)](https://github.com/Sucukdeluxe/multi-debrid-downloader/releases/latest)
-[![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6)](https://github.com/Sucukdeluxe/multi-debrid-downloader/releases/latest)
+[![Latest release](https://img.shields.io/github/v/release/Sucukdeluxe/Multi-Debrid-Downloader?display_name=tag)](https://github.com/Sucukdeluxe/Multi-Debrid-Downloader/releases/latest)
+[![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6)](https://github.com/Sucukdeluxe/Multi-Debrid-Downloader/releases/latest)
 [![Electron](https://img.shields.io/badge/Electron-31-47848F)](https://www.electronjs.org/)
 [![License](https://img.shields.io/badge/license-MIT-2ea44f)](LICENSE)
 
@@ -17,12 +17,12 @@ The interface is available in English and German. New installations start in Eng
 
 ## Download
 
-The latest Windows release is available on the [GitHub Releases page](https://github.com/Sucukdeluxe/multi-debrid-downloader/releases/latest).
+The latest Windows release is available on the [GitHub Releases page](https://github.com/Sucukdeluxe/Multi-Debrid-Downloader/releases/latest).
 
 | Package | Recommended for |
 | --- | --- |
-| `Real-Debrid-Downloader-Setup-<version>.exe` | Normal installation with Start menu and optional desktop shortcut |
-| `Real-Debrid-Downloader-<version>-portable.exe` | Portable use without installation |
+| `Multi-Debrid-Downloader-Setup-<version>.exe` | Normal installation with Start menu and optional desktop shortcut |
+| `Multi-Debrid-Downloader-<version>-portable.exe` | Portable use without installation |
 | `SHA256SUMS.txt` | Verifying downloaded files |
 
 Windows 10 or Windows 11 is required. Release executables are currently unsigned, so Windows may show a SmartScreen warning on first launch.
@@ -124,7 +124,7 @@ The Downloads workspace is optimized for large queues:
 
 ## Getting started
 
-1. Download the installer or portable executable from [Releases](https://github.com/Sucukdeluxe/multi-debrid-downloader/releases/latest).
+1. Download the installer or portable executable from [Releases](https://github.com/Sucukdeluxe/Multi-Debrid-Downloader/releases/latest).
 2. Open **Settings → Accounts** and add at least one supported debrid account.
 3. Configure provider order and optional hoster routing under **Usage rules**.
 4. Add links from **Downloads** or prepare collections in **Link collector**.

@@ -147,13 +147,13 @@ describe("browser-security", () => {
       externalHosts: githubOnly
     });
 
-    const allowed = harness.navigate("https://github.com/Sucukdeluxe/multi-debrid-downloader");
+    const allowed = harness.navigate("https://github.com/Sucukdeluxe/Multi-Debrid-Downloader");
     const lookalike = harness.navigate("https://github.com.evil.example/Sucukdeluxe");
 
     expect(allowed.preventDefault).toHaveBeenCalledTimes(1);
     expect(lookalike.preventDefault).toHaveBeenCalledTimes(1);
     expect(electron.openExternal).toHaveBeenCalledTimes(1);
-    expect(electron.openExternal).toHaveBeenCalledWith("https://github.com/Sucukdeluxe/multi-debrid-downloader");
+    expect(electron.openExternal).toHaveBeenCalledWith("https://github.com/Sucukdeluxe/Multi-Debrid-Downloader");
   });
 
   it("applies the main-window navigation policy to redirects", () => {
@@ -163,13 +163,13 @@ describe("browser-security", () => {
       externalHosts: githubOnly
     });
 
-    const allowed = harness.redirect("https://github.com/Sucukdeluxe/multi-debrid-downloader");
+    const allowed = harness.redirect("https://github.com/Sucukdeluxe/Multi-Debrid-Downloader");
     const lookalike = harness.redirect("https://github.com.evil.example/Sucukdeluxe");
 
     expect(allowed.preventDefault).toHaveBeenCalledTimes(1);
     expect(lookalike.preventDefault).toHaveBeenCalledTimes(1);
     expect(electron.openExternal).toHaveBeenCalledTimes(1);
-    expect(electron.openExternal).toHaveBeenCalledWith("https://github.com/Sucukdeluxe/multi-debrid-downloader");
+    expect(electron.openExternal).toHaveBeenCalledWith("https://github.com/Sucukdeluxe/Multi-Debrid-Downloader");
   });
 
   it("denies local-file navigation outside the packaged main renderer file", () => {

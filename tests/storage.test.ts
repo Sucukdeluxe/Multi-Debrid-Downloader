@@ -381,7 +381,8 @@ describe("settings storage", () => {
     for (const updateRepo of [
       "legacy-owner/real-debrid-downloader",
       "legacy-owner/multi-debrid-downloader",
-      "legacy-owner/real-debrid-downloader.git"
+      "legacy-owner/real-debrid-downloader.git",
+      "Sucukdeluxe/multi-debrid-downloader"
     ]) {
       const normalized = normalizeSettings({ ...defaultSettings(), updateRepo });
       expect(normalized.updateRepo).toBe(defaultSettings().updateRepo);

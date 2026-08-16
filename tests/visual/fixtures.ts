@@ -116,7 +116,7 @@ function createSettings(): AppSettings {
     speedLimitEnabled: false,
     speedLimitKbps: 0,
     speedLimitMode: "global",
-    updateRepo: "Sucukdeluxe/multi-debrid-downloader",
+    updateRepo: "Sucukdeluxe/Multi-Debrid-Downloader",
     autoUpdateCheck: true,
     clipboardWatch: true,
     minimizeToTray: false,
@@ -565,7 +565,7 @@ function createUpdate(updateAvailable: boolean): UpdateCheckResult {
         currentVersion: "2.0.12",
         latestVersion: "9.9.9",
         latestTag: "v9.9.9",
-        releaseUrl: "https://github.com/Sucukdeluxe/multi-debrid-downloader/releases/tag/v9.9.9",
+        releaseUrl: "https://github.com/Sucukdeluxe/Multi-Debrid-Downloader/releases/tag/v9.9.9",
         setupAssetUrl: "https://example.test/Multi-Debrid-Downloader-Setup-9.9.9.exe",
         setupAssetName: "Multi-Debrid-Downloader-Setup-9.9.9.exe",
         setupAssetDigest: "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
@@ -576,7 +576,7 @@ function createUpdate(updateAvailable: boolean): UpdateCheckResult {
         currentVersion: "2.0.12",
         latestVersion: "2.0.12",
         latestTag: "v2.0.12",
-        releaseUrl: "https://github.com/Sucukdeluxe/multi-debrid-downloader/releases/tag/v2.0.12",
+        releaseUrl: "https://github.com/Sucukdeluxe/Multi-Debrid-Downloader/releases/tag/v2.0.12",
         releaseNotes: "Aktuelle Version"
       };
 }

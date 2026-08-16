@@ -66,6 +66,7 @@ import { processVideoFile, resolveVideoTooling, stripDualLangMarker, hasDualLang
 import { sendNotification } from "./notify";
 import { logger } from "./logger";
 import { getRecentRotationEvents, runWithRotationItemSink, setRotationEventListener } from "./account-rotation-log";
+import { createAccountRuntimeEntries } from "./account-runtime-snapshot";
 import { runWithConversionTrace, traceConversionPhase, traceConversionNote } from "./conversion-trace";
 import type { RotationEvent } from "../shared/types";
 import { ensureItemLog, getItemLogPath as getPersistedItemLogPath, logItemEvent as writeItemLogEvent } from "./item-log";
@@ -2578,6 +2579,7 @@ export class DownloadManager extends EventEmitter {
 
     return {
       rotationEvents: getRecentRotationEvents(40),
+      accountRuntime: createAccountRuntimeEntries(rendererState.accounts, Object.values(snapshotSession.items), now),
       settings: rendererState.settings,
       accounts: rendererState.accounts,
       session: snapshotSession,

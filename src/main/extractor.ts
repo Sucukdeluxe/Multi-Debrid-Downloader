@@ -214,7 +214,7 @@ export function cleanupStaleSubstDrives(): void {
       if (!match) continue;
       const drive = match[1].toUpperCase();
       const target = match[2].trim();
-      if (/\\rd-extract-|\\Real-Debrid-Downloader/i.test(target)) {
+      if (/\\rd-extract-|\\(?:Real|Multi)-Debrid-Downloader/i.test(target)) {
         spawnSync("subst", [`${drive}:`, "/d"], { stdio: "pipe", timeout: 5000 });
         logger.info(`Stale subst ${drive}: entfernt (${target})`);
       }

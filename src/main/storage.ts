@@ -12,6 +12,20 @@ import { defaultSettings } from "./constants";
 import { needsPersistedSettingsRewrite, protectPersistedSettings, restorePersistedSettings } from "./credential-protection";
 import { logger } from "./logger";
 
+export function migrateProductUserDataDirectory(appDataPath: string): string {
+  const legacyPath = path.join(appDataPath, "Real-Debrid-Downloader");
+  const targetPath = path.join(appDataPath, "Multi-Debrid-Downloader");
+  if (fs.existsSync(targetPath) || !fs.existsSync(legacyPath)) {
+    return targetPath;
+  }
+  try {
+    fs.renameSync(legacyPath, targetPath);
+    return targetPath;
+  } catch {
+    return legacyPath;
+  }
+}
+
 const VALID_PRIMARY_PROVIDERS = new Set(["realdebrid", "megadebrid-api", "megadebrid-web", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink", "linksnappy"]);
 const VALID_FALLBACK_PROVIDERS = new Set(["none", "realdebrid", "megadebrid-api", "megadebrid-web", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink", "linksnappy"]);
 const VALID_CLEANUP_MODES = new Set(["none", "trash", "delete"]);
@@ -393,7 +407,7 @@ const DEPRECATED_UPDATE_REPO_NAMES = new Set([
 function migrateUpdateRepo(raw: string, fallback: string): string {
   const trimmed = raw.trim();
   const repoName = trimmed.split("/").filter(Boolean).pop()?.replace(/\.git$/i, "").toLowerCase() || "";
-  if (!trimmed || (DEPRECATED_UPDATE_REPO_NAMES.has(repoName) && trimmed.toLowerCase() !== fallback.toLowerCase())) {
+  if (!trimmed || (DEPRECATED_UPDATE_REPO_NAMES.has(repoName) && trimmed !== fallback)) {
     return fallback;
   }
   return trimmed;

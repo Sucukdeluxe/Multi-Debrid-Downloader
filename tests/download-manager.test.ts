@@ -13304,6 +13304,81 @@ describe("download manager", () => {
     expect(getProviderRuntimeSnapshot().realDebrid.cooldownCount).toBe(0);
   });
 
+  it("exposes sanitized per-account runtime state in the renderer snapshot", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const settings = {
+      ...defaultSettings(),
+      realDebridApiTokens: serializeRealDebridApiAccounts([{ id: "rda_one", token: "token-one" }]),
+      realDebridAccountDailyUsageBytes: { rda_one: 4_200_000_000 }
+    };
+    const session = emptySession();
+    session.items.runtime_item = {
+      id: "runtime_item",
+      packageId: "runtime_package",
+      url: "https://hoster.example/runtime.bin",
+      provider: "realdebrid",
+      providerAccountId: "rda_one",
+      status: "downloading",
+      retries: 0,
+      speedBps: 1024,
+      downloadedBytes: 100,
+      totalBytes: 1000,
+      progressPercent: 10,
+      fileName: "runtime.bin",
+      targetPath: path.join(root, "runtime.bin"),
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Download läuft",
+      createdAt: Date.now() - 1000,
+      updatedAt: Date.now()
+    };
+    session.packages.runtime_package = {
+      id: "runtime_package",
+      name: "runtime",
+      outputDir: root,
+      extractDir: root,
+      status: "downloading",
+      itemIds: ["runtime_item"],
+      cancelled: false,
+      enabled: true,
+      createdAt: Date.now() - 1000,
+      updatedAt: Date.now()
+    };
+    session.packageOrder = ["runtime_package"];
+    const manager = new DownloadManager(settings, session, createStoragePaths(path.join(root, "state")));
+    const activeItem = (manager as unknown as { session: typeof session }).session.items.runtime_item;
+    activeItem.status = "downloading";
+    activeItem.provider = "realdebrid";
+    activeItem.providerAccountId = "rda_one";
+    primeRealDebridRuntimeCooldownForTests("rda_one", 60_000, "HTTP 429 token-one", "rate_limit");
+
+    const runtime = (manager.getSnapshot() as unknown as {
+      accountRuntime: Array<{
+        accountId: string;
+        state: string;
+        reason: string;
+        cooldownUntil: number | null;
+        dailyUsageBytes: number;
+      }>;
+    }).accountRuntime;
+
+    expect(runtime).toEqual([
+      expect.objectContaining({
+        accountId: "rda_one",
+        state: "cooldown",
+        reason: "Rate-Limit aktiv",
+        cooldownUntil: expect.any(Number),
+        dailyUsageBytes: 4_200_000_000,
+        activeDownloads: 1,
+        lastUsedAt: expect.any(Number)
+      })
+    ]);
+    expect(JSON.stringify(runtime)).not.toContain("token-one");
+    expect(JSON.stringify(runtime)).not.toContain("HTTP 429");
+  });
+
   it("does not hang when rapid stop is followed by disabling the last provider", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);

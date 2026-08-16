@@ -22,6 +22,7 @@ import { validateRendererSettingsUpdate } from "./renderer-settings";
 import { applyMainWindowSecurity, createMainWindowWebPreferences, MAIN_WINDOW_EXTERNAL_HOSTS, openAllowedExternalUrl } from "./browser-security";
 import { assertTrustedIpcSender, type TrustedIpcOptions } from "./ipc-security";
 import { validateRealDebridLoginRequest } from "../shared/preload-api";
+import { migrateProductUserDataDirectory } from "./storage";
 
 function validateString(value: unknown, name: string): string {
   if (typeof value !== "string") {
@@ -51,6 +52,11 @@ const RESETTABLE_PROVIDER_KEYS = new Set<DebridProvider>([
   "debridlink",
   "linksnappy"
 ]);
+
+if (app.isPackaged && !process.argv.some((arg) => arg === "--user-data-dir" || arg.startsWith("--user-data-dir="))) {
+  app.setPath("userData", migrateProductUserDataDirectory(app.getPath("appData")));
+}
+
 function validateStringArray(value: unknown, name: string): string[] {
   if (!Array.isArray(value) || !value.every(v => typeof v === "string")) {
     throw new Error(`${name} muss ein String-Array sein`);

@@ -850,6 +850,155 @@
   overflow-y: auto;
 }
 
+.settings-account-runtime {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  gap: 16px;
+  overflow-y: auto;
+}
+
+.settings-runtime-provider-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 10px;
+}
+
+.settings-runtime-provider-card {
+  display: grid;
+  gap: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--ui-border);
+  border-radius: 8px;
+  background: var(--ui-panel);
+}
+
+.settings-runtime-provider-card header,
+.settings-runtime-provider-card > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-runtime-provider-card h3 {
+  margin: 0;
+  color: var(--ui-text);
+  font-size: 14px;
+}
+
+.settings-runtime-provider-card header span,
+.settings-runtime-provider-card > div span,
+.settings-runtime-account small {
+  color: var(--ui-text-muted);
+}
+
+.settings-runtime-provider-card strong {
+  margin-right: 4px;
+  color: var(--ui-text);
+}
+
+.settings-runtime-table {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--ui-border);
+  border-radius: 8px;
+  background: var(--ui-panel);
+}
+
+.settings-runtime-table-scroll {
+  overflow-x: auto;
+}
+
+.settings-runtime-row {
+  display: grid;
+  grid-template-columns: minmax(210px, 1.35fr) 150px 125px 130px 175px 155px minmax(220px, 1fr);
+  min-width: 1180px;
+  min-height: 48px;
+  align-items: center;
+  border-bottom: 1px solid var(--ui-border);
+}
+
+.settings-runtime-row:last-child {
+  border-bottom: 0;
+}
+
+.settings-runtime-row > span {
+  min-width: 0;
+  padding: 9px 12px;
+  color: var(--ui-text-secondary);
+}
+
+.settings-runtime-header {
+  min-height: 40px;
+  background: var(--ui-table-header);
+}
+
+.settings-runtime-header > span {
+  color: var(--ui-text);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.settings-runtime-account {
+  display: grid;
+  gap: 2px;
+}
+
+.settings-runtime-account strong {
+  overflow: hidden;
+  color: var(--ui-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-runtime-account small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-runtime-state {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--ui-input);
+  color: var(--ui-text-secondary);
+  white-space: nowrap;
+}
+
+.settings-runtime-state.is-ok {
+  background: color-mix(in srgb, var(--ui-success) 18%, transparent);
+  color: var(--ui-success-text);
+}
+
+.settings-runtime-state.is-active {
+  background: color-mix(in srgb, var(--ui-accent) 18%, transparent);
+  color: var(--ui-text);
+}
+
+.settings-runtime-state.is-warning {
+  background: color-mix(in srgb, var(--ui-warning) 18%, transparent);
+  color: var(--ui-warning-text);
+}
+
+.settings-runtime-state.is-danger {
+  background: color-mix(in srgb, var(--ui-danger) 18%, transparent);
+  color: var(--ui-danger-text);
+}
+
+.settings-runtime-state.is-muted {
+  color: var(--ui-text-muted);
+}
+
+.settings-runtime-empty {
+  padding: 20px;
+  color: var(--ui-text-muted);
+}
+
 .settings-rule-section {
   display: grid;
   gap: 12px;

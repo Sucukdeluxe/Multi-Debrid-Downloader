@@ -506,6 +506,23 @@ export interface RotationEvent {
   next?: string;
 }
 
+export type AccountRuntimeState = "ready" | "active" | "checking" | "cooldown" | "disabled" | "daily_limit" | "invalid";
+
+export interface AccountRuntimeEntry {
+  accountId: string;
+  provider: DebridProvider;
+  state: AccountRuntimeState;
+  reason: string;
+  activeDownloads: number;
+  inFlight: number;
+  attempts: number;
+  successes: number;
+  failures: number;
+  lastUsedAt: number | null;
+  cooldownUntil: number | null;
+  dailyUsageBytes: number;
+}
+
 export interface UiSnapshot {
   settings: RendererSettings;
   accounts: RendererAccount[];
@@ -535,6 +552,7 @@ export interface UiSnapshot {
   removedItemIds?: string[];
   removedPackageIds?: string[];
   rotationEvents?: RotationEvent[];
+  accountRuntime?: AccountRuntimeEntry[];
 }
 
 export interface AddLinksPayload {

@@ -1,6 +1,6 @@
 {
-  "name": "real-debrid-downloader",
-  "version": "2.0.42",
+  "name": "multi-debrid-downloader",
+  "version": "2.0.43",
   "description": "Desktop downloader",
   "main": "build/main/main/main.js",
   "author": "Sucukdeluxe",
@@ -51,7 +51,7 @@
   },
   "build": {
     "appId": "com.sucukdeluxe.realdebrid",
-    "productName": "Real-Debrid-Downloader",
+    "productName": "Multi-Debrid-Downloader",
     "directories": {
       "buildResources": "assets",
       "output": "release"
@@ -59,7 +59,7 @@
     "publish": {
       "provider": "github",
       "owner": "Sucukdeluxe",
-      "repo": "multi-debrid-downloader"
+      "repo": "Multi-Debrid-Downloader"
     },
     "files": [
       "build/main/**/*",

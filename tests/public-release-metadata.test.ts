@@ -111,14 +111,14 @@ function createReleaseFixture(): string {
   const setupSha512 = crypto.createHash("sha512").update(setupPayload).digest("base64");
 
   writeFile(rootDir, "package.json", `${JSON.stringify({
-    name: "real-debrid-downloader",
+    name: "multi-debrid-downloader",
     version: "1.7.233",
     build: {
-      productName: "Real-Debrid-Downloader",
+      productName: "Multi-Debrid-Downloader",
       publish: {
         provider: "github",
         owner: "Sucukdeluxe",
-        repo: "multi-debrid-downloader"
+        repo: "Multi-Debrid-Downloader"
       },
       files: [
         "build/main/**/*",
@@ -157,16 +157,16 @@ function createReleaseFixture(): string {
   writeFile(
     rootDir,
     "latest.yml",
-    `version: 1.7.233\nfiles:\n  - url: Real-Debrid-Downloader-Setup-1.7.233.exe\n    sha512: ${setupSha512}\n    size: ${setupPayload.length}\npath: Real-Debrid-Downloader-Setup-1.7.233.exe\nsha512: ${setupSha512}\n`
+    `version: 1.7.233\nfiles:\n  - url: Multi-Debrid-Downloader-Setup-1.7.233.exe\n    sha512: ${setupSha512}\n    size: ${setupPayload.length}\npath: Multi-Debrid-Downloader-Setup-1.7.233.exe\nsha512: ${setupSha512}\n`
   );
   writeFile(
     rootDir,
     "win-unpacked/resources/app-update.yml",
-    "provider: github\nowner: Sucukdeluxe\nrepo: multi-debrid-downloader\n"
+    "provider: github\nowner: Sucukdeluxe\nrepo: Multi-Debrid-Downloader\n"
   );
-  writeFile(rootDir, "Real-Debrid-Downloader-Setup-1.7.233.exe", setupPayload);
-  writeFile(rootDir, "Real-Debrid-Downloader-Setup-1.7.233.exe.blockmap", "blockmap");
-  writeFile(rootDir, "Real-Debrid-Downloader-1.7.233-portable.exe", "portable");
+  writeFile(rootDir, "Multi-Debrid-Downloader-Setup-1.7.233.exe", setupPayload);
+  writeFile(rootDir, "Multi-Debrid-Downloader-Setup-1.7.233.exe.blockmap", "blockmap");
+  writeFile(rootDir, "Multi-Debrid-Downloader-1.7.233-portable.exe", "portable");
   writeRedistributionFiles(rootDir);
   writeRedistributionFiles(rootDir, true);
   writeFile(rootDir, "assets/app_icon.ico", "application-icon");
@@ -190,9 +190,9 @@ describe("public release metadata", () => {
     expect(result.publish).toEqual({
       provider: "github",
       owner: "Sucukdeluxe",
-      repo: "multi-debrid-downloader"
+      repo: "Multi-Debrid-Downloader"
     });
-    expect(result.latestArtifact).toBe("Real-Debrid-Downloader-Setup-1.7.233.exe");
+    expect(result.latestArtifact).toBe("Multi-Debrid-Downloader-Setup-1.7.233.exe");
     expect(result.missingArtifacts).toEqual([]);
   });
 
@@ -208,16 +208,16 @@ describe("public release metadata", () => {
 
   it("rejects a latest.yml path whose artifact does not exist", () => {
     const rootDir = createReleaseFixture();
-    fs.rmSync(path.join(rootDir, "Real-Debrid-Downloader-Setup-1.7.233.exe"));
+    fs.rmSync(path.join(rootDir, "Multi-Debrid-Downloader-Setup-1.7.233.exe"));
 
-    expect(() => verifyPublicRelease(rootDir)).toThrow(/Real-Debrid-Downloader-Setup-1\.7\.233\.exe/);
+    expect(() => verifyPublicRelease(rootDir)).toThrow(/Multi-Debrid-Downloader-Setup-1\.7\.233\.exe/);
   });
 
   it("rejects syntactically invalid latest.yml", () => {
     const rootDir = createReleaseFixture();
     fs.writeFileSync(
       path.join(rootDir, "latest.yml"),
-      "version: 1.7.233\nfiles: [\npath: Real-Debrid-Downloader-Setup-1.7.233.exe\n"
+      "version: 1.7.233\nfiles: [\npath: Multi-Debrid-Downloader-Setup-1.7.233.exe\n"
     );
 
     expect(() => verifyPublicRelease(rootDir)).toThrow(/latest\.yml|yaml/i);
@@ -227,7 +227,7 @@ describe("public release metadata", () => {
     const rootDir = createReleaseFixture();
     const latestPath = path.join(rootDir, "latest.yml");
     const latest = fs.readFileSync(latestPath, "utf8").replace(
-      "url: Real-Debrid-Downloader-Setup-1.7.233.exe",
+      "url: Multi-Debrid-Downloader-Setup-1.7.233.exe",
       "url: Different-Setup-1.7.233.exe"
     );
     fs.writeFileSync(latestPath, latest);
@@ -247,7 +247,7 @@ describe("public release metadata", () => {
 
   it("rejects a directory in place of an artifact file", () => {
     const rootDir = createReleaseFixture();
-    const setupPath = path.join(rootDir, "Real-Debrid-Downloader-Setup-1.7.233.exe");
+    const setupPath = path.join(rootDir, "Multi-Debrid-Downloader-Setup-1.7.233.exe");
     fs.rmSync(setupPath);
     fs.mkdirSync(setupPath);
 
@@ -256,7 +256,7 @@ describe("public release metadata", () => {
 
   it("rejects an empty artifact file", () => {
     const rootDir = createReleaseFixture();
-    fs.writeFileSync(path.join(rootDir, "Real-Debrid-Downloader-1.7.233-portable.exe"), "");
+    fs.writeFileSync(path.join(rootDir, "Multi-Debrid-Downloader-1.7.233-portable.exe"), "");
 
     expect(() => verifyPublicRelease(rootDir)).toThrow(/artifact|empty|file/i);
   });
@@ -307,7 +307,7 @@ describe("public release metadata", () => {
 
   it("rejects a symlink in place of a release artifact", () => {
     const rootDir = createReleaseFixture();
-    const setupPath = path.join(rootDir, "Real-Debrid-Downloader-Setup-1.7.233.exe");
+    const setupPath = path.join(rootDir, "Multi-Debrid-Downloader-Setup-1.7.233.exe");
     const targetPath = path.join(rootDir, "setup-target.exe");
     fs.renameSync(setupPath, targetPath);
     fs.symlinkSync(targetPath, setupPath, "file");
@@ -385,8 +385,8 @@ describe("public release metadata", () => {
     });
 
     expect(result.verifiedArchives).toEqual([
-      "Real-Debrid-Downloader-Setup-1.7.233.exe",
-      "Real-Debrid-Downloader-1.7.233-portable.exe"
+      "Multi-Debrid-Downloader-Setup-1.7.233.exe",
+      "Multi-Debrid-Downloader-1.7.233-portable.exe"
     ]);
   });
 

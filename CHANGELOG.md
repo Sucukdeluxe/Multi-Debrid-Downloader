@@ -4,6 +4,22 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.43] - 2026-08-16
+
+### Product identity
+
+- Renamed the packaged application, installer, portable executable, support bundles, update repository, and public download references to Multi-Debrid-Downloader.
+- Migrated the legacy application data directory automatically so existing settings, accounts, queue state, history, statistics, and runtime logs remain available after the rename.
+- Preserved the existing Windows application identity to support in-place updates while retaining the legacy data directory as a safe fallback when Windows temporarily blocks the migration.
+- Updated diagnostics, exported link headers, host checks, user agents, release verification, and public documentation to use the current product name.
+
+### Account runtime
+
+- Added a Runtime tab to account management with provider summaries for available accounts, active downloads, and daily traffic.
+- Added per-account runtime details for current state, active downloads, daily traffic, session success rate, last use, and cooldown or skip reason.
+- Kept API and browser accounts with matching identifiers isolated by provider and access mode throughout runtime attribution.
+- Removed runtime counters for deleted accounts and limited renderer data to sanitized states and aggregate counters without credentials, API responses, or raw provider errors.
+
 ## [2.0.42] - 2026-08-15
 
 ### Real-Debrid accounts

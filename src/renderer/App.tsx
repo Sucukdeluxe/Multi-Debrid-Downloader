@@ -1593,7 +1593,7 @@ export function App(): ReactElement {
   const [avatarMenuOpen, setAvatarMenuOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [settingsSubTab, setSettingsSubTab] = useState<SettingsSection>("allgemein");
-  const [accountManagementTab, setAccountManagementTab] = useState<"overview" | "rules">("overview");
+  const [accountManagementTab, setAccountManagementTab] = useState<"overview" | "rules" | "runtime">("overview");
   const [selectedAccountRowKeys, setSelectedAccountRowKeys] = useState<Set<string>>(() => new Set());
   const [openSubmenu, setOpenSubmenu] = useState<string | null>(null);
   const [startConflictPrompt, setStartConflictPrompt] = useState<StartConflictPromptState | null>(null);
@@ -5011,6 +5011,130 @@ export function App(): ReactElement {
   const visibleAccountRows = useMemo(() => accountStatusSort === "none"
     ? projectedAccountRows
     : sortAccountRows(projectedAccountRows, accountStatusSort), [accountStatusSort, projectedAccountRows]);
+  const accountRuntimeModel = useMemo<AccountWorkspaceViewModel["runtime"]>(() => {
+    const runtimeEntries = snapshot.accountRuntime || [];
+    const runtimeByAccountId = new Map(runtimeEntries.map((entry) => [`${entry.provider}:${entry.accountId}`, entry]));
+    const runtimeAccountIdCounts = new Map<string, number>();
+    for (const entry of runtimeEntries) {
+      runtimeAccountIdCounts.set(entry.accountId, (runtimeAccountIdCounts.get(entry.accountId) || 0) + 1);
+    }
+    const uniqueRuntimeByAccountId = new Map(runtimeEntries
+      .filter((entry) => runtimeAccountIdCounts.get(entry.accountId) === 1)
+      .map((entry) => [entry.accountId, entry]));
+    const projectedById = new Map(projectedAccountRows.map((row) => [row.id, row]));
+    const providerGroups = new Map<string, {
+      id: string;
+      label: string;
+      accountCount: number;
+      availableAccountCount: number;
+      activeDownloads: number;
+      dailyUsageBytes: number;
+    }>();
+    const stateLabels = {
+      ready: "Bereit",
+      active: "Aktiv",
+      checking: "Prüfung",
+      cooldown: "Cooldown",
+      disabled: "Deaktiviert",
+      daily_limit: "Tageslimit",
+      invalid: "Fehler"
+    } as const;
+    const stateTones = {
+      ready: "ok",
+      active: "active",
+      checking: "active",
+      cooldown: "warning",
+      disabled: "muted",
+      daily_limit: "warning",
+      invalid: "danger"
+    } as const;
+    const accounts = accountRows.map((row) => {
+      const viewId = accountRowViewId(row);
+      const projected = projectedById.get(viewId);
+      const runtimeId = row.accountId || `svc-${row.entry.provider}`;
+      const runtimeProvider = row.entry.provider === "megadebrid"
+        ? (row.modeLabel.toLocaleLowerCase("de-DE").includes("web") ? "megadebrid-web" : "megadebrid-api")
+        : row.entry.provider;
+      const runtime = runtimeByAccountId.get(`${runtimeProvider}:${runtimeId}`)
+        ?? uniqueRuntimeByAccountId.get(runtimeId);
+      const fallbackState = row.disabled
+        ? "disabled"
+        : row.dailyLimitBytes > 0 && row.dailyUsedBytes >= row.dailyLimitBytes
+          ? "daily_limit"
+          : projected?.problem
+            ? "invalid"
+            : "ready";
+      const state = runtime?.state || fallbackState;
+      const outcomes = (runtime?.successes || 0) + (runtime?.failures || 0);
+      const successRateText = outcomes > 0
+        ? `${Math.round(((runtime?.successes || 0) / outcomes) * 100)} % (${runtime?.successes || 0}/${outcomes})`
+        : "—";
+      const lastUsedAt = runtime?.lastUsedAt || null;
+      let lastUsedText = "Noch nicht in dieser Sitzung";
+      if (lastUsedAt) {
+        const ageSeconds = Math.max(0, Math.floor((runtimeNow - lastUsedAt) / 1000));
+        lastUsedText = ageSeconds < 60
+          ? "Gerade eben"
+          : ageSeconds < 3600
+            ? `vor ${Math.floor(ageSeconds / 60)} Min.`
+            : ageSeconds < 86400
+              ? `vor ${Math.floor(ageSeconds / 3600)} Std.`
+              : formatDateTime(lastUsedAt);
+      }
+      let cooldownText = "—";
+      if (runtime?.cooldownUntil && runtime.cooldownUntil > runtimeNow) {
+        const seconds = Math.max(1, Math.ceil((runtime.cooldownUntil - runtimeNow) / 1000));
+        const duration = seconds < 60
+          ? `${seconds} Sek.`
+          : seconds < 3600
+            ? `${Math.ceil(seconds / 60)} Min.`
+            : `${Math.ceil(seconds / 3600)} Std.`;
+        cooldownText = `${runtime.reason} · ${duration}`;
+      } else if (state === "disabled" || state === "daily_limit" || state === "invalid") {
+        cooldownText = runtime?.reason || stateLabels[state];
+      }
+      const providerKey = row.hosterLabel.toLocaleLowerCase("de-DE");
+      const providerGroup = providerGroups.get(providerKey) ?? {
+        id: providerKey,
+        label: row.hosterLabel,
+        accountCount: 0,
+        availableAccountCount: 0,
+        activeDownloads: 0,
+        dailyUsageBytes: 0
+      };
+      providerGroup.accountCount += 1;
+      providerGroup.availableAccountCount += state === "ready" || state === "active" || state === "checking" ? 1 : 0;
+      providerGroup.activeDownloads += runtime?.activeDownloads || 0;
+      providerGroup.dailyUsageBytes += runtime?.dailyUsageBytes ?? row.dailyUsedBytes;
+      providerGroups.set(providerKey, providerGroup);
+      return {
+        id: viewId,
+        providerLabel: row.hosterLabel,
+        modeLabel: row.modeLabel,
+        identity: projected?.username !== "—" ? projected?.username || "" : projected?.email || "",
+        stateLabel: stateLabels[state],
+        stateTone: stateTones[state],
+        activeDownloads: runtime?.activeDownloads || 0,
+        dailyUsageText: humanSize(runtime?.dailyUsageBytes ?? row.dailyUsedBytes),
+        successRateText,
+        lastUsedText,
+        cooldownText
+      };
+    });
+    return {
+      providers: [...providerGroups.values()]
+        .sort((left, right) => left.label.localeCompare(right.label, "de-DE", { sensitivity: "base" }))
+        .map((provider) => ({
+          id: provider.id,
+          label: provider.label,
+          accountCount: provider.accountCount,
+          availableAccountCount: provider.availableAccountCount,
+          activeDownloads: provider.activeDownloads,
+          dailyUsageText: humanSize(provider.dailyUsageBytes)
+        })),
+      accounts
+    };
+  }, [accountRows, projectedAccountRows, runtimeNow, snapshot.accountRuntime]);
   const routingEntries = useMemo(() => Object.entries(settingsDraft.hosterRouting || {}).sort(([left], [right]) => left.localeCompare(right)), [settingsDraft.hosterRouting]);
   const usedRoutingHosters = useMemo(() => new Set(routingEntries.map(([hosterId]) => hosterId)), [routingEntries]);
   const routingProviderOptions = useMemo(() => configuredProviders.map((provider) => ({
@@ -5023,6 +5147,7 @@ export function App(): ReactElement {
     selectedIds: selectedAccountViewIds,
     busy: actionBusy || accountCheckBusy,
     statusSort: accountStatusSort,
+    runtime: accountRuntimeModel,
     rules: {
       providerOrder: activeProviderOrder.map((provider) => providerLabelWithMode(provider, settingsDraft)),
       routing: routingEntries.map(([hosterId, provider]) => `${KNOWN_HOSTERS.find((hoster) => hoster.id === hosterId)?.label || hosterId} → ${providerLabelWithMode(provider, settingsDraft)}`),

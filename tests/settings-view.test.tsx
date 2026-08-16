@@ -293,6 +293,33 @@ function workspaceModel(): AccountWorkspaceViewModel {
       providerOrder: ["Debrid-Link", "Real-Debrid"],
       routing: ["rapidgator.net → Debrid-Link"],
       autoFallback: true
+    },
+    runtime: {
+      providers: [
+        {
+          id: "realdebrid",
+          label: "Real-Debrid",
+          accountCount: 2,
+          availableAccountCount: 1,
+          activeDownloads: 3,
+          dailyUsageText: "12,5 GB"
+        }
+      ],
+      accounts: [
+        {
+          id: "rd-runtime",
+          providerLabel: "Real-Debrid",
+          modeLabel: "API",
+          identity: "stored-user",
+          stateLabel: "Cooldown",
+          stateTone: "warning",
+          activeDownloads: 0,
+          dailyUsageText: "4,2 GB",
+          successRateText: "75 % (3/4)",
+          lastUsedText: "vor 2 Min.",
+          cooldownText: "Rate-Limit aktiv · 48 Sek."
+        }
+      ]
     }
   };
 }
@@ -644,8 +671,26 @@ describe("account workspace", () => {
     const html = renderToStaticMarkup(<AccountWorkspace actions={workspaceActions()} model={workspaceModel()} />);
 
     expect(html).toContain("ui-sliding-selection ui-sliding-selection-horizontal");
-    expect(html.match(/data-sliding-selection-item="true"/g)).toHaveLength(2);
+    expect(html.match(/data-sliding-selection-item="true"/g)).toHaveLength(3);
     expect(html.match(/data-sliding-selection-active="true"/g)).toHaveLength(1);
+  });
+
+  it("shows a live provider and account overview without exposing raw failure details", () => {
+    const html = renderToStaticMarkup(
+      <AccountWorkspace
+        actions={workspaceActions()}
+        model={{ ...workspaceModel(), activePanel: "runtime" as never }}
+      />
+    );
+
+    expect(html).toContain("Laufzeit");
+    expect(html).toContain("Real-Debrid");
+    expect(html).toContain("1 von 2 verfügbar");
+    expect(html).toContain("<strong>3</strong> aktive Downloads");
+    expect(html).toContain("75 % (3/4)");
+    expect(html).toContain("Rate-Limit aktiv · 48 Sek.");
+    expect(html).not.toContain("HTTP 429");
+    expect(html).not.toContain("token-");
   });
 
   it("uses roving focus and horizontal keyboard navigation for account tabs", () => {
@@ -656,13 +701,13 @@ describe("account workspace", () => {
     });
     const tabs = findElements(tree, (element) => element.props.role === "tab");
 
-    expect(tabs.map((tab) => tab.props.tabIndex)).toEqual([0, -1]);
+    expect(tabs.map((tab) => tab.props.tabIndex)).toEqual([0, -1, -1]);
 
     for (const [key, sourceIndex, targetIndex, panel] of [
       ["ArrowRight", 0, 1, "rules"],
-      ["ArrowLeft", 0, 1, "rules"],
+      ["ArrowLeft", 0, 2, "runtime"],
       ["Home", 1, 0, "overview"],
-      ["End", 0, 1, "rules"]
+      ["End", 0, 2, "runtime"]
     ] as const) {
       const target = compositeKeyboardTarget(tabs.length);
       let prevented = false;
@@ -681,7 +726,7 @@ describe("account workspace", () => {
       actions: workspaceActions()
     });
     const rulesTabs = findElements(rulesTree, (element) => element.props.role === "tab");
-    expect(rulesTabs.map((tab) => tab.props.tabIndex)).toEqual([-1, 0]);
+    expect(rulesTabs.map((tab) => tab.props.tabIndex)).toEqual([-1, 0, -1]);
   });
 
   it("announces account loading and errors without hiding the existing table state", () => {
@@ -870,13 +915,14 @@ describe("account workspace", () => {
     expect(stopped).toBe(3);
   });
 
-  it("keeps overview and rules in the same workspace while only one panel is active", () => {
+  it("keeps all account panels in the same workspace while only one panel is active", () => {
     const html = renderToStaticMarkup(<AccountWorkspace actions={workspaceActions()} model={workspaceModel()} />);
-    expect(count(html, "class=\"settings-account-panel\"")).toBe(2);
-    expect(count(html, "hidden=\"\"")).toBe(1);
+    expect(count(html, "class=\"settings-account-panel\"")).toBe(3);
+    expect(count(html, "hidden=\"\"")).toBe(2);
     expect(html).toContain("Provider-Reihenfolge");
     expect(html).toContain("Hoster-Routing");
     expect(html).toContain("Automatischer Fallback");
+    expect(html).toContain("Provider-Laufzeit");
   });
 
   it("keeps add and edit dialogs separate and every secret field protected", () => {
