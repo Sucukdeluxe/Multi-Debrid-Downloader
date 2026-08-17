@@ -6551,11 +6551,9 @@ export class DownloadManager extends EventEmitter {
     const emitDelay = this.session.running
       ? itemCount >= 1500
         ? 700
-        : itemCount >= 700
+        : itemCount >= 250
           ? 500
-          : itemCount >= 250
-            ? 300
-            : 150
+          : 150
       : 200;
     this.stateEmitTimer = setTimeout(() => {
       this.stateEmitTimer = null;
@@ -10568,12 +10566,10 @@ export class DownloadManager extends EventEmitter {
         let lastLoggedPercent = -1;
         const itemCount = this.itemCount;
         const uiUpdateIntervalMs = itemCount >= 1500
-          ? 500
-          : itemCount >= 700
-            ? 350
-            : itemCount >= 250
-              ? 220
-              : 120;
+          ? 700
+          : itemCount >= 250
+            ? 500
+            : 120;
         let lastUiEmitAt = 0;
         const stallTimeoutMs = getDownloadStallTimeoutMs();
         const drainTimeoutMs = Math.max(30000, Math.min(300000, stallTimeoutMs > 0 ? stallTimeoutMs * 12 : 120000));

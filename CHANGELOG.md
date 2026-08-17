@@ -4,6 +4,14 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.44] - 2026-08-17
+
+### Live updates
+
+- Reduced visible download, remaining-volume, speed, ETA, and availability refresh churn for queues with 250 or more items by using a calm 500 ms cadence.
+- Updated live speed sparklines and the bandwidth chart to redraw every 500 ms instead of every 250 ms.
+- Kept small queues responsive and retained the stronger 700 ms protection for queues with 1,500 or more items.
+
 ## [2.0.43] - 2026-08-16
 
 ### Product identity

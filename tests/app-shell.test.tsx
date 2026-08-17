@@ -50,6 +50,10 @@ describe("desktop shell", () => {
     expect(getSnapshotRenderDelay(2_470, true, "statistics")).toBe(800);
   });
 
+  it("renders medium download queues immediately after their calm half-second snapshot", () => {
+    expect(getSnapshotRenderDelay(661, true, "downloads")).toBe(0);
+  });
+
   it("keeps application menus mounted for animated opening and closing", () => {
     const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
     const css = readFileSync(new URL("../src/renderer/styles.css", import.meta.url), "utf8");
