@@ -5,6 +5,7 @@ import type {
   AccountCredentialCheckInput,
   AccountSecretRequest,
   AccountSecretResult,
+  ArchivePasswordListResult,
   AccountCreateCommand,
   AccountDeleteCommand,
   AccountReplaceCommand,
@@ -136,6 +137,7 @@ export interface ElectronApi {
   checkDebridAccounts: (scope?: AccountCheckScope) => Promise<DebridAccountStatus[]>;
   checkAccountCredentials: (input: AccountCredentialCheckInput) => Promise<DebridAccountStatus>;
   revealAccountSecret: (input: AccountSecretRequest) => Promise<AccountSecretResult>;
+  getArchivePasswordList: () => Promise<ArchivePasswordListResult>;
   retryExtraction: (packageId: string) => Promise<void>;
   extractNow: (packageId: string) => Promise<void>;
   resetPackage: (packageId: string) => Promise<void>;

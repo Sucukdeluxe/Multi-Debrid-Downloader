@@ -1124,6 +1124,38 @@ describe("account workspace", () => {
 });
 
 describe("settings App integration", () => {
+  it("loads and preserves the stored archive password list in the extraction section", () => {
+    const revealBlock = sourceBlock(appSource, "const showToast", "const clearImportQueueFocusListener");
+    const applyBlock = sourceBlock(appSource, "const applyPersistedSettings", "const syncLiveProviderUsageSettings");
+    const mainSource = readFileSync(new URL("../src/main/main.ts", import.meta.url), "utf8");
+
+    expect(revealBlock).toContain("window.rd.getArchivePasswordList()");
+    expect(revealBlock).toContain('settingsSubTab !== "extract"');
+    expect(appSource).toContain("setSettingsDraft((current) => createSettingsDraft(state.settings, current))");
+    expect(appSource).toContain("setSettingsDraft((current) => createSettingsDraft(next.settings, current))");
+    expect(applyBlock).toContain("setSettingsDraft((current) => createSettingsDraft(result, preserveWriteOnlyValues ? current : undefined))");
+    expect(mainSource).toContain("handleTrusted(IPC_CHANNELS.GET_ARCHIVE_PASSWORD_LIST");
+  });
+
+  it("persists an edited archive password list before unrelated account mutations", () => {
+    const editBlock = sourceBlock(appSource, "const onSaveAccountEditDialog", "const onSaveAccountDialog");
+    const createBlock = sourceBlock(appSource, "const onSaveAccountDialog", "const onResetAccountDailyUsage");
+    const deleteKeyBlock = sourceBlock(appSource, "const onRemoveDebridLinkKey", "const onToggleAccountEnabled");
+    const deleteRowsBlock = sourceBlock(appSource, "const removeAccountTableRows", "const checkAccountsActive");
+
+    expect(editBlock.indexOf("await persistDraftSettings()")).toBeLessThan(editBlock.indexOf("window.rd.replaceAccount"));
+    expect(createBlock.indexOf("await persistDraftSettings()")).toBeLessThan(createBlock.indexOf("window.rd.createAccount"));
+    expect(deleteKeyBlock.indexOf("await persistDraftSettings()")).toBeLessThan(deleteKeyBlock.indexOf("window.rd.deleteAccount"));
+    expect(deleteRowsBlock.indexOf("await persistDraftSettings()")).toBeLessThan(deleteRowsBlock.indexOf("window.rd.deleteAccount"));
+  });
+
+  it("invalidates an archive password reveal before applying imported settings", () => {
+    const applyBlock = sourceBlock(appSource, "const applyPersistedSettings", "const syncLiveProviderUsageSettings");
+
+    expect(applyBlock).toContain("archivePasswordLoadGenerationRef.current += 1");
+    expect(applyBlock.indexOf("archivePasswordLoadGenerationRef.current += 1")).toBeLessThan(applyBlock.indexOf("setSettingsDraft"));
+  });
+
   it("enables an account by clearing both its row-level and provider-level locks", () => {
     expect(buildScopedAccountEnabledState(
       ["debridlink", "linksnappy"],

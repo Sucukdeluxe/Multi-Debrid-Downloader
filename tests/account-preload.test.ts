@@ -97,4 +97,16 @@ describe("account preload contract", () => {
     );
     expect(result).toEqual({ secret: "fixture-revealed-secret-7gH8" });
   });
+
+  it("loads the stored archive password list only through its dedicated channel", async () => {
+    const passwords = "fixture-archive-one\nfixture-archive-two";
+    electron.invoke.mockResolvedValueOnce({ passwords });
+
+    const result = await (electron.api as ElectronApi & {
+      getArchivePasswordList: () => Promise<{ passwords: string }>;
+    }).getArchivePasswordList();
+
+    expect(electron.invoke).toHaveBeenCalledWith(IPC_CHANNELS.GET_ARCHIVE_PASSWORD_LIST);
+    expect(result).toEqual({ passwords });
+  });
 });

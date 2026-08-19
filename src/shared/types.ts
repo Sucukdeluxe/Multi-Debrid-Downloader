@@ -390,6 +390,10 @@ export interface AccountSecretResult {
   secret: string;
 }
 
+export interface ArchivePasswordListResult {
+  passwords: string;
+}
+
 export interface DownloadItem {
   id: string;
   packageId: string;

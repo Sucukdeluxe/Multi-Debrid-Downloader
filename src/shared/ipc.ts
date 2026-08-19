@@ -74,6 +74,7 @@ export const IPC_CHANNELS = {
   CHECK_DEBRID_ACCOUNTS: "app:check-debrid-accounts",
   CHECK_ACCOUNT_CREDENTIALS: "app:check-account-credentials",
   REVEAL_ACCOUNT_SECRET: "app:reveal-account-secret",
+  GET_ARCHIVE_PASSWORD_LIST: "app:get-archive-password-list",
   RETRY_EXTRACTION: "queue:retry-extraction",
   EXTRACT_NOW: "queue:extract-now",
   RESET_PACKAGE: "queue:reset-package",

@@ -103,4 +103,19 @@ Backup-Passphrase=${echoedPassphrase}`;
     expect((controller as unknown as { manager: { applyDebridAccountStatuses: ReturnType<typeof vi.fn> } }).manager.applyDebridAccountStatuses)
       .toHaveBeenCalledWith([expect.objectContaining({ accountId, valid: true })]);
   });
+
+  it("returns the stored archive password list only through the explicit accessor", () => {
+    const passwords = "fixture-archive-password-one\nfixture-archive-password-two";
+    const controller = createController({ ...defaultSettings(), archivePasswordList: passwords });
+
+    const result = controller.getArchivePasswordList();
+
+    expect(result).toEqual({ passwords });
+    expect((controller as unknown as { audit: ReturnType<typeof vi.fn> }).audit).toHaveBeenCalledWith(
+      "INFO",
+      "Archiv-Passwortliste explizit angezeigt",
+      { entryCount: 2 }
+    );
+    expect(JSON.stringify((controller as unknown as { audit: ReturnType<typeof vi.fn> }).audit.mock.calls)).not.toContain(passwords);
+  });
 });

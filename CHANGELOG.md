@@ -4,6 +4,15 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.46] - 2026-08-20
+
+### Archive passwords
+
+- Restored the saved archive password list automatically when the Extraction settings section is opened.
+- Kept the visible password list intact after settings saves, account updates, and live state refreshes.
+- Prevented late password-list loads from overwriting unsaved edits and invalidated stale loads during backup imports.
+- Kept archive passwords out of general renderer snapshots and exposed them only through a dedicated trusted IPC channel.
+
 ## [2.0.45] - 2026-08-19
 
 ### Account availability

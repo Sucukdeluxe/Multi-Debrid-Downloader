@@ -13,6 +13,7 @@ import {
   AccountCredentialCheckInput,
   AccountSecretRequest,
   AccountSecretResult,
+  ArchivePasswordListResult,
   DebridAccountStatus,
   DebridProvider,
   DuplicatePolicy,
@@ -560,6 +561,13 @@ export class AppController {
     const secret = resolveStoredAccountSecret(this.settings, request);
     this.audit("INFO", "Gespeicherter Account-Zugang explizit angezeigt", { kind: request.kind });
     return { secret };
+  }
+
+  public getArchivePasswordList(): ArchivePasswordListResult {
+    const passwords = this.settings.archivePasswordList;
+    const entryCount = passwords.split(/\r?\n/).filter((entry) => entry.trim().length > 0).length;
+    this.audit("INFO", "Archiv-Passwortliste explizit angezeigt", { entryCount });
+    return { passwords };
   }
 
   public async checkAccountCredentials(input: AccountCredentialCheckInput): Promise<DebridAccountStatus> {

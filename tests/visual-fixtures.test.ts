@@ -213,6 +213,20 @@ describe("visual fixtures", () => {
     expect((await api.getSnapshot()).settings.animatePackageDisclosure).toBe(false);
   });
 
+  it("keeps a configured archive password list stateful in the isolated renderer", async () => {
+    const dense = createVisualFixture("dense");
+    const api = createVisualElectronApi(dense, "?archive-passwords=configured");
+
+    expect(await api.getArchivePasswordList()).toEqual({
+      passwords: "visual-archive-password-one\nvisual-archive-password-two"
+    });
+    expect((await api.getSnapshot()).settings.archivePasswordListConfigured).toBe(true);
+
+    await api.updateSettings({ archivePasswordList: "updated-visual-password" });
+
+    expect(await api.getArchivePasswordList()).toEqual({ passwords: "updated-visual-password" });
+  });
+
   it("boots the dense query once and waits for both visible package names", async () => {
     expect(typeof window).toBe("undefined");
     const harness = createTestVisualBootstrap(

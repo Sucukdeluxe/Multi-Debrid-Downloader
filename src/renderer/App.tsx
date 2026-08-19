@@ -1536,6 +1536,7 @@ export function App(): ReactElement {
   const updateCheckGenerationRef = useRef(0);
   const settingsDirtyRef = useRef(false);
   const writeOnlySettingsDirtyRef = useRef(new Set<"archivePasswordList" | "notifyUrl">());
+  const archivePasswordLoadGenerationRef = useRef(0);
   const settingsDraftRevisionRef = useRef(0);
 
   useEffect(() => {
@@ -1770,6 +1771,32 @@ export function App(): ReactElement {
     }, timeoutMs);
   }, []);
 
+  useEffect(() => {
+    if (settingsSubTab !== "extract" || writeOnlySettingsDirtyRef.current.has("archivePasswordList")) {
+      archivePasswordLoadGenerationRef.current += 1;
+      return;
+    }
+    const generation = archivePasswordLoadGenerationRef.current + 1;
+    archivePasswordLoadGenerationRef.current = generation;
+    void window.rd.getArchivePasswordList().then(({ passwords }) => {
+      if (archivePasswordLoadGenerationRef.current !== generation || writeOnlySettingsDirtyRef.current.has("archivePasswordList")) {
+        return;
+      }
+      setSettingsDraft((current) => current.archivePasswordList === passwords
+        ? current
+        : { ...current, archivePasswordList: passwords });
+    }).catch(() => {
+      if (archivePasswordLoadGenerationRef.current === generation) {
+        showToast("Archiv-Passwortliste konnte nicht geladen werden", 2800);
+      }
+    });
+    return () => {
+      if (archivePasswordLoadGenerationRef.current === generation) {
+        archivePasswordLoadGenerationRef.current += 1;
+      }
+    };
+  }, [settingsSubTab, snapshot.settings.archivePasswordListConfigured, showToast]);
+
   const applyHistoryEntries = useCallback((entries: HistoryEntry[]): void => {
     const availableIds = entries.map((entry) => entry.id);
     const availableSet = new Set(availableIds);
@@ -1913,7 +1940,7 @@ export function App(): ReactElement {
       if (state.settings.columnOrder?.length > 0) {
         setColumnOrder(state.settings.columnOrder);
       }
-      setSettingsDraft(createSettingsDraft(state.settings));
+      setSettingsDraft((current) => createSettingsDraft(state.settings, current));
       writeOnlySettingsDirtyRef.current.clear();
       settingsDirtyRef.current = false;
       panelDirtyRevisionRef.current = 0;
@@ -1970,7 +1997,7 @@ export function App(): ReactElement {
             setColumnOrder(next.settings.columnOrder);
           }
           if (!settingsDirtyRef.current) {
-            setSettingsDraft(createSettingsDraft(next.settings));
+            setSettingsDraft((current) => createSettingsDraft(next.settings, current));
           }
           latestStateRef.current = null;
         }
@@ -2627,8 +2654,11 @@ export function App(): ReactElement {
     });
   };
 
-  const applyPersistedSettings = (result: RendererSettings): void => {
-    setSettingsDraft(createSettingsDraft(result));
+  const applyPersistedSettings = (result: RendererSettings, preserveWriteOnlyValues = true): void => {
+    if (!preserveWriteOnlyValues) {
+      archivePasswordLoadGenerationRef.current += 1;
+    }
+    setSettingsDraft((current) => createSettingsDraft(result, preserveWriteOnlyValues ? current : undefined));
     writeOnlySettingsDirtyRef.current.clear();
     settingsDirtyRef.current = false;
     panelDirtyRevisionRef.current = 0;
@@ -2783,6 +2813,7 @@ export function App(): ReactElement {
       return;
     }
     await performQuickAction(async () => {
+      await persistDraftSettings();
       const result = await window.rd.replaceAccount(buildAccountReplaceCommand(editSnapshot));
       setSnapshot((current) => ({ ...current, settings: result.settings, accounts: result.accounts }));
       applyPersistedSettings(result.settings);
@@ -2813,6 +2844,7 @@ export function App(): ReactElement {
     }
     const selectedOption = dialogSnapshot.kind ? findAccountOption(dialogSnapshot.kind) : null;
     await performQuickAction(async () => {
+      await persistDraftSettings();
       if (dialogSnapshot.kind === "realdebrid-web") {
         const accountId = `rdw_${crypto.randomUUID().replace(/-/g, "")}`;
         const request = buildRealDebridWebCreateLoginRequest(dialogSnapshot, accountId);
@@ -2966,6 +2998,7 @@ export function App(): ReactElement {
     const confirmed = await askConfirmPrompt({ title: "Key entfernen", message: `Soll der Debrid-Link-Key ${key.masked} wirklich entfernt werden?`, confirmLabel: "Entfernen", danger: true });
     if (!confirmed) return;
     await performQuickAction(async () => {
+      await persistDraftSettings();
       const result = await window.rd.deleteAccount({ action: "delete", kind: "debridlink-api", accountId: key.id });
       setSnapshot((current) => ({ ...current, settings: result.settings, accounts: result.accounts }));
       applyPersistedSettings(result.settings);
@@ -3055,6 +3088,7 @@ export function App(): ReactElement {
         return;
       }
       await performQuickAction(async () => {
+        await persistDraftSettings();
         for (const selectedRow of rows) {
           const result = await window.rd.deleteAccount(buildAccountDeleteCommand(selectedRow.editTarget));
           setSnapshot((current) => ({ ...current, settings: result.settings, accounts: result.accounts }));
@@ -4304,7 +4338,7 @@ export function App(): ReactElement {
         // fresh settings and re-seed the draft so the UI reflects the import.
         if (!result.relaunch) {
           const fresh = await window.rd.getSnapshot();
-          applyPersistedSettings(fresh.settings);
+          applyPersistedSettings(fresh.settings, false);
         }
       } else if (result.message !== "Abgebrochen") {
         showToast(`Sicherung laden fehlgeschlagen: ${result.message}`, 3000);
@@ -4338,7 +4372,7 @@ export function App(): ReactElement {
     try {
       const result = await window.rd.importOnlineBackup(key);
       const fresh = await window.rd.getSnapshot();
-      applyPersistedSettings(fresh.settings);
+      applyPersistedSettings(fresh.settings, false);
       setOnlineBackupDialog(null);
       showToast(result.message, 4000);
     } catch {

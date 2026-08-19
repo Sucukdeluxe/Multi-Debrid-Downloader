@@ -110,6 +110,7 @@ const api: ElectronApi = {
   checkDebridAccounts: (scope: AccountCheckScope = "active"): Promise<DebridAccountStatus[]> => ipcRenderer.invoke(IPC_CHANNELS.CHECK_DEBRID_ACCOUNTS, scope),
   checkAccountCredentials: (input: AccountCredentialCheckInput): Promise<DebridAccountStatus> => ipcRenderer.invoke(IPC_CHANNELS.CHECK_ACCOUNT_CREDENTIALS, input),
   revealAccountSecret: (input: AccountSecretRequest): Promise<AccountSecretResult> => ipcRenderer.invoke(IPC_CHANNELS.REVEAL_ACCOUNT_SECRET, input),
+  getArchivePasswordList: () => ipcRenderer.invoke(IPC_CHANNELS.GET_ARCHIVE_PASSWORD_LIST),
   retryExtraction: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.RETRY_EXTRACTION, packageId),
   extractNow: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.EXTRACT_NOW, packageId),
   resetPackage: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.RESET_PACKAGE, packageId),

@@ -39,4 +39,12 @@ describe("renderer settings validation", () => {
     expect(validateRendererSettingsUpdate({ columnOrderVersion: undefined }, current)).toEqual({});
     expect(() => validateRendererSettingsUpdate({ obsoleteSetting: true }, current)).toThrow("Settings-Payload ist ungültig");
   });
+
+  it("keeps archive passwords out of general renderer settings", () => {
+    const password = "fixture-renderer-hidden-archive-password";
+    const projected = createRendererSettings({ ...defaultSettings(), archivePasswordList: password });
+
+    expect(projected.archivePasswordListConfigured).toBe(true);
+    expect(JSON.stringify(projected)).not.toContain(password);
+  });
 });

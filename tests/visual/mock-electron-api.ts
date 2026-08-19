@@ -15,6 +15,10 @@ export function createVisualElectronApi(
   const searchParams = new URLSearchParams(search);
   const historyState = searchParams.get("history-state");
   if (searchParams.get("animations") === "off") fixture.snapshot.settings.animatePackageDisclosure = false;
+  let archivePasswordList = searchParams.get("archive-passwords") === "configured"
+    ? "visual-archive-password-one\nvisual-archive-password-two"
+    : fixture.snapshot.settings.archivePasswordListConfigured ? "visual-archive-password" : "";
+  fixture.snapshot.settings.archivePasswordListConfigured = archivePasswordList.length > 0;
   let historyRequestCount = 0;
   const stateUpdateListeners = new Set<Parameters<ElectronApi["onStateUpdate"]>[0]>();
   const emitStateUpdate = (): void => {
@@ -23,6 +27,10 @@ export function createVisualElectronApi(
   };
   const updateSettings = (settings: RendererSettingsUpdate): RendererSettings => {
     const { archivePasswordList: _archivePasswordList, notifyUrl: _notifyUrl, ...safe } = settings;
+    if (typeof _archivePasswordList === "string") {
+      archivePasswordList = _archivePasswordList;
+      fixture.snapshot.settings.archivePasswordListConfigured = archivePasswordList.trim().length > 0;
+    }
     Object.assign(fixture.snapshot.settings, safe);
     emitStateUpdate();
     return clone(fixture.snapshot.settings);
@@ -30,6 +38,7 @@ export function createVisualElectronApi(
 
   return {
     getSnapshot: async () => clone(fixture.snapshot),
+    getArchivePasswordList: async () => ({ passwords: archivePasswordList }),
     getVersion: async () => "2.0.12",
     checkUpdates: async () => clone(fixture.update),
     installUpdate: async () => ({ started: true, message: "Visual update gestartet" }),

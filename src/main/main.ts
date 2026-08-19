@@ -451,6 +451,7 @@ function registerIpcHandlers(): void {
   handleTrusted(IPC_CHANNELS.REVEAL_ACCOUNT_SECRET, (_event: IpcMainInvokeEvent, rawRequest: unknown) => {
     return controller.revealAccountSecret(validateAccountSecretRequest(rawRequest));
   });
+  handleTrusted(IPC_CHANNELS.GET_ARCHIVE_PASSWORD_LIST, () => controller.getArchivePasswordList());
   handleTrusted(IPC_CHANNELS.ADD_LINKS, (_event: IpcMainInvokeEvent, payload: AddLinksPayload) => {
     validatePlainObject(payload ?? {}, "payload");
     validateString(payload?.rawText, "rawText");
