@@ -4,6 +4,14 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.45] - 2026-08-19
+
+### Account availability
+
+- Kept a configured Real-Debrid account pool authoritative when every account is disabled instead of reviving legacy browser-login fields.
+- Released stale in-memory Real-Debrid cooldown and sticky state when an account is explicitly re-enabled so the Start action becomes available without restarting the application.
+- Preserved configured per-account daily limits and usage while refreshing only transient runtime state.
+
 ## [2.0.44] - 2026-08-17
 
 ### Live updates

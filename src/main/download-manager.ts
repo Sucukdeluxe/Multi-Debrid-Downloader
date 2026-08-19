@@ -58,7 +58,7 @@ function releaseTlsSkip(): void {
 }
 import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 import { planDownloadCompletion, reconcileFinalizedSize, validateDownloadedFileCompletion } from "./download-completion";
-import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline, fetchAllDebridHostInfo, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState } from "./debrid";
+import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline, fetchAllDebridHostInfo, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown } from "./debrid";
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { classifyDiskError } from "./fs-error";
@@ -2268,6 +2268,15 @@ export class DownloadManager extends EventEmitter {
 
   public setSettings(next: AppSettings, opts?: { suppressRetroactiveCleanup?: boolean; settingsOnlyImport?: boolean }): void {
     const previous = this.settings;
+    const previousRealDebridAccounts = new Map(getRealDebridAccounts(previous).map((account) => [account.id, account]));
+    const previousRealDebridProviderDisabled = (previous.disabledProviders || []).includes("realdebrid");
+    const nextRealDebridProviderDisabled = (next.disabledProviders || []).includes("realdebrid");
+    const reenabledRealDebridAccountIds = getRealDebridAccounts(next)
+      .filter((account) => account.enabled && (
+        previousRealDebridAccounts.get(account.id)?.enabled === false
+        || (previousRealDebridProviderDisabled && !nextRealDebridProviderDisabled)
+      ))
+      .map((account) => account.id);
     const previousMegaPool = (["api", "web"] as const)
       .flatMap((mode) => getAvailableMegaDebridAccounts(previous, mode).map((account) => `${mode}:${account.id}:${account.password}`))
       .sort()
@@ -2300,6 +2309,11 @@ export class DownloadManager extends EventEmitter {
       this.invalidateMegaSessionFn?.();
     }
     this.debridService.setSettings(next);
+    for (const accountId of reenabledRealDebridAccountIds) {
+      if (releaseRealDebridAccountCooldown(accountId)) {
+        logger.info(`Settings-Update: Real-Debrid-Cooldown für reaktivierten Account freigegeben (${accountId})`);
+      }
+    }
     this.allDebridHostInfoCache.clear();
 
     const prevOrder = JSON.stringify(previous.providerOrder ?? []);
@@ -8260,7 +8274,8 @@ export class DownloadManager extends EventEmitter {
       return false;
     }
     if (effectiveProvider === "realdebrid") {
-      return getRealDebridAccounts(this.settings).some((account) => account.enabled)
+      const configuredAccounts = getRealDebridAccounts(this.settings);
+      return configuredAccounts.length > 0
         ? getAvailableRealDebridAccounts(this.settings).length > 0
         : Boolean(this.settings.realDebridUseWebLogin || this.settings.token.trim());
     }

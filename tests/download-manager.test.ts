@@ -21,7 +21,7 @@ import { serializeRealDebridApiAccounts } from "../src/shared/real-debrid-accoun
 import { getRenameLogPath, initRenameLog, shutdownRenameLog } from "../src/main/rename-log";
 import { UnrestrictedLink } from "../src/main/realdebrid";
 import { resetVideoToolingCache } from "../src/main/video-processor";
-import type { HistoryEntry, PackageEntry } from "../src/shared/types";
+import type { AppSettings, HistoryEntry, PackageEntry } from "../src/shared/types";
 
 const tempDirs: string[] = [];
 const originalFetch = globalThis.fetch;
@@ -634,6 +634,59 @@ describe("download start account gate", () => {
 
     expect(disabledProviderManager.getSnapshot().canStart).toBe(false);
     expect(disabledMegaManager.getSnapshot().canStart).toBe(false);
+  });
+
+  it("does not revive the legacy Real-Debrid login when every concrete pool account is disabled", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-disabled-pool-gate-"));
+    tempDirs.push(root);
+    const firstId = "rdw_first";
+    const secondId = "rdw_second";
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        realDebridUseWebLogin: true,
+        realDebridWebAccountIds: [firstId, secondId],
+        realDebridDisabledAccountIds: [firstId, secondId],
+        providerOrder: ["realdebrid"]
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    expect(manager.getSnapshot().canStart).toBe(false);
+    await expect(manager.start()).rejects.toThrow("Kein aktiver Download-Account verfügbar");
+  });
+
+  it("makes an explicitly re-enabled Real-Debrid account immediately usable after an old cooldown", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-reenabled-cooldown-gate-"));
+    tempDirs.push(root);
+    const accountId = "rdw_reenabled";
+    const disabledSettings: AppSettings = {
+      ...defaultSettings(),
+      realDebridUseWebLogin: true,
+      realDebridWebAccountIds: [accountId],
+      realDebridDisabledAccountIds: [accountId],
+      disabledProviders: ["realdebrid"],
+      providerOrder: ["realdebrid"]
+    };
+    const manager = new DownloadManager(
+      disabledSettings,
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+    primeRealDebridRuntimeCooldownForTests(accountId, 60_000, "Vorheriger Accountfehler");
+
+    expect(manager.getSnapshot().canStart).toBe(false);
+    expect(getProviderRuntimeSnapshot().realDebrid.accounts.find((entry) => entry.accountId === accountId)?.cooldown).not.toBeNull();
+
+    manager.setSettings({
+      ...disabledSettings,
+      realDebridDisabledAccountIds: [],
+      disabledProviders: []
+    });
+
+    expect(manager.getSnapshot().canStart).toBe(true);
+    expect(getProviderRuntimeSnapshot().realDebrid.accounts.find((entry) => entry.accountId === accountId)?.cooldown ?? null).toBeNull();
   });
 
   it("allows start when an active account is available", () => {

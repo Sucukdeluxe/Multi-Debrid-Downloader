@@ -714,6 +714,15 @@ export function pruneRealDebridRuntimeStateForAccounts(activeAccountIds: Set<str
   }
 }
 
+export function releaseRealDebridAccountCooldown(accountId: string): boolean {
+  const removed = realDebridAccountCooldowns.delete(accountId);
+  if (realDebridStickyAccountId === accountId) {
+    realDebridStickyAccountId = "";
+    realDebridStickyCount = 0;
+  }
+  return removed;
+}
+
 export function pruneExpiredRealDebridRuntimeState(now = Date.now()): number {
   let removed = 0;
   for (const [accountId, detail] of realDebridAccountCooldowns) {
