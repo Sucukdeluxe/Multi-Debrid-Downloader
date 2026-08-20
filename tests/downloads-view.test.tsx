@@ -1371,6 +1371,7 @@ describe("download table row contracts", () => {
     expect(css).toMatch(/\.downloads-availability\.has-counts\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*16px 4ch 1ch 4ch auto;[^}]*font-variant-numeric:\s*tabular-nums;/s);
     expect(css).toMatch(/\.downloads-availability-count\.is-online-count\s*\{[^}]*text-align:\s*right;/s);
     expect(css).toMatch(/\.downloads-availability-count\.is-total-count\s*\{[^}]*text-align:\s*left;/s);
+    expect(css).toMatch(/\.downloads-availability-label\s*\{[^}]*padding-left:\s*2px;/s);
     expect(css).toMatch(/\.downloads-availability\.is-online\s*\{[^}]*color:\s*var\(--ui-success-text\);/s);
     expect(css).toMatch(/\.downloads-availability\.is-partial\s*\{[^}]*color:\s*var\(--ui-warning-text\);/s);
     expect(css).toMatch(/\.downloads-availability\.is-offline\s*\{[^}]*color:\s*var\(--ui-danger-text\);/s);
