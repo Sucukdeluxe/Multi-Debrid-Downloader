@@ -1368,7 +1368,7 @@ describe("download table row contracts", () => {
   it("aligns availability symbols, split counts and labels on fixed axes", () => {
     const css = fs.readFileSync(path.join(process.cwd(), "src/renderer/views/downloads/downloads.css"), "utf8");
 
-    expect(css).toMatch(/\.downloads-availability\.has-counts\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*16px 4ch 1ch 4ch auto;[^}]*font-variant-numeric:\s*tabular-nums;/s);
+    expect(css).toMatch(/\.downloads-availability\.has-counts\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*16px 4ch 1ch max-content auto;[^}]*font-variant-numeric:\s*tabular-nums;/s);
     expect(css).toMatch(/\.downloads-availability-count\.is-online-count\s*\{[^}]*text-align:\s*right;/s);
     expect(css).toMatch(/\.downloads-availability-count\.is-total-count\s*\{[^}]*text-align:\s*left;/s);
     expect(css).toMatch(/\.downloads-availability-label\s*\{[^}]*padding-left:\s*1px;/s);

@@ -703,7 +703,7 @@
 
 .downloads-availability.has-counts {
   display: grid;
-  grid-template-columns: 16px 4ch 1ch 4ch auto;
+  grid-template-columns: 16px 4ch 1ch max-content auto;
   font-variant-numeric: tabular-nums;
 }
 
