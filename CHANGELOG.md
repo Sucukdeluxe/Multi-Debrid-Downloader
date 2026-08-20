@@ -4,6 +4,16 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.48] - 2026-08-20
+
+### Download table
+
+- Eliminated brief flicker and snap-back when moving download columns left or right.
+- Made column moves respond immediately while keeping transitions smooth and column widths stable.
+- Kept column move controls vertically centered throughout the animation.
+- Prevented live download updates, rapid repeated moves, and in-flight settings saves from reverting the selected column order.
+- Applied column changes instantly when animations are disabled.
+
 ## [2.0.47] - 2026-08-20
 
 ### Live updates
