@@ -54,49 +54,89 @@ describe("animated download column drag", () => {
   });
 
   it.each([
-    { draggedId: "name", measurements: columns, next: ["size", "name", "status"] },
-    {
-      draggedId: "name",
-      measurements: [
-        { id: "size", left: 0, width: 150 },
-        { id: "name", left: 150, width: 300 },
-        { id: "status", left: 450, width: 100 }
-      ],
-      next: ["name", "size", "status"]
-    }
-  ])("clears transforms before committing a $draggedId grid move", ({ draggedId, measurements, next }) => {
+    { afterLeft: 150, beforeLeft: 0, expectedDelta: -150, next: ["size", "name", "status"] },
+    { afterLeft: 0, beforeLeft: 150, expectedDelta: 150, next: ["name", "size", "status"] }
+  ])("commits the target grid before animating from a $expectedDelta px inverse offset", ({ afterLeft, beforeLeft, expectedDelta, next }) => {
     const commitDownloadColumnDrag = (columnDrag as unknown as {
-      commitDownloadColumnDrag?: (session: DownloadColumnDragSession, order: string[], commit: (order: string[]) => void) => void;
+      commitDownloadColumnDrag?: (session: DownloadColumnDragSession, order: string[], commit: (order: string[]) => void, prepare: () => void) => Animation[];
     }).commitDownloadColumnDrag;
     expect(commitDownloadColumnDrag).toBeTypeOf("function");
     if (!commitDownloadColumnDrag) return;
 
     const events: string[] = [];
+    let committed = false;
+    const outerAnimate = vi.fn(() => ({ finished: Promise.resolve() } as unknown as Animation));
+    const animate = vi.fn(() => ({ finished: Promise.resolve() } as unknown as Animation));
+    const motionTarget = { animate } as unknown as HTMLElement;
+    const element = {
+      animate: outerAnimate,
+      children: [motionTarget],
+      getBoundingClientRect: () => ({ left: committed ? afterLeft : beforeLeft, width: 300 })
+    } as unknown as HTMLElement;
     const root = {
-      classList: { remove: () => events.push("clear-classes") },
-      dataset: { columnDragging: draggedId },
-      querySelectorAll: () => [],
+      classList: { add: () => events.push("add-class"), remove: () => events.push("clear-classes") },
+      dataset: { columnDragging: "name" },
+      querySelectorAll: (selector: string) => selector === "[data-download-column]" ? [element] : [],
       style: {
         removeProperty: (property: string) => events.push(`clear:${property}`)
       }
     } as unknown as HTMLElement;
     const session = {
       active: true,
-      draggedId,
-      measurements,
+      draggedId: "name",
+      measurements: columns,
       pointerId: -1,
-      preview: calculateColumnDragPreview(measurements, draggedId, next[0] === draggedId ? -160 : 160),
+      preview: calculateColumnDragPreview(columns, "name", next[0] === "name" ? -160 : 160),
       root,
       startX: 0
     } as DownloadColumnDragSession;
 
-    commitDownloadColumnDrag(session, next, (order) => {
+    const animations = commitDownloadColumnDrag(session, next, (order) => {
+      committed = true;
       events.push(`commit:${order.join("|")}`);
-    });
+    }, () => events.push("prepare-grid"));
 
-    expect(events.at(-1)).toBe(`commit:${next.join("|")}`);
-    expect(events.slice(0, -1)).toContain("clear:--downloads-column-drag-name");
-    expect(events.slice(0, -1)).toContain("clear:--downloads-column-drag-size");
+    expect(animations).toHaveLength(1);
+    expect(events).toContain("prepare-grid");
+    expect(events.indexOf("prepare-grid")).toBeLessThan(events.indexOf(`commit:${next.join("|")}`));
+    expect(events).toContain(`commit:${next.join("|")}`);
+    expect(outerAnimate).not.toHaveBeenCalled();
+    expect(animate).toHaveBeenCalledWith([
+      { transform: `translate3d(${expectedDelta}px, 0, 0)` },
+      { transform: "translate3d(0, 0, 0)" }
+    ], expect.objectContaining({ duration: 220 }));
+  });
+
+  it("commits immediately without WAAPI when application animations are disabled", () => {
+    const animate = vi.fn(() => ({ finished: Promise.resolve() } as unknown as Animation));
+    let committed = false;
+    const element = {
+      children: [{ animate }],
+      getBoundingClientRect: () => ({ left: committed ? 150 : 0, width: 300 })
+    } as unknown as HTMLElement;
+    const root = {
+      classList: { add: vi.fn(), remove: vi.fn() },
+      dataset: {},
+      querySelectorAll: (selector: string) => selector === "[data-download-column]" ? [element] : [],
+      style: { removeProperty: vi.fn() }
+    } as unknown as HTMLElement;
+    const session = {
+      active: true,
+      draggedId: "name",
+      measurements: columns,
+      pointerId: -1,
+      preview: calculateColumnDragPreview(columns, "name", 160),
+      root,
+      startX: 0
+    } as DownloadColumnDragSession;
+
+    const animations = columnDrag.commitDownloadColumnDrag(session, ["size", "name", "status"], () => {
+      committed = true;
+    }, () => {}, false);
+
+    expect(committed).toBe(true);
+    expect(animations).toEqual([]);
+    expect(animate).not.toHaveBeenCalled();
   });
 
   it("serializes and coalesces rapid persistence requests", async () => {

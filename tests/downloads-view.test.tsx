@@ -55,6 +55,7 @@ import {
   getPackageProgress,
   getPackageSizeProgress
 } from "../src/renderer/views/downloads/DownloadsTable";
+import * as downloadsTableModule from "../src/renderer/views/downloads/DownloadsTable";
 import {
   DOWNLOAD_FILE_ROW_HEIGHT,
   DOWNLOAD_PACKAGE_ROW_HEIGHT,
@@ -71,6 +72,36 @@ import { getRollingMetricDirection } from "../src/renderer/ui/RollingMetricValue
 const now = new Date(2026, 7, 10, 12, 0, 0, 0).getTime();
 
 describe("Downloadtabellen-Spalten", () => {
+  it("derives grid tracks from the same column order that renders the cells", () => {
+    const downloadGridTemplateForOrder = (downloadsTableModule as unknown as {
+      downloadGridTemplateForOrder?: (order: readonly string[]) => string;
+    }).downloadGridTemplateForOrder;
+    expect(downloadGridTemplateForOrder).toBeTypeOf("function");
+    if (!downloadGridTemplateForOrder) return;
+
+    const order = ["size", "name"];
+    const expected = `36px ${downloadColumnDefinitions.size.width} ${downloadColumnDefinitions.name.width} 60px`;
+    const header = DownloadsTableHeader({
+      actions: createActions(),
+      columnOrder: order,
+      gridTemplate: `${downloadColumnDefinitions.name.width} ${downloadColumnDefinitions.size.width}`,
+      selectedCount: 0,
+      sortColumn: "name",
+      sortDirection: "asc",
+      visibleIds: []
+    });
+
+    expect(downloadGridTemplateForOrder(order)).toBe(expected);
+    expect(header.props.style.gridTemplateColumns).toBe(expected);
+  });
+
+  it("never interpolates download grid tracks while column contents move", () => {
+    const css = fs.readFileSync(path.join(process.cwd(), "src/renderer/views/downloads/downloads.css"), "utf8");
+
+    expect(css).toMatch(/\.downloads-table-header,\s*\.downloads-package-row,\s*\.downloads-item-row\s*\{[^}]*transition-property:\s*none;/s);
+    expect(css).toMatch(/\.downloads-table\.is-column-drag-motion-disabled\.is-column-drag-active\s+\[data-download-column\]\s*\{[^}]*transition:\s*none\s*!important;/s);
+  });
+
   it("verteilt die Breite mit ausreichend Platz für vollständige Überschriften", () => {
     expect(downloadColumnDefinitions.name.width).toBe("minmax(var(--downloads-name-min, 290px), 2.3fr)");
     expect(downloadColumnDefinitions.progress.width).toBe("minmax(var(--downloads-progress-min, 105px), 0.85fr)");

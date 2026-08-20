@@ -95,9 +95,9 @@ import {
   type StatisticsViewActions
 } from "./views/statistics/StatisticsView";
 import { buildDownloadsViewModel, formatRemainingDownloadBytes, getDownloadQueueTotalBytes, getDownloadSpeedBps, getPendingDownloadItemCount, getRemainingDownloadBytes, type DownloadDisplayMode, type DownloadSidebarFilter } from "./views/downloads/downloads-model";
-import { downloadColumnDefinitions, type DownloadSortColumn } from "./views/downloads/DownloadsTable";
+import { applyDownloadGridTemplate, downloadColumnDefinitions, type DownloadSortColumn } from "./views/downloads/DownloadsTable";
 import { DeleteConfirmationDialog } from "./views/downloads/DeleteConfirmationDialog";
-import { beginDownloadColumnDrag, clearDownloadColumnDrag, commitDownloadColumnDrag, createDownloadColumnOrderPersistence, settleDownloadColumnDrag, updateDownloadColumnDrag, type DownloadColumnDragSession, type DownloadColumnOrderPersistence } from "./views/downloads/column-drag";
+import { beginDownloadColumnDrag, clearDownloadColumnDrag, commitDownloadColumnDrag, createDownloadColumnOrderPersistence, DOWNLOAD_COLUMN_MOVE_DURATION_MS, updateDownloadColumnDrag, type DownloadColumnDragSession, type DownloadColumnOrderPersistence } from "./views/downloads/column-drag";
 import {
   DownloadsContent,
   DownloadsFooter,
@@ -1645,11 +1645,17 @@ export function App(): ReactElement {
   }
   const columnDragSessionRef = useRef<DownloadColumnDragSession | null>(null);
   const columnDragSettleTimerRef = useRef<number | null>(null);
+  const columnDragAnimationsRef = useRef<Animation[]>([]);
   const suppressColumnSortRef = useRef(false);
+  const cancelColumnDragAnimations = useCallback((): void => {
+    columnDragAnimationsRef.current.forEach((animation) => animation.cancel());
+    columnDragAnimationsRef.current = [];
+  }, []);
   useEffect(() => () => {
     if (columnDragSettleTimerRef.current !== null) window.clearTimeout(columnDragSettleTimerRef.current);
+    cancelColumnDragAnimations();
     if (columnDragSessionRef.current) clearDownloadColumnDrag(columnDragSessionRef.current);
-  }, []);
+  }, [cancelColumnDragAnimations]);
   const [colHeaderCtx, setColHeaderCtx] = useState<{ x: number; y: number } | null>(null);
   const colHeaderCtxRef = useRef<HTMLDivElement>(null);
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
@@ -4890,8 +4896,9 @@ export function App(): ReactElement {
         window.clearTimeout(columnDragSettleTimerRef.current);
         columnDragSettleTimerRef.current = null;
       }
+      cancelColumnDragAnimations();
       if (columnDragSessionRef.current) clearDownloadColumnDrag(columnDragSessionRef.current);
-      columnDragSessionRef.current = beginDownloadColumnDrag(event.currentTarget, column, event.pointerId, event.clientX);
+      columnDragSessionRef.current = beginDownloadColumnDrag(event.currentTarget, column, event.pointerId, event.clientX, snapshot.settings.animatePackageDisclosure);
     },
     onColumnPointerMove: (_column, event) => {
       const session = columnDragSessionRef.current;
@@ -4901,34 +4908,52 @@ export function App(): ReactElement {
     onColumnPointerUp: (_column, event) => {
       const session = columnDragSessionRef.current;
       if (!session || session.pointerId !== event.pointerId) return;
-      const next = settleDownloadColumnDrag(session, false);
-      if (!next) {
+      if (!session.active) {
+        clearDownloadColumnDrag(session);
         columnDragSessionRef.current = null;
         return;
       }
+      const next = session.preview.order;
       suppressColumnSortRef.current = true;
       window.setTimeout(() => { suppressColumnSortRef.current = false; }, 0);
       const changed = next.join("|") !== session.measurements.map((measurement) => measurement.id).join("|");
+      if (changed) persistColumnOrder(next);
+      const animationsEnabled = snapshot.settings.animatePackageDisclosure;
+      columnDragAnimationsRef.current = commitDownloadColumnDrag(session, next, (order) => {
+        if (changed) flushSync(() => setColumnOrder(order));
+      }, () => applyDownloadGridTemplate(session.root, next), animationsEnabled);
+      if (!animationsEnabled) {
+        if (columnDragSessionRef.current === session) columnDragSessionRef.current = null;
+        return;
+      }
       columnDragSettleTimerRef.current = window.setTimeout(() => {
-        if (changed) {
-          persistColumnOrder(next);
-          commitDownloadColumnDrag(session, next, (order) => flushSync(() => setColumnOrder(order)));
-        } else {
-          clearDownloadColumnDrag(session);
-        }
+        cancelColumnDragAnimations();
+        session.root.classList.remove("is-column-drag-settling");
         if (columnDragSessionRef.current === session) columnDragSessionRef.current = null;
         columnDragSettleTimerRef.current = null;
-      }, 220);
+      }, DOWNLOAD_COLUMN_MOVE_DURATION_MS);
     },
     onColumnPointerCancel: (_column, event) => {
       const session = columnDragSessionRef.current;
       if (!session || session.pointerId !== event.pointerId) return;
-      settleDownloadColumnDrag(session, true);
-      columnDragSettleTimerRef.current = window.setTimeout(() => {
+      if (!session.active) {
         clearDownloadColumnDrag(session);
+        columnDragSessionRef.current = null;
+        return;
+      }
+      const originalOrder = session.measurements.map((measurement) => measurement.id);
+      const animationsEnabled = snapshot.settings.animatePackageDisclosure;
+      columnDragAnimationsRef.current = commitDownloadColumnDrag(session, originalOrder, () => {}, () => {}, animationsEnabled);
+      if (!animationsEnabled) {
+        if (columnDragSessionRef.current === session) columnDragSessionRef.current = null;
+        return;
+      }
+      columnDragSettleTimerRef.current = window.setTimeout(() => {
+        cancelColumnDragAnimations();
+        session.root.classList.remove("is-column-drag-settling");
         if (columnDragSessionRef.current === session) columnDragSessionRef.current = null;
         columnDragSettleTimerRef.current = null;
-      }, 220);
+      }, DOWNLOAD_COLUMN_MOVE_DURATION_MS);
     },
     onColumnContextMenu: (_column, x, y) => setColHeaderCtx({ x, y })
   };

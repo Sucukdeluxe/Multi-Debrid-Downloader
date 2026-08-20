@@ -4,6 +4,8 @@ export interface ColumnDragMeasurement {
   width: number;
 }
 
+export const DOWNLOAD_COLUMN_MOVE_DURATION_MS = 220;
+
 export interface ColumnDragPreview {
   order: string[];
   offsets: Record<string, number>;
@@ -69,7 +71,7 @@ function setDraggedColumn(root: HTMLElement, draggedId: string, dragging: boolea
   }
 }
 
-export function beginDownloadColumnDrag(element: HTMLElement, draggedId: string, pointerId: number, clientX: number): DownloadColumnDragSession | null {
+export function beginDownloadColumnDrag(element: HTMLElement, draggedId: string, pointerId: number, clientX: number, animationsEnabled = true): DownloadColumnDragSession | null {
   const root = element.closest<HTMLElement>(".downloads-table");
   const header = element.closest<HTMLElement>(".downloads-table-header");
   if (!root || !header) return null;
@@ -78,6 +80,7 @@ export function beginDownloadColumnDrag(element: HTMLElement, draggedId: string,
     return { id: column.dataset.downloadColumn ?? "", left: rect.left, width: rect.width };
   }).filter((column) => column.id && column.width > 0);
   if (!measurements.some((column) => column.id === draggedId)) return null;
+  root.classList.toggle("is-column-drag-motion-disabled", !animationsEnabled);
   return {
     active: false,
     draggedId,
@@ -106,22 +109,8 @@ export function updateDownloadColumnDrag(session: DownloadColumnDragSession, cli
   return true;
 }
 
-export function settleDownloadColumnDrag(session: DownloadColumnDragSession, cancelled: boolean): string[] | null {
-  if (!session.active) return null;
-  const originalOrder = session.measurements.map((column) => column.id);
-  const order = cancelled ? originalOrder : session.preview.order;
-  const offsets = cancelled
-    ? Object.fromEntries(originalOrder.map((id) => [id, 0]))
-    : session.preview.settleOffsets;
-  setColumnOffsets(session.root, offsets);
-  session.root.style.removeProperty("--downloads-active-drag-x");
-  setDraggedColumn(session.root, session.draggedId, false);
-  session.root.classList.add("is-column-drag-settling");
-  return order;
-}
-
 export function clearDownloadColumnDrag(session: DownloadColumnDragSession): void {
-  session.root.classList.remove("is-column-drag-active", "is-column-drag-settling");
+  session.root.classList.remove("is-column-drag-active", "is-column-drag-motion-disabled", "is-column-drag-settling");
   session.root.style.removeProperty("--downloads-active-drag-x");
   session.measurements.forEach((measurement) => session.root.style.removeProperty(`--downloads-column-drag-${measurement.id}`));
   session.root.querySelectorAll<HTMLElement>("[data-column-dragging]").forEach((element) => delete element.dataset.columnDragging);
@@ -131,10 +120,38 @@ export function clearDownloadColumnDrag(session: DownloadColumnDragSession): voi
 export function commitDownloadColumnDrag(
   session: DownloadColumnDragSession,
   order: string[],
-  commit: (order: string[]) => void
-): void {
+  commit: (order: string[]) => void,
+  prepare: () => void = () => {},
+  animationsEnabled = true
+): Animation[] {
+  const elements = Array.from(session.root.querySelectorAll<HTMLElement>("[data-download-column]"));
+  const before = new Map(elements.map((element) => [element, element.getBoundingClientRect()]));
   clearDownloadColumnDrag(session);
+  prepare();
   commit(order);
+  if (!animationsEnabled) return [];
+  session.root.classList.add("is-column-drag-settling");
+  const animations: Animation[] = [];
+  for (const element of elements) {
+    const first = before.get(element);
+    if (!first) continue;
+    const last = element.getBoundingClientRect();
+    const deltaX = first.left - last.left;
+    if (Math.abs(deltaX) < 0.5) continue;
+    for (const target of Array.from(element.children)) {
+      const animation = target.animate([
+        { transform: `translate3d(${deltaX}px, 0, 0)` },
+        { transform: "translate3d(0, 0, 0)" }
+      ], {
+        duration: DOWNLOAD_COLUMN_MOVE_DURATION_MS,
+        easing: "cubic-bezier(0.22, 1, 0.36, 1)",
+        fill: "both"
+      });
+      animation.finished.catch(() => {});
+      animations.push(animation);
+    }
+  }
+  return animations;
 }
 
 export interface DownloadColumnOrderPersistence {

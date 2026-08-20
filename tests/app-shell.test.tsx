@@ -73,6 +73,15 @@ describe("desktop shell", () => {
     expect(stateUpdates).not.toContain("syncColumnOrderFromSnapshot");
   });
 
+  it("commits the target column grid before waiting for animation cleanup", () => {
+    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
+    const pointerUp = source.slice(source.indexOf("onColumnPointerUp:"), source.indexOf("onColumnPointerCancel:"));
+
+    expect(pointerUp.indexOf("commitDownloadColumnDrag")).toBeGreaterThanOrEqual(0);
+    expect(pointerUp.indexOf("commitDownloadColumnDrag")).toBeLessThan(pointerUp.indexOf("columnDragSettleTimerRef.current = window.setTimeout"));
+    expect(pointerUp).toContain("snapshot.settings.animatePackageDisclosure");
+  });
+
   it("keeps application menus mounted for animated opening and closing", () => {
     const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
     const css = readFileSync(new URL("../src/renderer/styles.css", import.meta.url), "utf8");

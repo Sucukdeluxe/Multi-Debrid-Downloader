@@ -36,8 +36,19 @@ function HosterLabels({ labels }: { labels: HosterLabel[] }): ReactElement {
   );
 }
 
-function downloadGridTemplate(gridTemplate: string): string {
+export function downloadGridTemplate(gridTemplate: string): string {
   return `${DOWNLOAD_SELECTION_COLUMN_WIDTH} ${gridTemplate} ${DOWNLOAD_ACTION_COLUMN_WIDTH}`;
+}
+
+export function downloadGridTemplateForOrder(columnOrder: readonly string[]): string {
+  return downloadGridTemplate(columnOrder.map((column) => downloadColumnDefinitions[column]?.width ?? "100px").join(" "));
+}
+
+export function applyDownloadGridTemplate(root: HTMLElement, columnOrder: readonly string[]): void {
+  const value = downloadGridTemplateForOrder(columnOrder);
+  root.querySelectorAll<HTMLElement>(".downloads-table-header, .downloads-package-row, .downloads-item-row").forEach((row) => {
+    row.style.gridTemplateColumns = value;
+  });
 }
 
 function isPackageRowDisclosureExcluded(target: EventTarget | null): boolean {
@@ -260,7 +271,7 @@ export function ItemRowContent({ item, selected, sessionRunning = true, columnOr
       className={`downloads-item-row${selected ? " is-selected" : ""}`}
       data-download-row-id={item.id}
       role="row"
-      style={{ gridTemplateColumns: downloadGridTemplate(gridTemplate) }}
+      style={{ gridTemplateColumns: downloadGridTemplateForOrder(columnOrder) }}
       onClick={(event) => {
         event.stopPropagation();
         actions.onToggleSelection(item.id, event.ctrlKey || event.metaKey, event.shiftKey);
@@ -460,7 +471,7 @@ export function PackageCardContent({ row, selectedIds, editing, editingName, pac
         className="downloads-package-row"
         data-download-row-id={entry.id}
         role="row"
-        style={{ gridTemplateColumns: downloadGridTemplate(gridTemplate) }}
+        style={{ gridTemplateColumns: downloadGridTemplateForOrder(columnOrder) }}
         onClick={(event) => {
           if (event.detail > 1) return;
           if (!event.ctrlKey && !event.metaKey && !event.shiftKey && selectedIds.size === 1 && selectedIds.has(entry.id)) return;
@@ -533,7 +544,7 @@ export function DownloadsTableHeader({ actions, columnOrder, gridTemplate, sortC
   const allSelected = visibleIds.length > 0 && selectedCount === visibleIds.length;
   const mixedSelection = selectedCount > 0 && selectedCount < visibleIds.length;
   return (
-    <div className="downloads-table-header" role="row" style={{ gridTemplateColumns: downloadGridTemplate(gridTemplate) }}>
+    <div className="downloads-table-header" role="row" style={{ gridTemplateColumns: downloadGridTemplateForOrder(columnOrder) }}>
       <span className="downloads-selection-cell" role="columnheader"><input aria-checked={mixedSelection ? "mixed" : allSelected} aria-label="Alle sichtbaren Downloads auswählen" checked={allSelected} onChange={(event) => actions.onSetVisibleSelection(visibleIds, event.target.checked)} ref={(input) => { if (input) input.indeterminate = mixedSelection; }} type="checkbox" /></span>
       {columnOrder.map((column, index) => {
         const definition = downloadColumnDefinitions[column];
