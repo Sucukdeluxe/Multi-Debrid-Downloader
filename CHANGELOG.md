@@ -4,6 +4,31 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.49] - 2026-08-21
+
+### Download table
+
+- Added a right-click column menu with a one-step reset to the default column layout.
+- Clarified visible-column state with green checkmarks, normal menu text, and a centered reset action.
+- Kept availability labels aligned across one- and two-digit package counts while reducing excess spacing before the online state.
+
+### Account status
+
+- Added the last successful or failed account-check time directly below each stored status.
+- Updated relative check times automatically while the application remains open.
+- Changed expired premium access to the existing Free Account state instead of leaving stale Premium active text visible.
+
+### History
+
+- Updated an already open History view immediately after a completed or deleted package is stored without polling or repeatedly reloading the full history file.
+- Removed multi-selected history entries through one validated IPC request and one atomic history-file update.
+- Preserved configured history limits above 500 entries during single and bulk removal operations.
+
+### Remaining volume
+
+- Added a translated hover explanation when the remaining download volume contains files whose sizes are not known yet.
+- Kept fully known queues unchanged while exposing the same explanation to assistive technology.
+
 ## [2.0.48] - 2026-08-20
 
 ### Download table
