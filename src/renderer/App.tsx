@@ -97,7 +97,7 @@ import {
 import { buildDownloadsViewModel, formatRemainingDownloadBytes, getDownloadQueueTotalBytes, getDownloadSpeedBps, getPendingDownloadItemCount, getRemainingDownloadBytes, type DownloadDisplayMode, type DownloadSidebarFilter } from "./views/downloads/downloads-model";
 import { downloadColumnDefinitions, type DownloadSortColumn } from "./views/downloads/DownloadsTable";
 import { DeleteConfirmationDialog } from "./views/downloads/DeleteConfirmationDialog";
-import { beginDownloadColumnDrag, clearDownloadColumnDrag, settleDownloadColumnDrag, updateDownloadColumnDrag, type DownloadColumnDragSession } from "./views/downloads/column-drag";
+import { beginDownloadColumnDrag, clearDownloadColumnDrag, commitDownloadColumnDrag, createDownloadColumnOrderPersistence, settleDownloadColumnDrag, updateDownloadColumnDrag, type DownloadColumnDragSession, type DownloadColumnOrderPersistence } from "./views/downloads/column-drag";
 import {
   DownloadsContent,
   DownloadsFooter,
@@ -1632,6 +1632,17 @@ export function App(): ReactElement {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleteConfirm, setDeleteConfirm] = useState<{ ids: Set<string>; dontAsk: boolean } | null>(null);
   const [columnOrder, setColumnOrder] = useState<string[]>(() => DEFAULT_COLUMN_ORDER);
+  const columnOrderPersistenceRef = useRef<DownloadColumnOrderPersistence | null>(null);
+  if (!columnOrderPersistenceRef.current) {
+    columnOrderPersistenceRef.current = createDownloadColumnOrderPersistence(
+      DEFAULT_COLUMN_ORDER,
+      async (order) => {
+        const settings = await window.rd.updateSettings({ columnOrder: order });
+        return settings.columnOrder?.length ? settings.columnOrder : order;
+      },
+      setColumnOrder
+    );
+  }
   const columnDragSessionRef = useRef<DownloadColumnDragSession | null>(null);
   const columnDragSettleTimerRef = useRef<number | null>(null);
   const suppressColumnSortRef = useRef(false);
@@ -1659,16 +1670,9 @@ export function App(): ReactElement {
   const allDebridHostRequestRef = useRef(0);
   const debridLinkHostLimitsRequestRef = useRef(0);
 
-  const columnOrderKey = useMemo(
-    () => (snapshot.settings.columnOrder || []).join("|"),
-    [snapshot.settings.columnOrder]
-  );
-  useEffect(() => {
-    const order = snapshot.settings.columnOrder;
-    if (order && order.length > 0) {
-      setColumnOrder(order);
-    }
-  }, [columnOrderKey]);
+  const persistColumnOrder = useCallback((order: string[]): void => {
+    columnOrderPersistenceRef.current?.enqueue(order);
+  }, []);
 
   const collectorViewModel = useMemo(() => buildCollectorViewModel(
     collectorTabs,
@@ -1938,7 +1942,7 @@ export function App(): ReactElement {
       masterSnapshotRef.current = state;
       setSnapshot(state);
       if (state.settings.columnOrder?.length > 0) {
-        setColumnOrder(state.settings.columnOrder);
+        columnOrderPersistenceRef.current?.applyAuthoritative(state.settings.columnOrder);
       }
       setSettingsDraft((current) => createSettingsDraft(state.settings, current));
       writeOnlySettingsDirtyRef.current.clear();
@@ -1993,9 +1997,6 @@ export function App(): ReactElement {
         if (latestStateRef.current) {
           const next = latestStateRef.current;
           setSnapshot(next);
-          if (next.settings.columnOrder?.length > 0) {
-            setColumnOrder(next.settings.columnOrder);
-          }
           if (!settingsDirtyRef.current) {
             setSettingsDraft((current) => createSettingsDraft(next.settings, current));
           }
@@ -2659,6 +2660,9 @@ export function App(): ReactElement {
       archivePasswordLoadGenerationRef.current += 1;
     }
     setSettingsDraft((current) => createSettingsDraft(result, preserveWriteOnlyValues ? current : undefined));
+    if (result.columnOrder?.length) {
+      columnOrderPersistenceRef.current?.applyAuthoritative(result.columnOrder);
+    }
     writeOnlySettingsDirtyRef.current.clear();
     settingsDirtyRef.current = false;
     panelDirtyRevisionRef.current = 0;
@@ -4907,10 +4911,11 @@ export function App(): ReactElement {
       const changed = next.join("|") !== session.measurements.map((measurement) => measurement.id).join("|");
       columnDragSettleTimerRef.current = window.setTimeout(() => {
         if (changed) {
-          flushSync(() => setColumnOrder(next));
-          void window.rd.updateSettings({ columnOrder: next }).catch(() => {});
+          persistColumnOrder(next);
+          commitDownloadColumnDrag(session, next, (order) => flushSync(() => setColumnOrder(order)));
+        } else {
+          clearDownloadColumnDrag(session);
         }
-        clearDownloadColumnDrag(session);
         if (columnDragSessionRef.current === session) columnDragSessionRef.current = null;
         columnDragSettleTimerRef.current = null;
       }, 220);
@@ -6432,8 +6437,8 @@ export function App(): ReactElement {
                     }
                     newOrder.splice(insertAt, 0, col);
                   }
+                  persistColumnOrder(newOrder);
                   setColumnOrder(newOrder);
-                  void window.rd.updateSettings({ columnOrder: newOrder }).catch(() => {});
                 }}
               >
                 {isVisible ? "\u2713 " : "\u2003 "}{def.label}

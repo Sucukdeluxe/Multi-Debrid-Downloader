@@ -65,6 +65,14 @@ describe("desktop shell", () => {
     expect(sparklineBlock).toContain("window.setInterval(tick, 750)");
   });
 
+  it("does not let live download snapshots overwrite the local column order", () => {
+    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
+    const stateUpdates = source.slice(source.indexOf("unsubscribe = window.rd.onStateUpdate"), source.indexOf("unsubClipboard = window.rd.onClipboardDetected"));
+
+    expect(stateUpdates).not.toContain("setColumnOrder");
+    expect(stateUpdates).not.toContain("syncColumnOrderFromSnapshot");
+  });
+
   it("keeps application menus mounted for animated opening and closing", () => {
     const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
     const css = readFileSync(new URL("../src/renderer/styles.css", import.meta.url), "utf8");

@@ -515,6 +515,7 @@ export interface DownloadsTableHeaderProps {
 }
 
 function moveColumnWithPointerActions(column: string, direction: -1 | 1, element: HTMLDivElement, actions: DownloadsTableActions): void {
+  if (element.closest<HTMLElement>(".downloads-table")?.classList.contains("is-column-drag-settling")) return;
   const sibling = direction < 0 ? element.previousElementSibling : element.nextElementSibling;
   if (!sibling?.matches(".downloads-column-header")) return;
   const currentRect = element.getBoundingClientRect();
@@ -548,6 +549,7 @@ export function DownloadsTableHeader({ actions, columnOrder, gridTemplate, sortC
             onPointerCancel={(event) => actions.onColumnPointerCancel(column, event)}
             onPointerDown={(event) => {
               if (event.button !== 0 || !event.isPrimary) return;
+              if (event.currentTarget.closest<HTMLElement>(".downloads-table")?.classList.contains("is-column-drag-settling")) return;
               event.currentTarget.setPointerCapture(event.pointerId);
               actions.onColumnPointerDown(column, event);
             }}

@@ -1512,6 +1512,7 @@ describe("download table row contracts", () => {
     const moveLeft = findElement(header, (element) => element.type === "button" && element.props["aria-label"] === "Geladen / Größe nach links verschieben");
     const previous = { getBoundingClientRect: () => ({ left: 100, width: 100 }), matches: () => true };
     const current = {
+      closest: () => null,
       getBoundingClientRect: () => ({ left: 200, width: 100 }),
       previousElementSibling: previous,
       nextElementSibling: null
@@ -1528,6 +1529,65 @@ describe("download table row contracts", () => {
       ["move", "size", 149],
       ["up", "size", 149]
     ]);
+  });
+
+  it("ignores another column move while the previous move is settling", () => {
+    const calls: string[] = [];
+    const header = DownloadsTableHeader({
+      actions: createActions({
+        onColumnPointerDown: () => calls.push("down"),
+        onColumnPointerMove: () => calls.push("move"),
+        onColumnPointerUp: () => calls.push("up")
+      }),
+      columnOrder: ["name", "size", "account"],
+      gridTemplate: "200px 100px 100px",
+      selectedCount: 0,
+      sortColumn: "name",
+      sortDirection: "asc",
+      visibleIds: ["package-a"]
+    });
+    const moveRight = findElement(header, (element) => element.type === "button" && element.props["aria-label"] === "Name nach rechts verschieben");
+    const table = { classList: { contains: (className: string) => className === "is-column-drag-settling" } };
+    const sibling = { getBoundingClientRect: () => ({ left: 300, width: 100 }), matches: () => true };
+    const current = {
+      closest: (selector: string) => selector === ".downloads-table" ? table : null,
+      getBoundingClientRect: () => ({ left: 100, width: 200 }),
+      previousElementSibling: null,
+      nextElementSibling: sibling
+    };
+
+    moveRight.props.onClick({ currentTarget: { closest: () => current }, stopPropagation: () => {} });
+
+    expect(calls).toEqual([]);
+  });
+
+  it("does not start a pointer drag while a column move is settling", () => {
+    const calls: string[] = [];
+    const header = DownloadsTableHeader({
+      actions: createActions({ onColumnPointerDown: () => calls.push("down") }),
+      columnOrder: ["name", "size", "account"],
+      gridTemplate: "200px 100px 100px",
+      selectedCount: 0,
+      sortColumn: "name",
+      sortDirection: "asc",
+      visibleIds: ["package-a"]
+    });
+    const nameHeader = findElement(header, (element) => element.props["data-download-column"] === "name");
+    const pointerCapture = vi.fn();
+
+    nameHeader.props.onPointerDown({
+      button: 0,
+      clientX: 200,
+      currentTarget: {
+        closest: () => ({ classList: { contains: (className: string) => className === "is-column-drag-settling" } }),
+        setPointerCapture: pointerCapture
+      },
+      isPrimary: true,
+      pointerId: 4
+    });
+
+    expect(pointerCapture).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
   });
 
   it("includes package selection state in memo equality", () => {

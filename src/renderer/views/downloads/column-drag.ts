@@ -127,3 +127,69 @@ export function clearDownloadColumnDrag(session: DownloadColumnDragSession): voi
   session.root.querySelectorAll<HTMLElement>("[data-column-dragging]").forEach((element) => delete element.dataset.columnDragging);
   delete session.root.dataset.columnDragging;
 }
+
+export function commitDownloadColumnDrag(
+  session: DownloadColumnDragSession,
+  order: string[],
+  commit: (order: string[]) => void
+): void {
+  clearDownloadColumnDrag(session);
+  commit(order);
+}
+
+export interface DownloadColumnOrderPersistence {
+  applyAuthoritative: (order: string[]) => void;
+  enqueue: (order: string[]) => void;
+  whenIdle: () => Promise<void>;
+}
+
+export function createDownloadColumnOrderPersistence(
+  initialOrder: string[],
+  persist: (order: string[]) => Promise<string[]>,
+  apply: (order: string[]) => void
+): DownloadColumnOrderPersistence {
+  let confirmed = initialOrder;
+  let queued: string[] | null = null;
+  let active: Promise<void> | null = null;
+  let epoch = 0;
+
+  const drain = async (): Promise<void> => {
+    while (queued) {
+      const order = queued;
+      queued = null;
+      const requestEpoch = epoch;
+      try {
+        const persisted = await persist(order);
+        if (requestEpoch !== epoch) continue;
+        confirmed = persisted.length > 0 ? persisted : order;
+        if (!queued) apply(confirmed);
+      } catch {
+        if (requestEpoch === epoch && !queued) apply(confirmed);
+      }
+    }
+  };
+
+  const start = (): void => {
+    if (active) return;
+    active = drain().finally(() => {
+      active = null;
+      if (queued) start();
+    });
+  };
+
+  return {
+    applyAuthoritative: (order) => {
+      epoch += 1;
+      confirmed = order;
+      apply(order);
+      queued = active ? order : null;
+    },
+    enqueue: (order) => {
+      queued = order;
+      start();
+    },
+    whenIdle: async () => {
+      while (active) await active;
+    }
+  };
+}
