@@ -4,6 +4,15 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.47] - 2026-08-20
+
+### Live updates
+
+- Standardized running download snapshots and progress metrics on a 750 ms cadence for every queue size.
+- Aligned session volume, remaining volume, speed, ETA, the header speed sparkline, and the bandwidth chart to the same refresh interval.
+- Removed the extra active-download renderer delay so the UI presents each completed snapshot immediately without stacking latency.
+- Prevented normal progress updates from retriggering rolling metric transitions before the previous transition can finish.
+
 ## [2.0.46] - 2026-08-20
 
 ### Archive passwords
