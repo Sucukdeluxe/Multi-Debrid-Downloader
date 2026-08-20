@@ -78,10 +78,15 @@ describe("animated download column drag", () => {
     let committed = false;
     const outerAnimate = vi.fn(() => ({ finished: Promise.resolve() } as unknown as Animation));
     const animate = vi.fn(() => ({ finished: Promise.resolve() } as unknown as Animation));
-    const motionTarget = { animate } as unknown as HTMLElement;
+    const motionTarget = { animate, matches: () => false } as unknown as HTMLElement;
+    const controlsAnimate = vi.fn(() => ({ finished: Promise.resolve() } as unknown as Animation));
+    const controls = {
+      animate: controlsAnimate,
+      matches: (selector: string) => selector === ".downloads-column-move-controls"
+    } as unknown as HTMLElement;
     const element = {
       animate: outerAnimate,
-      children: [motionTarget],
+      children: [motionTarget, controls],
       getBoundingClientRect: () => ({ left: committed ? afterLeft : beforeLeft, width: 300 })
     } as unknown as HTMLElement;
     const root = {
@@ -118,6 +123,7 @@ describe("animated download column drag", () => {
     expect(events.indexOf("prepare-grid")).toBeLessThan(events.indexOf(`commit:${next.join("|")}`));
     expect(events).toContain(`commit:${next.join("|")}`);
     expect(outerAnimate).not.toHaveBeenCalled();
+    expect(controlsAnimate).not.toHaveBeenCalled();
     expect(animate).toHaveBeenCalledWith([
       { transform: `translate3d(${expectedDelta}px, 0, 0)` },
       { transform: "translate3d(0, 0, 0)" }

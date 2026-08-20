@@ -149,6 +149,7 @@ export function commitDownloadColumnDrag(
     const deltaX = first.left - last.left;
     if (Math.abs(deltaX) < 0.5) continue;
     for (const target of Array.from(element.children)) {
+      if (target.matches(".downloads-column-move-controls")) continue;
       const animation = target.animate([
         { transform: `translate3d(${deltaX}px, 0, 0)` },
         { transform: "translate3d(0, 0, 0)" }
