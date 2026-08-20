@@ -375,6 +375,7 @@ function AccountRow({
       </span>
       <span className="settings-account-status" role="cell">
         <span className={`settings-account-status-badge is-${row.status.tone}`}>{row.status.text}</span>
+        {row.status.checkedAgo ? <small className="settings-account-status-checked"><span>Geprüft</span> {row.status.checkedAgo}</small> : null}
       </span>
       <span className="settings-account-traffic" role="cell">{row.traffic}</span>
       {renderAccountIdentityCell({ className: "settings-account-username", label: "Benutzername", onCopy: actions.onCopyIdentity, value: row.username })}

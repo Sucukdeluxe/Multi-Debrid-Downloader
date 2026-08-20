@@ -140,6 +140,7 @@ export interface AccountRowSource {
     state: AccountStatusSourceState;
     message: string;
     premiumUntilMs: number | null;
+    checkedAt?: number;
     username?: string;
     email?: string;
   };
@@ -161,6 +162,7 @@ export interface AccountRowViewModel {
   status: {
     tone: AccountStatusTone;
     text: string;
+    checkedAgo: string;
   };
   traffic: string;
   username: string;
@@ -634,6 +636,26 @@ function formatExpiry(premiumUntilMs: number | null): string {
   return new Intl.DateTimeFormat("de-DE").format(new Date(premiumUntilMs));
 }
 
+function formatCheckedAgo(checkedAt: number | undefined, nowMs: number): string {
+  if (!checkedAt || !Number.isFinite(checkedAt) || checkedAt <= 0) {
+    return "";
+  }
+  const deltaMs = Math.max(0, nowMs - checkedAt);
+  const minutes = Math.floor(deltaMs / 60_000);
+  if (minutes < 1) {
+    return "gerade eben";
+  }
+  if (minutes < 60) {
+    return `vor ${minutes} Min`;
+  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return `vor ${hours} Std`;
+  }
+  const days = Math.floor(hours / 24);
+  return `vor ${days} Tag${days === 1 ? "" : "en"}`;
+}
+
 function projectStatus(source: AccountRowSource): { tone: AccountStatusTone; text: string } {
   if (!source.enabled || source.status.state === "disabled") {
     return { tone: "disabled", text: "Deaktiviert" };
@@ -691,7 +713,7 @@ export function projectAccountRows(
       icon: ACCOUNT_SERVICE_ICONS[source.service],
       enabled: source.enabled,
       selected: selected.has(id),
-      status,
+      status: { ...status, checkedAgo: formatCheckedAgo(source.status.checkedAt, nowMs) },
       traffic: formatTraffic(source.dailyLimitBytes, source.dailyUsageBytes),
       username: identity.username,
       email: identity.email,

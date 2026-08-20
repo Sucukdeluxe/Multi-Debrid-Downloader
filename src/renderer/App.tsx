@@ -989,18 +989,6 @@ function formatDebridLinkCountQuota(info: DebridLinkHostLimitInfo | null | undef
   return info.note || "Nicht verfügbar";
 }
 
-function formatCheckedAgo(checkedAt: number): string {
-  const deltaMs = Date.now() - checkedAt;
-  if (!Number.isFinite(deltaMs) || deltaMs < 0) return "gerade eben";
-  const min = Math.floor(deltaMs / 60000);
-  if (min < 1) return "gerade eben";
-  if (min < 60) return `vor ${min} Min`;
-  const hours = Math.floor(min / 60);
-  if (hours < 24) return `vor ${hours} Std`;
-  const days = Math.floor(hours / 24);
-  return `vor ${days} Tag${days === 1 ? "" : "en"}`;
-}
-
 function rotationEventText(ev: { event: string; cooldownSec?: number; next?: string; reason?: string }): string {
   const untilRestart = /bis zum Tagesreset gesperrt/i.test(ev.reason || "");
   switch (ev.event) {
@@ -5058,7 +5046,7 @@ export function App(): ReactElement {
     : null;
   const accountSources = useMemo<AccountRowSource[]>(() => accountRows.map((row) => {
     const checkedStatus = row.accountId ? snapshot.settings.debridAccountStatuses?.[row.accountId] : undefined;
-    const state: AccountRowSource["status"]["state"] = resolveAccountStatusState(row.disabled, checkedStatus);
+    const state: AccountRowSource["status"]["state"] = resolveAccountStatusState(row.disabled, checkedStatus, runtimeNow);
     return {
       identityId: row.accountId || row.rowKey,
       service: row.entry.service,
@@ -5070,6 +5058,7 @@ export function App(): ReactElement {
         state,
         message: checkedStatus?.message || row.entry.statusLabel,
         premiumUntilMs: checkedStatus?.premiumUntilMs ?? null,
+        checkedAt: checkedStatus?.checkedAt,
         username: checkedStatus?.username,
         email: checkedStatus?.email
       },
@@ -5079,7 +5068,7 @@ export function App(): ReactElement {
       credentialKind: row.credentialLabel.includes("API") ? "api-key" : row.credentialLabel.includes("•") ? "password" : "protected",
       canCheck: row.checkable
     };
-  }), [accountRows, snapshot.settings.debridAccountStatuses]);
+  }), [accountRows, runtimeNow, snapshot.settings.debridAccountStatuses]);
   const selectedAccountViewIds = useMemo(() => accountRows
     .filter((row) => selectedAccountRowKeys.has(row.rowKey))
     .map(accountRowViewId), [accountRows, selectedAccountRowKeys]);

@@ -138,6 +138,7 @@ function accountSources(): AccountRowSource[] {
         state: "premium",
         message: "Premium aktiv",
         premiumUntilMs: NOW + 7 * 24 * 60 * 60 * 1000,
+        checkedAt: NOW - 5 * 60 * 1000,
         email: "verified@example.test"
       },
       dailyLimitBytes: 10 * GIB,
@@ -390,8 +391,40 @@ describe("settings model", () => {
       "Noch nicht geprüft",
       "Deaktiviert"
     ]);
+    expect(rows[0].status.checkedAgo).toBe("vor 5 Min");
     expect(JSON.stringify(rows)).not.toContain("test-password");
     expect(JSON.stringify(rows)).not.toContain("test-token");
+  });
+
+  it("marks elapsed premium access as expired instead of active", () => {
+    expect(resolveAccountStatusState(false, {
+      valid: true,
+      isPremium: true,
+      premiumUntilMs: NOW - 1
+    }, NOW)).toBe("free");
+    expect(resolveAccountStatusState(false, {
+      valid: true,
+      isPremium: true,
+      premiumUntilMs: NOW + 1
+    }, NOW)).toBe("premium");
+    expect(resolveAccountStatusState(false, {
+      valid: true,
+      isPremium: true,
+      premiumUntilMs: null
+    }, NOW)).toBe("premium");
+
+    const [row] = projectAccountRows([{
+      ...accountSources()[0],
+      status: {
+        ...accountSources()[0].status,
+        state: "free",
+        premiumUntilMs: NOW - 1,
+        checkedAt: NOW - 60 * 60 * 1000
+      }
+    }], [], NOW);
+
+    expect(row.status).toEqual({ tone: "free", text: "Free Account", checkedAgo: "vor 1 Std" });
+    expect(row.premiumUntilMs).toBeNull();
   });
 
   it("sorts positive premium expirations first and prunes vanished selections", () => {
@@ -673,6 +706,14 @@ describe("account workspace", () => {
     expect(html).toContain("ui-sliding-selection ui-sliding-selection-horizontal");
     expect(html.match(/data-sliding-selection-item="true"/g)).toHaveLength(3);
     expect(html.match(/data-sliding-selection-active="true"/g)).toHaveLength(1);
+  });
+
+  it("shows the last account check directly below the status", () => {
+    const html = renderToStaticMarkup(<AccountWorkspace actions={workspaceActions()} model={workspaceModel()} />);
+
+    expect(html).toContain("settings-account-status-checked");
+    expect(html).toContain("Geprüft");
+    expect(html).toContain("vor 5 Min");
   });
 
   it("shows a live provider and account overview without exposing raw failure details", () => {
@@ -1237,7 +1278,7 @@ describe("settings App integration", () => {
 
   it("keeps unchecked single accounts honest without a positive status", () => {
     const block = sourceBlock(appSource, "const accountSources", "const selectedAccountViewId");
-    expect(block).toContain("resolveAccountStatusState(row.disabled, checkedStatus)");
+    expect(block).toContain("resolveAccountStatusState(row.disabled, checkedStatus, runtimeNow)");
   });
 
   it("stores only the stable account row id in context-menu state", () => {
@@ -1255,6 +1296,7 @@ describe("settings App integration", () => {
 
 describe("settings geometry", () => {
   it("uses central focus and semantic status text tokens", () => {
+    expect(settingsCss).toContain(".settings-account-status-checked");
     expect(settingsCss).toMatch(/\.settings-theme-option:focus-visible,[^{]*\.settings-account-picker-row:focus-visible\s*{[^}]*outline:\s*2px solid var\(--ui-focus\);/s);
     expect(settingsCss).toMatch(/\.settings-save-state\.is-clean,[^{]*\.settings-save-state\.is-saved\s*{[^}]*color:\s*var\(--ui-success-text\);/s);
     expect(settingsCss).toMatch(/\.settings-save-state\.is-dirty,[^{]*\.settings-save-state\.is-saving\s*{[^}]*color:\s*var\(--ui-warning-text\);/s);

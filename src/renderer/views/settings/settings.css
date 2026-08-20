@@ -723,6 +723,20 @@
   white-space: nowrap;
 }
 
+.settings-account-status {
+  display: grid;
+  align-content: center;
+  gap: 2px;
+}
+
+.settings-account-status-checked {
+  overflow: hidden;
+  color: var(--ui-text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .settings-account-status-badge::before {
   width: 7px;
   height: 7px;

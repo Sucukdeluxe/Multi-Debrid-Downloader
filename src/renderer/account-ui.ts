@@ -117,7 +117,8 @@ export function resolveAccountUsername(storedUsername: string, checkedEmail?: st
 
 export function resolveAccountStatusState(
   disabled: boolean,
-  checkedStatus?: { valid: boolean; isPremium: boolean }
+  checkedStatus?: { valid: boolean; isPremium: boolean; premiumUntilMs?: number | null },
+  nowMs: number = Date.now()
 ): "disabled" | "unchecked" | "invalid" | "free" | "premium" {
   if (checkedStatus && !checkedStatus.valid) {
     return "invalid";
@@ -127,6 +128,13 @@ export function resolveAccountStatusState(
   }
   if (!checkedStatus) {
     return "unchecked";
+  }
+  if (checkedStatus.isPremium
+    && typeof checkedStatus.premiumUntilMs === "number"
+    && Number.isFinite(checkedStatus.premiumUntilMs)
+    && checkedStatus.premiumUntilMs > 0
+    && checkedStatus.premiumUntilMs <= nowMs) {
+    return "free";
   }
   return checkedStatus.isPremium ? "premium" : "free";
 }

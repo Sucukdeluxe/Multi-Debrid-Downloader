@@ -73,6 +73,8 @@ describe("renderer localization", () => {
     expect(translateUiText("Link kopieren", "en")).toBe("Copy Link");
     expect(translateUiText("example.test Klicken zum Kopieren", "en")).toBe("Click to copy example.test");
     expect(translateUiText("Klicken zum Kopieren", "en")).toBe("Click to copy");
+    expect(translateUiText("Geprüft", "en")).toBe("Checked");
+    expect(translateUiText("gerade eben", "en")).toBe("just now");
     expect(translateUiText("Geschwindigkeit verschieben", "en")).toBe("Move Speed");
     expect(translateUiText("Geschwindigkeit nach links verschieben", "en")).toBe("Move Speed left");
     expect(translateUiText("Move Speed right", "de")).toBe("Geschwindigkeit nach rechts verschieben");
