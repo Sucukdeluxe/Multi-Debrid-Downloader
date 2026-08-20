@@ -512,6 +512,7 @@ export interface DownloadsTableHeaderProps {
   actions: DownloadsTableActions;
   columnOrder: readonly string[];
   gridTemplate: string;
+  onResetColumnLayout?: () => void;
   sortColumn: DownloadSortColumn;
   sortDirection: "asc" | "desc";
   selectedCount: number;
@@ -533,7 +534,7 @@ function moveColumnWithPointerActions(column: string, direction: -1 | 1, element
   actions.onColumnPointerUp(column, pointerEvent(clientX));
 }
 
-export function DownloadsTableHeader({ actions, columnOrder, gridTemplate, sortColumn, sortDirection, selectedCount, visibleIds }: DownloadsTableHeaderProps): ReactElement {
+export function DownloadsTableHeader({ actions, columnOrder, gridTemplate, onResetColumnLayout, sortColumn, sortDirection, selectedCount, visibleIds }: DownloadsTableHeaderProps): ReactElement {
   const allSelected = visibleIds.length > 0 && selectedCount === visibleIds.length;
   const mixedSelection = selectedCount > 0 && selectedCount < visibleIds.length;
   return (
@@ -574,7 +575,7 @@ export function DownloadsTableHeader({ actions, columnOrder, gridTemplate, sortC
           </div>
         );
       })}
-      <span className="downloads-action-cell" role="columnheader">Aktion</span>
+      <span className="downloads-action-cell downloads-header-action-cell" role="columnheader"><span>Aktion</span>{onResetColumnLayout ? <button aria-label="Spaltenlayout zurücksetzen" className="downloads-column-reset-button" onClick={onResetColumnLayout} title="Spaltenlayout zurücksetzen" type="button">↺</button> : null}</span>
     </div>
   );
 }
