@@ -124,6 +124,7 @@ const api: ElectronApi = {
   },
   clearHistory: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.CLEAR_HISTORY),
   removeHistoryEntry: (entryId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.REMOVE_HISTORY_ENTRY, entryId),
+  removeHistoryEntries: (entryIds: string[]): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.REMOVE_HISTORY_ENTRIES, entryIds),
   revealHistoryEntry: (entryId: string): Promise<HistoryRevealResult> => ipcRenderer.invoke(IPC_CHANNELS.REVEAL_HISTORY_ENTRY, entryId),
   setPackagePriority: (packageId: string, priority: PackagePriority): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SET_PACKAGE_PRIORITY, packageId, priority),
   skipItems: (itemIds: string[]): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SKIP_ITEMS, itemIds),

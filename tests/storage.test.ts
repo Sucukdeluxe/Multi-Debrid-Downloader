@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
@@ -9,7 +9,7 @@ import { parseRealDebridApiAccounts, serializeRealDebridApiAccounts } from "../s
 import { AppSettings } from "../src/shared/types";
 import { defaultSettings } from "../src/main/constants";
 import { configureCredentialProtector } from "../src/main/credential-protection";
-import { addHistoryEntryForRetention, createStoragePaths, emptySession, loadHistory, loadHistoryForRetention, loadSession, loadSettings, normalizeLoadedSession, normalizeSettings, resetHistoryForRetention, saveHistory, saveSession, saveSessionAsync, saveSettings, saveSettingsAsync } from "../src/main/storage";
+import { addHistoryEntryForRetention, createStoragePaths, emptySession, loadHistory, loadHistoryForRetention, loadSession, loadSettings, normalizeLoadedSession, normalizeSettings, removeHistoryEntries, resetHistoryForRetention, saveHistory, saveSession, saveSessionAsync, saveSettings, saveSettingsAsync } from "../src/main/storage";
 
 const tempDirs: string[] = [];
 type SettingsSaveMode = "sync" | "async";
@@ -31,6 +31,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const dir of tempDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -1198,6 +1199,37 @@ describe("settings storage", () => {
       cleanedDownloadedBytes: 3_000,
       cleanedTotalBytes: 4_000
     }));
+  });
+
+  it("removes a history selection in one pass without applying the default 500-entry limit", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const limits = { maxEntries: 1_000, maxAgeDays: 0 };
+    const entries = Array.from({ length: 600 }, (_, index) => ({
+      id: `hist-${index}`,
+      name: `Paket ${index}`,
+      totalBytes: 1024,
+      downloadedBytes: 1024,
+      fileCount: 1,
+      provider: "realdebrid" as const,
+      completedAt: Date.now() - index,
+      durationSeconds: 12,
+      status: "completed" as const,
+      outputDir: path.join(dir, `out-${index}`),
+      urls: [`https://example.com/file-${index}.rar`]
+    }));
+    saveHistory(paths, entries, limits);
+    const renameSpy = vi.spyOn(fs, "renameSync");
+    renameSpy.mockClear();
+
+    const updated = removeHistoryEntries(paths, ["hist-0", "hist-599"], limits);
+
+    expect(renameSpy).toHaveBeenCalledTimes(1);
+    renameSpy.mockRestore();
+    expect(updated).toHaveLength(598);
+    expect(updated.some((entry) => entry.id === "hist-0" || entry.id === "hist-599")).toBe(false);
+    expect(loadHistory(paths, limits)).toHaveLength(598);
   });
 
   it("returns empty session when session file contains invalid JSON", () => {

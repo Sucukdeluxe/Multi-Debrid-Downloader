@@ -3285,9 +3285,10 @@ export function App(): ReactElement {
     if (!confirmed) {
       return;
     }
-    const results = await Promise.allSettled(ids.map((id) => window.rd.removeHistoryEntry(id)));
-    if (results.some((result) => result.status === "rejected")) {
-      showToast("Einige Verlaufseinträge konnten nicht entfernt werden");
+    try {
+      await window.rd.removeHistoryEntries(ids);
+    } catch {
+      showToast(ids.length === 1 ? "Verlaufseintrag konnte nicht entfernt werden" : "Verlaufseinträge konnten nicht entfernt werden");
       await loadHistoryEntries();
       return;
     }

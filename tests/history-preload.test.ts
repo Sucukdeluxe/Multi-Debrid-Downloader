@@ -6,6 +6,7 @@ import type { HistoryEntry } from "../src/shared/types";
 const electron = vi.hoisted(() => ({
   api: undefined as ElectronApi | undefined,
   listeners: new Map<string, (...args: unknown[]) => void>(),
+  invoke: vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => undefined),
   on: vi.fn((channel: string, listener: (...args: unknown[]) => void) => {
     electron.listeners.set(channel, listener);
   }),
@@ -23,7 +24,7 @@ vi.mock("electron", () => ({
     }
   },
   ipcRenderer: {
-    invoke: vi.fn(),
+    invoke: electron.invoke,
     on: electron.on,
     removeListener: electron.removeListener,
     send: vi.fn()
@@ -47,5 +48,14 @@ describe("history preload contract", () => {
 
     unsubscribe?.();
     expect(electron.removeListener).toHaveBeenCalledWith(IPC_CHANNELS.HISTORY_ENTRY_ADDED, listener);
+  });
+
+  it("forwards a history selection through one bulk removal channel", async () => {
+    electron.invoke.mockClear();
+
+    await electron.api?.removeHistoryEntries(["history-a", "history-b"]);
+
+    expect(electron.invoke).toHaveBeenCalledTimes(1);
+    expect(electron.invoke).toHaveBeenCalledWith(IPC_CHANNELS.REMOVE_HISTORY_ENTRIES, ["history-a", "history-b"]);
   });
 });

@@ -97,6 +97,14 @@ function isDevMode(): boolean {
   return process.env.NODE_ENV === "development";
 }
 
+function validateHistoryEntryIds(value: unknown): string[] {
+  const entryIds = validateStringArray(value, "entryIds");
+  if (entryIds.length > 100_000 || entryIds.some((entryId) => entryId.length === 0 || entryId.length > 4_096)) {
+    throw new Error("entryIds ist ungültig");
+  }
+  return [...new Set(entryIds)];
+}
+
 function getRendererFileUrl(): string {
   return pathToFileURL(path.join(app.getAppPath(), "build", "renderer", "index.html")).toString();
 }
@@ -587,6 +595,9 @@ function registerIpcHandlers(): void {
   handleTrusted(IPC_CHANNELS.REMOVE_HISTORY_ENTRY, (_event: IpcMainInvokeEvent, entryId: string) => {
     validateString(entryId, "entryId");
     return controller.removeHistoryEntry(entryId);
+  });
+  handleTrusted(IPC_CHANNELS.REMOVE_HISTORY_ENTRIES, (_event: IpcMainInvokeEvent, entryIds: unknown) => {
+    return controller.removeHistoryEntries(validateHistoryEntryIds(entryIds));
   });
   handleTrusted(IPC_CHANNELS.REVEAL_HISTORY_ENTRY, (_event: IpcMainInvokeEvent, entryId: unknown) => {
     return revealHistoryEntry({ entryId }, {

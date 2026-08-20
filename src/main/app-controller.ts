@@ -53,7 +53,7 @@ import { getItemLogPath, initItemLogs, shutdownItemLogs } from "./item-log";
 import { getPackageLogPath, initPackageLogs, shutdownPackageLogs } from "./package-log";
 import { initSessionLog, getSessionLogPath, shutdownSessionLog } from "./session-log";
 import { MegaWebFallback } from "./mega-web-fallback";
-import { addHistoryEntry, addHistoryEntryForRetention, cancelPendingAsyncSaves, clearHistory, createStoragePaths, loadHistory, loadHistoryForRetention, loadSessionWithStatus, loadSettings, normalizeHistoryEntry, normalizeLoadedSession, normalizeLoadedSessionTransientFields, normalizeSettings, removeHistoryEntry, resetHistoryForRetention, saveHistory, saveSession, saveSettings } from "./storage";
+import { addHistoryEntry, addHistoryEntryForRetention, cancelPendingAsyncSaves, clearHistory, createStoragePaths, loadHistory, loadHistoryForRetention, loadSessionWithStatus, loadSettings, normalizeHistoryEntry, normalizeLoadedSession, normalizeLoadedSessionTransientFields, normalizeSettings, removeHistoryEntries, resetHistoryForRetention, saveHistory, saveSession, saveSettings } from "./storage";
 import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate } from "./update";
 import { runInstallWithResume } from "./update-install-flow";
 import { rotateDebugToken, startDebugServer, stopDebugServer, restartDebugServer, getDebugServerRuntimeStatus, getActiveDebugToken, getDebugAllowlist, writeDebugServerConfig, clearDebugToken } from "./debug-server";
@@ -1382,8 +1382,12 @@ export class AppController {
   }
 
   public removeHistoryEntry(entryId: string): void {
-    this.audit("INFO", "Verlaufseintrag entfernt", { entryId });
-    removeHistoryEntry(this.storagePaths, entryId);
+    this.removeHistoryEntries([entryId]);
+  }
+
+  public removeHistoryEntries(entryIds: string[]): void {
+    this.audit("INFO", "Verlaufseinträge entfernt", { count: entryIds.length });
+    removeHistoryEntries(this.storagePaths, entryIds, this.historyLimits());
   }
 
   public addToHistory(entry: HistoryEntry): void {

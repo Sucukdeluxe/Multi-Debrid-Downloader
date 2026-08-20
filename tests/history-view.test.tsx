@@ -640,6 +640,17 @@ describe("visual history states", () => {
     expect(listener).not.toContain("getHistory()");
   });
 
+  it("removes the selected history ids through one backend call", () => {
+    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+    const removalStart = source.indexOf("const removeHistoryEntries = useCallback");
+    const removalEnd = source.indexOf("const clearHistoryEntries", removalStart);
+    const removal = source.slice(removalStart, removalEnd);
+
+    expect(removal).toContain("window.rd.removeHistoryEntries(ids)");
+    expect(removal).not.toContain("Promise.allSettled");
+    expect(removal).not.toContain("window.rd.removeHistoryEntry(");
+  });
+
   it("keeps bootstrap deterministic before exposing loading and error responses to the opened history view", async () => {
     const loadingApi = createVisualElectronApi(createVisualFixture("dense"), "?history-state=loading");
     await expect(loadingApi.getHistory()).resolves.toHaveLength(2);

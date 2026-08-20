@@ -388,6 +388,11 @@ export function createVisualElectronApi(
         fixture.history.splice(index, 1);
       }
     },
+    removeHistoryEntries: async (entryIds) => {
+      const removed = new Set(entryIds);
+      const retained = fixture.history.filter((entry) => !removed.has(entry.id));
+      fixture.history.splice(0, fixture.history.length, ...retained);
+    },
     revealHistoryEntry: async (entryId) => fixture.history.some((entry) => entry.id === entryId)
       ? { ok: true }
       : { ok: false, reason: "entry-not-found" },

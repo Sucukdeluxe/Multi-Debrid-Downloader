@@ -1546,11 +1546,21 @@ export function resetHistoryForRetention(paths: StoragePaths, retentionMode: His
   clearHistory(paths);
 }
 
-export function removeHistoryEntry(paths: StoragePaths, entryId: string): HistoryEntry[] {
-  const existing = loadHistory(paths);
-  const updated = existing.filter(e => e.id !== entryId);
-  saveHistory(paths, updated);
+export function removeHistoryEntries(paths: StoragePaths, entryIds: readonly string[], limits?: HistoryLimits): HistoryEntry[] {
+  const existing = loadHistory(paths, limits);
+  const removedIds = new Set(entryIds);
+  if (removedIds.size === 0) {
+    return existing;
+  }
+  const updated = existing.filter((entry) => !removedIds.has(entry.id));
+  if (updated.length !== existing.length) {
+    saveHistory(paths, updated, limits);
+  }
   return updated;
+}
+
+export function removeHistoryEntry(paths: StoragePaths, entryId: string, limits?: HistoryLimits): HistoryEntry[] {
+  return removeHistoryEntries(paths, [entryId], limits);
 }
 
 export function clearHistory(paths: StoragePaths): void {

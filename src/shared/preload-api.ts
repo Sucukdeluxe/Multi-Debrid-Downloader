@@ -145,6 +145,7 @@ export interface ElectronApi {
   onHistoryEntryAdded: (callback: (entry: HistoryEntry) => void) => () => void;
   clearHistory: () => Promise<void>;
   removeHistoryEntry: (entryId: string) => Promise<void>;
+  removeHistoryEntries: (entryIds: string[]) => Promise<void>;
   revealHistoryEntry: (entryId: string) => Promise<HistoryRevealResult>;
   setPackagePriority: (packageId: string, priority: PackagePriority) => Promise<void>;
   skipItems: (itemIds: string[]) => Promise<void>;

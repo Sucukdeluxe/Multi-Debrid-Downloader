@@ -82,6 +82,7 @@ export const IPC_CHANNELS = {
   HISTORY_ENTRY_ADDED: "history:entry-added",
   CLEAR_HISTORY: "history:clear",
   REMOVE_HISTORY_ENTRY: "history:remove-entry",
+  REMOVE_HISTORY_ENTRIES: "history:remove-entries",
   REVEAL_HISTORY_ENTRY: "history:reveal-entry",
   SET_PACKAGE_PRIORITY: "queue:set-package-priority",
   SKIP_ITEMS: "queue:skip-items",
