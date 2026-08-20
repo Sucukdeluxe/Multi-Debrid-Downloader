@@ -95,28 +95,13 @@ describe("Downloadtabellen-Spalten", () => {
     expect(header.props.style.gridTemplateColumns).toBe(expected);
   });
 
-  it("exposes a header action that delegates resetting the column layout", () => {
-    const reset = vi.fn();
-    const actions = createActions({ onResetColumnLayout: reset });
+  it("keeps the column layout reset out of the table action header", () => {
+    const actions = createActions();
     const model = withRuntime(createInput());
     const content = renderToStaticMarkup(<DownloadsContent actions={actions} model={model} />);
-    const header = DownloadsTableHeader({
-      actions,
-      columnOrder: model.columnOrder,
-      gridTemplate: model.gridTemplate,
-      onResetColumnLayout: actions.onResetColumnLayout,
-      selectedCount: 0,
-      sortColumn: "name",
-      sortDirection: "asc",
-      visibleIds: model.visibleRowIds
-    });
-    const button = findElement(header, (element) => element.type === "button" && element.props["aria-label"] === "Spaltenlayout zurücksetzen");
 
-    button.props.onClick();
-
-    expect(content).toContain('aria-label="Spaltenlayout zurücksetzen"');
-    expect(button.props.title).toBe("Spaltenlayout zurücksetzen");
-    expect(reset).toHaveBeenCalledTimes(1);
+    expect(content).not.toContain('aria-label="Spaltenlayout zurücksetzen"');
+    expect(content).toMatch(/class="downloads-action-cell" role="columnheader">Aktion<\/span>/);
   });
 
   it("never interpolates download grid tracks while column contents move", () => {
