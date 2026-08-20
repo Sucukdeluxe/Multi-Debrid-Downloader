@@ -880,7 +880,7 @@ const historyRetentionLabels: Record<RendererSettings["historyRetentionMode"], s
 const AUTO_RENDER_PACKAGE_LIMIT = 260;
 
 export function getSnapshotRenderDelay(itemCount: number, running: boolean, activeTab: MainView): number {
-  let delay = itemCount >= 250 ? 0 : 100;
+  let delay = running && activeTab === "downloads" ? 0 : itemCount >= 250 ? 0 : 100;
   if (!running) delay = Math.min(delay, 200);
   if (activeTab !== "downloads") delay = Math.max(delay, 800);
   return delay;
@@ -1272,7 +1272,7 @@ const BandwidthChart = memo(function BandwidthChart({ running, paused, speedHist
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const interval = setInterval(() => {
       drawChart();
-    }, reducedMotion ? 1000 : 500);
+    }, reducedMotion ? 1000 : 750);
     return () => clearInterval(interval);
   }, [drawChart, running, paused]);
 
@@ -1374,7 +1374,7 @@ const DownloadSpeedSparkline = memo(function DownloadSpeedSparkline({ speedBps, 
       draw();
     };
 
-    const id = window.setInterval(tick, 500);
+    const id = window.setInterval(tick, 750);
     return () => window.clearInterval(id);
   }, []);
 

@@ -165,6 +165,7 @@ const MAX_SAME_DIRECT_URL_ATTEMPTS = 3;
 
 const MAX_HTTP416_FRESH_RESTARTS = 2;
 const HTTP416_FRESH_RESTART_DELAY_MS = 8000;
+const DOWNLOAD_LIVE_UPDATE_INTERVAL_MS = 750;
 
 function getHttp416FreshRestartDelayMs(): number {
   const fromEnv = Number(process.env.RD_HTTP416_FRESH_RESTART_DELAY_MS ?? NaN);
@@ -6561,14 +6562,7 @@ export class DownloadManager extends EventEmitter {
     if (this.stateEmitTimer) {
       return;
     }
-    const itemCount = this.itemCount;
-    const emitDelay = this.session.running
-      ? itemCount >= 1500
-        ? 700
-        : itemCount >= 250
-          ? 500
-          : 150
-      : 200;
+    const emitDelay = this.session.running ? DOWNLOAD_LIVE_UPDATE_INTERVAL_MS : 200;
     this.stateEmitTimer = setTimeout(() => {
       this.stateEmitTimer = null;
       this.lastStateEmitAt = nowMs();
@@ -10579,12 +10573,7 @@ export class DownloadManager extends EventEmitter {
         let windowStarted = nowMs();
         let lastPackageLogAt = 0;
         let lastLoggedPercent = -1;
-        const itemCount = this.itemCount;
-        const uiUpdateIntervalMs = itemCount >= 1500
-          ? 700
-          : itemCount >= 250
-            ? 500
-            : 120;
+        const uiUpdateIntervalMs = DOWNLOAD_LIVE_UPDATE_INTERVAL_MS;
         let lastUiEmitAt = 0;
         const stallTimeoutMs = getDownloadStallTimeoutMs();
         const drainTimeoutMs = Math.max(30000, Math.min(300000, stallTimeoutMs > 0 ? stallTimeoutMs * 12 : 120000));

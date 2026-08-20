@@ -507,7 +507,7 @@ describe("bandwidth chart palette", () => {
     expect(chartBlock).toContain('role="img"');
     expect(chartBlock).toContain('aria-label="Bandbreitenverlauf der letzten 60 Sekunden"');
     expect(chartBlock).toContain('window.matchMedia("(prefers-reduced-motion: reduce)")');
-    expect(chartBlock).toContain("reducedMotion ? 1000 : 500");
+    expect(chartBlock).toContain("reducedMotion ? 1000 : 750");
   });
 
   it("asks for confirmation before deleting all saved download statistics", () => {

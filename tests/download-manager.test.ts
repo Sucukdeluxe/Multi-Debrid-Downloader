@@ -45,6 +45,44 @@ describe("runWithLimitedConcurrency", () => {
   });
 });
 
+describe("download live update cadence", () => {
+  it.each([69, 661, 2_470])("emits a running queue snapshot no sooner than 750 ms for %i items", async (itemCount) => {
+    vi.useFakeTimers();
+    try {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-live-cadence-"));
+      tempDirs.push(root);
+      const session = emptySession();
+      session.running = true;
+      const manager = new DownloadManager(defaultSettings(), session, createStoragePaths(path.join(root, "state")));
+      const internal = manager as unknown as {
+        emitState: () => void;
+        itemCount: number;
+        session: typeof session;
+        stateEmitTimer: NodeJS.Timeout | null;
+      };
+      internal.itemCount = itemCount;
+      internal.session.running = true;
+      if (internal.stateEmitTimer) {
+        clearTimeout(internal.stateEmitTimer);
+        internal.stateEmitTimer = null;
+      }
+      let emitted = 0;
+      manager.on("state", () => {
+        emitted += 1;
+      });
+
+      internal.emitState();
+      await vi.advanceTimersByTimeAsync(749);
+      expect(emitted).toBe(0);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(emitted).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("resolveUnrestrictTimeoutBudgetMs", () => {
   it("covers the complete provider plan and each later Real-Debrid account attempt", () => {
     const settings = {

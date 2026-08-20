@@ -50,8 +50,19 @@ describe("desktop shell", () => {
     expect(getSnapshotRenderDelay(2_470, true, "statistics")).toBe(800);
   });
 
-  it("renders medium download queues immediately after their calm half-second snapshot", () => {
+  it("renders medium download queues immediately after their calm 750 ms snapshot", () => {
     expect(getSnapshotRenderDelay(661, true, "downloads")).toBe(0);
+  });
+
+  it("does not add renderer delay after the 750 ms manager cadence for a small active queue", () => {
+    expect(getSnapshotRenderDelay(69, true, "downloads")).toBe(0);
+  });
+
+  it("redraws the header speed sparkline on the same 750 ms cadence", () => {
+    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
+    const sparklineBlock = source.slice(source.indexOf("const DownloadSpeedSparkline"), source.indexOf("const initialCollectorTabs"));
+
+    expect(sparklineBlock).toContain("window.setInterval(tick, 750)");
   });
 
   it("keeps application menus mounted for animated opening and closing", () => {
