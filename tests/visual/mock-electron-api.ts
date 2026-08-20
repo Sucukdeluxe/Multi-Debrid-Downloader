@@ -449,6 +449,7 @@ export function createVisualElectronApi(
       stateUpdateListeners.add(callback);
       return () => stateUpdateListeners.delete(callback);
     },
+    onHistoryEntryAdded: () => stableNoopUnsubscribe,
     onClipboardDetected: () => stableNoopUnsubscribe,
     onUpdateInstallProgress: () => stableNoopUnsubscribe
   };

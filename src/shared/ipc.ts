@@ -79,6 +79,7 @@ export const IPC_CHANNELS = {
   EXTRACT_NOW: "queue:extract-now",
   RESET_PACKAGE: "queue:reset-package",
   GET_HISTORY: "history:get",
+  HISTORY_ENTRY_ADDED: "history:entry-added",
   CLEAR_HISTORY: "history:clear",
   REMOVE_HISTORY_ENTRY: "history:remove-entry",
   REVEAL_HISTORY_ENTRY: "history:reveal-entry",

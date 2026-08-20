@@ -115,6 +115,13 @@ const api: ElectronApi = {
   extractNow: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.EXTRACT_NOW, packageId),
   resetPackage: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.RESET_PACKAGE, packageId),
   getHistory: (): Promise<HistoryEntry[]> => ipcRenderer.invoke(IPC_CHANNELS.GET_HISTORY),
+  onHistoryEntryAdded: (callback: (entry: HistoryEntry) => void): (() => void) => {
+    const listener = (_event: unknown, entry: HistoryEntry): void => callback(entry);
+    ipcRenderer.on(IPC_CHANNELS.HISTORY_ENTRY_ADDED, listener);
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.HISTORY_ENTRY_ADDED, listener);
+    };
+  },
   clearHistory: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.CLEAR_HISTORY),
   removeHistoryEntry: (entryId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.REMOVE_HISTORY_ENTRY, entryId),
   revealHistoryEntry: (entryId: string): Promise<HistoryRevealResult> => ipcRenderer.invoke(IPC_CHANNELS.REVEAL_HISTORY_ENTRY, entryId),

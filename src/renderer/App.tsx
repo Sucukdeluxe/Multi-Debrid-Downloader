@@ -73,6 +73,7 @@ import {
 } from "./views/collector/CollectorView";
 import {
   buildHistoryViewModel,
+  mergeLiveHistoryEntry,
   pruneHistoryIds,
   selectVisibleHistoryIds,
   type HistoryFilter
@@ -1658,6 +1659,8 @@ export function App(): ReactElement {
   const [historyCtxMenu, setHistoryCtxMenu] = useState<{ x: number; y: number; entryId: string } | null>(null);
   const historyCtxMenuRef = useRef<HTMLDivElement>(null);
   const historyLoadGenerationRef = useRef(0);
+  const historyLoadActiveRef = useRef(false);
+  const pendingLiveHistoryEntriesRef = useRef<HistoryEntry[]>([]);
   const historyVisibleIdsRef = useRef<string[]>([]);
   const [allDebridHostInfo, setAllDebridHostInfo] = useState<AllDebridHostInfo | null>(null);
   const [allDebridHostLoading, setAllDebridHostLoading] = useState(false);
@@ -1807,6 +1810,8 @@ export function App(): ReactElement {
 
   const loadHistoryEntries = useCallback(async (): Promise<void> => {
     const generation = ++historyLoadGenerationRef.current;
+    historyLoadActiveRef.current = true;
+    pendingLiveHistoryEntriesRef.current = [];
     setHistoryLoading(true);
     setHistoryError("");
     try {
@@ -1814,13 +1819,24 @@ export function App(): ReactElement {
       if (!mountedRef.current || generation !== historyLoadGenerationRef.current) {
         return;
       }
-      applyHistoryEntries(entries);
+      const settings = snapshotRef.current.settings;
+      const merged = [...pendingLiveHistoryEntriesRef.current].reverse().reduce(
+        (current, entry) => mergeLiveHistoryEntry(current, entry, {
+          maxEntries: settings.historyMaxEntries,
+          maxAgeDays: settings.historyMaxAgeDays
+        }),
+        entries
+      );
+      pendingLiveHistoryEntriesRef.current = [];
+      applyHistoryEntries(merged);
     } catch {
       if (mountedRef.current && generation === historyLoadGenerationRef.current) {
         setHistoryError("Verlauf konnte nicht geladen werden");
       }
     } finally {
       if (mountedRef.current && generation === historyLoadGenerationRef.current) {
+        historyLoadActiveRef.current = false;
+        pendingLiveHistoryEntriesRef.current = [];
         setHistoryLoading(false);
       }
     }
@@ -1833,8 +1849,31 @@ export function App(): ReactElement {
     void loadHistoryEntries();
     return () => {
       historyLoadGenerationRef.current += 1;
+      historyLoadActiveRef.current = false;
+      pendingLiveHistoryEntriesRef.current = [];
     };
   }, [loadHistoryEntries, tab]);
+
+  useEffect(() => {
+    const unsubscribeHistoryEntryAdded = window.rd.onHistoryEntryAdded((entry) => {
+      if (activeTabRef.current !== "history") {
+        return;
+      }
+      if (historyLoadActiveRef.current) {
+        pendingLiveHistoryEntriesRef.current = [
+          entry,
+          ...pendingLiveHistoryEntriesRef.current.filter((pending) => pending.id !== entry.id)
+        ];
+      }
+      const settings = snapshotRef.current.settings;
+      applyHistoryEntries(mergeLiveHistoryEntry(historyEntriesRef.current, entry, {
+        maxEntries: settings.historyMaxEntries,
+        maxAgeDays: settings.historyMaxAgeDays
+      }));
+      setHistoryError("");
+    });
+    return unsubscribeHistoryEntryAdded;
+  }, [applyHistoryEntries]);
 
   const loadAllDebridHostInfo = useCallback(async (silent = false): Promise<void> => {
     const requestId = allDebridHostRequestRef.current + 1;

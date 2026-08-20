@@ -929,6 +929,12 @@ function registerIpcHandlers(): void {
     }
     mainWindow.webContents.send(IPC_CHANNELS.STATE_UPDATE, snapshot);
   };
+  controller.onHistoryEntryAdded = (entry) => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return;
+    }
+    mainWindow.webContents.send(IPC_CHANNELS.HISTORY_ENTRY_ADDED, entry);
+  };
 }
 
 function formatRendererErrorReport(rawReport: unknown): string {

@@ -50,6 +50,19 @@ export interface HistoryPage {
 
 export const HISTORY_PAGE_SIZE = 100;
 
+export function mergeLiveHistoryEntry(
+  entries: readonly HistoryEntry[],
+  incoming: HistoryEntry,
+  limits: { maxEntries: number; maxAgeDays: number },
+  nowMs: number = Date.now()
+): HistoryEntry[] {
+  const maxEntries = limits.maxEntries > 0 ? Math.min(limits.maxEntries, 100_000) : 500;
+  const cutoff = limits.maxAgeDays > 0 ? nowMs - limits.maxAgeDays * 86_400_000 : 0;
+  const merged = [incoming, ...entries.filter((entry) => entry.id !== incoming.id)];
+  const retained = cutoff > 0 ? merged.filter((entry) => entry.completedAt >= cutoff) : merged;
+  return retained.length > maxEntries ? retained.slice(0, maxEntries) : retained;
+}
+
 export const HISTORY_TABLE_COLUMN_IDS = ["name", "status", "size", "hoster", "started", "completed"] as const;
 export type HistoryTableColumnId = typeof HISTORY_TABLE_COLUMN_IDS[number];
 export type HistoryTableColumnWidths = Record<HistoryTableColumnId, number>;

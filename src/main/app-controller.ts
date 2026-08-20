@@ -120,6 +120,8 @@ export class AppController {
 
   private onStateHandler: ((snapshot: UiSnapshot) => void) | null = null;
 
+  private onHistoryEntryAddedHandler: ((entry: HistoryEntry) => void) | null = null;
+
   private autoResumePending = false;
   private runtimeStatsTimer: NodeJS.Timeout | null = null;
   private lastMemoryWarnAt = 0;
@@ -162,7 +164,7 @@ export class AppController {
       invalidateMegaSession: () => this.megaWebFallback.invalidateSession(),
       protectEmptyClobber: loadResult.status === "empty-unreadable",
       onHistoryEntry: (entry: HistoryEntry) => {
-        addHistoryEntryForRetention(this.storagePaths, this.settings.historyRetentionMode, entry, this.historyLimits());
+        this.recordHistoryEntry(entry);
       }
     });
     this.manager.on("state", (snapshot: UiSnapshot) => {
@@ -451,6 +453,10 @@ export class AppController {
   private overlayLiveUsageCounters(target: AppSettings): void {
     const liveSettings = this.manager.getSettings();
     overlayLiveUsageCounters(target, liveSettings, this.manager.getLiveTotalRuntimeMs());
+  }
+
+  public set onHistoryEntryAdded(handler: ((entry: HistoryEntry) => void) | null) {
+    this.onHistoryEntryAddedHandler = handler;
   }
 
   private applySettingsOnlyBackup(importedSettings: AppSettings, remoteDiagnostics?: unknown, restoreRemoteDiagnostics = false): void {
@@ -1342,6 +1348,13 @@ export class AppController {
 
   private historyLimits(): { maxEntries: number; maxAgeDays: number } {
     return { maxEntries: this.settings.historyMaxEntries, maxAgeDays: this.settings.historyMaxAgeDays };
+  }
+
+  private recordHistoryEntry(entry: HistoryEntry): void {
+    const entries = addHistoryEntryForRetention(this.storagePaths, this.settings.historyRetentionMode, entry, this.historyLimits());
+    if (entries[0]?.id === entry.id) {
+      this.onHistoryEntryAddedHandler?.(entry);
+    }
   }
 
   public getHistory(): HistoryEntry[] {

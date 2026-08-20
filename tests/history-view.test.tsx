@@ -12,6 +12,7 @@ import {
   getHistoryTableGridTemplate,
   getHistoryTableMinWidth,
   HISTORY_PAGE_SIZE,
+  mergeLiveHistoryEntry,
   paginateHistoryRows,
   pruneHistoryIds,
   resizeHistoryTableColumn,
@@ -107,6 +108,18 @@ const entries: HistoryViewEntry[] = [
 ];
 
 describe("history model", () => {
+  it("prepends live entries without duplicates and applies retention limits", () => {
+    const incoming = entry({ id: "live", name: "Live", completedAt: now }) as HistoryEntry;
+    const existing: HistoryEntry[] = [
+      entry({ id: "current", name: "Current", completedAt: now - 1_000 }) as HistoryEntry,
+      entry({ id: "live", name: "Old live", completedAt: now - 2_000 }) as HistoryEntry,
+      entry({ id: "expired", name: "Expired", completedAt: now - 3 * 86_400_000 }) as HistoryEntry
+    ];
+
+    expect(mergeLiveHistoryEntry(existing, incoming, { maxEntries: 2, maxAgeDays: 2 }, now).map((item) => item.id))
+      .toEqual(["live", "current"]);
+  });
+
   it("separates today, previous six calendar days, older and status filters at exact boundaries", () => {
     const expected: Record<HistoryFilter, string[]> = {
       all: ["today", "week-edge", "week", "older"],
@@ -613,6 +626,18 @@ describe("visual history states", () => {
     expect(setup).toBeGreaterThan(effectStart);
     expect(setup).toBeLessThan(firstRequest);
     expect(cleanup).toBeGreaterThan(firstRequest);
+  });
+
+  it("merges pushed history entries only while the history tab is open", () => {
+    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+    const listenerStart = source.indexOf("window.rd.onHistoryEntryAdded");
+    const listenerEnd = source.indexOf("return unsubscribeHistoryEntryAdded", listenerStart);
+    const listener = source.slice(listenerStart, listenerEnd);
+
+    expect(listenerStart).toBeGreaterThan(-1);
+    expect(listener).toContain('activeTabRef.current !== "history"');
+    expect(listener).toContain("mergeLiveHistoryEntry");
+    expect(listener).not.toContain("getHistory()");
   });
 
   it("keeps bootstrap deterministic before exposing loading and error responses to the opened history view", async () => {

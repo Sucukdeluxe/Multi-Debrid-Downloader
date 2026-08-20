@@ -142,6 +142,7 @@ export interface ElectronApi {
   extractNow: (packageId: string) => Promise<void>;
   resetPackage: (packageId: string) => Promise<void>;
   getHistory: () => Promise<HistoryEntry[]>;
+  onHistoryEntryAdded: (callback: (entry: HistoryEntry) => void) => () => void;
   clearHistory: () => Promise<void>;
   removeHistoryEntry: (entryId: string) => Promise<void>;
   revealHistoryEntry: (entryId: string) => Promise<HistoryRevealResult>;
