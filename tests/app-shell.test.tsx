@@ -79,6 +79,7 @@ describe("desktop shell", () => {
 
     expect(pointerUp.indexOf("commitDownloadColumnDrag")).toBeGreaterThanOrEqual(0);
     expect(pointerUp.indexOf("commitDownloadColumnDrag")).toBeLessThan(pointerUp.indexOf("columnDragSettleTimerRef.current = window.setTimeout"));
+    expect(pointerUp.indexOf("commitDownloadColumnDrag")).toBeLessThan(pointerUp.indexOf("persistColumnOrder"));
     expect(pointerUp).toContain("snapshot.settings.animatePackageDisclosure");
   });
 

@@ -95,7 +95,7 @@ import {
   type StatisticsViewActions
 } from "./views/statistics/StatisticsView";
 import { buildDownloadsViewModel, formatRemainingDownloadBytes, getDownloadQueueTotalBytes, getDownloadSpeedBps, getPendingDownloadItemCount, getRemainingDownloadBytes, type DownloadDisplayMode, type DownloadSidebarFilter } from "./views/downloads/downloads-model";
-import { applyDownloadGridTemplate, downloadColumnDefinitions, type DownloadSortColumn } from "./views/downloads/DownloadsTable";
+import { downloadColumnDefinitions, type DownloadSortColumn } from "./views/downloads/DownloadsTable";
 import { DeleteConfirmationDialog } from "./views/downloads/DeleteConfirmationDialog";
 import { beginDownloadColumnDrag, clearDownloadColumnDrag, commitDownloadColumnDrag, createDownloadColumnOrderPersistence, DOWNLOAD_COLUMN_MOVE_DURATION_MS, updateDownloadColumnDrag, type DownloadColumnDragSession, type DownloadColumnOrderPersistence } from "./views/downloads/column-drag";
 import {
@@ -4917,11 +4917,11 @@ export function App(): ReactElement {
       suppressColumnSortRef.current = true;
       window.setTimeout(() => { suppressColumnSortRef.current = false; }, 0);
       const changed = next.join("|") !== session.measurements.map((measurement) => measurement.id).join("|");
-      if (changed) persistColumnOrder(next);
       const animationsEnabled = snapshot.settings.animatePackageDisclosure;
       columnDragAnimationsRef.current = commitDownloadColumnDrag(session, next, (order) => {
         if (changed) flushSync(() => setColumnOrder(order));
-      }, () => applyDownloadGridTemplate(session.root, next), animationsEnabled);
+      }, () => {}, animationsEnabled);
+      if (changed) persistColumnOrder(next);
       if (!animationsEnabled) {
         if (columnDragSessionRef.current === session) columnDragSessionRef.current = null;
         return;

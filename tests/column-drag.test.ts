@@ -54,9 +54,19 @@ describe("animated download column drag", () => {
   });
 
   it.each([
-    { afterLeft: 150, beforeLeft: 0, expectedDelta: -150, next: ["size", "name", "status"] },
-    { afterLeft: 0, beforeLeft: 150, expectedDelta: 150, next: ["name", "size", "status"] }
-  ])("commits the target grid before animating from a $expectedDelta px inverse offset", ({ afterLeft, beforeLeft, expectedDelta, next }) => {
+    { afterLeft: 150, beforeLeft: 0, expectedDelta: -150, measurements: columns, next: ["size", "name", "status"] },
+    {
+      afterLeft: 0,
+      beforeLeft: 150,
+      expectedDelta: 150,
+      measurements: [
+        { id: "size", left: 0, width: 150 },
+        { id: "name", left: 150, width: 300 },
+        { id: "status", left: 450, width: 100 }
+      ],
+      next: ["name", "size", "status"]
+    }
+  ])("commits the target grid before animating from a $expectedDelta px inverse offset", ({ afterLeft, beforeLeft, expectedDelta, measurements, next }) => {
     const commitDownloadColumnDrag = (columnDrag as unknown as {
       commitDownloadColumnDrag?: (session: DownloadColumnDragSession, order: string[], commit: (order: string[]) => void, prepare: () => void) => Animation[];
     }).commitDownloadColumnDrag;
@@ -64,6 +74,7 @@ describe("animated download column drag", () => {
     if (!commitDownloadColumnDrag) return;
 
     const events: string[] = [];
+    const selectors: string[] = [];
     let committed = false;
     const outerAnimate = vi.fn(() => ({ finished: Promise.resolve() } as unknown as Animation));
     const animate = vi.fn(() => ({ finished: Promise.resolve() } as unknown as Animation));
@@ -76,7 +87,10 @@ describe("animated download column drag", () => {
     const root = {
       classList: { add: () => events.push("add-class"), remove: () => events.push("clear-classes") },
       dataset: { columnDragging: "name" },
-      querySelectorAll: (selector: string) => selector === "[data-download-column]" ? [element] : [],
+      querySelectorAll: (selector: string) => {
+        selectors.push(selector);
+        return selector.includes('data-download-column="name"') ? [element] : [];
+      },
       style: {
         removeProperty: (property: string) => events.push(`clear:${property}`)
       }
@@ -84,9 +98,9 @@ describe("animated download column drag", () => {
     const session = {
       active: true,
       draggedId: "name",
-      measurements: columns,
+      measurements,
       pointerId: -1,
-      preview: calculateColumnDragPreview(columns, "name", next[0] === "name" ? -160 : 160),
+      preview: calculateColumnDragPreview(measurements, "name", next[0] === "name" ? -160 : 160),
       root,
       startX: 0
     } as DownloadColumnDragSession;
@@ -97,6 +111,9 @@ describe("animated download column drag", () => {
     }, () => events.push("prepare-grid"));
 
     expect(animations).toHaveLength(1);
+    expect(selectors[0]).toContain('data-download-column="name"');
+    expect(selectors[0]).toContain('data-download-column="size"');
+    expect(selectors[0]).not.toContain('data-download-column="status"');
     expect(events).toContain("prepare-grid");
     expect(events.indexOf("prepare-grid")).toBeLessThan(events.indexOf(`commit:${next.join("|")}`));
     expect(events).toContain(`commit:${next.join("|")}`);
@@ -109,6 +126,7 @@ describe("animated download column drag", () => {
 
   it("commits immediately without WAAPI when application animations are disabled", () => {
     const animate = vi.fn(() => ({ finished: Promise.resolve() } as unknown as Animation));
+    const querySelectorAll = vi.fn((selector: string) => selector === "[data-column-dragging]" ? [] : [element]);
     let committed = false;
     const element = {
       children: [{ animate }],
@@ -117,7 +135,7 @@ describe("animated download column drag", () => {
     const root = {
       classList: { add: vi.fn(), remove: vi.fn() },
       dataset: {},
-      querySelectorAll: (selector: string) => selector === "[data-download-column]" ? [element] : [],
+      querySelectorAll,
       style: { removeProperty: vi.fn() }
     } as unknown as HTMLElement;
     const session = {
@@ -136,6 +154,8 @@ describe("animated download column drag", () => {
 
     expect(committed).toBe(true);
     expect(animations).toEqual([]);
+    expect(querySelectorAll).toHaveBeenCalledTimes(1);
+    expect(querySelectorAll).toHaveBeenCalledWith("[data-column-dragging]");
     expect(animate).not.toHaveBeenCalled();
   });
 

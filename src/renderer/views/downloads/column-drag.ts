@@ -124,12 +124,22 @@ export function commitDownloadColumnDrag(
   prepare: () => void = () => {},
   animationsEnabled = true
 ): Animation[] {
-  const elements = Array.from(session.root.querySelectorAll<HTMLElement>("[data-download-column]"));
+  if (!animationsEnabled) {
+    clearDownloadColumnDrag(session);
+    prepare();
+    commit(order);
+    return [];
+  }
+  const originalOrder = session.measurements.map((measurement) => measurement.id);
+  const movedIds = originalOrder.filter((id, index) => (
+    order[index] !== id || Math.abs(session.preview.settleOffsets[id] ?? 0) >= 0.5
+  ));
+  const selector = movedIds.map((id) => `[data-download-column="${id}"]`).join(", ");
+  const elements = selector ? Array.from(session.root.querySelectorAll<HTMLElement>(selector)) : [];
   const before = new Map(elements.map((element) => [element, element.getBoundingClientRect()]));
   clearDownloadColumnDrag(session);
   prepare();
   commit(order);
-  if (!animationsEnabled) return [];
   session.root.classList.add("is-column-drag-settling");
   const animations: Animation[] = [];
   for (const element of elements) {

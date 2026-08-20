@@ -44,13 +44,6 @@ export function downloadGridTemplateForOrder(columnOrder: readonly string[]): st
   return downloadGridTemplate(columnOrder.map((column) => downloadColumnDefinitions[column]?.width ?? "100px").join(" "));
 }
 
-export function applyDownloadGridTemplate(root: HTMLElement, columnOrder: readonly string[]): void {
-  const value = downloadGridTemplateForOrder(columnOrder);
-  root.querySelectorAll<HTMLElement>(".downloads-table-header, .downloads-package-row, .downloads-item-row").forEach((row) => {
-    row.style.gridTemplateColumns = value;
-  });
-}
-
 function isPackageRowDisclosureExcluded(target: EventTarget | null): boolean {
   const closest = (target as { closest?: (selector: string) => Element | null } | null)?.closest;
   return typeof closest === "function" && closest.call(target, PACKAGE_ROW_DISCLOSURE_EXCLUSION_SELECTOR) !== null;
