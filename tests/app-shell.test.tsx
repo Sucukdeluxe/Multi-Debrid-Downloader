@@ -83,6 +83,16 @@ describe("desktop shell", () => {
     expect(pointerUp).toContain("snapshot.settings.animatePackageDisclosure");
   });
 
+  it("resets the download columns immediately and persists the default order", () => {
+    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
+    const actions = source.slice(source.indexOf("const downloadsActions"), source.indexOf("const statisticsActions"));
+
+    expect(actions).toContain("onResetColumnLayout");
+    expect(actions).toContain("setColumnOrder(DEFAULT_COLUMN_ORDER)");
+    expect(actions).toContain("persistColumnOrder(DEFAULT_COLUMN_ORDER)");
+    expect(actions).toContain('showToast("Spaltenlayout zurückgesetzt"');
+  });
+
   it("keeps application menus mounted for animated opening and closing", () => {
     const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
     const css = readFileSync(new URL("../src/renderer/styles.css", import.meta.url), "utf8");

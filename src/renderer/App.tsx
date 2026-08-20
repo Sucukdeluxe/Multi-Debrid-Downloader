@@ -4805,6 +4805,20 @@ export function App(): ReactElement {
   }), [actionBusy, columnOrder, downloadDisclosureRevision, downloadPackageSpeeds, downloadQueueTotalBytes, downloadRemaining, downloadsSortColumn, downloadsSortDescending, downloadsViewCore, editingName, editingPackageId, gridTemplate, liveDownloadSpeedBps, providerStats.length, scheduleCountdown, schedulePickerOpen, scheduleTimeInput, snapshot.canPause, snapshot.canStart, snapshot.canStop, snapshot.clipboardActive, snapshot.etaText, snapshot.reconnectSeconds, snapshot.session.items, snapshot.session.paused, snapshot.session.reconnectReason, snapshot.session.running, snapshot.settings.animatePackageDisclosure, snapshot.settings.scheduledStartEpochMs, snapshot.stats.totalDownloaded, snapshot.stats.totalPackages]);
 
   const downloadsActions: DownloadsViewActions = {
+    onResetColumnLayout: () => {
+      if (columnDragSettleTimerRef.current !== null) {
+        window.clearTimeout(columnDragSettleTimerRef.current);
+        columnDragSettleTimerRef.current = null;
+      }
+      cancelColumnDragAnimations();
+      if (columnDragSessionRef.current) {
+        clearDownloadColumnDrag(columnDragSessionRef.current);
+        columnDragSessionRef.current = null;
+      }
+      setColumnOrder(DEFAULT_COLUMN_ORDER);
+      persistColumnOrder(DEFAULT_COLUMN_ORDER);
+      showToast("Spaltenlayout zurückgesetzt", 1800);
+    },
     onDisplayModeChange: setDownloadDisplayMode,
     onFilterChange: setDownloadFilter,
     onProviderFilterChange: setDownloadProviderFilter,
