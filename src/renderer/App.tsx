@@ -6445,6 +6445,7 @@ export function App(): ReactElement {
         columnContextMenu={colHeaderCtx ? (
         <ContextMenu
           ariaLabel="Spaltenauswahl"
+          className="md-column-context-menu"
           onClose={() => setColHeaderCtx(null)}
           open
           ref={colHeaderCtxRef}
@@ -6459,7 +6460,7 @@ export function App(): ReactElement {
             return (
               <button
                 key={col}
-                className={`ctx-menu-item${isRequired ? " ctx-menu-disabled" : ""}${isVisible ? " ctx-menu-active" : ""}`}
+                className={`ctx-menu-item${isRequired ? " ctx-menu-disabled" : ""}`}
                 disabled={isRequired}
                 onClick={() => {
                   if (isRequired) return;
@@ -6482,12 +6483,13 @@ export function App(): ReactElement {
                   setColumnOrder(newOrder);
                 }}
               >
-                {isVisible ? "\u2713 " : "\u2003 "}{def.label}
+                <span aria-hidden="true" className="column-menu-check">{isVisible ? "\u2713" : ""}</span>
+                <span>{def.label}</span>
               </button>
             );
           })}
           <div className="ctx-menu-sep" />
-          <button className="ctx-menu-item" onClick={() => {
+          <button className="ctx-menu-item column-menu-reset" onClick={() => {
             resetColumnLayout();
             setColHeaderCtx(null);
           }}>Spaltenlayout zurücksetzen</button>

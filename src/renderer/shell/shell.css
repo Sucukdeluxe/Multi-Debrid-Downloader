@@ -796,6 +796,33 @@
   background: var(--ui-border);
 }
 
+.md-column-context-menu .ctx-menu-item {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  gap: 4px;
+}
+
+.md-column-context-menu .ctx-menu-item:not(.ctx-menu-disabled) {
+  color: var(--ui-text);
+}
+
+.md-column-context-menu .ctx-menu-disabled {
+  color: var(--ui-text);
+  opacity: 1;
+}
+
+.md-column-context-menu .column-menu-check {
+  color: var(--ui-success-text);
+  font-weight: 700;
+  text-align: center;
+}
+
+.md-column-context-menu .column-menu-reset {
+  display: block;
+  text-align: center;
+}
+
 .md-toast {
   right: 20px;
   bottom: 84px;

@@ -96,6 +96,18 @@ describe("desktop shell", () => {
     expect(menu).toContain("Spaltenlayout zurücksetzen");
     expect(menu).toContain("resetColumnLayout()");
     expect(menu).toContain("setColHeaderCtx(null)");
+    expect(menu).toContain('className="column-menu-check"');
+    expect(menu).toContain('className="ctx-menu-item column-menu-reset"');
+    expect(menu).not.toContain("ctx-menu-active");
+  });
+
+  it("styles checked columns with a green mark and normal text", () => {
+    const shellCss = readFileSync(new URL("../src/renderer/shell/shell.css", import.meta.url), "utf8");
+
+    expect(shellCss).toMatch(/\.md-column-context-menu \.column-menu-check\s*\{[^}]*color:\s*var\(--ui-success-text\);/s);
+    expect(shellCss).toMatch(/\.md-column-context-menu \.ctx-menu-item:not\(\.ctx-menu-disabled\)\s*\{[^}]*color:\s*var\(--ui-text\);/s);
+    expect(shellCss).toMatch(/\.md-column-context-menu \.ctx-menu-disabled\s*\{[^}]*color:\s*var\(--ui-text\);[^}]*opacity:\s*1;/s);
+    expect(shellCss).toMatch(/\.md-column-context-menu \.column-menu-reset\s*\{[^}]*text-align:\s*center;/s);
   });
 
   it("keeps application menus mounted for animated opening and closing", () => {
