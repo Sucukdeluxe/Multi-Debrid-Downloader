@@ -4804,21 +4804,23 @@ export function App(): ReactElement {
     }
   }), [actionBusy, columnOrder, downloadDisclosureRevision, downloadPackageSpeeds, downloadQueueTotalBytes, downloadRemaining, downloadsSortColumn, downloadsSortDescending, downloadsViewCore, editingName, editingPackageId, gridTemplate, liveDownloadSpeedBps, providerStats.length, scheduleCountdown, schedulePickerOpen, scheduleTimeInput, snapshot.canPause, snapshot.canStart, snapshot.canStop, snapshot.clipboardActive, snapshot.etaText, snapshot.reconnectSeconds, snapshot.session.items, snapshot.session.paused, snapshot.session.reconnectReason, snapshot.session.running, snapshot.settings.animatePackageDisclosure, snapshot.settings.scheduledStartEpochMs, snapshot.stats.totalDownloaded, snapshot.stats.totalPackages]);
 
+  const resetColumnLayout = useCallback((): void => {
+    if (columnDragSettleTimerRef.current !== null) {
+      window.clearTimeout(columnDragSettleTimerRef.current);
+      columnDragSettleTimerRef.current = null;
+    }
+    cancelColumnDragAnimations();
+    if (columnDragSessionRef.current) {
+      clearDownloadColumnDrag(columnDragSessionRef.current);
+      columnDragSessionRef.current = null;
+    }
+    setColumnOrder(DEFAULT_COLUMN_ORDER);
+    persistColumnOrder(DEFAULT_COLUMN_ORDER);
+    showToast("Spaltenlayout zurückgesetzt", 1800);
+  }, [cancelColumnDragAnimations, persistColumnOrder, showToast]);
+
   const downloadsActions: DownloadsViewActions = {
-    onResetColumnLayout: () => {
-      if (columnDragSettleTimerRef.current !== null) {
-        window.clearTimeout(columnDragSettleTimerRef.current);
-        columnDragSettleTimerRef.current = null;
-      }
-      cancelColumnDragAnimations();
-      if (columnDragSessionRef.current) {
-        clearDownloadColumnDrag(columnDragSessionRef.current);
-        columnDragSessionRef.current = null;
-      }
-      setColumnOrder(DEFAULT_COLUMN_ORDER);
-      persistColumnOrder(DEFAULT_COLUMN_ORDER);
-      showToast("Spaltenlayout zurückgesetzt", 1800);
-    },
+    onResetColumnLayout: resetColumnLayout,
     onDisplayModeChange: setDownloadDisplayMode,
     onFilterChange: setDownloadFilter,
     onProviderFilterChange: setDownloadProviderFilter,
@@ -6484,6 +6486,11 @@ export function App(): ReactElement {
               </button>
             );
           })}
+          <div className="ctx-menu-sep" />
+          <button className="ctx-menu-item" onClick={() => {
+            resetColumnLayout();
+            setColHeaderCtx(null);
+          }}>Spaltenlayout zurücksetzen</button>
         </ContextMenu>
         ) : null}
         historyContextMenu={historyCtxMenu ? (() => {

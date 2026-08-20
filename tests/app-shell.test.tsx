@@ -85,12 +85,17 @@ describe("desktop shell", () => {
 
   it("resets the download columns immediately and persists the default order", () => {
     const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
+    const reset = source.slice(source.indexOf("const resetColumnLayout"), source.indexOf("const downloadsActions"));
     const actions = source.slice(source.indexOf("const downloadsActions"), source.indexOf("const statisticsActions"));
+    const menu = source.slice(source.indexOf("columnContextMenu={"), source.indexOf("historyContextMenu={"));
 
-    expect(actions).toContain("onResetColumnLayout");
-    expect(actions).toContain("setColumnOrder(DEFAULT_COLUMN_ORDER)");
-    expect(actions).toContain("persistColumnOrder(DEFAULT_COLUMN_ORDER)");
-    expect(actions).toContain('showToast("Spaltenlayout zurückgesetzt"');
+    expect(reset).toContain("setColumnOrder(DEFAULT_COLUMN_ORDER)");
+    expect(reset).toContain("persistColumnOrder(DEFAULT_COLUMN_ORDER)");
+    expect(reset).toContain('showToast("Spaltenlayout zurückgesetzt"');
+    expect(actions).toContain("onResetColumnLayout: resetColumnLayout");
+    expect(menu).toContain("Spaltenlayout zurücksetzen");
+    expect(menu).toContain("resetColumnLayout()");
+    expect(menu).toContain("setColHeaderCtx(null)");
   });
 
   it("keeps application menus mounted for animated opening and closing", () => {
