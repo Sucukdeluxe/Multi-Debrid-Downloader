@@ -549,7 +549,7 @@ export function DownloadsTableHeader({ actions, columnOrder, gridTemplate, sortC
             className="downloads-column-header"
             data-download-column={column}
             key={column}
-            onContextMenu={(event) => { event.preventDefault(); actions.onColumnContextMenu(column, event.clientX, event.clientY); }}
+            onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); actions.onColumnContextMenu(column, event.clientX, event.clientY); }}
             onPointerCancel={(event) => actions.onColumnPointerCancel(column, event)}
             onPointerDown={(event) => {
               if (event.button !== 0 || !event.isPrimary) return;

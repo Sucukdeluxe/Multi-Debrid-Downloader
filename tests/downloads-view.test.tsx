@@ -1572,6 +1572,28 @@ describe("download table row contracts", () => {
     ]);
   });
 
+  it("opens the column menu without letting the same context event close it again", () => {
+    const calls: Array<[string, number, number]> = [];
+    const header = DownloadsTableHeader({
+      actions: createActions({ onColumnContextMenu: (column, x, y) => calls.push([column, x, y]) }),
+      columnOrder: ["name", "size"],
+      gridTemplate: "200px 100px",
+      selectedCount: 0,
+      sortColumn: "name",
+      sortDirection: "asc",
+      visibleIds: []
+    });
+    const nameHeader = findElement(header, (element) => element.props["data-download-column"] === "name");
+    const preventDefault = vi.fn();
+    const stopPropagation = vi.fn();
+
+    nameHeader.props.onContextMenu({ clientX: 320, clientY: 140, preventDefault, stopPropagation });
+
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+    expect(stopPropagation).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual([["name", 320, 140]]);
+  });
+
   it("ignores another column move while the previous move is settling", () => {
     const calls: string[] = [];
     const header = DownloadsTableHeader({
