@@ -10,6 +10,7 @@ import {
   buildDownloadsViewModel,
   classifyDownloadStatus,
   formatRemainingDownloadBytes,
+  formatRemainingDownloadTooltip,
   getDownloadQueueTotalBytes,
   getRemainingDownloadBytes,
   getPendingDownloadItemCount,
@@ -248,6 +249,22 @@ describe("verbleibendes Downloadvolumen", () => {
     expect(formatRemainingDownloadBytes({ bytes: 750_000_000, unknownItems: 1 })).toBe("≥ 715.26 MB");
     expect(formatRemainingDownloadBytes({ bytes: 0, unknownItems: 1 })).toBe("Unbekannt");
     expect(formatRemainingDownloadBytes({ bytes: 0, unknownItems: 0 })).toBe("0 B");
+    expect(formatRemainingDownloadTooltip({ bytes: 750_000_000, unknownItems: 1 }))
+      .toBe("Noch unbekannte Dateigrößen: 1. Die tatsächliche Restmenge kann höher sein.");
+    expect(formatRemainingDownloadTooltip({ bytes: 0, unknownItems: 0 })).toBe("");
+  });
+
+  it("erklärt unbekannte Restgrößen direkt am verbleibenden Wert", () => {
+    const model = withRuntime(createInput());
+    model.status.remaining = "≥ 715.26 MB";
+    model.status.remainingTooltip = "Noch unbekannte Dateigrößen: 2. Die tatsächliche Restmenge kann höher sein.";
+
+    const html = renderToStaticMarkup(<DownloadsSidebarStatus model={model} />);
+
+    expect(html).toContain('class="has-tooltip"');
+    expect(html).toContain('title="Noch unbekannte Dateigrößen: 2. Die tatsächliche Restmenge kann höher sein."');
+    expect(html).toContain('aria-describedby="downloads-status-remaining-tooltip"');
+    expect(html).toContain('class="downloads-visually-hidden"');
   });
 });
 
@@ -766,6 +783,7 @@ function withRuntime(input: DownloadsModelInput, overrides: Record<string, unkno
       totalBytes: 10_000_000_000,
       remaining: "6,50 GB",
       remainingBytes: 6_500_000_000,
+      remainingTooltip: "",
       hosters: 3,
       speed: "96,00 Mbit/s",
       eta: "00:05:00"

@@ -121,6 +121,11 @@ export function formatRemainingDownloadBytes(summary: { bytes: number; unknownIt
   return summary.bytes > 0 ? `≥ ${humanSize(summary.bytes)}` : "Unbekannt";
 }
 
+export function formatRemainingDownloadTooltip(summary: { bytes: number; unknownItems: number }): string {
+  if (summary.unknownItems <= 0) return "";
+  return `Noch unbekannte Dateigrößen: ${summary.unknownItems}. Die tatsächliche Restmenge kann höher sein.`;
+}
+
 export function getDownloadSpeedBps(packageSpeeds: Record<string, number>): number {
   let total = 0;
   for (const speed of Object.values(packageSpeeds)) {

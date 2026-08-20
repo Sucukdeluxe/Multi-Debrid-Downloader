@@ -21,6 +21,7 @@ export interface DownloadsStatusModel {
   totalBytes: number;
   remaining: string;
   remainingBytes: number;
+  remainingTooltip?: string;
   hosters: number;
   speed: string;
   eta: string;
@@ -106,15 +107,18 @@ export function DownloadsSidebar({ actions, model }: { actions: DownloadsViewAct
 export function DownloadsSidebarStatus({ model }: { model: DownloadsViewModel }): ReactElement {
   const speed = model.status.speed.replace(/^Geschwindigkeit:\s*/i, "");
   const eta = model.status.eta.replace(/^ETA:\s*/i, "");
-  const entries = [
+  const entries: Array<{ label: string; metric: string; numericValue: number; value: string; tooltip?: string }> = [
     { label: "Pakete", metric: "packages", numericValue: model.status.packages, value: integerFormatter.format(model.status.packages) },
     { label: "Links", metric: "links", numericValue: model.status.links, value: integerFormatter.format(model.status.links) },
     { label: "Sitzung", metric: "session", numericValue: model.status.sessionBytes, value: model.status.session },
-    { label: "Verbleibend", metric: "remaining", numericValue: model.status.remainingBytes, value: model.status.remaining },
+    { label: "Verbleibend", metric: "remaining", numericValue: model.status.remainingBytes, value: model.status.remaining, tooltip: model.status.remainingTooltip },
     { label: "Gesamt", metric: "total", numericValue: model.status.totalBytes, value: model.status.total },
     { label: "Hoster", metric: "hosters", numericValue: model.status.hosters, value: integerFormatter.format(model.status.hosters) }
   ];
-  return <section className="downloads-sidebar-status" data-visual-region="downloads-sidebar-status" aria-label="Downloadstatus">{entries.map((entry) => <div key={entry.metric}><span>{entry.label}</span><RollingMetricValue numericValue={entry.numericValue} value={entry.value} /></div>)}<div><span>Geschwindigkeit</span><strong data-status-metric="speed">{speed}</strong></div><div><span>ETA</span><strong data-status-metric="eta">{eta}</strong></div></section>;
+  return <section className="downloads-sidebar-status" data-visual-region="downloads-sidebar-status" aria-label="Downloadstatus">{entries.map((entry) => {
+    const tooltipId = entry.tooltip ? `downloads-status-${entry.metric}-tooltip` : undefined;
+    return <div aria-describedby={tooltipId} className={entry.tooltip ? "has-tooltip" : undefined} key={entry.metric} title={entry.tooltip || undefined}><span>{entry.label}</span><RollingMetricValue numericValue={entry.numericValue} value={entry.value} />{entry.tooltip ? <span className="downloads-visually-hidden" id={tooltipId}>{entry.tooltip}</span> : null}</div>;
+  })}<div><span>Geschwindigkeit</span><strong data-status-metric="speed">{speed}</strong></div><div><span>ETA</span><strong data-status-metric="eta">{eta}</strong></div></section>;
 }
 
 export function DownloadsToolbar({ actions, model }: { actions: DownloadsViewActions; model: DownloadsViewModel }): ReactElement {

@@ -75,6 +75,8 @@ describe("renderer localization", () => {
     expect(translateUiText("Klicken zum Kopieren", "en")).toBe("Click to copy");
     expect(translateUiText("Geprüft", "en")).toBe("Checked");
     expect(translateUiText("gerade eben", "en")).toBe("just now");
+    expect(translateUiText("Noch unbekannte Dateigrößen: 3. Die tatsächliche Restmenge kann höher sein.", "en"))
+      .toBe("Unknown file sizes: 3. The actual remaining amount may be higher.");
     expect(translateUiText("Geschwindigkeit verschieben", "en")).toBe("Move Speed");
     expect(translateUiText("Geschwindigkeit nach links verschieben", "en")).toBe("Move Speed left");
     expect(translateUiText("Move Speed right", "de")).toBe("Geschwindigkeit nach rechts verschieben");

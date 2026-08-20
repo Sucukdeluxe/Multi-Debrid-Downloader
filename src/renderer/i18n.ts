@@ -251,6 +251,8 @@ function translateDynamic(value: string, language: AppLanguage): string {
     }
     const remaining = value.match(/^(.+) von (.+) übrig$/);
     if (remaining) return `${remaining[1]} of ${remaining[2]} remaining`;
+    const unknownRemaining = value.match(/^Noch unbekannte Dateigrößen: (\d+)\. Die tatsächliche Restmenge kann höher sein\.$/);
+    if (unknownRemaining) return `Unknown file sizes: ${unknownRemaining[1]}. The actual remaining amount may be higher.`;
     const actionsFor = value.match(/^Aktionen für (.+)$/);
     if (actionsFor) return `Actions for ${actionsFor[1]}`;
     const assignment = value.match(/^(.+) Zuordnung entfernen$/);
@@ -416,6 +418,8 @@ function translateDynamic(value: string, language: AppLanguage): string {
     }
     const remaining = value.match(/^(.+) of (.+) remaining$/);
     if (remaining) return `${remaining[1]} von ${remaining[2]} übrig`;
+    const unknownRemaining = value.match(/^Unknown file sizes: (\d+)\. The actual remaining amount may be higher\.$/);
+    if (unknownRemaining) return `Noch unbekannte Dateigrößen: ${unknownRemaining[1]}. Die tatsächliche Restmenge kann höher sein.`;
     const actionsFor = value.match(/^Actions for (.+)$/);
     if (actionsFor) return `Aktionen für ${actionsFor[1]}`;
     const assignment = value.match(/^Remove (.+) assignment$/);
