@@ -15,6 +15,7 @@ import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
 import { getItemLogPath, initItemLogs, shutdownItemLogs } from "../src/main/item-log";
 import { initPackageLogs, shutdownPackageLogs } from "../src/main/package-log";
 import { createStoragePaths, emptySession } from "../src/main/storage";
+import { loadStatisticsLedger } from "../src/main/statistics-ledger";
 import { getProviderRuntimeSnapshot, primeDebridLinkRuntimeCooldownForTests, resetDebridLinkRuntimeStateForTests, primeMegaDebridRuntimeCooldownForTests, resetMegaDebridRuntimeStateForTests, primeMegaDebridInFlightForTests, primeRealDebridRuntimeCooldownForTests, resetRealDebridRuntimeStateForTests } from "../src/main/debrid";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import { serializeRealDebridApiAccounts } from "../src/shared/real-debrid-accounts";
@@ -13350,6 +13351,68 @@ describe("download manager", () => {
 
     expect(internal.settings.realDebridAccountDailyUsageBytes).toEqual({ rda_one: 100, rda_two: 250 });
     expect(internal.settings.realDebridAccountTotalUsageBytes).toEqual({ rda_one: 1000, rda_two: 2050 });
+  });
+
+  it("projects rolling traffic for each concrete account without exposing minute buckets", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const settings = {
+      ...defaultSettings(),
+      providerDailyUsageDay: getProviderUsageDayKey(),
+      realDebridApiTokens: serializeRealDebridApiAccounts([
+        { id: "rda_one", token: "token-one" },
+        { id: "rda_two", token: "token-two" }
+      ])
+    };
+    const manager = new DownloadManager(settings, emptySession(), createStoragePaths(path.join(root, "state")));
+    const internal = manager as unknown as {
+      recordProviderDownloadedBytes: (
+        provider: "realdebrid",
+        bytes: number,
+        providerAccountId?: string,
+        providerAccountLabel?: string
+      ) => void;
+      statisticsLedger: { minutes: unknown[] };
+    };
+
+    internal.recordProviderDownloadedBytes("realdebrid", 50, "rda_one", "Primary");
+    internal.recordProviderDownloadedBytes("realdebrid", 75, "rda_two", "Secondary");
+    const stats = manager.getStats();
+
+    expect(stats.rolling24Hours).toMatchObject({ downloadedBytes: 125 });
+    expect(stats.rolling24Hours?.accounts.map((account) => [account.id, account.label, account.bytes])).toEqual([
+      ["rda_two", "Secondary", 75],
+      ["rda_one", "Primary", 50]
+    ]);
+    expect(stats.statistics?.minutes).toEqual([]);
+    expect(internal.statisticsLedger.minutes).toHaveLength(1);
+  });
+
+  it("keeps rolling traffic on session reset and clears it on total reset", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    const settings = {
+      ...defaultSettings(),
+      providerDailyUsageDay: getProviderUsageDayKey(),
+      realDebridApiTokens: serializeRealDebridApiAccounts([{ id: "rda_one", token: "token-one" }])
+    };
+    const manager = new DownloadManager(settings, emptySession(), createStoragePaths(path.join(root, "state")));
+    const internal = manager as unknown as {
+      recordProviderDownloadedBytes: (
+        provider: "realdebrid",
+        bytes: number,
+        providerAccountId?: string,
+        providerAccountLabel?: string
+      ) => void;
+    };
+
+    internal.recordProviderDownloadedBytes("realdebrid", 50, "rda_one", "Primary");
+    manager.resetSessionStats();
+    expect(manager.getStats().rolling24Hours?.downloadedBytes).toBe(50);
+
+    manager.resetDownloadStats();
+    expect(manager.getStats().rolling24Hours).toMatchObject({ downloadedBytes: 0, accounts: [] });
+    expect(loadStatisticsLedger(createStoragePaths(path.join(root, "state")).statisticsFile).minutes).toEqual([]);
   });
 
   it("does not recreate account usage when the source account was removed during the download", () => {

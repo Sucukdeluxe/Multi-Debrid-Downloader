@@ -79,12 +79,13 @@ import { mergeKnownTotalBytes } from "./download-size";
 import { DiskCapacityError, DiskReservationCoordinator, type DiskReservationLease } from "./disk-space";
 import { createRendererState } from "./renderer-state";
 import {
+  RollingAccountStatisticsAccumulator,
   addStatisticsActiveIntervalInPlace,
   addStatisticsBytesInPlace,
   addStatisticsOutcomeInPlace,
   createStatisticsLedger,
   loadStatisticsLedger,
-  normalizeStatisticsLedger,
+  projectStatisticsLedger,
   saveStatisticsLedger,
   seedStatisticsDayProviderBytes
 } from "./statistics-ledger";
@@ -1831,6 +1832,8 @@ export class DownloadManager extends EventEmitter {
 
   private statisticsLedger: StatisticsLedger;
 
+  private rollingAccountStatistics: RollingAccountStatisticsAccumulator;
+
   private statisticsDirty = false;
 
   private statisticsUrgent = false;
@@ -1974,6 +1977,7 @@ export class DownloadManager extends EventEmitter {
       settings.providerDailyUsageBytes,
       startedAt
     );
+    this.rollingAccountStatistics = new RollingAccountStatisticsAccumulator(this.statisticsLedger, startedAt);
     this.protectAgainstEmptyClobber = Boolean(options.protectEmptyClobber);
     if (this.protectAgainstEmptyClobber) {
       logger.warn("Session-Schutz aktiv: Start mit unlesbarer Session — leere Speicherungen blockiert, bis echte Daten vorliegen");
@@ -2640,7 +2644,8 @@ export class DownloadManager extends EventEmitter {
       sessionRuntimeMs: this.getAppSessionRuntimeMs(now),
       totalRuntimeMs: this.getLiveTotalRuntimeMs(now),
       runtimeMeasuredAt: now,
-      statistics: normalizeStatisticsLedger(this.statisticsLedger, now)
+      statistics: projectStatisticsLedger(this.statisticsLedger, now),
+      rolling24Hours: this.rollingAccountStatistics.snapshot(now)
     };
     this.statsCache = stats;
     this.statsCacheAt = now;
@@ -2845,6 +2850,7 @@ export class DownloadManager extends EventEmitter {
     this.settings.providerTotalUsageBytes = {};
     this.settings.debridLinkApiKeyTotalUsageBytes = {};
     this.statisticsLedger = createStatisticsLedger();
+    this.rollingAccountStatistics.reset(this.statisticsLedger);
     this.statisticsDirty = false;
     this.statisticsUrgent = false;
     saveStatisticsLedger(this.storagePaths.statisticsFile, this.statisticsLedger);
@@ -8217,12 +8223,25 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
-  private recordProviderDownloadedBytes(provider: DownloadItem["provider"], byteDelta: number, providerAccountId?: string): void {
+  private recordProviderDownloadedBytes(
+    provider: DownloadItem["provider"],
+    byteDelta: number,
+    providerAccountId?: string,
+    providerAccountLabel?: string
+  ): void {
     if (!provider) {
       return;
     }
+    const recordedAt = nowMs();
     const effectiveProvider = resolveMegaDebridProvider(this.settings, provider) || provider;
-    addStatisticsBytesInPlace(this.statisticsLedger, effectiveProvider, byteDelta);
+    addStatisticsBytesInPlace(this.statisticsLedger, effectiveProvider, byteDelta, recordedAt);
+    this.rollingAccountStatistics.record(
+      effectiveProvider,
+      byteDelta,
+      providerAccountId,
+      providerAccountLabel,
+      recordedAt
+    );
     this.statisticsDirty = true;
     const nextUsage = addProviderDailyUsageBytes(this.settings, effectiveProvider, byteDelta);
     const nextTotalUsage = addProviderTotalUsageBytes(this.settings, effectiveProvider, byteDelta);
@@ -10851,7 +10870,12 @@ export class DownloadManager extends EventEmitter {
               this.session.totalDownloadedBytes += buffer.length;
               this.sessionDownloadedBytes += buffer.length;
               this.settings.totalDownloadedAllTime += buffer.length;
-              this.recordProviderDownloadedBytes(item.provider, buffer.length, item.providerAccountId);
+              this.recordProviderDownloadedBytes(
+                item.provider,
+                buffer.length,
+                item.providerAccountId,
+                item.providerAccountLabel
+              );
               this.itemContributedBytes.set(active.itemId, (this.itemContributedBytes.get(active.itemId) || 0) + buffer.length);
               this.recordSpeed(buffer.length, item.packageId);
               throughputWindowBytes += buffer.length;
