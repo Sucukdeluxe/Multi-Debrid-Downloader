@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { finished } from "node:stream/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import { createPackage } from "@electron/asar";
 
@@ -47,7 +48,10 @@ async function createFixtureAsar(version: string): Promise<Buffer> {
   fs.mkdirSync(path.join(sourceDir, "build", "main", "main"), { recursive: true });
   fs.writeFileSync(path.join(sourceDir, "package.json"), JSON.stringify({ name: "multi-debrid-downloader", version }), "utf8");
   fs.writeFileSync(path.join(sourceDir, "build", "main", "main", "main.js"), `var package_default = { name: "multi-debrid-downloader", version: "${version}" };`, "utf8");
-  await createPackage(sourceDir, outputPath);
+  const output = await createPackage(sourceDir, outputPath) as unknown as NodeJS.WritableStream | undefined;
+  if (output && typeof output.once === "function" && !(output as { writableFinished?: boolean }).writableFinished) {
+    await finished(output);
+  }
   const payload = fs.readFileSync(outputPath);
   fs.rmSync(rootDir, { recursive: true, force: true });
   return payload;

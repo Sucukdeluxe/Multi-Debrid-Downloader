@@ -4,6 +4,23 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.52] - 2026-08-21
+
+### Rolling account statistics
+
+- Added a true rolling Last 24 Hours range directly after Today in Statistics.
+- Attributed downloaded traffic to the exact Real-Debrid, Mega-Debrid, or Debrid-Link account that produced each direct link.
+- Displayed the known account username with its provider while retaining safe fallback labels for accounts without checked identity data.
+- Kept the rolling total accurate across midnight, account disablement, deletion, application restarts, and session-statistics resets.
+- Started exact rolling account collection after the upgrade without inventing historical account ownership from older daily totals.
+
+### Statistics precision and performance
+
+- Kept primary statistics data totals in gigabytes above 1 TB so large daily volumes remain precise, for example 1,250 GB instead of 1.2 TB.
+- Stored traffic in sparse minute buckets with a bounded 48-hour retention window.
+- Maintained the visible 24-hour aggregate incrementally and kept raw minute history out of frequent renderer snapshots.
+- Preserved full rolling history in encrypted full backups while removing account IDs and labels from support statistics.
+
 ## [2.0.51] - 2026-08-21
 
 ### In-app updates
