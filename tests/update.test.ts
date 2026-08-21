@@ -45,6 +45,15 @@ afterEach(() => {
 });
 
 describe("update", () => {
+  it("always refreshes release metadata before installing instead of using the previous check result", () => {
+    const controller = fs.readFileSync(new URL("../src/main/app-controller.ts", import.meta.url), "utf8");
+    const install = controller.slice(controller.indexOf("public async installUpdate"), controller.indexOf("public addLinks"));
+
+    expect(install).toContain("installLatestUpdate(this.settings.updateRepo, undefined, onProgress)");
+    expect(install).not.toContain("cacheAgeMs");
+    expect(install).not.toContain("this.lastUpdateCheck &&");
+  });
+
   it("normalizes update repo input", () => {
     expect(normalizeUpdateRepo("")).toBe("Sucukdeluxe/Multi-Debrid-Downloader");
     expect(normalizeUpdateRepo("owner/repo")).toBe("owner/repo");

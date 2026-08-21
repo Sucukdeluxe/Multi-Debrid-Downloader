@@ -5,6 +5,7 @@ import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
+import { extractFile } from "@electron/asar";
 
 const EXPECTED_PUBLISH = Object.freeze({
   provider: "github",
@@ -138,6 +139,14 @@ function hasExtraResource(extraResources, expected) {
     && entry.from === expected.from
     && entry.to === expected.to
   ));
+}
+
+function readPackagedMainVersion(asarPath) {
+  requireNonEmptyFile(asarPath, "packaged app.asar");
+  const packagePayload = JSON.parse(extractFile(asarPath, "package.json").toString("utf8"));
+  const mainBundle = extractFile(asarPath, path.win32.join("build", "main", "main", "main.js")).toString("utf8");
+  const bundled = /name:\s*["']multi-debrid-downloader["']\s*,\s*version:\s*["']([^"']+)["']/.exec(mainBundle)?.[1] || "";
+  return { packageVersion: String(packagePayload?.version || ""), bundledVersion: bundled };
 }
 
 function sha256File(filePath) {
@@ -325,6 +334,9 @@ export function verifyPublicRelease(rootDir = process.cwd()) {
   const expectedPortable = `${EXPECTED_PRODUCT_NAME}-${version}-portable.exe`;
   const expectedBlockmap = `${expectedSetup}.blockmap`;
   assertEqual(latestFields.path, expectedSetup, "latest.yml path");
+  const packagedVersions = readPackagedMainVersion(path.join(releaseDir, "win-unpacked", "resources", "app.asar"));
+  assertEqual(packagedVersions.packageVersion, version, "packaged package version");
+  assertEqual(packagedVersions.bundledVersion, version, "packaged main bundle version");
 
   const requiredArtifacts = [expectedSetup, expectedPortable, expectedBlockmap];
   const missingArtifacts = requiredArtifacts.filter((fileName) => !fs.existsSync(path.join(releaseDir, fileName)));

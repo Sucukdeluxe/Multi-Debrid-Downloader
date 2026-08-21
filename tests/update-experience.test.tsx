@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { runLatestUpdateCheck, shouldApplyUpdateCheckResult } from "../src/renderer/App";
+import { runLatestUpdateCheck, shouldApplyUpdateCheckResult, shouldOpenUpdatePrompt } from "../src/renderer/App";
 import type { UpdateCheckResult } from "../src/shared/types";
 import { AppHeader } from "../src/renderer/shell/AppHeader";
 import { getUpdateDialogFocusTarget, UpdateExperience } from "../src/renderer/shell/UpdateExperience";
@@ -14,6 +14,12 @@ const callbacks = {
 };
 
 describe("update experience", () => {
+  it("keeps a dismissed update version closed until the app restarts or a newer version appears", () => {
+    expect(shouldOpenUpdatePrompt("startup", "v2.0.51", "v2.0.51")).toBe(false);
+    expect(shouldOpenUpdatePrompt("startup", "v2.0.52", "v2.0.51")).toBe(true);
+    expect(shouldOpenUpdatePrompt("manual", "v2.0.51", "v2.0.51")).toBe(true);
+  });
+
   it("renders the available update and prompt as one accessible experience", () => {
     const html = renderToStaticMarkup(
       <UpdateExperience
@@ -146,15 +152,15 @@ describe("update experience", () => {
     expect(css).toMatch(/\.md-update-dialog\s*\{[^}]*box-shadow:\s*0 12px 40px rgb\(0 0 0 \/ 45%\)/s);
   });
 
-  it("uses a light-blue update affordance and a bounded scrollable changelog", () => {
+  it("uses a green update affordance and a bounded scrollable changelog", () => {
     const css = readFileSync(new URL("../src/renderer/shell/shell.css", import.meta.url), "utf8");
     const theme = readFileSync(new URL("../src/renderer/theme.css", import.meta.url), "utf8");
 
     expect(theme).toMatch(/--ui-update:\s*#BAD0FC;/);
     expect(theme).toMatch(/--ui-update-hover:\s*#8AA5DC;/);
     expect(theme).toMatch(/--ui-update-text:\s*#181A1F;/);
-    expect(css).toMatch(/\.md-update-trigger\s*\{[^}]*background:\s*var\(--ui-update\);[^}]*color:\s*var\(--ui-update-text\);/s);
-    expect(css).toMatch(/\.md-update-trigger:hover\s*\{[^}]*background:\s*var\(--ui-update-hover\);/s);
+    expect(css).toMatch(/\.md-update-trigger\s*\{[^}]*background:\s*var\(--ui-success\);[^}]*color:\s*var\(--ui-update-text\);/s);
+    expect(css).toMatch(/\.md-update-trigger:hover\s*\{[^}]*background:\s*color-mix\(in srgb, var\(--ui-success\) 82%, #000\);/s);
     expect(css).toMatch(/\.md-update-release-notes pre\s*\{[^}]*max-height:\s*min\(360px, 45vh\);[^}]*overflow-y:\s*auto;/s);
   });
 

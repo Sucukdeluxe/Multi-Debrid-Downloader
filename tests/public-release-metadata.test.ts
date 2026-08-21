@@ -4,6 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
+import { createPackage } from "@electron/asar";
 
 type ReleaseVerification = {
   publish: {
@@ -39,6 +40,20 @@ const { verifyPublicRelease, verifyReleaseArchives } = await import(verifierUrl)
   ) => ArchiveVerification;
 };
 const fixtureRoots: string[] = [];
+async function createFixtureAsar(version: string): Promise<Buffer> {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "public-release-asar-"));
+  const sourceDir = path.join(rootDir, "source");
+  const outputPath = path.join(rootDir, "app.asar");
+  fs.mkdirSync(path.join(sourceDir, "build", "main", "main"), { recursive: true });
+  fs.writeFileSync(path.join(sourceDir, "package.json"), JSON.stringify({ name: "multi-debrid-downloader", version }), "utf8");
+  fs.writeFileSync(path.join(sourceDir, "build", "main", "main", "main.js"), `var package_default = { name: "multi-debrid-downloader", version: "${version}" };`, "utf8");
+  await createPackage(sourceDir, outputPath);
+  const payload = fs.readFileSync(outputPath);
+  fs.rmSync(rootDir, { recursive: true, force: true });
+  return payload;
+}
+const validAppAsar = await createFixtureAsar("1.7.233");
+const staleAppAsar = await createFixtureAsar("1.7.232");
 const redistributionFiles = [
   "LICENSE",
   "THIRD_PARTY_NOTICES.md",
@@ -172,6 +187,7 @@ function createReleaseFixture(): string {
   writeRedistributionFiles(rootDir, true);
   writeFile(rootDir, "assets/app_icon.ico", "application-icon");
   writeFile(rootDir, "win-unpacked/resources/assets/app_icon.ico", "application-icon");
+  writeFile(rootDir, "win-unpacked/resources/app.asar", validAppAsar);
   writeFile(rootDir, "resources/installer.nsh", "!macro customCheckAppRunning\n${isUpdated}\nFIND_PROCESS\ntaskkill /f /im\n!macroend\n");
 
   return rootDir;
@@ -355,6 +371,13 @@ describe("public release metadata", () => {
     fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
 
     expect(() => verifyPublicRelease(rootDir)).toThrow(/NSIS|update|installer/i);
+  });
+
+  it("rejects a packaged main bundle built before the release version changed", () => {
+    const rootDir = createReleaseFixture();
+    fs.writeFileSync(path.join(rootDir, "win-unpacked", "resources", "app.asar"), staleAppAsar);
+
+    expect(() => verifyPublicRelease(rootDir)).toThrow(/main bundle|version/i);
   });
 
   it("rejects a packaged application without its window and tray icon", () => {

@@ -164,7 +164,7 @@
   justify-content: center;
   border: 0;
   border-radius: 6px;
-  background: var(--ui-update);
+  background: var(--ui-success);
   color: var(--ui-update-text);
   cursor: pointer;
   font-size: 14px;
@@ -174,7 +174,7 @@
 }
 
 .md-update-trigger:hover {
-  background: var(--ui-update-hover);
+  background: color-mix(in srgb, var(--ui-success) 82%, #000);
 }
 
 .md-update-trigger:focus-visible,

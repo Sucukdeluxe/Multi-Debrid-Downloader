@@ -1491,6 +1491,14 @@ export function shouldApplyUpdateCheckResult(
   return completedGeneration === currentGeneration;
 }
 
+export function shouldOpenUpdatePrompt(
+  source: "manual" | "startup",
+  latestTag: string,
+  dismissedTag: string
+): boolean {
+  return source === "manual" || !latestTag || latestTag !== dismissedTag;
+}
+
 export async function runLatestUpdateCheck(
   generationRef: { current: number },
   check: () => Promise<UpdateCheckResult>,
@@ -1523,6 +1531,7 @@ export function App(): ReactElement {
   const [scheduleCountdown, setScheduleCountdown] = useState("");
   const [runtimeNow, setRuntimeNow] = useState(() => Date.now());
   const updateCheckGenerationRef = useRef(0);
+  const dismissedUpdateTagRef = useRef("");
   const settingsDirtyRef = useRef(false);
   const writeOnlySettingsDirtyRef = useRef(new Set<"archivePasswordList" | "notifyUrl">());
   const archivePasswordLoadGenerationRef = useRef(0);
@@ -2589,7 +2598,15 @@ export function App(): ReactElement {
       releaseNotes: changelogText
     });
     setUpdateInstallProgress(null);
-    setUpdateDialogOpen(true);
+    setUpdateDialogOpen(shouldOpenUpdatePrompt(source, result.latestTag, dismissedUpdateTagRef.current));
+  };
+
+  const dismissUpdatePrompt = (): void => {
+    if (availableUpdate?.latestTag) {
+      dismissedUpdateTagRef.current = availableUpdate.latestTag;
+    }
+    setUpdateDialogOpen(false);
+    setUpdateInstallProgress(null);
   };
 
   const installUpdate = async (): Promise<void> => {
@@ -5737,12 +5754,9 @@ export function App(): ReactElement {
               available={Boolean(availableUpdate)}
               currentVersion={availableUpdate?.currentVersion ?? appVersion}
               latestTag={availableUpdate?.latestTag ?? ""}
-              onClose={() => {
-                setUpdateDialogOpen(false);
-                setUpdateInstallProgress(null);
-              }}
+              onClose={dismissUpdatePrompt}
               onInstall={() => { void installUpdate(); }}
-              onLater={() => setUpdateDialogOpen(false)}
+              onLater={dismissUpdatePrompt}
               onOpen={() => setUpdateDialogOpen(true)}
               open={updateDialogOpen || updateInstallProgress !== null}
               progress={updateInstallProgress ? {
@@ -6708,12 +6722,9 @@ export function App(): ReactElement {
             available={Boolean(availableUpdate)}
             currentVersion={availableUpdate?.currentVersion ?? appVersion}
             latestTag={availableUpdate?.latestTag ?? ""}
-            onClose={() => {
-              setUpdateDialogOpen(false);
-              setUpdateInstallProgress(null);
-            }}
+            onClose={dismissUpdatePrompt}
             onInstall={() => { void installUpdate(); }}
-            onLater={() => setUpdateDialogOpen(false)}
+            onLater={dismissUpdatePrompt}
             onOpen={() => setUpdateDialogOpen(true)}
             open={updateDialogOpen || updateInstallProgress !== null}
             progress={updateInstallProgress ? {

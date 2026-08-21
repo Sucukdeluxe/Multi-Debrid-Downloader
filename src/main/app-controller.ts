@@ -898,13 +898,9 @@ export class AppController {
   }
 
   public async installUpdate(onProgress?: (progress: UpdateInstallProgress) => void): Promise<UpdateInstallResult> {
-    const cacheAgeMs = Date.now() - this.lastUpdateCheckAt;
-    const cached = this.lastUpdateCheck && !this.lastUpdateCheck.error && cacheAgeMs <= 10 * 60 * 1000
-      ? this.lastUpdateCheck
-      : undefined;
     const result = await runInstallWithResume(
       this.manager,
-      () => installLatestUpdate(this.settings.updateRepo, cached, onProgress)
+      () => installLatestUpdate(this.settings.updateRepo, undefined, onProgress)
     );
     if (result.started) {
       this.lastUpdateCheck = null;
