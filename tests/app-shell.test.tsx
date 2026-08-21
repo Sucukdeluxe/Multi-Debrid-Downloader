@@ -65,6 +65,14 @@ describe("desktop shell", () => {
     expect(sparklineBlock).toContain("window.setInterval(tick, 750)");
   });
 
+  it("quits promptly after handing the update to the deferred installer launcher", () => {
+    const source = readFileSync(new URL("../src/main/main.ts", import.meta.url), "utf8");
+    const install = source.slice(source.indexOf("handleTrusted(IPC_CHANNELS.INSTALL_UPDATE"), source.indexOf("handleTrusted(IPC_CHANNELS.OPEN_EXTERNAL"));
+
+    expect(install).toContain("}, 250)");
+    expect(install).not.toContain("}, 5000)");
+  });
+
   it("does not let live download snapshots overwrite the local column order", () => {
     const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
     const stateUpdates = source.slice(source.indexOf("unsubscribe = window.rd.onStateUpdate"), source.indexOf("unsubClipboard = window.rd.onClipboardDetected"));

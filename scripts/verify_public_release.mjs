@@ -14,6 +14,7 @@ const EXPECTED_PUBLISH = Object.freeze({
 const EXPECTED_PRODUCT_NAME = "Multi-Debrid-Downloader";
 const EXPECTED_NSIS_ARTIFACT_NAME = "${productName}-Setup-${version}.${ext}";
 const EXPECTED_PORTABLE_ARTIFACT_NAME = "${productName}-${version}-portable.${ext}";
+const EXPECTED_NSIS_INCLUDE = "resources/installer.nsh";
 const REQUIRED_BUILD_FILES = Object.freeze([
   "resources/extractor-jvm/**/*",
   "LICENSE",
@@ -285,7 +286,14 @@ export function verifyPublicRelease(rootDir = process.cwd()) {
   assertEqual(publish.owner, EXPECTED_PUBLISH.owner, "package.json publish owner");
   assertEqual(publish.repo, EXPECTED_PUBLISH.repo, "package.json publish repo");
   assertEqual(build.nsis?.artifactName, EXPECTED_NSIS_ARTIFACT_NAME, "package.json NSIS artifactName");
+  assertEqual(build.nsis?.include, EXPECTED_NSIS_INCLUDE, "package.json NSIS update include");
   assertEqual(build.portable?.artifactName, EXPECTED_PORTABLE_ARTIFACT_NAME, "package.json portable artifactName");
+  const nsisInclude = readRequiredFile(path.join(absoluteRoot, ...EXPECTED_NSIS_INCLUDE.split("/")));
+  for (const requiredText of ["!macro customCheckAppRunning", "${isUpdated}", "FIND_PROCESS", "taskkill /f /im"]) {
+    if (!nsisInclude.includes(requiredText)) {
+      throw new Error(`NSIS update include omits ${requiredText}`);
+    }
+  }
   const buildFiles = Array.isArray(build.files) ? build.files : [];
   const missingBuildFiles = REQUIRED_BUILD_FILES.filter((entry) => !buildFiles.includes(entry));
   if (missingBuildFiles.length > 0) {

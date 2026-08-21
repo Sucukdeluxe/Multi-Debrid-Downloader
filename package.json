@@ -96,6 +96,7 @@
     },
     "nsis": {
       "artifactName": "${productName}-Setup-${version}.${ext}",
+      "include": "resources/installer.nsh",
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,

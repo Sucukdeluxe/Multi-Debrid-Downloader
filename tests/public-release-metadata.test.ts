@@ -144,6 +144,7 @@ function createReleaseFixture(): string {
       ],
       nsis: {
         artifactName: "${productName}-Setup-${version}.${ext}",
+        include: "resources/installer.nsh",
         oneClick: false,
         perMachine: false,
         allowToChangeInstallationDirectory: true,
@@ -171,6 +172,7 @@ function createReleaseFixture(): string {
   writeRedistributionFiles(rootDir, true);
   writeFile(rootDir, "assets/app_icon.ico", "application-icon");
   writeFile(rootDir, "win-unpacked/resources/assets/app_icon.ico", "application-icon");
+  writeFile(rootDir, "resources/installer.nsh", "!macro customCheckAppRunning\n${isUpdated}\nFIND_PROCESS\ntaskkill /f /im\n!macroend\n");
 
   return rootDir;
 }
@@ -343,6 +345,16 @@ describe("public release metadata", () => {
     fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
 
     expect(() => verifyPublicRelease(rootDir)).toThrow(/extraResources|LICENSE/);
+  });
+
+  it("rejects release metadata without the update-safe NSIS include", () => {
+    const rootDir = createReleaseFixture();
+    const packagePath = path.join(rootDir, "package.json");
+    const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+    delete packageJson.build.nsis.include;
+    fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+
+    expect(() => verifyPublicRelease(rootDir)).toThrow(/NSIS|update|installer/i);
   });
 
   it("rejects a packaged application without its window and tray icon", () => {

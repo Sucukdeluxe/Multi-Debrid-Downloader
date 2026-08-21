@@ -31,6 +31,17 @@ describe("Multi-Debrid-Downloader product metadata", () => {
     expect(supportBundle).toContain("mdd-support-bundle-");
   });
 
+  it("packages an update-safe NSIS process handoff for older app versions", () => {
+    const packageJson = JSON.parse(fs.readFileSync(path.resolve("package.json"), "utf8"));
+    const installer = fs.readFileSync(path.resolve("resources", "installer.nsh"), "utf8");
+
+    expect(packageJson.build.nsis.include).toBe("resources/installer.nsh");
+    expect(installer).toContain("!macro customCheckAppRunning");
+    expect(installer).toContain("${isUpdated}");
+    expect(installer).toContain("FIND_PROCESS");
+    expect(installer).toContain("taskkill /f /im");
+  });
+
   it("moves the legacy user data directory without losing runtime state", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mdd-user-data-"));
     tempDirs.push(root);

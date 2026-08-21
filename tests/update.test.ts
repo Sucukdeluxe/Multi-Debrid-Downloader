@@ -22,7 +22,7 @@ vi.mock("node:child_process", () => ({
   spawn: spawnMock
 }));
 
-import { buildInstallerLaunchArgs, checkGitHubUpdate, installLatestUpdate, isRemoteNewer, normalizeUpdateRepo, parseVersionParts } from "../src/main/update";
+import { buildDeferredInstallerLaunch, buildInstallerLaunchArgs, checkGitHubUpdate, installLatestUpdate, isRemoteNewer, normalizeUpdateRepo, parseVersionParts } from "../src/main/update";
 import { APP_VERSION } from "../src/main/constants";
 import { UpdateCheckResult, UpdateInstallProgress } from "../src/shared/types";
 
@@ -156,6 +156,24 @@ describe("update", () => {
 
   it("uses silent NSIS install flags with auto-run after update", () => {
     expect(buildInstallerLaunchArgs()).toEqual(["/S", "--updated", "--force-run"]);
+  });
+
+  it("defers the installer until the current application process has exited", () => {
+    const launch = buildDeferredInstallerLaunch("C:\\Temp\\MDD Update\\setup.exe", 4242, "C:\\Windows");
+    const encoded = launch.args.at(-1) || "";
+    const script = Buffer.from(encoded, "base64").toString("utf16le");
+
+    expect(launch.command).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+    expect(launch.args.slice(0, -1)).toEqual([
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-WindowStyle",
+      "Hidden",
+      "-EncodedCommand"
+    ]);
+    expect(script.indexOf("Get-Process -Id 4242")).toBeLessThan(script.indexOf("Start-Process -FilePath 'C:\\Temp\\MDD Update\\setup.exe'"));
+    expect(script).toContain("@('/S','--updated','--force-run')");
   });
 
   it("falls back to alternate download URL when setup asset URL returns 404", async () => {
@@ -567,7 +585,7 @@ describe("update", () => {
     });
 
     expect(result.started).toBe(true);
-    expect(spawnMock).toHaveBeenCalledWith(expect.any(String), ["/S", "--updated", "--force-run"], expect.objectContaining({
+    expect(spawnMock).toHaveBeenCalledWith(expect.stringMatching(/powershell\.exe$/i), expect.arrayContaining(["-EncodedCommand"]), expect.objectContaining({
       detached: true,
       stdio: "ignore",
       windowsHide: true
