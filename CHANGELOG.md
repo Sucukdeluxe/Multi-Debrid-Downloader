@@ -4,6 +4,21 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.51] - 2026-08-21
+
+### In-app updates
+
+- Refreshed the latest release metadata immediately before every installer download instead of reusing a previous update check.
+- Read the running version from the installed package metadata so the displayed version cannot lag behind the installed application.
+- Added a release gate that rejects packaged main bundles built for an older version.
+- Kept a dismissed update prompt closed for the same target version until the next application start while still allowing newer releases and manual checks to appear.
+- Changed the Update available button from blue to green.
+
+### Release verification
+
+- Added real Windows process-order and installed-package version coverage for the complete update handoff.
+- Required a fresh application build after the release version changes before packaging the installer.
+
 ## [2.0.50] - 2026-08-21
 
 ### In-app updates
