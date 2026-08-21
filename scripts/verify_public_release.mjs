@@ -5,7 +5,7 @@ import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
-import { extractFile } from "@electron/asar";
+import { extractFile, uncache } from "@electron/asar";
 
 const EXPECTED_PUBLISH = Object.freeze({
   provider: "github",
@@ -143,10 +143,15 @@ function hasExtraResource(extraResources, expected) {
 
 function readPackagedMainVersion(asarPath) {
   requireNonEmptyFile(asarPath, "packaged app.asar");
-  const packagePayload = JSON.parse(extractFile(asarPath, "package.json").toString("utf8"));
-  const mainBundle = extractFile(asarPath, path.win32.join("build", "main", "main", "main.js")).toString("utf8");
-  const bundled = /name:\s*["']multi-debrid-downloader["']\s*,\s*version:\s*["']([^"']+)["']/.exec(mainBundle)?.[1] || "";
-  return { packageVersion: String(packagePayload?.version || ""), bundledVersion: bundled };
+  uncache(asarPath);
+  try {
+    const packagePayload = JSON.parse(extractFile(asarPath, "package.json").toString("utf8"));
+    const mainBundle = extractFile(asarPath, path.win32.join("build", "main", "main", "main.js")).toString("utf8");
+    const bundled = /name:\s*["']multi-debrid-downloader["']\s*,\s*version:\s*["']([^"']+)["']/.exec(mainBundle)?.[1] || "";
+    return { packageVersion: String(packagePayload?.version || ""), bundledVersion: bundled };
+  } finally {
+    uncache(asarPath);
+  }
 }
 
 function sha256File(filePath) {
