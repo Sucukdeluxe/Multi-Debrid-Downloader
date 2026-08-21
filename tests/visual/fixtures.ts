@@ -467,8 +467,9 @@ function createDenseSnapshot(): UiSnapshot {
     totalRuntimeMs: 172800000,
     runtimeMeasuredAt: 1786312800000,
     statistics: {
-      version: 1,
+      version: 2,
       startedAt: 1786053600000,
+      minutes: [],
       days: [
         {
           day: "2026-08-08",

@@ -57,10 +57,37 @@ export interface StatisticsDayBucket {
   providers: Partial<Record<DebridProvider, StatisticsProviderBucket>>;
 }
 
+export interface StatisticsAccountMinuteUsage {
+  provider: DebridProvider;
+  label: string;
+  bytes: number;
+}
+
+export interface StatisticsMinuteBucket {
+  minute: number;
+  downloadedBytes: number;
+  accounts: Record<string, StatisticsAccountMinuteUsage>;
+}
+
+export interface StatisticsAccountUsage {
+  id: string;
+  provider: DebridProvider;
+  label: string;
+  bytes: number;
+}
+
+export interface StatisticsRolling24Hours {
+  from: number;
+  to: number;
+  downloadedBytes: number;
+  accounts: StatisticsAccountUsage[];
+}
+
 export interface StatisticsLedger {
-  version: 1;
+  version: 2;
   startedAt: number;
   days: StatisticsDayBucket[];
+  minutes: StatisticsMinuteBucket[];
 }
 
 export interface DownloadStats {
@@ -76,6 +103,7 @@ export interface DownloadStats {
   totalRuntimeMs: number;
   runtimeMeasuredAt: number;
   statistics?: StatisticsLedger;
+  rolling24Hours?: StatisticsRolling24Hours;
 }
 
 export interface DebridAccountStatus {

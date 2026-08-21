@@ -12,7 +12,7 @@ const session: SessionState = {
   reconnectReason: "", paused: false, running: true, updatedAt: 0
 };
 const history: HistoryEntry[] = [{ id: "h1" } as unknown as HistoryEntry];
-const statistics: StatisticsLedger = { version: 1, startedAt: 1, days: [] };
+const statistics: StatisticsLedger = { version: 2, startedAt: 1, days: [], minutes: [] };
 
 const baseInput = { appVersion: "1.7.183", exportedAt: "2026-06-07T00:00:00Z", session, history, statistics };
 

@@ -6,9 +6,13 @@ import { defaultSettings } from "../src/main/constants";
 import { DownloadManager } from "../src/main/download-manager";
 import { createStoragePaths, emptySession } from "../src/main/storage";
 import {
+  RollingAccountStatisticsAccumulator,
+  addStatisticsAccountBytesInPlace,
   aggregateStatisticsRange,
   createStatisticsLedger,
   loadStatisticsLedger,
+  normalizeStatisticsLedger,
+  projectStatisticsLedger,
   recordStatisticsActiveInterval,
   recordStatisticsBytes,
   recordStatisticsOutcome,
@@ -28,6 +32,119 @@ function localTime(day: number, hour = 12): number {
 }
 
 describe("statistics ledger", () => {
+  it("migrates version one ledgers without inventing minute history", () => {
+    const now = localTime(10);
+    const legacy = {
+      version: 1,
+      startedAt: now - 1_000,
+      days: [{
+        day: "2026-08-10",
+        downloadedBytes: 1_024,
+        measuredBytes: 1_024,
+        completedFiles: 1,
+        failedFiles: 0,
+        activeDownloadMs: 100,
+        providers: { realdebrid: { bytes: 1_024, completed: 1, failed: 0 } }
+      }]
+    };
+
+    const migrated = normalizeStatisticsLedger(legacy, now);
+
+    expect(migrated.version).toBe(2);
+    expect(migrated.days).toEqual(legacy.days);
+    expect(migrated.minutes).toEqual([]);
+  });
+
+  it("normalizes, merges, and bounds sparse account minute history", () => {
+    const now = localTime(10);
+    const currentMinute = Math.floor(now / 60_000) * 60_000;
+    const keptMinute = currentMinute - (47 * 60 * 60 * 1_000);
+    const raw = {
+      version: 2,
+      startedAt: now - 1_000,
+      days: [],
+      minutes: [
+        {
+          minute: keptMinute,
+          downloadedBytes: 1,
+          accounts: {
+            rdw_one: { provider: "realdebrid", label: "secret@example.test", bytes: 20 }
+          }
+        },
+        {
+          minute: keptMinute,
+          downloadedBytes: 1,
+          accounts: {
+            rdw_one: { provider: "realdebrid", label: "New label", bytes: 30 },
+            "https://unsafe": { provider: "realdebrid", label: "Unsafe", bytes: 99 }
+          }
+        },
+        {
+          minute: currentMinute - (49 * 60 * 60 * 1_000),
+          accounts: { rdw_old: { provider: "realdebrid", label: "Old", bytes: 500 } }
+        },
+        {
+          minute: currentMinute + 120_000,
+          accounts: { rdw_future: { provider: "realdebrid", label: "Future", bytes: 500 } }
+        }
+      ]
+    };
+
+    const normalized = normalizeStatisticsLedger(raw, now);
+
+    expect(normalized.minutes).toHaveLength(1);
+    expect(normalized.minutes[0].minute).toBe(keptMinute);
+    expect(normalized.minutes[0].downloadedBytes).toBe(50);
+    expect(normalized.minutes[0].accounts.rdw_one.bytes).toBe(50);
+    expect(normalized.minutes[0].accounts.rdw_one.label).not.toContain("secret@example.test");
+    expect(normalized.minutes[0].accounts).not.toHaveProperty("https://unsafe");
+  });
+
+  it("records separate accounts and projects no minute history into renderer snapshots", () => {
+    const now = localTime(10);
+    const ledger = createStatisticsLedger(now);
+
+    addStatisticsAccountBytesInPlace(ledger, "realdebrid", 50, "rdw_one", "Primary", now);
+    addStatisticsAccountBytesInPlace(ledger, "realdebrid", 75, "rdw_two", "Secondary", now);
+    addStatisticsAccountBytesInPlace(ledger, "debridlink", 25, undefined, undefined, now);
+
+    expect(ledger.minutes).toHaveLength(1);
+    expect(ledger.minutes[0].downloadedBytes).toBe(150);
+    expect(ledger.minutes[0].accounts).toMatchObject({
+      rdw_one: { provider: "realdebrid", label: "Primary", bytes: 50 },
+      rdw_two: { provider: "realdebrid", label: "Secondary", bytes: 75 },
+      "provider:debridlink": { provider: "debridlink", label: "Debrid-Link", bytes: 25 }
+    });
+    expect(projectStatisticsLedger(ledger, now).minutes).toEqual([]);
+    expect(ledger.minutes).toHaveLength(1);
+  });
+
+  it("maintains rolling account totals incrementally and expires the boundary minute", () => {
+    const now = localTime(10);
+    const oldMinute = now - (24 * 60 * 60 * 1_000) - 60_000;
+    const boundaryMinute = Math.floor((now - (24 * 60 * 60 * 1_000)) / 60_000) * 60_000;
+    const ledger = createStatisticsLedger(now);
+    addStatisticsAccountBytesInPlace(ledger, "realdebrid", 500, "rdw_old", "Old", oldMinute);
+    addStatisticsAccountBytesInPlace(ledger, "realdebrid", 100, "rdw_boundary", "Boundary", boundaryMinute);
+    const accumulator = new RollingAccountStatisticsAccumulator(ledger, now);
+
+    accumulator.record("realdebrid", 50, "rdw_one", "Primary", now);
+    accumulator.record("realdebrid", 75, "rdw_two", "Secondary", now);
+    const current = accumulator.snapshot(now);
+
+    expect(current.downloadedBytes).toBe(225);
+    expect(current.accounts.map((account) => [account.id, account.bytes])).toEqual([
+      ["rdw_boundary", 100],
+      ["rdw_two", 75],
+      ["rdw_one", 50]
+    ]);
+    expect(current.accounts).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: "rdw_old" })]));
+
+    const expired = accumulator.snapshot(now + 60_000);
+    expect(expired.downloadedBytes).toBe(125);
+    expect(expired.accounts).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: "rdw_boundary" })]));
+  });
+
   it("aggregates every available day inside a rolling seven-day window without requiring seven complete days", () => {
     let ledger = createStatisticsLedger(localTime(10));
     ledger = recordStatisticsBytes(ledger, "realdebrid", 100, localTime(7));
