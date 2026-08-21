@@ -4,6 +4,15 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.50] - 2026-08-21
+
+### In-app updates
+
+- Deferred silent installer startup until the current application process has fully exited so the new version can acquire the single-instance lock.
+- Added an installer-level process handoff that also protects upgrades launched by v2.0.48 and v2.0.49.
+- Reduced the delay between a verified update download and application shutdown from five seconds to 250 milliseconds.
+- Added Windows process-order regression coverage and made the public release verifier require the update-safe NSIS include.
+
 ## [2.0.49] - 2026-08-21
 
 ### Download table
