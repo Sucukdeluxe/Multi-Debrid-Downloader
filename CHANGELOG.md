@@ -4,6 +4,12 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.54] - 2026-08-21
+
+### Update validation
+
+- Published a controlled follow-up version so installations running v2.0.53 can verify the repaired in-app updater handoff end to end.
+
 ## [2.0.53] - 2026-08-21
 
 ### In-app updates
