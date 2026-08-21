@@ -58,7 +58,7 @@ function releaseTlsSkip(): void {
 }
 import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 import { planDownloadCompletion, reconcileFinalizedSize, validateDownloadedFileCompletion } from "./download-completion";
-import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline, fetchAllDebridHostInfo, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown } from "./debrid";
+import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkOneFichierLinks, checkRapidgatorOnline, fetchAllDebridHostInfo, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, isOneFichierLink, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown, type OneFichierCheckResult } from "./debrid";
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { classifyDiskError } from "./fs-error";
@@ -2009,6 +2009,7 @@ export class DownloadManager extends EventEmitter {
     void this.recoverRetryableItems("startup").catch((err) => logger.warn(`recoverRetryableItems Fehler (startup): ${compactErrorText(err)}`));
     this.recoverPostProcessingOnStartup();
     this.checkExistingRapidgatorLinks();
+    this.checkExistingOneFichierLinks();
     void this.cleanupExistingExtractedArchives().catch((err) => logger.warn(`cleanupExistingExtractedArchives Fehler (constructor): ${compactErrorText(err)}`));
     setRotationEventListener(() => {
       if (this.rotationListenerActive === false) {
@@ -3233,6 +3234,7 @@ export class DownloadManager extends EventEmitter {
     }
     if (newItemIds.length > 0) {
       void this.checkRapidgatorLinks(newItemIds).catch((err) => logger.warn(`checkRapidgatorLinks Fehler: ${compactErrorText(err)}`));
+      void this.checkOneFichierItems(newItemIds).catch((err) => logger.warn(`checkOneFichierItems Fehler: ${compactErrorText(err)}`));
     }
     return { addedPackages, addedLinks };
   }
@@ -3595,6 +3597,93 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
+  private async checkOneFichierItems(itemIds: string[]): Promise<void> {
+    const itemIdsByUrl = new Map<string, string[]>();
+    for (const itemId of itemIds) {
+      const item = this.session.items[itemId];
+      if (!item || !isOneFichierLink(item.url)) {
+        continue;
+      }
+      if (item.status !== "queued" && item.status !== "reconnect_wait") {
+        continue;
+      }
+      item.onlineStatus = "checking";
+      const existing = itemIdsByUrl.get(item.url) ?? [];
+      existing.push(itemId);
+      itemIdsByUrl.set(item.url, existing);
+    }
+    if (itemIdsByUrl.size === 0) {
+      return;
+    }
+
+    this.emitState();
+    let results: Map<string, OneFichierCheckResult>;
+    try {
+      results = await checkOneFichierLinks(Array.from(itemIdsByUrl.keys()));
+    } catch (error) {
+      logger.warn(`1Fichier-Linkprüfung fehlgeschlagen: ${compactErrorText(error)}`);
+      results = new Map();
+    }
+
+    for (const [url, ids] of itemIdsByUrl) {
+      const result = results.get(url) ?? null;
+      for (const itemId of ids) {
+        const item = this.session.items[itemId];
+        if (item) {
+          this.applyOneFichierCheckResult(item, result);
+        }
+      }
+    }
+    this.persistSoon();
+    this.emitState();
+  }
+
+  private applyOneFichierCheckResult(item: DownloadItem, result: OneFichierCheckResult | null): void {
+    if (!result) {
+      if (item.onlineStatus === "checking") {
+        item.onlineStatus = undefined;
+      }
+      return;
+    }
+    const canUpdateMetadata = item.status === "queued"
+      || item.status === "reconnect_wait"
+      || (item.status === "validating" && item.downloadedBytes === 0 && (!item.targetPath || !fs.existsSync(item.targetPath)));
+    if (item.status !== "queued" && item.status !== "reconnect_wait" && item.status !== "validating") {
+      item.onlineStatus = result.online ? "online" : "offline";
+      item.updatedAt = nowMs();
+      return;
+    }
+    if (item.status === "validating" && !result.online) {
+      item.onlineStatus = "offline";
+      item.updatedAt = nowMs();
+      return;
+    }
+    if (!result.online) {
+      item.status = "failed";
+      item.fullStatus = "Offline";
+      item.lastError = "Datei nicht gefunden auf 1Fichier";
+      item.onlineStatus = "offline";
+      item.updatedAt = nowMs();
+      if (this.runItemIds.has(item.id)) {
+        this.recordRunOutcome(item.id, "failed");
+      }
+      const pkg = this.session.packages[item.packageId];
+      if (pkg) {
+        this.refreshPackageStatus(pkg);
+      }
+      return;
+    }
+    if (canUpdateMetadata && result.fileName && looksLikeOpaqueFilename(item.fileName)) {
+      item.fileName = sanitizeFilename(result.fileName);
+      this.assignItemTargetPath(item, path.join(this.session.packages[item.packageId]?.outputDir || this.settings.outputDir, item.fileName));
+    }
+    if (canUpdateMetadata && result.fileSizeBytes !== null && result.fileSizeBytes > 0) {
+      item.totalBytes = result.fileSizeBytes;
+    }
+    item.onlineStatus = "online";
+    item.updatedAt = nowMs();
+  }
+
   private checkExistingRapidgatorLinks(): void {
     const uncheckedIds: string[] = [];
     for (const item of Object.values(this.session.items)) {
@@ -3609,6 +3698,25 @@ export class DownloadManager extends EventEmitter {
     }
     if (uncheckedIds.length > 0) {
       void this.checkRapidgatorLinks(uncheckedIds).catch((err) => logger.warn(`checkRapidgatorLinks Fehler (startup): ${compactErrorText(err)}`));
+    }
+  }
+
+  private checkExistingOneFichierLinks(): void {
+    const uncheckedIds: string[] = [];
+    for (const item of Object.values(this.session.items)) {
+      if (item.status !== "queued" && item.status !== "reconnect_wait") {
+        continue;
+      }
+      if (!isOneFichierLink(item.url) || item.onlineStatus === "offline") {
+        continue;
+      }
+      if (item.onlineStatus === "online" && !looksLikeOpaqueFilename(item.fileName) && item.totalBytes !== null && item.totalBytes > 0) {
+        continue;
+      }
+      uncheckedIds.push(item.id);
+    }
+    if (uncheckedIds.length > 0) {
+      void this.checkOneFichierItems(uncheckedIds).catch((err) => logger.warn(`checkOneFichierItems Fehler (startup): ${compactErrorText(err)}`));
     }
   }
 
@@ -9412,7 +9520,10 @@ export class DownloadManager extends EventEmitter {
         item.providerAccountId = unrestricted.sourceAccountId;
         item.providerAccountLabel = unrestricted.sourceAccountLabel;
         item.retries += unrestricted.retriesUsed;
-        item.fileName = sanitizeFilename(unrestricted.fileName || filenameFromUrl(item.url));
+        const unrestrictedFileName = sanitizeFilename(unrestricted.fileName || filenameFromUrl(item.url));
+        if (!looksLikeOpaqueFilename(unrestrictedFileName) || looksLikeOpaqueFilename(item.fileName)) {
+          item.fileName = unrestrictedFileName;
+        }
         let directHost = "";
         try {
           directHost = new URL(unrestricted.directUrl).host;

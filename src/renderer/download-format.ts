@@ -56,6 +56,7 @@ export function formatHosterLabel(hoster: string): { compact: string; title: str
   const normalized = hoster.trim().toLowerCase();
   if (normalized === "rapidgator") return { compact: "RG", title: "RapidGator", iconSrc: hosterIconSources.rapidgator };
   if (normalized === "ddownload") return { compact: "DD", title: "DDownload", iconSrc: hosterIconSources.ddownload };
+  if (normalized === "1fichier") return { compact: "1F", title: "1Fichier" };
   return { compact: hoster, title: hoster };
 }
 

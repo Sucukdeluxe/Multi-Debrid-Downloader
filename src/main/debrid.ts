@@ -26,7 +26,10 @@ const ALL_DEBRID_API_BASE_V41 = "https://api.alldebrid.com/v4.1";
 const MEGA_DEBRID_API_BASE = "https://www.mega-debrid.eu/api.php";
 
 const ONEFICHIER_API_BASE = "https://api.1fichier.com/v1";
-const ONEFICHIER_URL_RE = /^https?:\/\/(?:www\.)?(?:1fichier\.com|alterupload\.com|cjoint\.net|desfichiers\.com|dfichiers\.com|megadl\.fr|mesfichiers\.org|piecejointe\.net|pjointe\.com|tenvoi\.com|dl4free\.com)\/\?([a-z0-9]{5,20})$/i;
+const ONEFICHIER_CHECK_URL = "https://1fichier.com/check_links.pl";
+const ONEFICHIER_CHECK_BATCH_SIZE = 100;
+const ONEFICHIER_CHECK_BATCH_DELAY_MS = 1000;
+const ONEFICHIER_URL_RE = /^https?:\/\/(?:www\.)?(?:1fichier\.com|alterupload\.com|cjoint\.net|desfichiers\.(?:com|net)|dfichiers\.com|megadl\.fr|mesfichiers\.org|piecejointe\.net|pjointe\.com|tenvoi\.com|dl4free\.com)\/\?([a-z0-9]{5,20})$/i;
 
 const DEBRID_LINK_API_BASE = "https://debrid-link.com/api/v2";
 const DEBRID_LINK_KEY_QUOTA_ERRORS = new Set(["maxLink", "maxData"]);
@@ -1978,6 +1981,128 @@ export async function checkRapidgatorOnline(
   return null;
 }
 
+export interface OneFichierCheckResult {
+  online: boolean;
+  fileName: string;
+  fileSizeBytes: number | null;
+  accessRestricted: boolean;
+}
+
+export function isOneFichierLink(link: string): boolean {
+  return ONEFICHIER_URL_RE.test(String(link || "").trim());
+}
+
+function getOneFichierLinkId(link: string): string {
+  return String(link || "").trim().match(ONEFICHIER_URL_RE)?.[1]?.toLowerCase() || "";
+}
+
+function parseOneFichierCheckResponse(
+  responseText: string,
+  linksById: Map<string, string[]>
+): Map<string, OneFichierCheckResult> {
+  const results = new Map<string, OneFichierCheckResult>();
+  for (const rawLine of String(responseText || "").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) {
+      continue;
+    }
+    const id = line.match(/\?([a-z0-9]{5,20})(?:;|$)/i)?.[1]?.toLowerCase() || "";
+    const requestedLinks = linksById.get(id);
+    if (!requestedLinks || requestedLinks.length === 0) {
+      continue;
+    }
+
+    let result: OneFichierCheckResult | null = null;
+    if (/;;;(?:NOT FOUND|BAD LINK)\s*$/i.test(line)) {
+      result = { online: false, fileName: "", fileSizeBytes: null, accessRestricted: false };
+    } else if (/;;;PRIVATE\s*$/i.test(line)) {
+      result = { online: true, fileName: "", fileSizeBytes: null, accessRestricted: true };
+    } else {
+      const firstSeparator = line.indexOf(";");
+      const lastSeparator = line.lastIndexOf(";");
+      const fileName = decodeHtmlEntities(firstSeparator >= 0 && lastSeparator > firstSeparator
+        ? line.slice(firstSeparator + 1, lastSeparator)
+        : "").trim();
+      const fileSizeBytes = Number(lastSeparator >= 0 ? line.slice(lastSeparator + 1).trim() : NaN);
+      if (fileName && Number.isSafeInteger(fileSizeBytes) && fileSizeBytes >= 0) {
+        result = { online: true, fileName, fileSizeBytes, accessRestricted: false };
+      }
+    }
+
+    if (result) {
+      for (const link of requestedLinks) {
+        results.set(link, result);
+      }
+    }
+  }
+  return results;
+}
+
+export async function checkOneFichierLinks(
+  links: string[],
+  signal?: AbortSignal
+): Promise<Map<string, OneFichierCheckResult>> {
+  const supportedLinks = Array.from(new Set(links.map((link) => String(link || "").trim()).filter(isOneFichierLink)));
+  const results = new Map<string, OneFichierCheckResult>();
+
+  for (let offset = 0; offset < supportedLinks.length; offset += ONEFICHIER_CHECK_BATCH_SIZE) {
+    if (offset > 0) {
+      await sleepWithSignal(ONEFICHIER_CHECK_BATCH_DELAY_MS, signal);
+    }
+    const batch = supportedLinks.slice(offset, offset + ONEFICHIER_CHECK_BATCH_SIZE);
+    const linksById = new Map<string, string[]>();
+    const body = new URLSearchParams();
+    for (const link of batch) {
+      body.append("links[]", link);
+      const id = getOneFichierLinkId(link);
+      const existing = linksById.get(id) ?? [];
+      existing.push(link);
+      linksById.set(id, existing);
+    }
+
+    for (let attempt = 1; attempt <= REQUEST_RETRIES + 1; attempt += 1) {
+      try {
+        if (signal?.aborted) {
+          throw new Error("aborted:debrid");
+        }
+        const response = await fetch(ONEFICHIER_CHECK_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body,
+          signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
+        });
+        if (!response.ok) {
+          try { await response.body?.cancel(); } catch {  }
+          if (shouldRetryStatus(response.status) && attempt <= REQUEST_RETRIES) {
+            await sleepWithSignal(retryDelayForResponse(response, attempt), signal);
+            continue;
+          }
+          break;
+        }
+        const parsed = parseOneFichierCheckResponse(
+          await readResponseTextLimited(response, RAPIDGATOR_SCAN_MAX_BYTES, signal),
+          linksById
+        );
+        for (const [link, result] of parsed) {
+          results.set(link, result);
+        }
+        break;
+      } catch (error) {
+        const errorText = compactErrorText(error);
+        if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) {
+          throw error;
+        }
+        if (attempt > REQUEST_RETRIES || !isRetryableErrorText(errorText)) {
+          break;
+        }
+        await sleepWithSignal(retryDelay(attempt), signal);
+      }
+    }
+  }
+
+  return results;
+}
+
 function buildBestDebridRequests(link: string, token: string): BestDebridRequest[] {
   const linkParam = encodeURIComponent(link);
   const safeToken = String(token || "").trim();
@@ -3622,7 +3747,7 @@ class OneFichierClient {
   }
 
   public async unrestrictLink(link: string, signal?: AbortSignal): Promise<UnrestrictedLink> {
-    if (!ONEFICHIER_URL_RE.test(link)) {
+    if (!isOneFichierLink(link)) {
       throw new Error("Kein 1Fichier-Link");
     }
 
@@ -4110,7 +4235,7 @@ export class DebridService {
       }
     }
 
-    if (ONEFICHIER_URL_RE.test(link) && this.isProviderSelectableFor(settings, "onefichier")) {
+    if (isOneFichierLink(link) && this.isProviderSelectableFor(settings, "onefichier")) {
       try {
         const result = await this.unrestrictViaProvider(settings, "onefichier", link, signal);
         return {

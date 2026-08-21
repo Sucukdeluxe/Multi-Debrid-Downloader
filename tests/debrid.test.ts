@@ -5,7 +5,7 @@ import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import { serializeRealDebridApiAccounts } from "../src/shared/real-debrid-accounts";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
 import { isMegaDebridTransientResolveFailure } from "../src/shared/mega-debrid-errors";
-import { checkRapidgatorOnline, classifyMegaDebridAccountFailureForTests, clearMegaDebridEmptyResponseStreak, DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, getAvailableRealDebridAccounts, getDebridLinkKeyCooldownStateForTests, getDebridLinkKeyRuntimeStateForTests, getMegaDebridAccountCooldownState, getProviderRuntimeSnapshot, leadProviderChainWith, MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART, MEGA_DEBRID_STICKY_LINKS, normalizeResolvedFilename, parseRapidgatorFileSize, primeMegaDebridRuntimeCooldownForTests, primeMegaDebridUntilRestartForTests, recordMegaDebridEmptyResponseStreak, resetDebridLinkRuntimeStateForTests, resetMegaDebridRuntimeStateForTests, resetRealDebridRuntimeStateForTests } from "../src/main/debrid";
+import { checkOneFichierLinks, checkRapidgatorOnline, classifyMegaDebridAccountFailureForTests, clearMegaDebridEmptyResponseStreak, DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, getAvailableRealDebridAccounts, getDebridLinkKeyCooldownStateForTests, getDebridLinkKeyRuntimeStateForTests, getMegaDebridAccountCooldownState, getProviderRuntimeSnapshot, isOneFichierLink, leadProviderChainWith, MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART, MEGA_DEBRID_STICKY_LINKS, normalizeResolvedFilename, parseRapidgatorFileSize, primeMegaDebridRuntimeCooldownForTests, primeMegaDebridUntilRestartForTests, recordMegaDebridEmptyResponseStreak, resetDebridLinkRuntimeStateForTests, resetMegaDebridRuntimeStateForTests, resetRealDebridRuntimeStateForTests } from "../src/main/debrid";
 import { getAccountRuntimeSessionStats } from "../src/main/account-runtime";
 
 const originalFetch = globalThis.fetch;
@@ -2828,6 +2828,108 @@ describe("checkRapidgatorOnline", () => {
       fileName: "episode.part01.rar",
       fileSizeBytes: 1_610_612_736
     });
+  });
+});
+
+describe("checkOneFichierLinks", () => {
+  it("checks at most 100 links per request and maps exact metadata", async () => {
+    const links = Array.from({ length: 101 }, (_unused, index) => `https://1fichier.com/?id${String(index).padStart(5, "0")}`);
+    const batchSizes: number[] = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const body = init?.body instanceof URLSearchParams ? init.body : new URLSearchParams(String(init?.body || ""));
+      const requested = body.getAll("links[]");
+      batchSizes.push(requested.length);
+      return new Response(requested.map((link, index) => `${link};Archive.${batchSizes.length}.${index}.7z;${1000 + index}`).join("\r\n"), {
+        status: 200,
+        headers: { "Content-Type": "text/plain; charset=utf-8" }
+      });
+    }) as typeof fetch;
+
+    const results = await checkOneFichierLinks(links);
+
+    expect(batchSizes).toEqual([100, 1]);
+    expect(results.size).toBe(101);
+    expect(results.get(links[0])).toEqual({
+      online: true,
+      fileName: "Archive.1.0.7z",
+      fileSizeBytes: 1000,
+      accessRestricted: false
+    });
+    expect(results.get(links[100])).toEqual({
+      online: true,
+      fileName: "Archive.2.0.7z",
+      fileSizeBytes: 1000,
+      accessRestricted: false
+    });
+  });
+
+  it("paces consecutive 1Fichier batches to avoid hoster request blocks", async () => {
+    vi.useFakeTimers();
+    try {
+      const links = Array.from({ length: 101 }, (_unused, index) => `https://1fichier.com/?pc${String(index).padStart(5, "0")}`);
+      let calls = 0;
+      globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        calls += 1;
+        const body = init?.body instanceof URLSearchParams ? init.body : new URLSearchParams(String(init?.body || ""));
+        return new Response(body.getAll("links[]").map((link) => `${link};Paced.${calls}.rar;1024`).join("\n"), { status: 200 });
+      }) as typeof fetch;
+
+      const pending = checkOneFichierLinks(links);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(999);
+      expect(calls).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(1);
+      await pending;
+      expect(calls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("maps offline, private and HTML-encoded file responses without inventing metadata", async () => {
+    const online = "https://1fichier.com/?online123";
+    const offline = "https://1fichier.com/?gone12345";
+    const privateLink = "https://1fichier.com/?priv12345";
+    globalThis.fetch = (async (): Promise<Response> => new Response([
+      `${online};Movie&amp;Bonus.mkv;734003200`,
+      `${offline};;;NOT FOUND`,
+      `${privateLink};;;PRIVATE`
+    ].join("\n"), { status: 200 })) as typeof fetch;
+
+    const results = await checkOneFichierLinks([online, offline, privateLink]);
+
+    expect(results.get(online)).toEqual({
+      online: true,
+      fileName: "Movie&Bonus.mkv",
+      fileSizeBytes: 734003200,
+      accessRestricted: false
+    });
+    expect(results.get(offline)).toEqual({
+      online: false,
+      fileName: "",
+      fileSizeBytes: null,
+      accessRestricted: false
+    });
+    expect(results.get(privateLink)).toEqual({
+      online: true,
+      fileName: "",
+      fileSizeBytes: null,
+      accessRestricted: true
+    });
+  });
+
+  it("recognizes current aliases and ignores unrelated links without a request", async () => {
+    const fetchSpy = vi.fn(async (): Promise<Response> => new Response("", { status: 200 }));
+    globalThis.fetch = fetchSpy as typeof fetch;
+
+    expect(isOneFichierLink("https://desfichiers.net/?abc12345")).toBe(true);
+    expect(isOneFichierLink("https://piecejointe.net/?abc12345")).toBe(true);
+    expect(isOneFichierLink("https://example.com/?abc12345")).toBe(false);
+    expect(await checkOneFichierLinks(["https://example.com/?abc12345"])).toEqual(new Map());
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
 

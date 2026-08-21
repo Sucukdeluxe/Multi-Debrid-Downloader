@@ -4,6 +4,12 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+### 1Fichier imports
+
+- Resolve original 1Fichier filenames, exact sizes, and availability in batches before downloads start.
+- Keep resolved filenames when a debrid provider returns only a generic `download.bin` name.
+- Group supported 1Fichier mirror domains under one hoster identity.
+
 ## [2.0.54] - 2026-08-21
 
 ### Update validation

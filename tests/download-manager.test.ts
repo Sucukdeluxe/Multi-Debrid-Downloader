@@ -22,7 +22,7 @@ import { serializeRealDebridApiAccounts } from "../src/shared/real-debrid-accoun
 import { getRenameLogPath, initRenameLog, shutdownRenameLog } from "../src/main/rename-log";
 import { UnrestrictedLink } from "../src/main/realdebrid";
 import { resetVideoToolingCache } from "../src/main/video-processor";
-import type { AppSettings, HistoryEntry, PackageEntry } from "../src/shared/types";
+import type { AppSettings, DownloadItem, HistoryEntry, PackageEntry } from "../src/shared/types";
 
 const tempDirs: string[] = [];
 const originalFetch = globalThis.fetch;
@@ -957,6 +957,191 @@ describe("download manager", () => {
     expect(item.status).toBe("downloading");
     expect(item.fullStatus).toBe("Download läuft");
     expect(item.onlineStatus).toBe("online");
+  });
+
+  it("resolves 1Fichier names, sizes and availability in one batch after import", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-onefichier-metadata-"));
+    tempDirs.push(root);
+    const linkA = "https://1fichier.com/?abc12345";
+    const linkB = "https://desfichiers.net/?def67890";
+    let checkCalls = 0;
+
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === "https://1fichier.com/check_links.pl") {
+        checkCalls += 1;
+        return new Response([
+          `${linkA};Show.S01E01.German.DL.part01.rar;1073741824`,
+          `${linkB};Show.S01E01.German.DL.part02.rar;2147483648`
+        ].join("\n"), {
+          status: 200,
+          headers: { "Content-Type": "text/plain; charset=utf-8" }
+        });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(root, "state")));
+    manager.addPackages([{ name: "onefichier", links: [linkA, linkB] }]);
+
+    await waitFor(() => Object.values(manager.getSnapshot().session.items).every((item) => item.onlineStatus === "online"), 2_000);
+    const items = Object.values(manager.getSnapshot().session.items);
+
+    expect(checkCalls).toBe(1);
+    expect(items.map((item) => item.fileName)).toEqual([
+      "Show.S01E01.German.DL.part01.rar",
+      "Show.S01E01.German.DL.part02.rar"
+    ]);
+    expect(items.map((item) => item.totalBytes)).toEqual([1_073_741_824, 2_147_483_648]);
+    expect(items.map((item) => path.basename(item.targetPath))).toEqual([
+      "Show.S01E01.German.DL.part01.rar",
+      "Show.S01E01.German.DL.part02.rar"
+    ]);
+  });
+
+  it("keeps resolved 1Fichier metadata when a debrid response only returns download.bin", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-onefichier-preserve-"));
+    tempDirs.push(root);
+    const link = "https://1fichier.com/?keep12345";
+    const expectedName = "Series.S02E03.German.DL.part01.rar";
+    const binary = Buffer.alloc(192 * 1024, 23);
+    const server = http.createServer((_req, res) => {
+      res.statusCode = 200;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(binary.length));
+      res.end(binary);
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/download`;
+
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === "https://1fichier.com/check_links.pl") {
+        return new Response(`${link};${expectedName};${binary.length}`, { status: 200 });
+      }
+      if (url.includes("api.real-debrid.com/rest/1.0/unrestrict/link")) {
+        return new Response(JSON.stringify({
+          download: directUrl,
+          filename: "download.bin",
+          filesize: binary.length
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
+
+    try {
+      const manager = new DownloadManager({
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false
+      }, emptySession(), createStoragePaths(path.join(root, "state")));
+      manager.addPackages([{ name: "onefichier-preserve", links: [link] }]);
+      await waitFor(() => Object.values(manager.getSnapshot().session.items)[0]?.fileName === expectedName, 2_000);
+
+      await manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 15_000);
+      const item = Object.values(manager.getSnapshot().session.items)[0];
+
+      expect(item.status).toBe("completed");
+      expect(item.fileName).toBe(expectedName);
+      expect(path.basename(item.targetPath)).toBe(expectedName);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  }, 20_000);
+
+  it("finishes a delayed 1Fichier availability check after the download has started", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-onefichier-delayed-"));
+    tempDirs.push(root);
+    const link = "https://1fichier.com/?delay1234";
+    let resolveCheck: (response: Response) => void = () => undefined;
+    const delayedCheck = new Promise<Response>((resolve) => {
+      resolveCheck = resolve;
+    });
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === "https://1fichier.com/check_links.pl") {
+        return delayedCheck;
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(root, "state")));
+    manager.addPackages([{ name: "onefichier-delayed", links: [link] }]);
+    const item = Object.values((manager as any).session.items)[0] as DownloadItem;
+    expect(item.onlineStatus).toBe("checking");
+    item.status = "validating";
+    item.fullStatus = "Link wird umgewandelt";
+
+    resolveCheck(new Response(`${link};Delayed.Episode.mkv;524288000`, { status: 200 }));
+    await waitFor(() => item.onlineStatus === "online", 2_000);
+
+    expect(item.status).toBe("validating");
+    expect(item.fullStatus).toBe("Link wird umgewandelt");
+    expect(item.fileName).toBe("Delayed.Episode.mkv");
+    expect(path.basename(item.targetPath)).toBe("Delayed.Episode.mkv");
+    expect(item.totalBytes).toBe(524_288_000);
+  });
+
+  it("marks missing 1Fichier files offline while keeping private files queued", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-onefichier-status-"));
+    tempDirs.push(root);
+    const missing = "https://1fichier.com/?gone12345";
+    const privateLink = "https://1fichier.com/?priv12345";
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === "https://1fichier.com/check_links.pl") {
+        return new Response(`${missing};;;NOT FOUND\n${privateLink};;;PRIVATE`, { status: 200 });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(root, "state")));
+    manager.addPackages([{ name: "onefichier-status", links: [missing, privateLink] }]);
+    await waitFor(() => Object.values(manager.getSnapshot().session.items).every((item) => item.onlineStatus !== "checking"), 2_000);
+    const items = Object.values(manager.getSnapshot().session.items);
+
+    expect(items[0]).toEqual(expect.objectContaining({
+      status: "failed",
+      fullStatus: "Offline",
+      onlineStatus: "offline",
+      lastError: "Datei nicht gefunden auf 1Fichier"
+    }));
+    expect(items[1]).toEqual(expect.objectContaining({
+      status: "queued",
+      onlineStatus: "online",
+      fileName: "download.bin",
+      totalBytes: null
+    }));
+  });
+
+  it("leaves 1Fichier availability unknown when the checker returns no usable result", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-onefichier-unknown-"));
+    tempDirs.push(root);
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      return new Response("invalid response", { status: url === "https://1fichier.com/check_links.pl" ? 200 : 404 });
+    }) as typeof fetch;
+
+    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(root, "state")));
+    manager.addPackages([{ name: "onefichier-unknown", links: ["https://1fichier.com/?unknown12"] }]);
+    const item = Object.values((manager as any).session.items)[0] as DownloadItem;
+    await waitFor(() => item.onlineStatus !== "checking", 2_000);
+
+    expect(item.status).toBe("queued");
+    expect(item.onlineStatus).toBeUndefined();
+    expect(item.fileName).toBe("download.bin");
   });
 
   it("applies an imported settings snapshot without touching queued items or filesystem workflows", () => {

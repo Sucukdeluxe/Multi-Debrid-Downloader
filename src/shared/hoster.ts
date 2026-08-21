@@ -1,7 +1,19 @@
 const DOMAIN_ALIASES: Readonly<Record<string, string>> = Object.freeze({
   "rapidgator.net": "rapidgator",
   "rapidgator.asia": "rapidgator",
-  "rg.to": "rapidgator"
+  "rg.to": "rapidgator",
+  "1fichier.com": "1fichier",
+  "alterupload.com": "1fichier",
+  "cjoint.net": "1fichier",
+  "desfichiers.com": "1fichier",
+  "desfichiers.net": "1fichier",
+  "dfichiers.com": "1fichier",
+  "megadl.fr": "1fichier",
+  "mesfichiers.org": "1fichier",
+  "piecejointe.net": "1fichier",
+  "pjointe.com": "1fichier",
+  "tenvoi.com": "1fichier",
+  "dl4free.com": "1fichier"
 });
 
 export function normalizeHosterHostname(hostname: string): string {

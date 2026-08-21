@@ -620,6 +620,19 @@ describe("responsive Downloadstatus und Servicebezeichnungen", () => {
     expect(formatHosterLabel(hosters[1])).toEqual(expect.objectContaining({ compact: "RG", title: "RapidGator", iconSrc: expect.any(String) }));
   });
 
+  it("normalizes every supported 1Fichier domain to one hoster identity", () => {
+    const hosters = [
+      extractHoster("https://1fichier.com/?abc12345"),
+      extractHoster("https://desfichiers.net/?def67890"),
+      extractHoster("https://piecejointe.net/?ghi12345"),
+      extractHoster("https://dl4free.com/?jkl67890")
+    ];
+
+    expect(hosters).toEqual(["1fichier", "1fichier", "1fichier", "1fichier"]);
+    expect(new Set(hosters).size).toBe(1);
+    expect(formatHosterLabel(hosters[1])).toEqual({ compact: "1F", title: "1Fichier" });
+  });
+
   it("removes duplicated access-mode wording from service labels", () => {
     expect(normalizeDownloadServiceLabel("Mega-Debrid Web (Web Account)")).toBe("Mega-Debrid (Web)");
     expect(normalizeDownloadServiceLabel("Mega-Debrid API (API Account)")).toBe("Mega-Debrid (API)");
