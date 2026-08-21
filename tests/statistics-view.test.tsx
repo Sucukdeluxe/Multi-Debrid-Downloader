@@ -392,6 +392,21 @@ describe("statistics model", () => {
 });
 
 describe("statistics view", () => {
+  it("keeps large statistic data volumes precise in gigabytes instead of rounding to terabytes", () => {
+    const snapshot = createSnapshot();
+    let ledger = createStatisticsLedger(now);
+    ledger = recordStatisticsBytes(ledger, "realdebrid", 1_250 * 1024 ** 3, now);
+    snapshot.stats.statistics = ledger;
+    const model = buildStatisticsViewModel(snapshot, "today", now);
+    const html = renderToStaticMarkup(<>
+      <StatisticsSidebarStatus model={model} />
+      <StatisticsContent actions={createActions()} chart={<div />} model={model} />
+    </>);
+
+    expect(html.match(/1\.250 GB/g)).toHaveLength(2);
+    expect(html).toContain("1,2 TB");
+  });
+
   it("marks statistic ranges for one measured vertical selection indicator", () => {
     const model = buildStatisticsViewModel(createSnapshot(), "today", now);
     const html = renderToStaticMarkup(<StatisticsSidebar actions={createActions()} model={model} />);

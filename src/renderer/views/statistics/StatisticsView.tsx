@@ -32,7 +32,7 @@ const rangeItems: Array<{ id: StatisticsRange; label: string }> = [
 
 const numberFormatter = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 1 });
 
-function formatBytes(bytes: number): string {
+function formatBytes(bytes: number, maximumUnitIndex = Number.POSITIVE_INFINITY): string {
   const safe = Math.max(0, Number.isFinite(bytes) ? bytes : 0);
   if (safe < 1024) {
     return `${Math.round(safe)} B`;
@@ -40,7 +40,7 @@ function formatBytes(bytes: number): string {
   const units = ["KB", "MB", "GB", "TB", "PB"];
   let value = safe / 1024;
   let unitIndex = 0;
-  while (value >= 1024 && unitIndex < units.length - 1) {
+  while (value >= 1024 && unitIndex < units.length - 1 && unitIndex < maximumUnitIndex) {
     value /= 1024;
     unitIndex += 1;
   }
@@ -52,7 +52,7 @@ function formatMetric(metric: StatisticsMetric, kind: "bytes" | "count" | "perce
     return "–";
   }
   if (kind === "bytes") {
-    return formatBytes(metric.value);
+    return formatBytes(metric.value, 2);
   }
   if (kind === "speed") {
     return `${formatBytes(metric.value)}/s`;
