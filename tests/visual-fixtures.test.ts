@@ -87,6 +87,8 @@ describe("visual fixtures", () => {
     const update = createVisualFixture("update");
     expect(Object.keys(empty.snapshot.session.packages)).toHaveLength(0);
     expect(Object.keys(dense.snapshot.session.packages).length).toBeGreaterThan(1);
+    expect(dense.snapshot.stats.rolling24Hours?.accounts).toHaveLength(2);
+    expect(dense.snapshot.stats.statistics?.minutes).toEqual([]);
     expect(update.update.latestTag).toBe("v9.9.9");
     expect(createVisualFixture("dense")).toEqual(dense);
   });

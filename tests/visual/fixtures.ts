@@ -496,6 +496,25 @@ function createDenseSnapshot(): UiSnapshot {
           }
         }
       ]
+    },
+    rolling24Hours: {
+      from: 1786226400000,
+      to: 1786312800000,
+      downloadedBytes: 541165879488,
+      accounts: [
+        {
+          id: "rdw_visual_primary",
+          provider: "realdebrid",
+          label: "xSucukDE",
+          bytes: 328565653504
+        },
+        {
+          id: "dl_visual_secondary",
+          provider: "debridlink",
+          label: "Debrid-Link Key 2",
+          bytes: 212600225984
+        }
+      ]
     }
   };
   snapshot.speedText = "12,0 MB/s";

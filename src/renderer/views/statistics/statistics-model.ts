@@ -1,10 +1,11 @@
 import { aggregateStatisticsRange, type StatisticsAggregate } from "../../../shared/statistics-aggregation";
 import type { DebridProvider, DownloadItem, DownloadSummary, StatisticsProviderBucket, UiSnapshot } from "../../../shared/types";
 
-export type StatisticsRange = "session" | "today" | "week" | "month" | "all";
+export type StatisticsRange = "session" | "today" | "last24" | "week" | "month" | "all";
 export type StatisticsCoverage = "partial" | "unavailable";
 export type StatisticsSessionState = "empty" | "idle" | "active" | "paused";
-export type StatisticsProviderScope = "current-queue" | "today" | "week" | "month" | "all";
+export type StatisticsProviderScope = "current-queue" | "today" | "last24" | "week" | "month" | "all";
+export type StatisticsUsageKind = "providers" | "accounts";
 export type StatisticsMetricTone = "danger";
 
 export interface StatisticsMetric {
@@ -15,7 +16,7 @@ export interface StatisticsMetric {
 }
 
 export interface StatisticsProviderRow {
-  id: DebridProvider;
+  id: string;
   label: string;
   bytes: number;
   completed: number | null;
@@ -37,6 +38,7 @@ export interface StatisticsViewModel {
   sessionState: StatisticsSessionState;
   metrics: StatisticsMetrics;
   providerScope: StatisticsProviderScope | null;
+  usageKind: StatisticsUsageKind;
   providers: StatisticsProviderRow[];
   errorResetAvailable: boolean;
 }
@@ -179,6 +181,16 @@ function deriveUsageProviders(
   return sortProviderRows(rows);
 }
 
+function deriveRollingAccounts(snapshot: UiSnapshot): StatisticsProviderRow[] {
+  return (snapshot.stats.rolling24Hours?.accounts ?? []).map((account) => ({
+    id: account.id,
+    label: `${providerLabels[account.provider]} · ${account.label}`,
+    bytes: normalizeNonNegative(account.bytes),
+    completed: null,
+    failed: null
+  })).sort((left, right) => right.bytes - left.bytes || left.label.localeCompare(right.label, "de-DE", { sensitivity: "base" }) || left.id.localeCompare(right.id));
+}
+
 function aggregateMetrics(aggregate: StatisticsAggregate, sourceLabel: string): StatisticsMetrics {
   return {
     downloadedBytes: availableMetric(aggregate.downloadedBytes, sourceLabel),
@@ -207,6 +219,30 @@ export function buildStatisticsViewModel(
 ): StatisticsViewModel {
   const sessionState = deriveSessionState(snapshot);
 
+  if (range === "last24") {
+    const rolling = snapshot.stats.rolling24Hours;
+    const hasFullCoverage = nowMs - Math.max(0, snapshot.stats.statistics?.startedAt ?? nowMs) >= 24 * 60 * 60 * 1_000;
+    return {
+      range,
+      coverage: "partial",
+      message: hasFullCoverage
+        ? "Account-Traffic der vergangenen 24 Stunden."
+        : "Letzte 24 Stunden: Werte seit Beginn der Aufzeichnung.",
+      sessionState,
+      metrics: {
+        downloadedBytes: availableMetric(rolling?.downloadedBytes ?? 0, "Letzte 24 Stunden"),
+        files: unavailableMetric("Dateien werden nicht minutengenau nach Account erfasst"),
+        successRate: unavailableMetric("Ergebnisse werden nicht minutengenau nach Account erfasst"),
+        averageSpeedBps: unavailableMetric("Aktive Downloadzeit wird nur tagesweise erfasst"),
+        errors: unavailableMetric("Fehler werden nicht minutengenau nach Account erfasst")
+      },
+      providerScope: "last24",
+      usageKind: "accounts",
+      providers: deriveRollingAccounts(snapshot),
+      errorResetAvailable: false
+    };
+  }
+
   if (range === "today" || range === "week" || range === "month") {
     const days = range === "today" ? 1 : range === "week" ? 7 : 30;
     const aggregate = aggregateStatisticsRange(snapshot.stats.statistics, days, nowMs);
@@ -220,6 +256,7 @@ export function buildStatisticsViewModel(
       sessionState,
       metrics: aggregateMetrics(aggregate, label),
       providerScope: range,
+      usageKind: "providers",
       providers: deriveUsageProviders(
         Object.fromEntries(Object.entries(aggregate.providers).map(([provider, bucket]) => [provider, bucket?.bytes ?? 0])),
         aggregate.providers
@@ -245,6 +282,7 @@ export function buildStatisticsViewModel(
         errors: recordedMetrics.errors
       },
       providerScope: "all",
+      usageKind: "providers",
       providers,
       errorResetAvailable: false
     };
@@ -278,6 +316,7 @@ export function buildStatisticsViewModel(
       errors: availableMetric(failed, resultSource, failed > 0 ? "danger" : undefined)
     },
     providerScope: "current-queue",
+    usageKind: "providers",
     providers: deriveQueueProviders(items),
     errorResetAvailable: queueResults.failed > 0
   };

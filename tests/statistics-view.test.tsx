@@ -11,6 +11,7 @@ import {
 import {
   StatisticsContent,
   StatisticsSidebar,
+  StatisticsSidebarStatus,
   StatisticsView,
   type StatisticsViewActions
 } from "../src/renderer/views/statistics/StatisticsView";
@@ -212,6 +213,62 @@ describe("statistics model", () => {
     expect(model.providers.map((row) => [row.completed, row.failed])).toEqual([[0, 1], [1, 0]]);
   });
 
+  it("shows rolling account traffic with unavailable day-scoped metrics", () => {
+    const snapshot = createSnapshot();
+    snapshot.stats.statistics = {
+      version: 2,
+      startedAt: now - (2 * 60 * 60 * 1_000),
+      days: [],
+      minutes: []
+    };
+    snapshot.stats.rolling24Hours = {
+      from: now - (24 * 60 * 60 * 1_000),
+      to: now,
+      downloadedBytes: 125,
+      accounts: [
+        { id: "rdw_two", provider: "realdebrid", label: "Secondary", bytes: 75 },
+        { id: "rdw_one", provider: "realdebrid", label: "Primary", bytes: 50 }
+      ]
+    };
+
+    const model = buildStatisticsViewModel(snapshot, "last24", now);
+
+    expect(model.metrics.downloadedBytes).toMatchObject({ value: 125, available: true });
+    expectUnavailable(model.metrics.files);
+    expectUnavailable(model.metrics.successRate);
+    expectUnavailable(model.metrics.averageSpeedBps);
+    expectUnavailable(model.metrics.errors);
+    expect(model.usageKind).toBe("accounts");
+    expect(model.providerScope).toBe("last24");
+    expect(model.providers.map((row) => [row.id, row.label, row.bytes])).toEqual([
+      ["rdw_two", "Real-Debrid · Secondary", 75],
+      ["rdw_one", "Real-Debrid · Primary", 50]
+    ]);
+    expect(model.providers.map((row) => [row.completed, row.failed])).toEqual([[null, null], [null, null]]);
+    expect(model.message).toContain("seit Beginn der Aufzeichnung");
+  });
+
+  it("shows a complete rolling description after 24 hours of statistics coverage", () => {
+    const snapshot = createSnapshot();
+    snapshot.stats.statistics = {
+      version: 2,
+      startedAt: now - (25 * 60 * 60 * 1_000),
+      days: [],
+      minutes: []
+    };
+    snapshot.stats.rolling24Hours = {
+      from: now - (24 * 60 * 60 * 1_000),
+      to: now,
+      downloadedBytes: 0,
+      accounts: []
+    };
+
+    const model = buildStatisticsViewModel(snapshot, "last24", now);
+
+    expect(model.message).toContain("vergangenen 24 Stunden");
+    expect(model.message).not.toContain("seit Beginn der Aufzeichnung");
+  });
+
   it("treats a stale daily key as a genuine zero today without stale provider rows", () => {
     const snapshot = createSnapshot();
     snapshot.settings.providerDailyUsageDay = "2026-08-09";
@@ -340,7 +397,7 @@ describe("statistics view", () => {
     const html = renderToStaticMarkup(<StatisticsSidebar actions={createActions()} model={model} />);
 
     expect(html).toContain("ui-sliding-selection ui-sliding-selection-vertical");
-    expect(html.match(/data-sliding-selection-item="true"/g)).toHaveLength(5);
+    expect(html.match(/data-sliding-selection-item="true"/g)).toHaveLength(6);
     expect(html.match(/data-sliding-selection-active="true"/g)).toHaveLength(1);
   });
 
@@ -360,7 +417,7 @@ describe("statistics view", () => {
     for (const marker of ["statistics-sidebar", "statistics-kpis", "statistics-chart"]) {
       expect(html.match(new RegExp(`data-visual-region=\\"${marker}\\"`, "g"))).toHaveLength(1);
     }
-    for (const label of ["Sitzung", "Heute", "Sieben Tage", "30 Tage", "Gesamt"]) {
+    for (const label of ["Sitzung", "Heute", "Letzte 24 Stunden", "Sieben Tage", "30 Tage", "Gesamt"]) {
       expect(html).toContain(`>${label}<`);
     }
     expect(html).toContain("Bestehender Bandbreitenverlauf");
@@ -421,6 +478,27 @@ describe("statistics view", () => {
 
     expect(html).toContain('class="statistics-provider-empty" role="row"');
     expect(html).toContain('aria-colspan="3" role="cell"');
+  });
+
+  it("renders the rolling range as an account table with its own empty state", () => {
+    const snapshot = createSnapshot();
+    snapshot.stats.rolling24Hours = {
+      from: now - (24 * 60 * 60 * 1_000),
+      to: now,
+      downloadedBytes: 0,
+      accounts: []
+    };
+    const model = buildStatisticsViewModel(snapshot, "last24", now);
+    const html = renderToStaticMarkup(<>
+      <StatisticsSidebarStatus model={model} />
+      <StatisticsContent actions={createActions()} chart={<div />} model={model} />
+    </>);
+
+    expect(html).toContain("<h3>Accounts</h3>");
+    expect(html).toContain('aria-label="Account-Nutzung"');
+    expect(html).toContain('<span role="columnheader">Account</span>');
+    expect(html).toContain("In den vergangenen 24 Stunden wurde noch kein Account-Traffic erfasst.");
+    expect(html).toContain("Accounts: 0");
   });
 });
 
