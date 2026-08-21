@@ -40,6 +40,9 @@ describe("Multi-Debrid-Downloader product metadata", () => {
     expect(installer).toContain("${isUpdated}");
     expect(installer).toContain("FIND_PROCESS");
     expect(installer).toContain("taskkill /f /im");
+    expect(installer).toContain("$R1 >= 300");
+    expect(installer).toContain("update_force_wait:");
+    expect(installer).toContain("update_force_ready:");
   });
 
   it("moves the legacy user data directory without losing runtime state", () => {

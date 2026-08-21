@@ -4,13 +4,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const { spawnMock, unrefMock, onceMock } = vi.hoisted(() => {
   const unref = vi.fn();
-  const once = vi.fn((_event: string, _handler: (...args: unknown[]) => void) => ({
+  const child: { once: ReturnType<typeof vi.fn>; unref: ReturnType<typeof vi.fn> } = {
+    once: vi.fn(),
     unref
-  }));
-  const spawn = vi.fn(() => ({
-    once,
-    unref
-  }));
+  };
+  const once = vi.fn((event: string, handler: (...args: unknown[]) => void) => {
+    if (event === "spawn") {
+      queueMicrotask(() => handler());
+    }
+    return child;
+  });
+  child.once = once;
+  const spawn = vi.fn(() => child);
   return {
     spawnMock: spawn,
     unrefMock: unref,
@@ -22,7 +27,7 @@ vi.mock("node:child_process", () => ({
   spawn: spawnMock
 }));
 
-import { buildDeferredInstallerLaunch, buildInstallerLaunchArgs, checkGitHubUpdate, installLatestUpdate, isRemoteNewer, normalizeUpdateRepo, parseVersionParts } from "../src/main/update";
+import { buildInstallerLaunchArgs, checkGitHubUpdate, installLatestUpdate, isRemoteNewer, normalizeUpdateRepo, parseVersionParts } from "../src/main/update";
 import { APP_VERSION } from "../src/main/constants";
 import { UpdateCheckResult, UpdateInstallProgress } from "../src/shared/types";
 
@@ -165,24 +170,6 @@ describe("update", () => {
 
   it("uses silent NSIS install flags with auto-run after update", () => {
     expect(buildInstallerLaunchArgs()).toEqual(["/S", "--updated", "--force-run"]);
-  });
-
-  it("defers the installer until the current application process has exited", () => {
-    const launch = buildDeferredInstallerLaunch("C:\\Temp\\MDD Update\\setup.exe", 4242, "C:\\Windows");
-    const encoded = launch.args.at(-1) || "";
-    const script = Buffer.from(encoded, "base64").toString("utf16le");
-
-    expect(launch.command).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
-    expect(launch.args.slice(0, -1)).toEqual([
-      "-NoLogo",
-      "-NoProfile",
-      "-NonInteractive",
-      "-WindowStyle",
-      "Hidden",
-      "-EncodedCommand"
-    ]);
-    expect(script.indexOf("Get-Process -Id 4242")).toBeLessThan(script.indexOf("Start-Process -FilePath 'C:\\Temp\\MDD Update\\setup.exe'"));
-    expect(script).toContain("@('/S','--updated','--force-run')");
   });
 
   it("falls back to alternate download URL when setup asset URL returns 404", async () => {
@@ -594,7 +581,7 @@ describe("update", () => {
     });
 
     expect(result.started).toBe(true);
-    expect(spawnMock).toHaveBeenCalledWith(expect.stringMatching(/powershell\.exe$/i), expect.arrayContaining(["-EncodedCommand"]), expect.objectContaining({
+    expect(spawnMock).toHaveBeenCalledWith(expect.stringMatching(/rd-update[\\/].*setup\.exe$/i), ["/S", "--updated", "--force-run"], expect.objectContaining({
       detached: true,
       stdio: "ignore",
       windowsHide: true
@@ -605,6 +592,48 @@ describe("update", () => {
     expect(progressEvents.some((entry) => entry.stage === "verifying")).toBe(true);
     expect(progressEvents.some((entry) => entry.stage === "launching")).toBe(true);
     expect(progressEvents.some((entry) => entry.stage === "done")).toBe(true);
+  });
+
+  it("keeps the application running when Windows rejects the installer process", async () => {
+    const executablePayload = fs.readFileSync(process.execPath);
+    const digest = sha256Hex(executablePayload);
+    globalThis.fetch = (async (): Promise<Response> => new Response(executablePayload, {
+      status: 200,
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "Content-Length": String(executablePayload.length)
+      }
+    })) as typeof fetch;
+
+    const child: { once: ReturnType<typeof vi.fn>; unref: ReturnType<typeof vi.fn> } = {
+      once: vi.fn(),
+      unref: vi.fn()
+    };
+    child.once.mockImplementation((event: string, handler: (...args: unknown[]) => void) => {
+      if (event === "error") {
+        queueMicrotask(() => handler(new Error("spawn EACCES")));
+      }
+      return child;
+    });
+    spawnMock.mockReturnValueOnce(child);
+
+    const progressEvents: UpdateInstallProgress[] = [];
+    const result = await installLatestUpdate("owner/repo", {
+      updateAvailable: true,
+      currentVersion: APP_VERSION,
+      latestVersion: "9.9.9",
+      latestTag: "v9.9.9",
+      releaseUrl: "https://github.com/owner/repo/releases/tag/v9.9.9",
+      setupAssetUrl: "https://example.invalid/setup.exe",
+      setupAssetName: "setup.exe",
+      setupAssetDigest: `sha256:${digest}`
+    }, (progress) => progressEvents.push(progress));
+
+    expect(result.started).toBe(false);
+    expect(result.message).toContain("spawn EACCES");
+    expect(child.unref).not.toHaveBeenCalled();
+    expect(progressEvents.some((entry) => entry.stage === "done")).toBe(false);
+    expect(progressEvents.at(-1)?.stage).toBe("error");
   });
 });
 

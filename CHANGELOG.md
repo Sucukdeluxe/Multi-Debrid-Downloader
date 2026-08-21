@@ -4,6 +4,14 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.53] - 2026-08-21
+
+### In-app updates
+
+- Started the verified NSIS installer directly before application shutdown so Windows Server and RDP process-job cleanup cannot terminate an intermediate PowerShell launcher.
+- Kept the running application open when Windows rejects the installer process instead of reporting a successful update and quitting without an installer.
+- Delegated the complete process handoff to the installer with a 60-second graceful wait and a verified post-termination wait before replacing application files.
+
 ## [2.0.52] - 2026-08-21
 
 ### Rolling account statistics

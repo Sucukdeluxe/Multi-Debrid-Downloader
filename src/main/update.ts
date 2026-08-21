@@ -897,35 +897,6 @@ export function buildInstallerLaunchArgs(): string[] {
   return ["/S", "--updated", "--force-run"];
 }
 
-function quotePowerShellLiteral(value: string): string {
-  return `'${value.replaceAll("'", "''")}'`;
-}
-
-export function buildDeferredInstallerLaunch(
-  targetPath: string,
-  currentProcessId: number = process.pid,
-  systemRoot: string = process.env.SystemRoot || "C:\\Windows"
-): { command: string; args: string[] } {
-  const installerArgs = buildInstallerLaunchArgs().map(quotePowerShellLiteral).join(",");
-  const script = [
-    "$deadline=(Get-Date).AddMinutes(2)",
-    `while ((Get-Process -Id ${Math.max(1, Math.floor(currentProcessId))} -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $deadline)) { Start-Sleep -Milliseconds 200 }`,
-    `Start-Process -FilePath ${quotePowerShellLiteral(targetPath)} -ArgumentList @(${installerArgs}) -WindowStyle Hidden`
-  ].join("; ");
-  return {
-    command: path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
-    args: [
-      "-NoLogo",
-      "-NoProfile",
-      "-NonInteractive",
-      "-WindowStyle",
-      "Hidden",
-      "-EncodedCommand",
-      Buffer.from(script, "utf16le").toString("base64")
-    ]
-  };
-}
-
 export async function checkGitHubUpdate(repo: string): Promise<UpdateCheckResult> {
   const safeRepo = normalizeUpdateRepo(repo);
   const fallbackUrl = `${WEB_BASE}/${safeRepo}/releases/latest`;
@@ -1126,14 +1097,17 @@ export async function installLatestUpdate(
       message: "Starte stille Update-Installation",
     });
 
-    const deferredLaunch = buildDeferredInstallerLaunch(targetPath);
-    const child = childProcess.spawn(deferredLaunch.command, deferredLaunch.args, {
+    const child = childProcess.spawn(targetPath, buildInstallerLaunchArgs(), {
       detached: true,
       stdio: "ignore",
       windowsHide: true,
     });
-    child.once("error", (spawnError) => {
-      logger.error(`Update-Launcher Start fehlgeschlagen: ${compactErrorText(spawnError)}`);
+    await new Promise<void>((resolve, reject) => {
+      child.once("spawn", resolve);
+      child.once("error", (spawnError) => {
+        logger.error(`Update-Installer Start fehlgeschlagen: ${compactErrorText(spawnError)}`);
+        reject(spawnError);
+      });
     });
     child.unref();
 
