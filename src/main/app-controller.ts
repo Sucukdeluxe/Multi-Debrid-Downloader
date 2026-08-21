@@ -1092,7 +1092,7 @@ export class AppController {
       exportedAt: new Date().toISOString(),
       session: this.manager.getSession(),
       history: loadHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode, this.historyLimits()),
-      statistics: this.manager.getStats().statistics!,
+      statistics: this.manager.getStatisticsLedgerForBackup(),
       remoteDiagnostics
     });
     const encrypted = encryptBackup(JSON.stringify(payloadObj), passphrase);

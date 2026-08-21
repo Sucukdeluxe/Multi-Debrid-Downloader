@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildBackupPayload, planBackupImport } from "../src/main/backup-payload";
+import { readFileSync } from "node:fs";
 import type { AppSettings, SessionState, HistoryEntry, StatisticsLedger } from "../src/shared/types";
 
 function settings(overrides: Partial<AppSettings> = {}): AppSettings {
@@ -17,6 +18,14 @@ const statistics: StatisticsLedger = { version: 2, startedAt: 1, days: [], minut
 const baseInput = { appVersion: "1.7.183", exportedAt: "2026-06-07T00:00:00Z", session, history, statistics };
 
 describe("buildBackupPayload — default is settings-only", () => {
+  it("exports the full statistics ledger instead of the renderer projection", () => {
+    const source = readFileSync(new URL("../src/main/app-controller.ts", import.meta.url), "utf8");
+    const exportBlock = source.slice(source.indexOf("public exportBackup"), source.indexOf("public async exportOnlineBackup"));
+
+    expect(exportBlock).toContain("getStatisticsLedgerForBackup()");
+    expect(exportBlock).not.toContain("getStats().statistics");
+  });
+
   it("omits session AND history when backupIncludeDownloads is false (default)", () => {
     const p = buildBackupPayload({ ...baseInput, settings: { backupIncludeDownloads: false } as AppSettings });
     expect(p.kind).toBe("settings-only");

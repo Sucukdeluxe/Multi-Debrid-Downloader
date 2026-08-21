@@ -85,6 +85,7 @@ import {
   addStatisticsOutcomeInPlace,
   createStatisticsLedger,
   loadStatisticsLedger,
+  normalizeStatisticsLedger,
   projectStatisticsLedger,
   saveStatisticsLedger,
   seedStatisticsDayProviderBytes
@@ -2650,6 +2651,10 @@ export class DownloadManager extends EventEmitter {
     this.statsCache = stats;
     this.statsCacheAt = now;
     return stats;
+  }
+
+  public getStatisticsLedgerForBackup(now = nowMs()): StatisticsLedger {
+    return normalizeStatisticsLedger(this.statisticsLedger, now);
   }
 
   public getLiveTotalRuntimeMs(now = nowMs()): number {
@@ -8234,12 +8239,16 @@ export class DownloadManager extends EventEmitter {
     }
     const recordedAt = nowMs();
     const effectiveProvider = resolveMegaDebridProvider(this.settings, provider) || provider;
+    const accountStatus = providerAccountId ? this.settings.debridAccountStatuses[providerAccountId] : undefined;
+    const statisticsAccountLabel = accountStatus?.username?.trim()
+      || accountStatus?.email?.trim()
+      || providerAccountLabel;
     addStatisticsBytesInPlace(this.statisticsLedger, effectiveProvider, byteDelta, recordedAt);
     this.rollingAccountStatistics.record(
       effectiveProvider,
       byteDelta,
       providerAccountId,
-      providerAccountLabel,
+      statisticsAccountLabel,
       recordedAt
     );
     this.statisticsDirty = true;

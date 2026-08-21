@@ -165,8 +165,22 @@ export function buildRedactedSettingsPayload(settings: AppSettings): Record<stri
 }
 
 export function buildStatsPayload(snapshot: UiSnapshot): Record<string, unknown> {
+  const rolling24Hours = snapshot.stats.rolling24Hours;
   return {
-    session: snapshot.stats,
+    session: {
+      ...snapshot.stats,
+      ...(rolling24Hours ? {
+        rolling24Hours: {
+          from: rolling24Hours.from,
+          to: rolling24Hours.to,
+          downloadedBytes: rolling24Hours.downloadedBytes,
+          accounts: rolling24Hours.accounts.map((account) => ({
+            provider: account.provider,
+            bytes: account.bytes
+          }))
+        }
+      } : {})
+    },
     totals: {
       totalPackages: Object.keys(snapshot.session.packages).length,
       totalItems: Object.keys(snapshot.session.items).length,

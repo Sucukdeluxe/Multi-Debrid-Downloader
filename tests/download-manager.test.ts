@@ -13362,7 +13362,33 @@ describe("download manager", () => {
       realDebridApiTokens: serializeRealDebridApiAccounts([
         { id: "rda_one", token: "token-one" },
         { id: "rda_two", token: "token-two" }
-      ])
+      ]),
+      debridAccountStatuses: {
+        rda_one: {
+          accountId: "rda_one",
+          provider: "realdebrid" as const,
+          label: "Real-Debrid API 1",
+          maskedLogin: "Geschützter API-Token",
+          valid: true,
+          isPremium: true,
+          premiumUntilMs: null,
+          username: "xSucukDE",
+          message: "Premium aktiv",
+          checkedAt: Date.now()
+        },
+        rda_two: {
+          accountId: "rda_two",
+          provider: "realdebrid" as const,
+          label: "Real-Debrid API 2",
+          maskedLogin: "Geschützter API-Token",
+          valid: true,
+          isPremium: true,
+          premiumUntilMs: null,
+          username: "Backup",
+          message: "Premium aktiv",
+          checkedAt: Date.now()
+        }
+      }
     };
     const manager = new DownloadManager(settings, emptySession(), createStoragePaths(path.join(root, "state")));
     const internal = manager as unknown as {
@@ -13381,11 +13407,12 @@ describe("download manager", () => {
 
     expect(stats.rolling24Hours).toMatchObject({ downloadedBytes: 125 });
     expect(stats.rolling24Hours?.accounts.map((account) => [account.id, account.label, account.bytes])).toEqual([
-      ["rda_two", "Secondary", 75],
-      ["rda_one", "Primary", 50]
+      ["rda_two", "Backup", 75],
+      ["rda_one", "xSucukDE", 50]
     ]);
     expect(stats.statistics?.minutes).toEqual([]);
     expect(internal.statisticsLedger.minutes).toHaveLength(1);
+    expect(manager.getStatisticsLedgerForBackup().minutes).toHaveLength(1);
   });
 
   it("keeps rolling traffic on session reset and clears it on total reset", () => {
