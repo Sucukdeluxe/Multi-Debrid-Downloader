@@ -1336,6 +1336,9 @@ export class AppController {
     if (this.downloadHealthEvaluation) {
       await this.downloadHealthEvaluation;
     }
+    if (this.downloadHealthMonitor) {
+      await this.evaluateDownloadHealth();
+    }
     if (this.runtimeStatsTimer) {
       clearInterval(this.runtimeStatsTimer);
       this.runtimeStatsTimer = null;

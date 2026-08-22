@@ -6193,8 +6193,7 @@ export class DownloadManager extends EventEmitter {
     this.lastGlobalProgressAt = nowMs();
     this.lastReconnectMarkAt = 0;
     this.consecutiveReconnects = 0;
-    this.globalSpeedLimitQueue = Promise.resolve();
-    this.globalSpeedLimitNextAt = 0;
+    this.resetGlobalSpeedLimitState();
     this.summary = null;
     this.nonResumableActive = 0;
     this.persistSoon();
@@ -6307,8 +6306,7 @@ export class DownloadManager extends EventEmitter {
     this.lastGlobalProgressAt = nowMs();
     this.lastReconnectMarkAt = 0;
     this.consecutiveReconnects = 0;
-    this.globalSpeedLimitQueue = Promise.resolve();
-    this.globalSpeedLimitNextAt = 0;
+    this.resetGlobalSpeedLimitState();
     this.summary = null;
     this.nonResumableActive = 0;
     this.persistSoon();
@@ -6464,8 +6462,7 @@ export class DownloadManager extends EventEmitter {
     this.speedEventsHead = 0;
     this.lastGlobalProgressBytes = 0;
     this.lastGlobalProgressAt = nowMs();
-    this.globalSpeedLimitQueue = Promise.resolve();
-    this.globalSpeedLimitNextAt = 0;
+    this.resetGlobalSpeedLimitState();
     this.summary = null;
     this.nonResumableActive = 0;
     this.persistSoon();
@@ -12363,6 +12360,20 @@ export class DownloadManager extends EventEmitter {
 
   private globalSpeedLimitNextAt = 0;
 
+  private globalSpeedLimitHealthNextAt = 0;
+
+  private globalSpeedLimitPending = 0;
+
+  private globalSpeedLimitGeneration = 0;
+
+  private resetGlobalSpeedLimitState(): void {
+    this.globalSpeedLimitGeneration += 1;
+    this.globalSpeedLimitQueue = Promise.resolve();
+    this.globalSpeedLimitNextAt = 0;
+    this.globalSpeedLimitHealthNextAt = 0;
+    this.globalSpeedLimitPending = 0;
+  }
+
   private getEffectiveSpeedLimitKbps(): number {
     const now = nowMs();
     if (now - this.cachedSpeedLimitAt < 2000) {
@@ -12407,61 +12418,78 @@ export class DownloadManager extends EventEmitter {
 
   private async applyGlobalSpeedLimit(chunkBytes: number, bytesPerSecond: number, active?: ActiveTask): Promise<void> {
     const signal = active?.abortController.signal;
+    const generation = this.globalSpeedLimitGeneration;
+    const queuedAt = nowMs();
+    const durationMs = Math.max(1, Math.ceil((chunkBytes / bytesPerSecond) * 1000));
+    const healthReadyAt = Math.max(queuedAt, this.globalSpeedLimitNextAt, this.globalSpeedLimitHealthNextAt);
+    this.globalSpeedLimitHealthNextAt = healthReadyAt + durationMs;
+    this.globalSpeedLimitPending += 1;
+    if (active && healthReadyAt > queuedAt) {
+      active.blockedOnThrottleUntil = Math.max(active.blockedOnThrottleUntil || 0, healthReadyAt);
+    }
     const task = this.globalSpeedLimitQueue
       .catch(() => undefined)
       .then(async () => {
+        if (generation !== this.globalSpeedLimitGeneration) {
+          throw new Error("aborted:speed_limit_generation");
+        }
         if (signal?.aborted) {
           throw new Error("aborted:speed_limit");
         }
         const now = nowMs();
         const waitMs = Math.max(0, this.globalSpeedLimitNextAt - now);
         if (waitMs > 0) {
-          if (active) {
-            active.blockedOnThrottleUntil = now + waitMs;
-          }
-          try {
-            await new Promise<void>((resolve, reject) => {
-              let timer: NodeJS.Timeout | null = setTimeout(() => {
+          await new Promise<void>((resolve, reject) => {
+            let timer: NodeJS.Timeout | null = setTimeout(() => {
+              timer = null;
+              signal?.removeEventListener("abort", onAbort);
+              resolve();
+            }, waitMs);
+
+            const onAbort = (): void => {
+              if (timer) {
+                clearTimeout(timer);
                 timer = null;
-                signal?.removeEventListener("abort", onAbort);
-                resolve();
-              }, waitMs);
-
-              const onAbort = (): void => {
-                if (timer) {
-                  clearTimeout(timer);
-                  timer = null;
-                }
-                signal?.removeEventListener("abort", onAbort);
-                reject(new Error("aborted:speed_limit"));
-              };
-
-              if (signal) {
-                if (signal.aborted) {
-                  onAbort();
-                  return;
-                }
-                signal.addEventListener("abort", onAbort, { once: true });
               }
-            });
-          } finally {
-            if (active) {
-              active.blockedOnThrottleUntil = 0;
+              signal?.removeEventListener("abort", onAbort);
+              reject(new Error("aborted:speed_limit"));
+            };
+
+            if (signal) {
+              if (signal.aborted) {
+                onAbort();
+                return;
+              }
+              signal.addEventListener("abort", onAbort, { once: true });
             }
-          }
+          });
         }
 
+        if (generation !== this.globalSpeedLimitGeneration) {
+          throw new Error("aborted:speed_limit_generation");
+        }
         if (signal?.aborted) {
           throw new Error("aborted:speed_limit");
         }
 
         const startAt = Math.max(nowMs(), this.globalSpeedLimitNextAt);
-        const durationMs = Math.max(1, Math.ceil((chunkBytes / bytesPerSecond) * 1000));
         this.globalSpeedLimitNextAt = startAt + durationMs;
       });
 
     this.globalSpeedLimitQueue = task;
-    await task;
+    try {
+      await task;
+    } finally {
+      if (active && active.blockedOnThrottleUntil === healthReadyAt) {
+        active.blockedOnThrottleUntil = 0;
+      }
+      if (generation === this.globalSpeedLimitGeneration) {
+        this.globalSpeedLimitPending = Math.max(0, this.globalSpeedLimitPending - 1);
+        if (this.globalSpeedLimitPending === 0) {
+          this.globalSpeedLimitHealthNextAt = Math.max(nowMs(), this.globalSpeedLimitNextAt);
+        }
+      }
+    }
   }
 
   private async applySpeedLimit(chunkBytes: number, localWindowBytes: number, localWindowStarted: number, active?: ActiveTask): Promise<void> {
@@ -14095,8 +14123,7 @@ export class DownloadManager extends EventEmitter {
     this.speedEventsHead = 0;
     this.speedBytesLastWindow = 0;
     this.speedBytesPerPackage.clear();
-    this.globalSpeedLimitQueue = Promise.resolve();
-    this.globalSpeedLimitNextAt = 0;
+    this.resetGlobalSpeedLimitState();
     this.nonResumableActive = 0;
     this.lastGlobalProgressBytes = this.session.totalDownloadedBytes;
     this.lastGlobalProgressAt = nowMs();

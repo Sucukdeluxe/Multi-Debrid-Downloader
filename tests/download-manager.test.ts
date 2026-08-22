@@ -22,6 +22,7 @@ import { serializeRealDebridApiAccounts } from "../src/shared/real-debrid-accoun
 import { getRenameLogPath, initRenameLog, shutdownRenameLog } from "../src/main/rename-log";
 import { UnrestrictedLink } from "../src/main/realdebrid";
 import { resetVideoToolingCache } from "../src/main/video-processor";
+import { createDownloadHealthState, evaluateDownloadHealth } from "../src/main/download-health-monitor";
 import type { AppSettings, DownloadItem, HistoryEntry, PackageEntry } from "../src/shared/types";
 
 const tempDirs: string[] = [];
@@ -14698,7 +14699,7 @@ describe("package lifecycle telemetry boundaries", () => {
 });
 
 describe("download health snapshot", () => {
-  function createHealthManager(root: string) {
+  function createHealthManager(root: string, settings = defaultSettings()) {
     const session = emptySession();
     const packageId = "private-package-id";
     const itemId = "private-item-id";
@@ -14741,7 +14742,7 @@ describe("download health snapshot", () => {
       createdAt: 2_000,
       updatedAt: now
     };
-    const manager = new DownloadManager(defaultSettings(), session, createStoragePaths(path.join(root, "state")));
+    const manager = new DownloadManager(settings, session, createStoragePaths(path.join(root, "state")));
     const state = manager as any;
     session.running = true;
     session.items[itemId].status = "downloading";
@@ -14907,6 +14908,91 @@ describe("download health snapshot", () => {
 
     expect(health.activeTasks).toBe(1);
     expect(health.nextRetryAt).toBe(0);
+  });
+
+  it("freezes health while two active downloads wait in the real global speed-limit queue", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    try {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-health-global-throttle-"));
+      tempDirs.push(root);
+      const settings = {
+        ...defaultSettings(),
+        speedLimitEnabled: true,
+        speedLimitMode: "global" as const,
+        speedLimitKbps: 1
+      };
+      const { manager, session, state, packageId, itemId } = createHealthManager(root, settings);
+      const secondItemId = "private-throttled-item-2";
+      session.items[secondItemId] = {
+        ...session.items[itemId],
+        id: secondItemId
+      };
+      session.packages[packageId].itemIds.push(secondItemId);
+      state.runItemIds.add(secondItemId);
+      const firstActive = {
+        itemId,
+        packageId,
+        abortController: new AbortController(),
+        abortReason: "none",
+        resumable: true,
+        nonResumableCounted: false,
+        phase: "downloading",
+        phaseStartedAt: 10_000,
+        phaseDeadlineAt: 0,
+        blockedOnDiskWrite: false,
+        blockedOnDiskSince: 0,
+        blockedOnThrottleUntil: 0
+      };
+      const secondActive = {
+        ...firstActive,
+        itemId: secondItemId,
+        abortController: new AbortController()
+      };
+      state.activeTasks.set(itemId, firstActive);
+      state.activeTasks.set(secondItemId, secondActive);
+
+      await state.applySpeedLimit(100 * 1024, 0, 10_000, firstActive);
+      const secondWait = state.applySpeedLimit(100 * 1024, 0, 10_000, secondActive);
+      const firstWait = state.applySpeedLimit(100 * 1024, 0, 10_000, firstActive);
+      const waitsSettled = Promise.allSettled([secondWait, firstWait]);
+      await Promise.resolve();
+
+      let healthState = createDownloadHealthState();
+      const events = [];
+      for (const now of [10_000, 55_000, 105_000]) {
+        vi.setSystemTime(now);
+        const result = evaluateDownloadHealth(
+          healthState,
+          manager.getDownloadHealthSnapshot(now),
+          now,
+          {
+            stallAfterMs: 90_000,
+            cooldownMs: 600_000,
+            notifyOnStall: true,
+            notifyOnRecovery: true
+          }
+        );
+        healthState = result.state;
+        events.push(...result.events);
+      }
+
+      expect(firstActive.blockedOnThrottleUntil).toBeGreaterThan(105_000);
+      expect(secondActive.blockedOnThrottleUntil).toBeGreaterThan(105_000);
+      expect(manager.getDownloadHealthSnapshot(105_000).blockedOnThrottleUntil).toBeGreaterThan(105_000);
+      expect(healthState.status).toBe("expected_wait");
+      expect(healthState.suspiciousDurationMs).toBe(0);
+      expect(events).toEqual([]);
+
+      firstActive.abortController.abort("test-finished");
+      secondActive.abortController.abort("test-finished");
+      await vi.runAllTimersAsync();
+      await waitsSettled;
+      expect(firstActive.blockedOnThrottleUntil).toBe(0);
+      expect(secondActive.blockedOnThrottleUntil).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("counts one technical recovery when the existing global watchdog restarts stalled tasks", () => {
