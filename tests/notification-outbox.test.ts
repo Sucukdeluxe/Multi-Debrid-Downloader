@@ -6,7 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { NotificationEvent, NotificationOutbox } from "../src/main/notification-outbox";
 import { buildPackageNotificationEvent } from "../src/main/notification-events";
 import { buildNotifyRequest, sendNotification } from "../src/main/notify";
-import type { PackageResult } from "../src/shared/types";
+import { finalizePackageResult } from "../src/main/package-telemetry";
+import type { DownloadItem, PackageEntry, PackageResult, PackageTelemetry, RemuxOperationMetric } from "../src/shared/types";
 
 const tempDirs: string[] = [];
 
@@ -43,6 +44,73 @@ function event(id: string, overrides: Partial<NotificationEvent> = {}): Notifica
 
 function persisted(filePath: string): { events: NotificationEvent[]; lastSuccessAt: number; lastFailureAt: number } {
   return JSON.parse(fs.readFileSync(filePath, "utf8")) as { events: NotificationEvent[]; lastSuccessAt: number; lastFailureAt: number };
+}
+
+const privateFailureDetails = "https://private.example.test/hook C:/Private/target alice@example.test token=SUPERSECRET";
+const privateFailureValues = [
+  "https://private.example.test/hook",
+  "C:/Private/target",
+  "alice@example.test",
+  "token=SUPERSECRET"
+];
+
+function privateFailureTelemetry(source: "fullStatus" | "remux" | "cleanup"): PackageTelemetry {
+  const item: DownloadItem = {
+    id: "item-private",
+    packageId: "pkg-private",
+    url: "https://download.example.test/file",
+    provider: "realdebrid",
+    status: source === "fullStatus" ? "failed" : "completed",
+    retries: 0,
+    speedBps: 0,
+    downloadedBytes: source === "fullStatus" ? 0 : 1000,
+    totalBytes: 1000,
+    progressPercent: source === "fullStatus" ? 0 : 100,
+    fileName: "file.bin",
+    targetPath: "C:\\Downloads\\Paket\\file.bin",
+    resumable: true,
+    attempts: 1,
+    lastError: "",
+    fullStatus: source === "fullStatus" ? privateFailureDetails : "Fertig",
+    createdAt: 1000,
+    updatedAt: 2000
+  };
+  const packageEntry: PackageEntry = {
+    id: "pkg-private",
+    name: "Paket",
+    outputDir: "C:\\Downloads\\Paket",
+    extractDir: "C:\\Downloads\\Paket",
+    status: "failed",
+    itemIds: [item.id],
+    cancelled: false,
+    enabled: true,
+    downloadStartedAt: 1000,
+    downloadCompletedAt: 2000,
+    downloadEndedAt: 2000,
+    postProcessQueuedAt: 2000,
+    postProcessStartedAt: 2000,
+    postProcessCompletedAt: 3000,
+    terminalAt: 3000,
+    createdAt: 1000,
+    updatedAt: 3000
+  };
+  const remuxOperations: RemuxOperationMetric[] = source === "remux" ? [{
+    id: "remux-private",
+    fileName: "file.mkv",
+    startedAt: 2000,
+    completedAt: 3000,
+    durationMs: 1000,
+    status: "failed",
+    errorCategory: privateFailureDetails
+  }] : [];
+  return {
+    package: packageEntry,
+    items: [item],
+    archiveOperations: [],
+    remuxOperations,
+    outputCount: 0,
+    cleanupErrorCategory: source === "cleanup" ? privateFailureDetails : ""
+  };
 }
 
 describe("NotificationOutbox", () => {
@@ -338,6 +406,36 @@ describe("NotificationOutbox", () => {
     }
   });
 
+  it.each([
+    ["fullStatus fallback", "fullStatus", "Download · Download"],
+    ["remux operation", "remux", "Remux · Remux"],
+    ["cleanup failure", "cleanup", "Aufräumen · Cleanup"]
+  ] as const)("redacts private %s details through telemetry, Discord request, and persisted outbox", async (_label, source, expectedFailure) => {
+    const filePath = createOutboxFile();
+    const result = finalizePackageResult(privateFailureTelemetry(source));
+    const notificationEvent = buildPackageNotificationEvent({ generation: 1, result }, 3000);
+    const request = buildNotifyRequest("https://discord.com/api/webhooks/123/abc", {
+      title: notificationEvent.payload.title,
+      message: notificationEvent.payload.description || "",
+      color: notificationEvent.payload.color,
+      fields: notificationEvent.payload.fields,
+      timestamp: notificationEvent.createdAt
+    });
+    const outbox = new NotificationOutbox({ filePath, send: async () => true, now: () => 3000 });
+
+    await outbox.enqueue(notificationEvent);
+
+    const eventText = JSON.stringify(notificationEvent);
+    const requestText = String(request.init.body);
+    const persistedText = fs.readFileSync(filePath, "utf8");
+    expect(notificationEvent.payload.fields.find((field) => field.name === "Fehler")?.value).toBe(expectedFailure);
+    for (const sensitiveValue of privateFailureValues) {
+      expect(eventText).not.toContain(sensitiveValue);
+      expect(requestText).not.toContain(sensitiveValue);
+      expect(persistedText).not.toContain(sensitiveValue);
+    }
+  });
+
   it("projects private failure details from an existing outbox before persisting again", async () => {
     const filePath = createOutboxFile();
     const privateDetails = "https://private.example.test/hook C:/Private/target alice@example.test token=SUPERSECRET";
@@ -364,6 +462,54 @@ describe("NotificationOutbox", () => {
     expect(persistedText).not.toContain("C:/Private/target");
     expect(persistedText).not.toContain("alice@example.test");
     expect(persistedText).not.toContain("token=SUPERSECRET");
+  });
+
+  it("redacts a legacy persisted failure before automatic drain and Discord request creation", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1000);
+    const filePath = createOutboxFile();
+    const legacyEvent = event("legacy-private-auto-drain", {
+      payload: {
+        title: "Paket fehlgeschlagen",
+        description: "Paket",
+        fields: [{ name: "Fehler", value: `Download · ${privateFailureDetails}`, inline: false }]
+      }
+    });
+    fs.writeFileSync(filePath, JSON.stringify({
+      version: 1,
+      events: [legacyEvent],
+      lastSuccessAt: 0,
+      lastFailureAt: 0
+    }), "utf8");
+    const sentEvents: NotificationEvent[] = [];
+    const requestBodies: string[] = [];
+    const outbox = new NotificationOutbox({
+      filePath,
+      autoDrain: true,
+      send: async (queuedEvent) => {
+        sentEvents.push(queuedEvent);
+        requestBodies.push(String(buildNotifyRequest("https://discord.com/api/webhooks/123/abc", {
+          title: queuedEvent.payload.title,
+          message: queuedEvent.payload.description || "",
+          color: queuedEvent.payload.color,
+          fields: queuedEvent.payload.fields,
+          timestamp: queuedEvent.createdAt
+        }).init.body));
+        return true;
+      }
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    await outbox.drain(1000);
+
+    expect(sentEvents).toHaveLength(1);
+    expect(sentEvents[0].payload.fields[0]?.value).toBe("Download · Download");
+    expect(outbox.getStatus().queued).toBe(0);
+    expect(persisted(filePath).events).toEqual([]);
+    const emittedText = `${JSON.stringify(sentEvents)} ${requestBodies.join(" ")} ${fs.readFileSync(filePath, "utf8")}`;
+    for (const sensitiveValue of privateFailureValues) {
+      expect(emittedText).not.toContain(sensitiveValue);
+    }
   });
 
   it("returns after the default three-second shutdown budget when sending hangs", async () => {

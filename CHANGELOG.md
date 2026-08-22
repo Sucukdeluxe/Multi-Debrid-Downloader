@@ -4,6 +4,16 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+### Notification Center
+
+- Added rich Discord embeds for final package results, run summaries, remaining-volume alerts, and confirmed download stalls and recoveries.
+- Wait for downloads, extraction, remuxing, cleanup, and deferred post-processing before reporting a package or run as finished.
+- Persist pending notifications across restarts with ordered delivery, bounded retries, rate-limit handling, expiration, and a controlled shutdown drain.
+- Support immediate package notifications or two-minute success digests while always delivering enabled failure notifications immediately.
+- Added configurable run-scoped remaining-volume, download-stall, cooldown, and recovery alerts that ignore expected waits and short self-healing interruptions.
+- Expanded History with separate download, extraction, remux, post-processing, and total durations plus final file, archive, part, output, and failure-phase details.
+- Keep webhook details, local paths, account data, and credentials out of persisted notification events and failure messages.
+
 ## [2.0.55] - 2026-08-22
 
 ### 1Fichier imports
