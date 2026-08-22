@@ -297,6 +297,58 @@ export function pathSetKey(filePath: string): string {
 
 type TargetPlanKind = "file" | "directory";
 
+type RawArchivePlanEntry = {
+  canonicalWindowsKey: string;
+  normalizedSpelling: string;
+  kind: TargetPlanKind;
+};
+
+type RawArchivePlanNode = {
+  segmentSpelling: string;
+  entry?: RawArchivePlanEntry;
+  children: Map<string, RawArchivePlanNode>;
+};
+
+class RawArchivePlanInvariant {
+  private readonly root: RawArchivePlanNode = { segmentSpelling: "", children: new Map() };
+
+  public add(relativeTarget: string, kind: TargetPlanKind): void {
+    const normalizedSpelling = String(relativeTarget || "").replace(/\\/g, "/").replace(/\/+$/, "");
+    const segments = normalizedSpelling.split("/").filter(Boolean);
+    if (segments.length === 0) {
+      throw new Error("Raw-Archivplan-Kollision: leeres Ziel");
+    }
+    let node = this.root;
+    const canonicalSegments: string[] = [];
+    for (const segment of segments) {
+      if (node.entry?.kind === "file") {
+        throw new Error(`Raw-Archivplan-Kollision: Datei ist Vorfahr von ${normalizedSpelling}`);
+      }
+      const canonicalSegment = segment.toLowerCase();
+      canonicalSegments.push(canonicalSegment);
+      let child = node.children.get(canonicalSegment);
+      if (!child) {
+        child = { segmentSpelling: segment, children: new Map() };
+        node.children.set(canonicalSegment, child);
+      } else if (child.segmentSpelling !== segment) {
+        throw new Error(`Raw-Archivplan-Kollision: Windows-Case-Alias ${normalizedSpelling}`);
+      }
+      node = child;
+    }
+    const canonicalWindowsKey = canonicalSegments.join("/");
+    if (node.entry) {
+      if (node.entry.kind === "directory" && kind === "directory" && node.entry.normalizedSpelling === normalizedSpelling) {
+        return;
+      }
+      throw new Error(`Raw-Archivplan-Kollision: mehrfaches oder typwidriges Ziel ${node.entry.canonicalWindowsKey}`);
+    }
+    if (kind === "file" && node.children.size > 0) {
+      throw new Error(`Raw-Archivplan-Kollision: Datei ist Vorfahr eines anderen Ziels ${normalizedSpelling}`);
+    }
+    node.entry = { canonicalWindowsKey, normalizedSpelling, kind };
+  }
+}
+
 type TargetPlanNode = {
   kind?: TargetPlanKind;
   children: Map<string, TargetPlanNode>;
@@ -2348,7 +2400,7 @@ export function validateNativeArchiveEntryCandidates(entries: readonly string[],
 
 function validateNativeArchiveTargetPlan(entries: readonly NativeArchiveEntryCandidate[], targetDir: string): void {
   const scope = new PackageOutputScope([targetDir]);
-  const targetPlan = new TargetPlanInvariant();
+  const rawPlan = new RawArchivePlanInvariant();
   for (const candidate of entries) {
     const entryPath = String(candidate.entryPath || "").replace(/\\/g, "/").replace(/\/$/, "");
     if (!entryPath) {
@@ -2356,7 +2408,7 @@ function validateNativeArchiveTargetPlan(entries: readonly NativeArchiveEntryCan
     }
     const outputPath = path.resolve(targetDir, ...entryPath.split("/"));
     scope.validateTarget(entryPath, outputPath);
-    targetPlan.add(outputPath, candidate.isDirectory ? "directory" : "file");
+    rawPlan.add(entryPath, candidate.isDirectory ? "directory" : "file");
   }
 }
 
@@ -3060,6 +3112,21 @@ async function extractZipArchive(
   const zip = new AdmZip(archivePath);
   const entries = zip.getEntries();
   const resolvedTarget = path.resolve(targetDir);
+  const rawPlan = new RawArchivePlanInvariant();
+
+  for (const entry of entries) {
+    if (signal?.aborted) {
+      throw new Error("aborted:extract");
+    }
+    const baseOutputPath = path.resolve(targetDir, entry.entryName);
+    if (!baseOutputPath.startsWith(resolvedTarget + path.sep) && baseOutputPath !== resolvedTarget) {
+      throw new Error(`ZIP-Eintrag Path Traversal blockiert: ${entry.entryName}`);
+    }
+    const entryPath = entry.entryName.replace(/\\/g, "/").replace(/\/$/, "");
+    validateTarget?.(entryPath || "directory", baseOutputPath);
+    rawPlan.add(entryPath, entry.isDirectory ? "directory" : "file");
+  }
+
   const plannedOutputs = new Set<string>();
   const targetPlan = new TargetPlanInvariant();
   const renameCounters = new Map<string, number>();

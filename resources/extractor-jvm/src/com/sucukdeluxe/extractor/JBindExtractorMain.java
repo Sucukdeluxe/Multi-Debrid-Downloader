@@ -36,6 +36,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -250,6 +251,20 @@ public final class JBindExtractorMain {
                 fileHeaders = new ArrayList<FileHeader>();
             }
 
+            RawArchivePlanInvariant rawPlan = new RawArchivePlanInvariant();
+            for (FileHeader header : fileHeaders) {
+                if (header == null) {
+                    continue;
+                }
+                String entryName = normalizeEntryName(header.getFileName(), "file");
+                if (header.isDirectory()) {
+                    resolveDirectory(request.targetDir, entryName);
+                } else {
+                    secureResolve(request.targetDir, entryName);
+                }
+                rawPlan.add(entryName, header.isDirectory());
+            }
+
             long totalUnits = 0;
             boolean encrypted = false;
             for (FileHeader header : fileHeaders) {
@@ -259,43 +274,47 @@ public final class JBindExtractorMain {
                 encrypted = encrypted || header.isEncrypted();
                 totalUnits += safeSize(header.getUncompressedSize());
             }
-            ProgressTracker progress = new ProgressTracker(totalUnits);
-            progress.emitStart();
-
-            Set<String> preflightReserved = new HashSet<String>();
+            Set<String> reserved = new HashSet<String>();
             TargetPlanInvariant targetPlan = new TargetPlanInvariant();
+            Map<FileHeader, String> plannedEntryNames = new IdentityHashMap<FileHeader, String>();
+            Map<FileHeader, File> plannedDirectories = new IdentityHashMap<FileHeader, File>();
+            Map<FileHeader, OutputTarget> plannedOutputs = new IdentityHashMap<FileHeader, OutputTarget>();
             for (FileHeader header : fileHeaders) {
                 if (header == null) {
                     continue;
                 }
                 String entryName = normalizeEntryName(header.getFileName(), "file");
+                plannedEntryNames.put(header, entryName);
                 if (header.isDirectory()) {
                     File dir = resolveDirectory(request.targetDir, entryName);
                     targetPlan.add(dir, true);
-                    preflightReserved.add(pathKey(dir));
+                    reserved.add(pathKey(dir));
+                    plannedDirectories.put(header, dir);
                 } else {
-                    OutputTarget outputTarget = resolveOutputFile(request.targetDir, entryName, request.conflictMode, preflightReserved);
+                    OutputTarget outputTarget = resolveOutputFile(request.targetDir, entryName, request.conflictMode, reserved);
                     targetPlan.add(outputTarget.reportedFile, false);
+                    plannedOutputs.put(header, outputTarget);
                 }
             }
 
-            Set<String> reserved = new HashSet<String>();
+            ProgressTracker progress = new ProgressTracker(totalUnits);
+            progress.emitStart();
+
             for (FileHeader header : fileHeaders) {
                 if (header == null) {
                     continue;
                 }
 
-                String entryName = normalizeEntryName(header.getFileName(), "file");
+                String entryName = plannedEntryNames.get(header);
                 if (header.isDirectory()) {
-                    File dir = resolveDirectory(request.targetDir, entryName);
+                    File dir = plannedDirectories.get(header);
                     ensureDirectory(dir);
                     rejectLinkedPath(request.targetDir, dir);
-                    reserved.add(pathKey(dir));
                     continue;
                 }
 
                 long itemUnits = safeSize(header.getUncompressedSize());
-                OutputTarget outputTarget = resolveOutputFile(request.targetDir, entryName, request.conflictMode, reserved);
+                OutputTarget outputTarget = plannedOutputs.get(header);
                 File output = outputTarget.file;
                 if (output == null) {
                     emitOutput(request.archiveFile, entryName, outputTarget.reportedFile, "complete", outputTarget.disposition);
@@ -392,10 +411,28 @@ public final class JBindExtractorMain {
                 throw new IOException("Archiv enthalt keine Eintrage oder konnte nicht gelesen werden: " + request.archiveFile.getAbsolutePath());
             }
 
+            List<String> rawEntryNames = new ArrayList<String>();
+            List<Boolean> rawEntryDirectories = new ArrayList<Boolean>();
+            RawArchivePlanInvariant rawPlan = new RawArchivePlanInvariant();
+            for (int i = 0; i < itemCount; i++) {
+                Boolean isFolder = (Boolean) archive.getProperty(i, PropID.IS_FOLDER);
+                String entryPath = (String) archive.getProperty(i, PropID.PATH);
+                String entryName = normalizeEntryName(entryPath, "item-" + i);
+                if (Boolean.TRUE.equals(isFolder)) {
+                    resolveDirectory(request.targetDir, entryName);
+                } else {
+                    secureResolve(request.targetDir, entryName);
+                }
+                rawPlan.add(entryName, Boolean.TRUE.equals(isFolder));
+                rawEntryNames.add(entryName);
+                rawEntryDirectories.add(Boolean.valueOf(Boolean.TRUE.equals(isFolder)));
+            }
+
             long totalUnits = 0;
             boolean encrypted = false;
             List<Integer> fileIndices = new ArrayList<Integer>();
             List<File> outputFiles = new ArrayList<File>();
+            List<File> reportedFiles = new ArrayList<File>();
             List<Long> fileSizes = new ArrayList<Long>();
             List<String> entryNames = new ArrayList<String>();
             List<String> dispositions = new ArrayList<String>();
@@ -404,9 +441,8 @@ public final class JBindExtractorMain {
             TargetPlanInvariant targetPlan = new TargetPlanInvariant();
 
             for (int i = 0; i < itemCount; i++) {
-                Boolean isFolder = (Boolean) archive.getProperty(i, PropID.IS_FOLDER);
-                String entryPath = (String) archive.getProperty(i, PropID.PATH);
-                String entryName = normalizeEntryName(entryPath, "item-" + i);
+                Boolean isFolder = rawEntryDirectories.get(i);
+                String entryName = rawEntryNames.get(i);
 
                 if (Boolean.TRUE.equals(isFolder)) {
                     File dir = resolveDirectory(request.targetDir, entryName);
@@ -430,14 +466,18 @@ public final class JBindExtractorMain {
                 OutputTarget outputTarget = resolveOutputFile(request.targetDir, entryName, request.conflictMode, reserved);
                 targetPlan.add(outputTarget.reportedFile, false);
                 File output = outputTarget.file;
-                if (output == null) {
-                    emitOutput(request.archiveFile, entryName, outputTarget.reportedFile, "complete", outputTarget.disposition);
-                }
                 fileIndices.add(i);
                 outputFiles.add(output);
+                reportedFiles.add(outputTarget.reportedFile);
                 fileSizes.add(itemSize);
                 entryNames.add(entryName);
                 dispositions.add(outputTarget.disposition);
+            }
+
+            for (int i = 0; i < outputFiles.size(); i++) {
+                if (outputFiles.get(i) == null) {
+                    emitOutput(request.archiveFile, entryNames.get(i), reportedFiles.get(i), "complete", dispositions.get(i));
+                }
             }
 
             for (File directory : outputDirectories) {
@@ -809,6 +849,73 @@ public final class JBindExtractorMain {
             value = value.toLowerCase(Locale.ROOT);
         }
         return value;
+    }
+
+    private static final class RawArchivePlanInvariant {
+        private final RawArchivePlanNode root = new RawArchivePlanNode("");
+
+        void add(String relativeTarget, boolean directory) throws IOException {
+            String normalizedSpelling = relativeTarget == null ? "" : relativeTarget.replace('\\', '/');
+            while (normalizedSpelling.endsWith("/")) {
+                normalizedSpelling = normalizedSpelling.substring(0, normalizedSpelling.length() - 1);
+            }
+            if (normalizedSpelling.length() == 0) {
+                throw new IOException("Raw-Archivplan-Kollision: leeres Ziel");
+            }
+            String[] segments = normalizedSpelling.split("/", -1);
+            StringBuilder canonicalKey = new StringBuilder();
+            RawArchivePlanNode node = root;
+            for (String segment : segments) {
+                if (node.entry != null && !node.entry.directory) {
+                    throw new IOException("Raw-Archivplan-Kollision: Datei ist Vorfahr von " + normalizedSpelling);
+                }
+                String canonicalSegment = segment.toLowerCase(Locale.ROOT);
+                if (canonicalKey.length() > 0) {
+                    canonicalKey.append('/');
+                }
+                canonicalKey.append(canonicalSegment);
+                RawArchivePlanNode child = node.children.get(canonicalSegment);
+                if (child == null) {
+                    child = new RawArchivePlanNode(segment);
+                    node.children.put(canonicalSegment, child);
+                } else if (!child.segmentSpelling.equals(segment)) {
+                    throw new IOException("Raw-Archivplan-Kollision: Windows-Case-Alias " + normalizedSpelling);
+                }
+                node = child;
+            }
+            if (node.entry != null) {
+                if (node.entry.directory && directory && node.entry.normalizedSpelling.equals(normalizedSpelling)) {
+                    return;
+                }
+                throw new IOException("Raw-Archivplan-Kollision: mehrfaches oder typwidriges Ziel " + node.entry.canonicalWindowsKey);
+            }
+            if (!directory && !node.children.isEmpty()) {
+                throw new IOException("Raw-Archivplan-Kollision: Datei ist Vorfahr eines anderen Ziels " + normalizedSpelling);
+            }
+            node.entry = new RawArchivePlanEntry(canonicalKey.toString(), normalizedSpelling, directory);
+        }
+    }
+
+    private static final class RawArchivePlanNode {
+        private final String segmentSpelling;
+        private final Map<String, RawArchivePlanNode> children = new HashMap<String, RawArchivePlanNode>();
+        private RawArchivePlanEntry entry;
+
+        private RawArchivePlanNode(String segmentSpelling) {
+            this.segmentSpelling = segmentSpelling;
+        }
+    }
+
+    private static final class RawArchivePlanEntry {
+        private final String canonicalWindowsKey;
+        private final String normalizedSpelling;
+        private final boolean directory;
+
+        private RawArchivePlanEntry(String canonicalWindowsKey, String normalizedSpelling, boolean directory) {
+            this.canonicalWindowsKey = canonicalWindowsKey;
+            this.normalizedSpelling = normalizedSpelling;
+            this.directory = directory;
+        }
     }
 
     private static final class TargetPlanInvariant {
