@@ -24,7 +24,7 @@ import { assertTrustedIpcSender, type TrustedIpcOptions } from "./ipc-security";
 import { validateRealDebridLoginRequest } from "../shared/preload-api";
 import { migrateProductUserDataDirectory } from "./storage";
 import { validateCollectorContainerInspectionRequest, validateCollectorInspectionRequest } from "../shared/collector";
-import { DailyStartScheduler, hasDailyStartRulePatch } from "./daily-start-scheduler";
+import { DailyStartScheduler, hasDailyStartRulePatch, prepareDailyStartSettingsPatch } from "./daily-start-scheduler";
 
 function validateString(value: unknown, name: string): string {
   if (typeof value !== "string") {
@@ -464,7 +464,7 @@ function registerIpcHandlers(): void {
   });
   handleTrusted(IPC_CHANNELS.UPDATE_SETTINGS, async (_event: IpcMainInvokeEvent, partial: RendererSettingsUpdate) => {
     const validated = validateRendererSettingsUpdate(partial ?? {}, controller.getSettings());
-    const result = controller.updateSettings(validated as Partial<AppSettings>);
+    const result = controller.updateSettings(prepareDailyStartSettingsPatch(validated) as Partial<AppSettings>);
     updateClipboardWatcher();
     updateTray();
     armScheduledStart(result.scheduledStartEpochMs || 0, { startOnPast: true });

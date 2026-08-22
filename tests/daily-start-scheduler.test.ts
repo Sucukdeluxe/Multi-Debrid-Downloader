@@ -1,6 +1,12 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
-import type { DailyStartSettings } from "../src/shared/types";
+import type { AppSettings, DailyStartSettings } from "../src/shared/types";
 import { DailyStartScheduler, nextDailyStartEpochMs, prepareDailyStartSettingsPatch, shouldDeferAutoResumeToDailyStart } from "../src/main/daily-start-scheduler";
+import { defaultSettings } from "../src/main/constants";
+import { configureCredentialProtector } from "../src/main/credential-protection";
+import { createStoragePaths, loadSettings, saveSettings } from "../src/main/storage";
 
 const originalTimezone = process.env.TZ;
 process.env.TZ = "Europe/Berlin";
@@ -30,13 +36,19 @@ class FakeDailyStartController {
   public running = false;
   public paused = false;
   public canStart = true;
-  public items: Record<string, { status: string }> = { queued: { status: "queued" } };
+  public items: Record<string, { status: string; packageId: string }> = { queued: { status: "queued", packageId: "package" } };
+  public packages: Record<string, { enabled: boolean; cancelled: boolean }> = {
+    package: { enabled: true, cancelled: false }
+  };
   public events: string[] = [];
   public start = vi.fn(async () => {
     this.events.push("start");
   });
 
-  public constructor(value: DailyStartSettings) {
+  public constructor(
+    value: DailyStartSettings,
+    private readonly persist?: (value: DailyStartSettings) => void
+  ) {
     this.settings = value;
   }
 
@@ -46,7 +58,8 @@ class FakeDailyStartController {
       session: {
         running: this.running,
         paused: this.paused,
-        items: this.items
+        items: this.items,
+        packages: this.packages
       },
       canStart: this.canStart
     };
@@ -60,6 +73,7 @@ class FakeDailyStartController {
     if (partial.dailyStartLastHandledLocalDate) {
       this.events.push(`handled:${partial.dailyStartLastHandledLocalDate}`);
     }
+    this.persist?.(this.settings);
     return this.settings;
   }
 }
@@ -125,6 +139,39 @@ describe("daily start scheduler", () => {
     expect(controller.start).toHaveBeenCalledTimes(1);
   });
 
+  it("does not redispatch when the local calendar moves behind a handled or pending day", async () => {
+    const now = new Date(2026, 7, 22, 11, 0).getTime();
+    const handledController = new FakeDailyStartController(settings({
+      dailyStartLastHandledLocalDate: "2026-08-23"
+    }));
+    const pendingController = new FakeDailyStartController(settings({
+      dailyStartPendingLocalDate: "2026-08-23"
+    }));
+
+    expect(await new DailyStartScheduler(handledController, () => now).reconcile()).toBeNull();
+    expect(await new DailyStartScheduler(pendingController, () => now).reconcile()).toBeNull();
+
+    expect(handledController.start).not.toHaveBeenCalled();
+    expect(pendingController.start).not.toHaveBeenCalled();
+    expect(handledController.settings.dailyStartLastHandledLocalDate).toBe("2026-08-23");
+    expect(pendingController.settings.dailyStartPendingLocalDate).toBe("2026-08-23");
+    expect(nextDailyStartEpochMs(handledController.settings, now)).toBe(new Date(2026, 7, 24, 10, 0).getTime());
+    expect(nextDailyStartEpochMs(pendingController.settings, now)).toBe(new Date(2026, 7, 23, 10, 0).getTime());
+  });
+
+  it("does not regress last handled when an older pending receipt expires", async () => {
+    const now = new Date(2026, 7, 23, 9, 0).getTime();
+    const controller = new FakeDailyStartController(settings({
+      dailyStartLastHandledLocalDate: "2026-08-22",
+      dailyStartPendingLocalDate: "2026-08-21"
+    }));
+
+    expect(await new DailyStartScheduler(controller, () => now).reconcile()).toBe("missed");
+    expect(controller.start).not.toHaveBeenCalled();
+    expect(controller.settings.dailyStartLastHandledLocalDate).toBe("2026-08-22");
+    expect(controller.settings.dailyStartPendingLocalDate).toBe("");
+  });
+
   it("treats repeated suspend and resume reconciles as one daily dispatch", async () => {
     const now = new Date(2026, 7, 22, 10, 5).getTime();
     const controller = new FakeDailyStartController(settings());
@@ -139,20 +186,55 @@ describe("daily start scheduler", () => {
 
   it("recovers a persisted pending receipt after restart and then deduplicates it", async () => {
     const now = new Date(2026, 7, 22, 10, 5).getTime();
-    const controller = new FakeDailyStartController(settings({ dailyStartPendingLocalDate: "2026-08-22" }));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mdd-daily-restart-"));
+    const paths = createStoragePaths(dir);
+    configureCredentialProtector({
+      isEncryptionAvailable: () => false,
+      encryptString: (value) => Buffer.from(value, "utf8"),
+      decryptString: (value) => Buffer.from(value).toString("utf8")
+    });
+    saveSettings(paths, {
+      ...defaultSettings(),
+      ...settings({ dailyStartPendingLocalDate: "2026-08-22" })
+    });
 
-    await new DailyStartScheduler(controller, () => now).reconcile();
-    await new DailyStartScheduler(controller, () => now).reconcile();
+    try {
+      const restartedController = new FakeDailyStartController(
+        loadSettings(paths),
+        (value) => saveSettings(paths, value as AppSettings)
+      );
+      await new DailyStartScheduler(restartedController, () => now).reconcile();
 
-    expect(controller.start).toHaveBeenCalledTimes(1);
-    expect(controller.settings.dailyStartLastHandledLocalDate).toBe("2026-08-22");
-    expect(controller.settings.dailyStartPendingLocalDate).toBe("");
+      expect(restartedController.start).toHaveBeenCalledTimes(1);
+      expect(restartedController.settings.dailyStartLastHandledLocalDate).toBe("2026-08-22");
+      expect(restartedController.settings.dailyStartPendingLocalDate).toBe("");
+
+      const secondRestartController = new FakeDailyStartController(loadSettings(paths));
+      await new DailyStartScheduler(secondRestartController, () => now).reconcile();
+
+      expect(secondRestartController.start).not.toHaveBeenCalled();
+      expect(secondRestartController.settings.dailyStartLastHandledLocalDate).toBe("2026-08-22");
+      expect(secondRestartController.settings.dailyStartPendingLocalDate).toBe("");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("marks an empty queue handled without calling start", async () => {
     const now = new Date(2026, 7, 22, 10, 5).getTime();
     const controller = new FakeDailyStartController(settings());
     controller.items = {};
+
+    expect(await new DailyStartScheduler(controller, () => now).reconcile()).toBe("empty_queue");
+    expect(controller.start).not.toHaveBeenCalled();
+    expect(controller.settings.dailyStartLastHandledLocalDate).toBe("2026-08-22");
+    expect(controller.settings.dailyStartLastOutcome).toBe("empty_queue");
+  });
+
+  it("treats queued items in disabled packages as an empty startable queue", async () => {
+    const now = new Date(2026, 7, 22, 10, 5).getTime();
+    const controller = new FakeDailyStartController(settings());
+    controller.packages.package.enabled = false;
 
     expect(await new DailyStartScheduler(controller, () => now).reconcile()).toBe("empty_queue");
     expect(controller.start).not.toHaveBeenCalled();
@@ -216,6 +298,28 @@ describe("daily start scheduler", () => {
 
     await scheduler.reconcile();
     expect(controller.start).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not consume a pending day when shutdown invalidates an in-flight start", async () => {
+    const now = new Date(2026, 7, 22, 10, 5).getTime();
+    const controller = new FakeDailyStartController(settings());
+    let resolveStart!: () => void;
+    controller.start.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      resolveStart = resolve;
+    }));
+    const scheduler = new DailyStartScheduler(controller, () => now);
+
+    const reconcile = scheduler.reconcile();
+    expect(controller.start).toHaveBeenCalledTimes(1);
+    expect(controller.settings.dailyStartPendingLocalDate).toBe("2026-08-22");
+
+    scheduler.end();
+    resolveStart();
+
+    expect(await reconcile).toBeNull();
+    expect(controller.settings.dailyStartPendingLocalDate).toBe("2026-08-22");
+    expect(controller.settings.dailyStartLastHandledLocalDate).toBe("");
+    expect(controller.settings.dailyStartLastOutcome).toBe("");
   });
 
   it("constructs each DST target from local calendar fields instead of adding 24 hours", () => {

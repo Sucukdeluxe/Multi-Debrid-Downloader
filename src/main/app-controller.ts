@@ -81,7 +81,7 @@ import { normalizeStatisticsLedger, saveStatisticsLedger } from "./statistics-le
 import { NotificationOutbox } from "./notification-outbox";
 import { sendNotification } from "./notify";
 import { DownloadHealthMonitor } from "./download-health-monitor";
-import { prepareDailyStartSettingsPatch, shouldDeferAutoResumeToDailyStart } from "./daily-start-scheduler";
+import { shouldDeferAutoResumeToDailyStart } from "./daily-start-scheduler";
 
 function sanitizeSettingsPatch(partial: Partial<AppSettings>): Partial<AppSettings> {
   const entries = Object.entries(partial || {}).filter(([, value]) => value !== undefined);
@@ -521,7 +521,7 @@ export class AppController {
   }
 
   public updateSettings(partial: Partial<AppSettings>): AppSettings {
-    const sanitizedPatch = prepareDailyStartSettingsPatch(sanitizeSettingsPatch(partial)) as Partial<AppSettings>;
+    const sanitizedPatch = sanitizeSettingsPatch(partial);
     const previousSettings = this.settings;
     let nextSettings = normalizeSettings({
       ...previousSettings,

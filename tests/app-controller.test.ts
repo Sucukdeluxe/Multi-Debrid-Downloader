@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppController } from "../src/main/app-controller";
 import { defaultSettings } from "../src/main/constants";
 import { configureCredentialProtector } from "../src/main/credential-protection";
+import { prepareDailyStartSettingsPatch } from "../src/main/daily-start-scheduler";
 import { createStoragePaths } from "../src/main/storage";
 import type { AppSettings } from "../src/shared/types";
 
@@ -55,11 +56,11 @@ describe("AppController daily start settings", () => {
       scheduledStartEpochMs: 1_800_000_000_000
     });
 
-    const updated = controller.updateSettings({
+    const updated = controller.updateSettings(prepareDailyStartSettingsPatch({
       dailyStartEnabled: true,
       dailyStartMinuteOfDay: 18 * 60 + 45,
       dailyStartFirstLocalDate: "2026-08-23"
-    });
+    }));
 
     expect(updated.scheduledStartEpochMs).toBe(0);
     expect(updated).toMatchObject({
@@ -67,5 +68,28 @@ describe("AppController daily start settings", () => {
       dailyStartMinuteOfDay: 18 * 60 + 45,
       dailyStartFirstLocalDate: "2026-08-23"
     });
+  });
+
+  it("preserves a legacy one-time schedule when an account mutation saves a complete settings state", async () => {
+    configureCredentialProtector({
+      isEncryptionAvailable: () => false,
+      encryptString: (value) => Buffer.from(value, "utf8"),
+      decryptString: (value) => Buffer.from(value).toString("utf8")
+    });
+    const scheduledStartEpochMs = 1_800_000_000_000;
+    const controller = createController({
+      ...defaultSettings(),
+      ddownloadLogin: "account@example.test",
+      ddownloadPassword: "secret",
+      scheduledStartEpochMs
+    });
+
+    await controller.executeAccountCommand({
+      action: "delete",
+      kind: "ddownload-login",
+      accountId: "svc-ddownload"
+    });
+
+    expect(controller.getSettings().scheduledStartEpochMs).toBe(scheduledStartEpochMs);
   });
 });

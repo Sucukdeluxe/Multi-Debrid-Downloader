@@ -5,7 +5,8 @@ interface DailyStartSnapshot {
   session: {
     running: boolean;
     paused: boolean;
-    items: Record<string, { status: string }>;
+    items: Record<string, { status: string; packageId: string }>;
+    packages: Record<string, { enabled: boolean; cancelled: boolean }>;
   };
   canStart: boolean;
 }
@@ -73,6 +74,12 @@ export function nextDailyStartEpochMs(settings: DailyStartSettings, nowEpochMs =
   const now = new Date(nowEpochMs);
   const today = formatLocalDate(now);
   let candidate = settings.dailyStartFirstLocalDate > today ? settings.dailyStartFirstLocalDate : today;
+  const pending = isValidLocalDate(settings.dailyStartPendingLocalDate)
+    ? settings.dailyStartPendingLocalDate
+    : "";
+  if (pending && candidate < pending) {
+    candidate = pending;
+  }
   const handled = isValidLocalDate(settings.dailyStartLastHandledLocalDate)
     ? settings.dailyStartLastHandledLocalDate
     : "";
@@ -105,6 +112,7 @@ export function shouldDeferAutoResumeToDailyStart(
 export class DailyStartScheduler {
   private reconcileInFlight: Promise<DailyStartOutcome | null> | null = null;
   private reconcileTimer: ReturnType<typeof setInterval> | null = null;
+  private lifecycleGeneration = 0;
 
   public constructor(
     private readonly controller: DailyStartController,
@@ -115,7 +123,7 @@ export class DailyStartScheduler {
     if (this.reconcileInFlight) {
       return this.reconcileInFlight;
     }
-    const operation = this.reconcileOnce();
+    const operation = this.reconcileOnce(this.lifecycleGeneration);
     this.reconcileInFlight = operation;
     void operation.finally(() => {
       if (this.reconcileInFlight === operation) {
@@ -135,6 +143,7 @@ export class DailyStartScheduler {
   }
 
   public end(): void {
+    this.lifecycleGeneration += 1;
     if (this.reconcileTimer !== null) {
       clearInterval(this.reconcileTimer);
       this.reconcileTimer = null;
@@ -150,7 +159,7 @@ export class DailyStartScheduler {
     return outcome;
   }
 
-  private async reconcileOnce(): Promise<DailyStartOutcome | null> {
+  private async reconcileOnce(generation: number): Promise<DailyStartOutcome | null> {
     const nowEpochMs = this.now();
     let settings = this.controller.getSnapshot().settings;
     if (!settings.dailyStartEnabled || !isValidLocalDate(settings.dailyStartFirstLocalDate)) {
@@ -158,17 +167,27 @@ export class DailyStartScheduler {
     }
 
     const today = formatLocalDate(new Date(nowEpochMs));
+    const handledDate = isValidLocalDate(settings.dailyStartLastHandledLocalDate)
+      ? settings.dailyStartLastHandledLocalDate
+      : "";
+    const pendingDate = isValidLocalDate(settings.dailyStartPendingLocalDate)
+      ? settings.dailyStartPendingLocalDate
+      : "";
+    if ((handledDate && today <= handledDate) || (pendingDate && today < pendingDate)) {
+      return null;
+    }
     let missed: DailyStartOutcome | null = null;
     if (isValidLocalDate(settings.dailyStartPendingLocalDate) && settings.dailyStartPendingLocalDate < today) {
-      const pendingDate = settings.dailyStartPendingLocalDate;
+      const missedDate = settings.dailyStartPendingLocalDate;
+      const lastHandledLocalDate = handledDate > missedDate ? handledDate : missedDate;
       this.controller.updateSettings({
-        dailyStartLastHandledLocalDate: pendingDate,
+        dailyStartLastHandledLocalDate: lastHandledLocalDate,
         dailyStartPendingLocalDate: "",
         dailyStartLastOutcome: "missed"
       });
       settings = {
         ...settings,
-        dailyStartLastHandledLocalDate: pendingDate,
+        dailyStartLastHandledLocalDate: lastHandledLocalDate,
         dailyStartPendingLocalDate: "",
         dailyStartLastOutcome: "missed"
       };
@@ -194,8 +213,13 @@ export class DailyStartScheduler {
     if (snapshot.session.running || snapshot.session.paused) {
       return this.finish(today, "already_active");
     }
-    const hasQueuedItems = Object.values(snapshot.session.items)
-      .some((item) => item.status === "queued" || item.status === "reconnect_wait");
+    const hasQueuedItems = Object.values(snapshot.session.items).some((item) => {
+      if (item.status !== "queued" && item.status !== "reconnect_wait") {
+        return false;
+      }
+      const pkg = snapshot.session.packages[item.packageId];
+      return Boolean(pkg && pkg.enabled && !pkg.cancelled);
+    });
     if (!hasQueuedItems) {
       return this.finish(today, "empty_queue");
     }
@@ -207,8 +231,14 @@ export class DailyStartScheduler {
     try {
       await this.controller.start();
     } catch (error) {
+      if (generation !== this.lifecycleGeneration) {
+        return null;
+      }
       this.controller.updateSettings({ dailyStartLastOutcome: "start_failed" });
       throw error;
+    }
+    if (generation !== this.lifecycleGeneration) {
+      return null;
     }
     return this.finish(today, "started");
   }
