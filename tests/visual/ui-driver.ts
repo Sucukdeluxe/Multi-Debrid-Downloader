@@ -3,7 +3,7 @@ import { VISUAL_SCENARIOS, type VisualScenario } from "./fixtures";
 export type MainViewId = "downloads" | "collector" | "settings" | "history" | "statistics";
 
 export interface VisualInteraction {
-  type: "click" | "hover" | "fill" | "press" | "wait-visible" | "wait-absent";
+  type: "click" | "hover" | "leave" | "focus" | "blur" | "fill" | "press" | "wait-visible" | "wait-absent";
   role?: string;
   name?: string;
   value?: string;
@@ -33,7 +33,7 @@ export interface VisualCapture {
 }
 
 const MAIN_VIEWS = ["downloads", "collector", "settings", "history", "statistics"] as const;
-const INTERACTION_TYPES = ["click", "hover", "fill", "press", "wait-visible", "wait-absent"] as const;
+const INTERACTION_TYPES = ["click", "hover", "leave", "focus", "blur", "fill", "press", "wait-visible", "wait-absent"] as const;
 const ASSERTION_TYPES = ["active-view", "visible", "absent", "nonempty", "minimum-row-count", "layer-above"] as const;
 const REGION_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const VIEW_NAMES: Record<MainViewId, string> = {
@@ -366,6 +366,19 @@ function hoverElement(targetDocument: Document, element: Element): void {
   dispatch(element, createEvent(targetDocument, "mouseenter", "mouse"));
 }
 
+function leaveElement(targetDocument: Document, element: Element): void {
+  dispatch(element, createEvent(targetDocument, "pointerout", "pointer"));
+  dispatch(element, createEvent(targetDocument, "pointerleave", "pointer"));
+  dispatch(element, createEvent(targetDocument, "mouseout", "mouse"));
+  dispatch(element, createEvent(targetDocument, "mouseleave", "mouse"));
+}
+
+function blurElement(element: Element): void {
+  if ("blur" in element && typeof element.blur === "function") {
+    element.blur();
+  }
+}
+
 function setNativeValue(targetDocument: Document, element: Element, value: string): void {
   const view = targetDocument.defaultView;
   if (!view) {
@@ -447,6 +460,12 @@ async function runInteraction(interaction: VisualInteraction, targetDocument: Do
     clickElement(targetDocument, element);
   } else if (interaction.type === "hover") {
     hoverElement(targetDocument, element);
+  } else if (interaction.type === "leave") {
+    leaveElement(targetDocument, element);
+  } else if (interaction.type === "focus") {
+    focusElement(element);
+  } else if (interaction.type === "blur") {
+    blurElement(element);
   } else if (interaction.type === "fill") {
     setNativeValue(targetDocument, element, interaction.value as string);
   } else {

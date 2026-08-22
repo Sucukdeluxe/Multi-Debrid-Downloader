@@ -36,6 +36,16 @@ type ToolbarMeasurement = {
   schedule: DOMRect;
 };
 
+type ContextInfoMeasurement = {
+  afterHover: boolean;
+  afterPopover: boolean;
+  afterLeave: boolean;
+  afterFocus: boolean;
+  afterBlur: boolean;
+  afterFirstClick: boolean;
+  afterSecondClick: boolean;
+};
+
 class CdpClient {
   private nextId = 0;
   private readonly pending = new Map<number, {
@@ -246,6 +256,24 @@ describe("download disclosure in the headless visual harness", () => {
     throw new Error("Visual harness did not reach its ready state");
   }
 
+  async function loadDriverCapture(name: string): Promise<void> {
+    if (!client) throw new Error("Chrome DevTools client is missing");
+    await client.send("Page.navigate", {
+      url: `http://127.0.0.1:${visualPort}/driver-test.html?capture=${encodeURIComponent(name)}&run=${Date.now()}`
+    });
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline) {
+      const state = await client.evaluate<{ error: string; ready: boolean }>(`({
+        error: document.getElementById('root')?.textContent || '',
+        ready: document.documentElement.dataset.visualReady === 'true'
+      })`);
+      if (state.ready) return;
+      if (state.error.startsWith("Visual-Harness-Fehler:")) throw new Error(state.error);
+      await delay(50);
+    }
+    throw new Error(`Visual driver capture did not reach its ready state: ${name}`);
+  }
+
   async function measureDisclosure(action: "einklappen" | "ausklappen"): Promise<DisclosureSample[]> {
     if (!client) throw new Error("Chrome DevTools client is missing");
     return client.evaluate<DisclosureSample[]>(`(async () => {
@@ -347,5 +375,80 @@ describe("download disclosure in the headless visual harness", () => {
     expect(measurement.toggle.left).toBeGreaterThanOrEqual(measurement.toolbar.left - 1);
     expect(measurement.toggle.right).toBeLessThanOrEqual(measurement.toolbar.right + 1);
     expect(measurement.toolbar.right - measurement.toggle.right).toBeLessThanOrEqual(12);
+  }, 30_000);
+
+  it("opens context info on hover and focus, stays open over the popover and closes outside", async () => {
+    await loadDenseDownloads(1120);
+    if (!client) throw new Error("Chrome DevTools client is missing");
+    const trigger = await client.evaluate<DOMRect>(`(() => {
+      const element = document.querySelector('.ui-context-info-trigger');
+      if (!(element instanceof HTMLButtonElement)) throw new Error('Context info trigger is missing');
+      return element.getBoundingClientRect().toJSON();
+    })()`);
+    await client.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: trigger.left + trigger.width / 2,
+      y: trigger.top + trigger.height / 2
+    });
+    await delay(50);
+    const afterHover = await client.evaluate<boolean>("Boolean(document.querySelector('.ui-context-info-region'))");
+    const popover = await client.evaluate<DOMRect>(`(() => {
+      const element = document.querySelector('.ui-context-info-region');
+      if (!(element instanceof HTMLElement)) throw new Error('Context info region is missing after hover');
+      return element.getBoundingClientRect().toJSON();
+    })()`);
+    await client.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: popover.left + popover.width / 2,
+      y: popover.top + popover.height / 2
+    });
+    await delay(50);
+    const afterPopover = await client.evaluate<boolean>("Boolean(document.querySelector('.ui-context-info-region'))");
+    await client.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 1110, y: 10 });
+    await delay(50);
+    const afterLeave = await client.evaluate<boolean>("Boolean(document.querySelector('.ui-context-info-region'))");
+    const focusStates = await client.evaluate<Omit<ContextInfoMeasurement, "afterHover" | "afterPopover" | "afterLeave">>(`(async () => {
+      const wait = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const trigger = document.querySelector('.ui-context-info-trigger');
+      const outside = document.querySelector('.md-shell-navigation-item');
+      if (!(trigger instanceof HTMLButtonElement) || !(outside instanceof HTMLButtonElement)) {
+        throw new Error('Context info focus targets are missing');
+      }
+      trigger.focus();
+      await wait();
+      const afterFocus = Boolean(document.querySelector('.ui-context-info-region'));
+      outside.focus();
+      await wait();
+      const afterBlur = Boolean(document.querySelector('.ui-context-info-region'));
+      trigger.click();
+      await wait();
+      const afterFirstClick = Boolean(document.querySelector('.ui-context-info-region'));
+      trigger.click();
+      await wait();
+      const afterSecondClick = Boolean(document.querySelector('.ui-context-info-region'));
+      return { afterFocus, afterBlur, afterFirstClick, afterSecondClick };
+    })()`);
+    const measurement: ContextInfoMeasurement = { afterHover, afterPopover, afterLeave, ...focusStates };
+
+    expect(measurement).toEqual({
+      afterHover: true,
+      afterPopover: true,
+      afterLeave: false,
+      afterFocus: true,
+      afterBlur: false,
+      afterFirstClick: true,
+      afterSecondClick: true
+    });
+  }, 30_000);
+
+  it("executes the context info hover, leave, focus and blur manifest captures", async () => {
+    for (const name of ["info-open", "info-closed-after-leave", "info-open-focus", "info-closed-after-blur", "info-open-focus-inside"]) {
+      await loadDriverCapture(name);
+      if (name === "info-open-focus-inside") {
+        if (!client) throw new Error("Chrome DevTools client is missing");
+        const transitions = await client.evaluate<string>("document.querySelector('[data-context-info-transitions]')?.getAttribute('data-context-info-transitions') || ''");
+        expect(transitions.split(",")).not.toContain("closed");
+      }
+    }
   }, 30_000);
 });

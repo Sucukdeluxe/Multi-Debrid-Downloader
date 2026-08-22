@@ -189,11 +189,70 @@
     "viewport": { "width": 2560, "height": 1369 },
     "activeView": "downloads",
     "interactions": [
-      { "type": "click", "role": "button", "name": "Informationen" }
+      { "type": "hover", "role": "button", "name": "Informationen" },
+      { "type": "wait-visible", "role": "region", "name": "Informationen zu Downloads" }
     ],
     "assertions": [
       { "type": "visible", "role": "region", "name": "Informationen zu Downloads" },
       { "type": "nonempty", "role": "region", "name": "Informationen zu Downloads" }
+    ]
+  },
+  {
+    "name": "info-closed-after-leave",
+    "scenario": "dense",
+    "viewport": { "width": 2560, "height": 1369 },
+    "activeView": "downloads",
+    "interactions": [
+      { "type": "hover", "role": "button", "name": "Informationen" },
+      { "type": "wait-visible", "role": "region", "name": "Informationen zu Downloads" },
+      { "type": "leave", "role": "button", "name": "Informationen" },
+      { "type": "wait-absent", "role": "region", "name": "Informationen zu Downloads" }
+    ],
+    "assertions": [
+      { "type": "absent", "role": "region", "name": "Informationen zu Downloads" }
+    ]
+  },
+  {
+    "name": "info-open-focus",
+    "scenario": "dense",
+    "viewport": { "width": 2560, "height": 1369 },
+    "activeView": "downloads",
+    "interactions": [
+      { "type": "focus", "role": "button", "name": "Informationen" },
+      { "type": "wait-visible", "role": "region", "name": "Informationen zu Downloads" }
+    ],
+    "assertions": [
+      { "type": "visible", "role": "region", "name": "Informationen zu Downloads" }
+    ]
+  },
+  {
+    "name": "info-closed-after-blur",
+    "scenario": "dense",
+    "viewport": { "width": 2560, "height": 1369 },
+    "activeView": "downloads",
+    "interactions": [
+      { "type": "focus", "role": "button", "name": "Informationen" },
+      { "type": "wait-visible", "role": "region", "name": "Informationen zu Downloads" },
+      { "type": "blur", "role": "button", "name": "Informationen" },
+      { "type": "wait-absent", "role": "region", "name": "Informationen zu Downloads" }
+    ],
+    "assertions": [
+      { "type": "absent", "role": "region", "name": "Informationen zu Downloads" }
+    ]
+  },
+  {
+    "name": "info-open-focus-inside",
+    "scenario": "dense",
+    "viewport": { "width": 2560, "height": 1369 },
+    "activeView": "downloads",
+    "interactions": [
+      { "type": "focus", "role": "button", "name": "Informationen" },
+      { "type": "wait-visible", "role": "region", "name": "Informationen zu Downloads" },
+      { "type": "focus", "role": "button", "name": "Kontextaktion" },
+      { "type": "wait-visible", "role": "region", "name": "Informationen zu Downloads" }
+    ],
+    "assertions": [
+      { "type": "visible", "role": "region", "name": "Informationen zu Downloads" }
     ]
   },
   {

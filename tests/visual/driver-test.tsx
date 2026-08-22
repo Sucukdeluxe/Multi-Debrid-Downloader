@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
+import { ContextInfoButton } from "../../src/renderer/ui/ContextInfoButton";
 import {
   loadVisualCapture,
   prepareVisualCapture,
@@ -23,6 +24,7 @@ function DriverTestApp({ updateAvailable }: { updateAvailable: boolean }) {
   const [updateDialogOpen, setUpdateDialogOpen] = useState(updateAvailable);
   const [updateTooltipOpen, setUpdateTooltipOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
+  const [infoTransitions, setInfoTransitions] = useState<boolean[]>([]);
 
   return (
     <>
@@ -48,8 +50,16 @@ function DriverTestApp({ updateAvailable }: { updateAvailable: boolean }) {
               <div role="row">Dokumentation Staffel 1</div>
             </div>
             <div data-visual-region="downloads-pagination">Seite 1 von 1</div>
-            <button type="button" onClick={() => setInfoOpen((open) => !open)}>Informationen</button>
-            {infoOpen && <section aria-label="Informationen zu Downloads">Drei Downloads sind sichtbar.</section>}
+            <ContextInfoButton
+              content={<><span>Drei Downloads sind sichtbar.</span><button type="button">Kontextaktion</button></>}
+              contextName="Downloads"
+              onOpenChange={(open) => {
+                setInfoTransitions((transitions) => [...transitions, open]);
+                setInfoOpen(open);
+              }}
+              open={infoOpen}
+            />
+            <output data-context-info-transitions={infoTransitions.map((open) => open ? "open" : "closed").join(",")} />
           </>
         )}
         {activeView === "collector" && (

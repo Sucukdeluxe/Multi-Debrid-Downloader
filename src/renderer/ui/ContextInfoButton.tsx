@@ -43,13 +43,23 @@ export function ContextInfoButton({
   }
 
   return (
-    <div className="ui-context-info">
+    <div
+      className="ui-context-info"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          onOpenChange(false);
+        }
+      }}
+      onFocus={() => onOpenChange(true)}
+      onMouseEnter={() => onOpenChange(true)}
+      onMouseLeave={() => onOpenChange(false)}
+    >
       <button
         aria-controls={regionId}
         aria-expanded={open}
         aria-label="Informationen"
         className="ui-context-info-trigger"
-        onClick={() => onOpenChange(!open)}
+        onClick={() => onOpenChange(true)}
         title="Informationen"
         type="button"
       >

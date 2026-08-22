@@ -97,8 +97,7 @@ const filters: Array<{ id: DownloadSidebarFilter; label: string }> = [
 export function DownloadsSidebar({ actions, model }: { actions: DownloadsViewActions; model: DownloadsViewModel }): ReactElement {
   return (
     <aside className="downloads-sidebar" data-visual-region="downloads-sidebar">
-      <div className="downloads-mode-title">Pakete</div>
-      <SlidingSelection activeKey={model.filter} aria-label="Downloadfilter" as="nav" axis="vertical">
+      <SlidingSelection activeKey={model.filter} aria-label="Downloadfilter" as="nav" axis="vertical" className="downloads-filter-group">
         {filters.map((filter) => <button aria-current={model.filter === filter.id ? "page" : undefined} className={model.filter === filter.id ? "is-active" : ""} data-sliding-selection-active={model.filter === filter.id} data-sliding-selection-item="true" key={filter.id} onClick={() => actions.onFilterChange(filter.id)} type="button"><span>{filter.label}</span><b>{model.counts[filter.id]}</b></button>)}
       </SlidingSelection>
       <label className="downloads-provider-filter"><span>Service</span><select aria-label="Service filtern" disabled={model.providerOptions.length <= 1} onChange={(event) => actions.onProviderFilterChange(event.target.value)} value={model.providerFilter}><option value="all">Alle Services</option>{model.providerOptions.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select></label>

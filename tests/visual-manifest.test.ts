@@ -155,6 +155,10 @@ describe("reference capture manifest", () => {
       "context-statistics",
       "info-closed",
       "info-open",
+      "info-closed-after-leave",
+      "info-open-focus",
+      "info-closed-after-blur",
+      "info-open-focus-inside",
       "info-absent"
     ]));
     const collector = manifest.find((entry: { name: string }) => entry.name === "collector-dense");
@@ -172,6 +176,48 @@ describe("reference capture manifest", () => {
       role: "button",
       name: "Update verfügbar"
     });
+    const infoOpen = manifest.find((entry: { name: string }) => entry.name === "info-open");
+    expect(infoOpen.interactions).toEqual([
+      { type: "hover", role: "button", name: "Informationen" },
+      { type: "wait-visible", role: "region", name: "Informationen zu Downloads" }
+    ]);
+    const infoClosedAfterLeave = manifest.find((entry: { name: string }) => entry.name === "info-closed-after-leave");
+    expect(infoClosedAfterLeave.interactions).toEqual([
+      { type: "hover", role: "button", name: "Informationen" },
+      { type: "wait-visible", role: "region", name: "Informationen zu Downloads" },
+      { type: "leave", role: "button", name: "Informationen" },
+      { type: "wait-absent", role: "region", name: "Informationen zu Downloads" }
+    ]);
+    const infoOpenFocus = manifest.find((entry: { name: string }) => entry.name === "info-open-focus");
+    expect(infoOpenFocus.interactions).toEqual([
+      { type: "focus", role: "button", name: "Informationen" },
+      { type: "wait-visible", role: "region", name: "Informationen zu Downloads" }
+    ]);
+    const infoClosedAfterBlur = manifest.find((entry: { name: string }) => entry.name === "info-closed-after-blur");
+    expect(infoClosedAfterBlur.interactions).toEqual([
+      { type: "focus", role: "button", name: "Informationen" },
+      { type: "wait-visible", role: "region", name: "Informationen zu Downloads" },
+      { type: "blur", role: "button", name: "Informationen" },
+      { type: "wait-absent", role: "region", name: "Informationen zu Downloads" }
+    ]);
+    const infoOpenFocusInside = manifest.find((entry: { name: string }) => entry.name === "info-open-focus-inside");
+    expect(infoOpenFocusInside.interactions).toEqual([
+      { type: "focus", role: "button", name: "Informationen" },
+      { type: "wait-visible", role: "region", name: "Informationen zu Downloads" },
+      { type: "focus", role: "button", name: "Kontextaktion" },
+      { type: "wait-visible", role: "region", name: "Informationen zu Downloads" }
+    ]);
+  });
+
+  it("accepts explicit leave, focus and blur interactions", () => {
+    expect(validateVisualCaptureManifest([{
+      ...validCapture,
+      interactions: [
+        { type: "leave", role: "button", name: "Informationen" },
+        { type: "focus", role: "button", name: "Informationen" },
+        { type: "blur", role: "button", name: "Informationen" }
+      ]
+    }])).toEqual([]);
   });
 
   it("defines representative responsive captures before the final matrix", () => {

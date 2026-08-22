@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import fs from "node:fs";
 import path from "node:path";
-import { isValidElement, type ReactElement, type ReactNode } from "react";
+import { Children, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { DownloadItem, DownloadStatus, PackageEntry } from "../src/shared/types";
@@ -70,6 +70,7 @@ import {
   normalizeDownloadServiceLabel
 } from "../src/renderer/download-format";
 import { getRollingMetricDirection } from "../src/renderer/ui/RollingMetricValue";
+import { SlidingSelection } from "../src/renderer/ui/SlidingSelection";
 
 const now = new Date(2026, 7, 10, 12, 0, 0, 0).getTime();
 
@@ -1044,14 +1045,21 @@ describe("downloads view", () => {
     expect(multiple).not.toMatch(/<select[^>]*aria-label="Service filtern"[^>]*disabled=""/);
   });
 
-  it("shows only the package mode while the file mode remains hidden", () => {
-    const html = renderToStaticMarkup(<DownloadsSidebar actions={createActions()} model={withRuntime(createInput())} />);
+  it("starts with the six download filters in a compact neutral group without a package title", () => {
+    const sidebar = DownloadsSidebar({ actions: createActions(), model: withRuntime(createInput()) });
+    const children = Children.toArray(sidebar.props.children).filter(isValidElement);
+    const filterGroup = children[0] as ReactElement<{ className?: string }>;
+    const html = renderToStaticMarkup(sidebar);
     const css = fs.readFileSync(path.join(process.cwd(), "src/renderer/views/downloads/downloads.css"), "utf8");
 
-    expect(html).toContain("Pakete");
+    expect(filterGroup.type).toBe(SlidingSelection);
+    expect(filterGroup.props.className).toBe("downloads-filter-group");
+    expect(html).not.toContain("downloads-mode-title");
+    expect(html).not.toContain(">Pakete<");
     expect(html).not.toContain(">Dateien<");
     expect(html).not.toContain("downloads-mode-switch");
-    expect(css).toMatch(/\.downloads-mode-title\s*\{[^}]*justify-content:\s*center;[^}]*color:\s*#0a0f1a;[^}]*background:\s*#90cdf4;[^}]*text-align:\s*center;/s);
+    expect(css).toMatch(/\.downloads-filter-group\s*\{[^}]*padding:\s*4px;[^}]*border:\s*1px solid var\(--ui-border\);[^}]*border-radius:\s*6px;[^}]*background:\s*var\(--ui-input\);/s);
+    expect(css).not.toContain(".downloads-mode-title");
   });
 
   it("renders the five dense markers exactly once and the empty marker only for a true empty queue", () => {

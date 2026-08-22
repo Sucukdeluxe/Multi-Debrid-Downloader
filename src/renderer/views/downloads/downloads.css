@@ -39,18 +39,11 @@
   padding: 14px 12px 6px;
 }
 
-.downloads-mode-title {
-  display: flex;
-  min-height: 36px;
-  align-items: center;
-  justify-content: center;
-  padding: 0 10px;
+.downloads-filter-group {
+  padding: 4px;
   border: 1px solid var(--ui-border);
   border-radius: 6px;
-  color: #0a0f1a;
-  background: #90cdf4;
-  text-align: center;
-  font-weight: 700;
+  background: var(--ui-input);
 }
 
 .downloads-sidebar nav button,
