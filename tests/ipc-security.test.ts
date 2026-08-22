@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { assertTrustedIpcSender } from "../src/main/ipc-security";
 import { validateRealDebridLoginRequest } from "../src/shared/preload-api";
+import { validateCollectorContainerInspectionRequest, validateCollectorInspectionRequest } from "../src/shared/collector";
 
 function eventFor(url: string) {
   return {
@@ -23,6 +24,27 @@ describe("ipc-security", () => {
     expect(() => validateRealDebridLoginRequest({ accountId: "rdw_valid", create: true, dailyLimitBytes: -1 })).toThrow(/Account-Payload/i);
     expect(() => validateRealDebridLoginRequest({ accountId: "rdw_valid", create: true, dailyLimitBytes: Number.MAX_SAFE_INTEGER + 1 })).toThrow(/Account-Payload/i);
     expect(() => validateRealDebridLoginRequest({ accountId: "rdw_existing", dailyLimitBytes: 1 })).toThrow(/Account-Payload/i);
+  });
+
+  it("accepts only bounded collector inspection payloads", () => {
+    expect(validateCollectorInspectionRequest({ rawText: "https://1fichier.com/?abc12345", addedAt: 1234 })).toEqual({
+      rawText: "https://1fichier.com/?abc12345",
+      addedAt: 1234
+    });
+    expect(() => validateCollectorInspectionRequest({ rawText: "x", addedAt: 1, token: "secret" })).toThrow(/Linksammler-Payload/i);
+    expect(() => validateCollectorInspectionRequest({ rawText: "x".repeat(2_000_001), addedAt: 1 })).toThrow(/Linksammler-Payload/i);
+    expect(() => validateCollectorInspectionRequest({ rawText: "x", addedAt: -1 })).toThrow(/Linksammler-Payload/i);
+    expect(() => validateCollectorInspectionRequest({ rawText: "x", addedAt: Number.MAX_SAFE_INTEGER + 1 })).toThrow(/Linksammler-Payload/i);
+  });
+
+  it("accepts only bounded absolute collector container paths", () => {
+    expect(validateCollectorContainerInspectionRequest(["C:\\Imports\\one.dlc", "D:\\two.dlc"], 1234)).toEqual({
+      filePaths: ["C:\\Imports\\one.dlc", "D:\\two.dlc"],
+      addedAt: 1234
+    });
+    expect(() => validateCollectorContainerInspectionRequest(["relative.dlc"], 1)).toThrow(/Container-Payload/i);
+    expect(() => validateCollectorContainerInspectionRequest(["C:\\Imports\\one.txt"], 1)).toThrow(/Container-Payload/i);
+    expect(() => validateCollectorContainerInspectionRequest(Array.from({ length: 101 }, (_unused, index) => `C:\\${index}.dlc`), 1)).toThrow(/Container-Payload/i);
   });
 
   it("accepts IPC from the configured Vite development renderer origin", () => {

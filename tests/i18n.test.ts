@@ -63,6 +63,11 @@ describe("renderer localization", () => {
     expect(translateUiText("Einträge: 2", "en")).toBe("Entries: 2");
     expect(translateUiText("Sichtbar: 2", "en")).toBe("Visible: 2");
     expect(translateUiText("Ausgewählt: 0", "en")).toBe("Selected: 0");
+    expect(translateUiText("Auswahl übergeben (3)", "en")).toBe("Send selection (3)");
+    expect(translateUiText("Alle übergeben (16)", "en")).toBe("Send all (16)");
+    expect(translateUiText("Paket SBS14HD auswählen", "en")).toBe("Select package SBS14HD");
+    expect(translateUiText("16 Dateien", "en")).toBe("16 files");
+    expect(translateUiText("15/16 geprüft", "en")).toBe("15/16 checked");
     expect(translateUiText("2 pro Seite", "en")).toBe("2 per page");
     expect(translateUiText("Sichtbar: ", "en")).toBe("Visible: ");
     expect(translateUiText(" pro Seite", "en")).toBe(" per page");

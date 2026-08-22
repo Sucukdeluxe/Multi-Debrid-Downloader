@@ -23,6 +23,7 @@ import { applyMainWindowSecurity, createMainWindowWebPreferences, MAIN_WINDOW_EX
 import { assertTrustedIpcSender, type TrustedIpcOptions } from "./ipc-security";
 import { validateRealDebridLoginRequest } from "../shared/preload-api";
 import { migrateProductUserDataDirectory } from "./storage";
+import { validateCollectorContainerInspectionRequest, validateCollectorInspectionRequest } from "../shared/collector";
 
 function validateString(value: unknown, name: string): string {
   if (typeof value !== "string") {
@@ -475,6 +476,17 @@ function registerIpcHandlers(): void {
     const validPaths = validateStringArray(filePaths ?? [], "filePaths");
     const safePaths = validPaths.filter((p) => path.isAbsolute(p));
     return controller.addContainers(safePaths);
+  });
+  handleTrusted(IPC_CHANNELS.INSPECT_COLLECTOR_TEXT, (_event: IpcMainInvokeEvent, rawRequest: unknown) => {
+    return controller.inspectCollectorText(validateCollectorInspectionRequest(rawRequest));
+  });
+  handleTrusted(IPC_CHANNELS.INSPECT_COLLECTOR_CONTAINERS, (_event: IpcMainInvokeEvent, rawPaths: unknown, rawAddedAt: unknown) => {
+    const request = validateCollectorContainerInspectionRequest(rawPaths, rawAddedAt);
+    const safePaths = request.filePaths.filter((filePath) => path.isAbsolute(filePath));
+    if (safePaths.length !== request.filePaths.length) {
+      throw new Error("Container-Payload ist ungültig");
+    }
+    return controller.inspectCollectorContainers(safePaths, request.addedAt);
   });
   handleTrusted(IPC_CHANNELS.GET_START_CONFLICTS, () => controller.getStartConflicts());
   handleTrusted(IPC_CHANNELS.RESOLVE_START_CONFLICT, (_event: IpcMainInvokeEvent, packageId: string, policy: "keep" | "skip" | "overwrite") => {

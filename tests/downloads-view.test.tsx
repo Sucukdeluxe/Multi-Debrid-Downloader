@@ -630,7 +630,7 @@ describe("responsive Downloadstatus und Servicebezeichnungen", () => {
 
     expect(hosters).toEqual(["1fichier", "1fichier", "1fichier", "1fichier"]);
     expect(new Set(hosters).size).toBe(1);
-    expect(formatHosterLabel(hosters[1])).toEqual({ compact: "1F", title: "1Fichier" });
+    expect(formatHosterLabel(hosters[1])).toEqual({ compact: "1Fichier", title: "1Fichier", iconSrc: "./provider-icons/onefichier.png" });
   });
 
   it("removes duplicated access-mode wording from service labels", () => {

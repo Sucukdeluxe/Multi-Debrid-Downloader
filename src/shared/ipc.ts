@@ -14,6 +14,8 @@ export const IPC_CHANNELS = {
   RESET_DEBRID_LINK_API_KEY_DAILY_USAGE: "app:reset-debrid-link-api-key-daily-usage",
   ADD_LINKS: "queue:add-links",
   ADD_CONTAINERS: "queue:add-containers",
+  INSPECT_COLLECTOR_TEXT: "collector:inspect-text",
+  INSPECT_COLLECTOR_CONTAINERS: "collector:inspect-containers",
   GET_START_CONFLICTS: "queue:get-start-conflicts",
   RESOLVE_START_CONFLICT: "queue:resolve-start-conflict",
   CLEAR_ALL: "queue:clear-all",

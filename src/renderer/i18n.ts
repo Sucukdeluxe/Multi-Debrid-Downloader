@@ -70,6 +70,10 @@ const pairs = [
   ["Abbrechen", "Cancel"], ["Speichern", "Save"], ["Schließen", "Close"], ["Löschen", "Delete"], ["Suchen", "Search"], ["Zurücksetzen", "Reset"], ["Testen", "Test"], ["Öffnen", "Open"],
   ["Noch keine Downloads", "No downloads yet"], ["Füge Links hinzu, um den ersten Download zu starten.", "Add links to start the first download."], ["Keine passenden Downloads", "No matching downloads"], ["Alle anzeigen", "Show all"],
   ["Neue Sammlung", "New collection"], ["Linksammler-Aktionen", "Link collector actions"], ["Links erfassen", "Capture links"], ["DLC importieren", "Import DLC"], ["Datei importieren", "Import file"],
+  ["Linksammler-Filter", "Link collector filters"], ["Alle Links", "All links"], ["Downloads übergeben", "Send to downloads"], ["Gesammelte Downloadpakete", "Collected download packages"], ["Hinzugefügt", "Added"],
+  ["Name, URL oder Hoster", "Name, URL or hoster"], ["Links werden analysiert", "Analyzing links"], ["Dateinamen, Größen und Verfügbarkeit werden geprüft.", "Checking filenames, sizes, and availability."],
+  ["Bereits gesammelte Pakete bleiben unverändert.", "Already collected packages remain unchanged."], ["Füge Links hinzu, um Pakete vor dem Download zu prüfen.", "Add links to inspect packages before downloading."],
+  ["Links werden geprüft und automatisch zu Downloadpaketen gruppiert.", "Links are inspected and automatically grouped into download packages."], ["Analysieren", "Analyze"], ["Eine URL pro Zeile", "One URL per line"],
   ["Sammlung verarbeiten", "Process collection"], ["Queue exportieren", "Export queue"], ["An Downloads übergeben", "Send to downloads"], ["Auswahl entfernen", "Remove selection"], ["Ausgewählte Links löschen", "Delete selected links"], ["Links löschen", "Delete links"], ["Die ausgewählten Links werden aus der Sammlung entfernt. Dieser Schritt kann nicht rückgängig gemacht werden.", "The selected links will be removed from the collection. This action cannot be undone."], ["Gesammelte Links", "Collected links"],
   ["Auswahl", "Selection"], ["Links werden verarbeitet", "Processing links"], ["Die laufende Aktion wird abgeschlossen.", "The current action is being completed."], ["Die lokale Sammlung bleibt unverändert.", "The local collection remains unchanged."],
   ["Passe die Suche an oder lösche den Filter.", "Adjust the search or clear the filter."], ["Füge Links hinzu oder importiere eine vorhandene Liste.", "Add links or import an existing list."], ["Keine passenden Links", "No matching links"], ["Noch keine Links", "No links yet"],
@@ -319,6 +323,14 @@ function translateDynamic(value: string, language: AppLanguage): string {
     if (capture) return `Capture links locally for ${capture[1]}.`;
     const collectorSelection = value.match(/^(.+) aus (.+), Zeile (\d+) auswählen$/);
     if (collectorSelection) return `Select ${collectorSelection[1]} from ${collectorSelection[2]}, line ${collectorSelection[3]}`;
+    const collectorTransfer = value.match(/^(Auswahl|Alle) übergeben \((\d+)\)$/);
+    if (collectorTransfer) return `${collectorTransfer[1] === "Auswahl" ? "Send selection" : "Send all"} (${collectorTransfer[2]})`;
+    const collectorPackageSelect = value.match(/^Paket (.+) auswählen$/);
+    if (collectorPackageSelect) return `Select package ${collectorPackageSelect[1]}`;
+    const collectorFiles = value.match(/^(\d+) Dateien$/);
+    if (collectorFiles) return `${collectorFiles[1]} files`;
+    const collectorChecked = value.match(/^(\d+)\/(\d+) geprüft$/);
+    if (collectorChecked) return `${collectorChecked[1]}/${collectorChecked[2]} checked`;
     const copy = value.match(/^([\s\S]+?)\s+Klicken zum Kopieren$/);
     if (copy) return `Click to copy ${copy[1]}`;
     const cancelledPart = value.match(/^· (\d+) abgebrochen$/);
@@ -530,6 +542,14 @@ function translateDynamic(value: string, language: AppLanguage): string {
     if (pageStatus) return `Seite ${pageStatus[1]} von ${pageStatus[2]}`;
     const collectorSelection = value.match(/^Select (.+) from (.+), line (\d+)$/);
     if (collectorSelection) return `${collectorSelection[1]} aus ${collectorSelection[2]}, Zeile ${collectorSelection[3]} auswählen`;
+    const collectorTransfer = value.match(/^Send (selection|all) \((\d+)\)$/);
+    if (collectorTransfer) return `${collectorTransfer[1] === "selection" ? "Auswahl" : "Alle"} übergeben (${collectorTransfer[2]})`;
+    const collectorPackageSelect = value.match(/^Select package (.+)$/);
+    if (collectorPackageSelect) return `Paket ${collectorPackageSelect[1]} auswählen`;
+    const collectorFiles = value.match(/^(\d+) files$/);
+    if (collectorFiles) return `${collectorFiles[1]} Dateien`;
+    const collectorChecked = value.match(/^(\d+)\/(\d+) checked$/);
+    if (collectorChecked) return `${collectorChecked[1]}/${collectorChecked[2]} geprüft`;
     const moveColumnDirection = value.match(/^Move (.+) (left|right)$/);
     if (moveColumnDirection) return `${enToDe.get(moveColumnDirection[1]) ?? moveColumnDirection[1]} nach ${moveColumnDirection[2] === "left" ? "links" : "rechts"} verschieben`;
     const moveColumn = value.match(/^Move (.+)$/);

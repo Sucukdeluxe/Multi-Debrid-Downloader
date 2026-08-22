@@ -9,6 +9,7 @@ import type {
 import { parseDebridLinkApiKeys } from "../../src/shared/debrid-link-keys";
 import { getMegaDebridAccountId } from "../../src/shared/mega-debrid-accounts";
 import { createRendererState } from "../../src/main/renderer-state";
+import type { CollectorInspectionResult } from "../../src/shared/collector";
 
 export const VISUAL_SCENARIOS = ["empty", "dense", "update"] as const;
 
@@ -16,10 +17,33 @@ export type VisualScenario = (typeof VISUAL_SCENARIOS)[number];
 
 export interface VisualFixture {
   snapshot: UiSnapshot;
+  collector: CollectorInspectionResult;
   history: HistoryEntry[];
   update: UpdateCheckResult;
   traceConfig: SupportTraceConfig;
   remoteDiagnostics: RemoteDiagnosticsInfo;
+}
+
+function createCollectorInspection(): CollectorInspectionResult {
+  return {
+    invalidCount: 0,
+    duplicateCount: 0,
+    packages: [{
+      id: "visual-collector-package-sbs14hd",
+      name: "SBS14HD",
+      addedAt: VISUAL_NOW_MS,
+      links: Array.from({ length: 16 }, (_unused, index) => ({
+        id: `visual-collector-link-${index + 1}`,
+        url: `https://1fichier.com/?visual${String(index + 1).padStart(2, "0")}`,
+        fileName: `SBS14HD.part${String(index + 1).padStart(2, "0")}.rar`,
+        fileSizeBytes: index === 15 ? 373_517_856 : 471_859_200,
+        hoster: "1fichier",
+        availability: "online" as const,
+        status: "ready" as const,
+        addedAt: VISUAL_NOW_MS
+      }))
+    }]
+  };
 }
 
 export interface VisualClockTarget {
@@ -634,6 +658,7 @@ export function createVisualFixture(scenario: VisualScenario): VisualFixture {
   if (scenario === "empty") {
     return {
       snapshot: createEmptySnapshot(),
+      collector: createCollectorInspection(),
       history: [],
       update: createUpdate(false),
       traceConfig: createTraceConfig(),
@@ -643,6 +668,7 @@ export function createVisualFixture(scenario: VisualScenario): VisualFixture {
 
   return {
     snapshot: createDenseSnapshot(),
+    collector: createCollectorInspection(),
     history: createDenseHistory(),
     update: createUpdate(scenario === "update"),
     traceConfig: createTraceConfig(),

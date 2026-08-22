@@ -109,4 +109,17 @@ describe("account preload contract", () => {
     expect(electron.invoke).toHaveBeenCalledWith(IPC_CHANNELS.GET_ARCHIVE_PASSWORD_LIST);
     expect(result).toEqual({ passwords });
   });
+
+  it("forwards collector text and container inspection without adding downloads", async () => {
+    const result = { packages: [], invalidCount: 0, duplicateCount: 0 };
+    electron.invoke.mockResolvedValue(result);
+
+    await electron.api?.inspectCollectorText({ rawText: "https://1fichier.com/?abc12345", addedAt: 1234 });
+    await electron.api?.inspectCollectorContainers(["C:\\Imports\\sample.dlc"], 5678);
+
+    expect(electron.invoke.mock.calls).toEqual([
+      [IPC_CHANNELS.INSPECT_COLLECTOR_TEXT, { rawText: "https://1fichier.com/?abc12345", addedAt: 1234 }],
+      [IPC_CHANNELS.INSPECT_COLLECTOR_CONTAINERS, ["C:\\Imports\\sample.dlc"], 5678]
+    ]);
+  });
 });

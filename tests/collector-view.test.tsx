@@ -2,33 +2,22 @@ import { readFileSync } from "node:fs";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import type { CollectorPackage } from "../src/shared/collector";
 import {
-  mergeCollectorDraftText,
-  planCollectorTabRemoval,
-  planCollectorTextReplacement
-} from "../src/renderer/App";
-import {
-  buildCollectorRows,
-  buildCollectorViewModel,
-  type CollectorSourceTab
+  buildCollectorTransferPackages,
+  buildCollectorWorkspaceViewModel,
+  mergeCollectorPackages,
+  removeCollectorLinks,
+  selectCollectorPackageLinks
 } from "../src/renderer/views/collector/collector-model";
-import {
-  CollectorInputDialog,
-  CollectorContent,
-  CollectorSidebar,
-  CollectorToolbar,
-  CollectorView,
-  type CollectorViewActions
-} from "../src/renderer/views/collector/CollectorView";
+import { CollectorContent, CollectorInputDialog, CollectorSidebar, CollectorToolbar, CollectorView, type CollectorViewActions } from "../src/renderer/views/collector/CollectorView";
 
 function visitElements(node: ReactNode, visit: (element: ReactElement) => void): void {
   if (Array.isArray(node)) {
     node.forEach((child) => visitElements(child, visit));
     return;
   }
-  if (!isValidElement(node)) {
-    return;
-  }
+  if (!isValidElement(node)) return;
   visit(node);
   visitElements(node.props.children, visit);
   visitElements(node.props.actions, visit);
@@ -37,13 +26,9 @@ function visitElements(node: ReactNode, visit: (element: ReactElement) => void):
 function findElement(node: ReactNode, predicate: (element: ReactElement) => boolean): ReactElement {
   let result: ReactElement | null = null;
   visitElements(node, (element) => {
-    if (!result && predicate(element)) {
-      result = element;
-    }
+    if (!result && predicate(element)) result = element;
   });
-  if (!result) {
-    throw new Error("Element not found");
-  }
+  if (!result) throw new Error("Element not found");
   return result;
 }
 
@@ -53,274 +38,166 @@ function findButton(node: ReactNode, label: string): ReactElement {
 
 function createActions(overrides: Partial<CollectorViewActions> = {}): CollectorViewActions {
   return {
-    onTabSelect: () => {},
-    onTabAdd: () => {},
-    onTabRemove: () => {},
+    onFilterChange: () => {},
     onOpenInput: () => {},
     onImportDlc: () => {},
     onImportFile: () => {},
-    onExportQueue: () => {},
-    onSubmit: () => {},
+    onSubmitSelected: () => {},
+    onSubmitAll: () => {},
     onQueryChange: () => {},
-    onSelectionChange: () => {},
+    onLinkSelectionChange: () => {},
+    onPackageSelectionChange: () => {},
+    onPackageCollapseChange: () => {},
     onRemoveSelected: () => {},
     ...overrides
   };
 }
 
-const populatedTabs: CollectorSourceTab[] = [
-  {
-    id: "tab-a",
-    name: "Sammlung A",
-    text: "https://example.test/a\n\n https://example.test/b "
-  }
-];
+const packages: CollectorPackage[] = [{
+  id: "package-sbs",
+  name: "SBS14HD",
+  addedAt: 1000,
+  links: [
+    { id: "link-1", url: "https://1fichier.com/?one11111", fileName: "SBS14HD.part01.rar", fileSizeBytes: 471_859_200, hoster: "1fichier", availability: "online", status: "ready", addedAt: 1000 },
+    { id: "link-2", url: "https://1fichier.com/?two22222", fileName: "SBS14HD.part02.rar", fileSizeBytes: 471_859_200, hoster: "1fichier", availability: "online", status: "ready", addedAt: 1000 }
+  ]
+}, {
+  id: "package-mixed",
+  name: "Mixed",
+  addedAt: 2000,
+  links: [
+    { id: "link-3", url: "https://example.test/unknown", fileName: "unknown.bin", fileSizeBytes: null, hoster: "example", availability: "unknown", status: "unknown", addedAt: 2000 },
+    { id: "link-4", url: "https://example.test/offline", fileName: "offline.bin", fileSizeBytes: null, hoster: "example", availability: "offline", status: "offline", addedAt: 2000 }
+  ]
+}];
 
-describe("collector model", () => {
-  it("derives stable rows from non-empty raw lines without validating or regrouping them", () => {
-    const rows = buildCollectorRows(populatedTabs, "tab-a", "");
+describe("collector workspace model", () => {
+  it("merges packages by name while deduplicating URLs", () => {
+    const incoming: CollectorPackage[] = [{
+      id: "incoming",
+      name: "SBS14HD",
+      addedAt: 3000,
+      links: [
+        { ...packages[0].links[0], id: "duplicate" },
+        { id: "link-5", url: "https://1fichier.com/?three333", fileName: "SBS14HD.part03.rar", fileSizeBytes: 10, hoster: "1fichier", availability: "online", status: "ready", addedAt: 3000 }
+      ]
+    }];
+    const result = mergeCollectorPackages(packages, incoming);
 
-    expect(rows).toHaveLength(2);
-    expect(rows.map((row) => row.id)).toEqual(["tab-a:0", "tab-a:2"]);
-    expect(rows.map((row) => row.originalLineIndex)).toEqual([0, 2]);
-    expect(rows.map((row) => row.value)).toEqual([
-      "https://example.test/a",
-      "https://example.test/b"
+    expect(result.addedLinks).toBe(1);
+    expect(result.duplicateLinks).toBe(1);
+    expect(result.packages[0].id).toBe("package-sbs");
+    expect(result.packages[0].links.map((link) => link.id)).toEqual(["link-1", "link-2", "link-5"]);
+  });
+
+  it("supports whole-package selection, partial transfers and partial removal", () => {
+    const selected = selectCollectorPackageLinks(new Set(["link-3"]), packages[0], true);
+    expect([...selected].sort()).toEqual(["link-1", "link-2", "link-3"]);
+    expect(buildCollectorTransferPackages(packages, new Set(["link-2", "link-3"])).map((pkg) => [pkg.name, pkg.links.map((link) => link.id)])).toEqual([
+      ["SBS14HD", ["link-2"]], ["Mixed", ["link-3"]]
     ]);
-    expect(rows[0].linkCount).toBe(2);
-    expect(rows[1].linkCount).toBe(2);
+    expect(removeCollectorLinks(packages, new Set(["link-2", "link-3"])).map((pkg) => [pkg.name, pkg.links.map((link) => link.id)])).toEqual([
+      ["SBS14HD", ["link-1"]], ["Mixed", ["link-4"]]
+    ]);
   });
 
-  it("filters presentation rows while keeping source counts and original line identities", () => {
-    const model = buildCollectorViewModel(populatedTabs, "tab-a", "EXAMPLE.TEST/B", false, ["tab-a:0"]);
+  it("derives aggregates, filters and search once for the view", () => {
+    const model = buildCollectorWorkspaceViewModel(packages, "online", "part02", false, ["link-2"], ["package-mixed"], "", true);
 
-    expect(model.rows.map((row) => row.id)).toEqual(["tab-a:2"]);
-    expect(model.tabs).toEqual([{ id: "tab-a", name: "Sammlung A", linkCount: 2 }]);
-    expect(model.selectedIds).toEqual(["tab-a:0"]);
-    expect(model.empty).toBe(false);
-  });
-
-  it("preserves clipboard and drop appends that arrive while an input draft is open", () => {
-    expect(mergeCollectorDraftText(
-      "https://example.test/old",
-      "https://example.test/old\nhttps://example.test/clipboard",
-      "https://example.test/edited"
-    )).toBe("https://example.test/edited\nhttps://example.test/clipboard");
-    expect(mergeCollectorDraftText("old", "old", "edited")).toBe("edited");
-  });
-
-  it("moves the active identity to an existing neighbor before later appends arrive", () => {
-    const tabs: CollectorSourceTab[] = [
-      { id: "tab-a", name: "Sammlung A", text: "a" },
-      { id: "tab-b", name: "Sammlung B", text: "b" },
-      { id: "tab-c", name: "Sammlung C", text: "c" }
-    ];
-
-    expect(planCollectorTabRemoval(tabs, "tab-b", "tab-b")).toEqual({
-      tabs: [tabs[0], tabs[2]],
-      activeTabId: "tab-a"
-    });
-    expect(planCollectorTabRemoval(tabs, "tab-c", "tab-a")).toEqual({
-      tabs: [tabs[1], tabs[2]],
-      activeTabId: "tab-c"
-    });
-  });
-
-  it("invalidates positional row selection whenever raw text is replaced", () => {
-    const tabs: CollectorSourceTab[] = [
-      { id: "tab-a", name: "Sammlung A", text: "old-a\nold-b" },
-      { id: "tab-b", name: "Sammlung B", text: "untouched" }
-    ];
-
-    expect(planCollectorTextReplacement(tabs, "tab-a", "new-a")).toEqual({
-      tabs: [
-        { id: "tab-a", name: "Sammlung A", text: "new-a" },
-        tabs[1]
-      ],
-      selectedIds: []
-    });
+    expect(model.packages).toHaveLength(1);
+    expect(model.packages[0]).toEqual(expect.objectContaining({ totalBytes: 943_718_400, unknownSizeCount: 0, onlineCount: 2, totalCount: 2, selectedCount: 1, collapsed: false }));
+    expect(model.packages[0].links.map((link) => link.id)).toEqual(["link-2"]);
+    expect(model.filters).toEqual([
+      { id: "all", label: "Alle Links", count: 4 }, { id: "online", label: "Online", count: 2 }, { id: "unknown", label: "Ungeprüft", count: 1 }, { id: "offline", label: "Offline", count: 1 }
+    ]);
   });
 });
 
 describe("CollectorView", () => {
-  it("marks collections for one measured vertical selection indicator", () => {
-    const model = buildCollectorViewModel([
-      { id: "tab-a", name: "Sammlung A", text: "https://example.test/a" },
-      { id: "tab-b", name: "Sammlung B", text: "https://example.test/b" }
-    ], "tab-b", "", false, []);
-    const html = renderToStaticMarkup(<CollectorSidebar actions={createActions()} model={model} />);
-
-    expect(html).toContain("ui-sliding-selection ui-sliding-selection-vertical");
-    expect(html.match(/data-sliding-selection-item="true"/g)).toHaveLength(2);
-    expect(html.match(/data-sliding-selection-active="true"/g)).toHaveLength(1);
+  it("renders expandable package and file rows with preview columns", () => {
+    const html = renderToStaticMarkup(<CollectorView actions={createActions()} model={buildCollectorWorkspaceViewModel(packages, "all", "", false, [], [], "", true)} />);
+    for (const heading of ["Name", "Größe", "Hoster", "Status", "Verfügbarkeit", "Hinzugefügt"]) expect(html).toContain(`>${heading}<`);
+    expect(html).toContain("SBS14HD");
+    expect(html).toContain("SBS14HD.part01.rar");
+    expect(html).toContain("SBS14HD.part02.rar");
+    expect(html).toContain("2/2 online");
+    expect(html).toContain("aria-label=\"SBS14HD einklappen\"");
+    expect(html).not.toContain("URL oder Rohzeile");
+    expect(html).not.toContain(">Zeile<");
+    expect(html).not.toContain(">Lokal<");
   });
 
-  it("keeps empty, busy and error states inside the same table body", () => {
-    const empty = renderToStaticMarkup(
-      <CollectorView
-        actions={createActions()}
-        model={buildCollectorViewModel([{ id: "tab-a", name: "Sammlung A", text: "" }], "tab-a", "", false, [])}
-      />
-    );
-    const busy = renderToStaticMarkup(
-      <CollectorView
-        actions={createActions()}
-        model={{ ...buildCollectorViewModel([], "", "", true, []), error: "" }}
-      />
-    );
-    const failed = renderToStaticMarkup(
-      <CollectorView
-        actions={createActions()}
-        model={{ ...buildCollectorViewModel([], "", "", false, []), error: "Import fehlgeschlagen" }}
-      />
-    );
-
-    for (const [html, state] of [
-      [empty, "Noch keine Links"],
-      [busy, "Links werden verarbeitet"],
-      [failed, "Import fehlgeschlagen"]
-    ]) {
-      expect(html.indexOf(state)).toBeGreaterThan(html.indexOf("data-visual-region=\"collector-table-body\""));
-    }
-    expect(empty).toContain("data-visual-region=\"collector-empty-state\"");
-    expect(empty).not.toContain("aria-label=\"Seitennavigation\"");
+  it("renders collapsed packages without child rows", () => {
+    const html = renderToStaticMarkup(<CollectorContent actions={createActions()} model={buildCollectorWorkspaceViewModel(packages, "all", "", false, [], ["package-sbs"], "", false)} />);
+    expect(html).toContain("aria-label=\"SBS14HD ausklappen\"");
+    expect(html).not.toContain("SBS14HD.part01.rar");
   });
 
-  it("renders compact occupied rows and removes the empty marker", () => {
-    const html = renderToStaticMarkup(
-      <CollectorView
-        actions={createActions()}
-        model={buildCollectorViewModel(populatedTabs, "tab-a", "", false, [])}
-      />
-    );
-
-    expect(html.match(/class=\"collector-row(?: is-selected)?\"/g)).toHaveLength(2);
-    expect(html).not.toContain("data-visual-region=\"collector-empty-state\"");
-    expect(html).toContain("data-visual-region=\"collector-sidebar\"");
-    expect(html).toContain("data-visual-region=\"collector-toolbar\"");
-    expect(html).toContain("data-visual-region=\"collector-table-body\"");
-    expect(html).not.toContain("data-visual-region=\"downloads-toolbar\"");
-    expect(html).not.toContain("aria-label=\"Seitennavigation\"");
+  it("offers selected and all transfer actions", () => {
+    let selected = 0;
+    let all = 0;
+    const toolbar = CollectorToolbar({ actions: createActions({ onSubmitSelected: () => { selected += 1; }, onSubmitAll: () => { all += 1; } }), model: buildCollectorWorkspaceViewModel(packages, "all", "", false, ["link-1"], [], "", true) });
+    findButton(toolbar, "Auswahl übergeben (1)").props.onClick();
+    findButton(toolbar, "Alle übergeben (4)").props.onClick();
+    expect(selected).toBe(1);
+    expect(all).toBe(1);
   });
 
-  it("gives every row checkbox a unique accessible name with its link and collection", () => {
-    const content = CollectorContent({
-      actions: createActions(),
-      model: buildCollectorViewModel(populatedTabs, "tab-a", "", false, [])
-    });
-    const labels: string[] = [];
-    visitElements(content, (element) => {
-      if (element.type === "input" && element.props.type === "checkbox") {
-        labels.push(element.props["aria-label"]);
-      }
-    });
-
-    expect(labels).toEqual([
-      "https://example.test/a aus Sammlung A, Zeile 1 auswählen",
-      "https://example.test/b aus Sammlung A, Zeile 3 auswählen"
-    ]);
-    expect(new Set(labels).size).toBe(labels.length);
+  it("renders accessible mixed package selection", () => {
+    const html = renderToStaticMarkup(<CollectorContent actions={createActions()} model={buildCollectorWorkspaceViewModel(packages, "all", "", false, ["link-1"], [], "", true)} />);
+    expect(html).toContain("aria-label=\"Paket SBS14HD auswählen\"");
+    expect(html).toContain("aria-checked=\"mixed\"");
   });
 
-  it("uses a high-contrast table heading token in both themes", () => {
-    const css = readFileSync(new URL("../src/renderer/views/collector/collector.css", import.meta.url), "utf8");
-
-    expect(css).toMatch(/\.collector-table-header-row\s*{[^}]*color:\s*var\(--ui-text-secondary\);/s);
-  });
-
-  it("uses the semantic danger text token for the removal action", () => {
-    const css = readFileSync(new URL("../src/renderer/views/collector/collector.css", import.meta.url), "utf8");
-
-    expect(css).toMatch(/\.collector-action-danger:not\(:disabled\)\s*{[^}]*color:\s*var\(--ui-danger-text\);/s);
-  });
-
-  it("disables queue submission only when the active collection has no links", () => {
-    const emptyActive = CollectorToolbar({
-      actions: createActions(),
-      model: buildCollectorViewModel([
-        { id: "tab-a", name: "Sammlung A", text: "" },
-        { id: "tab-b", name: "Sammlung B", text: "https://example.test/b" }
-      ], "tab-a", "", false, [])
-    });
-    const filteredActive = CollectorToolbar({
-      actions: createActions(),
-      model: buildCollectorViewModel(populatedTabs, "tab-a", "kein-treffer", false, [])
-    });
-
-    expect(findButton(emptyActive, "An Downloads übergeben").props.disabled).toBe(true);
-    expect(findButton(filteredActive, "An Downloads übergeben").props.disabled).toBe(false);
-  });
-
-  it("separates local input, queue submission, search, selection and local removal callbacks", () => {
-    let inputOpens = 0;
-    let queueSubmits = 0;
+  it("routes status filters and search independently", () => {
+    let filter = "";
     let query = "";
-    let selected = "";
-    let removals = 0;
-    const actions = createActions({
-      onOpenInput: () => { inputOpens += 1; },
-      onSubmit: () => { queueSubmits += 1; },
-      onQueryChange: (value) => { query = value; },
-      onSelectionChange: (rowId) => { selected = rowId; },
-      onRemoveSelected: () => { removals += 1; }
-    });
-    const toolbar = CollectorToolbar({
-      actions,
-      model: buildCollectorViewModel(populatedTabs, "tab-a", "", false, ["tab-a:0"])
-    });
-    const content = CollectorContent({
-      actions,
-      model: buildCollectorViewModel(populatedTabs, "tab-a", "", false, ["tab-a:0"])
-    });
-
-    findButton(toolbar, "Links hinzufügen").props.onClick();
-    expect(inputOpens).toBe(1);
-    expect(queueSubmits).toBe(0);
-
-    findButton(toolbar, "An Downloads übergeben").props.onClick();
-    expect(queueSubmits).toBe(1);
-
-    const search = findElement(toolbar, (element) => element.props.label === "Links durchsuchen");
-    search.props.onChange({ target: { value: "release" } });
-    expect(query).toBe("release");
-
-    const checkbox = findElement(content, (element) => element.type === "input" && element.props.type === "checkbox");
-    checkbox.props.onChange();
-    findButton(toolbar, "Auswahl entfernen").props.onClick();
-    expect(selected).toBe("tab-a:0");
-    expect(removals).toBe(1);
-    expect(queueSubmits).toBe(1);
+    const model = buildCollectorWorkspaceViewModel(packages, "online", "", false, [], [], "", true);
+    const actions = createActions({ onFilterChange: (value) => { filter = value; }, onQueryChange: (value) => { query = value; } });
+    const sidebar = CollectorSidebar({ actions, model });
+    findElement(sidebar, (element) => element.type === "button" && element.props["aria-current"] === "page").props.onClick();
+    const toolbar = CollectorToolbar({ actions, model });
+    findElement(toolbar, (element) => element.props.label === "Links durchsuchen").props.onChange({ target: { value: "part02" } });
+    expect(filter).toBe("online");
+    expect(query).toBe("part02");
   });
 
-  it("names the input dialog and commits only through the local draft callback", () => {
+  it("keeps busy, error and empty states inside the table body", () => {
+    const actions = createActions();
+    const empty = renderToStaticMarkup(<CollectorContent actions={actions} model={buildCollectorWorkspaceViewModel([], "all", "", false, [], [], "", true)} />);
+    const busy = renderToStaticMarkup(<CollectorContent actions={actions} model={buildCollectorWorkspaceViewModel([], "all", "", true, [], [], "", true)} />);
+    const failed = renderToStaticMarkup(<CollectorContent actions={actions} model={buildCollectorWorkspaceViewModel([], "all", "", false, [], [], "Import fehlgeschlagen", true)} />);
+    expect(empty).toContain("Noch keine Links");
+    expect(busy).toContain("Links werden analysiert");
+    expect(failed).toContain("Import fehlgeschlagen");
+  });
+
+  it("uses an analysis dialog instead of a raw tab editor", () => {
     let value = "";
     let commits = 0;
-    const dialog = CollectorInputDialog({
-      open: true,
-      tabName: "Sammlung A",
-      value,
-      onChange: (next) => { value = next; },
-      onClose: () => {},
-      onCommit: () => { commits += 1; }
-    });
+    const dialog = CollectorInputDialog({ open: true, value, onChange: (next) => { value = next; }, onClose: () => {}, onCommit: () => { commits += 1; } });
     const html = renderToStaticMarkup(dialog);
-
-    expect(html).toContain("role=\"dialog\"");
-    expect(html).toContain("aria-label=\"Links\"");
-    expect(html).toContain("Links hinzufügen");
-    expect(html).toContain("Übernehmen");
-
-    const textbox = findElement(dialog, (element) => element.type === "textarea" && element.props["aria-label"] === "Links");
-    textbox.props.onChange({ target: { value: "https://example.test/new" } });
-    findButton(dialog, "Übernehmen").props.onClick();
-    expect(value).toBe("https://example.test/new");
+    expect(html).toContain("Links werden geprüft und automatisch zu Downloadpaketen gruppiert.");
+    expect(html).toContain("Analysieren");
+    findElement(dialog, (element) => element.type === "textarea").props.onChange({ target: { value: "https://1fichier.com/?abc" } });
+    findButton(dialog, "Analysieren").props.onClick();
+    expect(value).toBe("https://1fichier.com/?abc");
     expect(commits).toBe(1);
   });
 
-  it("moves the search field onto a separate compact row instead of overlapping actions", () => {
+  it("uses aligned responsive package grids and content visibility", () => {
     const css = readFileSync(new URL("../src/renderer/views/collector/collector.css", import.meta.url), "utf8");
-
+    expect(css).toMatch(/\.collector-table-header-row, \.collector-package-row, \.collector-file-row\s*\{[^}]*grid-template-columns:/s);
+    expect(css).toMatch(/\.collector-package-group\s*\{[^}]*content-visibility:\s*auto;/s);
     expect(css).toMatch(/@media \(max-width: 1120px\)[\s\S]*\.collector-toolbar\s*\{[^}]*flex-wrap:\s*wrap;/s);
-    expect(css).toMatch(/@media \(max-width: 1120px\)[\s\S]*\.collector-toolbar \.ui-toolbar-search\s*\{[^}]*flex:\s*1 0 100%;[^}]*width:\s*100%;/s);
+  });
+
+  it("uses one consistent gap across collector toolbar groups", () => {
+    const css = readFileSync(new URL("../src/renderer/views/collector/collector.css", import.meta.url), "utf8");
+    const toolbarGap = css.match(/\.collector-toolbar\s*\{[^}]*gap:\s*([^;]+);/s)?.[1]?.trim();
+    const groupGap = css.match(/\.collector-toolbar \.ui-toolbar-group\s*\{[^}]*gap:\s*([^;]+);/s)?.[1]?.trim();
+
+    expect(toolbarGap).toBeTruthy();
+    expect(groupGap).toBe(toolbarGap);
   });
 });

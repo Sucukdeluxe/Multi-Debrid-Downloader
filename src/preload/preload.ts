@@ -31,6 +31,7 @@ import {
   UpdateInstallProgress
 } from "../shared/types";
 import type { RealDebridLoginRequest } from "../shared/preload-api";
+import type { CollectorInspectionRequest, CollectorInspectionResult } from "../shared/collector";
 import { IPC_CHANNELS } from "../shared/ipc";
 import { ElectronApi } from "../shared/preload-api";
 
@@ -51,6 +52,10 @@ const api: ElectronApi = {
     ipcRenderer.invoke(IPC_CHANNELS.ADD_LINKS, payload),
   addContainers: (filePaths: string[]): Promise<{ addedPackages: number; addedLinks: number }> =>
     ipcRenderer.invoke(IPC_CHANNELS.ADD_CONTAINERS, filePaths),
+  inspectCollectorText: (request: CollectorInspectionRequest): Promise<CollectorInspectionResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.INSPECT_COLLECTOR_TEXT, request),
+  inspectCollectorContainers: (filePaths: string[], addedAt: number): Promise<CollectorInspectionResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.INSPECT_COLLECTOR_CONTAINERS, filePaths, addedAt),
   getStartConflicts: (): Promise<StartConflictEntry[]> => ipcRenderer.invoke(IPC_CHANNELS.GET_START_CONFLICTS),
   resolveStartConflict: (packageId: string, policy: DuplicatePolicy): Promise<StartConflictResolutionResult> =>
     ipcRenderer.invoke(IPC_CHANNELS.RESOLVE_START_CONFLICT, packageId, policy),

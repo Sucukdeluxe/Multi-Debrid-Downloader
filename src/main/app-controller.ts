@@ -45,6 +45,8 @@ import { applyAccountCommand, resolveStoredAccountSecret } from "./account-comma
 import { collectAccountStatusRedactionValues, sanitizeDebridAccountStatus, sanitizeDebridAccountStatuses } from "./account-status-sanitizer";
 import { createRendererState } from "./renderer-state";
 import { parseCollectorInput } from "./link-parser";
+import { inspectCollectorPackages, inspectCollectorText } from "./collector-inspection";
+import type { CollectorInspectionRequest, CollectorInspectionResult } from "../shared/collector";
 import { configureLogger, flushLoggerSync, getLogFilePath, logger } from "./logger";
 import { AllDebridWebFallback } from "./all-debrid-web";
 import { BestDebridWebFallback } from "./bestdebrid-web";
@@ -924,6 +926,15 @@ export class AppController {
       requestedPackages: parsed.length
     });
     return { ...result, invalidCount: 0 };
+  }
+
+  public inspectCollectorText(request: CollectorInspectionRequest): Promise<CollectorInspectionResult> {
+    return inspectCollectorText(request, this.settings);
+  }
+
+  public async inspectCollectorContainers(filePaths: string[], addedAt: number): Promise<CollectorInspectionResult> {
+    const packages = await importDlcContainers(filePaths);
+    return inspectCollectorPackages(packages, this.settings, addedAt, {}, true);
   }
 
   public async addContainers(filePaths: string[]): Promise<{ addedPackages: number; addedLinks: number }> {

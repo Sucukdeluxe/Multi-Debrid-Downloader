@@ -18,12 +18,14 @@ describe("desktop shell", () => {
     expect(source).toContain("Maskierte Kennung kopiert");
   });
 
-  it("confirms before removing a collector tab", () => {
+  it("removes collector links only after the exact download transfer succeeds", () => {
     const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
-    const removal = source.slice(source.indexOf("const removeCollectorTab"), source.indexOf("const openCollectorInput"));
+    const start = source.indexOf("const transferCollectorPackages");
+    const transfer = source.slice(start, source.indexOf("const onImportDlc =", start));
 
-    expect(removal).toContain("askConfirmPrompt");
-    expect(removal.indexOf("askConfirmPrompt")).toBeLessThan(removal.indexOf("planCollectorTabRemoval"));
+    expect(transfer).toContain("await window.rd.addLinks");
+    expect(transfer).toContain("result.addedLinks !== transferredIds.size");
+    expect(transfer.indexOf("await window.rd.addLinks")).toBeLessThan(transfer.indexOf("setCollectorPackages"));
   });
 
   it("confirms before removing selected collector links", () => {
@@ -31,7 +33,7 @@ describe("desktop shell", () => {
     const removal = source.slice(source.indexOf("const removeSelectedCollectorRows"), source.indexOf("const onPackageStartEdit"));
 
     expect(removal).toContain("askConfirmPrompt");
-    expect(removal.indexOf("askConfirmPrompt")).toBeLessThan(removal.indexOf("setCollectorTabs"));
+    expect(removal.indexOf("askConfirmPrompt")).toBeLessThan(removal.indexOf("setCollectorPackages"));
     expect(removal).toContain('title: "Ausgewählte Links löschen"');
   });
 

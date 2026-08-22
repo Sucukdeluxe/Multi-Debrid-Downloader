@@ -59,6 +59,8 @@ export function createVisualElectronApi(
     deleteAccount: async () => ({ accountId: null, settings: clone(fixture.snapshot.settings), accounts: clone(fixture.snapshot.accounts) }),
     addLinks: async () => ({ addedPackages: 0, addedLinks: 0, invalidCount: 0 }),
     addContainers: async () => ({ addedPackages: 0, addedLinks: 0 }),
+    inspectCollectorText: async () => clone(fixture.collector),
+    inspectCollectorContainers: async () => clone(fixture.collector),
     getStartConflicts: async () => [],
     resolveStartConflict: async (_packageId, policy) => ({
       skipped: policy === "skip",

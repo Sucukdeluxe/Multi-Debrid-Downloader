@@ -18,11 +18,11 @@ export function resolveEscapeSelectionScope(
   settingsSection: string,
   tagName: string,
   inputType = ""
-): "downloads" | "history" | "accounts" | null {
+): "downloads" | "collector" | "history" | "accounts" | null {
   if (!shouldClearDownloadSelectionOnEscape(tagName, inputType)) {
     return null;
   }
-  if (view === "downloads" || view === "history") {
+  if (view === "downloads" || view === "history" || view === "collector") {
     return view;
   }
   return view === "settings" && settingsSection === "accounts" ? "accounts" : null;
