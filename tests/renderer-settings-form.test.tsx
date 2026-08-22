@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { RendererSettings, UiSnapshot } from "../src/shared/types";
 import {
+  activateDailyScheduleSettings,
   buildDailyScheduleSettingsUpdate,
   persistDailyScheduleSettingsUpdate
 } from "../src/renderer/App";
@@ -19,6 +20,22 @@ describe("daily schedule settings form", () => {
       dailyStartMinuteOfDay: 23 * 60 + 45,
       dailyStartFirstLocalDate: "2026-08-23"
     });
+  });
+
+  it.each(["", "8:15", "24:00", "12:60"])("reports the invalid time %j when activation is invoked directly", async (time) => {
+    const persist = vi.fn();
+    const showError = vi.fn();
+
+    await expect(activateDailyScheduleSettings(
+      time,
+      "today",
+      persist,
+      showError,
+      new Date(2026, 7, 22, 18, 30, 0, 0)
+    )).resolves.toBe(false);
+
+    expect(showError).toHaveBeenCalledWith("Bitte eine gültige Startzeit auswählen.");
+    expect(persist).not.toHaveBeenCalled();
   });
 
   it("applies persisted settings after a successful activation", async () => {

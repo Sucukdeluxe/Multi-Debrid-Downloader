@@ -1534,6 +1534,21 @@ export function buildDailyScheduleSettingsUpdate(
   };
 }
 
+export async function activateDailyScheduleSettings(
+  time: string,
+  startDay: DailyScheduleStartDay,
+  persist: (update: RendererSettingsUpdate) => Promise<boolean>,
+  showError: (message: string) => void,
+  now = new Date()
+): Promise<boolean> {
+  const update = buildDailyScheduleSettingsUpdate(time, startDay, now);
+  if (!update) {
+    showError("Bitte eine gültige Startzeit auswählen.");
+    return false;
+  }
+  return persist(update);
+}
+
 export async function persistDailyScheduleSettingsUpdate(
   update: RendererSettingsUpdate,
   operation: "activate" | "cancel",
@@ -4771,14 +4786,17 @@ export function App(): ReactElement {
   ), [applyAuthoritativeDailyScheduleSnapshot, applyDailyScheduleSettings, showToast]);
 
   const activateDownloadSchedule = useCallback((): void => {
-    const update = buildDailyScheduleSettingsUpdate(scheduleTimeInput, scheduleStartDay);
-    if (!update) return;
-    void persistDownloadSchedule(update, "activate").then((persisted) => {
+    void activateDailyScheduleSettings(
+      scheduleTimeInput,
+      scheduleStartDay,
+      (update) => persistDownloadSchedule(update, "activate"),
+      (message) => showToast(message, 2800)
+    ).then((persisted) => {
       if (persisted) {
         setSchedulePickerOpen(false);
       }
     });
-  }, [persistDownloadSchedule, scheduleStartDay, scheduleTimeInput]);
+  }, [persistDownloadSchedule, scheduleStartDay, scheduleTimeInput, showToast]);
 
   const removeActionableDownloads = useCallback((): void => {
     const ids = new Set(downloadsViewCore.actionableSelectedIds);
@@ -4812,6 +4830,7 @@ export function App(): ReactElement {
     scheduleActive: snapshot.settings.dailyStartEnabled || snapshot.settings.scheduledStartEpochMs > 0,
     scheduleOpen: schedulePickerOpen,
     scheduleTime: scheduleTimeInput,
+    scheduleTimeValid: buildDailyScheduleSettingsUpdate(scheduleTimeInput, scheduleStartDay) !== null,
     scheduleStartDay,
     scheduleLabel: scheduleCountdown || (snapshot.settings.dailyStartEnabled
       ? formatDailyScheduleTime(snapshot.settings.dailyStartMinuteOfDay)

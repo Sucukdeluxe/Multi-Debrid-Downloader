@@ -791,6 +791,7 @@ function withRuntime(input: DownloadsModelInput, overrides: Partial<DownloadsVie
     scheduleActive: false,
     scheduleOpen: false,
     scheduleTime: "23:30",
+    scheduleTimeValid: true,
     scheduleStartDay: "today",
     scheduleLabel: "",
     packageSpeedBps: { "package-a": 12_000_000 },
@@ -1233,6 +1234,15 @@ describe("downloads view", () => {
     expect(renderToStaticMarkup(toolbar)).toContain("Ab heute");
     expect(renderToStaticMarkup(toolbar)).toContain("Ab morgen");
     expect(calls).toEqual(["time:09:45", "day:today"]);
+  });
+
+  it.each(["", "8:15", "24:00", "12:60"])("disables schedule activation for the invalid time %j", (scheduleTime) => {
+    const toolbar = DownloadsToolbar({
+      actions: createActions(),
+      model: withRuntime(createInput(), { scheduleOpen: true, scheduleTime, scheduleTimeValid: false })
+    });
+
+    expect(findButton(toolbar, "Planen").props.disabled).toBe(true);
   });
 
   it("animates the persistent schedule slot horizontally and disables it through the global motion setting", () => {

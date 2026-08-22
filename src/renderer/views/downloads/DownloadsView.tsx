@@ -42,6 +42,7 @@ export interface DownloadsViewModel extends DownloadsViewModelCore {
   scheduleActive: boolean;
   scheduleOpen: boolean;
   scheduleTime: string;
+  scheduleTimeValid: boolean;
   scheduleStartDay: DailyScheduleStartDay;
   scheduleLabel: string;
   packageSpeedBps: Record<string, number>;
@@ -141,7 +142,7 @@ export function DownloadsToolbar({ actions, model }: { actions: DownloadsViewAct
         <span {...(!scheduleSlotOpen ? { inert: "true" } : {})} aria-hidden={!scheduleSlotOpen} className="downloads-schedule-controls">
           {model.scheduleActive
             ? <><strong>Geplant: {model.scheduleLabel}</strong><button disabled={false} onClick={actions.onCancelSchedule} type="button">Abbrechen</button></>
-            : <><input aria-label="Startzeit" disabled={!scheduleSlotOpen} onChange={(event) => actions.onScheduleTimeChange(event.target.value)} type="time" value={model.scheduleTime} /><select aria-label="Starttag" disabled={!scheduleSlotOpen} onChange={(event) => actions.onScheduleStartDayChange(event.target.value as DailyScheduleStartDay)} value={model.scheduleStartDay}><option value="today">Ab heute</option><option value="tomorrow">Ab morgen</option></select><button disabled={!scheduleSlotOpen} onClick={actions.onActivateSchedule} type="button">Planen</button></>}
+            : <><input aria-label="Startzeit" disabled={!scheduleSlotOpen} onChange={(event) => actions.onScheduleTimeChange(event.target.value)} type="time" value={model.scheduleTime} /><select aria-label="Starttag" disabled={!scheduleSlotOpen} onChange={(event) => actions.onScheduleStartDayChange(event.target.value as DailyScheduleStartDay)} value={model.scheduleStartDay}><option value="today">Ab heute</option><option value="tomorrow">Ab morgen</option></select><button disabled={!scheduleSlotOpen || !model.scheduleTimeValid} onClick={actions.onActivateSchedule} type="button">Planen</button></>}
         </span>
       </span>
       <span className="downloads-toolbar-divider" />
