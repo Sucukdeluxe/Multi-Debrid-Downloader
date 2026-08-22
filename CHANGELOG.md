@@ -2,6 +2,14 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.58] - 2026-08-22
+
+### DLC drag and drop
+
+- Restore direct DLC drag-and-drop imports into Downloads without routing dropped containers through the link collector preview.
+- Resolve dropped file paths through Electron's supported preload bridge instead of relying on renderer-only file properties.
+- Bound explicit link collector metadata enrichment so unavailable hoster checks cannot leave the interface permanently busy.
+
 ## [2.0.57] - 2026-08-22
 
 ### Window appearance
