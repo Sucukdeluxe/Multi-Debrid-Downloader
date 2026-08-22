@@ -5,7 +5,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { getDebridLinkApiKeyIds } from "../shared/debrid-link-keys";
 import { getMegaDebridAccountIds, mergeMegaDebridCredentialPools, parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
-import { AppSettings, ArchiveOperationMetric, AudioStripSummary, BandwidthScheduleEntry, DailyStartOutcome, DebridAccountStatus, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, FailurePhase, HistoryEntry, HistoryRetentionMode, LogStorageLocation, PackageEntry, PackagePriority, RemuxOperationMetric, SessionState } from "../shared/types";
+import { AppSettings, ArchiveOperationMetric, AudioStripSummary, BandwidthScheduleEntry, DailyStartOutcome, DebridAccountStatus, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, FailurePhase, HistoryEntry, HistoryRetentionMode, LogStorageLocation, PACKAGE_OUTPUT_PROVENANCE_VERSION, PackageEntry, PackagePriority, RemuxOperationMetric, SessionState } from "../shared/types";
 import { getProviderUsageDayKey } from "../shared/provider-daily-limits";
 import { getRealDebridAccountIds, normalizeRealDebridWebAccountIds, parseRealDebridApiAccounts, serializeRealDebridApiAccounts } from "../shared/real-debrid-accounts";
 import { defaultSettings } from "./constants";
@@ -974,6 +974,9 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
     const statusRaw = asText(pkg.status) as DownloadStatus;
     const status: DownloadStatus = VALID_DOWNLOAD_STATUSES.has(statusRaw) ? statusRaw : "queued";
     const rawItemIds = Array.isArray(pkg.itemIds) ? pkg.itemIds : [];
+    const outputProvenance = Array.isArray(pkg.outputProvenance)
+      ? [...new Set(pkg.outputProvenance.map((value) => asText(value).toLowerCase()).filter((value) => /^[a-f0-9]{64}$/.test(value)))].slice(0, 1_000_000)
+      : [];
     packagesById[id] = {
       id,
       name: asText(pkg.name) || "Paket",
@@ -1006,10 +1009,9 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
       terminalAt: clampNumber(pkg.terminalAt, 0, 0, Number.MAX_SAFE_INTEGER),
       archiveOperations: normalizeArchiveOperations(pkg.archiveOperations),
       remuxOperations: normalizeRemuxOperations(pkg.remuxOperations),
-      outputCount: clampNumber(pkg.outputCount, 0, 0, 1_000_000),
-      outputProvenance: Array.isArray(pkg.outputProvenance)
-        ? [...new Set(pkg.outputProvenance.map((value) => asText(value).toLowerCase()).filter((value) => /^[a-f0-9]{64}$/.test(value)))].slice(0, 1_000_000)
-        : [],
+      outputCount: outputProvenance.length,
+      outputProvenanceVersion: PACKAGE_OUTPUT_PROVENANCE_VERSION,
+      outputProvenance,
       cleanupErrorCategory: asText(pkg.cleanupErrorCategory),
       resultGeneration: clampNumber(pkg.resultGeneration, 1, 1, Number.MAX_SAFE_INTEGER),
       createdAt: clampNumber(pkg.createdAt, now, 0, Number.MAX_SAFE_INTEGER),

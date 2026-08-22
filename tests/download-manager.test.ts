@@ -15114,12 +15114,26 @@ describe("package priority ordering", () => {
 });
 
 describe("package lifecycle telemetry boundaries", () => {
-  it("serializes provenance capture for packages sharing one extract directory", async () => {
+  it("captures shared-root provenance from package staging without scanning unrelated files", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-output-provenance-lock-"));
     tempDirs.push(root);
     const extractDir = path.join(root, "extract");
     fs.mkdirSync(extractDir, { recursive: true });
-    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(root, "state")));
+    for (let index = 0; index < 2_000; index += 1) {
+      fs.writeFileSync(path.join(extractDir, `foreign-${index}.txt`), "foreign");
+    }
+    const traversedDirectories: string[] = [];
+    const manager = new DownloadManager(
+      { ...defaultSettings(), extractConflictMode: "overwrite" },
+      emptySession(),
+      createStoragePaths(path.join(root, "state")),
+      {
+        readOutputDirectory: async (directory: string) => {
+          traversedDirectories.push(path.resolve(directory));
+          return fs.promises.readdir(directory, { withFileTypes: true });
+        }
+      } as any
+    );
     const createPackage = (id: string): PackageEntry => ({
       id,
       name: id,
@@ -15141,25 +15155,107 @@ describe("package lifecycle telemetry boundaries", () => {
     let enteredB = false;
     const state = manager as any;
 
-    const first = state.runWithPackageOutputProvenance(packageA, async () => {
-      fs.writeFileSync(path.join(extractDir, "package-a.mkv"), "a");
+    const first = state.runWithPackageOutputProvenance(packageA, async (operationTarget = extractDir) => {
+      fs.writeFileSync(path.join(operationTarget, "package-a.mkv"), "a");
       await gateA;
     });
-    await vi.waitFor(() => expect(fs.existsSync(path.join(extractDir, "package-a.mkv"))).toBe(true));
-    const second = state.runWithPackageOutputProvenance(packageB, async () => {
+    await vi.waitFor(() => expect(enteredB).toBe(false));
+    const second = state.runWithPackageOutputProvenance(packageB, async (operationTarget = extractDir) => {
       enteredB = true;
-      fs.writeFileSync(path.join(extractDir, "package-b.mkv"), "b");
+      fs.writeFileSync(path.join(operationTarget, "package-b.mkv"), "b");
     });
-    await Promise.resolve();
-
-    expect(enteredB).toBe(false);
+    await vi.waitFor(() => expect(enteredB).toBe(true));
     releaseA();
     await Promise.all([first, second]);
     expect(packageA.outputCount).toBe(1);
     expect(packageB.outputCount).toBe(1);
+    expect(traversedDirectories.length).toBeGreaterThan(0);
+    expect(traversedDirectories).not.toContain(path.resolve(extractDir));
+    expect(traversedDirectories.length).toBeLessThanOrEqual(4);
   });
 
-  it("uses item-path provenance for archive identity and leaves unknown part counts at zero", () => {
+  it.each([
+    ["overwrite", "package", ["episode.mkv"]],
+    ["skip", "foreign", ["episode.mkv"]],
+    ["rename", "foreign", ["episode (1).mkv", "episode.mkv"]]
+  ] as const)("preserves %s conflicts while merging staged package outputs", async (conflictMode, expectedOriginal, expectedFiles) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `rd-output-${conflictMode}-`));
+    tempDirs.push(root);
+    const extractDir = path.join(root, "extract");
+    fs.mkdirSync(extractDir, { recursive: true });
+    fs.writeFileSync(path.join(extractDir, "episode.mkv"), "foreign");
+    const manager = new DownloadManager(
+      { ...defaultSettings(), extractConflictMode: conflictMode },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+    const pkg: PackageEntry = {
+      id: `conflict-${conflictMode}`,
+      name: `conflict-${conflictMode}`,
+      outputDir: path.join(root, "downloads"),
+      extractDir,
+      status: "completed",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      createdAt: 1_000,
+      updatedAt: 1_000
+    };
+    const state = manager as any;
+
+    await state.runWithPackageOutputProvenance(pkg, async (operationTarget = extractDir) => {
+      fs.writeFileSync(path.join(operationTarget, "episode.mkv"), "package");
+    });
+
+    expect(fs.readFileSync(path.join(extractDir, "episode.mkv"), "utf8")).toBe(expectedOriginal);
+    expect(fs.readdirSync(extractDir).filter((name) => name.endsWith(".mkv")).sort()).toEqual([...expectedFiles]);
+    expect(pkg.outputCount).toBe(conflictMode === "skip" ? 0 : 1);
+  });
+
+  it("retains partial staged outputs deterministically when extraction aborts", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-output-abort-"));
+    tempDirs.push(root);
+    const extractDir = path.join(root, "extract");
+    fs.mkdirSync(extractDir, { recursive: true });
+    const traversedDirectories: string[] = [];
+    const manager = new DownloadManager(
+      defaultSettings(),
+      emptySession(),
+      createStoragePaths(path.join(root, "state")),
+      {
+        readOutputDirectory: async (directory: string) => {
+          traversedDirectories.push(path.resolve(directory));
+          return fs.promises.readdir(directory, { withFileTypes: true });
+        }
+      } as any
+    );
+    const pkg: PackageEntry = {
+      id: "aborted-output",
+      name: "aborted-output",
+      outputDir: path.join(root, "downloads"),
+      extractDir,
+      status: "completed",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      createdAt: 1_000,
+      updatedAt: 1_000
+    };
+    const state = manager as any;
+
+    await expect(state.runWithPackageOutputProvenance(pkg, async (operationTarget = extractDir) => {
+      fs.writeFileSync(path.join(operationTarget, "partial.mkv"), "partial");
+      throw new Error("aborted:extract");
+    })).rejects.toThrow("aborted:extract");
+
+    expect(fs.readFileSync(path.join(extractDir, "partial.mkv"), "utf8")).toBe("partial");
+    expect(pkg.outputCount).toBe(1);
+    expect(traversedDirectories.length).toBeGreaterThan(0);
+    expect(traversedDirectories).not.toContain(path.resolve(extractDir));
+    expect(fs.readdirSync(extractDir).filter((name) => name.startsWith(".rd-output-"))).toEqual([]);
+  });
+
+  it("uses normalized nested item paths for archive identity and leaves empty item provenance at zero", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-archive-identity-"));
     tempDirs.push(root);
     const session = emptySession();
@@ -15196,26 +15292,102 @@ describe("package lifecycle telemetry boundaries", () => {
       createdAt: 1_000,
       updatedAt: 1_000
     });
-    const progress = (current: number) => ({
-      current,
+    const progress = (archivePath: string) => ({
+      current: 0,
       total: 3,
       percent: 100,
       archiveName: "episode.rar",
+      archivePath,
       archivePercent: 100,
       elapsedMs: 1_000,
       archiveDone: true,
       archiveSuccess: true
     });
     const state = manager as any;
+    const itemA = item("item-a", "season-a");
+    const itemB = item("item-b", "season-b");
+    const archiveAPath = path.join(pkg.outputDir, "season-a", "episode.rar");
+    const archiveBPath = path.join(pkg.outputDir, "season-b", "episode.rar");
+    const archiveAItems = (resolveArchiveItemsFromList as any)("episode.rar", [itemA, itemB], archiveAPath);
+    const archiveBItems = (resolveArchiveItemsFromList as any)("episode.rar", [itemA, itemB], archiveBPath);
+    const unresolvedItem = { ...item("unresolved", "season-c"), targetPath: "" };
 
-    state.recordArchiveOperation(pkg, progress(0), [item("item-a", "season-a")]);
-    state.recordArchiveOperation(pkg, progress(1), [item("item-b", "season-b")]);
-    state.recordArchiveOperation(pkg, { ...progress(2), archiveName: "unresolved.rar" }, []);
+    state.recordArchiveOperation(pkg, progress(archiveAPath), archiveAItems);
+    state.recordArchiveOperation(pkg, progress(archiveBPath), archiveBItems);
+    state.recordArchiveOperation(pkg, { ...progress(""), archiveName: "unresolved.rar" }, [unresolvedItem]);
 
     const operations = pkg.archiveOperations || [];
     expect(operations).toHaveLength(3);
     expect(new Set(operations.map((operation) => operation.id))).toHaveLength(3);
+    expect(operations.map((operation) => operation.itemIds)).toEqual([["item-a"], ["item-b"], []]);
     expect(operations.map((operation) => operation.partCount)).toEqual([1, 1, 0]);
+  });
+
+  it("keeps foreign post-process waiters reserved when stopping another run", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-run-owned-slots-"));
+    tempDirs.push(root);
+    const session = emptySession();
+    const createPackage = (id: string): PackageEntry => ({
+      id,
+      name: id,
+      outputDir: path.join(root, "downloads", id),
+      extractDir: path.join(root, "extract", id),
+      status: "completed",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      createdAt: 1_000,
+      updatedAt: 1_000
+    });
+    const packageA = createPackage("run-a-package");
+    const packageB = createPackage("run-b-package");
+    session.packages[packageA.id] = packageA;
+    session.packages[packageB.id] = packageB;
+    session.packageOrder = [packageA.id, packageB.id];
+    const manager = new DownloadManager(
+      { ...defaultSettings(), maxParallelExtract: 1 },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+    const state = manager as any;
+    const runA = state.createRunContext([packageA.id], 1_000, false);
+    const runB = state.beginActiveRunContext([packageB.id], 2_000);
+    session.running = true;
+    session.runStartedAt = 2_000;
+    state.runPackageIds = new Set([packageB.id]);
+    state.runItemIds = new Set(["run-b-item"]);
+    let concurrent = 1;
+    let peak = concurrent;
+    let foreignResolved = false;
+
+    await state.acquirePostProcessSlot("active-a", runA.id);
+    const foreignWaiter = state.acquirePostProcessSlot("waiting-a", runA.id).then((acquired: boolean | undefined) => {
+      foreignResolved = true;
+      if (acquired !== false) {
+        concurrent += 1;
+        peak = Math.max(peak, concurrent);
+      }
+      return acquired;
+    });
+    const stoppedWaiter = state.acquirePostProcessSlot("waiting-b", runB.id);
+    manager.stop();
+    const stoppedResult = await stoppedWaiter;
+    await Promise.resolve();
+
+    expect(stoppedResult).toBe(false);
+    expect(foreignResolved).toBe(false);
+    expect(state.packagePostProcessActive).toBe(1);
+
+    concurrent -= 1;
+    state.releasePostProcessSlot();
+    const foreignResult = await foreignWaiter;
+    expect(foreignResult).toBe(true);
+    expect(state.packagePostProcessActive).toBe(1);
+    expect(peak).toBe(1);
+
+    concurrent -= 1;
+    state.releasePostProcessSlot();
+    expect(state.packagePostProcessActive).toBe(0);
   });
 
   it("records queued, slot start and terminal timestamps around real post-processing", async () => {

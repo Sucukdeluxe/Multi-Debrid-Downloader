@@ -1200,6 +1200,7 @@ describe("settings storage", () => {
           }],
           remuxOperations: [],
           outputCount: 1,
+          outputProvenanceVersion: 1,
           outputProvenance: ["a".repeat(64), "invalid", "a".repeat(64)],
           cleanupErrorCategory: "",
           createdAt: 1_000,
@@ -1227,8 +1228,46 @@ describe("settings storage", () => {
       archiveOperations: [expect.objectContaining({ id: "archive-1", durationMs: 4_000 })],
       remuxOperations: [],
       outputCount: 1,
+      outputProvenanceVersion: 1,
       outputProvenance: ["a".repeat(64)],
       cleanupErrorCategory: ""
+    }));
+  });
+
+  it("invalidates an unversioned legacy package output count on load", () => {
+    const normalized = normalizeLoadedSession({
+      version: 2,
+      packageOrder: ["legacy-output-count"],
+      packages: {
+        "legacy-output-count": {
+          id: "legacy-output-count",
+          name: "Legacy output count",
+          outputDir: "C:\\Downloads\\Legacy",
+          extractDir: "C:\\Downloads\\Shared",
+          status: "completed",
+          itemIds: [],
+          cancelled: false,
+          enabled: true,
+          outputCount: 48_000,
+          createdAt: 1_000,
+          updatedAt: 2_000
+        }
+      },
+      items: {},
+      runStartedAt: 0,
+      totalDownloadedBytes: 0,
+      summaryText: "",
+      reconnectUntil: 0,
+      reconnectReason: "",
+      paused: false,
+      running: false,
+      updatedAt: 2_000
+    });
+
+    expect(normalized.packages["legacy-output-count"]).toEqual(expect.objectContaining({
+      outputCount: 0,
+      outputProvenanceVersion: 1,
+      outputProvenance: []
     }));
   });
 

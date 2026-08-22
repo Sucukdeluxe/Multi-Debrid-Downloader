@@ -495,6 +495,7 @@ export interface AudioStripSummary {
 
 export type PackageResultStatus = "completed" | "partial" | "failed" | "cancelled";
 export type FailurePhase = "download" | "extract" | "remux" | "cleanup" | null;
+export const PACKAGE_OUTPUT_PROVENANCE_VERSION = 1;
 
 export interface ArchiveOperationMetric {
   id: string;
@@ -588,6 +589,7 @@ export interface PackageEntry {
   archiveOperations?: ArchiveOperationMetric[];
   remuxOperations?: RemuxOperationMetric[];
   outputCount?: number;
+  outputProvenanceVersion?: number;
   outputProvenance?: string[];
   cleanupErrorCategory?: string;
   resultGeneration?: number;

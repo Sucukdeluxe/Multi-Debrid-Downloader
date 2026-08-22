@@ -622,6 +622,41 @@ describe("authoritative run completion", () => {
     expect([...state.finalizedPackageResults.keys()].filter((key) => key.startsWith(`${pkg.id}:`))).toEqual([`${pkg.id}:2`]);
   });
 
+  it("prunes only the removed package result generations and provenance state", () => {
+    const { manager, session } = setup();
+    const packageA = addPackage(session, ["completed"], "removed-package");
+    const packageB = addPackage(session, ["completed"], "retained-package");
+    packageA.outputCount = 1;
+    packageA.outputProvenance = ["a".repeat(64)];
+    packageB.outputCount = 1;
+    packageB.outputProvenance = ["b".repeat(64)];
+    const state = internal(manager);
+    const resultA = { packageId: packageA.id };
+    const resultB = { packageId: packageB.id };
+    state.finalizedPackageResults.set(`${packageA.id}:1`, resultA);
+    state.finalizedPackageResults.set(`${packageA.id}:2`, resultA);
+    state.finalizedPackageResults.set(`${packageB.id}:1`, resultB);
+    state.standalonePackageResults.add(`${packageA.id}:2`);
+    state.standalonePackageResults.add(`${packageB.id}:1`);
+    state.suppressedPackageResults.add(`${packageA.id}:1`);
+    state.suppressedPackageResults.add(`${packageB.id}:1`);
+    state.successDigestResults.set(`${packageA.id}:2`, { generation: 2, result: resultA });
+    state.successDigestResults.set(`${packageB.id}:1`, { generation: 1, result: resultB });
+    const context = state.createRunContext([packageA.id, packageB.id], 1_000, false);
+
+    state.removePackageFromSession(packageA.id, [...packageA.itemIds]);
+
+    expect([...state.finalizedPackageResults.keys()]).toEqual([`${packageB.id}:1`]);
+    expect([...state.standalonePackageResults]).toEqual([`${packageB.id}:1`]);
+    expect([...state.suppressedPackageResults]).toEqual([`${packageB.id}:1`]);
+    expect([...state.successDigestResults.keys()]).toEqual([`${packageB.id}:1`]);
+    expect(context.packageGenerations).toEqual(new Map([[packageB.id, 1]]));
+    expect(packageA.outputCount).toBe(0);
+    expect(packageA.outputProvenance).toEqual([]);
+    expect(packageB.outputCount).toBe(1);
+    expect(packageB.outputProvenance).toEqual(["b".repeat(64)]);
+  });
+
   it("tracks a main postprocess task created by triggerPendingExtractions after start begins", async () => {
     const { manager, session, events, history } = setup({ autoExtract: true });
     const pkg = addPackage(session);
