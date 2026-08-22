@@ -69,9 +69,57 @@ afterEach(() => {
 });
 
 describe("main shutdown lifecycle", () => {
+  it("drains extraction before session persistence and runtime disposal", async () => {
+    const drain = deferred();
+    const events: string[] = [];
+    const controller = Object.create(AppController.prototype) as any;
+    controller.downloadHealthTimer = null;
+    controller.downloadHealthEvaluation = null;
+    controller.downloadHealthMonitor = null;
+    controller.runtimeStatsTimer = null;
+    controller.notificationOutbox = { drainForShutdown: vi.fn(async () => undefined) };
+    controller.manager = {
+      suspendDownloadHealthMonitoring: vi.fn(),
+      prepareForShutdown: vi.fn(() => events.push("queue-close")),
+      shutdownAndDrain: vi.fn(async () => {
+        events.push("child-drain-start");
+        await drain.promise;
+        events.push("child-drain-end");
+      }),
+      persistForShutdown: vi.fn(() => events.push("session-persist")),
+      flushNotificationsForShutdown: vi.fn(async () => undefined)
+    };
+    controller.megaWebFallback = { dispose: vi.fn(() => events.push("runtime-dispose")) };
+    controller.realDebridWebFallbacks = new Map();
+    controller.pendingRealDebridWebAccountIds = new Map();
+    controller.allDebridWebFallback = { dispose: vi.fn() };
+    controller.bestDebridWebFallback = { dispose: vi.fn() };
+    controller.shutdownLogStorage = vi.fn();
+    controller.audit = vi.fn();
+    controller.settings = { historyRetentionMode: "never" };
+
+    const shutdown = controller.shutdown();
+    await Promise.resolve();
+    expect(events).toEqual(["queue-close", "child-drain-start"]);
+    drain.resolve();
+    await shutdown;
+
+    expect(events).toEqual([
+      "queue-close",
+      "child-drain-start",
+      "child-drain-end",
+      "session-persist",
+      "runtime-dispose"
+    ]);
+  });
+
   it("AppController waits for the bounded outbox drain before disposing runtime owners", async () => {
     const drain = deferred();
-    const manager = { prepareForShutdown: vi.fn() };
+    const manager = {
+      prepareForShutdown: vi.fn(),
+      shutdownAndDrain: vi.fn(async () => undefined),
+      persistForShutdown: vi.fn()
+    };
     const controller = Object.create(AppController.prototype) as any;
     controller.runtimeStatsTimer = null;
     controller.notificationOutbox = { drainForShutdown: vi.fn(() => drain.promise) };
@@ -88,6 +136,7 @@ describe("main shutdown lifecycle", () => {
     const shutdown = controller.shutdown();
 
     expect(shutdown).toBeInstanceOf(Promise);
+    await vi.waitFor(() => expect(controller.notificationOutbox.drainForShutdown).toHaveBeenCalledTimes(1));
     const drainBudget = controller.notificationOutbox.drainForShutdown.mock.calls[0][0];
     expect(drainBudget).toBeGreaterThan(0);
     expect(drainBudget).toBeLessThanOrEqual(3000);

@@ -1117,11 +1117,14 @@ app.on("before-quit", createBeforeQuitHandler({
     powerMonitor.removeListener("resume", handlePowerResume);
     stopClipboardWatcher();
     destroyTray();
-    shutdownDaemon();
   },
   shutdown: async () => {
-    if (controller) {
-      await controller.shutdown();
+    try {
+      if (controller) {
+        await controller.shutdown();
+      }
+    } finally {
+      shutdownDaemon();
     }
   },
   continueQuit: () => app.quit(),

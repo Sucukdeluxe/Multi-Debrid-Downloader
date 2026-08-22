@@ -60,11 +60,11 @@ export interface ExtractOptions {
   skipPostCleanup?: boolean;
   packageId?: string;
   hybridMode?: boolean;
-  maxParallel?: number;
   extractCpuPriority?: string;
   onArchiveFailure?: (failure: ExtractArchiveFailureInfo) => void;
   onLog?: (level: "INFO" | "WARN" | "ERROR", message: string) => void;
   onOutput?: (event: ExtractOutputEvent) => void;
+  scheduleArchive?: <T>(archivePath: string, execute: (signal: AbortSignal) => Promise<T>) => Promise<T>;
 }
 
 export interface ExtractProgressUpdate {
@@ -215,6 +215,9 @@ interface DaemonRequest {
   passwordCount: number;
   onOutput?: (event: ExtractOutputEvent) => void;
   targetDir: string;
+  aborted: boolean;
+  timedOut: boolean;
+  terminationStarted: boolean;
 }
 
 const activeSubstDrives = new Set<string>();
@@ -1493,13 +1496,6 @@ function runExtractCommand(
       timeoutId = setTimeout(() => {
         timedOutByWatchdog = true;
         killProcessTree(child);
-        finish({
-          ok: false,
-          missingCommand: false,
-          aborted: false,
-          timedOut: true,
-          errorText: `Entpacken Timeout nach ${Math.ceil(timeoutMs / 1000)}s`
-        });
       }, timeoutMs);
     }
 
@@ -1507,7 +1503,6 @@ function runExtractCommand(
       ? (): void => {
         abortedBySignal = true;
         killProcessTree(child);
-        finish({ ok: false, missingCommand: false, aborted: true, timedOut: false, errorText: "aborted:extract" });
       }
       : null;
     if (signal && onAbort) {
@@ -1526,6 +1521,9 @@ function runExtractCommand(
     });
 
     child.on("error", (error) => {
+      if (abortedBySignal || timedOutByWatchdog) {
+        return;
+      }
       const text = cleanErrorText(String(error));
       finish({
         ok: false,
@@ -1927,6 +1925,9 @@ function startDaemon(layout: JvmExtractorLayout): boolean {
     });
 
     child.on("error", () => {
+      if (daemonCurrentRequest?.terminationStarted) {
+        return;
+      }
       if (daemonCurrentRequest) {
         finishDaemonRequest({
           ok: false, missingCommand: true, missingRuntime: true,
@@ -1940,12 +1941,27 @@ function startDaemon(layout: JvmExtractorLayout): boolean {
     child.on("close", () => {
       if (daemonCurrentRequest) {
         const req = daemonCurrentRequest;
-        finishDaemonRequest({
-          ok: false, missingCommand: false, missingRuntime: false,
-          aborted: false, timedOut: false,
-          errorText: cleanErrorText(req.parseState.reportedError || daemonOutput) || "Daemon process exited unexpectedly",
-          usedPassword: req.parseState.usedPassword, backend: req.parseState.backend
-        });
+        if (req.aborted) {
+          finishDaemonRequest({
+            ok: false, missingCommand: false, missingRuntime: false,
+            aborted: true, timedOut: false, errorText: "aborted:extract",
+            usedPassword: req.parseState.usedPassword, backend: req.parseState.backend
+          });
+        } else if (req.timedOut) {
+          finishDaemonRequest({
+            ok: false, missingCommand: false, missingRuntime: false,
+            aborted: false, timedOut: true,
+            errorText: `Entpacken Timeout nach ${Math.ceil((req.timeoutMs || 0) / 1000)}s`,
+            usedPassword: req.parseState.usedPassword, backend: req.parseState.backend
+          });
+        } else {
+          finishDaemonRequest({
+            ok: false, missingCommand: false, missingRuntime: false,
+            aborted: false, timedOut: false,
+            errorText: cleanErrorText(req.parseState.reportedError || daemonOutput) || "Daemon process exited unexpectedly",
+            usedPassword: req.parseState.usedPassword, backend: req.parseState.backend
+          });
+        }
       }
       fs.rm(jvmTmpDir, { recursive: true, force: true }, () => {});
       daemonProcess = null;
@@ -2010,36 +2026,38 @@ function sendDaemonRequest(
       startedAt: Date.now(),
       passwordCount: passwordCandidates.length,
       onOutput,
-      targetDir
+      targetDir,
+      aborted: false,
+      timedOut: false,
+      terminationStarted: false
     };
     logger.info(`JVM Daemon Request Start: archive=${archiveName}, pwCandidates=${passwordCandidates.length}, timeoutMs=${timeoutMs || 0}, conflict=${mode}`);
 
     if (timeoutMs && timeoutMs > 0) {
       daemonTimeoutId = setTimeout(() => {
         const req = daemonCurrentRequest;
-        if (req) {
-          finishDaemonRequest({
-            ok: false, missingCommand: false, missingRuntime: false,
-            aborted: false, timedOut: true,
-            errorText: `Entpacken Timeout nach ${Math.ceil(timeoutMs / 1000)}s`,
-            usedPassword: parseState.usedPassword, backend: parseState.backend
-          });
+        if (req && !req.terminationStarted) {
+          req.timedOut = true;
+          req.terminationStarted = true;
+          try { daemonProcess?.stdin?.end(); } catch { }
+          if (daemonProcess) {
+            killProcessTree(daemonProcess);
+          }
         }
-        shutdownDaemon();
       }, timeoutMs);
     }
 
     if (signal) {
       daemonAbortHandler = () => {
         const req = daemonCurrentRequest;
-        if (req) {
-          finishDaemonRequest({
-            ok: false, missingCommand: false, missingRuntime: false,
-            aborted: true, timedOut: false, errorText: "aborted:extract",
-            usedPassword: parseState.usedPassword, backend: parseState.backend
-          });
+        if (req && !req.terminationStarted) {
+          req.aborted = true;
+          req.terminationStarted = true;
+          try { daemonProcess?.stdin?.end(); } catch { }
+          if (daemonProcess) {
+            killProcessTree(daemonProcess);
+          }
         }
-        shutdownDaemon();
       };
       signal.addEventListener("abort", daemonAbortHandler, { once: true });
     }
@@ -2211,12 +2229,6 @@ async function runJvmExtractCommand(
       timeoutId = setTimeout(() => {
         timedOutByWatchdog = true;
         killProcessTree(child);
-        finish({
-          ok: false, missingCommand: false, missingRuntime: false,
-          aborted: false, timedOut: true,
-          errorText: `Entpacken Timeout nach ${Math.ceil(timeoutMs / 1000)}s`,
-          usedPassword: parseState.usedPassword, backend: parseState.backend
-        });
       }, timeoutMs);
     }
 
@@ -2224,11 +2236,6 @@ async function runJvmExtractCommand(
       ? (): void => {
         abortedBySignal = true;
         killProcessTree(child);
-        finish({
-          ok: false, missingCommand: false, missingRuntime: false,
-          aborted: true, timedOut: false, errorText: "aborted:extract",
-          usedPassword: parseState.usedPassword, backend: parseState.backend
-        });
       }
       : null;
 
@@ -2244,6 +2251,9 @@ async function runJvmExtractCommand(
     });
 
     child.on("error", (error) => {
+      if (abortedBySignal || timedOutByWatchdog) {
+        return;
+      }
       const text = cleanErrorText(String(error));
       finish({
         ok: false, missingCommand: text.toLowerCase().includes("enoent"),
@@ -2555,21 +2565,14 @@ export function parseNativeExtractOutput(
 }
 
 function failDaemonOutputCallback(req: DaemonRequest): void {
-  if (daemonCurrentRequest !== req || !req.parseState.outputError) {
+  if (daemonCurrentRequest !== req || !req.parseState.outputError || req.terminationStarted) {
     return;
   }
-  const message = cleanErrorText(req.parseState.outputError.message || String(req.parseState.outputError));
-  finishDaemonRequest({
-    ok: false,
-    missingCommand: false,
-    missingRuntime: false,
-    aborted: false,
-    timedOut: false,
-    errorText: message,
-    usedPassword: req.parseState.usedPassword,
-    backend: req.parseState.backend
-  });
-  shutdownDaemon();
+  req.terminationStarted = true;
+  try { daemonProcess?.stdin?.end(); } catch { }
+  if (daemonProcess) {
+    killProcessTree(daemonProcess);
+  }
 }
 
 function createNativeOutputCollector(
@@ -3793,12 +3796,24 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
     }
   }
 
-  const maxParallel = Math.max(1, options.maxParallel || 1);
+  const fallbackSignal = options.signal || new AbortController().signal;
+  let localScheduleQueue = Promise.resolve();
+  const scheduleArchive = options.scheduleArchive
+    ? <T>(archivePath: string, execute: (signal: AbortSignal) => Promise<T>): Promise<T> => options.scheduleArchive!(
+      archivePath,
+      (jobSignal) => execute(options.signal ? AbortSignal.any([options.signal, jobSignal]) : jobSignal)
+    )
+    : <T>(_archivePath: string, execute: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+      const scheduled = localScheduleQueue.then(() => execute(fallbackSignal));
+      localScheduleQueue = scheduled.then(() => undefined, () => undefined);
+      return scheduled;
+    };
+  const archiveWorkerCount = Math.max(1, pendingCandidates.length);
   let noExtractorEncountered = false;
   let lastArchiveFinishedAt: number | null = null;
 
-  const extractSingleArchive = async (archivePath: string): Promise<void> => {
-    if (options.signal?.aborted) {
+  const extractSingleArchive = async (archivePath: string, signal: AbortSignal): Promise<void> => {
+    if (signal.aborted) {
       throw new Error("aborted:extract");
     }
     if (noExtractorEncountered) {
@@ -3876,18 +3891,18 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
           try {
             const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, archivePasswordCandidates, (value) => {
               reportArchiveProgress(value);
-            }, options.signal, hybrid, onPwAttempt, false, undefined, options.onLog, emitOutput);
+            }, signal, hybrid, onPwAttempt, false, undefined, options.onLog, emitOutput);
             rememberLearnedPassword(usedPassword);
           } catch (error) {
             if (isNoExtractorError(String(error))) {
-              await extractZipArchive(archivePath, options.targetDir, options.conflictMode, options.signal, emitOutput, validateOutputTarget);
+              await extractZipArchive(archivePath, options.targetDir, options.conflictMode, signal, emitOutput, validateOutputTarget);
             } else {
               throw error;
             }
           }
         } else {
           try {
-            await extractZipArchive(archivePath, options.targetDir, options.conflictMode, options.signal, emitOutput, validateOutputTarget);
+            await extractZipArchive(archivePath, options.targetDir, options.conflictMode, signal, emitOutput, validateOutputTarget);
             archivePercent = 100;
           } catch (error) {
             if (!shouldFallbackToExternalZip(error)) {
@@ -3896,7 +3911,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
             try {
               const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, archivePasswordCandidates, (value) => {
                 reportArchiveProgress(value);
-              }, options.signal, hybrid, onPwAttempt, false, undefined, options.onLog, emitOutput);
+              }, signal, hybrid, onPwAttempt, false, undefined, options.onLog, emitOutput);
               rememberLearnedPassword(usedPassword);
             } catch (externalError) {
               throw selectZipFallbackError(error, externalError);
@@ -3907,7 +3922,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
         const flatResult = { needed: false };
         const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, archivePasswordCandidates, (value) => {
           reportArchiveProgress(value);
-        }, options.signal, hybrid, onPwAttempt, packageNeedsFlatMode, flatResult, options.onLog, emitOutput);
+        }, signal, hybrid, onPwAttempt, packageNeedsFlatMode, flatResult, options.onLog, emitOutput);
         rememberLearnedPassword(usedPassword);
         if (flatResult.needed) packageNeedsFlatMode = true;
       }
@@ -3974,10 +3989,10 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
     }
   };
 
-  if (maxParallel <= 1) {
+  if (archiveWorkerCount <= 1) {
     for (const archivePath of pendingCandidates) {
       if (options.signal?.aborted || noExtractorEncountered) break;
-      await extractSingleArchive(archivePath);
+      await scheduleArchive(archivePath, (signal) => extractSingleArchive(archivePath, signal));
     }
     if (noExtractorEncountered) {
       const remaining = candidates.length - (extracted + failed);
@@ -3993,7 +4008,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
       options.onLog?.("INFO", `Passwort-Discovery: Extrahiere erstes Archiv seriell (${passwordCandidates.length} Passwort-Kandidaten)...`);
       const first = pendingCandidates[0];
       try {
-        await extractSingleArchive(first);
+        await scheduleArchive(first, (signal) => extractSingleArchive(first, signal));
       } catch (err) {
         const errText = String(err);
         if (/aborted:extract/i.test(errText)) throw err;
@@ -4015,7 +4030,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
           const idx = nextIdx;
           nextIdx += 1;
           try {
-            await extractSingleArchive(queue[idx]);
+            await scheduleArchive(queue[idx], (signal) => extractSingleArchive(queue[idx], signal));
           } catch (error) {
             const errText = String(error);
             if (errText.includes("noextractor:skipped")) {
@@ -4029,7 +4044,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
         }
       };
 
-      const workerCount = Math.min(maxParallel, parallelQueue.length);
+      const workerCount = parallelQueue.length;
       logger.info(`Parallele Extraktion: ${workerCount} gleichzeitige Worker für ${parallelQueue.length} Archive`);
       const frozenPasswords = [...passwordCandidates];
       await Promise.all(Array.from({ length: workerCount }, () => worker()));
@@ -4051,7 +4066,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
             if (options.signal?.aborted || noExtractorEncountered) break;
             try {
               failed -= 1;
-              await extractSingleArchive(archivePath);
+              await scheduleArchive(archivePath, (signal) => extractSingleArchive(archivePath, signal));
               retryRecovered += 1;
             } catch (retryError) {
               const errText = String(retryError);
@@ -4073,7 +4088,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
             if (options.signal?.aborted || noExtractorEncountered) break;
             try {
               failed -= 1;
-              await extractSingleArchive(archivePath);
+              await scheduleArchive(archivePath, (signal) => extractSingleArchive(archivePath, signal));
               retryRecovered += 1;
             } catch (retryError) {
               const errText = String(retryError);
@@ -4145,20 +4160,22 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
           const hybrid = Boolean(options.hybridMode);
           logger.info(`Nested-Entpacke: ${nestedName} -> ${options.targetDir}${hybrid ? " (hybrid)" : ""}`);
           try {
-            const ext = path.extname(nestedArchive).toLowerCase();
-            if (ext === ".zip" && !(await shouldPreferExternalZip(nestedArchive))) {
-              try {
-                await extractZipArchive(nestedArchive, options.targetDir, options.conflictMode, options.signal, emitOutput, validateOutputTarget);
-                nestedPercent = 100;
-              } catch (zipErr) {
-                if (!shouldFallbackToExternalZip(zipErr)) throw zipErr;
-                const usedPw = await runExternalExtract(nestedArchive, options.targetDir, options.conflictMode, passwordCandidates, (v) => { nestedPercent = Math.max(nestedPercent, v); }, options.signal, hybrid, undefined, false, undefined, options.onLog, emitOutput);
+            await scheduleArchive(nestedArchive, async (signal) => {
+              const ext = path.extname(nestedArchive).toLowerCase();
+              if (ext === ".zip" && !(await shouldPreferExternalZip(nestedArchive))) {
+                try {
+                  await extractZipArchive(nestedArchive, options.targetDir, options.conflictMode, signal, emitOutput, validateOutputTarget);
+                  nestedPercent = 100;
+                } catch (zipErr) {
+                  if (!shouldFallbackToExternalZip(zipErr)) throw zipErr;
+                  const usedPw = await runExternalExtract(nestedArchive, options.targetDir, options.conflictMode, passwordCandidates, (v) => { nestedPercent = Math.max(nestedPercent, v); }, signal, hybrid, undefined, false, undefined, options.onLog, emitOutput);
+                  rememberLearnedPassword(usedPw);
+                }
+              } else {
+                const usedPw = await runExternalExtract(nestedArchive, options.targetDir, options.conflictMode, passwordCandidates, (v) => { nestedPercent = Math.max(nestedPercent, v); }, signal, hybrid, undefined, false, undefined, options.onLog, emitOutput);
                 rememberLearnedPassword(usedPw);
               }
-            } else {
-              const usedPw = await runExternalExtract(nestedArchive, options.targetDir, options.conflictMode, passwordCandidates, (v) => { nestedPercent = Math.max(nestedPercent, v); }, options.signal, hybrid, undefined, false, undefined, options.onLog, emitOutput);
-              rememberLearnedPassword(usedPw);
-            }
+            });
             extracted += 1;
             nestedExtracted += 1;
             extractedArchives.add(nestedArchive);

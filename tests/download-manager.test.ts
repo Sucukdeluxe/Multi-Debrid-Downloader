@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DownloadManager, buildAutoRenameBaseNameFromFoldersWithOptions, extractArchiveNameFromExtractorLogMessage, getAuthoritativeRealDebridTotal, getDiskWriteWaitReason, resolveArchiveItemsFromList, resolveUnrestrictTimeoutBudgetMs, runWithLimitedConcurrency } from "../src/main/download-manager";
 import { planDownloadCompletion, validateDownloadedFileCompletion } from "../src/main/download-completion";
 import { DiskReservationCoordinator } from "../src/main/disk-space";
+import { ExtractionCoordinator } from "../src/main/extraction-coordinator";
 import { defaultSettings } from "../src/main/constants";
 import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
@@ -2308,42 +2309,6 @@ describe("download manager", () => {
     expect((manager as any).session.packages[packageId].itemIds).toEqual([firstItemId, secondItemId]);
 
     expect((manager as any).shouldCollapseQuickPostProcessRequeue(packageId)).toBe(false);
-  });
-
-  it("honors maxParallelExtract for concurrent post-process slots", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-postprocess-slots-"));
-    tempDirs.push(root);
-
-    const manager = new DownloadManager(
-      {
-        ...defaultSettings(),
-        token: "rd-token",
-        maxParallelExtract: 4
-      },
-      emptySession(),
-      createStoragePaths(path.join(root, "state"))
-    );
-
-    await (manager as any).acquirePostProcessSlot("pkg-1");
-    await (manager as any).acquirePostProcessSlot("pkg-2");
-    await (manager as any).acquirePostProcessSlot("pkg-3");
-    await (manager as any).acquirePostProcessSlot("pkg-4");
-
-    expect((manager as any).packagePostProcessActive).toBe(4);
-
-    let fifthResolved = false;
-    const fifth = (manager as any).acquirePostProcessSlot("pkg-5").then(() => {
-      fifthResolved = true;
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(fifthResolved).toBe(false);
-
-    (manager as any).releasePostProcessSlot();
-    await fifth;
-
-    expect(fifthResolved).toBe(true);
-    expect((manager as any).packagePostProcessActive).toBe(4);
   });
 
   it("extractNow only re-arms completed items that are not already extracted", () => {
@@ -15543,6 +15508,71 @@ describe("package lifecycle telemetry boundaries", () => {
     expect(pkg.outputRecords).toEqual([expect.objectContaining({ state: "partial", outputPath: path.join(extractDir, "partial.mkv") })]);
   });
 
+  it("holds one deduplicated multipart lease through child close and output-scope finalization", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-coordinated-lease-"));
+    tempDirs.push(root);
+    const outputDir = path.join(root, "downloads");
+    const extractDir = path.join(root, "extract");
+    fs.mkdirSync(outputDir, { recursive: true });
+    const firstPart = path.join(outputDir, "release.part1.rar");
+    const secondPart = path.join(outputDir, "release.part2.rar");
+    fs.writeFileSync(firstPart, Buffer.alloc(100));
+    fs.writeFileSync(secondPart, Buffer.alloc(200));
+    const session = emptySession();
+    const pkg: PackageEntry = {
+      id: "coordinated-lease",
+      name: "coordinated-lease",
+      outputDir,
+      extractDir,
+      status: "completed",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      resultGeneration: 3,
+      createdAt: 1_000,
+      updatedAt: 1_000
+    };
+    session.packages[pkg.id] = pkg;
+    session.packageOrder = [pkg.id];
+    const manager = new DownloadManager(defaultSettings(), session, createStoragePaths(path.join(root, "state")));
+    const state = manager as any;
+    state.extractionCoordinator = new ExtractionCoordinator(1);
+    state.diskReservations = new DiskReservationCoordinator({
+      safetyBytes: 0,
+      statVolume: async () => ({ path: extractDir, volumeKey: "extract-volume", freeBytes: 10_000, totalBytes: 20_000 })
+    });
+    const originalSync = state.syncPackageOutputScope.bind(state);
+    const reservationsDuringFinalization: number[] = [];
+    state.syncPackageOutputScope = (entry: PackageEntry, scope: unknown) => {
+      reservationsDuringFinalization.push(state.diskReservations.getReservedBytesByVolume().get("extract-volume") || 0);
+      return originalSync(entry, scope);
+    };
+    let closeChild = () => {};
+    const childClosed = new Promise<void>((resolve) => {
+      closeChild = resolve;
+    });
+    let completed = false;
+
+    const extraction = state.runCoordinatedExtraction(
+      pkg,
+      [firstPart, firstPart.toUpperCase(), secondPart],
+      undefined,
+      async (_targetDir: string, _scope: unknown, scheduleArchive: (archivePath: string, execute: (signal: AbortSignal) => Promise<void>) => Promise<void>) => {
+        await scheduleArchive(firstPart, async () => childClosed);
+      }
+    ).then(() => {
+      completed = true;
+    });
+
+    await vi.waitFor(() => expect(state.diskReservations.getReservedBytesByVolume().get("extract-volume")).toBe(300));
+    expect(completed).toBe(false);
+    closeChild();
+    await extraction;
+
+    expect(reservationsDuringFinalization).toContain(300);
+    expect(state.diskReservations.getReservedBytesByVolume().get("extract-volume")).toBe(0);
+  });
+
   it("uses normalized nested item paths for archive identity and leaves empty item provenance at zero", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-archive-identity-"));
     tempDirs.push(root);
@@ -15609,73 +15639,6 @@ describe("package lifecycle telemetry boundaries", () => {
     expect(new Set(operations.map((operation) => operation.id))).toHaveLength(3);
     expect(operations.map((operation) => operation.itemIds)).toEqual([["item-a"], ["item-b"], []]);
     expect(operations.map((operation) => operation.partCount)).toEqual([1, 1, 0]);
-  });
-
-  it("keeps foreign post-process waiters reserved when stopping another run", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-run-owned-slots-"));
-    tempDirs.push(root);
-    const session = emptySession();
-    const createPackage = (id: string): PackageEntry => ({
-      id,
-      name: id,
-      outputDir: path.join(root, "downloads", id),
-      extractDir: path.join(root, "extract", id),
-      status: "completed",
-      itemIds: [],
-      cancelled: false,
-      enabled: true,
-      createdAt: 1_000,
-      updatedAt: 1_000
-    });
-    const packageA = createPackage("run-a-package");
-    const packageB = createPackage("run-b-package");
-    session.packages[packageA.id] = packageA;
-    session.packages[packageB.id] = packageB;
-    session.packageOrder = [packageA.id, packageB.id];
-    const manager = new DownloadManager(
-      { ...defaultSettings(), maxParallelExtract: 1 },
-      session,
-      createStoragePaths(path.join(root, "state"))
-    );
-    const state = manager as any;
-    const runA = state.createRunContext([packageA.id], 1_000, false);
-    const runB = state.beginActiveRunContext([packageB.id], 2_000);
-    session.running = true;
-    session.runStartedAt = 2_000;
-    state.runPackageIds = new Set([packageB.id]);
-    state.runItemIds = new Set(["run-b-item"]);
-    let concurrent = 1;
-    let peak = concurrent;
-    let foreignResolved = false;
-
-    await state.acquirePostProcessSlot("active-a", runA.id);
-    const foreignWaiter = state.acquirePostProcessSlot("waiting-a", runA.id).then((acquired: boolean | undefined) => {
-      foreignResolved = true;
-      if (acquired !== false) {
-        concurrent += 1;
-        peak = Math.max(peak, concurrent);
-      }
-      return acquired;
-    });
-    const stoppedWaiter = state.acquirePostProcessSlot("waiting-b", runB.id);
-    manager.stop();
-    const stoppedResult = await stoppedWaiter;
-    await Promise.resolve();
-
-    expect(stoppedResult).toBe(false);
-    expect(foreignResolved).toBe(false);
-    expect(state.packagePostProcessActive).toBe(1);
-
-    concurrent -= 1;
-    state.releasePostProcessSlot();
-    const foreignResult = await foreignWaiter;
-    expect(foreignResult).toBe(true);
-    expect(state.packagePostProcessActive).toBe(1);
-    expect(peak).toBe(1);
-
-    concurrent -= 1;
-    state.releasePostProcessSlot();
-    expect(state.packagePostProcessActive).toBe(0);
   });
 
   it("records queued, slot start and terminal timestamps around real post-processing", async () => {

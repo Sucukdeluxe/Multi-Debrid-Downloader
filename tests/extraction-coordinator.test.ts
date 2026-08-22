@@ -331,4 +331,35 @@ describe("ExtractionCoordinator", () => {
     await Promise.all([active, finalized, shutdown]);
     expect(events).toEqual(["waiter-cancel", "active-abort", "child-close", "scope-finalize", "lease-release"]);
   });
+
+  it("waits for scope finalization registered immediately after child drain", async () => {
+    const coordinator = new ExtractionCoordinator(1);
+    const heldLease = lease();
+    const operation = await coordinator.beginOperation({
+      context: context("late-finalize", "package-a", "run"),
+      targetPath: "C:\\target",
+      members: [{ path: "C:\\archives\\one.rar", size: 100 }],
+      acquireLease: async () => heldLease
+    });
+    const childClose = deferred<void>();
+    const scopeClose = deferred<void>();
+    const active = coordinator.scheduleArchive(operation, "active", async () => childClose.promise);
+    let shutdownSettled = false;
+    const shutdown = coordinator.shutdownAndDrain(Date.now() + 1000).then(() => {
+      shutdownSettled = true;
+    });
+
+    childClose.resolve();
+    await active;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(shutdownSettled).toBe(false);
+    const finalization = operation.finalize(async () => scopeClose.promise);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(shutdownSettled).toBe(false);
+    expect(heldLease.release).not.toHaveBeenCalled();
+
+    scopeClose.resolve();
+    await Promise.all([finalization, shutdown]);
+    expect(heldLease.release).toHaveBeenCalledTimes(1);
+  });
 });

@@ -162,7 +162,7 @@ export class ExtractionCoordinator {
         const members = deduplicateMembers(options.members || []);
         state.lease = await options.acquireLease({
           phase: "extract",
-          ownerId: context.operationId,
+          ownerId: context.packageId,
           targetPath: String(options.targetPath || ""),
           requiredBytes: reservationBytes(members),
           memberPaths: Object.freeze(members.map((member) => member.path))
@@ -233,10 +233,7 @@ export class ExtractionCoordinator {
       this.resolveDrainIfIdle(state);
     }
     await this.waitUntilDeadline(Promise.all(states.map((state) => state.drain.promise)), deadlineAt);
-    const finalizers = states.map((state) => state.finalizePromise).filter((value): value is Promise<void> => Boolean(value));
-    if (finalizers.length > 0) {
-      await this.waitUntilDeadline(Promise.allSettled(finalizers), deadlineAt);
-    }
+    await this.waitForFinalization(states, deadlineAt);
     for (const state of states) {
       this.releaseLease(state);
     }
@@ -400,6 +397,23 @@ export class ExtractionCoordinator {
     await Promise.race([task.then(() => undefined, () => undefined), elapsed]);
     if (timeout) {
       clearTimeout(timeout);
+    }
+  }
+
+  private async waitForFinalization(states: readonly OperationState[], deadlineAt: number): Promise<void> {
+    while (Date.now() < deadlineAt) {
+      const pending = states.filter((state) => this.operations.get(state.context.operationId) === state);
+      if (pending.length === 0) {
+        return;
+      }
+      const finalizers = pending
+        .map((state) => state.finalizePromise)
+        .filter((value): value is Promise<void> => Boolean(value));
+      const waitMs = Math.max(1, Math.min(10, deadlineAt - Date.now()));
+      await Promise.race([
+        ...finalizers.map((finalizer) => finalizer.then(() => undefined, () => undefined)),
+        new Promise<void>((resolve) => setTimeout(resolve, waitMs))
+      ]);
     }
   }
 }

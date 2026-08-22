@@ -1214,7 +1214,6 @@ describe("extractor", () => {
         conflictMode: "overwrite",
         removeLinks: false,
         removeSamples: false,
-        maxParallel: 2,
         passwordList: "pw1|pw2|pw3",
         onProgress: (update) => {
           if (update.phase !== "extracting" || !update.archiveName) return;
@@ -1249,7 +1248,6 @@ describe("extractor", () => {
         conflictMode: "overwrite",
         removeLinks: false,
         removeSamples: false,
-        maxParallel: 4
       });
 
       expect(result.extracted).toBe(2);
@@ -1274,7 +1272,6 @@ describe("extractor", () => {
         conflictMode: "overwrite",
         removeLinks: false,
         removeSamples: false,
-        maxParallel: 4,
         passwordList: "pw1|pw2|pw3"
       });
 
@@ -1428,6 +1425,40 @@ describe("extractor", () => {
       expect(result.extracted).toBe(2);
       expect(fs.existsSync(path.join(targetDir, "owned.txt"))).toBe(true);
       expect(fs.existsSync(path.join(targetDir, "foreign.txt"))).toBe(false);
+    });
+
+    it("delegates top-level and nested archive jobs through one scheduler", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-global-extract-scheduler-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(packageDir, { recursive: true });
+      const first = new AdmZip();
+      first.addFile("first.txt", Buffer.from("first"));
+      first.writeZip(path.join(packageDir, "first.zip"));
+      const nested = new AdmZip();
+      nested.addFile("nested.txt", Buffer.from("nested"));
+      const second = new AdmZip();
+      second.addFile("owned.zip", nested.toBuffer());
+      second.writeZip(path.join(packageDir, "second.zip"));
+      const scheduled: string[] = [];
+
+      const result = await extractPackageArchives({
+        packageDir,
+        targetDir,
+        cleanupMode: "none",
+        conflictMode: "overwrite",
+        removeLinks: false,
+        removeSamples: false,
+        scheduleArchive: async (archivePath, execute) => {
+          scheduled.push(path.basename(archivePath));
+          return execute(new AbortController().signal);
+        }
+      });
+
+      expect(result.failed).toBe(0);
+      expect(scheduled).toEqual(["first.zip", "second.zip", "owned.zip"]);
+      expect(fs.readFileSync(path.join(targetDir, "nested.txt"), "utf8")).toBe("nested");
     });
 
     it("resumes same-basename archives by relative path and invalidates changed multipart fingerprints", async () => {

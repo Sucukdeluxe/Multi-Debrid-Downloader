@@ -83,6 +83,7 @@ import { mergeKnownTotalBytes } from "./download-size";
 import { DiskCapacityError, DiskReservationCoordinator, type DiskReservationLease } from "./disk-space";
 import { createRendererState } from "./renderer-state";
 import { PackageOutputScope } from "./package-output-scope";
+import { ExtractionCoordinator, type ExtractionArchiveMember } from "./extraction-coordinator";
 import {
   RollingAccountStatisticsAccumulator,
   addStatisticsActiveIntervalInPlace,
@@ -1941,11 +1942,7 @@ export class DownloadManager extends EventEmitter {
 
   private packageOutputScopes = new Map<string, PackageOutputScope>();
 
-  private packagePostProcessQueue: Promise<void> = Promise.resolve();
-
-  private packagePostProcessActive = 0;
-
-  private packagePostProcessWaiters: Array<{ packageId: string; runOwnerId: string | null; resolve: (acquired: boolean) => void }> = [];
+  private extractionCoordinator: ExtractionCoordinator;
 
   private packagePostProcessTasks = new Map<string, Promise<void>>();
 
@@ -2088,6 +2085,7 @@ export class DownloadManager extends EventEmitter {
     this.session = session;
     this.itemCount = Object.keys(this.session.items).length;
     this.storagePaths = storagePaths;
+    this.extractionCoordinator = new ExtractionCoordinator(settings.maxParallelExtract || 1);
     this.statisticsLedger = seedStatisticsDayProviderBytes(
       loadStatisticsLedger(storagePaths.statisticsFile, startedAt),
       settings.providerDailyUsageBytes,
@@ -2425,6 +2423,7 @@ export class DownloadManager extends EventEmitter {
     const now = nowMs();
     next.totalRuntimeAllTimeMs = Math.max(next.totalRuntimeAllTimeMs || 0, this.getLiveTotalRuntimeMs(now));
     this.settings = next;
+    this.extractionCoordinator.resize(next.maxParallelExtract || 1);
     this.invalidateSettingsSnapshotCache();
     this.runtimePersistedTotalMs = this.settings.totalRuntimeAllTimeMs || 0;
     this.runtimePersistedAt = now;
@@ -2670,7 +2669,6 @@ export class DownloadManager extends EventEmitter {
 
   public abortAllPostProcessing(): void {
     this.abortPostProcessing("external");
-    this.cancelPostProcessWaiters();
   }
 
   public triggerIdleExtractions(): void {
@@ -2987,6 +2985,7 @@ export class DownloadManager extends EventEmitter {
 
   private abortPackagePostProcessing(packageId: string, reason: string, invalidateDeferred = true): Promise<void>[] {
     const tasks: Promise<void>[] = [];
+    void this.extractionCoordinator.cancelPackage(packageId, reason);
     if (invalidateDeferred) {
       this.bumpPackagePostProcessVersion(packageId);
     }
@@ -3355,8 +3354,6 @@ export class DownloadManager extends EventEmitter {
     this.hybridExtractedPaths.clear();
     this.hybridFailedArchives.clear();
     this.providerFailures.clear();
-    this.packagePostProcessQueue = Promise.resolve();
-    this.cancelPostProcessWaiters();
     this.summary = null;
     this.nonResumableActive = 0;
     this.resetSessionTotalsIfQueueEmpty(true);
@@ -4661,6 +4658,86 @@ export class DownloadManager extends EventEmitter {
           }
         }
       }
+    }
+  }
+
+  private async extractionArchiveMembers(archivePaths: readonly string[]): Promise<ExtractionArchiveMember[]> {
+    const archiveRoots = new Map<string, string>();
+    for (const archivePath of archivePaths) {
+      const resolved = path.resolve(archivePath);
+      const key = process.platform === "win32" ? resolved.toLocaleLowerCase("en-US") : resolved;
+      if (!archiveRoots.has(key)) {
+        archiveRoots.set(key, resolved);
+      }
+    }
+    const directoryFiles = new Map<string, string[]>();
+    const memberPaths = new Map<string, string>();
+    for (const archivePath of archiveRoots.values()) {
+      const directory = path.dirname(archivePath);
+      const directoryKey = process.platform === "win32" ? directory.toLocaleLowerCase("en-US") : directory;
+      let files = directoryFiles.get(directoryKey);
+      if (!files) {
+        try {
+          files = (await fs.promises.readdir(directory, { withFileTypes: true }))
+            .filter((entry) => entry.isFile())
+            .map((entry) => entry.name);
+        } catch {
+          files = [];
+        }
+        directoryFiles.set(directoryKey, files);
+      }
+      for (const memberPath of collectArchiveCleanupTargets(archivePath, files)) {
+        const resolved = path.resolve(memberPath);
+        const key = process.platform === "win32" ? resolved.toLocaleLowerCase("en-US") : resolved;
+        if (!memberPaths.has(key)) {
+          memberPaths.set(key, resolved);
+        }
+      }
+    }
+    return Promise.all([...memberPaths.values()].map(async (memberPath) => {
+      try {
+        return { path: memberPath, size: (await fs.promises.stat(memberPath)).size };
+      } catch {
+        return { path: memberPath, size: null };
+      }
+    }));
+  }
+
+  private async runCoordinatedExtraction<T>(
+    pkg: PackageEntry,
+    archivePaths: readonly string[],
+    signal: AbortSignal | undefined,
+    operation: (
+      targetDir: string,
+      scope: PackageOutputScope,
+      scheduleArchive: <R>(archivePath: string, execute: (signal: AbortSignal) => Promise<R>) => Promise<R>
+    ) => Promise<T>
+  ): Promise<T> {
+    const members = await this.extractionArchiveMembers(archivePaths);
+    const extraction = await this.extractionCoordinator.beginOperation({
+      context: {
+        operationId: uuidv4(),
+        packageId: pkg.id,
+        generation: this.getPackageResultGeneration(pkg.id),
+        runOwnerId: this.getPackageResultRunOwner(pkg.id) || ""
+      },
+      targetPath: pkg.extractDir,
+      members,
+      acquireLease: (request) => this.diskReservations.reserve({
+        phase: request.phase,
+        ownerId: request.ownerId,
+        targetPath: request.targetPath,
+        requiredBytes: request.requiredBytes
+      })
+    });
+    const scheduleArchive = <R>(archivePath: string, execute: (jobSignal: AbortSignal) => Promise<R>): Promise<R> =>
+      this.extractionCoordinator.scheduleArchive(extraction, archivePath, (jobSignal) => execute(
+        signal ? AbortSignal.any([signal, jobSignal]) : jobSignal
+      ));
+    try {
+      return await this.runWithPackageOutputProvenance(pkg, (targetDir, scope) => operation(targetDir, scope, scheduleArchive));
+    } finally {
+      await extraction.finalize();
     }
   }
 
@@ -7093,7 +7170,9 @@ export class DownloadManager extends EventEmitter {
     this.speedBytesPerPackage.clear();
     this.speedEventsHead = 0;
     this.abortPostProcessing("stop", stoppedRunContext?.id);
-    this.cancelPostProcessWaiters(stoppedRunContext?.id);
+    if (stoppedRunContext) {
+      void this.extractionCoordinator.cancelRun(stoppedRunContext.id, "stop");
+    }
     for (const active of this.activeTasks.values()) {
       active.abortReason = abortReason;
       active.abortController.abort(abortReason);
@@ -7217,6 +7296,15 @@ export class DownloadManager extends EventEmitter {
     this.pacedStartReservationByItem.clear();
     this.nonResumableActive = 0;
     this.session.summaryText = "";
+    this.emitState(true);
+    logger.info(`Shutdown-Vorbereitung beendet: requeued=${requeuedItems}`);
+  }
+
+  public async shutdownAndDrain(deadlineAt: number): Promise<void> {
+    await this.extractionCoordinator.shutdownAndDrain(deadlineAt);
+  }
+
+  public persistForShutdown(): void {
     if (!this.skipShutdownPersist) {
       const pkgCount = Object.keys(this.session.packages).length;
       const itemCount = Object.keys(this.session.items).length;
@@ -7230,8 +7318,6 @@ export class DownloadManager extends EventEmitter {
     } else {
       logger.info(`Shutdown-Save übersprungen: skipShutdownPersist=${this.skipShutdownPersist}, blockAllPersistence=${this.blockAllPersistence}`);
     }
-    this.emitState(true);
-    logger.info(`Shutdown-Vorbereitung beendet: requeued=${requeuedItems}`);
   }
 
   public togglePause(): boolean {
@@ -8672,6 +8758,7 @@ export class DownloadManager extends EventEmitter {
       if (runContextId !== undefined && owner !== runContextId) {
         continue;
       }
+      void this.extractionCoordinator.cancelPackage(packageId, reason);
       if (!controller.signal.aborted) {
         controller.abort(reason);
       }
@@ -8701,75 +8788,28 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
-    for (const controller of this.packageDeferredPostProcessAbortControllers.values()) {
+    for (const [packageId, controller] of this.packageDeferredPostProcessAbortControllers.entries()) {
       const owner = this.packageDeferredRunOwnerByController.get(controller);
       if (runContextId !== undefined && owner !== runContextId) {
         continue;
       }
+      void this.extractionCoordinator.cancelPackage(packageId, reason);
       if (!controller.signal.aborted) {
         controller.abort(reason);
       }
     }
-    for (const hybridSet of this.packageHybridPostProcessControllers.values()) {
+    for (const [packageId, hybridSet] of this.packageHybridPostProcessControllers.entries()) {
       for (const controller of hybridSet) {
         const owner = this.packageHybridRunOwnerByController.get(controller);
         if (runContextId !== undefined && owner !== runContextId) {
           continue;
         }
+        void this.extractionCoordinator.cancelPackage(packageId, reason);
         if (!controller.signal.aborted) {
           controller.abort(reason);
         }
       }
     }
-  }
-
-  private cancelPostProcessWaiters(runOwnerId?: string): void {
-    const retained: typeof this.packagePostProcessWaiters = [];
-    for (const waiter of this.packagePostProcessWaiters) {
-      if (runOwnerId !== undefined && waiter.runOwnerId !== runOwnerId) {
-        retained.push(waiter);
-      } else {
-        waiter.resolve(false);
-      }
-    }
-    this.packagePostProcessWaiters = retained;
-  }
-
-  private async acquirePostProcessSlot(packageId: string, runOwnerId: string | null = this.getPackageResultRunOwner(packageId)): Promise<boolean> {
-    const maxConcurrent = Math.max(1, Math.min(8, this.settings.maxParallelExtract || 1));
-    if (this.packagePostProcessActive < maxConcurrent) {
-      this.packagePostProcessActive += 1;
-      return true;
-    }
-    return new Promise<boolean>((resolve) => {
-      this.packagePostProcessWaiters.push({ packageId, runOwnerId, resolve });
-    });
-  }
-
-  private releasePostProcessSlot(): void {
-    if (this.packagePostProcessActive <= 0) {
-      this.packagePostProcessActive = 0;
-      return;
-    }
-    const maxConcurrent = Math.max(1, Math.min(8, this.settings.maxParallelExtract || 1));
-    if (this.packagePostProcessWaiters.length === 0 || this.packagePostProcessActive > maxConcurrent) {
-      this.packagePostProcessActive -= 1;
-      return;
-    }
-    const order = this.session.packageOrder;
-    let bestIdx = 0;
-    let bestOrder = order.indexOf(this.packagePostProcessWaiters[0].packageId);
-    if (bestOrder === -1) bestOrder = Infinity;
-    for (let i = 1; i < this.packagePostProcessWaiters.length; i++) {
-      let pos = order.indexOf(this.packagePostProcessWaiters[i].packageId);
-      if (pos === -1) pos = Infinity;
-      if (pos < bestOrder) {
-        bestOrder = pos;
-        bestIdx = i;
-      }
-    }
-    const [next] = this.packagePostProcessWaiters.splice(bestIdx, 1);
-    next.resolve(true);
   }
 
   private runPackagePostProcessing(packageId: string): Promise<void> {
@@ -8793,30 +8833,11 @@ export class DownloadManager extends EventEmitter {
     // cannot reference its own const inside its initializer). Assigned right after.
     const handle: { task?: Promise<void> } = {};
     const task = (async () => {
-      const slotWaitStart = nowMs();
-      let slotAcquired = false;
       try {
-        slotAcquired = await this.acquirePostProcessSlot(
-          packageId,
-          this.packagePostProcessRunOwnerByController.get(abortController) ?? null
-        );
-        if (!slotAcquired) {
-          return;
-        }
         const startedPackage = this.session.packages[packageId];
         if (startedPackage) {
           startedPackage.postProcessStartedAt = startedPackage.postProcessStartedAt || nowMs();
           startedPackage.updatedAt = nowMs();
-        }
-        const slotWaitMs = nowMs() - slotWaitStart;
-        if (slotWaitMs > 100) {
-          logger.info(`Post-Process Slot erhalten nach ${(slotWaitMs / 1000).toFixed(1)}s Wartezeit: pkg=${packageId.slice(0, 8)}`);
-          const pkg = this.session.packages[packageId];
-          if (pkg) {
-            this.logPackageForPackage(pkg, "INFO", "Post-Process-Slot erhalten", {
-              slotWaitMs
-            });
-          }
         }
         let round = 0;
         do {
@@ -8849,9 +8870,6 @@ export class DownloadManager extends EventEmitter {
           }
         } while (this.hybridExtractRequeue.has(packageId));
       } finally {
-        if (slotAcquired) {
-          this.releasePostProcessSlot();
-        }
         // Identity guard: only clear the map entries if they still point to THIS
         // task/controller. After an abort deletes our handle a new run can install
         // a fresh task+controller for the same packageId; a blind delete here would
@@ -13598,7 +13616,7 @@ export class DownloadManager extends EventEmitter {
         return 0;
       }
 
-      const result = await this.runWithPackageOutputProvenance(pkg, (targetDir, scope) => extractPackageArchives({
+      const result = await this.runCoordinatedExtraction(pkg, [...readyArchives], signal, (targetDir, scope, scheduleArchive) => extractPackageArchives({
         packageDir: pkg.outputDir,
         targetDir,
         cleanupMode: this.settings.cleanupMode,
@@ -13611,7 +13629,7 @@ export class DownloadManager extends EventEmitter {
         skipPostCleanup: true,
         packageId,
         hybridMode: true,
-        maxParallel: this.settings.maxParallelExtract || 2,
+        scheduleArchive,
         extractCpuPriority: "high",
         onLog: (level, message) => this.logExtractionForItems(pkg, items, "Hybrid-Extractor", level, message),
         onOutput: (event) => scope.add(event),
@@ -14136,40 +14154,6 @@ export class DownloadManager extends EventEmitter {
             fullExtractItemIds.add(entry.id);
           }
         }
-        const archiveSizes = await Promise.all([...fullArchiveSet].map(async (archivePath) => {
-          try {
-            return (await fs.promises.stat(archivePath)).size;
-          } catch {
-            return null;
-          }
-        }));
-        try {
-          const diskLease = await this.diskReservations.reserve({
-            phase: "extract",
-            ownerId: packageId,
-            targetPath: pkg.extractDir,
-            requiredBytes: archiveSizes.every((size) => size === null) ? null : archiveSizes.reduce<number>((total, size) => total + Math.max(0, size || 0), 0)
-          });
-          diskLease.release();
-        } catch (error) {
-          if (error instanceof DiskCapacityError) {
-            this.diskWaitEvents = [{ ...error.event, packageId }];
-            const retryAt = error.event.retryAt;
-            this.packageDiskRetryAfterByPackage.set(packageId, retryAt);
-            for (const entry of completedItems) {
-              entry.fullStatus = "Warte auf Festplatte";
-              entry.lastError = "Zu wenig Speicherplatz";
-              entry.updatedAt = nowMs();
-            }
-            pkg.postProcessLabel = undefined;
-            pkg.status = "queued";
-            pkg.updatedAt = nowMs();
-            this.persistSoon();
-            this.emitState();
-            return;
-          }
-          throw error;
-        }
         const pendingAt = nowMs();
         for (const entry of completedItems) {
           if (!fullExtractItemIds.has(entry.id) || isExtractedLabel(entry.fullStatus)) {
@@ -14180,7 +14164,9 @@ export class DownloadManager extends EventEmitter {
           entry.updatedAt = pendingAt;
         }
         this.emitState();
-        const result = await this.runWithPackageOutputProvenance(pkg, (targetDir, scope) => extractPackageArchives({
+        let result;
+        try {
+          result = await this.runCoordinatedExtraction(pkg, [...fullArchiveSet], extractAbortController.signal, (targetDir, scope, scheduleArchive) => extractPackageArchives({
           packageDir: pkg.outputDir,
           targetDir,
           cleanupMode: this.settings.cleanupMode,
@@ -14192,7 +14178,7 @@ export class DownloadManager extends EventEmitter {
           packageId,
           onlyArchives: fullArchiveSet,
           skipPostCleanup: true,
-          maxParallel: this.settings.maxParallelExtract || 2,
+          scheduleArchive,
           extractCpuPriority: "high",
           onLog: (level, message) => this.logExtractionForItems(pkg, completedItems, "Extractor", level, message),
           onOutput: (event) => scope.add(event),
@@ -14322,7 +14308,26 @@ export class DownloadManager extends EventEmitter {
             }
             emitExtractStatus(overallLabel);
           }
-        }));
+          }));
+        } catch (error) {
+          if (error instanceof DiskCapacityError) {
+            this.diskWaitEvents = [{ ...error.event, packageId }];
+            const retryAt = error.event.retryAt;
+            this.packageDiskRetryAfterByPackage.set(packageId, retryAt);
+            for (const entry of completedItems) {
+              entry.fullStatus = "Warte auf Festplatte";
+              entry.lastError = "Zu wenig Speicherplatz";
+              entry.updatedAt = nowMs();
+            }
+            pkg.postProcessLabel = undefined;
+            pkg.status = "queued";
+            pkg.updatedAt = nowMs();
+            this.persistSoon();
+            this.emitState();
+            return;
+          }
+          throw error;
+        }
         logger.info(`Post-Processing Entpacken Ende: pkg=${pkg.name}, extracted=${result.extracted}, failed=${result.failed}, lastError=${result.lastError || ""}`);
         this.logPackageForPackage(pkg, "INFO", "Post-Processing Entpacken Ende", {
           extracted: result.extracted,
@@ -14532,7 +14537,7 @@ export class DownloadManager extends EventEmitter {
           });
           const nestedFailureCategories = new Map<string, string>();
           const nestedItems = pkg.itemIds.map((itemId) => this.session.items[itemId]).filter(Boolean) as DownloadItem[];
-          const nestedResult = await this.runWithPackageOutputProvenance(pkg, (targetDir, scope) => extractPackageArchives({
+          const nestedResult = await this.runCoordinatedExtraction(pkg, nestedCandidates, deferredController.signal, (targetDir, scope, scheduleArchive) => extractPackageArchives({
             packageDir: pkg.extractDir,
             targetDir,
             cleanupMode: this.settings.cleanupMode,
@@ -14543,7 +14548,7 @@ export class DownloadManager extends EventEmitter {
             signal: deferredController.signal,
             packageId,
             onlyArchives: new Set(nestedCandidates.map((p) => process.platform === "win32" ? path.resolve(p).toLowerCase() : path.resolve(p))),
-            maxParallel: this.settings.maxParallelExtract || 2,
+            scheduleArchive,
             extractCpuPriority: this.settings.extractCpuPriority,
             onLog: (level, message) => this.logPackageForPackage(pkg, level, `Nested-Extractor: ${message}`),
             onOutput: (event) => scope.add(event),

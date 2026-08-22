@@ -1360,6 +1360,8 @@ export class AppController {
     abortActiveUpdateDownload();
     cancelPendingAsyncSaves();
     this.manager.prepareForShutdown();
+    await this.manager.shutdownAndDrain?.(deadlineAt);
+    this.manager.persistForShutdown?.();
     if (this.downloadHealthEvaluation) {
       await this.waitForShutdownTask(this.downloadHealthEvaluation, deadlineAt);
     }
