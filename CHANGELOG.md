@@ -11,6 +11,13 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 - Group supported 1Fichier mirror domains under one hoster identity.
 - Display the full `1Fichier` hoster name consistently in the link collector and Downloads.
 
+### DDownload imports
+
+- Resolve public DDownload filenames, exact sizes, and availability before links enter the download queue.
+- Treat removed files as offline while keeping protected or inconclusive pages available for later retry.
+- Preserve resolved DDownload filenames when a debrid provider later returns only `download.bin`.
+- Normalize `ddownload.com` and `ddl.to` under one DDownload hoster identity.
+
 ### Link collector
 
 - Rebuilt the link collector as a package-oriented preview with expandable file rows, resolved metadata, availability filters, stable selection, and selected or complete transfer to Downloads.

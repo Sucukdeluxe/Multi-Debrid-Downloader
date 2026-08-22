@@ -633,6 +633,16 @@ describe("responsive Downloadstatus und Servicebezeichnungen", () => {
     expect(formatHosterLabel(hosters[1])).toEqual({ compact: "1Fichier", title: "1Fichier", iconSrc: "./provider-icons/onefichier.png" });
   });
 
+  it("normalizes DDownload and ddl.to to one hoster identity", () => {
+    const hosters = [
+      extractHoster("https://ddownload.com/ntwscdw62gyb"),
+      extractHoster("https://ddl.to/ntwscdw62gyb/Archive.part02.rar")
+    ];
+
+    expect(hosters).toEqual(["ddownload", "ddownload"]);
+    expect(formatHosterLabel(hosters[1])).toEqual({ compact: "DD", title: "DDownload", iconSrc: "./provider-icons/ddownload.ico" });
+  });
+
   it("removes duplicated access-mode wording from service labels", () => {
     expect(normalizeDownloadServiceLabel("Mega-Debrid Web (Web Account)")).toBe("Mega-Debrid (Web)");
     expect(normalizeDownloadServiceLabel("Mega-Debrid API (API Account)")).toBe("Mega-Debrid (API)");

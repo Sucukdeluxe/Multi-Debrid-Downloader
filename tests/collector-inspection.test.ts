@@ -62,11 +62,11 @@ describe("collector inspection", () => {
       "https://example.com/a",
       "https://example.com/a",
       "# Package: Staffel B",
-      "https://example.com/b"
+      "https://example.com/abcdef1234567890abcdef12"
     ].join("\n");
 
     const result = await inspectCollectorText({ rawText, addedAt: 2000 }, defaultSettings(), {
-      resolveFilenames: async () => new Map([["https://example.com/b", "episode.part02.rar"]])
+      resolveFilenames: async () => new Map([["https://example.com/abcdef1234567890abcdef12", "episode.part02.rar"]])
     });
 
     expect(result.packages.map((pkg) => pkg.name)).toEqual(["Staffel A", "Staffel B"]);
@@ -98,6 +98,34 @@ describe("collector inspection", () => {
       availability: "unknown",
       status: "unknown"
     }));
+  });
+
+  it("resolves DDownload metadata before grouping without using a debrid account", async () => {
+    const link = "https://ddownload.com/ntwscdw62gyb";
+    let genericResolverCalls = 0;
+    const result = await inspectCollectorText({ rawText: link, addedAt: 3500 }, defaultSettings(), {
+      checkDdownload: async () => ({
+        online: true,
+        fileName: "SBS14HD.part02.rar",
+        fileSizeBytes: 526_385_152
+      }),
+      resolveFilenames: async () => {
+        genericResolverCalls += 1;
+        return new Map();
+      }
+    });
+
+    expect(genericResolverCalls).toBe(0);
+    expect(result.packages).toHaveLength(1);
+    expect(result.packages[0].name).toBe("SBS14HD");
+    expect(result.packages[0].links).toEqual([expect.objectContaining({
+      url: link,
+      fileName: "SBS14HD.part02.rar",
+      fileSizeBytes: 526_385_152,
+      hoster: "ddownload",
+      availability: "online",
+      status: "ready"
+    })]);
   });
 
   it("infers archive package names and serializes inspected metadata for the existing queue parser", () => {

@@ -58,7 +58,7 @@ function releaseTlsSkip(): void {
 }
 import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 import { planDownloadCompletion, reconcileFinalizedSize, validateDownloadedFileCompletion } from "./download-completion";
-import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkOneFichierLinks, checkRapidgatorOnline, fetchAllDebridHostInfo, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, isOneFichierLink, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown, type OneFichierCheckResult } from "./debrid";
+import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkDdownloadOnline, checkOneFichierLinks, checkRapidgatorOnline, fetchAllDebridHostInfo, filenameFromDdownloadUrlPath, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, isDdownloadLink, isOneFichierLink, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown, type DdownloadCheckResult, type OneFichierCheckResult } from "./debrid";
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { classifyDiskError } from "./fs-error";
@@ -2009,6 +2009,7 @@ export class DownloadManager extends EventEmitter {
     void this.recoverRetryableItems("startup").catch((err) => logger.warn(`recoverRetryableItems Fehler (startup): ${compactErrorText(err)}`));
     this.recoverPostProcessingOnStartup();
     this.checkExistingRapidgatorLinks();
+    this.checkExistingDdownloadLinks();
     this.checkExistingOneFichierLinks();
     void this.cleanupExistingExtractedArchives().catch((err) => logger.warn(`cleanupExistingExtractedArchives Fehler (constructor): ${compactErrorText(err)}`));
     setRotationEventListener(() => {
@@ -3234,6 +3235,7 @@ export class DownloadManager extends EventEmitter {
     }
     if (newItemIds.length > 0) {
       void this.checkRapidgatorLinks(newItemIds).catch((err) => logger.warn(`checkRapidgatorLinks Fehler: ${compactErrorText(err)}`));
+      void this.checkDdownloadItems(newItemIds).catch((err) => logger.warn(`checkDdownloadItems Fehler: ${compactErrorText(err)}`));
       void this.checkOneFichierItems(newItemIds).catch((err) => logger.warn(`checkOneFichierItems Fehler: ${compactErrorText(err)}`));
     }
     return { addedPackages, addedLinks };
@@ -3597,6 +3599,78 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
+  private async checkDdownloadItems(itemIds: string[]): Promise<void> {
+    const itemsToCheck: Array<{ itemId: string; url: string }> = [];
+    for (const itemId of itemIds) {
+      const item = this.session.items[itemId];
+      if (!item || !isDdownloadLink(item.url)) continue;
+      if (item.status !== "queued" && item.status !== "reconnect_wait") continue;
+      item.onlineStatus = "checking";
+      itemsToCheck.push({ itemId, url: item.url });
+    }
+    if (itemsToCheck.length === 0) return;
+    this.emitState();
+    const checkedUrls = new Map<string, Promise<DdownloadCheckResult | null>>();
+    await runWithLimitedConcurrency(itemsToCheck, 4, async ({ itemId, url }) => {
+      let pending = checkedUrls.get(url);
+      if (!pending) {
+        pending = checkDdownloadOnline(url);
+        checkedUrls.set(url, pending);
+      }
+      let result: DdownloadCheckResult | null = null;
+      try {
+        result = await pending;
+      } catch (error) {
+        logger.warn(`DDownload-Linkprüfung fehlgeschlagen: ${compactErrorText(error)}`);
+      }
+      const item = this.session.items[itemId];
+      if (item) this.applyDdownloadCheckResult(item, result);
+      this.persistSoon();
+      this.emitState();
+    });
+    this.persistSoon();
+  }
+
+  private applyDdownloadCheckResult(item: DownloadItem, result: DdownloadCheckResult | null): void {
+    if (!result) {
+      if (item.onlineStatus === "checking") item.onlineStatus = undefined;
+      return;
+    }
+    const canUpdateMetadata = item.status === "queued"
+      || item.status === "reconnect_wait"
+      || (item.status === "validating" && item.downloadedBytes === 0 && (!item.targetPath || !fs.existsSync(item.targetPath)));
+    if (item.status !== "queued" && item.status !== "reconnect_wait" && item.status !== "validating") {
+      item.onlineStatus = result.online ? "online" : "offline";
+      item.updatedAt = nowMs();
+      return;
+    }
+    if (item.status === "validating" && !result.online) {
+      item.onlineStatus = "offline";
+      item.updatedAt = nowMs();
+      return;
+    }
+    if (!result.online) {
+      item.status = "failed";
+      item.fullStatus = "Offline";
+      item.lastError = "Datei nicht gefunden auf DDownload";
+      item.onlineStatus = "offline";
+      item.updatedAt = nowMs();
+      if (this.runItemIds.has(item.id)) this.recordRunOutcome(item.id, "failed");
+      const pkg = this.session.packages[item.packageId];
+      if (pkg) this.refreshPackageStatus(pkg);
+      return;
+    }
+    const unresolvedFileName = looksLikeOpaqueFilename(item.fileName)
+      || (!filenameFromDdownloadUrlPath(item.url) && item.fileName === filenameFromUrl(item.url));
+    if (canUpdateMetadata && result.fileName && unresolvedFileName) {
+      item.fileName = sanitizeFilename(result.fileName);
+      this.assignItemTargetPath(item, path.join(this.session.packages[item.packageId]?.outputDir || this.settings.outputDir, item.fileName));
+    }
+    if (canUpdateMetadata && result.fileSizeBytes !== null && result.fileSizeBytes > 0) item.totalBytes = result.fileSizeBytes;
+    item.onlineStatus = "online";
+    item.updatedAt = nowMs();
+  }
+
   private async checkOneFichierItems(itemIds: string[]): Promise<void> {
     const itemIdsByUrl = new Map<string, string[]>();
     for (const itemId of itemIds) {
@@ -3698,6 +3772,21 @@ export class DownloadManager extends EventEmitter {
     }
     if (uncheckedIds.length > 0) {
       void this.checkRapidgatorLinks(uncheckedIds).catch((err) => logger.warn(`checkRapidgatorLinks Fehler (startup): ${compactErrorText(err)}`));
+    }
+  }
+
+  private checkExistingDdownloadLinks(): void {
+    const uncheckedIds: string[] = [];
+    for (const item of Object.values(this.session.items)) {
+      if (item.status !== "queued" && item.status !== "reconnect_wait") continue;
+      if (!isDdownloadLink(item.url) || item.onlineStatus === "offline") continue;
+      const unresolvedFileName = looksLikeOpaqueFilename(item.fileName)
+        || (!filenameFromDdownloadUrlPath(item.url) && item.fileName === filenameFromUrl(item.url));
+      if (item.onlineStatus === "online" && item.totalBytes !== null && item.totalBytes > 0 && !unresolvedFileName) continue;
+      uncheckedIds.push(item.id);
+    }
+    if (uncheckedIds.length > 0) {
+      void this.checkDdownloadItems(uncheckedIds).catch((err) => logger.warn(`checkDdownloadItems Fehler (startup): ${compactErrorText(err)}`));
     }
   }
 

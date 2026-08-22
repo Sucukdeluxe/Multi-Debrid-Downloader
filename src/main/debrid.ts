@@ -3797,9 +3797,123 @@ class OneFichierClient {
   }
 }
 
-const DDOWNLOAD_URL_RE = /^https?:\/\/(?:www\.)?(?:ddownload\.com|ddl\.to)\/([a-z0-9]+)/i;
+const DDOWNLOAD_URL_RE = /^https?:\/\/(?:www\.)?(?:ddownload\.com|ddl\.to)\/([a-z0-9]{8,20})(?:\/|$)/i;
 const DDOWNLOAD_WEB_BASE = "https://ddownload.com";
 const DDOWNLOAD_WEB_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
+const DDOWNLOAD_SCAN_MAX_BYTES = 512 * 1024;
+const DDOWNLOAD_FILE_NOT_FOUND_RE = /(?:File Not Found|No such file|file was removed|file was banned|Unavailable for legal reasons)/i;
+
+export interface DdownloadCheckResult {
+  online: boolean;
+  fileName: string;
+  fileSizeBytes: number | null;
+}
+
+export function isDdownloadLink(link: string): boolean {
+  return DDOWNLOAD_URL_RE.test(String(link || "").trim());
+}
+
+export function filenameFromDdownloadUrlPath(link: string): string {
+  if (!isDdownloadLink(link)) return "";
+  try {
+    const parts = new URL(link).pathname.split("/").filter(Boolean);
+    for (let index = parts.length - 1; index >= 1; index -= 1) {
+      const normalized = normalizeResolvedFilename(safeDecode(parts[index]).replace(/\.html?$/i, ""));
+      if (normalized) return normalized;
+    }
+  } catch {
+  }
+  return "";
+}
+
+export function extractDdownloadFilenameFromHtml(html: string): string {
+  const patterns = [
+    /class=["'][^"']*dk-dl-icon[^"']*["'][^>]*data-fn=["']([^"']+)["']/i,
+    /data-fn=["']([^"']+)["'][^>]*class=["'][^"']*dk-dl-icon[^"']*["']/i,
+    /<h2[^>]*class=["'][^"']*dk-dl-name[^"']*["'][^>]*>([^<]+)<\/h2>/i,
+    /class=["'][^"']*file-info-name[^"']*["'][^>]*>([^<]+)</i
+  ];
+  for (const pattern of patterns) {
+    const normalized = normalizeResolvedFilename(html.match(pattern)?.[1] || "");
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
+export function parseDdownloadFileSize(value: string | null | undefined): number | null {
+  return parseRapidgatorFileSize(value);
+}
+
+export async function checkDdownloadOnline(
+  link: string,
+  signal?: AbortSignal
+): Promise<DdownloadCheckResult | null> {
+  if (!isDdownloadLink(link)) return null;
+  const headers = {
+    "User-Agent": DDOWNLOAD_WEB_UA,
+    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9,de;q=0.8"
+  };
+
+  for (let attempt = 1; attempt <= REQUEST_RETRIES + 1; attempt += 1) {
+    try {
+      if (signal?.aborted) throw new Error("aborted:debrid");
+      const response = await fetch(link, {
+        method: "GET",
+        redirect: "follow",
+        headers,
+        signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
+      });
+      if (response.status === 404) {
+        try { await response.body?.cancel(); } catch { }
+        return { online: false, fileName: "", fileSizeBytes: null };
+      }
+      if (!response.ok) {
+        try { await response.body?.cancel(); } catch { }
+        if (shouldRetryStatus(response.status) && attempt <= REQUEST_RETRIES) {
+          await sleepWithSignal(retryDelayForResponse(response, attempt), signal);
+          continue;
+        }
+        return null;
+      }
+      const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+      const contentLength = Number(response.headers.get("content-length") || NaN);
+      if (contentType
+        && !contentType.includes("text/html")
+        && !contentType.includes("application/xhtml")
+        && !contentType.includes("text/plain")) {
+        try { await response.body?.cancel(); } catch { }
+        return null;
+      }
+      if (!contentType && Number.isFinite(contentLength) && contentLength > DDOWNLOAD_SCAN_MAX_BYTES) {
+        try { await response.body?.cancel(); } catch { }
+        return null;
+      }
+      const html = await readResponseTextLimited(response, DDOWNLOAD_SCAN_MAX_BYTES, signal);
+      if (DDOWNLOAD_FILE_NOT_FOUND_RE.test(html)) {
+        return { online: false, fileName: "", fileSizeBytes: null };
+      }
+      const pageName = extractDdownloadFilenameFromHtml(html);
+      const hasFilePage = Boolean(pageName)
+        || /\bdk-dl-(?:icon|name|size)\b/i.test(html)
+        || /Your file is ready to download|Regular Download via DDownload/i.test(html);
+      if (!hasFilePage) return null;
+      const sizeMatch = html.match(/class=["'][^"']*dk-dl-size[^"']*["'][^>]*>([^<]+)</i)
+        || html.match(/(?:File\s*size|Dateigröße)\s*[:\-]?\s*<[^>]*>([^<]+)</i);
+      return {
+        online: true,
+        fileName: pageName || filenameFromDdownloadUrlPath(link),
+        fileSizeBytes: parseDdownloadFileSize(sizeMatch?.[1])
+      };
+    } catch (error) {
+      const errorText = compactErrorText(error);
+      if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) throw error;
+      if (attempt > REQUEST_RETRIES || !isRetryableErrorText(errorText)) return null;
+    }
+    if (attempt <= REQUEST_RETRIES) await sleepWithSignal(retryDelay(attempt), signal);
+  }
+  return null;
+}
 
 class DdownloadClient {
   private login: string;
@@ -3899,8 +4013,7 @@ class DdownloadClient {
 
         const idVal = html.match(/name="id" value="([^"]+)"/)?.[1] || fileCode;
         const randVal = html.match(/name="rand" value="([^"]+)"/)?.[1] || "";
-        const fileNameMatch = html.match(/class="file-info-name"[^>]*>([^<]+)</);
-        const fileName = fileNameMatch?.[1]?.trim() || filenameFromUrl(link);
+        const fileName = extractDdownloadFilenameFromHtml(html) || filenameFromDdownloadUrlPath(link) || filenameFromUrl(link);
 
         const dlBody = new URLSearchParams({
           op: "download2",

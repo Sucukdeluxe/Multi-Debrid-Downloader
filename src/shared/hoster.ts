@@ -2,6 +2,8 @@ const DOMAIN_ALIASES: Readonly<Record<string, string>> = Object.freeze({
   "rapidgator.net": "rapidgator",
   "rapidgator.asia": "rapidgator",
   "rg.to": "rapidgator",
+  "ddownload.com": "ddownload",
+  "ddl.to": "ddownload",
   "1fichier.com": "1fichier",
   "alterupload.com": "1fichier",
   "cjoint.net": "1fichier",

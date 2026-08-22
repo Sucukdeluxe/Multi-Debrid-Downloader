@@ -5,7 +5,7 @@ import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import { serializeRealDebridApiAccounts } from "../src/shared/real-debrid-accounts";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
 import { isMegaDebridTransientResolveFailure } from "../src/shared/mega-debrid-errors";
-import { checkOneFichierLinks, checkRapidgatorOnline, classifyMegaDebridAccountFailureForTests, clearMegaDebridEmptyResponseStreak, DebridService, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromRapidgatorUrlPath, getAvailableRealDebridAccounts, getDebridLinkKeyCooldownStateForTests, getDebridLinkKeyRuntimeStateForTests, getMegaDebridAccountCooldownState, getProviderRuntimeSnapshot, isOneFichierLink, leadProviderChainWith, MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART, MEGA_DEBRID_STICKY_LINKS, normalizeResolvedFilename, parseRapidgatorFileSize, primeMegaDebridRuntimeCooldownForTests, primeMegaDebridUntilRestartForTests, recordMegaDebridEmptyResponseStreak, resetDebridLinkRuntimeStateForTests, resetMegaDebridRuntimeStateForTests, resetRealDebridRuntimeStateForTests } from "../src/main/debrid";
+import { checkDdownloadOnline, checkOneFichierLinks, checkRapidgatorOnline, classifyMegaDebridAccountFailureForTests, clearMegaDebridEmptyResponseStreak, DebridService, extractDdownloadFilenameFromHtml, extractRapidgatorFilenameFromHtml, fetchAllDebridHostInfo, fetchDebridLinkHostLimits, filenameFromDdownloadUrlPath, filenameFromRapidgatorUrlPath, getAvailableRealDebridAccounts, getDebridLinkKeyCooldownStateForTests, getDebridLinkKeyRuntimeStateForTests, getMegaDebridAccountCooldownState, getProviderRuntimeSnapshot, isDdownloadLink, isOneFichierLink, leadProviderChainWith, MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART, MEGA_DEBRID_STICKY_LINKS, normalizeResolvedFilename, parseDdownloadFileSize, parseRapidgatorFileSize, primeMegaDebridRuntimeCooldownForTests, primeMegaDebridUntilRestartForTests, recordMegaDebridEmptyResponseStreak, resetDebridLinkRuntimeStateForTests, resetMegaDebridRuntimeStateForTests, resetRealDebridRuntimeStateForTests } from "../src/main/debrid";
 import { getAccountRuntimeSessionStats } from "../src/main/account-runtime";
 
 const originalFetch = globalThis.fetch;
@@ -2828,6 +2828,59 @@ describe("checkRapidgatorOnline", () => {
       fileName: "episode.part01.rar",
       fileSizeBytes: 1_610_612_736
     });
+  });
+});
+
+describe("DDownload public metadata", () => {
+  it("recognizes canonical and short domains without treating unrelated pages as files", () => {
+    expect(isDdownloadLink("https://ddownload.com/ntwscdw62gyb")).toBe(true);
+    expect(isDdownloadLink("https://ddl.to/ntwscdw62gyb/Archive.part02.rar")).toBe(true);
+    expect(isDdownloadLink("https://ddownload.com/login.html")).toBe(false);
+    expect(isDdownloadLink("https://example.com/ntwscdw62gyb")).toBe(false);
+  });
+
+  it("uses a real filename from the URL but rejects a bare file code", () => {
+    expect(filenameFromDdownloadUrlPath("https://ddownload.com/ntwscdw62gyb/Archive.part02.rar")).toBe("Archive.part02.rar");
+    expect(filenameFromDdownloadUrlPath("https://ddownload.com/ntwscdw62gyb")).toBe("");
+  });
+
+  it("parses the current public page name and binary size", () => {
+    const html = [
+      '<div class="dk-dl-icon" data-fn="Show.S01E02.German.DL.part02.rar">',
+      '<h2 class="dk-dl-name">Show.S01E02.German.DL.part02.rar</h2>',
+      '<p class="dk-dl-size">502.00 MB</p>'
+    ].join("");
+
+    expect(extractDdownloadFilenameFromHtml(html)).toBe("Show.S01E02.German.DL.part02.rar");
+    expect(parseDdownloadFileSize("502.00 MB")).toBe(526_385_152);
+  });
+
+  it("returns exact metadata for an online file and explicit offline state for a removed file", async () => {
+    const responses = [
+      new Response('<div class="dk-dl-icon" data-fn="Show.S01E02.mkv"><h2 class="dk-dl-name">Show.S01E02.mkv</h2><p class="dk-dl-size">840.02 MB</p>', { status: 200, headers: { "Content-Type": "text/html" } }),
+      new Response('<main><h1>File Not Found</h1></main>', { status: 200, headers: { "Content-Type": "text/html" } })
+    ];
+    globalThis.fetch = vi.fn(async () => responses.shift() || new Response("", { status: 500 })) as typeof fetch;
+
+    await expect(checkDdownloadOnline("https://ddownload.com/3nq8wruijuh4")).resolves.toEqual({
+      online: true,
+      fileName: "Show.S01E02.mkv",
+      fileSizeBytes: 880_824_812
+    });
+    await expect(checkDdownloadOnline("https://ddownload.com/missing1234")).resolves.toEqual({
+      online: false,
+      fileName: "",
+      fileSizeBytes: null
+    });
+  });
+
+  it("keeps challenge and malformed pages unknown instead of marking them online", async () => {
+    globalThis.fetch = vi.fn(async () => new Response("<html><title>Just a moment...</title></html>", {
+      status: 200,
+      headers: { "Content-Type": "text/html" }
+    })) as typeof fetch;
+
+    await expect(checkDdownloadOnline("https://ddownload.com/unknown1234")).resolves.toBeNull();
   });
 });
 

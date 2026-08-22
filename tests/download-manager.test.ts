@@ -959,6 +959,156 @@ describe("download manager", () => {
     expect(item.onlineStatus).toBe("online");
   });
 
+  it("resolves DDownload names, sizes and availability after import", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-ddownload-metadata-"));
+    tempDirs.push(root);
+    const link = "https://ddownload.com/ntwscdw62gyb";
+    let checkCalls = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === link) {
+        checkCalls += 1;
+        return new Response('<div class="dk-dl-icon" data-fn="Show.S01E02.German.DL.part02.rar"><h2 class="dk-dl-name">Show.S01E02.German.DL.part02.rar</h2><p class="dk-dl-size">502.00 MB</p>', {
+          status: 200,
+          headers: { "Content-Type": "text/html" }
+        });
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(root, "state")));
+    manager.addPackages([{ name: "ddownload", links: [link] }]);
+
+    await waitFor(() => Object.values(manager.getSnapshot().session.items)[0]?.onlineStatus === "online", 2_000);
+    const downloadedItem = Object.values(manager.getSnapshot().session.items)[0];
+
+    expect(checkCalls).toBe(1);
+    expect(downloadedItem.fileName).toBe("Show.S01E02.German.DL.part02.rar");
+    expect(downloadedItem.totalBytes).toBe(526_385_152);
+    expect(path.basename(downloadedItem.targetPath)).toBe("Show.S01E02.German.DL.part02.rar");
+  });
+
+  it("rechecks unresolved DDownload metadata when a queued session is restored", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-ddownload-startup-"));
+    tempDirs.push(root);
+    const link = "https://ddownload.com/startup1234";
+    const session = emptySession();
+    const paths = createStoragePaths(path.join(root, "state"));
+    let page = "<html><title>Just a moment...</title></html>";
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === link) return new Response(page, { status: 200, headers: { "Content-Type": "text/html" } });
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const firstManager = new DownloadManager(defaultSettings(), session, paths);
+    firstManager.addPackages([{ name: "startup", links: [link] }]);
+    await waitFor(() => Object.values(session.items)[0]?.onlineStatus !== "checking", 2_000);
+    const restoredItem = Object.values(session.items)[0];
+    restoredItem.fileName = "download.bin";
+    restoredItem.targetPath = path.join(session.packages[restoredItem.packageId].outputDir, restoredItem.fileName);
+    restoredItem.totalBytes = null;
+    restoredItem.onlineStatus = undefined;
+    page = '<h2 class="dk-dl-name">Restored.Show.S01E01.mkv</h2><p class="dk-dl-size">1.50 GB</p>';
+
+    const restoredManager = new DownloadManager(defaultSettings(), session, paths);
+    await waitFor(() => Object.values(restoredManager.getSnapshot().session.items)[0]?.onlineStatus === "online", 2_000);
+    const checkedItem = Object.values(restoredManager.getSnapshot().session.items)[0];
+
+    expect(checkedItem.fileName).toBe("Restored.Show.S01E01.mkv");
+    expect(checkedItem.totalBytes).toBe(1_610_612_736);
+    expect(path.basename(checkedItem.targetPath)).toBe("Restored.Show.S01E01.mkv");
+  });
+
+  it("fails removed DDownload files while keeping protected pages queued as unknown", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-ddownload-status-"));
+    tempDirs.push(root);
+    const missing = "https://ddownload.com/missing1234";
+    const protectedLink = "https://ddownload.com/protect1234";
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === missing) return new Response("<h1>File Not Found</h1>", { status: 200, headers: { "Content-Type": "text/html" } });
+      if (url === protectedLink) return new Response("<title>Just a moment...</title>", { status: 200, headers: { "Content-Type": "text/html" } });
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(root, "state")));
+    manager.addPackages([{ name: "ddownload-status", links: [missing, protectedLink] }]);
+    await waitFor(() => Object.values(manager.getSnapshot().session.items).every((item) => item.onlineStatus !== "checking"), 2_000);
+    const items = Object.values(manager.getSnapshot().session.items);
+
+    expect(items[0]).toEqual(expect.objectContaining({
+      status: "failed",
+      fullStatus: "Offline",
+      onlineStatus: "offline",
+      lastError: "Datei nicht gefunden auf DDownload"
+    }));
+    expect(items[1]).toEqual(expect.objectContaining({
+      status: "queued",
+      onlineStatus: undefined,
+      totalBytes: null
+    }));
+  });
+
+  it("keeps DDownload metadata when a debrid response later returns download.bin", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-ddownload-preserve-"));
+    tempDirs.push(root);
+    const link = "https://ddownload.com/keep1234567";
+    const expectedName = "Series.S02E03.German.DL.part01.rar";
+    const binary = Buffer.alloc(192 * 1024, 31);
+    const server = http.createServer((_req, res) => {
+      res.statusCode = 200;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(binary.length));
+      res.end(binary);
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("server address unavailable");
+    const directUrl = `http://127.0.0.1:${address.port}/download`;
+
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === link) {
+        return new Response(`<h2 class="dk-dl-name">${expectedName}</h2><p class="dk-dl-size">192 KB</p>`, {
+          status: 200,
+          headers: { "Content-Type": "text/html" }
+        });
+      }
+      if (url.includes("api.real-debrid.com/rest/1.0/unrestrict/link")) {
+        return new Response(JSON.stringify({ download: directUrl, filename: "download.bin", filesize: binary.length }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
+
+    try {
+      const manager = new DownloadManager({
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false
+      }, emptySession(), createStoragePaths(path.join(root, "state")));
+      manager.addPackages([{ name: "ddownload-preserve", links: [link] }]);
+      await waitFor(() => Object.values(manager.getSnapshot().session.items)[0]?.fileName === expectedName, 2_000);
+
+      await manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 15_000);
+      const downloadedItem = Object.values(manager.getSnapshot().session.items)[0];
+
+      expect(downloadedItem.status).toBe("completed");
+      expect(downloadedItem.fileName).toBe(expectedName);
+      expect(path.basename(downloadedItem.targetPath)).toBe(expectedName);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  }, 20_000);
+
   it("resolves 1Fichier names, sizes and availability in one batch after import", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-onefichier-metadata-"));
     tempDirs.push(root);

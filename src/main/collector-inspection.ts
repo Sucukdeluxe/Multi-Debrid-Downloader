@@ -4,11 +4,12 @@ import { serializeCollectorPackages } from "../shared/collector";
 import type { CollectorInspectionRequest, CollectorInspectionResult, CollectorLink, CollectorPackage } from "../shared/collector";
 import type { AppSettings, ParsedPackageInput } from "../shared/types";
 import { extractHosterFromUrl } from "../shared/hoster";
-import { checkOneFichierLinks, checkRapidgatorOnline, DebridService, isOneFichierLink, type OneFichierCheckResult } from "./debrid";
+import { checkDdownloadOnline, checkOneFichierLinks, checkRapidgatorOnline, DebridService, isDdownloadLink, isOneFichierLink, type OneFichierCheckResult } from "./debrid";
 import { parseCollectorInput } from "./link-parser";
 import { filenameFromUrl, isHttpLink, looksLikeOpaqueFilename, sanitizeFilename } from "./utils";
 
 interface CollectorInspectionDependencies {
+  checkDdownload?: typeof checkDdownloadOnline;
   checkOneFichier?: (links: string[]) => Promise<Map<string, OneFichierCheckResult>>;
   checkRapidgator?: typeof checkRapidgatorOnline;
   resolveFilenames?: (links: string[]) => Promise<Map<string, string>>;
@@ -160,11 +161,13 @@ export async function inspectCollectorPackages(
 
   const oneFichierLinks = sourceLinks.map((link) => link.url).filter(isOneFichierLink);
   const rapidgatorLinks = sourceLinks.map((link) => link.url).filter((url) => extractHosterFromUrl(url) === "rapidgator");
+  const ddownloadLinks = sourceLinks.map((link) => link.url).filter(isDdownloadLink);
   const genericLinks = sourceLinks
     .filter((source) => !source.explicitFileName && looksLikeOpaqueFilename(source.fileName))
     .map((source) => source.url)
-    .filter((url) => !oneFichierLinks.includes(url) && !rapidgatorLinks.includes(url));
+    .filter((url) => !oneFichierLinks.includes(url) && !rapidgatorLinks.includes(url) && !ddownloadLinks.includes(url));
 
+  const checkDdownload = dependencies.checkDdownload ?? checkDdownloadOnline;
   const checkOneFichier = dependencies.checkOneFichier ?? checkOneFichierLinks;
   const checkRapidgator = dependencies.checkRapidgator ?? checkRapidgatorOnline;
   const resolveFilenames = dependencies.resolveFilenames ?? ((urls) => new DebridService(settings).resolveFilenames(urls));
@@ -179,9 +182,20 @@ export async function inspectCollectorPackages(
     if (result.fileName) link.fileName = sanitizeFilename(result.fileName);
     if (result.fileSizeBytes !== null && result.fileSizeBytes >= 0) link.fileSizeBytes = result.fileSizeBytes;
   });
-  const genericPromise = resolveFilenames(genericLinks).catch(() => new Map<string, string>());
+  const ddownloadPromise = runWithConcurrency(ddownloadLinks, 4, async (url) => {
+    const result = await checkDdownload(url).catch(() => null);
+    const link = linksByUrl.get(url);
+    if (!link || !result) return;
+    link.availability = result.online ? "online" : "offline";
+    link.status = result.online ? (result.fileName ? "ready" : "unknown") : "offline";
+    if (result.fileName) link.fileName = sanitizeFilename(result.fileName);
+    if (result.fileSizeBytes !== null && result.fileSizeBytes >= 0) link.fileSizeBytes = result.fileSizeBytes;
+  });
+  const genericPromise = genericLinks.length > 0
+    ? resolveFilenames(genericLinks).catch(() => new Map<string, string>())
+    : Promise.resolve(new Map<string, string>());
 
-  const [oneFichierResults, genericResults] = await Promise.all([oneFichierPromise, genericPromise, rapidgatorPromise]).then(([one, generic]) => [one, generic] as const);
+  const [oneFichierResults, genericResults] = await Promise.all([oneFichierPromise, genericPromise, rapidgatorPromise, ddownloadPromise]).then(([one, generic]) => [one, generic] as const);
   for (const [url, result] of oneFichierResults) {
     const link = linksByUrl.get(url);
     if (!link) continue;
