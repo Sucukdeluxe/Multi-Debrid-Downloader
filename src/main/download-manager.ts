@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { v4 as uuidv4 } from "uuid";
 import {
@@ -93,6 +94,7 @@ import {
 } from "./statistics-ledger";
 import { finalizePackageResult } from "./package-telemetry";
 import type { NotificationEvent } from "./notification-outbox";
+import type { DownloadHealthSnapshot } from "./download-health-monitor";
 import {
   buildHistoryEntry,
   buildPackageDigestEvents,
@@ -120,6 +122,10 @@ type ActiveTask = {
   unrestrictRetries?: number;
   blockedOnDiskWrite?: boolean;
   blockedOnDiskSince?: number;
+  blockedOnThrottleUntil?: number;
+  phase?: "validating" | "downloading" | "integrity_check";
+  phaseStartedAt?: number;
+  phaseDeadlineAt?: number;
 };
 
 const DOWNLOAD_ACCOUNT_PROVIDERS: readonly DebridProvider[] = [
@@ -1962,6 +1968,22 @@ export class DownloadManager extends EventEmitter {
 
   private lastSchedulerHeartbeatAt = 0;
 
+  private lastSchedulerTickAt = 0;
+
+  private downloadProgressSequence = 0;
+
+  private itemCompletionSequence = 0;
+
+  private lastPositiveByteAt = 0;
+
+  private technicalRecoveryCount = 0;
+
+  private healthManualStop = false;
+
+  private healthShuttingDown = false;
+
+  private healthTerminalFailure = false;
+
   private lastReconnectMarkAt = 0;
 
   private consecutiveReconnects = 0;
@@ -2480,6 +2502,113 @@ export class DownloadManager extends EventEmitter {
 
   public getSummary(): DownloadSummary | null {
     return this.summary;
+  }
+
+  public getDownloadHealthSnapshot(now = nowMs()): DownloadHealthSnapshot {
+    const openPackages = new Set<string>();
+    const queueParts: string[] = [];
+    const activeTasks: ActiveTask[] = [];
+    let openItems = 0;
+    let knownDownloadedBytes = 0;
+    let currentSpeedBps = 0;
+    let startableItems = 0;
+    let nextRetryAt = 0;
+    let providerCooldownUntil = 0;
+
+    for (const itemId of this.runItemIds) {
+      queueParts.push(itemId);
+      const item = this.session.items[itemId];
+      if (!item || isFinishedStatus(item.status)) {
+        continue;
+      }
+      const pkg = this.session.packages[item.packageId];
+      if (!pkg || pkg.cancelled || !pkg.enabled) {
+        continue;
+      }
+      openItems += 1;
+      openPackages.add(pkg.id);
+      knownDownloadedBytes += Math.max(0, Math.floor(Number(item.downloadedBytes) || 0));
+      currentSpeedBps += Math.max(0, Math.floor(Number(item.speedBps) || 0));
+      const active = this.activeTasks.get(itemId);
+      if (active && !active.abortController.signal.aborted) {
+        activeTasks.push(active);
+        continue;
+      }
+      if (item.status !== "queued" && item.status !== "reconnect_wait") {
+        continue;
+      }
+      const retryAt = this.retryAfterByItem.get(itemId) || 0;
+      const failureKey = this.getProviderFailureKeyForItem(item);
+      const cooldownAt = this.providerFailures.get(failureKey)?.cooldownUntil || 0;
+      if (retryAt > now) {
+        nextRetryAt = nextRetryAt === 0 ? retryAt : Math.min(nextRetryAt, retryAt);
+      }
+      if (cooldownAt > now) {
+        providerCooldownUntil = providerCooldownUntil === 0
+          ? cooldownAt
+          : Math.min(providerCooldownUntil, cooldownAt);
+      }
+      if (retryAt <= now && cooldownAt <= now) {
+        startableItems += 1;
+      }
+    }
+
+    const blockedOnDisk = activeTasks.length > 0 && activeTasks.every((active) => Boolean(active.blockedOnDiskWrite));
+    const throttleDeadlines = activeTasks.map((active) => active.blockedOnThrottleUntil || 0);
+    const blockedOnThrottleUntil = throttleDeadlines.length > 0 && throttleDeadlines.every((deadline) => deadline > now)
+      ? Math.min(...throttleDeadlines)
+      : 0;
+    const phaseDeadlines = activeTasks.map((active) => active.phaseDeadlineAt || 0);
+    const activePhaseDeadlineAt = phaseDeadlines.length > 0 && phaseDeadlines.every((deadline) => deadline > now)
+      ? Math.min(...phaseDeadlines)
+      : 0;
+    const queueFingerprint = createHash("sha256")
+      .update([...queueParts].sort().join("\n"))
+      .digest("hex");
+    const runParts = [...this.runPackageIds].map((packageId) => {
+      const generation = Math.max(1, Math.floor(Number(this.session.packages[packageId]?.resultGeneration) || 1));
+      return `${packageId}:${generation}`;
+    });
+    const runFingerprint = createHash("sha256")
+      .update(`${runParts.sort().join("\n")}|${queueFingerprint}`)
+      .digest("hex");
+
+    return {
+      runActive: this.session.running && openItems > 0,
+      runFingerprint,
+      queueFingerprint,
+      openItems,
+      openPackages: openPackages.size,
+      knownDownloadedBytes,
+      activeTasks: activeTasks.length,
+      startableItems,
+      lastSchedulerTickAt: this.lastSchedulerTickAt,
+      downloadProgressSequence: this.downloadProgressSequence,
+      itemCompletionSequence: this.itemCompletionSequence,
+      lastPositiveByteAt: this.lastPositiveByteAt,
+      technicalRecoveryCount: this.technicalRecoveryCount,
+      paused: this.session.paused,
+      reconnectUntil: this.session.reconnectUntil,
+      nextRetryAt: activeTasks.length === 0 && startableItems === 0 ? nextRetryAt : 0,
+      providerCooldownUntil: activeTasks.length === 0 && startableItems === 0 ? providerCooldownUntil : 0,
+      blockedOnDisk,
+      blockedOnThrottleUntil,
+      activePhaseDeadlineAt,
+      terminalFailure: this.healthTerminalFailure,
+      manualStop: this.healthManualStop,
+      shuttingDown: this.healthShuttingDown,
+      currentSpeedBps: this.session.running && !this.session.paused ? currentSpeedBps : 0
+    };
+  }
+
+  private beginHealthRun(): void {
+    this.healthManualStop = false;
+    this.healthShuttingDown = false;
+    this.healthTerminalFailure = false;
+  }
+
+  public suspendDownloadHealthMonitoring(): void {
+    this.healthShuttingDown = true;
   }
 
   public isSessionRunning(): boolean {
@@ -5978,6 +6107,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   public async startPackages(packageIds: string[]): Promise<void> {
+    this.beginHealthRun();
     this.ensureUsableDownloadAccount();
     const targetSet = new Set(packageIds);
     for (const packageId of this.packagePostProcessTasks.keys()) {
@@ -6080,6 +6210,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   public async startItems(itemIds: string[]): Promise<void> {
+    this.beginHealthRun();
     this.ensureUsableDownloadAccount();
     const targetSet = new Set(itemIds);
 
@@ -6196,6 +6327,7 @@ export class DownloadManager extends EventEmitter {
     if (this.session.running) {
       return;
     }
+    this.beginHealthRun();
     this.ensureUsableDownloadAccount();
     this.schedulerGeneration += 1;
 
@@ -6349,6 +6481,8 @@ export class DownloadManager extends EventEmitter {
 
   public stop(options?: { parkForRestart?: boolean }): void {
     const parkForRestart = options?.parkForRestart === true;
+    this.healthManualStop = !parkForRestart;
+    this.healthShuttingDown = parkForRestart;
     const abortReason: "stop" | "shutdown" = parkForRestart ? "shutdown" : "stop";
     const keepExtraction = this.settings.autoExtractWhenStopped;
     const wasRunning = this.session.running;
@@ -6426,6 +6560,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   public prepareForShutdown(): void {
+    this.healthShuttingDown = true;
     logger.info(`Shutdown-Vorbereitung gestartet: active=${this.activeTasks.size}, running=${this.session.running}, paused=${this.session.paused}`);
     this.updateStatisticsActivity(nowMs());
     this.rotationListenerActive = false;
@@ -6924,6 +7059,11 @@ export class DownloadManager extends EventEmitter {
 
   private recordSpeed(bytes: number, packageId: string = ""): void {
     const now = nowMs();
+    if (!Number.isFinite(bytes) || bytes <= 0) {
+      return;
+    }
+    this.downloadProgressSequence += 1;
+    this.lastPositiveByteAt = now;
     if (bytes > 0 && this.consecutiveReconnects > 0) {
       this.consecutiveReconnects = 0;
     }
@@ -6956,6 +7096,7 @@ export class DownloadManager extends EventEmitter {
       this.statisticsUrgent = true;
     }
     if (status === "completed" && previous !== "completed") {
+      this.itemCompletionSequence += 1;
       this.sessionCompletedFiles += 1;
       this.settings.totalCompletedFilesAllTime = Math.max(0, Number(this.settings.totalCompletedFilesAllTime || 0)) + 1;
       this.invalidateStatsCache();
@@ -9108,6 +9249,7 @@ export class DownloadManager extends EventEmitter {
     try {
       while (this.session.running && this.schedulerGeneration === myGeneration) {
         const now = nowMs();
+        this.lastSchedulerTickAt = now;
         this.updateStatisticsActivity(now);
         if (now - this.lastSchedulerHeartbeatAt >= 60000) {
           this.lastSchedulerHeartbeatAt = now;
@@ -9247,6 +9389,7 @@ export class DownloadManager extends EventEmitter {
     }
 
     logger.warn(`Globaler Download-Stall erkannt (${Math.floor((now - this.lastGlobalProgressAt) / 1000)}s ohne Fortschritt), ${stalledCount} Task(s) neu starten, diskBlocked=${diskBlockedCount}`);
+    this.technicalRecoveryCount += 1;
     for (const active of this.activeTasks.values()) {
       if (active.abortController.signal.aborted) {
         continue;
@@ -9578,7 +9721,11 @@ export class DownloadManager extends EventEmitter {
       resumable: true,
       nonResumableCounted: false,
       blockedOnDiskWrite: false,
-      blockedOnDiskSince: 0
+      blockedOnDiskSince: 0,
+      blockedOnThrottleUntil: 0,
+      phase: "validating",
+      phaseStartedAt: item.updatedAt,
+      phaseDeadlineAt: item.updatedAt + getUnrestrictTimeoutMs() + 15_000
     };
     this.activeTasks.set(itemId, active);
     this.notePacedStartForItem(item, nowMs());
@@ -9701,6 +9848,9 @@ export class DownloadManager extends EventEmitter {
           this.settings,
           item.url
         );
+        active.phase = "validating";
+        active.phaseStartedAt = nowMs();
+        active.phaseDeadlineAt = active.phaseStartedAt + unrestrictTimeoutMs;
         const unrestrictTimeoutSignal = AbortSignal.timeout(unrestrictTimeoutMs);
         const unrestrictedSignal = AbortSignal.any([active.abortController.signal, unrestrictTimeoutSignal]);
         let unrestricted;
@@ -9805,6 +9955,9 @@ export class DownloadManager extends EventEmitter {
           throw error;
         }
         item.status = "downloading";
+        active.phase = "downloading";
+        active.phaseStartedAt = nowMs();
+        active.phaseDeadlineAt = 0;
         const pLabel = unrestricted.providerLabel;
         item.fullStatus = "Starte...";
         item.updatedAt = nowMs();
@@ -9858,6 +10011,14 @@ export class DownloadManager extends EventEmitter {
             this.emitState();
 
             const integrityStartedAt = nowMs();
+            const integrityBytes = Math.max(0, Number(item.downloadedBytes || item.totalBytes || 0));
+            const integrityBudgetMs = Math.max(
+              120_000,
+              Math.min(30 * 60 * 1000, 60_000 + Math.ceil(integrityBytes / (25 * 1024 * 1024)) * 1000)
+            );
+            active.phase = "integrity_check";
+            active.phaseStartedAt = integrityStartedAt;
+            active.phaseDeadlineAt = integrityStartedAt + integrityBudgetMs;
             const validation = await validateFileAgainstManifest(item.targetPath, pkg.outputDir);
             if (active.abortController.signal.aborted) {
               throw new Error(`aborted:${active.abortReason}`);
@@ -9883,6 +10044,9 @@ export class DownloadManager extends EventEmitter {
                 item.totalBytes = mergeKnownTotalBytes(item.totalBytes, unrestricted.fileSize);
                 this.emitState();
                 await sleep(300);
+                active.phase = "downloading";
+                active.phaseStartedAt = nowMs();
+                active.phaseDeadlineAt = 0;
                 continue;
               }
               throw new Error(`Integritätsprüfung fehlgeschlagen (${validation.message})`);
@@ -11178,7 +11342,7 @@ export class DownloadManager extends EventEmitter {
               }
 
               const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
-              await this.applySpeedLimit(buffer.length, windowBytes, windowStarted, active.abortController.signal);
+              await this.applySpeedLimit(buffer.length, windowBytes, windowStarted, active);
               if (active.abortController.signal.aborted) {
                 throw new Error(`aborted:${active.abortReason}`);
               }
@@ -12241,7 +12405,8 @@ export class DownloadManager extends EventEmitter {
     return 0;
   }
 
-  private async applyGlobalSpeedLimit(chunkBytes: number, bytesPerSecond: number, signal?: AbortSignal): Promise<void> {
+  private async applyGlobalSpeedLimit(chunkBytes: number, bytesPerSecond: number, active?: ActiveTask): Promise<void> {
+    const signal = active?.abortController.signal;
     const task = this.globalSpeedLimitQueue
       .catch(() => undefined)
       .then(async () => {
@@ -12251,32 +12416,39 @@ export class DownloadManager extends EventEmitter {
         const now = nowMs();
         const waitMs = Math.max(0, this.globalSpeedLimitNextAt - now);
         if (waitMs > 0) {
-          await new Promise<void>((resolve, reject) => {
-            let timer: NodeJS.Timeout | null = setTimeout(() => {
-              timer = null;
-              if (signal) {
-                signal.removeEventListener("abort", onAbort);
-              }
-              resolve();
-            }, waitMs);
-
-            const onAbort = (): void => {
-              if (timer) {
-                clearTimeout(timer);
+          if (active) {
+            active.blockedOnThrottleUntil = now + waitMs;
+          }
+          try {
+            await new Promise<void>((resolve, reject) => {
+              let timer: NodeJS.Timeout | null = setTimeout(() => {
                 timer = null;
-              }
-              signal?.removeEventListener("abort", onAbort);
-              reject(new Error("aborted:speed_limit"));
-            };
+                signal?.removeEventListener("abort", onAbort);
+                resolve();
+              }, waitMs);
 
-            if (signal) {
-              if (signal.aborted) {
-                onAbort();
-                return;
+              const onAbort = (): void => {
+                if (timer) {
+                  clearTimeout(timer);
+                  timer = null;
+                }
+                signal?.removeEventListener("abort", onAbort);
+                reject(new Error("aborted:speed_limit"));
+              };
+
+              if (signal) {
+                if (signal.aborted) {
+                  onAbort();
+                  return;
+                }
+                signal.addEventListener("abort", onAbort, { once: true });
               }
-              signal.addEventListener("abort", onAbort, { once: true });
+            });
+          } finally {
+            if (active) {
+              active.blockedOnThrottleUntil = 0;
             }
-          });
+          }
         }
 
         if (signal?.aborted) {
@@ -12292,7 +12464,8 @@ export class DownloadManager extends EventEmitter {
     await task;
   }
 
-  private async applySpeedLimit(chunkBytes: number, localWindowBytes: number, localWindowStarted: number, signal?: AbortSignal): Promise<void> {
+  private async applySpeedLimit(chunkBytes: number, localWindowBytes: number, localWindowStarted: number, active?: ActiveTask): Promise<void> {
+    const signal = active?.abortController.signal;
     const limitKbps = this.getEffectiveSpeedLimitKbps();
     if (limitKbps <= 0) {
       return;
@@ -12306,38 +12479,46 @@ export class DownloadManager extends EventEmitter {
       if (projected > allowed) {
         const sleepMs = Math.ceil(((projected - allowed) / bytesPerSecond) * 1000);
         if (sleepMs > 0) {
-          await new Promise<void>((resolve, reject) => {
-            let timer: NodeJS.Timeout | null = setTimeout(() => {
-              timer = null;
-              if (signal) {
-                signal.removeEventListener("abort", onAbort);
-              }
-              resolve();
-            }, Math.min(300, sleepMs));
-
-            const onAbort = (): void => {
-              if (timer) {
-                clearTimeout(timer);
+          const boundedSleepMs = Math.min(300, sleepMs);
+          if (active) {
+            active.blockedOnThrottleUntil = nowMs() + boundedSleepMs;
+          }
+          try {
+            await new Promise<void>((resolve, reject) => {
+              let timer: NodeJS.Timeout | null = setTimeout(() => {
                 timer = null;
-              }
-              signal?.removeEventListener("abort", onAbort);
-              reject(new Error("aborted:speed_limit"));
-            };
+                signal?.removeEventListener("abort", onAbort);
+                resolve();
+              }, boundedSleepMs);
 
-            if (signal) {
-              if (signal.aborted) {
-                onAbort();
-                return;
+              const onAbort = (): void => {
+                if (timer) {
+                  clearTimeout(timer);
+                  timer = null;
+                }
+                signal?.removeEventListener("abort", onAbort);
+                reject(new Error("aborted:speed_limit"));
+              };
+
+              if (signal) {
+                if (signal.aborted) {
+                  onAbort();
+                  return;
+                }
+                signal.addEventListener("abort", onAbort, { once: true });
               }
-              signal.addEventListener("abort", onAbort, { once: true });
+            });
+          } finally {
+            if (active) {
+              active.blockedOnThrottleUntil = 0;
             }
-          });
+          }
         }
       }
       return;
     }
 
-    await this.applyGlobalSpeedLimit(chunkBytes, bytesPerSecond, signal);
+    await this.applyGlobalSpeedLimit(chunkBytes, bytesPerSecond, active);
   }
 
   private async findReadyArchiveSets(pkg: PackageEntry): Promise<Set<string>> {
@@ -13885,6 +14066,7 @@ export class DownloadManager extends EventEmitter {
     const success = outcomes.filter((status) => status === "completed").length;
     const failed = outcomes.filter((status) => status === "failed").length;
     const cancelled = outcomes.filter((status) => status === "cancelled").length;
+    this.healthTerminalFailure = failed > 0;
     const extracted = this.runCompletedPackages.size;
     const duration = runStartedAt > 0 ? Math.max(1, Math.floor((completedAt - runStartedAt) / 1000)) : 1;
     const avgSpeed = Math.floor(this.session.totalDownloadedBytes / duration);

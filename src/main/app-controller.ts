@@ -80,6 +80,7 @@ import { getLegacyDesktopLogDirectory, migrateLogDirectories, prepareLogDirector
 import { normalizeStatisticsLedger, saveStatisticsLedger } from "./statistics-ledger";
 import { NotificationOutbox } from "./notification-outbox";
 import { sendNotification } from "./notify";
+import { DownloadHealthMonitor } from "./download-health-monitor";
 
 function sanitizeSettingsPatch(partial: Partial<AppSettings>): Partial<AppSettings> {
   const entries = Object.entries(partial || {}).filter(([, value]) => value !== undefined);
@@ -121,6 +122,12 @@ export class AppController {
   private storagePaths = createStoragePaths(path.join(app.getPath("userData"), "runtime"));
 
   private notificationOutbox: NotificationOutbox;
+
+  private downloadHealthMonitor: DownloadHealthMonitor;
+
+  private downloadHealthTimer: NodeJS.Timeout | null = null;
+
+  private downloadHealthEvaluation: Promise<void> | null = null;
 
   private logDirectory = this.storagePaths.baseDir;
 
@@ -168,6 +175,7 @@ export class AppController {
         timestamp: event.createdAt
       })
     });
+    this.downloadHealthMonitor = new DownloadHealthMonitor(this.storagePaths.notificationHealthFile);
     void this.notificationOutbox.drain().catch((error) => {
       logger.warn(`Notification-Outbox konnte nicht gestartet werden: ${String(error)}`);
     });
@@ -192,6 +200,11 @@ export class AppController {
     this.manager.on("state", (snapshot: UiSnapshot) => {
       this.onStateHandler?.(snapshot);
     });
+    void this.evaluateDownloadHealth();
+    this.downloadHealthTimer = setInterval(() => {
+      void this.evaluateDownloadHealth();
+    }, 15_000);
+    this.downloadHealthTimer.unref?.();
     logger.info(`App gestartet v${APP_VERSION}`);
     logger.info(`Log-Datei: ${getLogFilePath()}`);
     logAuditEvent("INFO", "App gestartet", {
@@ -1288,7 +1301,41 @@ export class AppController {
     return this.manager.getItemLogPath(itemId) || getItemLogPath(itemId);
   }
 
+  private evaluateDownloadHealth(): Promise<void> {
+    if (this.downloadHealthEvaluation) {
+      return this.downloadHealthEvaluation;
+    }
+    const now = Date.now();
+    const task = this.downloadHealthMonitor.sample(
+      this.manager.getDownloadHealthSnapshot(now),
+      now,
+      {
+        stallAfterMs: this.settings.notifyStallAfterSeconds * 1000,
+        cooldownMs: this.settings.notifyStallCooldownMinutes * 60_000,
+        notifyOnStall: this.settings.notifyOnDownloadStall && Boolean(String(this.settings.notifyUrl || "").trim()),
+        notifyOnRecovery: this.settings.notifyOnDownloadRecovery && Boolean(String(this.settings.notifyUrl || "").trim())
+      },
+      (event) => this.notificationOutbox.enqueue(event)
+    ).then(() => undefined).catch((error) => {
+      logger.warn(`Download-Health-Monitor konnte nicht ausgewertet werden: ${String(error)}`);
+    }).finally(() => {
+      if (this.downloadHealthEvaluation === task) {
+        this.downloadHealthEvaluation = null;
+      }
+    });
+    this.downloadHealthEvaluation = task;
+    return task;
+  }
+
   public async shutdown(): Promise<void> {
+    if (this.downloadHealthTimer) {
+      clearInterval(this.downloadHealthTimer);
+      this.downloadHealthTimer = null;
+    }
+    this.manager.suspendDownloadHealthMonitoring?.();
+    if (this.downloadHealthEvaluation) {
+      await this.downloadHealthEvaluation;
+    }
     if (this.runtimeStatsTimer) {
       clearInterval(this.runtimeStatsTimer);
       this.runtimeStatsTimer = null;

@@ -14696,3 +14696,245 @@ describe("package lifecycle telemetry boundaries", () => {
     expect(pkg.terminalAt).toBe(pkg.postProcessCompletedAt);
   });
 });
+
+describe("download health snapshot", () => {
+  function createHealthManager(root: string) {
+    const session = emptySession();
+    const packageId = "private-package-id";
+    const itemId = "private-item-id";
+    const now = 100_000;
+    session.running = true;
+    session.runStartedAt = 10_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "Private package name",
+      outputDir: path.join(root, "private-output"),
+      extractDir: path.join(root, "private-extract"),
+      status: "downloading",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt: 1_000,
+      updatedAt: now
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://private.example.test/file",
+      provider: "realdebrid",
+      providerLabel: "Private provider label",
+      providerAccountId: "private-account-id",
+      providerAccountLabel: "private@example.test",
+      status: "downloading",
+      retries: 0,
+      speedBps: 8192,
+      downloadedBytes: 4096,
+      totalBytes: 16384,
+      progressPercent: 25,
+      fileName: "private-file.bin",
+      targetPath: path.join(root, "private-output", "private-file.bin"),
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Download läuft",
+      createdAt: 2_000,
+      updatedAt: now
+    };
+    const manager = new DownloadManager(defaultSettings(), session, createStoragePaths(path.join(root, "state")));
+    const state = manager as any;
+    session.running = true;
+    session.items[itemId].status = "downloading";
+    session.items[itemId].speedBps = 8192;
+    session.packages[packageId].status = "downloading";
+    state.runItemIds.add(itemId);
+    state.runPackageIds.add(packageId);
+    return { manager, session, state, packageId, itemId };
+  }
+
+  it("exposes only aggregate run-scope health data and opaque fingerprints", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-health-snapshot-"));
+    tempDirs.push(root);
+    const { manager, state, packageId, itemId } = createHealthManager(root);
+    state.lastSchedulerTickAt = 99_000;
+    state.activeTasks.set(itemId, {
+      itemId,
+      packageId,
+      abortController: new AbortController(),
+      abortReason: "none",
+      resumable: true,
+      nonResumableCounted: false,
+      phase: "downloading",
+      phaseStartedAt: 90_000,
+      phaseDeadlineAt: 0,
+      blockedOnDiskWrite: false,
+      blockedOnDiskSince: 0,
+      blockedOnThrottleUntil: 0
+    });
+
+    const health = manager.getDownloadHealthSnapshot(100_000);
+    const serialized = JSON.stringify(health);
+
+    expect(health).toMatchObject({
+      runActive: true,
+      openItems: 1,
+      openPackages: 1,
+      knownDownloadedBytes: 4096,
+      activeTasks: 1,
+      startableItems: 0,
+      lastSchedulerTickAt: 99_000,
+      currentSpeedBps: 8192
+    });
+    expect(health.runFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(health.queueFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(serialized).not.toMatch(/private|example\.test|realdebrid|file\.bin/i);
+  });
+
+  it("keeps the run fingerprint stable across restart time changes for the same generation scope", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-health-fingerprint-"));
+    tempDirs.push(root);
+    const { manager, session } = createHealthManager(root);
+    session.packages[session.packageOrder[0]].resultGeneration = 4;
+
+    const before = manager.getDownloadHealthSnapshot(100_000);
+    session.runStartedAt = 200_000;
+    const after = manager.getDownloadHealthSnapshot(210_000);
+
+    expect(after.runFingerprint).toBe(before.runFingerprint);
+    expect(after.queueFingerprint).toBe(before.queueFingerprint);
+  });
+
+  it("advances progress sequences only for positive byte events and successful item completions", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-health-sequences-"));
+    tempDirs.push(root);
+    const { manager, session, state, packageId, itemId } = createHealthManager(root);
+
+    state.recordSpeed(1024, packageId);
+    state.recordSpeed(0, packageId);
+    state.recordSpeed(-512, packageId);
+    session.totalDownloadedBytes = 10_000_000;
+    session.totalDownloadedBytes = 0;
+    state.recordRunOutcome(itemId, "completed");
+    state.recordRunOutcome(itemId, "completed");
+
+    const health = manager.getDownloadHealthSnapshot(100_000);
+
+    expect(health.downloadProgressSequence).toBe(1);
+    expect(health.lastPositiveByteAt).toBeGreaterThan(0);
+    expect(health.itemCompletionSequence).toBe(1);
+  });
+
+  it("projects retry, cooldown, disk, throttle and valid phase waits without stale disk events", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-health-waits-"));
+    tempDirs.push(root);
+    const { manager, session, state, packageId, itemId } = createHealthManager(root);
+    const active = {
+      itemId,
+      packageId,
+      abortController: new AbortController(),
+      abortReason: "none",
+      resumable: true,
+      nonResumableCounted: false,
+      phase: "validating",
+      phaseStartedAt: 90_000,
+      phaseDeadlineAt: 130_000,
+      blockedOnDiskWrite: true,
+      blockedOnDiskSince: 95_000,
+      blockedOnThrottleUntil: 120_000
+    };
+    state.activeTasks.set(itemId, active);
+    state.diskWaitEvents = [{
+      phase: "download",
+      targetPath: "C:\\private\\disk",
+      requiredBytes: 100,
+      availableBytes: 0,
+      reserveBytes: 0,
+      retryAt: 80_000,
+      itemId,
+      packageId
+    }];
+
+    const activeWait = manager.getDownloadHealthSnapshot(100_000);
+
+    expect(activeWait.blockedOnDisk).toBe(true);
+    expect(activeWait.blockedOnThrottleUntil).toBe(120_000);
+    expect(activeWait.activePhaseDeadlineAt).toBe(130_000);
+
+    state.activeTasks.clear();
+    session.items[itemId].status = "queued";
+    state.retryAfterByItem.set(itemId, 140_000);
+    state.providerFailures.set("realdebrid", { count: 20, lastFailAt: 99_000, cooldownUntil: 150_000 });
+
+    const queuedWait = manager.getDownloadHealthSnapshot(100_000);
+
+    expect(queuedWait.startableItems).toBe(0);
+    expect(queuedWait.nextRetryAt).toBe(140_000);
+    expect(queuedWait.providerCooldownUntil).toBe(150_000);
+    expect(queuedWait.blockedOnDisk).toBe(false);
+  });
+
+  it("does not project a partial retry as a global wait while another download is active", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-health-partial-wait-"));
+    tempDirs.push(root);
+    const { manager, session, state, packageId, itemId } = createHealthManager(root);
+    const queuedId = "private-queued-id";
+    session.items[queuedId] = {
+      ...session.items[itemId],
+      id: queuedId,
+      status: "queued",
+      downloadedBytes: 0,
+      speedBps: 0
+    };
+    session.packages[packageId].itemIds.push(queuedId);
+    state.runItemIds.add(queuedId);
+    state.activeTasks.set(itemId, {
+      itemId,
+      packageId,
+      abortController: new AbortController(),
+      abortReason: "none",
+      resumable: true,
+      nonResumableCounted: false,
+      phase: "downloading",
+      phaseStartedAt: 90_000,
+      phaseDeadlineAt: 0,
+      blockedOnDiskWrite: false,
+      blockedOnDiskSince: 0,
+      blockedOnThrottleUntil: 0
+    });
+    state.retryAfterByItem.set(queuedId, 140_000);
+
+    const health = manager.getDownloadHealthSnapshot(100_000);
+
+    expect(health.activeTasks).toBe(1);
+    expect(health.nextRetryAt).toBe(0);
+  });
+
+  it("counts one technical recovery when the existing global watchdog restarts stalled tasks", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-health-watchdog-"));
+    tempDirs.push(root);
+    const { manager, state, packageId, itemId } = createHealthManager(root);
+    const active = {
+      itemId,
+      packageId,
+      abortController: new AbortController(),
+      abortReason: "none",
+      resumable: true,
+      nonResumableCounted: false,
+      phase: "downloading",
+      phaseStartedAt: 1,
+      phaseDeadlineAt: 0,
+      blockedOnDiskWrite: false,
+      blockedOnDiskSince: 0,
+      blockedOnThrottleUntil: 0
+    };
+    state.activeTasks.set(itemId, active);
+    state.lastGlobalProgressBytes = 0;
+    state.lastGlobalProgressAt = 1;
+
+    state.runGlobalStallWatchdog(90_000);
+
+    expect(active.abortController.signal.aborted).toBe(true);
+    expect(active.abortReason).toBe("stall");
+    expect(manager.getDownloadHealthSnapshot(90_000).technicalRecoveryCount).toBe(1);
+  });
+});
