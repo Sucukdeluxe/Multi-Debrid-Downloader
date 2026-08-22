@@ -2412,6 +2412,8 @@ export function parseNativeArchiveEntryList(command: string, output: string): st
 
 type NativeArchiveEntryCandidate = { entryPath: string; isDirectory: boolean };
 
+type NativeEntryPreflightResult = ExtractSpawnResult & { entries: NativeArchiveEntryCandidate[] };
+
 function parseNativeArchiveEntryCandidates(command: string, output: string): NativeArchiveEntryCandidate[] {
   const lines = String(output || "").split(/\r?\n/);
   if (isRarNativeCommand(command)) {
@@ -2472,6 +2474,34 @@ function validateNativeArchiveTargetPlan(entries: readonly NativeArchiveEntryCan
   }
 }
 
+function nativeArchiveEntriesForOutputMode(
+  command: string,
+  entries: readonly NativeArchiveEntryCandidate[],
+  flatMode: boolean
+): NativeArchiveEntryCandidate[] {
+  if (!flatMode || !isRarNativeCommand(command)) {
+    return [...entries];
+  }
+  return entries
+    .filter((entry) => !entry.isDirectory)
+    .map((entry) => ({
+      entryPath: path.posix.basename(entry.entryPath.replace(/\\/g, "/").replace(/\/$/, "")),
+      isDirectory: false
+    }));
+}
+
+export function validateNativeFlatArchiveEntryCandidates(
+  command: string,
+  entries: readonly string[],
+  targetDir: string
+): void {
+  const candidates = entries.map((entryPath) => ({
+    entryPath,
+    isDirectory: /[\\/]$/.test(entryPath)
+  }));
+  validateNativeArchiveTargetPlan(nativeArchiveEntriesForOutputMode(command, candidates, true), targetDir);
+}
+
 function dispatchJvmOutputEvent(
   state: JvmParseState,
   onOutput: ((event: ExtractOutputEvent) => void) | undefined,
@@ -2528,8 +2558,9 @@ async function runNativeEntryPreflight(
   targetDir: string,
   password: string,
   signal: AbortSignal | undefined,
-  timeoutMs: number
-): Promise<ExtractSpawnResult> {
+  timeoutMs: number,
+  flatMode: boolean
+): Promise<NativeEntryPreflightResult> {
   const chunks: string[] = [];
   const result = await runExtractCommand(
     command,
@@ -2539,7 +2570,7 @@ async function runNativeEntryPreflight(
     timeoutMs
   );
   if (!result.ok) {
-    return result;
+    return { ...result, entries: [] };
   }
   try {
     const entries = parseNativeArchiveEntryCandidates(command, chunks.join(""));
@@ -2547,16 +2578,124 @@ async function runNativeEntryPreflight(
       throw new Error("Native Archivliste enthält keine validierbaren Einträge");
     }
     validateNativeArchiveTargetPlan(entries, targetDir);
-    return result;
+    if (flatMode && isRarNativeCommand(command)) {
+      validateNativeArchiveTargetPlan(nativeArchiveEntriesForOutputMode(command, entries, true), targetDir);
+    }
+    return { ...result, entries };
   } catch (error) {
     return {
       ok: false,
       missingCommand: false,
       aborted: false,
       timedOut: false,
-      errorText: cleanErrorText(String(error))
+      errorText: cleanErrorText(String(error)),
+      entries: []
     };
   }
+}
+
+function existingNativeOutputKeys(
+  command: string,
+  entries: readonly NativeArchiveEntryCandidate[],
+  targetDir: string,
+  conflictMode: ConflictMode,
+  flatMode: boolean
+): Set<string> {
+  const keys = new Set<string>();
+  const mode = effectiveConflictMode(conflictMode);
+  const extractsFlat = flatMode && isRarNativeCommand(command);
+  for (const candidate of entries) {
+    if (candidate.isDirectory) {
+      continue;
+    }
+    const archiveEntryPath = candidate.entryPath.replace(/\\/g, "/").replace(/\/$/, "");
+    const entryPath = extractsFlat ? path.posix.basename(archiveEntryPath) : archiveEntryPath;
+    const outputPath = path.resolve(targetDir, ...entryPath.split("/"));
+    try {
+      const stat = fs.lstatSync(outputPath);
+      if (stat.isFile() && !stat.isSymbolicLink()) {
+        keys.add(pathSetKey(outputPath));
+        if (mode === "rename") {
+          const pattern = nativeRenameOutputPattern(command, path.basename(outputPath));
+          for (const entry of fs.readdirSync(path.dirname(outputPath), { withFileTypes: true })) {
+            if (entry.isFile() && pattern.test(entry.name)) {
+              keys.add(pathSetKey(path.join(path.dirname(outputPath), entry.name)));
+            }
+          }
+        }
+      }
+    } catch {
+    }
+  }
+  return keys;
+}
+
+function nativeRenameOutputPattern(command: string, fileName: string): RegExp {
+  const parsed = path.parse(fileName);
+  const suffix = extractorCommandKind(command) === "seven_zip" ? "_\\d+" : "\\(\\d+\\)";
+  return new RegExp(`^${escapeRegex(parsed.name)}${suffix}${escapeRegex(parsed.ext)}$`, "i");
+}
+
+export function reconcileNativeExtractOutputs(
+  command: string,
+  entries: readonly { entryPath: string; isDirectory: boolean }[],
+  archivePath: string,
+  targetDir: string,
+  conflictMode: ConflictMode,
+  existingBefore: ReadonlySet<string>,
+  flatMode = false
+): ExtractOutputEvent[] {
+  validateNativeArchiveTargetPlan(entries, targetDir);
+  const mode = effectiveConflictMode(conflictMode);
+  const extractsFlat = flatMode && isRarNativeCommand(command);
+  const scope = new PackageOutputScope([targetDir]);
+  const events: ExtractOutputEvent[] = [];
+  for (const candidate of entries) {
+    if (candidate.isDirectory) {
+      continue;
+    }
+    const archiveEntryPath = candidate.entryPath.replace(/\\/g, "/").replace(/\/$/, "");
+    const entryPath = extractsFlat ? path.posix.basename(archiveEntryPath) : archiveEntryPath;
+    const baseOutputPath = path.resolve(targetDir, ...entryPath.split("/"));
+    const existed = existingBefore.has(pathSetKey(baseOutputPath));
+    let outputPath = baseOutputPath;
+    if (mode === "rename" && existed) {
+      const pattern = nativeRenameOutputPattern(command, path.basename(baseOutputPath));
+      let renamedCandidates: string[] = [];
+      try {
+        renamedCandidates = fs.readdirSync(path.dirname(baseOutputPath), { withFileTypes: true })
+          .filter((entry) => entry.isFile() && pattern.test(entry.name))
+          .map((entry) => path.join(path.dirname(baseOutputPath), entry.name))
+          .filter((candidatePath) => !existingBefore.has(pathSetKey(candidatePath)));
+      } catch {
+      }
+      if (renamedCandidates.length !== 1) {
+        continue;
+      }
+      [outputPath] = renamedCandidates;
+    }
+    const event: ExtractOutputEvent = {
+      version: 1,
+      archivePath: path.resolve(archivePath),
+      entryPath,
+      outputPath,
+      state: "complete",
+      disposition: mode === "rename" && existed
+        ? "renamed"
+        : mode === "skip" && existed
+        ? "skipped"
+        : mode === "overwrite" && existed
+          ? "overwritten"
+          : "written"
+    };
+    try {
+      if (event.disposition === "skipped" || scope.add(event)) {
+        events.push(event);
+      }
+    } catch {
+    }
+  }
+  return events;
 }
 
 export function parseNativeExtractOutput(
@@ -2612,6 +2751,24 @@ export function parseNativeExtractOutput(
   } catch {
     return [];
   }
+}
+
+export function remapNativeSubstOutput(
+  event: ExtractOutputEvent,
+  effectiveTargetDir: string,
+  targetDir: string
+): ExtractOutputEvent {
+  const relativePath = path.relative(path.resolve(effectiveTargetDir), path.resolve(event.outputPath));
+  if (!relativePath
+    || relativePath === ".."
+    || relativePath.startsWith(`..${path.sep}`)
+    || path.isAbsolute(relativePath)) {
+    throw new Error(`Ungültiger subst-Ausgabepfad: ${event.outputPath}`);
+  }
+  return {
+    ...event,
+    outputPath: path.resolve(targetDir, relativePath)
+  };
 }
 
 function failDaemonOutputCallback(req: DaemonRequest): void {
@@ -2695,12 +2852,20 @@ async function runExternalExtractInner(
   const summarizeResultError = (errorText: string): string => cleanErrorText(errorText);
   let createErrorText = "";
   let createErrorPassword = "";
-  const runNativeAttempt = async (args: string[], password: string): Promise<ExtractSpawnResult> => {
-    const preflight = await runNativeEntryPreflight(command, archivePath, targetDir, password, signal, timeoutMs);
+  const runNativeAttempt = async (args: string[], password: string, flatMode = false): Promise<ExtractSpawnResult> => {
+    const preflight = await runNativeEntryPreflight(command, archivePath, targetDir, password, signal, timeoutMs, flatMode);
     if (!preflight.ok) {
       return preflight;
     }
-    const outputs = createNativeOutputCollector(command, archivePath, targetDir, conflictMode, onOutput);
+    const existingBefore = existingNativeOutputKeys(command, preflight.entries, targetDir, conflictMode, flatMode);
+    const reportedOutputs = new Set<string>();
+    const emitNativeOutput = (event: ExtractOutputEvent): void => {
+      if (event.state === "complete" && event.disposition !== "skipped") {
+        reportedOutputs.add(pathSetKey(event.outputPath));
+      }
+      onOutput?.(event);
+    };
+    const outputs = createNativeOutputCollector(command, archivePath, targetDir, conflictMode, emitNativeOutput);
     const result = await runExtractCommand(command, args, (chunk) => {
       outputs.push(chunk);
       const parsed = parseProgressPercent(chunk);
@@ -2714,6 +2879,13 @@ async function runExternalExtractInner(
       }
     }, signal, timeoutMs);
     outputs.finish(result.ok ? "complete" : "partial");
+    if (result.ok) {
+      for (const event of reconcileNativeExtractOutputs(command, preflight.entries, archivePath, targetDir, conflictMode, existingBefore, flatMode)) {
+        if (!reportedOutputs.has(pathSetKey(event.outputPath))) {
+          onOutput?.(event);
+        }
+      }
+    }
     return result;
   };
 
@@ -2726,7 +2898,7 @@ async function runExternalExtractInner(
       onLog?.("INFO", `Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length}: archive=${path.basename(archivePath)}, password=<redacted>`);
       logger.info(`Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length} für ${path.basename(archivePath)} (password=<redacted>)`);
       const args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password, usePerformanceFlags, hybridMode, true);
-      const result = await runNativeAttempt(args, password);
+      const result = await runNativeAttempt(args, password, true);
       logger.info(`Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length}: ok=${result.ok}, bestPercent=${bestPercent}`);
       onLog?.("INFO", `Flach-Extraktion Ergebnis ${passwordAttempt}/${passwords.length}: archive=${path.basename(archivePath)}, ok=${result.ok}, timedOut=${result.timedOut}, missingCommand=${result.missingCommand}, bestPercent=${bestPercent}`);
       if (result.ok) { if (flatModeResult) flatModeResult.needed = true; onArchiveProgress?.(100); return password; }
@@ -2824,7 +2996,7 @@ async function runExternalExtractInner(
       logger.info(`Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length} für ${path.basename(archivePath)} (password=<redacted>)`);
       onLog?.("INFO", `Flach-Extraktion Versuch ${passwordAttempt}/${flatPasswords.length}: archive=${path.basename(archivePath)}, password=<redacted>`);
       const args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password, usePerformanceFlags, hybridMode, true);
-      const result = await runNativeAttempt(args, password);
+      const result = await runNativeAttempt(args, password, true);
       logger.info(`Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length}: ok=${result.ok}, bestPercent=${bestPercent}`);
       onLog?.("INFO", `Flach-Extraktion Ergebnis ${passwordAttempt}/${flatPasswords.length}: archive=${path.basename(archivePath)}, ok=${result.ok}, timedOut=${result.timedOut}, missingCommand=${result.missingCommand}, bestPercent=${bestPercent}`);
       if (result.ok) { if (flatModeResult) flatModeResult.needed = true; onArchiveProgress?.(100); return password; }
@@ -2935,10 +3107,7 @@ async function runExternalExtract(
       onLog?.("INFO", `Legacy-Zielpfad unveraendert: archive=${archiveName}, effectiveTargetDir=${effectiveTargetDir}`);
     }
     const legacyOnOutput = subst && onOutput
-      ? (event: ExtractOutputEvent): void => onOutput({
-        ...event,
-        outputPath: path.resolve(targetDir, ...event.entryPath.split("/"))
-      })
+      ? (event: ExtractOutputEvent): void => onOutput(remapNativeSubstOutput(event, effectiveTargetDir, targetDir))
       : onOutput;
 
     const command = await resolveExtractorCommand(archivePath);

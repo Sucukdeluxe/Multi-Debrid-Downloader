@@ -21,10 +21,13 @@ import {
   orderExtractorCandidatesForArchive,
   parseNativeExtractOutput,
   parseNativeArchiveEntryList,
+  remapNativeSubstOutput,
+  reconcileNativeExtractOutputs,
   resolveExtractorBackendModeForArchive,
   resolveExtractorBackendMode,
   shouldFallbackLegacyRarToJvm,
   validateNativeArchiveEntryCandidates,
+  validateNativeFlatArchiveEntryCandidates,
 } from "../src/main/extractor";
 
 const tempDirs: string[] = [];
@@ -1731,6 +1734,56 @@ describe("extractor", () => {
       ]);
     });
 
+    it("preserves a native renamed filename when remapping a subst output", () => {
+      const targetDir = "C:\\Downloads\\Extracted";
+      const event = remapNativeSubstOutput({
+        version: 1,
+        archivePath: "C:\\Downloads\\release.rar",
+        entryPath: "episode.mkv",
+        outputPath: "Z:\\episode(2).mkv",
+        state: "complete",
+        disposition: "renamed"
+      }, "Z:\\", targetDir);
+
+      expect(event.outputPath).toBe(path.resolve(targetDir, "episode(2).mkv"));
+      expect(event.entryPath).toBe("episode.mkv");
+    });
+
+    it("keeps native 7-Zip output directories when a previous RAR requested flat mode", () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-native-seven-flat-"));
+      tempDirs.push(root);
+      const targetDir = path.join(root, "out");
+      const outputPath = path.join(targetDir, "folder", "episode.mkv");
+      fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+      fs.writeFileSync(outputPath, "video");
+
+      const events = reconcileNativeExtractOutputs(
+        "7z.exe",
+        [{ entryPath: "folder/episode.mkv", isDirectory: false }],
+        path.join(root, "release.7z"),
+        targetDir,
+        "overwrite",
+        new Set(),
+        true
+      );
+
+      expect(events).toEqual([
+        expect.objectContaining({ entryPath: "folder/episode.mkv", outputPath })
+      ]);
+    });
+
+    it("rejects colliding RAR flat-mode basenames before extraction", () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-native-rar-flat-collision-"));
+      tempDirs.push(root);
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(targetDir, { recursive: true });
+
+      expect(() => validateNativeFlatArchiveEntryCandidates("Rar.exe", [
+        "folder-a/episode.mkv",
+        "folder-b/episode.mkv"
+      ], targetDir)).toThrow(/Kollision/i);
+    });
+
     it.each(["Entpacke", "Extrayendo", "Extraction"])("parses verified native RAR candidates without depending on the %s locale verb", (verb) => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-native-locale-"));
       tempDirs.push(root);
@@ -1741,6 +1794,72 @@ describe("extractor", () => {
 
       expect(parseNativeExtractOutput("UnRAR.exe", `${verb}  ${outputPath}  OK`, path.join(root, "archive.rar"), targetDir, "overwrite")).toEqual([
         expect.objectContaining({ outputPath, entryPath: "episode.mkv" })
+      ]);
+    });
+
+    it("reconciles verified native outputs when WinRAR emits no parseable completion line", () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-native-reconcile-"));
+      tempDirs.push(root);
+      const targetDir = path.join(root, "out");
+      const archivePath = path.join(root, "release.part1.rar");
+      const outputPath = path.join(targetDir, "folder", "episode.mkv");
+      fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+      fs.writeFileSync(outputPath, "video");
+
+      const events = reconcileNativeExtractOutputs(
+        "Rar.exe",
+        [{ entryPath: "folder/", isDirectory: true }, { entryPath: "folder/episode.mkv", isDirectory: false }],
+        archivePath,
+        targetDir,
+        "overwrite",
+        new Set()
+      );
+
+      expect(events).toEqual([{
+        version: 1,
+        archivePath: path.resolve(archivePath),
+        entryPath: "folder/episode.mkv",
+        outputPath,
+        state: "complete",
+        disposition: "written"
+      }]);
+    });
+
+    it.each([
+      ["Rar.exe", "episode(1).mkv", "episode(2).mkv"],
+      ["7z.exe", "episode_1.mkv", "episode_2.mkv"]
+    ])("reconciles the newly renamed %s output without claiming an older collision", (command, firstRenamedName, newRenamedName) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-native-rename-reconcile-"));
+      tempDirs.push(root);
+      const targetDir = path.join(root, "out");
+      const archivePath = path.join(root, "release.rar");
+      const basePath = path.join(targetDir, "episode.mkv");
+      const firstRenamedPath = path.join(targetDir, firstRenamedName);
+      const newRenamedPath = path.join(targetDir, newRenamedName);
+      fs.mkdirSync(targetDir, { recursive: true });
+      fs.writeFileSync(basePath, "foreign-base");
+      fs.writeFileSync(firstRenamedPath, "foreign-renamed");
+      const existingBefore = new Set([basePath, firstRenamedPath].map((filePath) => (
+        process.platform === "win32" ? path.resolve(filePath).toLowerCase() : path.resolve(filePath)
+      )));
+      fs.writeFileSync(newRenamedPath, "owned");
+
+      const events = reconcileNativeExtractOutputs(
+        command,
+        [{ entryPath: "episode.mkv", isDirectory: false }],
+        archivePath,
+        targetDir,
+        "rename",
+        existingBefore
+      );
+
+      expect(events).toEqual([
+        expect.objectContaining({
+          entryPath: "episode.mkv",
+          outputPath: newRenamedPath,
+          state: "complete",
+          disposition: "renamed"
+        })
       ]);
     });
 
