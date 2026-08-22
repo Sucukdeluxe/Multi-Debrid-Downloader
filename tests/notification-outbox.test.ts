@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NotificationEvent, NotificationOutbox } from "../src/main/notification-outbox";
+import { sendNotification } from "../src/main/notify";
 
 const tempDirs: string[] = [];
 
@@ -67,11 +68,12 @@ describe("NotificationOutbox", () => {
 
   it("backs off a failed event without allowing later events to overtake it", async () => {
     const filePath = createOutboxFile();
+    let now = 1000;
     const outcomes = [false, true, true];
     const sent: string[] = [];
     const outbox = new NotificationOutbox({
       filePath,
-      now: () => 1000,
+      now: () => now,
       send: async (queuedEvent) => {
         sent.push(queuedEvent.id);
         return outcomes.shift() ?? true;
@@ -80,15 +82,113 @@ describe("NotificationOutbox", () => {
 
     await outbox.enqueue(event("first"));
     await outbox.enqueue(event("second"));
-    await outbox.drain(1000);
+    await outbox.drain();
     expect(sent).toEqual(["first"]);
     expect(persisted(filePath).events[0]).toMatchObject({ id: "first", attempts: 1, nextAttemptAt: 2000 });
     expect(outbox.getStatus()).toEqual({ queued: 2, lastSuccessAt: 0, lastFailureAt: 1000 });
 
-    await outbox.drain(1999);
+    now = 1999;
+    await outbox.drain();
     expect(sent).toEqual(["first"]);
-    await outbox.drain(2000);
+    now = 2000;
+    await outbox.drain();
     expect(sent).toEqual(["first", "first", "second"]);
+  });
+
+  it("uses the actual failure time for retry backoff", async () => {
+    const filePath = createOutboxFile();
+    let now = 1000;
+    const outbox = new NotificationOutbox({
+      filePath,
+      now: () => now,
+      send: async () => {
+        now = 4500;
+        return false;
+      }
+    });
+
+    await outbox.enqueue(event("late-failure"));
+    await outbox.drain();
+
+    expect(persisted(filePath).events[0]).toMatchObject({ attempts: 1, nextAttemptAt: 5500 });
+    expect(outbox.getStatus().lastFailureAt).toBe(4500);
+  });
+
+  it("rechecks expiration after each send before delivering the next event", async () => {
+    const filePath = createOutboxFile();
+    let now = 1000;
+    const sent: string[] = [];
+    const outbox = new NotificationOutbox({
+      filePath,
+      now: () => now,
+      send: async (queuedEvent) => {
+        sent.push(queuedEvent.id);
+        now = 2000;
+        return true;
+      }
+    });
+
+    await outbox.enqueue(event("first", { expiresAt: 5000 }));
+    await outbox.enqueue(event("expires-during-send", { expiresAt: 1500 }));
+    await outbox.drain();
+
+    expect(sent).toEqual(["first"]);
+    expect(outbox.getStatus()).toEqual({ queued: 0, lastSuccessAt: 2000, lastFailureAt: 0 });
+  });
+
+  it("caps exponential retry backoff at ten minutes after many attempts", async () => {
+    const filePath = createOutboxFile();
+    let now = 1000;
+    const outbox = new NotificationOutbox({
+      filePath,
+      now: () => now,
+      send: async () => {
+        now = 2000;
+        return false;
+      }
+    });
+
+    await outbox.enqueue(event("many-attempts", { attempts: 20 }));
+    await outbox.drain();
+
+    expect(persisted(filePath).events[0]).toMatchObject({ attempts: 21, nextAttemptAt: 602000 });
+  });
+
+  it("restores a future retry timer and reads changed URL and mention only when retrying", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1000);
+    const filePath = createOutboxFile();
+    const firstUrl = "https://discord.example.test/api/webhooks/first";
+    const secondUrl = "https://discord.example.test/api/webhooks/second";
+    let settings = { url: firstUrl, mention: "111111" };
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(new Response("", { status: 404 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const sender = (queuedEvent: NotificationEvent): Promise<boolean> => sendNotification(settings.url, {
+      title: queuedEvent.payload.title,
+      message: queuedEvent.payload.description || "",
+      mention: settings.mention,
+      fields: queuedEvent.payload.fields,
+      timestamp: queuedEvent.createdAt
+    }, fetchFn, async () => {});
+    const firstProcess = new NotificationOutbox({ filePath, send: sender });
+
+    await firstProcess.enqueue(event("restart-retry"));
+    await firstProcess.drain();
+    expect(persisted(filePath).events[0]).toMatchObject({ attempts: 1, nextAttemptAt: 2000 });
+
+    settings = { url: secondUrl, mention: "222222" };
+    const restartedProcess = new NotificationOutbox({ filePath, send: sender, autoDrain: true });
+    await vi.advanceTimersByTimeAsync(999);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(fetchFn.mock.calls[0][0]).toBe(firstUrl);
+    expect(fetchFn.mock.calls[1][0]).toBe(secondUrl);
+    expect(JSON.parse(String(fetchFn.mock.calls[0][1]?.body)).content).toBe("<@111111>");
+    expect(JSON.parse(String(fetchFn.mock.calls[1][1]?.body)).content).toBe("<@222222>");
+    await restartedProcess.drain();
+    expect(persisted(filePath).events).toEqual([]);
   });
 
   it("automatically drains new events and retries them at the persisted deadline", async () => {

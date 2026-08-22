@@ -1287,7 +1287,7 @@ export class AppController {
     return this.manager.getItemLogPath(itemId) || getItemLogPath(itemId);
   }
 
-  public shutdown(): void {
+  public async shutdown(): Promise<void> {
     if (this.runtimeStatsTimer) {
       clearInterval(this.runtimeStatsTimer);
       this.runtimeStatsTimer = null;
@@ -1295,7 +1295,7 @@ export class AppController {
     stopDebugServer();
     abortActiveUpdateDownload();
     cancelPendingAsyncSaves();
-    void this.notificationOutbox.drainForShutdown().catch((error) => {
+    await this.notificationOutbox.drainForShutdown(3000).catch((error) => {
       logger.warn(`Notification-Outbox konnte beim Beenden nicht geleert werden: ${String(error)}`);
     });
     this.manager.prepareForShutdown();

@@ -94,6 +94,41 @@ let controller: AppController;
 let pendingBackupImport: Buffer | null = null;
 const CLIPBOARD_MAX_TEXT_CHARS = 50_000;
 
+export interface BeforeQuitHandlerOptions {
+  cleanup: () => void;
+  shutdown: () => Promise<void>;
+  continueQuit: () => void;
+  onError: (error: unknown) => void;
+}
+
+export function createBeforeQuitHandler(options: BeforeQuitHandlerOptions): (event: { preventDefault: () => void }) => void {
+  let shutdownStarted = false;
+  let quitAllowed = false;
+  return (event) => {
+    if (quitAllowed) {
+      return;
+    }
+    event.preventDefault();
+    if (shutdownStarted) {
+      return;
+    }
+    shutdownStarted = true;
+    let shutdown: Promise<void>;
+    try {
+      options.cleanup();
+      shutdown = options.shutdown();
+    } catch (error) {
+      shutdown = Promise.reject(error);
+    }
+    void shutdown.catch((error) => {
+      options.onError(error);
+    }).finally(() => {
+      quitAllowed = true;
+      options.continueQuit();
+    });
+  };
+}
+
 function isDevMode(): boolean {
   return process.env.NODE_ENV === "development";
 }
@@ -1038,16 +1073,20 @@ app.on("window-all-closed", () => {
   }
 });
 
-app.on("before-quit", () => {
-  if (updateQuitTimer) { clearTimeout(updateQuitTimer); updateQuitTimer = null; }
-  stopClipboardWatcher();
-  destroyTray();
-  shutdownDaemon();
-  if (controller) {
-    try {
-      controller.shutdown();
-    } catch (error) {
-      logger.error(`Fehler beim Shutdown: ${String(error)}`);
+app.on("before-quit", createBeforeQuitHandler({
+  cleanup: () => {
+    if (updateQuitTimer) { clearTimeout(updateQuitTimer); updateQuitTimer = null; }
+    stopClipboardWatcher();
+    destroyTray();
+    shutdownDaemon();
+  },
+  shutdown: async () => {
+    if (controller) {
+      await controller.shutdown();
     }
+  },
+  continueQuit: () => app.quit(),
+  onError: (error) => {
+    logger.error(`Fehler beim Shutdown: ${String(error)}`);
   }
-});
+}));

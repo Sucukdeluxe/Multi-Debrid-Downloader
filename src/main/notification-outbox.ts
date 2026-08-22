@@ -132,7 +132,7 @@ function oldestIndex(events: NotificationEvent[], predicate: (event: Notificatio
 }
 
 function retryDelayMs(attempts: number): number {
-  return Math.min(MAX_RETRY_DELAY_MS, 1000 * (2 ** Math.min(9, Math.max(0, attempts - 1))));
+  return Math.min(MAX_RETRY_DELAY_MS, 1000 * (2 ** Math.min(30, Math.max(0, attempts - 1))));
 }
 
 export class NotificationOutbox {
@@ -153,6 +153,9 @@ export class NotificationOutbox {
     this.clock = options.now || Date.now;
     this.autoDrain = Boolean(options.autoDrain);
     this.load();
+    if (this.autoDrain && this.events.length > 0) {
+      this.scheduleDrain(Math.max(0, this.events[0].nextAttemptAt - this.clock()));
+    }
   }
 
   public async enqueue(event: NotificationEvent): Promise<void> {
@@ -170,11 +173,15 @@ export class NotificationOutbox {
 
   public drain(now?: number): Promise<void> {
     return this.runExclusive(async () => {
-      const drainAt = finiteInteger(now ?? this.clock());
-      this.enforceLimits(drainAt);
+      let currentNow = finiteInteger(now ?? this.clock());
+      this.enforceLimits(currentNow);
       while (this.events.length > 0) {
         const current = this.events[0];
-        if (current.nextAttemptAt > drainAt) {
+        if (current.nextAttemptAt > currentNow) {
+          await this.persist(currentNow);
+          if (this.autoDrain) {
+            this.scheduleDrain(Math.max(0, current.nextAttemptAt - this.clock()));
+          }
           break;
         }
         let sent = false;
@@ -183,23 +190,25 @@ export class NotificationOutbox {
         } catch {
           sent = false;
         }
+        const outcomeAt = finiteInteger(this.clock(), currentNow);
         if (!sent) {
           current.attempts += 1;
-          current.nextAttemptAt = drainAt + retryDelayMs(current.attempts);
-          this.lastFailureAt = drainAt;
-          await this.persist(drainAt);
+          current.nextAttemptAt = outcomeAt + retryDelayMs(current.attempts);
+          this.lastFailureAt = outcomeAt;
+          await this.persist(outcomeAt);
           if (this.autoDrain) {
             this.scheduleDrain(Math.max(0, current.nextAttemptAt - this.clock()));
           }
           break;
         }
         this.events.shift();
-        this.lastSuccessAt = drainAt;
-        await this.persist(drainAt);
+        this.lastSuccessAt = outcomeAt;
+        await this.persist(outcomeAt);
+        currentNow = finiteInteger(this.clock(), outcomeAt);
       }
       if (this.events.length === 0) {
         this.clearRetryTimer();
-        await this.persist(drainAt);
+        await this.persist(finiteInteger(this.clock(), currentNow));
       }
     });
   }
