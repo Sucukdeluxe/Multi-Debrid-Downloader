@@ -210,4 +210,38 @@ describe("bestdebrid-web", () => {
     rejectRequest(new Error("late bestdebrid rejection"));
     await Promise.resolve();
   });
+
+  it("observes the raw rejection when the signal is already aborted and keeps the queue usable", async () => {
+    const filePath = createCookieFile([
+      "# Netscape HTTP Cookie File",
+      "bestdebrid.com\tFALSE\t/\tTRUE\t1803585385\tPHPSESSID\tsecret-session"
+    ].join("\n"));
+    tempFiles.push(filePath);
+    const fallback = new BestDebridWebFallback(() => true);
+    await fallback.importCookiesFromFile(filePath);
+    mockFetch.mockResolvedValue(new Response(JSON.stringify({
+      error: 0,
+      link: "https://bestdebrid.direct/next.bin",
+      filename: "next.bin",
+      size: "777 B"
+    }), { status: 200 }));
+    const controller = new AbortController();
+    controller.abort("before-queue");
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      await expect(fallback.unrestrict("https://1fichier.com/?pre-aborted", controller.signal))
+        .rejects.toThrow("aborted:bestdebrid-web");
+      await new Promise((resolve) => setImmediate(resolve));
+      await expect(fallback.unrestrict("https://1fichier.com/?next")).resolves.toMatchObject({
+        directUrl: "https://bestdebrid.direct/next.bin",
+        fileName: "next.bin"
+      });
+      expect(unhandled).toEqual([]);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
 });

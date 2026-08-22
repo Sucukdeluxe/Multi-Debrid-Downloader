@@ -231,6 +231,34 @@ describe("realdebrid-web", () => {
     await Promise.resolve();
   });
 
+  it("observes the raw rejection when the signal is already aborted and keeps the queue usable", async () => {
+    mockSessionFetch.mockResolvedValue(new Response("<input name=\"private_token\" value=\"next-token\">", { status: 200 }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      download: "https://cdn.real-debrid.example/next.bin",
+      filename: "next.bin",
+      filesize: 555
+    }), { status: 200 })));
+    const fallback = new RealDebridWebFallback("persist:realdebrid-web-rdw_pre_aborted", () => true);
+    const controller = new AbortController();
+    controller.abort("before-queue");
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      await expect(fallback.unrestrict("https://rapidgator.net/file/pre-aborted", controller.signal))
+        .rejects.toThrow("aborted:realdebrid-web");
+      await new Promise((resolve) => setImmediate(resolve));
+      await expect(fallback.unrestrict("https://rapidgator.net/file/next")).resolves.toMatchObject({
+        directUrl: "https://cdn.real-debrid.example/next.bin",
+        fileName: "next.bin"
+      });
+      expect(unhandled).toEqual([]);
+      expect(mockSessionFetch).toHaveBeenCalledTimes(1);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
   it("does not open a login window for an authenticated account with a fair-use error", async () => {
     mockSessionFetch.mockResolvedValue(new Response("<input name=\"private_token\" value=\"session-token\">", { status: 200 }));
     vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => new Response(JSON.stringify({

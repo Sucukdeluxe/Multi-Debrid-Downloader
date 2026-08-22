@@ -71,3 +71,33 @@ Umgesetzt und fokussiert verifiziert.
 
 - Der vollständige Manager-Testlauf wurde in dieser Fixrunde nicht erneut ausgeführt; die geänderten Lifecycle-/Cooldown-Fälle sowie alle drei vollständigen Providerdateien und der vollständige Download-Renderer-Test wurden fokussiert geprüft.
 - Der bestehende Renderer-Buildhinweis für einen JavaScript-Chunk über 500 kB bleibt unverändert.
+
+## Fixrunde 2/5
+
+### Korrekturen
+
+- Eine gemeinsame pure Providerplanung liefert Hosterroute, direkte 1Fichier-/DDownload-Pfade und die geordnete Providerkette sowohl an den echten Unrestrictpfad als auch an die Cooldown-Projektion.
+- Bei deaktiviertem automatischem Fehlerfallback bildet die Projektion weiterhin den realen Sonderfall ab, dass ein wegen Real-Debrid-Cooldown nicht auswählbarer Primärprovider auf einen sofort verfügbaren Sekundärprovider wechseln darf.
+- Die gemeinsame Provider-Deaktivierungsprüfung behandelt `megadebrid` als Alias für beide konkreten Mega-Debrid-Modi und wird auch vom Manager-Startgate verwendet.
+- Die äußere Abort-Race hängt ihren terminalen Observer an den rohen Queue-Promise, bevor ein bereits abgebrochenes Signal ausgewertet wird. Dadurch bleibt auch die spätere rohe Rejection behandelt und die Queue sofort für den Folgejob frei.
+
+### RED→GREEN
+
+- `autoProviderFallback=false`: Vorher blieb ein falsches Real-Debrid-`retryAt` trotz sofort verfügbarem AllDebrid-Zweitprovider; danach `retryAt=null`.
+- Direkte 1Fichier-/DDownload-Links: Vorher überlagerte der Real-Debrid-Cooldown beide Direktpfade; danach bleiben sie startfähig. Der Direktpfad wurde zusätzlich mit einer gezielten Mutation wieder rot und nach Wiederherstellung grün belegt.
+- `disabledProviders: ["megadebrid"]`: Vorher waren `canStart=true` und ein Mega-Retry sichtbar; danach `canStart=false`, `phase=idle`, `retryAt=null`.
+- Bereits abgebrochenes Signal: Real-Debrid, AllDebrid und BestDebrid erzeugten vor dem Fix jeweils eine rohe `unhandledRejection`; danach keine, und der jeweilige Folgejob schloss erfolgreich ab.
+
+### Verifikation
+
+- 12/12 fokussierte Manager-Lifecycle-/Cooldown-Tests bestanden.
+- 6/6 bestehende Debrid-Providerwahltests bestanden.
+- 155/155 vollständige Webprovider-/Download-Renderer-Tests bestanden.
+- `npx tsc --noEmit` bestand.
+- `npm run build` bestand für Main und Renderer.
+- `git diff --check` bestand.
+
+### Bedenken
+
+- Die vollständigen Manager- und Debrid-Testdateien wurden nicht komplett ausgeführt; die geänderten Auswahl-, Lifecycle- und Queuepfade wurden fokussiert abgedeckt.
+- Der bestehende Renderer-Buildhinweis für einen JavaScript-Chunk über 500 kB bleibt unverändert.

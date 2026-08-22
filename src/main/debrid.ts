@@ -1643,6 +1643,42 @@ export function leadProviderChainWith(order: readonly DebridProvider[], preferre
   return [preferred, ...order.filter((provider) => provider !== preferred)];
 }
 
+type ProviderSelectionPlan = {
+  hosterKey: string;
+  routedProvider?: DebridProvider;
+  directProviders: DebridProvider[];
+  order: DebridProvider[];
+};
+
+function buildProviderSelectionPlan(
+  settings: AppSettings,
+  link: string,
+  preferredLeadProvider?: DebridProvider | null
+): ProviderSelectionPlan {
+  const configuredOrder = settings.providerOrder && settings.providerOrder.length > 0
+    ? uniqueProviderOrder(settings.providerOrder)
+    : toProviderOrder(settings.providerPrimary, settings.providerSecondary, settings.providerTertiary);
+  const order = leadProviderChainWith(configuredOrder, preferredLeadProvider);
+  const hosterKey = extractHosterFromUrl(link);
+  const routedProvider = hosterKey ? settings.hosterRouting?.[hosterKey] : undefined;
+  const directProviders: DebridProvider[] = [];
+  if (isOneFichierLink(link)) {
+    directProviders.push("onefichier");
+  }
+  if (DDOWNLOAD_URL_RE.test(link)) {
+    directProviders.push("ddownload");
+  }
+  return { hosterKey, routedProvider, directProviders, order };
+}
+
+export function isProviderDisabledForSelection(settings: AppSettings, provider: DebridProvider): boolean {
+  const effectiveProvider = resolveMegaDebridProvider(settings, provider);
+  const disabled = settings.disabledProviders || [];
+  return disabled.includes(provider)
+    || disabled.includes(effectiveProvider)
+    || ((effectiveProvider === "megadebrid-api" || effectiveProvider === "megadebrid-web") && disabled.includes("megadebrid"));
+}
+
 function isRapidgatorLink(link: string): boolean {
   try {
     const hostname = new URL(link).hostname.toLowerCase();
@@ -4151,25 +4187,62 @@ export class DebridService {
 
   public getBlockingProviderRetryAt(link: string, preferredLeadProvider: DebridProvider | null = null, now = Date.now()): number | null {
     const settings = cloneSettings(this.settings);
-    const configuredOrder = settings.providerOrder && settings.providerOrder.length > 0
-      ? uniqueProviderOrder(settings.providerOrder)
-      : toProviderOrder(settings.providerPrimary, settings.providerSecondary, settings.providerTertiary);
-    const orderedProviders = leadProviderChainWith(configuredOrder, preferredLeadProvider);
-    const hosterKey = extractHosterFromUrl(link);
-    const routedProvider = hosterKey ? settings.hosterRouting?.[hosterKey] : undefined;
-    const routedPlan = routedProvider
-      ? [routedProvider, ...orderedProviders.filter((provider) => provider !== routedProvider)]
-      : orderedProviders;
-    const plan = settings.autoProviderFallback || routedProvider ? routedPlan : routedPlan.slice(0, 1);
+    const plan = buildProviderSelectionPlan(settings, link, preferredLeadProvider);
     const deadlines: number[] = [];
+    if (plan.routedProvider) {
+      const routedState = this.getProviderRuntimeWaitState(settings, plan.routedProvider, plan.hosterKey, now);
+      if (routedState.configured) {
+        if (routedState.retryAt === null) {
+          return null;
+        }
+        deadlines.push(routedState.retryAt);
+      }
+    }
+    for (const provider of plan.directProviders) {
+      const state = this.getProviderRuntimeWaitState(settings, provider, plan.hosterKey, now);
+      if (state.configured && state.retryAt === null) {
+        return null;
+      }
+      if (state.retryAt) {
+        deadlines.push(state.retryAt);
+      }
+    }
+    if (!settings.autoProviderFallback) {
+      const primary = plan.order[0];
+      if (!primary || !this.isProviderConfiguredFor(settings, primary)) {
+        return deadlines.length > 0 ? Math.min(...deadlines) : null;
+      }
+      if (this.isProviderDailyLimited(settings, primary)) {
+        const secondary = plan.order.find((provider) => provider !== primary && this.isProviderSelectableFor(settings, provider));
+        if (secondary) {
+          const secondaryState = this.getProviderRuntimeWaitState(settings, secondary, plan.hosterKey, now);
+          if (secondaryState.retryAt === null) {
+            return null;
+          }
+          deadlines.push(secondaryState.retryAt);
+        } else {
+          const primaryState = this.getProviderRuntimeWaitState(settings, primary, plan.hosterKey, now);
+          if (primaryState.retryAt) {
+            deadlines.push(primaryState.retryAt);
+          }
+        }
+      } else {
+        const primaryState = this.getProviderRuntimeWaitState(settings, primary, plan.hosterKey, now);
+        if (primaryState.retryAt === null) {
+          return null;
+        }
+        deadlines.push(primaryState.retryAt);
+      }
+      return deadlines.length > 0 ? Math.min(...deadlines) : null;
+    }
     const seen = new Set<DebridProvider>();
-    for (const provider of plan) {
+    for (const provider of plan.order) {
       const effectiveProvider = resolveMegaDebridProvider(settings, provider);
       if (seen.has(effectiveProvider)) {
         continue;
       }
       seen.add(effectiveProvider);
-      const state = this.getProviderRuntimeWaitState(settings, effectiveProvider, hosterKey, now);
+      const state = this.getProviderRuntimeWaitState(settings, provider, plan.hosterKey, now);
       if (!state.configured) {
         continue;
       }
@@ -4187,10 +4260,11 @@ export class DebridService {
     hosterKey: string,
     now: number
   ): { configured: boolean; retryAt: number | null } {
-    if ((settings.disabledProviders || []).includes(provider)) {
+    if (isProviderDisabledForSelection(settings, provider)) {
       return { configured: false, retryAt: null };
     }
-    if (provider === "realdebrid") {
+    const effectiveProvider = resolveMegaDebridProvider(settings, provider);
+    if (effectiveProvider === "realdebrid") {
       const accounts = this.getConfiguredRealDebridAccounts(settings).filter((account) => account.enabled
         && !isRealDebridAccountDailyLimitReached(settings, account.id, now));
       if (accounts.length === 0) {
@@ -4201,8 +4275,8 @@ export class DebridService {
         ? { configured: true, retryAt: null }
         : { configured: true, retryAt: Math.min(...deadlines as number[]) };
     }
-    if (provider === "megadebrid-api" || provider === "megadebrid-web") {
-      const mode = provider === "megadebrid-web" ? "web" : "api";
+    if (effectiveProvider === "megadebrid-api" || effectiveProvider === "megadebrid-web") {
+      const mode = effectiveProvider === "megadebrid-web" ? "web" : "api";
       if (!isMegaDebridModeEnabled(settings, mode) || (mode === "web" && !this.options.megaWebUnrestrict)) {
         return { configured: false, retryAt: null };
       }
@@ -4216,7 +4290,7 @@ export class DebridService {
         ? { configured: true, retryAt: null }
         : { configured: true, retryAt: Math.min(...deadlines as number[]) };
     }
-    if (provider === "debridlink") {
+    if (effectiveProvider === "debridlink") {
       const keys = parseDebridLinkApiKeys(settings.debridLinkApiKeys).filter((key) => !isDebridLinkApiKeyDisabled(settings, key.id)
         && !isDebridLinkApiKeyDailyLimitReached(settings, key.id, now));
       if (keys.length === 0) {
@@ -4400,11 +4474,9 @@ export class DebridService {
 
   public async unrestrictLink(link: string, signal?: AbortSignal, settingsSnapshot?: AppSettings, preferredLeadProvider?: DebridProvider | null): Promise<ProviderUnrestrictedLink> {
     const settings = settingsSnapshot ? cloneSettings(settingsSnapshot) : cloneSettings(this.settings);
-
-    const routing = settings.hosterRouting || {};
-    const hosterKey = extractHosterFromUrl(link);
-    if (hosterKey && routing[hosterKey]) {
-      const routedProvider = routing[hosterKey];
+    const selectionPlan = buildProviderSelectionPlan(settings, link, preferredLeadProvider);
+    const { hosterKey, routedProvider } = selectionPlan;
+    if (hosterKey && routedProvider) {
       if (this.isProviderSelectableFor(settings, routedProvider)) {
         logger.info(`Hoster-Zuordnung: ${hosterKey} → ${PROVIDER_LABELS[routedProvider]}`);
         try {
@@ -4437,13 +4509,16 @@ export class DebridService {
       }
     }
 
-    if (isOneFichierLink(link) && this.isProviderSelectableFor(settings, "onefichier")) {
+    for (const directProvider of selectionPlan.directProviders) {
+      if (!this.isProviderSelectableFor(settings, directProvider)) {
+        continue;
+      }
       try {
-        const result = await this.unrestrictViaProvider(settings, "onefichier", link, signal);
+        const result = await this.unrestrictViaProvider(settings, directProvider, link, signal);
         return {
           ...result,
-          provider: "onefichier",
-          providerLabel: PROVIDER_LABELS["onefichier"] + (result.sourceLabel ? ` (${result.sourceLabel})` : "")
+          provider: directProvider,
+          providerLabel: PROVIDER_LABELS[directProvider] + (result.sourceLabel ? ` (${result.sourceLabel})` : "")
         };
       } catch (error) {
         const errorText = compactErrorText(error);
@@ -4456,29 +4531,7 @@ export class DebridService {
       }
     }
 
-    if (DDOWNLOAD_URL_RE.test(link) && this.isProviderSelectableFor(settings, "ddownload")) {
-      try {
-        const result = await this.unrestrictViaProvider(settings, "ddownload", link, signal);
-        return {
-          ...result,
-          provider: "ddownload",
-          providerLabel: PROVIDER_LABELS["ddownload"] + (result.sourceLabel ? ` (${result.sourceLabel})` : "")
-        };
-      } catch (error) {
-        const errorText = compactErrorText(error);
-        if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) {
-          throw error;
-        }
-        if (!settings.autoProviderFallback) {
-          throw error;
-        }
-      }
-    }
-
-    const baseOrder: DebridProvider[] = (settings.providerOrder && settings.providerOrder.length > 0)
-      ? uniqueProviderOrder(settings.providerOrder)
-      : toProviderOrder(settings.providerPrimary, settings.providerSecondary, settings.providerTertiary);
-    const order = leadProviderChainWith(baseOrder, preferredLeadProvider);
+    const order = selectionPlan.order;
 
     const primary = order[0];
     if (!settings.autoProviderFallback) {
@@ -4586,7 +4639,7 @@ export class DebridService {
 
   private isProviderConfiguredFor(settings: AppSettings, provider: DebridProvider): boolean {
     const effectiveProvider = resolveMegaDebridProvider(settings, provider);
-    if ((settings.disabledProviders || []).includes(provider) || (settings.disabledProviders || []).includes(effectiveProvider)) return false;
+    if (isProviderDisabledForSelection(settings, provider)) return false;
     if (effectiveProvider === "realdebrid") {
       return this.getConfiguredRealDebridAccounts(settings).some((account) => account.enabled);
     }

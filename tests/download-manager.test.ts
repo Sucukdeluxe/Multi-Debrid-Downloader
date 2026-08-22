@@ -998,6 +998,93 @@ describe("deterministic stop and restart lifecycle", () => {
     });
   });
 
+  it("uses an available secondary provider for cooldown projection even when automatic failure fallback is disabled", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-disabled-fallback-provider-context-"));
+    tempDirs.push(root);
+    const accountId = "rda_disabled_fallback_secondary";
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        realDebridApiTokens: serializeRealDebridApiAccounts([{ id: accountId, token: "token" }]),
+        allDebridToken: "all-debrid-token",
+        providerOrder: ["realdebrid", "alldebrid"],
+        autoProviderFallback: false,
+        autoExtract: false
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+    manager.addPackages([{ name: "secondary", links: ["https://rapidgator.net/file/secondary"] }]);
+    primeRealDebridRuntimeCooldownForTests(accountId, 60_000);
+
+    expect(manager.getSnapshot()).toMatchObject({
+      canStart: true,
+      lifecycle: { phase: "idle", retryAt: null }
+    });
+  });
+
+  it.each([
+    {
+      name: "1Fichier",
+      link: "https://1fichier.com/?direct123",
+      settings: { oneFichierApiKey: "onefichier-key" }
+    },
+    {
+      name: "DDownload",
+      link: "https://ddownload.com/abc12345/direct.bin",
+      settings: { ddownloadLogin: "user", ddownloadPassword: "password" }
+    }
+  ])("does not project a Real-Debrid cooldown over the direct $name path", ({ link, settings: directSettings }) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-direct-provider-context-"));
+    tempDirs.push(root);
+    const accountId = `rda_direct_${path.basename(root)}`;
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        ...directSettings,
+        realDebridApiTokens: serializeRealDebridApiAccounts([{ id: accountId, token: "token" }]),
+        providerOrder: ["realdebrid"],
+        autoProviderFallback: false,
+        autoExtract: false
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+    manager.addPackages([{ name: "direct", links: [link] }]);
+    primeRealDebridRuntimeCooldownForTests(accountId, 60_000);
+
+    expect(manager.getSnapshot()).toMatchObject({
+      canStart: true,
+      lifecycle: { phase: "idle", retryAt: null }
+    });
+  });
+
+  it("does not project a Mega-Debrid retry when the shared Mega provider alias is disabled", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-disabled-mega-alias-context-"));
+    tempDirs.push(root);
+    const login = "disabled-mega@example.test";
+    const accountId = getMegaDebridAccountId(login);
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        megaDebridApiCredentials: `${login}:password`,
+        megaDebridApiEnabled: true,
+        disabledProviders: ["megadebrid"],
+        providerOrder: ["megadebrid"],
+        autoExtract: false
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+    manager.addPackages([{ name: "mega-disabled", links: ["https://rapidgator.net/file/mega-disabled"] }]);
+    primeMegaDebridRuntimeCooldownForTests(`${accountId}:api`, 60_000);
+
+    expect(manager.getSnapshot()).toMatchObject({
+      canStart: false,
+      lifecycle: { phase: "idle", retryAt: null }
+    });
+  });
+
   it("ignores cooldowns for another provider or hoster and for pure post-processing", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-irrelevant-cooldown-context-"));
     tempDirs.push(root);

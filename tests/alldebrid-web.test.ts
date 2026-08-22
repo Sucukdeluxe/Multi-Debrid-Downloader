@@ -181,6 +181,33 @@ describe("alldebrid-web", () => {
     await Promise.resolve();
   });
 
+  it("observes the raw rejection when the signal is already aborted and keeps the queue usable", async () => {
+    mockFetch.mockResolvedValue(new Response(JSON.stringify({
+      link: "https://alldebrid.direct/next.bin",
+      filename: "next.bin",
+      filesize: 666
+    }), { status: 200 }));
+    const fallback = new AllDebridWebFallback(() => true);
+    const controller = new AbortController();
+    controller.abort("before-queue");
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      await expect(fallback.unrestrict("https://rapidgator.net/file/pre-aborted", controller.signal))
+        .rejects.toThrow("aborted:alldebrid-web");
+      await new Promise((resolve) => setImmediate(resolve));
+      await expect(fallback.unrestrict("https://rapidgator.net/file/next")).resolves.toMatchObject({
+        directUrl: "https://alldebrid.direct/next.bin",
+        fileName: "next.bin"
+      });
+      expect(unhandled).toEqual([]);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
   it("opens the login window after login_required and retries generation with the same session partition", async () => {
     mockFetch
       .mockResolvedValueOnce(new Response("login", { status: 200 }))

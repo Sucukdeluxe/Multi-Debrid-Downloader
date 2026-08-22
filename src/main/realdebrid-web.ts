@@ -80,9 +80,6 @@ async function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Prom
   if (!signal) {
     return promise;
   }
-  if (signal.aborted) {
-    throw abortError();
-  }
   return new Promise<T>((resolve, reject) => {
     let settled = false;
     const onAbort = (): void => {
@@ -109,6 +106,9 @@ async function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Prom
       signal.removeEventListener("abort", onAbort);
       reject(error);
     });
+    if (signal.aborted) {
+      onAbort();
+    }
   });
 }
 
