@@ -116,6 +116,8 @@ const providerLabels: Record<DebridProvider, string> = {
 
 const statusLabels: Record<HistoryViewStatus, string> = {
   completed: "Abgeschlossen",
+  partial: "Teilweise",
+  cancelled: "Abgebrochen",
   deleted: "Gelöscht",
   failed: "Fehlgeschlagen"
 };

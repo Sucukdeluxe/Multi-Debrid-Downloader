@@ -992,6 +992,200 @@ describe("settings storage", () => {
     expect(normalized.historyRetentionMode).toBe("permanent");
   });
 
+  it("loads legacy history without inventing structured durations", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    fs.writeFileSync(paths.historyFile, JSON.stringify([{
+      id: "legacy",
+      name: "Altbestand",
+      totalBytes: 1_000,
+      downloadedBytes: 1_000,
+      fileCount: 1,
+      provider: "realdebrid",
+      completedAt: 10_000,
+      durationSeconds: 9,
+      status: "completed",
+      outputDir: "C:\\Downloads\\Altbestand"
+    }]), "utf8");
+
+    const [loaded] = loadHistory(paths);
+
+    expect(loaded).toEqual(expect.objectContaining({
+      durationSeconds: 9,
+      status: "completed"
+    }));
+    expect(loaded.downloadDurationSeconds).toBeUndefined();
+    expect(loaded.totalDurationSeconds).toBeUndefined();
+  });
+
+  it.each(["completed", "partial", "failed", "cancelled", "deleted"] as const)("preserves the %s history status", (status) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    fs.writeFileSync(paths.historyFile, JSON.stringify([{
+      id: `history-${status}`,
+      name: "Paket",
+      completedAt: 10_000,
+      durationSeconds: 1,
+      status,
+      outputDir: "C:\\Downloads\\Paket"
+    }]), "utf8");
+
+    expect(loadHistory(paths)[0]?.status).toBe(status);
+  });
+
+  it("clamps expanded history metrics and preserves normalized operations", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    fs.writeFileSync(paths.historyFile, JSON.stringify([{
+      id: "structured",
+      name: "Paket",
+      completedAt: 50_000,
+      durationSeconds: 1,
+      status: "failed",
+      outputDir: "C:\\Downloads\\Paket",
+      startedAt: -10,
+      downloadEndedAt: 20_000,
+      postProcessStartedAt: 25_000,
+      downloadDurationSeconds: -120,
+      extractionDurationSeconds: 30,
+      remuxDurationSeconds: 5,
+      postProcessDurationSeconds: 35,
+      totalDurationSeconds: 50,
+      successfulFiles: -1,
+      failedFiles: 1,
+      cancelledFiles: 0,
+      archiveCount: 1,
+      partCount: 16,
+      outputCount: 15,
+      failurePhase: "extract",
+      archiveOperations: [{
+        id: "archive-1",
+        name: "Paket.part01.rar",
+        itemIds: ["item-1", "", "item-2"],
+        partCount: -16,
+        startedAt: 25_000,
+        completedAt: 50_000,
+        durationMs: -30_000,
+        status: "failed",
+        errorCategory: "checksum"
+      }],
+      remuxOperations: [{
+        id: "remux-1",
+        fileName: "episode.mkv",
+        startedAt: 30_000,
+        completedAt: 35_000,
+        durationMs: 5_000,
+        status: "cancelled",
+        errorCategory: "cancelled"
+      }]
+    }]), "utf8");
+
+    expect(loadHistory(paths)[0]).toEqual(expect.objectContaining({
+      status: "failed",
+      startedAt: 0,
+      downloadEndedAt: 20_000,
+      postProcessStartedAt: 25_000,
+      downloadDurationSeconds: 0,
+      extractionDurationSeconds: 30,
+      remuxDurationSeconds: 5,
+      postProcessDurationSeconds: 35,
+      totalDurationSeconds: 50,
+      successfulFiles: 0,
+      failedFiles: 1,
+      cancelledFiles: 0,
+      archiveCount: 1,
+      partCount: 16,
+      outputCount: 15,
+      failurePhase: "extract",
+      archiveOperations: [{
+        id: "archive-1",
+        name: "Paket.part01.rar",
+        itemIds: ["item-1", "item-2"],
+        partCount: 0,
+        startedAt: 25_000,
+        completedAt: 50_000,
+        durationMs: 0,
+        status: "failed",
+        errorCategory: "checksum"
+      }],
+      remuxOperations: [{
+        id: "remux-1",
+        fileName: "episode.mkv",
+        startedAt: 30_000,
+        completedAt: 35_000,
+        durationMs: 5_000,
+        status: "cancelled",
+        errorCategory: "cancelled"
+      }]
+    }));
+  });
+
+  it("preserves package lifecycle timestamps and operation metrics when loading a session", () => {
+    const normalized = normalizeLoadedSession({
+      version: 2,
+      packageOrder: ["pkg-1"],
+      packages: {
+        "pkg-1": {
+          id: "pkg-1",
+          name: "Paket",
+          outputDir: "C:\\Downloads\\Paket",
+          extractDir: "C:\\Downloads\\Paket",
+          status: "completed",
+          itemIds: [],
+          cancelled: false,
+          enabled: true,
+          downloadStartedAt: 1_000,
+          downloadCompletedAt: 10_000,
+          downloadEndedAt: 12_000,
+          postProcessQueuedAt: 13_000,
+          postProcessStartedAt: 14_000,
+          postProcessCompletedAt: 20_000,
+          terminalAt: 21_000,
+          archiveOperations: [{
+            id: "archive-1",
+            name: "Paket.rar",
+            itemIds: [],
+            partCount: 1,
+            startedAt: 14_000,
+            completedAt: 18_000,
+            durationMs: 4_000,
+            status: "completed",
+            errorCategory: ""
+          }],
+          remuxOperations: [],
+          outputCount: 1,
+          cleanupErrorCategory: "",
+          createdAt: 1_000,
+          updatedAt: 21_000
+        }
+      },
+      items: {},
+      runStartedAt: 1_000,
+      totalDownloadedBytes: 0,
+      summaryText: "",
+      reconnectUntil: 0,
+      reconnectReason: "",
+      paused: false,
+      running: false,
+      updatedAt: 21_000
+    });
+
+    expect(normalized.packages["pkg-1"]).toEqual(expect.objectContaining({
+      downloadEndedAt: 12_000,
+      postProcessQueuedAt: 13_000,
+      postProcessStartedAt: 14_000,
+      postProcessCompletedAt: 20_000,
+      terminalAt: 21_000,
+      archiveOperations: [expect.objectContaining({ id: "archive-1", durationMs: 4_000 })],
+      remuxOperations: [],
+      outputCount: 1,
+      cleanupErrorCategory: ""
+    }));
+  });
+
   it("skips adding persisted history entries when history retention is never", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
     tempDirs.push(dir);

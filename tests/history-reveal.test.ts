@@ -53,6 +53,13 @@ describe("revealHistoryEntry", () => {
     expect(deps.openPath).toHaveBeenCalledWith("C:\\Downloads\\Paket");
   });
 
+  it.each(["partial", "failed", "cancelled"] as const)("opens a %s history result from the same authoritative directory", async (status) => {
+    const deps = dependencies({ loadHistory: () => [historyEntry({ status })] });
+
+    await expect(revealHistoryEntry({ entryId: "known-id" }, deps)).resolves.toEqual({ ok: true });
+    expect(deps.openPath).toHaveBeenCalledWith("C:\\Downloads\\Paket");
+  });
+
   it("ignores every renderer-supplied field except entryId", async () => {
     const deps = dependencies();
 

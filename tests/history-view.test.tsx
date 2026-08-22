@@ -136,6 +136,15 @@ describe("history model", () => {
     }
   });
 
+  it("labels partial and cancelled package results", () => {
+    const rows = filterHistoryRows([
+      entry({ id: "partial", name: "Teilweise", status: "partial" }),
+      entry({ id: "cancelled", name: "Abgebrochen", status: "cancelled" })
+    ], "all", "", now);
+
+    expect(rows.map((row) => row.statusLabel)).toEqual(["Teilweise", "Abgebrochen"]);
+  });
+
   it("uses local calendar midnights for the six previous days across both daylight-saving transitions", () => {
     const springNow = new Date(2026, 2, 30, 12, 0, 0, 0).getTime();
     const springBoundary = new Date(2026, 2, 24, 0, 0, 0, 0).getTime();

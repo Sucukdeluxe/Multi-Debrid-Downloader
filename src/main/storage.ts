@@ -5,7 +5,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { getDebridLinkApiKeyIds } from "../shared/debrid-link-keys";
 import { getMegaDebridAccountIds, mergeMegaDebridCredentialPools, parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
-import { AppSettings, AudioStripSummary, BandwidthScheduleEntry, DebridAccountStatus, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, HistoryEntry, HistoryRetentionMode, LogStorageLocation, PackageEntry, PackagePriority, SessionState } from "../shared/types";
+import { AppSettings, ArchiveOperationMetric, AudioStripSummary, BandwidthScheduleEntry, DebridAccountStatus, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, FailurePhase, HistoryEntry, HistoryRetentionMode, LogStorageLocation, PackageEntry, PackagePriority, RemuxOperationMetric, SessionState } from "../shared/types";
 import { getProviderUsageDayKey } from "../shared/provider-daily-limits";
 import { getRealDebridAccountIds, normalizeRealDebridWebAccountIds, parseRealDebridApiAccounts, serializeRealDebridApiAccounts } from "../shared/real-debrid-accounts";
 import { defaultSettings } from "./constants";
@@ -42,6 +42,9 @@ const VALID_DOWNLOAD_STATUSES = new Set<DownloadStatus>([
 ]);
 const VALID_ITEM_PROVIDERS = new Set<DebridProvider>(["realdebrid", "megadebrid", "megadebrid-api", "megadebrid-web", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink"]);
 const VALID_ONLINE_STATUSES = new Set(["online", "offline", "checking"]);
+const VALID_OPERATION_STATUSES = new Set(["completed", "failed", "cancelled"]);
+const VALID_HISTORY_STATUSES = new Set(["completed", "partial", "failed", "cancelled", "deleted"]);
+const VALID_FAILURE_PHASES = new Set(["download", "extract", "remux", "cleanup"]);
 const SAFE_SESSION_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
 
 function asText(value: unknown): string {
@@ -767,6 +770,68 @@ function normalizeAudioStripSummary(raw: unknown): AudioStripSummary | undefined
   };
 }
 
+function normalizeArchiveOperations(raw: unknown): ArchiveOperationMetric[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.slice(0, 10_000).flatMap((value) => {
+    const operation = asRecord(value);
+    if (!operation) {
+      return [];
+    }
+    const id = normalizeSessionId(operation.id);
+    const status = asText(operation.status);
+    if (!id || !VALID_OPERATION_STATUSES.has(status)) {
+      return [];
+    }
+    return [{
+      id,
+      name: asText(operation.name),
+      itemIds: Array.isArray(operation.itemIds)
+        ? operation.itemIds.map(normalizeSessionId).filter(Boolean).slice(0, 100_000)
+        : [],
+      partCount: clampNumber(operation.partCount, 0, 0, 100_000),
+      startedAt: clampNumber(operation.startedAt, 0, 0, Number.MAX_SAFE_INTEGER),
+      completedAt: clampNumber(operation.completedAt, 0, 0, Number.MAX_SAFE_INTEGER),
+      durationMs: clampNumber(operation.durationMs, 0, 0, Number.MAX_SAFE_INTEGER),
+      status: status as ArchiveOperationMetric["status"],
+      errorCategory: asText(operation.errorCategory)
+    }];
+  });
+}
+
+function normalizeRemuxOperations(raw: unknown): RemuxOperationMetric[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.slice(0, 10_000).flatMap((value) => {
+    const operation = asRecord(value);
+    if (!operation) {
+      return [];
+    }
+    const id = normalizeSessionId(operation.id);
+    const status = asText(operation.status);
+    if (!id || !VALID_OPERATION_STATUSES.has(status)) {
+      return [];
+    }
+    return [{
+      id,
+      fileName: asText(operation.fileName),
+      startedAt: clampNumber(operation.startedAt, 0, 0, Number.MAX_SAFE_INTEGER),
+      completedAt: clampNumber(operation.completedAt, 0, 0, Number.MAX_SAFE_INTEGER),
+      durationMs: clampNumber(operation.durationMs, 0, 0, Number.MAX_SAFE_INTEGER),
+      status: status as RemuxOperationMetric["status"],
+      errorCategory: asText(operation.errorCategory)
+    }];
+  });
+}
+
+function optionalClampedNumber(record: Record<string, unknown>, key: string, max = Number.MAX_SAFE_INTEGER): number | undefined {
+  return Object.prototype.hasOwnProperty.call(record, key)
+    ? clampNumber(record[key], 0, 0, max)
+    : undefined;
+}
+
 function migrateLegacyMegaEnableFlags(parsed: AppSettings): AppSettings {
   if (parsed.megaDebridApiEnabled !== undefined || parsed.megaDebridWebEnabled !== undefined) {
     return parsed;
@@ -922,6 +987,15 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
         : [],
       downloadStartedAt: clampNumber(pkg.downloadStartedAt, 0, 0, Number.MAX_SAFE_INTEGER),
       downloadCompletedAt: clampNumber(pkg.downloadCompletedAt, 0, 0, Number.MAX_SAFE_INTEGER),
+      downloadEndedAt: clampNumber(pkg.downloadEndedAt, 0, 0, Number.MAX_SAFE_INTEGER),
+      postProcessQueuedAt: clampNumber(pkg.postProcessQueuedAt, 0, 0, Number.MAX_SAFE_INTEGER),
+      postProcessStartedAt: clampNumber(pkg.postProcessStartedAt, 0, 0, Number.MAX_SAFE_INTEGER),
+      postProcessCompletedAt: clampNumber(pkg.postProcessCompletedAt, 0, 0, Number.MAX_SAFE_INTEGER),
+      terminalAt: clampNumber(pkg.terminalAt, 0, 0, Number.MAX_SAFE_INTEGER),
+      archiveOperations: normalizeArchiveOperations(pkg.archiveOperations),
+      remuxOperations: normalizeRemuxOperations(pkg.remuxOperations),
+      outputCount: clampNumber(pkg.outputCount, 0, 0, 1_000_000),
+      cleanupErrorCategory: asText(pkg.cleanupErrorCategory),
       createdAt: clampNumber(pkg.createdAt, now, 0, Number.MAX_SAFE_INTEGER),
       updatedAt: clampNumber(pkg.updatedAt, now, 0, Number.MAX_SAFE_INTEGER)
     };
@@ -1484,6 +1558,24 @@ export function normalizeHistoryEntry(raw: unknown, index: number): HistoryEntry
   const id = asText(entry.id) || `hist-${Date.now().toString(36)}-${index}`;
   const name = asText(entry.name) || "Unbenannt";
   const providerRaw = asText(entry.provider);
+  const statusRaw = asText(entry.status);
+  const failurePhaseRaw = entry.failurePhase === null ? null : asText(entry.failurePhase);
+  const optionalFields = {
+    startedAt: optionalClampedNumber(entry, "startedAt"),
+    downloadEndedAt: optionalClampedNumber(entry, "downloadEndedAt"),
+    postProcessStartedAt: optionalClampedNumber(entry, "postProcessStartedAt"),
+    downloadDurationSeconds: optionalClampedNumber(entry, "downloadDurationSeconds"),
+    extractionDurationSeconds: optionalClampedNumber(entry, "extractionDurationSeconds"),
+    remuxDurationSeconds: optionalClampedNumber(entry, "remuxDurationSeconds"),
+    postProcessDurationSeconds: optionalClampedNumber(entry, "postProcessDurationSeconds"),
+    totalDurationSeconds: optionalClampedNumber(entry, "totalDurationSeconds"),
+    successfulFiles: optionalClampedNumber(entry, "successfulFiles", 1_000_000),
+    failedFiles: optionalClampedNumber(entry, "failedFiles", 1_000_000),
+    cancelledFiles: optionalClampedNumber(entry, "cancelledFiles", 1_000_000),
+    archiveCount: optionalClampedNumber(entry, "archiveCount", 100_000),
+    partCount: optionalClampedNumber(entry, "partCount", 1_000_000),
+    outputCount: optionalClampedNumber(entry, "outputCount", 1_000_000)
+  };
 
   return {
     id,
@@ -1494,9 +1586,15 @@ export function normalizeHistoryEntry(raw: unknown, index: number): HistoryEntry
     provider: VALID_ITEM_PROVIDERS.has(providerRaw as DebridProvider) ? providerRaw as DebridProvider : null,
     completedAt: clampNumber(entry.completedAt, Date.now(), 0, Number.MAX_SAFE_INTEGER),
     durationSeconds: clampNumber(entry.durationSeconds, 0, 0, Number.MAX_SAFE_INTEGER),
-    status: entry.status === "deleted" ? "deleted" : "completed",
+    status: VALID_HISTORY_STATUSES.has(statusRaw) ? statusRaw as HistoryEntry["status"] : "completed",
     outputDir: asText(entry.outputDir),
-    urls: Array.isArray(entry.urls) ? (entry.urls as unknown[]).map(String).filter(Boolean) : undefined
+    urls: Array.isArray(entry.urls) ? (entry.urls as unknown[]).map(String).filter(Boolean) : undefined,
+    ...Object.fromEntries(Object.entries(optionalFields).filter(([, value]) => value !== undefined)),
+    ...(failurePhaseRaw === null || VALID_FAILURE_PHASES.has(failurePhaseRaw)
+      ? { failurePhase: failurePhaseRaw as FailurePhase }
+      : {}),
+    ...(Array.isArray(entry.archiveOperations) ? { archiveOperations: normalizeArchiveOperations(entry.archiveOperations) } : {}),
+    ...(Array.isArray(entry.remuxOperations) ? { remuxOperations: normalizeRemuxOperations(entry.remuxOperations) } : {})
   };
 }
 

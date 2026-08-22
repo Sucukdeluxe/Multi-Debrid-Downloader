@@ -481,6 +481,68 @@ export interface AudioStripSummary {
   files: AudioStripFileResult[];
 }
 
+export type PackageResultStatus = "completed" | "partial" | "failed" | "cancelled";
+export type FailurePhase = "download" | "extract" | "remux" | "cleanup" | null;
+
+export interface ArchiveOperationMetric {
+  id: string;
+  name: string;
+  itemIds: string[];
+  partCount: number;
+  startedAt: number;
+  completedAt: number;
+  durationMs: number;
+  status: "completed" | "failed" | "cancelled";
+  errorCategory: string;
+}
+
+export interface RemuxOperationMetric {
+  id: string;
+  fileName: string;
+  startedAt: number;
+  completedAt: number;
+  durationMs: number;
+  status: "completed" | "failed" | "cancelled";
+  errorCategory: string;
+}
+
+export interface PackageTelemetry {
+  package: PackageEntry;
+  items: DownloadItem[];
+  archiveOperations?: ArchiveOperationMetric[];
+  remuxOperations?: RemuxOperationMetric[];
+  outputCount?: number;
+  cleanupErrorCategory?: string;
+}
+
+export interface PackageResult {
+  packageId: string;
+  name: string;
+  status: PackageResultStatus;
+  startedAt: number;
+  downloadEndedAt: number;
+  postProcessStartedAt: number;
+  completedAt: number;
+  downloadDurationSeconds: number;
+  extractionDurationSeconds: number;
+  remuxDurationSeconds: number;
+  postProcessDurationSeconds: number;
+  totalDurationSeconds: number;
+  totalBytes: number;
+  downloadedBytes: number;
+  averageDownloadSpeedBps: number;
+  successfulFiles: number;
+  failedFiles: number;
+  cancelledFiles: number;
+  archiveCount: number;
+  partCount: number;
+  outputCount: number;
+  failurePhase: FailurePhase;
+  errorCategory: string;
+  archiveOperations: ArchiveOperationMetric[];
+  remuxOperations: RemuxOperationMetric[];
+}
+
 export interface PackageEntry {
   id: string;
   name: string;
@@ -501,6 +563,15 @@ export interface PackageEntry {
   cleanedProviders?: DebridProvider[];
   downloadStartedAt?: number;
   downloadCompletedAt?: number;
+  downloadEndedAt?: number;
+  postProcessQueuedAt?: number;
+  postProcessStartedAt?: number;
+  postProcessCompletedAt?: number;
+  terminalAt?: number;
+  archiveOperations?: ArchiveOperationMetric[];
+  remuxOperations?: RemuxOperationMetric[];
+  outputCount?: number;
+  cleanupErrorCategory?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -829,9 +900,26 @@ export interface HistoryEntry {
   provider: DebridProvider | null;
   completedAt: number;
   durationSeconds: number;
-  status: "completed" | "deleted";
+  status: PackageResultStatus | "deleted";
   outputDir: string;
   urls?: string[];
+  startedAt?: number;
+  downloadEndedAt?: number;
+  postProcessStartedAt?: number;
+  downloadDurationSeconds?: number;
+  extractionDurationSeconds?: number;
+  remuxDurationSeconds?: number;
+  postProcessDurationSeconds?: number;
+  totalDurationSeconds?: number;
+  successfulFiles?: number;
+  failedFiles?: number;
+  cancelledFiles?: number;
+  archiveCount?: number;
+  partCount?: number;
+  outputCount?: number;
+  failurePhase?: FailurePhase;
+  archiveOperations?: ArchiveOperationMetric[];
+  remuxOperations?: RemuxOperationMetric[];
 }
 
 export interface HistoryState {
