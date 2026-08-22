@@ -42,7 +42,8 @@ import {
   DownloadsSidebarStatus,
   DownloadsToolbar,
   DownloadsView,
-  type DownloadsViewActions
+  type DownloadsViewActions,
+  type DownloadsViewModel
 } from "../src/renderer/views/downloads/DownloadsView";
 import {
   DownloadsTableHeader,
@@ -711,6 +712,7 @@ function createActions(overrides: Partial<DownloadsViewActions> = {}): Downloads
     onStopDownloads: () => {},
     onToggleSchedule: () => {},
     onScheduleTimeChange: () => {},
+    onScheduleStartDayChange: () => {},
     onActivateSchedule: () => {},
     onCancelSchedule: () => {},
     onMoveSelectionUp: () => {},
@@ -774,7 +776,7 @@ function findButton(node: ReactNode, label: string): ReactElement {
   return findElement(node, (element) => element.type === "button" && element.props.children === label);
 }
 
-function withRuntime(input: DownloadsModelInput, overrides: Record<string, unknown> = {}) {
+function withRuntime(input: DownloadsModelInput, overrides: Partial<DownloadsViewModel> = {}): DownloadsViewModel {
   return {
     ...buildDownloadsViewModel(input),
     running: true,
@@ -789,6 +791,7 @@ function withRuntime(input: DownloadsModelInput, overrides: Record<string, unkno
     scheduleActive: false,
     scheduleOpen: false,
     scheduleTime: "23:30",
+    scheduleStartDay: "today",
     scheduleLabel: "",
     packageSpeedBps: { "package-a": 12_000_000 },
     disclosureRevision: 0,
@@ -1184,6 +1187,68 @@ describe("downloads view", () => {
 
     expect(html).toContain("Geplant: 1m 30s");
     expect(findButton(toolbar, "Abbrechen").props.disabled).toBe(false);
+  });
+
+  it("keeps closed schedule controls mounted, hidden and unreachable", () => {
+    const toolbar = DownloadsToolbar({
+      actions: createActions(),
+      model: withRuntime(createInput(), { scheduleActive: false, scheduleOpen: false })
+    });
+    const slot = findElement(toolbar, (element) => String(element.props.className || "").includes("downloads-schedule-slot"));
+    const controls = findElement(toolbar, (element) => String(element.props.className || "").includes("downloads-schedule-controls"));
+    const timeInput = findElement(toolbar, (element) => element.type === "input" && element.props["aria-label"] === "Startzeit");
+    const daySelect = findElement(toolbar, (element) => element.type === "select" && element.props["aria-label"] === "Starttag");
+
+    expect(findButton(toolbar, "Zeitplan").props["aria-expanded"]).toBe(false);
+    expect(slot.props.className).toContain("is-closed");
+    expect(controls.props["aria-hidden"]).toBe(true);
+    expect(controls.props.inert).toBe("true");
+    expect(renderToStaticMarkup(toolbar)).toContain('inert="true"');
+    expect(timeInput.props.disabled).toBe(true);
+    expect(daySelect.props.disabled).toBe(true);
+    expect(findButton(toolbar, "Planen").props.disabled).toBe(true);
+  });
+
+  it("collects local time and the selected first start day from the open schedule slot", () => {
+    const calls: string[] = [];
+    const toolbar = DownloadsToolbar({
+      actions: createActions({
+        onScheduleTimeChange: (value) => calls.push(`time:${value}`),
+        onScheduleStartDayChange: (value) => calls.push(`day:${value}`)
+      }),
+      model: withRuntime(createInput(), { scheduleOpen: true, scheduleStartDay: "tomorrow", scheduleTime: "08:15" })
+    });
+    const controls = findElement(toolbar, (element) => String(element.props.className || "").includes("downloads-schedule-controls"));
+    const timeInput = findElement(toolbar, (element) => element.type === "input" && element.props["aria-label"] === "Startzeit");
+    const daySelect = findElement(toolbar, (element) => element.type === "select" && element.props["aria-label"] === "Starttag");
+
+    timeInput.props.onChange({ target: { value: "09:45" } });
+    daySelect.props.onChange({ target: { value: "today" } });
+
+    expect(findButton(toolbar, "Zeitplan").props["aria-expanded"]).toBe(true);
+    expect(controls.props["aria-hidden"]).toBe(false);
+    expect(controls.props.inert).toBeUndefined();
+    expect(timeInput.props.value).toBe("08:15");
+    expect(daySelect.props.value).toBe("tomorrow");
+    expect(renderToStaticMarkup(toolbar)).toContain("Ab heute");
+    expect(renderToStaticMarkup(toolbar)).toContain("Ab morgen");
+    expect(calls).toEqual(["time:09:45", "day:today"]);
+  });
+
+  it("animates the persistent schedule slot horizontally and disables it through the global motion setting", () => {
+    const closed = renderToStaticMarkup(<DownloadsToolbar actions={createActions()} model={withRuntime(createInput())} />);
+    const open = renderToStaticMarkup(<DownloadsToolbar actions={createActions()} model={withRuntime(createInput(), { scheduleOpen: true })} />);
+    const motionDisabled = renderToStaticMarkup(<DownloadsToolbar actions={createActions()} model={withRuntime(createInput(), { animationsEnabled: false, scheduleOpen: true })} />);
+    const css = readFileSync(new URL("../src/renderer/views/downloads/downloads.css", import.meta.url), "utf8");
+
+    expect(closed).toContain("downloads-schedule-slot is-closed");
+    expect(open).toContain("downloads-schedule-slot is-open");
+    expect(motionDisabled).toContain("downloads-schedule-slot is-open is-motion-disabled");
+    expect(css).toMatch(/\.downloads-schedule-slot\s*\{[^}]*grid-template-columns:\s*0fr;[^}]*opacity:\s*0;[^}]*transition:/s);
+    expect(css).toMatch(/\.downloads-schedule-slot\.is-open\s*\{[^}]*grid-template-columns:\s*1fr;[^}]*opacity:\s*1;/s);
+    expect(css).toMatch(/\.downloads-schedule-controls\s*\{[^}]*transform:\s*translateX\(-\d+px\);[^}]*transition:\s*transform/s);
+    expect(css).toMatch(/\.downloads-schedule-slot\.is-open \.downloads-schedule-controls\s*\{[^}]*transform:\s*translateX\(0\);/s);
+    expect(css).toMatch(/\.downloads-schedule-slot\.is-motion-disabled[^\{]*\{[^}]*transition:\s*none !important;/s);
   });
 
   it("keeps the table header and all rows in one horizontal scroll context with exact dense geometry", () => {

@@ -237,13 +237,45 @@
   background: var(--ui-border);
 }
 
+.downloads-schedule-slot {
+  display: grid;
+  grid-template-columns: 0fr;
+  min-width: 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition: grid-template-columns 180ms ease, opacity 140ms ease;
+}
+
+.downloads-schedule-slot.is-open {
+  grid-template-columns: 1fr;
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .downloads-schedule-controls {
   display: flex;
   align-items: center;
   gap: 5px;
+  min-width: 0;
+  width: max-content;
+  overflow: hidden;
+  white-space: nowrap;
+  transform: translateX(-10px);
+  transition: transform 180ms ease;
 }
 
-.downloads-schedule-controls input {
+.downloads-schedule-slot.is-open .downloads-schedule-controls {
+  transform: translateX(0);
+}
+
+.downloads-schedule-slot.is-motion-disabled,
+.downloads-schedule-slot.is-motion-disabled .downloads-schedule-controls {
+  transition: none !important;
+}
+
+.downloads-schedule-controls input,
+.downloads-schedule-controls select {
   height: 36px;
 }
 

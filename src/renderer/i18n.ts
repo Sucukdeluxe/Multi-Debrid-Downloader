@@ -63,7 +63,7 @@ const pairs = [
   ["Abgeschlossene und gelöschte Pakete erscheinen hier.", "Completed and deleted packages appear here."], ["Passe Filter oder Suche an.", "Adjust the filter or search."], ["Öffne die Ansicht erneut, um es noch einmal zu versuchen.", "Open the view again to retry."],
   ["Alle sichtbaren Einträge auswählen", "Select all visible entries"], ["Details anzeigen", "Show details"], ["Details ausblenden", "Hide details"],
   ["Sichtbar:", "Visible:"], ["pro Seite", "per page"],
-  ["Verfügbarkeit", "Availability"], ["Hinzugefügt am", "Added on"], ["Ungeprüft", "Unchecked"], ["Paket gestoppt", "Package stopped"], ["Alle anzeigen", "Show all"], ["Planen", "Schedule"], ["Startzeit", "Start time"],
+  ["Verfügbarkeit", "Availability"], ["Hinzugefügt am", "Added on"], ["Ungeprüft", "Unchecked"], ["Paket gestoppt", "Package stopped"], ["Alle anzeigen", "Show all"], ["Planen", "Schedule"], ["Startzeit", "Start time"], ["Starttag", "Start day"], ["Ab heute", "Starting today"], ["Ab morgen", "Starting tomorrow"],
   ["Keine Downloads", "No downloads"], ["Keine passenden Downloads", "No matching downloads"], ["Füge Links hinzu, um Downloads vorzubereiten.", "Add links to prepare downloads."], ["Passe Filter oder Suche an.", "Adjust the filter or search."],
   ["Keine Links gesammelt", "No links collected"], ["Keine passenden Links", "No matching links"], ["Füge Links oder Text ein, um sie zu sammeln.", "Paste links or text to collect them."], ["Links durchsuchen", "Search links"],
   ["Datenmenge", "Data volume"], ["Sitzungszähler", "Session counter"], ["Sieben Tage", "Seven days"], ["30 Tage", "30 days"], ["Zeitraum", "Period"], ["Erfolgreich", "Successful"],
@@ -215,7 +215,7 @@ const prefixedPairs = [
   ["Sicherung laden fehlgeschlagen: ", "Loading backup failed: "], ["Support-Bundle fehlgeschlagen: ", "Support bundle failed: "], ["Support-Trace fehlgeschlagen: ", "Support trace failed: "],
   ["Debug-Setup-Check fehlgeschlagen: ", "Debug setup check failed: "], ["Fehler-Ansicht fehlgeschlagen: ", "Error view failed: "], ["Token-Rotation fehlgeschlagen: ", "Token rotation failed: "],
   ["Ferndiagnose-Status fehlgeschlagen: ", "Remote diagnostics status failed: "], ["Aktivieren fehlgeschlagen: ", "Enabling failed: "], ["Deaktivieren fehlgeschlagen: ", "Disabling failed: "],
-  ["Session-Reset fehlgeschlagen: ", "Session reset failed: "], ["Download-Reset fehlgeschlagen: ", "Download reset failed: "]
+  ["Session-Reset fehlgeschlagen: ", "Session reset failed: "], ["Download-Reset fehlgeschlagen: ", "Download reset failed: "], ["Zeitplan konnte nicht aktiviert werden: ", "Schedule could not be activated: "], ["Zeitplan konnte nicht abgebrochen werden: ", "Schedule could not be cancelled: "], ["Zeitplan konnte nicht abgeglichen werden: ", "Schedule could not be reconciled: "]
 ] as const;
 
 export function normalizeLanguage(value: unknown): AppLanguage {

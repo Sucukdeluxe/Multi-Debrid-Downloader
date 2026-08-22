@@ -111,6 +111,7 @@ import {
   DownloadsSidebar,
   DownloadsSidebarStatus,
   DownloadsToolbar,
+  type DailyScheduleStartDay,
   type DownloadsViewActions,
   type DownloadsViewModel
 } from "./views/downloads/DownloadsView";
@@ -1493,6 +1494,67 @@ export async function runLatestUpdateCheck(
   await apply(result, generation);
 }
 
+interface DailySchedulePersistenceDependencies {
+  updateSettings: (update: RendererSettingsUpdate) => Promise<RendererSettings>;
+  getSnapshot: () => Promise<UiSnapshot>;
+  applySettings: (settings: RendererSettings) => void;
+  applySnapshot: (snapshot: UiSnapshot) => void;
+  showError: (message: string) => void;
+}
+
+function formatDailyScheduleLocalDate(date: Date): string {
+  const year = String(date.getFullYear()).padStart(4, "0");
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function formatDailyScheduleTime(minuteOfDay: number): string {
+  const minute = Math.max(0, Math.min(1_439, Math.floor(minuteOfDay)));
+  return `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
+}
+
+export function buildDailyScheduleSettingsUpdate(
+  time: string,
+  startDay: DailyScheduleStartDay,
+  now = new Date()
+): RendererSettingsUpdate | null {
+  const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(time);
+  if (!match) {
+    return null;
+  }
+  const firstDate = new Date(now);
+  if (startDay === "tomorrow") {
+    firstDate.setDate(firstDate.getDate() + 1);
+  }
+  return {
+    dailyStartEnabled: true,
+    dailyStartMinuteOfDay: Number(match[1]) * 60 + Number(match[2]),
+    dailyStartFirstLocalDate: formatDailyScheduleLocalDate(firstDate)
+  };
+}
+
+export async function persistDailyScheduleSettingsUpdate(
+  update: RendererSettingsUpdate,
+  operation: "activate" | "cancel",
+  dependencies: DailySchedulePersistenceDependencies
+): Promise<boolean> {
+  try {
+    const settings = await dependencies.updateSettings(update);
+    dependencies.applySettings(settings);
+    return true;
+  } catch (error) {
+    const action = operation === "activate" ? "aktiviert" : "abgebrochen";
+    dependencies.showError(`Zeitplan konnte nicht ${action} werden: ${String(error)}`);
+    try {
+      dependencies.applySnapshot(await dependencies.getSnapshot());
+    } catch (snapshotError) {
+      dependencies.showError(`Zeitplan konnte nicht abgeglichen werden: ${String(snapshotError)}`);
+    }
+    return false;
+  }
+}
+
 export function App(): ReactElement {
   const [snapshot, setSnapshot] = useState<UiSnapshot>(emptySnapshot);
   const [appVersion, setAppVersion] = useState("");
@@ -1509,6 +1571,7 @@ export function App(): ReactElement {
   const [settingsSaveState, setSettingsSaveState] = useState<SettingsSaveState>("clean");
   const [schedulePickerOpen, setSchedulePickerOpen] = useState(false);
   const [scheduleTimeInput, setScheduleTimeInput] = useState("");
+  const [scheduleStartDay, setScheduleStartDay] = useState<DailyScheduleStartDay>("today");
   const [scheduleCountdown, setScheduleCountdown] = useState("");
   const [runtimeNow, setRuntimeNow] = useState(() => Date.now());
   const updateCheckGenerationRef = useRef(0);
@@ -1730,7 +1793,9 @@ export function App(): ReactElement {
   }, [settingsDraft.speedLimitKbps]);
 
   useEffect(() => {
-    const schedMs = snapshot.settings.scheduledStartEpochMs || 0;
+    const schedMs = snapshot.settings.dailyStartEnabled
+      ? snapshot.settings.nextDailyStartEpochMs
+      : snapshot.settings.scheduledStartEpochMs || 0;
     if (schedMs <= 0) { setScheduleCountdown(""); return; }
     const update = (): void => {
       const remaining = schedMs - Date.now();
@@ -1744,7 +1809,7 @@ export function App(): ReactElement {
     update();
     const timer = setInterval(update, 1000);
     return () => clearInterval(timer);
-  }, [snapshot.settings.scheduledStartEpochMs]);
+  }, [snapshot.settings.dailyStartEnabled, snapshot.settings.nextDailyStartEpochMs, snapshot.settings.scheduledStartEpochMs]);
 
   useEffect(() => {
     const timer = setInterval(() => setRuntimeNow(Date.now()), 1000);
@@ -4677,16 +4742,43 @@ export function App(): ReactElement {
       });
   }, [setClipboardWatcherActive, showToast]);
 
+  const applyDailyScheduleSettings = useCallback((settings: RendererSettings): void => {
+    const apply = (current: UiSnapshot): UiSnapshot => ({ ...current, settings });
+    const next = apply(snapshotRef.current);
+    snapshotRef.current = next;
+    masterSnapshotRef.current = masterSnapshotRef.current ? apply(masterSnapshotRef.current) : next;
+    if (latestStateRef.current) {
+      latestStateRef.current = apply(latestStateRef.current);
+    }
+    setSnapshot(next);
+  }, []);
+
+  const applyAuthoritativeDailyScheduleSnapshot = useCallback((state: UiSnapshot): void => {
+    masterSnapshotRef.current = state;
+    latestStateRef.current = null;
+    snapshotRef.current = state;
+    setSnapshot(state);
+  }, []);
+
+  const persistDownloadSchedule = useCallback((update: RendererSettingsUpdate, operation: "activate" | "cancel"): Promise<boolean> => (
+    persistDailyScheduleSettingsUpdate(update, operation, {
+      updateSettings: (value) => window.rd.updateSettings(value),
+      getSnapshot: () => window.rd.getSnapshot(),
+      applySettings: applyDailyScheduleSettings,
+      applySnapshot: applyAuthoritativeDailyScheduleSnapshot,
+      showError: (message) => showToast(message, 3200)
+    })
+  ), [applyAuthoritativeDailyScheduleSnapshot, applyDailyScheduleSettings, showToast]);
+
   const activateDownloadSchedule = useCallback((): void => {
-    if (!scheduleTimeInput) return;
-    const [hours, minutes] = scheduleTimeInput.split(":").map(Number);
-    const now = new Date();
-    const target = new Date(now);
-    target.setHours(hours, minutes, 0, 0);
-    if (target.getTime() <= now.getTime()) target.setDate(target.getDate() + 1);
-    void window.rd.updateSettings({ scheduledStartEpochMs: target.getTime() }).catch(() => {});
-    setSchedulePickerOpen(false);
-  }, [scheduleTimeInput]);
+    const update = buildDailyScheduleSettingsUpdate(scheduleTimeInput, scheduleStartDay);
+    if (!update) return;
+    void persistDownloadSchedule(update, "activate").then((persisted) => {
+      if (persisted) {
+        setSchedulePickerOpen(false);
+      }
+    });
+  }, [persistDownloadSchedule, scheduleStartDay, scheduleTimeInput]);
 
   const removeActionableDownloads = useCallback((): void => {
     const ids = new Set(downloadsViewCore.actionableSelectedIds);
@@ -4717,10 +4809,15 @@ export function App(): ReactElement {
     reconnectSeconds: snapshot.reconnectSeconds,
     reconnectReason: snapshot.session.reconnectReason,
     clipboardWatcher: snapshot.clipboardActive,
-    scheduleActive: snapshot.settings.scheduledStartEpochMs > 0,
+    scheduleActive: snapshot.settings.dailyStartEnabled || snapshot.settings.scheduledStartEpochMs > 0,
     scheduleOpen: schedulePickerOpen,
     scheduleTime: scheduleTimeInput,
-    scheduleLabel: scheduleCountdown || (snapshot.settings.scheduledStartEpochMs > 0 ? new Date(snapshot.settings.scheduledStartEpochMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""),
+    scheduleStartDay,
+    scheduleLabel: scheduleCountdown || (snapshot.settings.dailyStartEnabled
+      ? formatDailyScheduleTime(snapshot.settings.dailyStartMinuteOfDay)
+      : snapshot.settings.scheduledStartEpochMs > 0
+        ? new Date(snapshot.settings.scheduledStartEpochMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+        : ""),
     packageSpeedBps: downloadPackageSpeeds,
     editingPackageId,
     editingName,
@@ -4744,7 +4841,7 @@ export function App(): ReactElement {
       speed: liveDownloadSpeedBps > 0 ? formatSpeedMbps(liveDownloadSpeedBps) : "0 B/s",
       eta: snapshot.etaText
     }
-  }), [actionBusy, columnOrder, downloadDisclosureRevision, downloadPackageSpeeds, downloadQueueTotalBytes, downloadRemaining, downloadsSortColumn, downloadsSortDescending, downloadsViewCore, editingName, editingPackageId, gridTemplate, liveDownloadSpeedBps, providerStats.length, scheduleCountdown, schedulePickerOpen, scheduleTimeInput, snapshot.canPause, snapshot.canStart, snapshot.canStop, snapshot.clipboardActive, snapshot.etaText, snapshot.reconnectSeconds, snapshot.session.items, snapshot.session.paused, snapshot.session.reconnectReason, snapshot.session.running, snapshot.settings.animatePackageDisclosure, snapshot.settings.scheduledStartEpochMs, snapshot.stats.totalDownloaded, snapshot.stats.totalPackages]);
+  }), [actionBusy, columnOrder, downloadDisclosureRevision, downloadPackageSpeeds, downloadQueueTotalBytes, downloadRemaining, downloadsSortColumn, downloadsSortDescending, downloadsViewCore, editingName, editingPackageId, gridTemplate, liveDownloadSpeedBps, providerStats.length, scheduleCountdown, schedulePickerOpen, scheduleStartDay, scheduleTimeInput, snapshot.canPause, snapshot.canStart, snapshot.canStop, snapshot.clipboardActive, snapshot.etaText, snapshot.reconnectSeconds, snapshot.session.items, snapshot.session.paused, snapshot.session.reconnectReason, snapshot.session.running, snapshot.settings.animatePackageDisclosure, snapshot.settings.dailyStartEnabled, snapshot.settings.dailyStartMinuteOfDay, snapshot.settings.scheduledStartEpochMs, snapshot.stats.totalDownloaded, snapshot.stats.totalPackages]);
 
   const resetColumnLayout = useCallback((): void => {
     if (columnDragSettleTimerRef.current !== null) {
@@ -4785,12 +4882,20 @@ export function App(): ReactElement {
     },
     onStopDownloads: () => { void performQuickAction(() => window.rd.stop()); },
     onToggleSchedule: () => {
-      setSchedulePickerOpen((current) => !current);
-      setScheduleTimeInput("");
+      if (!schedulePickerOpen) {
+        const now = new Date();
+        const minuteOfDay = snapshot.settings.dailyStartEnabled
+          ? snapshot.settings.dailyStartMinuteOfDay
+          : now.getHours() * 60 + now.getMinutes();
+        setScheduleTimeInput(formatDailyScheduleTime(minuteOfDay));
+        setScheduleStartDay("today");
+      }
+      setSchedulePickerOpen(!schedulePickerOpen);
     },
     onScheduleTimeChange: setScheduleTimeInput,
+    onScheduleStartDayChange: setScheduleStartDay,
     onActivateSchedule: activateDownloadSchedule,
-    onCancelSchedule: () => { void window.rd.updateSettings({ scheduledStartEpochMs: 0 }).catch(() => {}); },
+    onCancelSchedule: () => { void persistDownloadSchedule({ dailyStartEnabled: false }, "cancel"); },
     onMoveSelectionUp: () => moveSelectedPackages("up", downloadsViewCore.actionableSelectedIds),
     onMoveSelectionDown: () => moveSelectedPackages("down", downloadsViewCore.actionableSelectedIds),
     onRenameSelection: () => {
