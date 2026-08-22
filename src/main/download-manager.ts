@@ -6346,6 +6346,7 @@ export class DownloadManager extends EventEmitter {
     const stoppedRunContext = wasRunning
       ? this.stopActiveRunContext(this.runPackageIds, this.session.runStartedAt)
       : null;
+    this.suppressStandalonePackageResults();
     this.schedulerGeneration += 1;
     this.session.running = false;
     this.session.paused = false;
@@ -8325,8 +8326,8 @@ export class DownloadManager extends EventEmitter {
       completedItems: completedItems.length,
       targetedItems: targetItems.length
     });
-    const generation = this.beginPackageResultGeneration(packageId, false, true);
-    this.standalonePackageResults.add(this.packageResultKey(packageId, generation));
+    this.beginPackageResultGeneration(packageId, false, true);
+    this.reactivateStandalonePackageResult(packageId);
     this.persistSoon();
     this.emitState(true);
     void this.runPackagePostProcessing(packageId).catch((err) => logger.warn(`runPackagePostProcessing Fehler (retryExtraction): ${compactErrorText(err)}`));
@@ -8355,8 +8356,8 @@ export class DownloadManager extends EventEmitter {
       completedItems: completedItems.length,
       targetedItems: targetItems.length
     });
-    const generation = this.beginPackageResultGeneration(packageId, false, true);
-    this.standalonePackageResults.add(this.packageResultKey(packageId, generation));
+    this.beginPackageResultGeneration(packageId, false, true);
+    this.reactivateStandalonePackageResult(packageId);
     this.persistSoon();
     this.emitState(true);
     void this.runPackagePostProcessing(packageId).catch((err) => logger.warn(`runPackagePostProcessing Fehler (extractNow): ${compactErrorText(err)}`));
@@ -11629,9 +11630,9 @@ export class DownloadManager extends EventEmitter {
         if (!pkg) {
           continue;
         }
-        const generation = this.beginPackageResultGeneration(packageId, false, true);
+        this.beginPackageResultGeneration(packageId, false, true);
         if (!this.runPackageIds.has(packageId)) {
-          this.standalonePackageResults.add(this.packageResultKey(packageId, generation));
+          this.reactivateStandalonePackageResult(packageId);
         }
         this.refreshPackageStatus(pkg);
       }
@@ -11828,8 +11829,23 @@ export class DownloadManager extends EventEmitter {
 
   private trackStandalonePackageResult(packageId: string): void {
     const key = this.packageResultKey(packageId, this.getPackageResultGeneration(packageId));
+    if (this.suppressedPackageResults.has(key)) {
+      return;
+    }
+    this.standalonePackageResults.add(key);
+  }
+
+  private reactivateStandalonePackageResult(packageId: string): void {
+    const key = this.packageResultKey(packageId, this.getPackageResultGeneration(packageId));
     this.suppressedPackageResults.delete(key);
     this.standalonePackageResults.add(key);
+  }
+
+  private suppressStandalonePackageResults(): void {
+    for (const key of this.standalonePackageResults) {
+      this.suppressedPackageResults.add(key);
+    }
+    this.standalonePackageResults.clear();
   }
 
   private trackPackagePostProcessResult(packageId: string): void {
@@ -11909,6 +11925,10 @@ export class DownloadManager extends EventEmitter {
       return null;
     }
     const generation = this.getPackageResultGeneration(packageId);
+    const key = this.packageResultKey(packageId, generation);
+    if (this.suppressedPackageResults.has(key)) {
+      return null;
+    }
     if (!this.runPackageIds.has(packageId) && !this.isPackageResultTracked(packageId, generation)) {
       return null;
     }
@@ -11916,7 +11936,6 @@ export class DownloadManager extends EventEmitter {
     if (items.some((item) => !isFinishedStatus(item.status)) || this.hasPackageLifecycleWork(packageId)) {
       return null;
     }
-    const key = this.packageResultKey(packageId, generation);
     const existing = this.finalizedPackageResults.get(key);
     if (existing) {
       return existing;

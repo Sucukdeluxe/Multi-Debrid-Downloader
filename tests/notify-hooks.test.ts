@@ -575,16 +575,20 @@ describe("authoritative run completion", () => {
     expect(history[0].name).toBe(pkg.name);
   });
 
-  it("stops and removes the active run context before late package work can emit", async () => {
+  it("keeps stopped package postprocessing suppressed when a later start only runs another package", async () => {
     const { manager, session, events, history } = setup({ autoExtractWhenStopped: true });
-    const packageA = addPackage(session, ["completed"], "stopped-package");
+    const packageA = addPackage(session, ["queued"], "stopped-package");
     const state = internal(manager);
-    session.running = true;
-    session.runStartedAt = Date.now() - 20_000;
-    state.runItemIds = new Set(packageA.itemIds);
-    state.runPackageIds = new Set([packageA.id]);
-    state.runOutcomes = new Map([[packageA.itemIds[0], "completed"]]);
-    const stoppedContext = state.beginActiveRunContext(state.runPackageIds, session.runStartedAt);
+    vi.spyOn(state, "ensureScheduler").mockResolvedValue(undefined);
+
+    await manager.start();
+    const packageAItem = session.items[packageA.itemIds[0]];
+    packageAItem.status = "completed";
+    packageAItem.downloadedBytes = 1_000;
+    packageAItem.totalBytes = 1_000;
+    packageAItem.progressPercent = 100;
+    packageAItem.fullStatus = "Fertig";
+    packageA.status = "completed";
     let releasePostProcess = (): void => {};
     const postProcessGate = new Promise<void>((resolve) => {
       releasePostProcess = resolve;
@@ -595,31 +599,55 @@ describe("authoritative run completion", () => {
 
     manager.stop();
     await flushNotifications();
-    const stoppedEvent = events.find((event) => event.type === "run_stopped");
-    expect(stoppedEvent?.id).toBe(`run:${stoppedContext.id}:run_stopped`);
-    expect(state.activeRunContextId).toBeNull();
-    expect(state.runContexts.has(stoppedContext.id)).toBe(false);
+
+    const packageB = addPackage(session, ["queued"], "follow-up-package");
+    await manager.start();
+    expect(session.running).toBe(true);
+    expect(state.runPackageIds).toEqual(new Set([packageB.id]));
 
     releasePostProcess();
     await latePostProcess;
     await flushNotifications();
     expect(events.filter((event) => event.type === "package_completed")).toHaveLength(0);
     expect(history).toHaveLength(0);
+  });
 
-    const packageB = addPackage(session, ["completed"], "follow-up-package");
-    session.running = true;
-    session.runStartedAt = Date.now() - 5_000;
-    state.runItemIds = new Set(packageB.itemIds);
-    state.runPackageIds = new Set([packageB.id]);
-    state.runOutcomes = new Map([[packageB.itemIds[0], "completed"]]);
-    state.beginActiveRunContext(state.runPackageIds, session.runStartedAt);
-    state.finishRun();
+  it("suppresses a stopped postprocess-only generation and allows an explicit package retry", async () => {
+    const { manager, session, events, history } = setup({ autoExtract: true, autoExtractWhenStopped: true });
+    const pkg = addPackage(session, ["completed"], "postprocess-only-package");
+    const state = internal(manager);
+    vi.spyOn(state, "ensureScheduler").mockResolvedValue(undefined);
+    let releasePostProcess = (): void => {};
+    let postProcessGate = new Promise<void>((resolve) => {
+      releasePostProcess = resolve;
+    });
+    state.handlePackagePostProcessing = vi.fn(async () => postProcessGate);
+
+    await manager.start();
+    const stoppedPostProcess = state.packagePostProcessTasks.get(pkg.id);
+    expect(stoppedPostProcess).toBeDefined();
+    expect(state.runItemIds.size).toBe(0);
+    manager.stop();
+
+    releasePostProcess();
+    await stoppedPostProcess;
+    await flushNotifications();
+    expect(events.filter((event) => event.type === "package_completed")).toHaveLength(0);
+    expect(history).toHaveLength(0);
+
+    session.items[pkg.itemIds[0]].fullStatus = "Entpacken - Error";
+    postProcessGate = new Promise<void>((resolve) => {
+      releasePostProcess = resolve;
+    });
+    manager.retryExtraction(pkg.id);
+    const retriedPostProcess = state.packagePostProcessTasks.get(pkg.id);
+    expect(retriedPostProcess).toBeDefined();
+    releasePostProcess();
+    await retriedPostProcess;
     await flushNotifications();
 
-    expect(events.filter((event) => event.type === "run_stopped")).toHaveLength(1);
-    expect(events.filter((event) => event.type === "run_completed")).toHaveLength(1);
     expect(events.filter((event) => event.type === "package_completed")).toHaveLength(1);
-    expect(history.map((entry) => entry.name)).toEqual([packageB.name]);
+    expect(history.map((entry) => entry.name)).toEqual([pkg.name]);
   });
 
   it("finalizes overlapping runs independently when the earlier run finishes deferred work last", async () => {
