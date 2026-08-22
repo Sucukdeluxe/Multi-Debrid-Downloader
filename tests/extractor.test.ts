@@ -1930,6 +1930,38 @@ describe("extractor", () => {
       ].join("\n"))).toEqual(["folder/", "folder/episode.mkv"]);
     });
 
+    it("classifies bare RAR directory names through the attribute-filtered directory listing", () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-native-rar-directory-list-"));
+      tempDirs.push(root);
+      const allEntries = [
+        "Doona.S01E02.German.DL.720p.WEB.x264-WvF\\doona.s01e02.german.dl.720p.web.x264-wvf.mkv",
+        "Doona.S01E02.German.DL.720p.WEB.x264-WvF"
+      ].join("\r\n");
+      const directoryEntries = "Doona.S01E02.German.DL.720p.WEB.x264-WvF\r\n";
+
+      expect(buildExternalListArgs("Rar.exe", "archive.rar", "", true)).toEqual([
+        "lb", "-e+d", "-p-", "-y", "archive.rar"
+      ]);
+      const parsed = parseNativeArchiveEntryList("Rar.exe", allEntries, directoryEntries);
+      expect(parsed).toEqual([
+        "Doona.S01E02.German.DL.720p.WEB.x264-WvF\\doona.s01e02.german.dl.720p.web.x264-wvf.mkv",
+        "Doona.S01E02.German.DL.720p.WEB.x264-WvF/"
+      ]);
+      expect(() => validateNativeArchiveEntryCandidates(parsed, root)).not.toThrow();
+      expect(() => validateNativeArchiveEntryCandidates(
+        parseNativeArchiveEntryList("Rar.exe", allEntries),
+        root
+      )).toThrow(/Datei ist Vorfahr/i);
+      expect(() => validateNativeArchiveEntryCandidates(
+        parseNativeArchiveEntryList("Rar.exe", "same\r\nsame\r\n", "same\r\n"),
+        root
+      )).toThrow(/mehrfaches|typwidriges/i);
+      expect(() => validateNativeArchiveEntryCandidates(
+        parseNativeArchiveEntryList("Rar.exe", "same\r\nsame\r\n", "same\r\nsame\r\n"),
+        root
+      )).not.toThrow();
+    });
+
     it("preflights every internal ZIP entry before overwriting an earlier safe target", async () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-zip-full-preflight-"));
       tempDirs.push(root);

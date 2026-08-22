@@ -2396,17 +2396,17 @@ export function buildExternalExtractArgs(
   return ["x", "-y", "-bb1", "-sccUTF-8", overwrite, pass, archivePath, `-o${targetDir}`];
 }
 
-export function buildExternalListArgs(command: string, archivePath: string, password = ""): string[] {
+export function buildExternalListArgs(command: string, archivePath: string, password = "", directoriesOnly = false): string[] {
   if (isRarNativeCommand(command)) {
     const pass = password ? `-p${password}` : "-p-";
-    return ["lb", pass, "-y", archivePath];
+    return directoriesOnly ? ["lb", "-e+d", pass, "-y", archivePath] : ["lb", pass, "-y", archivePath];
   }
   const pass = password ? `-p${password}` : "-p";
   return ["l", "-slt", "-sccUTF-8", pass, archivePath];
 }
 
-export function parseNativeArchiveEntryList(command: string, output: string): string[] {
-  return parseNativeArchiveEntryCandidates(command, output).map((entry) => (
+export function parseNativeArchiveEntryList(command: string, output: string, directoryOutput = ""): string[] {
+  return parseNativeArchiveEntryCandidates(command, output, directoryOutput).map((entry) => (
     entry.isDirectory && !/[\\/]$/.test(entry.entryPath) ? `${entry.entryPath}/` : entry.entryPath
   ));
 }
@@ -2415,13 +2415,25 @@ type NativeArchiveEntryCandidate = { entryPath: string; isDirectory: boolean };
 
 type NativeEntryPreflightResult = ExtractSpawnResult & { entries: NativeArchiveEntryCandidate[] };
 
-function parseNativeArchiveEntryCandidates(command: string, output: string): NativeArchiveEntryCandidate[] {
+function parseNativeArchiveEntryCandidates(command: string, output: string, directoryOutput = ""): NativeArchiveEntryCandidate[] {
   const lines = String(output || "").split(/\r?\n/);
   if (isRarNativeCommand(command)) {
-    return lines.filter((line) => line.length > 0).map((entryPath) => ({
-      entryPath,
-      isDirectory: /[\\/]$/.test(entryPath)
-    }));
+    const directoryCounts = new Map<string, number>();
+    for (const entryPath of String(directoryOutput || "").split(/\r?\n/).filter((line) => line.length > 0)) {
+      const key = entryPath.replace(/\\/g, "/").replace(/\/+$/, "").toLocaleLowerCase("en-US");
+      directoryCounts.set(key, (directoryCounts.get(key) || 0) + 1);
+    }
+    return lines.filter((line) => line.length > 0).map((entryPath) => {
+      const key = entryPath.replace(/\\/g, "/").replace(/\/+$/, "").toLocaleLowerCase("en-US");
+      const directoryCount = directoryCounts.get(key) || 0;
+      if (directoryCount > 0) {
+        directoryCounts.set(key, directoryCount - 1);
+      }
+      return {
+        entryPath,
+        isDirectory: /[\\/]$/.test(entryPath) || directoryCount > 0
+      };
+    });
   }
   const entries: NativeArchiveEntryCandidate[] = [];
   let inEntries = false;
@@ -2573,8 +2585,21 @@ async function runNativeEntryPreflight(
   if (!result.ok) {
     return { ...result, entries: [] };
   }
+  const directoryChunks: string[] = [];
+  if (isRarNativeCommand(command)) {
+    const directoryResult = await runExtractCommand(
+      command,
+      buildExternalListArgs(command, archivePath, password, true),
+      (chunk) => directoryChunks.push(chunk),
+      signal,
+      timeoutMs
+    );
+    if (!directoryResult.ok) {
+      return { ...directoryResult, entries: [] };
+    }
+  }
   try {
-    const entries = parseNativeArchiveEntryCandidates(command, chunks.join(""));
+    const entries = parseNativeArchiveEntryCandidates(command, chunks.join(""), directoryChunks.join(""));
     if (entries.length === 0) {
       throw new Error("Native Archivliste enthält keine validierbaren Einträge");
     }

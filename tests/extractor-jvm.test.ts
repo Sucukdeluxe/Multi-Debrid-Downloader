@@ -297,7 +297,7 @@ describe.skipIf(!hasJavaRuntime() || !hasJvmExtractorRuntime())("extractor jvm b
     expect(second).toEqual(expect.objectContaining({ extracted: 1, failed: 0 }));
   }, 10000);
 
-  it.each(["7zjbinding", "zip4j"])("reports %s partial output before removing a failed file", (backend) => {
+  it.each(["7zjbinding", "zip4j"])("reports only removed after deleting a failed %s output", (backend) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), `rd-jvm-partial-${backend}-`));
     tempDirs.push(root);
     const targetDir = path.join(root, "out");
@@ -333,9 +333,35 @@ describe.skipIf(!hasJavaRuntime() || !hasJvmExtractorRuntime())("extractor jvm b
       .map((line) => line.split(" ")[2]);
 
     expect(run.status).not.toBe(0);
-    expect(states[0]).toBe("opened");
-    expect(states).toContain("partial");
-    expect(states[states.length - 1]).toBe("removed");
+    expect(states).toEqual(["opened", "removed"]);
+    expect(fs.existsSync(path.join(targetDir, "episode.bin"))).toBe(false);
+  });
+
+  it("preserves the real JVM archive error when a failed output is removed before Node consumes the event", async () => {
+    process.env.RD_EXTRACT_BACKEND = "jvm";
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-jvm-removed-output-error-"));
+    tempDirs.push(root);
+    const packageDir = path.join(root, "pkg");
+    const targetDir = path.join(root, "out");
+    const zipPath = path.join(packageDir, "corrupt.zip");
+    fs.mkdirSync(packageDir, { recursive: true });
+    const zip = new AdmZip();
+    zip.addFile("episode.bin", Buffer.from("payload-".repeat(20_000)));
+    zip.writeZip(zipPath);
+    corruptFirstZipPayload(zipPath);
+
+    const result = await extractPackageArchives({
+      packageDir,
+      targetDir,
+      cleanupMode: "none",
+      conflictMode: "overwrite",
+      removeLinks: false,
+      removeSamples: false
+    });
+
+    expect(result).toEqual(expect.objectContaining({ extracted: 0, failed: 1 }));
+    expect(result.lastError).not.toContain("Gemeldete Extract-Ausgabe existiert nicht");
+    expect(result.lastError).toMatch(/crc|data|checksum|zip|archive/i);
     expect(fs.existsSync(path.join(targetDir, "episode.bin"))).toBe(false);
   });
 

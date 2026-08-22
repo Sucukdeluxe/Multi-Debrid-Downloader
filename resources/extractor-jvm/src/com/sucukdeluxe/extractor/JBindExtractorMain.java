@@ -375,10 +375,11 @@ public final class JBindExtractorMain {
                     throw error;
                 } finally {
                     if (!extractionSuccess && output.exists()) {
-                        emitOutput(request.archiveFile, entryName, output, "partial", outputTarget.disposition);
-                    }
-                    if (!extractionSuccess && output.exists() && output.delete()) {
-                        emitOutput(request.archiveFile, entryName, output, "removed", outputTarget.disposition);
+                        if (output.delete()) {
+                            emitOutput(request.archiveFile, entryName, output, "removed", outputTarget.disposition);
+                        } else {
+                            emitOutput(request.archiveFile, entryName, output, "partial", outputTarget.disposition);
+                        }
                     }
                 }
             }
@@ -1294,13 +1295,18 @@ public final class JBindExtractorMain {
             closeCurrentStreamOnly();
             if (!currentSuccess[0] && currentOutput[0] != null && currentOutput[0].exists()) {
                 int pos = currentPos[0];
-                if (pos >= 0) {
+                if (currentOutput[0].delete()) {
+                    if (pos >= 0) {
+                        emitOutput(archiveFile, entryNames.get(pos), currentOutput[0], "removed", dispositions.get(pos));
+                    }
+                } else if (pos >= 0) {
                     emitOutput(archiveFile, entryNames.get(pos), currentOutput[0], "partial", dispositions.get(pos));
                 }
-                if (currentOutput[0].delete() && pos >= 0) {
-                    emitOutput(archiveFile, entryNames.get(pos), currentOutput[0], "removed", dispositions.get(pos));
-                }
             }
+            currentOutput[0] = null;
+            currentPos[0] = -1;
+            currentSuccess[0] = false;
+            currentRemaining[0] = 0;
         }
     }
 
