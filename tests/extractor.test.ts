@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import AdmZip from "adm-zip";
@@ -29,6 +30,47 @@ import {
 const tempDirs: string[] = [];
 const originalExtractBackend = process.env.RD_EXTRACT_BACKEND;
 const originalStatfs = fs.promises.statfs;
+const require = createRequire(import.meta.url);
+
+type ZipFixtureEntry = { name: string; directory?: boolean; content?: string };
+
+function writeZipFixture(filePath: string, entries: readonly ZipFixtureEntry[]): void {
+  const ZipFile = require("adm-zip/zipFile") as new (input: null, options: Record<string, unknown>) => {
+    setEntry: (entry: unknown) => void;
+    compressToBuffer: () => Buffer;
+  };
+  const ZipEntry = require("adm-zip/zipEntry") as new (options: Record<string, unknown>) => {
+    entryName: string;
+    setData: (data: Buffer) => void;
+  };
+  const utils = require("adm-zip/util") as {
+    Constants: { NONE: number };
+    decoder: unknown;
+  };
+  const options = {
+    noSort: true,
+    readEntries: false,
+    method: utils.Constants.NONE,
+    decoder: utils.decoder
+  };
+  const zip = new ZipFile(null, options);
+  for (const fixture of entries) {
+    const entry = new ZipEntry(options);
+    entry.entryName = fixture.directory && !fixture.name.endsWith("/") ? `${fixture.name}/` : fixture.name;
+    entry.setData(Buffer.from(fixture.content || ""));
+    zip.setEntry(entry);
+  }
+  fs.writeFileSync(filePath, zip.compressToBuffer());
+}
+
+const archiveTargetCollisionCases = [
+  ["directory then same-name file", [{ name: "same", directory: true }, { name: "same", content: "file" }]],
+  ["file then same-name directory", [{ name: "same", content: "file" }, { name: "same", directory: true }]],
+  ["parent file then child file", [{ name: "same", content: "parent" }, { name: "same/child", content: "child" }]],
+  ["child file then parent file", [{ name: "same/child", content: "child" }, { name: "same", content: "parent" }]],
+  ["case-insensitive file aliases", [{ name: "Name", content: "first" }, { name: "name", content: "second" }]],
+  ["duplicate file targets", [{ name: "same", content: "first" }, { name: "same", content: "second" }]]
+] as const satisfies ReadonlyArray<readonly [string, readonly ZipFixtureEntry[]]>;
 
 beforeEach(() => {
   process.env.RD_EXTRACT_BACKEND = "legacy";
@@ -1659,6 +1701,13 @@ describe("extractor", () => {
         "folder/episode.mkv",
         "subtitle.srt"
       ]);
+      expect(parseNativeArchiveEntryList("7z.exe", [
+        "----------",
+        "Path = folder",
+        "Folder = +",
+        "Path = folder/episode.mkv",
+        "Folder = -"
+      ].join("\n"))).toEqual(["folder/", "folder/episode.mkv"]);
     });
 
     it("preflights every internal ZIP entry before overwriting an earlier safe target", async () => {
@@ -1690,6 +1739,69 @@ describe("extractor", () => {
       expect(result.failed).toBe(1);
       expect(fs.readFileSync(safePath, "utf8")).toBe("foreign-safe");
       expect(fs.readFileSync(aliasPath, "utf8")).toBe("foreign-alias");
+    });
+
+    it.each(archiveTargetCollisionCases)("rejects internal ZIP %s before any target mutation", async (_label, entries) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-zip-target-plan-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(packageDir, { recursive: true });
+      fs.mkdirSync(targetDir, { recursive: true });
+      const sentinelPath = path.join(targetDir, "sentinel.txt");
+      fs.writeFileSync(sentinelPath, "foreign");
+      writeZipFixture(path.join(packageDir, "collision.zip"), entries);
+
+      const result = await extractPackageArchives({
+        packageDir,
+        targetDir,
+        cleanupMode: "none",
+        conflictMode: "overwrite",
+        removeLinks: false,
+        removeSamples: false
+      });
+
+      expect(result).toEqual(expect.objectContaining({ extracted: 0, failed: 1 }));
+      expect(fs.readdirSync(targetDir)).toEqual(["sentinel.txt"]);
+      expect(fs.readFileSync(sentinelPath, "utf8")).toBe("foreign");
+    });
+
+    it.each(archiveTargetCollisionCases)("rejects native preflight %s", (_label, entries) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-native-target-plan-"));
+      tempDirs.push(root);
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(targetDir, { recursive: true });
+      const candidates = entries.map((entry) => "directory" in entry && entry.directory ? `${entry.name}/` : entry.name);
+
+      expect(() => validateNativeArchiveEntryCandidates(candidates, targetDir)).toThrow(/target|ziel|kollision/i);
+      expect(fs.readdirSync(targetDir)).toEqual([]);
+    });
+
+    it("allows safely identical duplicate directory targets", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-identical-directory-plan-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(packageDir, { recursive: true });
+      writeZipFixture(path.join(packageDir, "directories.zip"), [
+        { name: "same", directory: true },
+        { name: "same", directory: true },
+        { name: "same/child.txt", content: "child" }
+      ]);
+
+      const result = await extractPackageArchives({
+        packageDir,
+        targetDir,
+        cleanupMode: "none",
+        conflictMode: "overwrite",
+        removeLinks: false,
+        removeSamples: false
+      });
+
+      expect(result).toEqual(expect.objectContaining({ extracted: 1, failed: 0 }));
+      expect(fs.statSync(path.join(targetDir, "same")).isDirectory()).toBe(true);
+      expect(fs.readFileSync(path.join(targetDir, "same", "child.txt"), "utf8")).toBe("child");
+      expect(() => validateNativeArchiveEntryCandidates(["same/", "same/"], targetDir)).not.toThrow();
     });
 
     it("preserves raw RAR list trailing whitespace and dots for validation", () => {

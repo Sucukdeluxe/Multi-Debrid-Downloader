@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -8,6 +9,47 @@ import { extractPackageArchives } from "../src/main/extractor";
 
 const tempDirs: string[] = [];
 const originalBackend = process.env.RD_EXTRACT_BACKEND;
+const require = createRequire(import.meta.url);
+
+type ZipFixtureEntry = { name: string; directory?: boolean; content?: string };
+
+function writeZipFixture(filePath: string, entries: readonly ZipFixtureEntry[]): void {
+  const ZipFile = require("adm-zip/zipFile") as new (input: null, options: Record<string, unknown>) => {
+    setEntry: (entry: unknown) => void;
+    compressToBuffer: () => Buffer;
+  };
+  const ZipEntry = require("adm-zip/zipEntry") as new (options: Record<string, unknown>) => {
+    entryName: string;
+    setData: (data: Buffer) => void;
+  };
+  const utils = require("adm-zip/util") as {
+    Constants: { NONE: number };
+    decoder: unknown;
+  };
+  const options = {
+    noSort: true,
+    readEntries: false,
+    method: utils.Constants.NONE,
+    decoder: utils.decoder
+  };
+  const zip = new ZipFile(null, options);
+  for (const fixture of entries) {
+    const entry = new ZipEntry(options);
+    entry.entryName = fixture.directory && !fixture.name.endsWith("/") ? `${fixture.name}/` : fixture.name;
+    entry.setData(Buffer.from(fixture.content || ""));
+    zip.setEntry(entry);
+  }
+  fs.writeFileSync(filePath, zip.compressToBuffer());
+}
+
+const jvmTargetCollisionCases = [
+  ["directory then same-name file", [{ name: "same", directory: true }, { name: "same", content: "file" }]],
+  ["file then same-name directory", [{ name: "same", content: "file" }, { name: "same", directory: true }]],
+  ["parent file then child file", [{ name: "same", content: "parent" }, { name: "same/child", content: "child" }]],
+  ["child file then parent file", [{ name: "same/child", content: "child" }, { name: "same", content: "parent" }]],
+  ["case-insensitive file aliases", [{ name: "Name", content: "first" }, { name: "name", content: "second" }]],
+  ["duplicate file targets", [{ name: "same", content: "first" }, { name: "same", content: "second" }]]
+] as const satisfies ReadonlyArray<readonly [string, readonly ZipFixtureEntry[]]>;
 
 function hasJavaRuntime(): boolean {
   const result = spawnSync("java", ["-version"], { stdio: "ignore" });
@@ -400,6 +442,81 @@ describe.skipIf(!hasJavaRuntime() || !hasJvmExtractorRuntime())("extractor jvm b
     expect(run.status).not.toBe(0);
     expect(fs.readFileSync(safePath, "utf8")).toBe("foreign-safe");
     expect(fs.readFileSync(aliasPath, "utf8")).toBe("foreign-alias");
+  });
+
+  it.each(["7zjbinding", "zip4j"].flatMap((backend) => jvmTargetCollisionCases.map(([label, entries]) => [backend, label, entries] as const)))(
+    "rejects %s %s before any target mutation",
+    (backend, _label, entries) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), `rd-jvm-target-plan-${backend}-`));
+      tempDirs.push(root);
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(targetDir, { recursive: true });
+      const sentinelPath = path.join(targetDir, "sentinel.txt");
+      fs.writeFileSync(sentinelPath, "foreign");
+      const zipPath = path.join(root, "collision.zip");
+      writeZipFixture(zipPath, entries);
+      const runtimeRoot = path.join(process.cwd(), "resources", "extractor-jvm");
+      const classPath = [
+        path.join(runtimeRoot, "classes"),
+        path.join(runtimeRoot, "lib", "sevenzipjbinding.jar"),
+        path.join(runtimeRoot, "lib", "sevenzipjbinding-all-platforms.jar"),
+        path.join(runtimeRoot, "lib", "zip4j.jar")
+      ].join(path.delimiter);
+
+      const run = spawnSync("java", [
+        "-cp",
+        classPath,
+        "com.sucukdeluxe.extractor.JBindExtractorMain",
+        "--archive",
+        zipPath,
+        "--target",
+        targetDir,
+        "--conflict",
+        "overwrite",
+        "--backend",
+        backend
+      ], { encoding: "utf8" });
+
+      expect(run.status).not.toBe(0);
+      expect(fs.readdirSync(targetDir)).toEqual(["sentinel.txt"]);
+      expect(fs.readFileSync(sentinelPath, "utf8")).toBe("foreign");
+    }
+  );
+
+  it.each(["7zjbinding", "zip4j"])("allows safely identical duplicate directory targets in %s", (backend) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `rd-jvm-identical-directory-${backend}-`));
+    tempDirs.push(root);
+    const targetDir = path.join(root, "out");
+    const zipPath = path.join(root, "directories.zip");
+    writeZipFixture(zipPath, [
+      { name: "same", directory: true },
+      { name: "same", directory: true }
+    ]);
+    const runtimeRoot = path.join(process.cwd(), "resources", "extractor-jvm");
+    const classPath = [
+      path.join(runtimeRoot, "classes"),
+      path.join(runtimeRoot, "lib", "sevenzipjbinding.jar"),
+      path.join(runtimeRoot, "lib", "sevenzipjbinding-all-platforms.jar"),
+      path.join(runtimeRoot, "lib", "zip4j.jar")
+    ].join(path.delimiter);
+
+    const run = spawnSync("java", [
+      "-cp",
+      classPath,
+      "com.sucukdeluxe.extractor.JBindExtractorMain",
+      "--archive",
+      zipPath,
+      "--target",
+      targetDir,
+      "--conflict",
+      "overwrite",
+      "--backend",
+      backend
+    ], { encoding: "utf8" });
+
+    expect(run.status).toBe(0);
+    expect(fs.readdirSync(targetDir)).toEqual(["same"]);
+    expect(fs.statSync(path.join(targetDir, "same")).isDirectory()).toBe(true);
   });
 
   it("emits progress callbacks with archiveName and percent", async () => {

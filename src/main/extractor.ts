@@ -295,6 +295,44 @@ export function pathSetKey(filePath: string): string {
   return process.platform === "win32" ? filePath.toLowerCase() : filePath;
 }
 
+type TargetPlanKind = "file" | "directory";
+
+type TargetPlanNode = {
+  kind?: TargetPlanKind;
+  children: Map<string, TargetPlanNode>;
+};
+
+class TargetPlanInvariant {
+  private readonly root: TargetPlanNode = { children: new Map() };
+
+  public add(outputPath: string, kind: TargetPlanKind): void {
+    const key = pathSetKey(path.resolve(outputPath)).replace(/\\/g, "/");
+    const segments = key.split("/").filter(Boolean);
+    let node = this.root;
+    for (const segment of segments) {
+      if (node.kind === "file") {
+        throw new Error(`Target-Plan-Kollision: Datei ist Vorfahr von ${outputPath}`);
+      }
+      let child = node.children.get(segment);
+      if (!child) {
+        child = { children: new Map() };
+        node.children.set(segment, child);
+      }
+      node = child;
+    }
+    if (node.kind) {
+      if (node.kind === "directory" && kind === "directory") {
+        return;
+      }
+      throw new Error(`Target-Plan-Kollision: mehrfaches oder typwidriges Ziel ${outputPath}`);
+    }
+    if (kind === "file" && node.children.size > 0) {
+      throw new Error(`Target-Plan-Kollision: Datei ist Vorfahr eines anderen Ziels ${outputPath}`);
+    }
+    node.kind = kind;
+  }
+}
+
 function stripDuplicateSuffixBeforeExtension(fileName: string): string {
   return String(fileName || "").replace(/ \(\d+\)(?=\.[^.]+$)/, "");
 }
@@ -2255,12 +2293,30 @@ export function buildExternalListArgs(command: string, archivePath: string, pass
 }
 
 export function parseNativeArchiveEntryList(command: string, output: string): string[] {
+  return parseNativeArchiveEntryCandidates(command, output).map((entry) => (
+    entry.isDirectory && !/[\\/]$/.test(entry.entryPath) ? `${entry.entryPath}/` : entry.entryPath
+  ));
+}
+
+type NativeArchiveEntryCandidate = { entryPath: string; isDirectory: boolean };
+
+function parseNativeArchiveEntryCandidates(command: string, output: string): NativeArchiveEntryCandidate[] {
   const lines = String(output || "").split(/\r?\n/);
   if (isRarNativeCommand(command)) {
-    return lines.filter((line) => line.length > 0);
+    return lines.filter((line) => line.length > 0).map((entryPath) => ({
+      entryPath,
+      isDirectory: /[\\/]$/.test(entryPath)
+    }));
   }
-  const entries: string[] = [];
+  const entries: NativeArchiveEntryCandidate[] = [];
   let inEntries = false;
+  let current: NativeArchiveEntryCandidate | null = null;
+  const commitCurrent = (): void => {
+    if (current) {
+      entries.push(current);
+      current = null;
+    }
+  };
   for (const line of lines) {
     if (/^-{8,}\s*$/.test(line.trim())) {
       inEntries = true;
@@ -2271,21 +2327,36 @@ export function parseNativeArchiveEntryList(command: string, output: string): st
     }
     const match = line.match(/^Path = (.*)$/);
     if (match?.[1]) {
-      entries.push(match[1]);
+      commitCurrent();
+      current = { entryPath: match[1], isDirectory: /[\\/]$/.test(match[1]) };
+      continue;
+    }
+    if (current && /^Folder = \+\s*$/.test(line)) {
+      current.isDirectory = true;
     }
   }
+  commitCurrent();
   return entries;
 }
 
 export function validateNativeArchiveEntryCandidates(entries: readonly string[], targetDir: string): void {
+  validateNativeArchiveTargetPlan(entries.map((entryPath) => ({
+    entryPath,
+    isDirectory: /[\\/]$/.test(entryPath)
+  })), targetDir);
+}
+
+function validateNativeArchiveTargetPlan(entries: readonly NativeArchiveEntryCandidate[], targetDir: string): void {
   const scope = new PackageOutputScope([targetDir]);
-  for (const rawEntry of entries) {
-    const entryPath = String(rawEntry || "").replace(/\\/g, "/").replace(/\/$/, "");
+  const targetPlan = new TargetPlanInvariant();
+  for (const candidate of entries) {
+    const entryPath = String(candidate.entryPath || "").replace(/\\/g, "/").replace(/\/$/, "");
     if (!entryPath) {
       continue;
     }
     const outputPath = path.resolve(targetDir, ...entryPath.split("/"));
     scope.validateTarget(entryPath, outputPath);
+    targetPlan.add(outputPath, candidate.isDirectory ? "directory" : "file");
   }
 }
 
@@ -2359,11 +2430,11 @@ async function runNativeEntryPreflight(
     return result;
   }
   try {
-    const entries = parseNativeArchiveEntryList(command, chunks.join(""));
+    const entries = parseNativeArchiveEntryCandidates(command, chunks.join(""));
     if (entries.length === 0) {
       throw new Error("Native Archivliste enthält keine validierbaren Einträge");
     }
-    validateNativeArchiveEntryCandidates(entries, targetDir);
+    validateNativeArchiveTargetPlan(entries, targetDir);
     return result;
   } catch (error) {
     return {
@@ -2943,6 +3014,7 @@ function isZipSafetyGuardError(error: unknown): boolean {
     || text.includes("zip-eintrag verdaechtig gross")
     || text.includes("symbolischer link")
     || text.includes("reparse point")
+    || text.includes("target-plan-kollision")
     || text.includes("extract_output_callback_failed");
 }
 
@@ -2989,6 +3061,7 @@ async function extractZipArchive(
   const entries = zip.getEntries();
   const resolvedTarget = path.resolve(targetDir);
   const plannedOutputs = new Set<string>();
+  const targetPlan = new TargetPlanInvariant();
   const renameCounters = new Map<string, number>();
   const directoryPlans: Array<{ entryPath: string; outputPath: string }> = [];
   const filePlans: Array<{
@@ -3012,6 +3085,8 @@ async function extractZipArchive(
     if (entry.isDirectory) {
       const entryPath = entry.entryName.replace(/\\/g, "/").replace(/\/$/, "") || "directory";
       validateTarget?.(entryPath, baseOutputPath);
+      targetPlan.add(baseOutputPath, "directory");
+      plannedOutputs.add(pathSetKey(baseOutputPath));
       directoryPlans.push({ entryPath, outputPath: baseOutputPath });
       continue;
     }
@@ -3058,6 +3133,7 @@ async function extractZipArchive(
       if (mode === "skip") {
         const entryPath = entry.entryName.replace(/\\/g, "/");
         validateTarget?.(entryPath, baseOutputPath);
+        targetPlan.add(baseOutputPath, "file");
         filePlans.push({
           entry,
           entryPath,
@@ -3100,6 +3176,7 @@ async function extractZipArchive(
 
     const normalizedEntryPath = entry.entryName.replace(/\\/g, "/");
     validateTarget?.(normalizedEntryPath, outputPath);
+    targetPlan.add(outputPath, "file");
     plannedOutputs.add(outputKey);
     filePlans.push({
       entry,

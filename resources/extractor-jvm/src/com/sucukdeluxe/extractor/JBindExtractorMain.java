@@ -263,6 +263,7 @@ public final class JBindExtractorMain {
             progress.emitStart();
 
             Set<String> preflightReserved = new HashSet<String>();
+            TargetPlanInvariant targetPlan = new TargetPlanInvariant();
             for (FileHeader header : fileHeaders) {
                 if (header == null) {
                     continue;
@@ -270,9 +271,11 @@ public final class JBindExtractorMain {
                 String entryName = normalizeEntryName(header.getFileName(), "file");
                 if (header.isDirectory()) {
                     File dir = resolveDirectory(request.targetDir, entryName);
+                    targetPlan.add(dir, true);
                     preflightReserved.add(pathKey(dir));
                 } else {
-                    resolveOutputFile(request.targetDir, entryName, request.conflictMode, preflightReserved);
+                    OutputTarget outputTarget = resolveOutputFile(request.targetDir, entryName, request.conflictMode, preflightReserved);
+                    targetPlan.add(outputTarget.reportedFile, false);
                 }
             }
 
@@ -398,6 +401,7 @@ public final class JBindExtractorMain {
             List<String> dispositions = new ArrayList<String>();
             List<File> outputDirectories = new ArrayList<File>();
             Set<String> reserved = new HashSet<String>();
+            TargetPlanInvariant targetPlan = new TargetPlanInvariant();
 
             for (int i = 0; i < itemCount; i++) {
                 Boolean isFolder = (Boolean) archive.getProperty(i, PropID.IS_FOLDER);
@@ -406,6 +410,7 @@ public final class JBindExtractorMain {
 
                 if (Boolean.TRUE.equals(isFolder)) {
                     File dir = resolveDirectory(request.targetDir, entryName);
+                    targetPlan.add(dir, true);
                     outputDirectories.add(dir);
                     reserved.add(pathKey(dir));
                     continue;
@@ -423,6 +428,7 @@ public final class JBindExtractorMain {
                 totalUnits += itemSize;
 
                 OutputTarget outputTarget = resolveOutputFile(request.targetDir, entryName, request.conflictMode, reserved);
+                targetPlan.add(outputTarget.reportedFile, false);
                 File output = outputTarget.file;
                 if (output == null) {
                     emitOutput(request.archiveFile, entryName, outputTarget.reportedFile, "complete", outputTarget.disposition);
@@ -798,11 +804,52 @@ public final class JBindExtractorMain {
     }
 
     private static String pathKey(File file) {
-        String value = file.getAbsolutePath();
+        String value = file.toPath().toAbsolutePath().normalize().toString();
         if (isWindows()) {
             value = value.toLowerCase(Locale.ROOT);
         }
         return value;
+    }
+
+    private static final class TargetPlanInvariant {
+        private final TargetPlanNode root = new TargetPlanNode();
+
+        void add(File file, boolean directory) throws IOException {
+            String key = pathKey(file).replace('\\', '/');
+            String[] segments = key.split("/");
+            TargetPlanNode node = root;
+            for (String segment : segments) {
+                if (segment.length() == 0) {
+                    continue;
+                }
+                if (node.file) {
+                    throw new IOException("Target-Plan-Kollision: Datei ist Vorfahr von " + file.getAbsolutePath());
+                }
+                TargetPlanNode child = node.children.get(segment);
+                if (child == null) {
+                    child = new TargetPlanNode();
+                    node.children.put(segment, child);
+                }
+                node = child;
+            }
+            if (node.file || node.directory) {
+                if (directory && node.directory && !node.file) {
+                    return;
+                }
+                throw new IOException("Target-Plan-Kollision: mehrfaches oder typwidriges Ziel " + file.getAbsolutePath());
+            }
+            if (!directory && !node.children.isEmpty()) {
+                throw new IOException("Target-Plan-Kollision: Datei ist Vorfahr eines anderen Ziels " + file.getAbsolutePath());
+            }
+            node.directory = directory;
+            node.file = !directory;
+        }
+    }
+
+    private static final class TargetPlanNode {
+        private final Map<String, TargetPlanNode> children = new HashMap<String, TargetPlanNode>();
+        private boolean file;
+        private boolean directory;
     }
 
     private static boolean isWindows() {
