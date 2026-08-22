@@ -62,6 +62,25 @@ export interface HistoryEntryContext {
   provider: DebridProvider | null;
 }
 
+export interface RunRemainingSnapshot {
+  remainingBytes: number;
+  openItems: number;
+  openPackages: number;
+  unknownCount: number;
+  speedBps: number;
+  etaSeconds: number;
+}
+
+export interface RemainingThresholdDecision {
+  emit: boolean;
+  remainingBytes?: number;
+}
+
+export interface RemainingThresholdState {
+  snapshot: RunRemainingSnapshot | null;
+  crossings: number;
+}
+
 const SUCCESS_TTL_MS = 6 * 60 * 60 * 1000;
 const IMPORTANT_TTL_MS = 24 * 60 * 60 * 1000;
 const DIGEST_PACKAGE_LIMIT = 20;
@@ -71,6 +90,25 @@ const numberFormatter = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 
 function finiteNonNegative(value: unknown): number {
   const numeric = Number(value);
   return Number.isFinite(numeric) && numeric > 0 ? numeric : 0;
+}
+
+export function evaluateRemainingThreshold(
+  previous: RunRemainingSnapshot | null,
+  current: RunRemainingSnapshot,
+  thresholdBytes: number
+): RemainingThresholdDecision {
+  const threshold = finiteNonNegative(thresholdBytes);
+  if (!previous
+    || threshold <= 0
+    || previous.openItems <= 0
+    || current.openItems <= 0
+    || previous.unknownCount > 0
+    || current.unknownCount > 0
+    || previous.remainingBytes <= threshold
+    || current.remainingBytes > threshold) {
+    return { emit: false };
+  }
+  return { emit: true, remainingBytes: current.remainingBytes };
 }
 
 function formatBytes(bytes: number): string {
@@ -281,6 +319,31 @@ export function buildRunNotificationEvent(result: RunResult): NotificationEvent 
       { name: "Remuxfehler", value: String(result.remuxFailures), inline: true },
       { name: "Downloadfehler", value: String(result.downloadFailures), inline: true },
       { name: "Offline", value: String(result.offlineFailures), inline: true }
+    ]
+  );
+}
+
+export function buildRemainingThresholdNotificationEvent(
+  runId: string,
+  crossing: number,
+  snapshot: RunRemainingSnapshot,
+  thresholdBytes: number,
+  createdAt: number
+): NotificationEvent {
+  return event(
+    `run:${runId}:remaining_threshold_crossed:${crossing}`,
+    "remaining_threshold_crossed",
+    "success",
+    createdAt,
+    "📉 Restmenge erreicht",
+    `Der aktive Durchlauf liegt bei oder unter ${formatBytes(thresholdBytes)}.`,
+    0x3498db,
+    [
+      { name: "Restmenge", value: formatBytes(snapshot.remainingBytes), inline: true },
+      { name: "Offene Pakete", value: String(snapshot.openPackages), inline: true },
+      { name: "Offene Dateien", value: String(snapshot.openItems), inline: true },
+      { name: "Geschwindigkeit", value: snapshot.speedBps > 0 ? `${formatBytes(snapshot.speedBps)}/s` : "—", inline: true },
+      { name: "ETA", value: snapshot.etaSeconds >= 0 ? formatDuration(snapshot.etaSeconds) : "—", inline: true }
     ]
   );
 }

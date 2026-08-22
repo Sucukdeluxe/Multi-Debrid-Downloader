@@ -97,9 +97,13 @@ import {
   buildHistoryEntry,
   buildPackageDigestEvents,
   buildPackageNotificationEvent,
+  buildRemainingThresholdNotificationEvent,
   buildRunNotificationEvent,
   buildRunResult,
-  type PackageResultEnvelope
+  evaluateRemainingThreshold,
+  type PackageResultEnvelope,
+  type RemainingThresholdState,
+  type RunRemainingSnapshot
 } from "./notification-events";
 
 type ActiveTask = {
@@ -471,6 +475,7 @@ type RunLifecycleContext = {
   startedAt: number;
   packageGenerations: Map<string, number>;
   downloadsFinished: boolean;
+  remainingNotification: RemainingThresholdState;
 };
 
 function generateHistoryId(): string {
@@ -6860,6 +6865,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   private emitState(force = false): void {
+    this.evaluateRemainingNotification();
     const now = nowMs();
     const MIN_FORCE_GAP_MS = 120;
     if (force) {
@@ -11757,7 +11763,13 @@ export class DownloadManager extends EventEmitter {
     for (const packageId of packageIds) {
       packageGenerations.set(packageId, this.getPackageResultGeneration(packageId));
     }
-    const context: RunLifecycleContext = { id: uuidv4(), startedAt, packageGenerations, downloadsFinished };
+    const context: RunLifecycleContext = {
+      id: uuidv4(),
+      startedAt,
+      packageGenerations,
+      downloadsFinished,
+      remainingNotification: { snapshot: null, crossings: 0 }
+    };
     this.runContexts.set(context.id, context);
     return context;
   }
@@ -11866,6 +11878,11 @@ export class DownloadManager extends EventEmitter {
   private trackPackagePostProcessResult(packageId: string): void {
     const generation = this.getPackageResultGeneration(packageId);
     const key = this.packageResultKey(packageId, generation);
+    for (const context of this.runContexts.values()) {
+      if (context.packageGenerations.get(packageId) === generation) {
+        return;
+      }
+    }
     if (this.suppressedPackageResults.has(key)) {
       return;
     }
@@ -11886,6 +11903,72 @@ export class DownloadManager extends EventEmitter {
       .catch((error) => {
         logger.warn(`Notification konnte nicht eingereiht werden: ${compactErrorText(error)}`);
       });
+  }
+
+  private buildRunRemainingSnapshot(): RunRemainingSnapshot {
+    const openPackages = new Set<string>();
+    let remainingBytes = 0;
+    let openItems = 0;
+    let unknownCount = 0;
+    for (const itemId of this.runItemIds) {
+      const item = this.session.items[itemId];
+      if (!item || isFinishedStatus(item.status)) {
+        continue;
+      }
+      const pkg = this.session.packages[item.packageId];
+      if (!pkg || pkg.cancelled || !pkg.enabled) {
+        continue;
+      }
+      openItems += 1;
+      openPackages.add(pkg.id);
+      if (item.totalBytes === null) {
+        unknownCount += 1;
+      } else {
+        remainingBytes += Math.max(0, item.totalBytes - item.downloadedBytes);
+      }
+    }
+    const speedBps = !this.session.running || this.session.paused
+      ? 0
+      : Math.max(0, Math.floor(this.speedBytesLastWindow / SPEED_WINDOW_SECONDS));
+    const etaSeconds = unknownCount === 0 && speedBps > 0
+      ? Math.ceil(remainingBytes / speedBps)
+      : remainingBytes === 0 && unknownCount === 0
+        ? 0
+        : -1;
+    return {
+      remainingBytes,
+      openItems,
+      openPackages: openPackages.size,
+      unknownCount,
+      speedBps,
+      etaSeconds
+    };
+  }
+
+  private evaluateRemainingNotification(): void {
+    const context = this.activeRunContextId ? this.runContexts.get(this.activeRunContextId) : undefined;
+    if (!context || context.downloadsFinished) {
+      return;
+    }
+    const current = this.buildRunRemainingSnapshot();
+    const previous = context.remainingNotification.snapshot;
+    context.remainingNotification.snapshot = current;
+    if (!this.settings.notifyOnRemainingBelow) {
+      return;
+    }
+    const thresholdBytes = this.settings.notifyRemainingThresholdGb * 1024 ** 3;
+    const decision = evaluateRemainingThreshold(previous, current, thresholdBytes);
+    if (!decision.emit) {
+      return;
+    }
+    context.remainingNotification.crossings += 1;
+    this.queueNotificationEvent(buildRemainingThresholdNotificationEvent(
+      context.id,
+      context.remainingNotification.crossings,
+      current,
+      thresholdBytes,
+      nowMs()
+    ));
   }
 
   private queueSuccessfulPackageResult(envelope: PackageResultEnvelope): void {

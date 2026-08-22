@@ -650,6 +650,52 @@ describe("authoritative run completion", () => {
     expect(history.map((entry) => entry.name)).toEqual([packageA.name]);
   });
 
+  it("keeps run A ownership when its real deferred follow-up starts during run B before run B stops", async () => {
+    const { manager, session, events, history } = setup({ autoExtractWhenStopped: true, maxParallelExtract: 1 });
+    const packageA = addPackage(session, ["queued"], "deferred-owner-package");
+    const state = internal(manager);
+    vi.spyOn(state, "ensureScheduler").mockResolvedValue(undefined);
+
+    await manager.start();
+    const packageAItem = session.items[packageA.itemIds[0]];
+    packageAItem.status = "completed";
+    packageAItem.downloadedBytes = 1_000;
+    packageAItem.totalBytes = 1_000;
+    packageAItem.progressPercent = 100;
+    packageAItem.fullStatus = "Fertig";
+    packageA.status = "completed";
+    state.runOutcomes.set(packageAItem.id, "completed");
+    state.packagePostProcessActive = 1;
+
+    let releaseCollection = (): void => {};
+    const collectionGate = new Promise<void>((resolve) => {
+      releaseCollection = resolve;
+    });
+    const collect = vi.spyOn(state, "collectMkvFilesToLibrary").mockImplementation(async () => collectionGate);
+    const packageAMainPostProcess = state.runPackagePostProcessing(packageA.id);
+    await vi.waitFor(() => expect(state.packagePostProcessWaiters).toHaveLength(1));
+    state.finishRun();
+
+    const packageB = addPackage(session, ["queued"], "active-run-package");
+    await manager.start();
+    expect(state.runPackageIds).toEqual(new Set([packageB.id]));
+
+    state.releasePostProcessSlot();
+    await packageAMainPostProcess;
+    await vi.waitFor(() => expect(collect).toHaveBeenCalled());
+    const deferredTasks = [...(state.packageDeferredPostProcessTasks.get(packageA.id) || [])];
+    expect(deferredTasks).toHaveLength(1);
+
+    manager.stop();
+    releaseCollection();
+    await Promise.allSettled(deferredTasks);
+    await flushNotifications();
+
+    expect(events.filter((event) => event.type === "package_completed")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "run_completed")).toHaveLength(1);
+    expect(history.map((entry) => entry.name)).toEqual([packageA.name]);
+  });
+
   it("does not reactivate a suppressed foreign package when another start recovers it from disk", async () => {
     const { manager, session, events, history } = setup({ autoExtractWhenStopped: true });
     const packageA = addPackage(session, ["queued"], "suppressed-recovery-package");
