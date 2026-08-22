@@ -42,6 +42,7 @@ export interface RunResult {
   remuxFailures: number;
   downloadFailures: number;
   offlineFailures: number;
+  cleanupFailures: number;
 }
 
 export interface RunResultInput {
@@ -289,10 +290,11 @@ export function buildRunResult(input: RunResultInput): RunResult {
     extractionDurationSeconds: sum((result) => result.extractionDurationSeconds),
     remuxDurationSeconds: sum((result) => result.remuxDurationSeconds),
     postProcessDurationSeconds: sum((result) => result.postProcessDurationSeconds),
-    extractionFailures: packages.reduce((total, result) => total + result.archiveOperations.filter((operation) => operation.status === "failed").length, 0),
-    remuxFailures: packages.reduce((total, result) => total + result.remuxOperations.filter((operation) => operation.status === "failed").length, 0),
-    downloadFailures: packages.filter((result) => result.failurePhase === "download").reduce((total, result) => total + result.failedFiles, 0),
-    offlineFailures: packages.filter((result) => /offline|not found|nicht gefunden/i.test(result.errorCategory)).reduce((total, result) => total + result.failedFiles, 0)
+    extractionFailures: sum((result) => result.extractionFailures),
+    remuxFailures: sum((result) => result.remuxFailures),
+    downloadFailures: sum((result) => result.downloadFailures),
+    offlineFailures: sum((result) => result.offlineFailures),
+    cleanupFailures: sum((result) => result.cleanupFailures)
   };
 }
 
@@ -323,7 +325,8 @@ export function buildRunNotificationEvent(result: RunResult): NotificationEvent 
       { name: "Entpackfehler", value: String(result.extractionFailures), inline: true },
       { name: "Remuxfehler", value: String(result.remuxFailures), inline: true },
       { name: "Downloadfehler", value: String(result.downloadFailures), inline: true },
-      { name: "Offline", value: String(result.offlineFailures), inline: true }
+      { name: "Offline", value: String(result.offlineFailures), inline: true },
+      { name: "Cleanupfehler", value: String(result.cleanupFailures), inline: true }
     ]
   );
 }

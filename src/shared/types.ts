@@ -546,6 +546,11 @@ export interface PackageResult {
   successfulFiles: number;
   failedFiles: number;
   cancelledFiles: number;
+  downloadFailures: number;
+  offlineFailures: number;
+  extractionFailures: number;
+  remuxFailures: number;
+  cleanupFailures: number;
   archiveCount: number;
   partCount: number;
   outputCount: number;

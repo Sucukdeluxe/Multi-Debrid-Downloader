@@ -123,7 +123,8 @@ export function finalizePackageResult(telemetry: PackageTelemetry): PackageResul
     .map((operation) => ({ ...operation, itemIds: [...operation.itemIds] }));
   const remuxOperations = (telemetry.remuxOperations ?? packageEntry.remuxOperations ?? [])
     .map((operation) => ({ ...operation }));
-  const completedDownloads = telemetry.items.filter((item) => item.status === "completed").length;
+  const cleanedCompletedDownloads = Math.max(0, Math.floor(finiteNonNegative(packageEntry.cleanedCompletedItemCount)));
+  const completedDownloads = cleanedCompletedDownloads + telemetry.items.filter((item) => item.status === "completed").length;
   const failedDownloads = telemetry.items.filter((item) => item.status === "failed");
   const cancelledDownloads = telemetry.items.filter((item) => item.status === "cancelled").length;
   const failedArchives = archiveOperations.filter((operation) => operation.status === "failed").length;
@@ -133,7 +134,12 @@ export function finalizePackageResult(telemetry: PackageTelemetry): PackageResul
   const audioStripFailures = Math.max(0, Math.floor(finiteNonNegative(packageEntry.audioStripSummary?.failed)));
   const remuxFailures = Math.max(failedRemuxOperations, audioStripFailures);
   const cleanupErrorCategory = String(telemetry.cleanupErrorCategory ?? packageEntry.cleanupErrorCategory ?? "").trim();
-  const postProcessFailures = failedArchives + remuxFailures + (cleanupErrorCategory ? 1 : 0);
+  const downloadFailureCategories = failedDownloads.map((item) =>
+    projectPackageFailureCategory("download", item.lastError || item.fullStatus)
+  );
+  const offlineFailures = downloadFailureCategories.filter((category) => category === "Offline").length;
+  const cleanupFailures = cleanupErrorCategory ? 1 : 0;
+  const postProcessFailures = failedArchives + remuxFailures + cleanupFailures;
   const postProcessCancellations = cancelledArchives + cancelledRemuxOperations;
   const failedFiles = failedDownloads.length + postProcessFailures;
   const cancelledFiles = cancelledDownloads + postProcessCancellations;
@@ -143,8 +149,10 @@ export function finalizePackageResult(telemetry: PackageTelemetry): PackageResul
   const postProcessStartedAt = finiteNonNegative(packageEntry.postProcessStartedAt);
   const postProcessCompletedAt = finiteNonNegative(packageEntry.postProcessCompletedAt);
   const completedAt = finiteNonNegative(packageEntry.terminalAt);
-  const downloadedBytes = telemetry.items.reduce((total, item) => total + finiteNonNegative(item.downloadedBytes), 0);
-  const totalBytes = telemetry.items.reduce((total, item) => total + finiteNonNegative(item.totalBytes ?? item.downloadedBytes), 0);
+  const downloadedBytes = finiteNonNegative(packageEntry.cleanedDownloadedBytes)
+    + telemetry.items.reduce((total, item) => total + finiteNonNegative(item.downloadedBytes), 0);
+  const totalBytes = finiteNonNegative(packageEntry.cleanedTotalBytes)
+    + telemetry.items.reduce((total, item) => total + finiteNonNegative(item.totalBytes ?? item.downloadedBytes), 0);
   const downloadDurationSeconds = durationSecondsBetween(startedAt, downloadEndedAt);
   const extractionDurationSeconds = sumOperationDurationSeconds(archiveOperations);
   const remuxDurationSeconds = sumOperationDurationSeconds(remuxOperations);
@@ -177,6 +185,11 @@ export function finalizePackageResult(telemetry: PackageTelemetry): PackageResul
     successfulFiles,
     failedFiles,
     cancelledFiles,
+    downloadFailures: failedDownloads.length,
+    offlineFailures,
+    extractionFailures: failedArchives,
+    remuxFailures,
+    cleanupFailures,
     archiveCount: archiveOperations.length,
     partCount: archiveOperations.reduce((total, operation) => total + Math.max(0, Math.floor(finiteNonNegative(operation.partCount))), 0),
     outputCount: Math.max(0, Math.floor(finiteNonNegative(telemetry.outputCount ?? packageEntry.outputCount))),

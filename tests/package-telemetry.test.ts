@@ -11,6 +11,7 @@ import {
   durationSecondsBetween,
   finalizePackageResult
 } from "../src/main/package-telemetry";
+import { buildRunResult } from "../src/main/notification-events";
 import { normalizeLoadedSession } from "../src/main/storage";
 
 function packageEntry(overrides: Partial<PackageEntry> = {}): PackageEntry {
@@ -174,6 +175,28 @@ describe("package lifecycle telemetry", () => {
     }));
   });
 
+  it("includes immediately cleaned successes and bytes in a mixed package result", () => {
+    const failedItem = downloadItem("item-3", "failed");
+    const result = finalizePackageResult(telemetry({
+      package: packageEntry({
+        status: "failed",
+        itemIds: [failedItem.id],
+        cleanedCompletedItemCount: 2,
+        cleanedDownloadedBytes: 2_000,
+        cleanedTotalBytes: 2_000
+      }),
+      items: [failedItem]
+    }));
+
+    expect(result).toEqual(expect.objectContaining({
+      status: "partial",
+      successfulFiles: 2,
+      failedFiles: 1,
+      downloadedBytes: 2_000,
+      totalBytes: 3_000
+    }));
+  });
+
   it("classifies a failed download without error text as a download-phase failure", () => {
     const item = { ...downloadItem("item-1", "failed"), lastError: "", fullStatus: "" };
     const result = finalizePackageResult(telemetry({
@@ -317,6 +340,39 @@ describe("package lifecycle telemetry", () => {
       { failurePhase: "extract", errorCategory: "Entpacken" },
       { failurePhase: "download", errorCategory: "Download" }
     ]);
+  });
+
+  it("retains additive failure counters when cleanup is the primary failure phase", () => {
+    const failedItem = { ...downloadItem("item-1", "failed"), lastError: "Host ist offline" };
+    const packageResult = finalizePackageResult(telemetry({
+      items: [failedItem],
+      archiveOperations: [archiveOperation({ status: "failed", errorCategory: "archive-error" })],
+      remuxOperations: [remuxOperation({ status: "failed", errorCategory: "remux-error" })],
+      cleanupErrorCategory: "cleanup-error"
+    }));
+    const runResult = buildRunResult({
+      id: "mixed-failures",
+      stopped: false,
+      startedAt: 1_000,
+      completedAt: 166_000,
+      packages: [packageResult]
+    });
+
+    expect(packageResult).toEqual(expect.objectContaining({
+      failurePhase: "cleanup",
+      downloadFailures: 1,
+      offlineFailures: 1,
+      extractionFailures: 1,
+      remuxFailures: 1,
+      cleanupFailures: 1
+    }));
+    expect(runResult).toEqual(expect.objectContaining({
+      downloadFailures: 1,
+      offlineFailures: 1,
+      extractionFailures: 1,
+      remuxFailures: 1,
+      cleanupFailures: 1
+    }));
   });
 
   it("uses audio-strip outcomes when no individual remux operation was recorded", () => {
