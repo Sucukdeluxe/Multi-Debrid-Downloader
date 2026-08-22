@@ -11,6 +11,7 @@ import {
   durationSecondsBetween,
   finalizePackageResult
 } from "../src/main/package-telemetry";
+import { normalizeLoadedSession } from "../src/main/storage";
 
 function packageEntry(overrides: Partial<PackageEntry> = {}): PackageEntry {
   return {
@@ -173,6 +174,21 @@ describe("package lifecycle telemetry", () => {
     }));
   });
 
+  it("classifies a failed download without error text as a download-phase failure", () => {
+    const item = { ...downloadItem("item-1", "failed"), lastError: "", fullStatus: "" };
+    const result = finalizePackageResult(telemetry({
+      package: packageEntry({ status: "failed", itemIds: [item.id] }),
+      items: [item]
+    }));
+
+    expect(result).toEqual(expect.objectContaining({
+      status: "failed",
+      failedFiles: 1,
+      failurePhase: "download",
+      errorCategory: "download"
+    }));
+  });
+
   it("classifies a package with only cancelled work as cancelled", () => {
     const item = downloadItem("item-1", "cancelled");
     const result = finalizePackageResult(telemetry({
@@ -208,6 +224,43 @@ describe("package lifecycle telemetry", () => {
       remuxDurationSeconds: 0,
       postProcessDurationSeconds: 0,
       totalDurationSeconds: 60
+    }));
+  });
+
+  it("retains legacy download timing after session normalization", () => {
+    const item = { ...downloadItem("item-1"), downloadedBytes: 240_000, totalBytes: 240_000 };
+    const legacyPackage = packageEntry({
+      itemIds: [item.id],
+      downloadStartedAt: 1_000,
+      downloadCompletedAt: 121_000,
+      terminalAt: 121_000,
+      updatedAt: 121_000
+    });
+    delete legacyPackage.downloadEndedAt;
+    const normalized = normalizeLoadedSession({
+      version: 2,
+      packageOrder: [legacyPackage.id],
+      packages: { [legacyPackage.id]: legacyPackage },
+      items: { [item.id]: item },
+      runStartedAt: 1_000,
+      totalDownloadedBytes: 240_000,
+      summaryText: "",
+      reconnectUntil: 0,
+      reconnectReason: "",
+      paused: false,
+      running: false,
+      updatedAt: 121_000
+    });
+    const normalizedPackage = normalized.packages[legacyPackage.id];
+    const result = finalizePackageResult({
+      package: normalizedPackage,
+      items: normalizedPackage.itemIds.map((itemId) => normalized.items[itemId])
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      downloadEndedAt: 121_000,
+      downloadDurationSeconds: 120,
+      averageDownloadSpeedBps: 2_000
     }));
   });
 

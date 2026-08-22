@@ -58,8 +58,8 @@ function getFailure(
     return { failurePhase: "extract", errorCategory: failedArchive.errorCategory };
   }
   const downloadError = downloadErrors.find(Boolean);
-  if (downloadError) {
-    return { failurePhase: "download", errorCategory: downloadError };
+  if (downloadErrors.length > 0) {
+    return { failurePhase: "download", errorCategory: downloadError || "download" };
   }
   return { failurePhase: null, errorCategory: "" };
 }
@@ -86,7 +86,7 @@ export function finalizePackageResult(telemetry: PackageTelemetry): PackageResul
   const cancelledFiles = cancelledDownloads + postProcessCancellations;
   const successfulFiles = Math.max(0, completedDownloads - postProcessFailures - postProcessCancellations);
   const startedAt = finiteNonNegative(packageEntry.downloadStartedAt);
-  const downloadEndedAt = finiteNonNegative(packageEntry.downloadEndedAt ?? packageEntry.downloadCompletedAt);
+  const downloadEndedAt = finiteNonNegative(packageEntry.downloadEndedAt) || finiteNonNegative(packageEntry.downloadCompletedAt);
   const postProcessStartedAt = finiteNonNegative(packageEntry.postProcessStartedAt);
   const postProcessCompletedAt = finiteNonNegative(packageEntry.postProcessCompletedAt);
   const completedAt = finiteNonNegative(packageEntry.terminalAt);
