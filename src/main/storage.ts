@@ -998,6 +998,7 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
       remuxOperations: normalizeRemuxOperations(pkg.remuxOperations),
       outputCount: clampNumber(pkg.outputCount, 0, 0, 1_000_000),
       cleanupErrorCategory: asText(pkg.cleanupErrorCategory),
+      resultGeneration: clampNumber(pkg.resultGeneration, 1, 1, Number.MAX_SAFE_INTEGER),
       createdAt: clampNumber(pkg.createdAt, now, 0, Number.MAX_SAFE_INTEGER),
       updatedAt: clampNumber(pkg.updatedAt, now, 0, Number.MAX_SAFE_INTEGER)
     };

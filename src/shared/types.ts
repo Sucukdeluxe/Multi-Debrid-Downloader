@@ -572,6 +572,7 @@ export interface PackageEntry {
   remuxOperations?: RemuxOperationMetric[];
   outputCount?: number;
   cleanupErrorCategory?: string;
+  resultGeneration?: number;
   createdAt: number;
   updatedAt: number;
 }

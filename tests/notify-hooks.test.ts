@@ -243,6 +243,51 @@ describe("authoritative package completion", () => {
     expect(history).toHaveLength(2);
   });
 
+  it("continues the persisted result generation after an extraction retry following restart", async () => {
+    const { manager, session, events, history } = setup();
+    const pkg = addPackage(session);
+    const state = internal(manager);
+    pkg.resultGeneration = 7;
+    pkg.terminalAt = Date.now() - 1_000;
+    pkg.archiveOperations = [{
+      id: "archive-restart-failed",
+      name: "episode.rar",
+      itemIds: [...pkg.itemIds],
+      partCount: 1,
+      startedAt: 10_000,
+      completedAt: 12_000,
+      durationMs: 2_000,
+      status: "failed",
+      errorCategory: "crc_error"
+    }];
+    session.items[pkg.itemIds[0]].fullStatus = "Entpacken - Error";
+    vi.spyOn(state, "runPackagePostProcessing").mockResolvedValue(undefined);
+
+    manager.retryExtraction(pkg.id);
+    expect(pkg.resultGeneration).toBe(8);
+
+    pkg.archiveOperations = [{
+      id: "archive-restart-completed",
+      name: "episode.rar",
+      itemIds: [...pkg.itemIds],
+      partCount: 1,
+      startedAt: 20_000,
+      completedAt: 23_000,
+      durationMs: 3_000,
+      status: "completed",
+      errorCategory: ""
+    }];
+    session.items[pkg.itemIds[0]].fullStatus = "Entpackt - Done (3.0s)";
+    pkg.status = "completed";
+    state.tryFinalizePackageResult(pkg.id);
+    await flushNotifications();
+
+    expect(events).toHaveLength(1);
+    expect(events[0].id).toContain(":8:");
+    expect(history).toHaveLength(1);
+    expect(history[0].id).toBe(`hist-${pkg.id}-8`);
+  });
+
   it("moves a pending success digest into the outbox before shutdown", async () => {
     const { manager, session, events } = setup({ notifyPackageSuccessMode: "digest" });
     const pkg = addPackage(session);
@@ -277,6 +322,29 @@ describe("authoritative run completion", () => {
 
     expect(events.map((event) => event.type)).toEqual(["run_stopped"]);
     expect(events.some((event) => event.type === "run_completed")).toBe(false);
+  });
+
+  it("builds run_stopped file counters only from finalized package results", async () => {
+    const { manager, session, events } = setup();
+    const pkg = addPackage(session);
+    const state = internal(manager);
+    state.runPackageIds = new Set([pkg.id]);
+    state.tryFinalizePackageResult(pkg.id);
+    await flushNotifications();
+    events.length = 0;
+
+    session.running = true;
+    session.runStartedAt = Date.now() - 10_000;
+    state.runItemIds = new Set(pkg.itemIds);
+    state.runPackageIds = new Set([pkg.id]);
+    state.runOutcomes = new Map([[pkg.itemIds[0], "failed"]]);
+
+    manager.stop();
+    await flushNotifications();
+
+    const stopped = events.find((event) => event.type === "run_stopped");
+    expect(stopped).toBeDefined();
+    expect(stopped?.payload.fields.some((field) => field.name === "Dateien" && field.value === "1 erfolgreich · 0 fehlgeschlagen · 0 abgebrochen")).toBe(true);
   });
 
   it("waits for failed extraction package results before emitting the final run summary", async () => {
@@ -344,8 +412,6 @@ describe("authoritative run completion", () => {
     session.runStartedAt = Date.now() - 20_000;
     state.runItemIds = new Set(pkg.itemIds);
     state.runPackageIds = new Set([pkg.id]);
-    state.packageResultGenerations = new Map([[pkg.id, 1]]);
-    state.runPackageGenerations = new Map([[pkg.id, 1]]);
     state.runOutcomes = new Map([[pkg.itemIds[0], "completed"]]);
 
     state.tryFinalizePackageResult(pkg.id);
@@ -356,5 +422,37 @@ describe("authoritative run completion", () => {
 
     expect(events.map((event) => event.type)).toEqual(["package_completed", "run_completed"]);
     expect(events[0].payload.title).toContain("Paket-Digest");
+  });
+
+  it("finalizes overlapping runs independently when the earlier run finishes deferred work last", async () => {
+    const { manager, session, events, history } = setup();
+    const packageA = addPackage(session, ["completed"], "package-a");
+    const packageB = addPackage(session, ["completed"], "package-b");
+    const state = internal(manager);
+
+    session.running = true;
+    session.runStartedAt = Date.now() - 20_000;
+    state.runItemIds = new Set(packageA.itemIds);
+    state.runPackageIds = new Set([packageA.id]);
+    state.runOutcomes = new Map([[packageA.itemIds[0], "completed"]]);
+    state.packageDeferredPostProcessTasks.set(packageA.id, new Set([Promise.resolve()]));
+    state.finishRun();
+
+    session.running = true;
+    session.runStartedAt = Date.now() - 5_000;
+    state.runItemIds = new Set(packageB.itemIds);
+    state.runPackageIds = new Set([packageB.id]);
+    state.runOutcomes = new Map([[packageB.itemIds[0], "completed"]]);
+    state.finishRun();
+
+    state.packageDeferredPostProcessTasks.delete(packageA.id);
+    state.tryFinalizePackageResult(packageA.id);
+    await flushNotifications();
+
+    expect(events.filter((event) => event.type === "package_completed")).toHaveLength(2);
+    expect(events.filter((event) => event.type === "run_completed")).toHaveLength(2);
+    expect(new Set(events.filter((event) => event.type === "package_completed").map((event) => event.id)).size).toBe(2);
+    expect(new Set(events.filter((event) => event.type === "run_completed").map((event) => event.id)).size).toBe(2);
+    expect(history.map((entry) => entry.name).sort()).toEqual([packageA.name, packageB.name].sort());
   });
 });

@@ -1137,6 +1137,7 @@ describe("settings storage", () => {
           itemIds: [],
           cancelled: false,
           enabled: true,
+          resultGeneration: 7,
           downloadStartedAt: 1_000,
           downloadCompletedAt: 10_000,
           downloadEndedAt: 12_000,
@@ -1174,6 +1175,7 @@ describe("settings storage", () => {
     });
 
     expect(normalized.packages["pkg-1"]).toEqual(expect.objectContaining({
+      resultGeneration: 7,
       downloadEndedAt: 12_000,
       postProcessQueuedAt: 13_000,
       postProcessStartedAt: 14_000,

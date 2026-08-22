@@ -4457,6 +4457,7 @@ describe("download manager", () => {
 
     let releaseBlockedPostProcess: ((value?: void | PromiseLike<void>) => void) | undefined;
     try {
+      const history: HistoryEntry[] = [];
       const manager = new DownloadManager(
         {
           ...defaultSettings(),
@@ -4467,13 +4468,14 @@ describe("download manager", () => {
           maxParallel: 1
         },
         emptySession(),
-        createStoragePaths(path.join(root, "state"))
+        createStoragePaths(path.join(root, "state")),
+        { onHistoryEntry: (entry) => history.push(entry) }
       );
 
       const blocker = new Promise<void>((resolve) => {
         releaseBlockedPostProcess = resolve;
       });
-      (manager as unknown as { packagePostProcessQueue: Promise<void> }).packagePostProcessQueue = blocker;
+      (manager as any).handlePackagePostProcessing = vi.fn(async () => blocker);
 
       manager.addPackages([
         { name: "first", links: ["https://dummy/first"] },
@@ -4494,14 +4496,26 @@ describe("download manager", () => {
         return state === "validating" || state === "downloading" || state === "integrity_check" || state === "completed";
       }, 6000);
 
+      const pendingPackage = manager.getSnapshot().session.packages[firstPackage];
+      expect(pendingPackage?.downloadStartedAt).toBeGreaterThan(0);
+      expect(pendingPackage?.downloadEndedAt).toBeGreaterThanOrEqual(pendingPackage?.downloadStartedAt || 0);
+      expect(pendingPackage?.downloadEndedAt).toBe(pendingPackage?.downloadCompletedAt);
+      const downloadEndedAt = pendingPackage?.downloadEndedAt || 0;
+      await new Promise((resolve) => setTimeout(resolve, 1_200));
+      expect(manager.getSnapshot().session.packages[firstPackage]?.downloadEndedAt).toBe(downloadEndedAt);
+
       if (releaseBlockedPostProcess) {
         releaseBlockedPostProcess();
       }
       await waitFor(() => !manager.getSnapshot().session.running, 25000);
+      await waitFor(() => history.some((entry) => entry.name === "first"), 6000);
 
       const done = manager.getSnapshot();
       expect(done.session.items[firstItem]?.status).toBe("completed");
       expect(done.session.items[secondItem]?.status).toBe("completed");
+      const firstHistory = history.find((entry) => entry.name === "first");
+      expect(firstHistory?.downloadEndedAt).toBe(downloadEndedAt);
+      expect(firstHistory?.totalDurationSeconds).toBeGreaterThan(firstHistory?.downloadDurationSeconds || 0);
     } finally {
       if (releaseBlockedPostProcess) {
         releaseBlockedPostProcess();
@@ -11055,6 +11069,7 @@ describe("download manager", () => {
       errorCategory: ""
     });
     expect(snapshot.session.packages[packageId]?.archiveOperations?.[0].durationMs).toBeGreaterThanOrEqual(0);
+    expect(snapshot.session.packages[packageId]?.outputCount).toBe(1);
   }, 30000);
 
   it("does not fail startup post-processing when source package dir is missing but extract output exists", async () => {
