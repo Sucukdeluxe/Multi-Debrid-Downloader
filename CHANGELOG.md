@@ -2,6 +2,19 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.61] - 2026-08-23
+
+### RAR extraction reliability
+
+- Recognize explicit WinRAR directory entries even when the native listing omits trailing path separators.
+- Preserve strict file-directory collision protection by matching typed directory entries with counted archive occurrences.
+- Keep the original JVM archive or CRC error when a failed partial output has already been removed.
+- Prevent stale partial-output events from terminating the JVM extractor or replacing the actionable extraction error.
+
+### Windows persistence
+
+- Retry short-lived Windows file locks while atomically saving the notification outbox during runtime and startup.
+
 ## [2.0.60] - 2026-08-22
 
 ### Manual extraction
