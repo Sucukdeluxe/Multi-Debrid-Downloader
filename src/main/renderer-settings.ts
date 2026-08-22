@@ -82,6 +82,9 @@ export function validateRendererSettingsUpdate(value: unknown, current: AppSetti
     if (!(key in safe)) {
       invalid();
     }
+    if (key === "notifyPackageSuccessMode" && entry !== "digest" && entry !== "individual") {
+      invalid();
+    }
     validateTopLevelType(entry, safe[key]);
     validateJsonValue(entry);
     output[key] = entry;

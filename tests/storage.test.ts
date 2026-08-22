@@ -52,14 +52,17 @@ describe("settings storage", () => {
     expect(loadSettingsFrom({ notifyOnPackageCompleted: true, notifyPackageSuccessMode: "digest" }).notifyPackageSuccessMode).toBe("digest");
   });
 
-  it("normalizes notification defaults and numeric limits", () => {
+  it("preserves an explicit individual success mode when legacy package notifications are disabled", () => {
+    expect(loadSettingsFrom({ notifyOnPackageCompleted: false, notifyPackageSuccessMode: "individual" }).notifyPackageSuccessMode).toBe("individual");
+  });
+
+  it("falls back from an invalid persisted success mode according to the legacy package toggle", () => {
+    expect(loadSettingsFrom({ notifyOnPackageCompleted: true, notifyPackageSuccessMode: "invalid" }).notifyPackageSuccessMode).toBe("individual");
+    expect(loadSettingsFrom({ notifyOnPackageCompleted: false, notifyPackageSuccessMode: "invalid" }).notifyPackageSuccessMode).toBe("digest");
+  });
+
+  it("loads notification defaults for new settings", () => {
     const defaults = loadSettingsFrom({});
-    const normalized = normalizeSettings({
-      ...defaultSettings(),
-      notifyRemainingThresholdGb: 0,
-      notifyStallAfterSeconds: 3_601,
-      notifyStallCooldownMinutes: 1
-    });
 
     expect(defaults).toEqual(expect.objectContaining({
       notifyPackageSuccessMode: "digest",
@@ -70,11 +73,22 @@ describe("settings storage", () => {
       notifyStallCooldownMinutes: 10,
       notifyOnDownloadRecovery: true
     }));
-    expect(normalized).toEqual(expect.objectContaining({
-      notifyRemainingThresholdGb: 1,
-      notifyStallAfterSeconds: 3_600,
-      notifyStallCooldownMinutes: 5
-    }));
+  });
+
+  it.each([
+    ["notifyRemainingThresholdGb", 0, 1],
+    ["notifyRemainingThresholdGb", 100_001, 100_000],
+    ["notifyRemainingThresholdGb", "invalid", 50],
+    ["notifyStallAfterSeconds", 59, 60],
+    ["notifyStallAfterSeconds", 3_601, 3_600],
+    ["notifyStallAfterSeconds", "invalid", 90],
+    ["notifyStallCooldownMinutes", 4, 5],
+    ["notifyStallCooldownMinutes", 1_441, 1_440],
+    ["notifyStallCooldownMinutes", "invalid", 10]
+  ] as const)("normalizes %s from %s to %s", (key, input, expected) => {
+    const normalized = normalizeSettings({ ...defaultSettings(), [key]: input } as AppSettings);
+
+    expect(normalized[key]).toBe(expected);
   });
 
   it("enables package disclosure motion by default and preserves an explicit opt-out", () => {

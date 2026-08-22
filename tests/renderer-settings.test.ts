@@ -22,6 +22,14 @@ describe("renderer settings validation", () => {
     expect(validateRendererSettingsUpdate(update, current)).toEqual(update);
   });
 
+  it("rejects unsupported package success modes at the IPC boundary", () => {
+    const current = defaultSettings();
+
+    expect(validateRendererSettingsUpdate({ notifyPackageSuccessMode: "digest" }, current)).toEqual({ notifyPackageSuccessMode: "digest" });
+    expect(validateRendererSettingsUpdate({ notifyPackageSuccessMode: "individual" }, current)).toEqual({ notifyPackageSuccessMode: "individual" });
+    expect(() => validateRendererSettingsUpdate({ notifyPackageSuccessMode: "batched" }, current)).toThrow("Settings-Payload ist ungültig");
+  });
+
   it("accepts a complete settings save when an account status has no optional email", () => {
     const current = defaultSettings();
     current.debridAccountStatuses = {
