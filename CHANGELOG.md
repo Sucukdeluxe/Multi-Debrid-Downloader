@@ -4,6 +4,8 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.55] - 2026-08-22
+
 ### 1Fichier imports
 
 - Resolve original 1Fichier filenames, exact sizes, and availability in batches before downloads start.
@@ -23,6 +25,8 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 - Rebuilt the link collector as a package-oriented preview with expandable file rows, resolved metadata, availability filters, stable selection, and selected or complete transfer to Downloads.
 - Route pasted links, clipboard detections, text files, drag-and-drop, and DLC containers through inspection before they enter the download queue.
 - Show known hosters as icons with full-name tooltips and a text fallback when an icon cannot be loaded.
+- Restore exported queue JSON through the structured queue importer while keeping text files in the link collector preview.
+- Open the link analysis dialog directly from Ctrl+L and the File menu.
 
 ## [2.0.54] - 2026-08-21
 

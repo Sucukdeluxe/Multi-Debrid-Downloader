@@ -5,7 +5,7 @@ import { AvatarMenu, getAvatarMenuKeyboardAction } from "../src/renderer/shell/A
 import { AppHeader } from "../src/renderer/shell/AppHeader";
 import { AppShell } from "../src/renderer/shell/AppShell";
 import { buildMainNavigation } from "../src/renderer/shell/shell-model";
-import { getSnapshotRenderDelay } from "../src/renderer/App";
+import { classifyCollectorImportFileName, getSnapshotRenderDelay, readCollectorImportFiles } from "../src/renderer/App";
 
 describe("desktop shell", () => {
   it("uses keyboard-focusable controls for every copy target", () => {
@@ -35,6 +35,43 @@ describe("desktop shell", () => {
     expect(removal).toContain("askConfirmPrompt");
     expect(removal.indexOf("askConfirmPrompt")).toBeLessThan(removal.indexOf("setCollectorPackages"));
     expect(removal).toContain('title: "Ausgewählte Links löschen"');
+  });
+
+  it("routes exported queue JSON back through the queue importer while text files stay in the collector", async () => {
+    expect(classifyCollectorImportFileName("queue.json")).toBe("queue");
+    expect(classifyCollectorImportFileName("LINKS.TXT")).toBe("links");
+    expect(classifyCollectorImportFileName("archive.zip")).toBe("unsupported");
+
+    const files = await readCollectorImportFiles([
+      { name: "queue.json", text: async () => '{"version":1,"packages":[]}' },
+      { name: "links.txt", text: async () => "https://example.test/file" },
+      { name: "ignored.zip", text: async () => "not-read" }
+    ]);
+    expect(files).toEqual({
+      queueJson: ['{"version":1,"packages":[]}'],
+      linkText: "https://example.test/file"
+    });
+
+    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
+    const picker = source.slice(source.indexOf("const onImportQueue ="), source.indexOf("const setBool ="));
+    const drop = source.slice(source.indexOf("const onDrop ="), source.indexOf("const onExportQueue ="));
+
+    expect(picker).toContain("readCollectorImportFiles([file])");
+    expect(picker).toContain("importQueueJsonTexts(queueJson)");
+    expect(drop).toContain("readCollectorImportFiles(importFiles)");
+    expect(drop).toContain("importQueueJsonTexts(queueJson)");
+  });
+
+  it("opens the link analysis dialog from Ctrl+L and the File menu", () => {
+    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
+    const shortcutStart = source.indexOf('e.key.toLowerCase() === "l"');
+    const shortcut = source.slice(shortcutStart, source.indexOf('e.key.toLowerCase() === "p"', shortcutStart));
+    const menuStart = source.indexOf("Text mit Links analysieren");
+    const menu = source.slice(source.lastIndexOf("<button", menuStart), source.indexOf("</button>", menuStart));
+
+    expect(shortcut).toContain("openCollectorInput()");
+    expect(shortcut).not.toContain('setTab("collector")');
+    expect(menu).toContain("openCollectorInput()");
   });
 
   it("places the delete confirmation opt-out below the right-aligned actions", () => {

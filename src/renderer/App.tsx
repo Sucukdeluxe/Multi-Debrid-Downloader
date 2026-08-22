@@ -838,6 +838,28 @@ export function getSnapshotRenderDelay(itemCount: number, running: boolean, acti
   return delay;
 }
 
+export function classifyCollectorImportFileName(fileName: string): "queue" | "links" | "unsupported" {
+  const normalized = String(fileName || "").trim().toLowerCase();
+  if (normalized.endsWith(".json")) return "queue";
+  if (normalized.endsWith(".txt")) return "links";
+  return "unsupported";
+}
+
+export async function readCollectorImportFiles(
+  files: ReadonlyArray<{ name: string; text: () => Promise<string> }>
+): Promise<{ queueJson: string[]; linkText: string }> {
+  const queueJson: string[] = [];
+  const linkText: string[] = [];
+  for (const file of files) {
+    const kind = classifyCollectorImportFileName(file.name);
+    if (kind === "unsupported") continue;
+    const text = await file.text();
+    if (kind === "queue") queueJson.push(text);
+    else linkText.push(text);
+  }
+  return { queueJson, linkText: linkText.join("\n") };
+}
+
 const KNOWN_HOSTERS: { id: string; label: string }[] = [
   { id: "rapidgator", label: "Rapidgator" },
   { id: "uploaded", label: "Uploaded" },
@@ -3500,6 +3522,32 @@ export function App(): ReactElement {
 
   onImportDlcRef.current = onImportDlc;
 
+  const importQueueJsonTexts = async (queueJson: string[]): Promise<void> => {
+    if (queueJson.length === 0) return;
+    setCollectorError("");
+    await performQuickAction(async () => {
+      await persistDraftSettings();
+      const existingIds = new Set(Object.keys(snapshotRef.current.session.packages));
+      let addedPackages = 0;
+      let addedLinks = 0;
+      for (const json of queueJson) {
+        const result = await window.rd.importQueue(json);
+        addedPackages += result.addedPackages;
+        addedLinks += result.addedLinks;
+      }
+      if (addedLinks === 0) {
+        setCollectorError("Keine gültigen Links in der Queue-Datei gefunden");
+        showToast("Keine gültigen Links in der Queue-Datei gefunden", 3000);
+        return;
+      }
+      showToast(`Importiert: ${addedPackages} Paket(e), ${addedLinks} Link(s)`);
+      if (snapshotRef.current.settings.collapseNewPackages) await collapseNewPackages(existingIds);
+    }, (error) => {
+      setCollectorError(`Import fehlgeschlagen: ${String(error)}`);
+      showToast(`Import fehlgeschlagen: ${String(error)}`, 2600);
+    });
+  };
+
   const onDrop = async (event: DragEvent<HTMLElement>): Promise<void> => {
     event.preventDefault();
     dragDepthRef.current = 0;
@@ -3515,8 +3563,9 @@ export function App(): ReactElement {
     if (dlc.length > 0) {
       await enqueueCollectorInspection(() => window.rd.inspectCollectorContainers(dlc, Date.now()));
     } else if (importFiles.length > 0) {
-      const importedText = (await Promise.all(importFiles.map((file) => file.text()))).join("\n");
-      await inspectCollectorRawText(importedText);
+      const { queueJson, linkText } = await readCollectorImportFiles(importFiles);
+      await importQueueJsonTexts(queueJson);
+      if (linkText.trim()) await inspectCollectorRawText(linkText);
     } else if (droppedText.trim()) {
       await inspectCollectorRawText(droppedText);
     }
@@ -3566,7 +3615,9 @@ export function App(): ReactElement {
         return;
       }
       releasePickerBusy();
-      await inspectCollectorRawText(await file.text());
+      const { queueJson, linkText } = await readCollectorImportFiles([file]);
+      await importQueueJsonTexts(queueJson);
+      if (linkText.trim()) await inspectCollectorRawText(linkText);
     };
 
     clearImportQueueFocusListener();
@@ -3673,6 +3724,7 @@ export function App(): ReactElement {
 
   const openCollectorInput = (): void => {
     setCollectorError("");
+    setTab("collector");
     setCollectorInput({ draft: "" });
   };
 
@@ -4481,7 +4533,7 @@ export function App(): ReactElement {
         if (!e.shiftKey && e.key.toLowerCase() === "l") {
           if (inInput) return;
           e.preventDefault();
-          setTab("collector");
+          openCollectorInput();
           setOpenMenu(null);
           return;
         }
@@ -5613,7 +5665,7 @@ export function App(): ReactElement {
             Datei
           </button>
           <div aria-hidden={openMenu !== "datei"} className={`menu-dropdown${openMenu === "datei" ? " is-open" : ""}`}>
-              <button className="menu-dropdown-item" onClick={() => { closeMenus(); setTab("collector"); }}>
+              <button className="menu-dropdown-item" onClick={() => { closeMenus(); openCollectorInput(); }}>
                 <span>Text mit Links analysieren</span>
                 <span className="shortcut">Strg+L</span>
               </button>
