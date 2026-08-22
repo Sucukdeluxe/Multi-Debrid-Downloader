@@ -4363,12 +4363,12 @@ export class DownloadManager extends EventEmitter {
     return false;
   }
 
-  private async countPackageOutputFiles(rootDir: string): Promise<number> {
+  private async snapshotPackageOutputFiles(rootDir: string): Promise<Map<string, string>> {
+    const snapshot = new Map<string, string>();
     if (!rootDir) {
-      return 0;
+      return snapshot;
     }
     const stack = [rootDir];
-    let count = 0;
     while (stack.length > 0) {
       const current = stack.pop() as string;
       let entries: fs.Dirent[] = [];
@@ -4385,11 +4385,29 @@ export class DownloadManager extends EventEmitter {
         if (entry.isDirectory()) {
           stack.push(fullPath);
         } else if (entry.isFile() && !isArchiveLikePath(fullPath) && !isIgnorableEmptyDirFileName(entry.name)) {
-          count += 1;
+          try {
+            const stat = await fs.promises.stat(fullPath);
+            const relativePath = path.relative(rootDir, fullPath).replace(/\\/g, "/");
+            const key = process.platform === "win32" ? relativePath.toLowerCase() : relativePath;
+            snapshot.set(key, `${stat.size}:${stat.mtimeMs}`);
+          } catch {
+          }
         }
       }
     }
-    return count;
+    return snapshot;
+  }
+
+  private async recordPackageOutputFiles(pkg: PackageEntry, before: ReadonlyMap<string, string>): Promise<void> {
+    const after = await this.snapshotPackageOutputFiles(pkg.extractDir);
+    const provenance = new Set(pkg.outputProvenance || []);
+    for (const [relativePath, signature] of after) {
+      if (before.get(relativePath) !== signature) {
+        provenance.add(createHash("sha256").update(relativePath).digest("hex"));
+      }
+    }
+    pkg.outputProvenance = [...provenance];
+    pkg.outputCount = Math.max(pkg.outputCount || 0, provenance.size);
   }
 
   private async removeEmptyDirectoryTree(rootDir: string): Promise<number> {
@@ -12244,6 +12262,7 @@ export class DownloadManager extends EventEmitter {
       pkg.archiveOperations = [];
       pkg.remuxOperations = [];
       pkg.outputCount = 0;
+      pkg.outputProvenance = [];
       pkg.cleanupErrorCategory = "";
     }
     return next;
@@ -13225,6 +13244,7 @@ export class DownloadManager extends EventEmitter {
         return 0;
       }
 
+      const packageOutputBefore = await this.snapshotPackageOutputFiles(pkg.extractDir);
       const result = await extractPackageArchives({
         packageDir: pkg.outputDir,
         targetDir: pkg.extractDir,
@@ -13384,7 +13404,7 @@ export class DownloadManager extends EventEmitter {
           }
         }
       });
-      pkg.outputCount = Math.max(pkg.outputCount || 0, await this.countPackageOutputFiles(pkg.extractDir));
+      await this.recordPackageOutputFiles(pkg, packageOutputBefore);
 
       logger.info(`Hybrid-Extract Ende: pkg=${pkg.name}, extracted=${result.extracted}, failed=${result.failed}`);
       this.logPackageForPackage(pkg, "INFO", "Hybrid-Extract abgeschlossen", {
@@ -13801,6 +13821,7 @@ export class DownloadManager extends EventEmitter {
           entry.updatedAt = pendingAt;
         }
         this.emitState();
+        const packageOutputBefore = await this.snapshotPackageOutputFiles(pkg.extractDir);
         const result = await extractPackageArchives({
           packageDir: pkg.outputDir,
           targetDir: pkg.extractDir,
@@ -13943,7 +13964,7 @@ export class DownloadManager extends EventEmitter {
             emitExtractStatus(overallLabel);
           }
         });
-        pkg.outputCount = Math.max(pkg.outputCount || 0, await this.countPackageOutputFiles(pkg.extractDir));
+        await this.recordPackageOutputFiles(pkg, packageOutputBefore);
         logger.info(`Post-Processing Entpacken Ende: pkg=${pkg.name}, extracted=${result.extracted}, failed=${result.failed}, lastError=${result.lastError || ""}`);
         this.logPackageForPackage(pkg, "INFO", "Post-Processing Entpacken Ende", {
           extracted: result.extracted,
@@ -14150,6 +14171,7 @@ export class DownloadManager extends EventEmitter {
           });
           const nestedFailureCategories = new Map<string, string>();
           const nestedItems = pkg.itemIds.map((itemId) => this.session.items[itemId]).filter(Boolean) as DownloadItem[];
+          const packageOutputBefore = await this.snapshotPackageOutputFiles(pkg.extractDir);
           const nestedResult = await extractPackageArchives({
             packageDir: pkg.extractDir,
             targetDir: pkg.extractDir,
@@ -14177,7 +14199,7 @@ export class DownloadManager extends EventEmitter {
             }
           });
           throwIfAborted();
-          pkg.outputCount = Math.max(pkg.outputCount || 0, await this.countPackageOutputFiles(pkg.extractDir));
+          await this.recordPackageOutputFiles(pkg, packageOutputBefore);
           extractedCount += nestedResult.extracted;
           logger.info(`Deferred Nested-Extraction Ende: extracted=${nestedResult.extracted}, failed=${nestedResult.failed}`);
           this.logPackageForPackage(pkg, "INFO", "Deferred Nested-Extraction Ende", {

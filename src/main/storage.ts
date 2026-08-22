@@ -1007,6 +1007,9 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
       archiveOperations: normalizeArchiveOperations(pkg.archiveOperations),
       remuxOperations: normalizeRemuxOperations(pkg.remuxOperations),
       outputCount: clampNumber(pkg.outputCount, 0, 0, 1_000_000),
+      outputProvenance: Array.isArray(pkg.outputProvenance)
+        ? [...new Set(pkg.outputProvenance.map((value) => asText(value).toLowerCase()).filter((value) => /^[a-f0-9]{64}$/.test(value)))].slice(0, 1_000_000)
+        : [],
       cleanupErrorCategory: asText(pkg.cleanupErrorCategory),
       resultGeneration: clampNumber(pkg.resultGeneration, 1, 1, Number.MAX_SAFE_INTEGER),
       createdAt: clampNumber(pkg.createdAt, now, 0, Number.MAX_SAFE_INTEGER),

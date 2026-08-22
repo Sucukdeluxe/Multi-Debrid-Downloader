@@ -1200,6 +1200,7 @@ describe("settings storage", () => {
           }],
           remuxOperations: [],
           outputCount: 1,
+          outputProvenance: ["a".repeat(64), "invalid", "a".repeat(64)],
           cleanupErrorCategory: "",
           createdAt: 1_000,
           updatedAt: 21_000
@@ -1226,6 +1227,7 @@ describe("settings storage", () => {
       archiveOperations: [expect.objectContaining({ id: "archive-1", durationMs: 4_000 })],
       remuxOperations: [],
       outputCount: 1,
+      outputProvenance: ["a".repeat(64)],
       cleanupErrorCategory: ""
     }));
   });

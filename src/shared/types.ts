@@ -588,6 +588,7 @@ export interface PackageEntry {
   archiveOperations?: ArchiveOperationMetric[];
   remuxOperations?: RemuxOperationMetric[];
   outputCount?: number;
+  outputProvenance?: string[];
   cleanupErrorCategory?: string;
   resultGeneration?: number;
   createdAt: number;

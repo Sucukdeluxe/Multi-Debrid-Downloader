@@ -11466,8 +11466,10 @@ describe("download manager", () => {
     tempDirs.push(root);
 
     const outputDir = path.join(root, "downloads", "recovery");
-    const extractDir = path.join(root, "extract", "recovery");
+    const extractDir = path.join(root, "extract");
     fs.mkdirSync(outputDir, { recursive: true });
+    fs.mkdirSync(extractDir, { recursive: true });
+    fs.writeFileSync(path.join(extractDir, "foreign-package.txt"), "foreign");
 
     const zip = new AdmZip();
     zip.addFile("episode.txt", Buffer.from("ok"));
@@ -11518,7 +11520,7 @@ describe("download manager", () => {
         token: "rd-token",
         outputDir: path.join(root, "downloads"),
         extractDir: path.join(root, "extract"),
-        createExtractSubfolder: true,
+        createExtractSubfolder: false,
         autoExtract: true,
         enableIntegrityCheck: false,
         cleanupMode: "none"
