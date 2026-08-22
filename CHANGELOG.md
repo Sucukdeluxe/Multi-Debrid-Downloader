@@ -2,7 +2,7 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
-## [Unreleased]
+## [2.0.56] - 2026-08-22
 
 ### Notification Center
 
@@ -13,6 +13,43 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 - Added configurable run-scoped remaining-volume, download-stall, cooldown, and recovery alerts that ignore expected waits and short self-healing interruptions.
 - Expanded History with separate download, extraction, remux, post-processing, and total durations plus final file, archive, part, output, and failure-phase details.
 - Keep webhook details, local paths, account data, and credentials out of persisted notification events and failure messages.
+
+### Recurring daily schedule
+
+- Replaced the one-time Downloads scheduler with a recurring local-time schedule that can begin today or tomorrow.
+- Persist daily schedules across restarts and reconcile them after startup, account changes, suspend, and resume.
+- Prevent duplicate starts for the same local day while handling daylight-saving changes, missed dates, empty queues, active runs, unavailable accounts, and retryable start failures.
+- Added strict time validation, a next-start countdown, and visible save errors.
+
+### Stop and restart lifecycle
+
+- Serialize full-queue, package, and item starts through one lifecycle so starts requested during stopping run once after existing work drains.
+- Prevent late recovery callbacks and stale task finalizers from reviving stopped work or replacing a newer run.
+- Release cancelled Real-Debrid, AllDebrid, and BestDebrid web waits without blocking later requests.
+- Show the current lifecycle phase, reason, provider retry countdown, pending start, and remaining work.
+- Keep active and deferred post-processing bound to the run that owns it.
+
+### Interface polish
+
+- Added coordinated fade and size transitions when package rows expand or collapse while respecting the animation preference.
+- Added global expand and collapse actions to Downloads and the link collector, including packages outside the active filter.
+- Kept the Downloads package action visible in a responsive toolbar and disabled it for an empty queue.
+- Changed contextual help to open on pointer hover or keyboard focus and grouped download filters into a compact sidebar section.
+
+### Extraction safety and coordination
+
+- Validate complete archive target plans before any extraction writes, including invalid Windows names, aliases, duplicate targets, and file-directory collisions.
+- Track concrete extraction outputs per package generation across writes, renames, partial results, removal, and restarts.
+- Limit nested extraction, renaming, audio processing, cleanup, and library collection to files owned by the producing package.
+- Added one global extraction coordinator for the configured parallel limit across packages and extraction modes, with fair scheduling and live limit changes.
+- Hold multipart disk reservations and extraction permits until the real child process closes and output ownership is finalized.
+- Keep run and package cancellation isolated and prevent recursive discovery of unrelated archives in shared roots.
+
+### Telemetry and History
+
+- Added completed, partial, failed, and cancelled package results with separate download, extraction, remux, post-processing, and total durations.
+- Record file counts, downloaded bytes, archive groups, parts, outputs, failure phases, and error categories in History and final run summaries.
+- Preserve mixed package outcomes and separate download, offline, extraction, remux, and cleanup failure totals.
 
 ## [2.0.55] - 2026-08-22
 
