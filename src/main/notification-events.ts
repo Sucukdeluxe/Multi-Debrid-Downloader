@@ -10,6 +10,7 @@ import type {
   NotificationEventType,
   NotificationPriority
 } from "./notification-outbox";
+import { projectPackageFailureCategory } from "./package-telemetry";
 
 export interface PackageResultEnvelope {
   generation: number;
@@ -202,9 +203,10 @@ export function buildPackageNotificationEvent(
     { name: "Archive", value: `${result.archiveCount} Gruppen · ${result.partCount} Parts · ${result.outputCount} Ausgaben`, inline: true }
   ];
   if (result.failurePhase) {
+    const errorCategory = projectPackageFailureCategory(result.failurePhase, result.errorCategory);
     fields.push({
       name: "Fehler",
-      value: `${failurePhaseLabel(result)}${result.errorCategory ? ` · ${result.errorCategory.slice(0, 256)}` : ""}`,
+      value: `${failurePhaseLabel(result)} · ${errorCategory}`,
       inline: false
     });
   }

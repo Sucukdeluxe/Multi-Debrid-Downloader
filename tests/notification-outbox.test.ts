@@ -4,7 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NotificationEvent, NotificationOutbox } from "../src/main/notification-outbox";
-import { sendNotification } from "../src/main/notify";
+import { buildPackageNotificationEvent } from "../src/main/notification-events";
+import { buildNotifyRequest, sendNotification } from "../src/main/notify";
+import type { PackageResult } from "../src/shared/types";
 
 const tempDirs: string[] = [];
 
@@ -275,6 +277,93 @@ describe("NotificationOutbox", () => {
     expect(raw).not.toContain("private-webhook");
     expect(raw).not.toContain("@private");
     expect(persisted(filePath).events[0]).toEqual(event("safe"));
+  });
+
+  it("keeps private package failure details out of events, requests, and persisted state", async () => {
+    const filePath = createOutboxFile();
+    const privateDetails = "https://private.example.test/hook C:/Private/target alice@example.test token=SUPERSECRET";
+    const result: PackageResult = {
+      packageId: "pkg-private",
+      name: "Paket",
+      status: "failed",
+      startedAt: 1000,
+      downloadEndedAt: 2000,
+      postProcessStartedAt: 0,
+      completedAt: 2000,
+      downloadDurationSeconds: 1,
+      extractionDurationSeconds: 0,
+      remuxDurationSeconds: 0,
+      postProcessDurationSeconds: 0,
+      totalDurationSeconds: 1,
+      totalBytes: 1000,
+      downloadedBytes: 0,
+      averageDownloadSpeedBps: 0,
+      successfulFiles: 0,
+      failedFiles: 1,
+      cancelledFiles: 0,
+      archiveCount: 0,
+      partCount: 0,
+      outputCount: 0,
+      failurePhase: "download",
+      errorCategory: privateDetails,
+      archiveOperations: [],
+      remuxOperations: []
+    };
+    const notificationEvent = buildPackageNotificationEvent({ generation: 1, result }, 1000);
+    const request = buildNotifyRequest("https://discord.com/api/webhooks/123/abc", {
+      title: notificationEvent.payload.title,
+      message: notificationEvent.payload.description || "",
+      color: notificationEvent.payload.color,
+      fields: notificationEvent.payload.fields,
+      timestamp: notificationEvent.createdAt
+    });
+    const outbox = new NotificationOutbox({ filePath, send: async () => true, now: () => 1000 });
+
+    await outbox.enqueue(notificationEvent);
+
+    const eventText = JSON.stringify(notificationEvent);
+    const requestText = String(request.init.body);
+    const persistedText = fs.readFileSync(filePath, "utf8");
+    const sensitiveValues = [
+      "https://private.example.test/hook",
+      "C:/Private/target",
+      "alice@example.test",
+      "token=SUPERSECRET"
+    ];
+    expect(notificationEvent.payload.fields.find((field) => field.name === "Fehler")?.value).toBe("Download · Download");
+    for (const sensitiveValue of sensitiveValues) {
+      expect(eventText).not.toContain(sensitiveValue);
+      expect(requestText).not.toContain(sensitiveValue);
+      expect(persistedText).not.toContain(sensitiveValue);
+    }
+  });
+
+  it("projects private failure details from an existing outbox before persisting again", async () => {
+    const filePath = createOutboxFile();
+    const privateDetails = "https://private.example.test/hook C:/Private/target alice@example.test token=SUPERSECRET";
+    const legacyEvent = event("legacy-private", {
+      payload: {
+        title: "Paket fehlgeschlagen",
+        description: "Paket",
+        fields: [{ name: "Fehler", value: `Download · ${privateDetails}`, inline: false }]
+      }
+    });
+    fs.writeFileSync(filePath, JSON.stringify({
+      version: 1,
+      events: [legacyEvent],
+      lastSuccessAt: 0,
+      lastFailureAt: 0
+    }), "utf8");
+    const outbox = new NotificationOutbox({ filePath, send: async () => true, now: () => 1000 });
+
+    await outbox.enqueue(event("safe"));
+
+    const persistedText = fs.readFileSync(filePath, "utf8");
+    expect(persisted(filePath).events[0].payload.fields[0]?.value).toBe("Download · Download");
+    expect(persistedText).not.toContain("https://private.example.test/hook");
+    expect(persistedText).not.toContain("C:/Private/target");
+    expect(persistedText).not.toContain("alice@example.test");
+    expect(persistedText).not.toContain("token=SUPERSECRET");
   });
 
   it("returns after the default three-second shutdown budget when sending hangs", async () => {

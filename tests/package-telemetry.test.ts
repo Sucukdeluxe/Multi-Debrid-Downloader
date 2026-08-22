@@ -153,7 +153,7 @@ describe("package lifecycle telemetry", () => {
       partCount: 16,
       archiveCount: 1,
       failurePhase: "extract",
-      errorCategory: "checksum"
+      errorCategory: "Entpacken"
     }));
   });
 
@@ -170,7 +170,7 @@ describe("package lifecycle telemetry", () => {
       failedFiles: 1,
       cancelledFiles: 0,
       failurePhase: "download",
-      errorCategory: "download-error"
+      errorCategory: "Download"
     }));
   });
 
@@ -185,8 +185,44 @@ describe("package lifecycle telemetry", () => {
       status: "failed",
       failedFiles: 1,
       failurePhase: "download",
-      errorCategory: "download"
+      errorCategory: "Download"
     }));
+  });
+
+  it("projects private download failure details to a fixed category", () => {
+    const privateDetails = "https://private.example.test/hook C:/Private/target alice@example.test token=SUPERSECRET";
+    const item = {
+      ...downloadItem("item-1", "failed"),
+      lastError: privateDetails,
+      fullStatus: privateDetails
+    };
+    const result = finalizePackageResult(telemetry({
+      package: packageEntry({ status: "failed", itemIds: [item.id] }),
+      items: [item]
+    }));
+
+    expect(result.errorCategory).toBe("Download");
+    expect(result.errorCategory).not.toContain("private.example.test");
+    expect(result.errorCategory).not.toContain("C:/Private/target");
+    expect(result.errorCategory).not.toContain("alice@example.test");
+    expect(result.errorCategory).not.toContain("SUPERSECRET");
+  });
+
+  it.each([
+    ["Host ist offline", "Offline"],
+    ["Request ETIMEDOUT", "Timeout"],
+    ["socket ECONNRESET", "Netzwerk"],
+    ["ENOSPC: no space left on device", "Speicherplatz"],
+    ["EACCES: permission denied", "Berechtigung"],
+    ["nicht näher klassifizierbar", "Download"]
+  ])("maps download failure detail %s to %s", (detail, expectedCategory) => {
+    const item = { ...downloadItem("item-1", "failed"), lastError: detail };
+    const result = finalizePackageResult(telemetry({
+      package: packageEntry({ status: "failed", itemIds: [item.id] }),
+      items: [item]
+    }));
+
+    expect(result.errorCategory).toBe(expectedCategory);
   });
 
   it("classifies a package with only cancelled work as cancelled", () => {
@@ -268,11 +304,19 @@ describe("package lifecycle telemetry", () => {
     const failedItem = downloadItem("item-1", "failed");
     const failedArchive = archiveOperation({ status: "failed", errorCategory: "archive-error" });
     const failedRemux = remuxOperation({ status: "failed", errorCategory: "remux-error" });
+    const failures = [
+      finalizePackageResult(telemetry({ items: [failedItem], archiveOperations: [failedArchive], remuxOperations: [failedRemux], cleanupErrorCategory: "cleanup-error" })),
+      finalizePackageResult(telemetry({ items: [failedItem], archiveOperations: [failedArchive], remuxOperations: [failedRemux] })),
+      finalizePackageResult(telemetry({ items: [failedItem], archiveOperations: [failedArchive] })),
+      finalizePackageResult(telemetry({ items: [failedItem] }))
+    ];
 
-    expect(finalizePackageResult(telemetry({ items: [failedItem], archiveOperations: [failedArchive], remuxOperations: [failedRemux], cleanupErrorCategory: "cleanup-error" })).failurePhase).toBe("cleanup");
-    expect(finalizePackageResult(telemetry({ items: [failedItem], archiveOperations: [failedArchive], remuxOperations: [failedRemux] })).failurePhase).toBe("remux");
-    expect(finalizePackageResult(telemetry({ items: [failedItem], archiveOperations: [failedArchive] })).failurePhase).toBe("extract");
-    expect(finalizePackageResult(telemetry({ items: [failedItem] })).failurePhase).toBe("download");
+    expect(failures.map(({ failurePhase, errorCategory }) => ({ failurePhase, errorCategory }))).toEqual([
+      { failurePhase: "cleanup", errorCategory: "Cleanup" },
+      { failurePhase: "remux", errorCategory: "Remux" },
+      { failurePhase: "extract", errorCategory: "Entpacken" },
+      { failurePhase: "download", errorCategory: "Download" }
+    ]);
   });
 
   it("uses audio-strip outcomes when no individual remux operation was recorded", () => {

@@ -2,6 +2,8 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import type { DiscordEmbedFieldPayload } from "./notify";
+import { projectPackageFailureCategory } from "./package-telemetry";
+import type { FailurePhase } from "../shared/types";
 
 export type NotificationEventType =
   | "package_completed"
@@ -66,10 +68,29 @@ const EVENT_TYPES = new Set<NotificationEventType>([
 const MAX_EVENTS = 250;
 const MAX_RETRY_DELAY_MS = 10 * 60 * 1000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 3000;
+const PACKAGE_FAILURE_EVENT_TYPES = new Set<NotificationEventType>([
+  "package_partial",
+  "package_failed"
+]);
+const PACKAGE_FAILURE_PHASES = new Map<string, FailurePhase>([
+  ["Download", "download"],
+  ["Entpacken", "extract"],
+  ["Remux", "remux"],
+  ["Aufräumen", "cleanup"]
+]);
 
 function finiteInteger(value: unknown, fallback = 0): number {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : fallback;
+}
+
+function sanitizePackageFailureFieldValue(value: string): string {
+  const match = /^(Download|Entpacken|Remux|Aufräumen)(?:\s*·\s*(.*))?$/s.exec(value.trim());
+  if (!match) {
+    return "Unbekannt";
+  }
+  const phase = PACKAGE_FAILURE_PHASES.get(match[1]) ?? null;
+  return `${match[1]} · ${projectPackageFailureCategory(phase, match[2])}`;
 }
 
 function sanitizeEvent(value: unknown): NotificationEvent | null {
@@ -93,7 +114,10 @@ function sanitizeEvent(value: unknown): NotificationEvent | null {
         return [];
       }
       const name = typeof field.name === "string" ? field.name.slice(0, 1024) : "";
-      const fieldValue = typeof field.value === "string" ? field.value.slice(0, 4096) : "";
+      const rawFieldValue = typeof field.value === "string" ? field.value.slice(0, 4096) : "";
+      const fieldValue = name === "Fehler" && PACKAGE_FAILURE_EVENT_TYPES.has(type)
+        ? sanitizePackageFailureFieldValue(rawFieldValue)
+        : rawFieldValue;
       return name && fieldValue ? [{ name, value: fieldValue, inline: Boolean(field.inline) }] : [];
     })
     : [];

@@ -7,6 +7,31 @@ import type {
   RemuxOperationMetric
 } from "../shared/types";
 
+export type PackageFailureCategory =
+  | "Netzwerk"
+  | "Timeout"
+  | "Offline"
+  | "Speicherplatz"
+  | "Berechtigung"
+  | "Download"
+  | "Entpacken"
+  | "Remux"
+  | "Cleanup"
+  | "Unbekannt";
+
+const packageFailureCategories = new Map<string, PackageFailureCategory>([
+  ["netzwerk", "Netzwerk"],
+  ["timeout", "Timeout"],
+  ["offline", "Offline"],
+  ["speicherplatz", "Speicherplatz"],
+  ["berechtigung", "Berechtigung"],
+  ["download", "Download"],
+  ["entpacken", "Entpacken"],
+  ["remux", "Remux"],
+  ["cleanup", "Cleanup"],
+  ["unbekannt", "Unbekannt"]
+]);
+
 function finiteNonNegative(value: unknown): number {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : 0;
@@ -24,6 +49,34 @@ export function durationSecondsBetween(startedAt: number | undefined, completedA
 
 export function sumOperationDurationSeconds(operations: readonly { durationMs: number }[]): number {
   return durationMsToSeconds(operations.reduce((total, operation) => total + finiteNonNegative(operation.durationMs), 0));
+}
+
+export function projectPackageFailureCategory(failurePhase: FailurePhase, detail: unknown): PackageFailureCategory {
+  const normalized = String(detail ?? "").trim().slice(0, 2048).toLowerCase();
+  const knownCategory = packageFailureCategories.get(normalized);
+  if (knownCategory) {
+    return knownCategory;
+  }
+  if (/\b(?:e?timed?[\s_-]*out|timeout)\b|zeit(?:ü|ue)berschreitung/.test(normalized)) {
+    return "Timeout";
+  }
+  if (/\boffline\b|not[\s_-]*found|nicht[\s_-]*gefunden|dead[\s_-]*link|http\s*404/.test(normalized)) {
+    return "Offline";
+  }
+  if (/\benospc\b|disk[\s_-]*full|no[\s_-]+space[\s_-]+left|not[\s_-]+enough[\s_-]+(?:disk[\s_-]+)?space|insufficient[\s_-]+(?:disk[\s_-]+)?space|speicherplatz|datenträger[^\n]*voll/.test(normalized)) {
+    return "Speicherplatz";
+  }
+  if (/\beacces\b|\beperm\b|permission|access[\s_-]*denied|zugriff[^\n]*verweigert|berechtigung/.test(normalized)) {
+    return "Berechtigung";
+  }
+  if (/network|netzwerk|\beconn|\benet|\behost|\beai_again\b|\bdns\b|socket|connection|verbindung|fetch[\s_-]*failed/.test(normalized)) {
+    return "Netzwerk";
+  }
+  if (failurePhase === "download") return "Download";
+  if (failurePhase === "extract") return "Entpacken";
+  if (failurePhase === "remux") return "Remux";
+  if (failurePhase === "cleanup") return "Cleanup";
+  return "Unbekannt";
 }
 
 function classifyStatus(successfulFiles: number, failedFiles: number, cancelledFiles: number, packageCancelled: boolean): PackageResultStatus {
@@ -47,19 +100,19 @@ function getFailure(
   downloadErrors: readonly string[]
 ): { failurePhase: FailurePhase; errorCategory: string } {
   if (cleanupErrorCategory) {
-    return { failurePhase: "cleanup", errorCategory: cleanupErrorCategory };
+    return { failurePhase: "cleanup", errorCategory: projectPackageFailureCategory("cleanup", cleanupErrorCategory) };
   }
   const failedRemux = remuxOperations.find((operation) => operation.status === "failed");
   if (failedRemux || remuxFallbackFailures > 0) {
-    return { failurePhase: "remux", errorCategory: failedRemux?.errorCategory || "remux" };
+    return { failurePhase: "remux", errorCategory: projectPackageFailureCategory("remux", failedRemux?.errorCategory) };
   }
   const failedArchive = archiveOperations.find((operation) => operation.status === "failed");
   if (failedArchive) {
-    return { failurePhase: "extract", errorCategory: failedArchive.errorCategory };
+    return { failurePhase: "extract", errorCategory: projectPackageFailureCategory("extract", failedArchive.errorCategory) };
   }
   const downloadError = downloadErrors.find(Boolean);
   if (downloadErrors.length > 0) {
-    return { failurePhase: "download", errorCategory: downloadError || "download" };
+    return { failurePhase: "download", errorCategory: projectPackageFailureCategory("download", downloadError) };
   }
   return { failurePhase: null, errorCategory: "" };
 }
