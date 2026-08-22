@@ -1863,6 +1863,9 @@ function handleDaemonLine(line: string): void {
 
   if (daemonCurrentRequest) {
     const req = daemonCurrentRequest;
+    if (req.terminationStarted) {
+      return;
+    }
     parseJvmLine(trimmed, req.onArchiveProgress, req.parseState, req.onOutput);
     failDaemonOutputCallback(req);
   }
@@ -1918,6 +1921,9 @@ function startDaemon(layout: JvmExtractorLayout): boolean {
       for (const line of lines) {
         if (daemonCurrentRequest) {
           const req = daemonCurrentRequest;
+          if (req.terminationStarted) {
+            continue;
+          }
           parseJvmLine(line, req.onArchiveProgress, req.parseState, req.onOutput);
           failDaemonOutputCallback(req);
         }

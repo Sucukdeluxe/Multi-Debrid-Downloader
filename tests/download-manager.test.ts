@@ -43,6 +43,19 @@ function writePackageOutputOwnerMarker(pkg: PackageEntry): void {
   }));
 }
 
+function setExtractOutputRecords(pkg: PackageEntry, outputPaths: string[]): void {
+  pkg.outputProvenanceVersion = 1;
+  pkg.outputRecords = outputPaths.map((outputPath) => ({
+    version: 1,
+    archivePath: path.join(pkg.outputDir, "source.zip"),
+    entryPath: path.relative(pkg.extractDir, outputPath).replace(/\\/g, "/"),
+    outputPath,
+    state: "complete",
+    disposition: "written"
+  }));
+  pkg.outputCount = outputPaths.length;
+}
+
 describe("runWithLimitedConcurrency", () => {
   it("processes the full batch without exceeding the configured worker count", async () => {
     let active = 0;
@@ -12064,6 +12077,10 @@ describe("download manager", () => {
       createdAt,
       updatedAt: createdAt
     };
+    setExtractOutputRecords(session.packages[packageId], [
+      path.join(extractDir, "episode.links.txt"),
+      path.join(extractDir, "sample", "sample.mkv")
+    ]);
 
     const manager = new DownloadManager(
       {
@@ -12094,6 +12111,83 @@ describe("download manager", () => {
 
     expect(fs.existsSync(path.join(extractDir, "episode.links.txt"))).toBe(false);
     expect(fs.existsSync(path.join(extractDir, "sample", "sample.mkv"))).toBe(false);
+  });
+
+  it("deletes only package-owned archive members from a shared download root", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-shared-cleanup-"));
+    tempDirs.push(root);
+    const outputDir = path.join(root, "downloads");
+    const extractDir = path.join(root, "extract", "owned-package");
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.mkdirSync(extractDir, { recursive: true });
+    const ownedPaths = [path.join(outputDir, "owned.part1.rar"), path.join(outputDir, "owned.part2.rar")];
+    const foreignPaths = [path.join(outputDir, "foreign.part1.rar"), path.join(outputDir, "foreign.part2.rar")];
+    for (const archivePath of [...ownedPaths, ...foreignPaths]) {
+      fs.writeFileSync(archivePath, archivePath);
+    }
+    const extractedPath = path.join(extractDir, "episode.mkv");
+    fs.writeFileSync(extractedPath, "video");
+    const session = emptySession();
+    const packageId = "owned-package";
+    const createdAt = Date.now() - 20_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: packageId,
+      outputDir,
+      extractDir,
+      status: "completed",
+      itemIds: ["owned-part-1", "owned-part-2"],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    for (let index = 0; index < ownedPaths.length; index += 1) {
+      const itemId = `owned-part-${index + 1}`;
+      session.items[itemId] = {
+        id: itemId,
+        packageId,
+        url: `https://example.com/${path.basename(ownedPaths[index])}`,
+        provider: "realdebrid",
+        status: "completed",
+        retries: 0,
+        speedBps: 0,
+        downloadedBytes: fs.statSync(ownedPaths[index]).size,
+        totalBytes: fs.statSync(ownedPaths[index]).size,
+        progressPercent: 100,
+        fileName: path.basename(ownedPaths[index]),
+        targetPath: ownedPaths[index],
+        resumable: true,
+        attempts: 1,
+        lastError: "",
+        fullStatus: "Entpackt - Done (1s)",
+        createdAt,
+        updatedAt: createdAt
+      };
+    }
+    setExtractOutputRecords(session.packages[packageId], [extractedPath]);
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        outputDir,
+        extractDir: path.join(root, "extract"),
+        autoExtract: true,
+        autoRename4sf4sj: false,
+        collectMkvToLibrary: false,
+        removeLinkFilesAfterExtract: false,
+        removeSamplesAfterExtract: false,
+        enableIntegrityCheck: false,
+        cleanupMode: "delete"
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await (manager as any).runDeferredPostExtraction(packageId, session.packages[packageId], 1, 0, true, 1);
+
+    expect(ownedPaths.map((archivePath) => fs.existsSync(archivePath))).toEqual([false, false]);
+    expect(foreignPaths.map((archivePath) => fs.existsSync(archivePath))).toEqual([true, true]);
   });
 
   it("does not delete startup archives when any completed item has an extract error", async () => {
@@ -13089,12 +13183,14 @@ describe("download manager", () => {
       createStoragePaths(path.join(root, "state"))
     );
     (manager as any).fileStabilizeMinAgeMs = 30_000;
+    setExtractOutputRecords(session.packages[packageId], [scenePath]);
 
     const expectedBase = "Test.Show.S02E05.Title.GERMAN.WS.720p.HDTV.x264-aWake";
     const renamedLibPath = path.join(mkvLibraryDir, `${expectedBase}.mkv`);
     const sceneLibPath = path.join(mkvLibraryDir, sceneName);
 
-    await (manager as any).autoRenameExtractedVideoFiles(extractDir, session.packages[packageId], undefined, true);
+    const outputScope = (manager as any).getPackageOutputScope(session.packages[packageId]);
+    await (manager as any).autoRenameExtractedVideoFiles(extractDir, outputScope, session.packages[packageId], undefined, true);
     await (manager as any).collectMkvFilesToLibrary(packageId, session.packages[packageId], undefined, false);
 
     expect(fs.existsSync(renamedLibPath)).toBe(true);
@@ -13153,6 +13249,7 @@ describe("download manager", () => {
     (manager as any).fileStabilizeMinAgeMs = 30_000;
 
     const expectedBase = "Test.Show.S02E05.Title.GERMAN.WS.720p.HDTV.x264-aWake";
+    setExtractOutputRecords(session.packages[packageId], [path.join(epFolder, sceneName)]);
     await (manager as any).runDeferredPostExtraction(packageId, session.packages[packageId], 1, 0, true, 1);
 
     expect(fs.existsSync(path.join(mkvLibraryDir, `${expectedBase}.mkv`))).toBe(true);

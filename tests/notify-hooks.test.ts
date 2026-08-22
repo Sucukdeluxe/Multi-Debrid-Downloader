@@ -789,7 +789,21 @@ describe("authoritative run completion", () => {
     packageAItem.fullStatus = "Fertig";
     packageA.status = "completed";
     state.runOutcomes.set(packageAItem.id, "completed");
-    state.packagePostProcessActive = 1;
+    const handlePackagePostProcessing = state.handlePackagePostProcessing.bind(state);
+    let releaseMainPostProcess = (): void => {};
+    let markMainPostProcessEntered = (): void => {};
+    const mainPostProcessGate = new Promise<void>((resolve) => {
+      releaseMainPostProcess = resolve;
+    });
+    const mainPostProcessEntered = new Promise<void>((resolve) => {
+      markMainPostProcessEntered = resolve;
+    });
+    vi.spyOn(state, "handlePackagePostProcessing").mockImplementation(async (...args: unknown[]) => {
+      const [packageId, signal] = args as [string, AbortSignal?];
+      markMainPostProcessEntered();
+      await mainPostProcessGate;
+      await handlePackagePostProcessing(packageId, signal);
+    });
 
     let releaseCollection = (): void => {};
     const collectionGate = new Promise<void>((resolve) => {
@@ -797,14 +811,14 @@ describe("authoritative run completion", () => {
     });
     const collect = vi.spyOn(state, "collectMkvFilesToLibrary").mockImplementation(async () => collectionGate);
     const packageAMainPostProcess = state.runPackagePostProcessing(packageA.id);
-    await vi.waitFor(() => expect(state.packagePostProcessWaiters).toHaveLength(1));
+    await mainPostProcessEntered;
     state.finishRun();
 
     const packageB = addPackage(session, ["queued"], "active-run-package");
     await manager.start();
     expect(state.runPackageIds).toEqual(new Set([packageB.id]));
 
-    state.releasePostProcessSlot();
+    releaseMainPostProcess();
     await packageAMainPostProcess;
     await vi.waitFor(() => expect(collect).toHaveBeenCalled());
     const deferredTasks = [...(state.packageDeferredPostProcessTasks.get(packageA.id) || [])];

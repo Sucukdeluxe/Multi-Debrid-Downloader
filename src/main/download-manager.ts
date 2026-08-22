@@ -64,7 +64,7 @@ function releaseTlsSkip(): void {
 import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifactsFromScope, removeSampleArtifactsFromScope } from "./cleanup";
 import { planDownloadCompletion, reconcileFinalizedSize, validateDownloadedFileCompletion } from "./download-completion";
 import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkDdownloadOnline, checkOneFichierLinks, checkRapidgatorOnline, fetchAllDebridHostInfo, filenameFromDdownloadUrlPath, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, isDdownloadLink, isOneFichierLink, isProviderDisabledForSelection, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown, type DdownloadCheckResult, type OneFichierCheckResult } from "./debrid";
-import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo, type ExtractProgressUpdate } from "./extractor";
+import { clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo, type ExtractProgressUpdate } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { classifyDiskError } from "./fs-error";
 import { processVideoFile, resolveVideoTooling, stripDualLangMarker, hasDualLangMarker, isRemuxableVideoFile, type GermanAudioMode, type VideoProcessResult } from "./video-processor";
@@ -5883,39 +5883,47 @@ export class DownloadManager extends EventEmitter {
     return removed;
   }
 
-  private async cleanupRemainingArchiveArtifacts(packageDir: string, shouldAbort?: () => boolean): Promise<number> {
+  private async cleanupRemainingArchiveArtifacts(pkg: PackageEntry, shouldAbort?: () => boolean): Promise<number> {
     if (this.settings.cleanupMode === "none") {
       return 0;
     }
     if (shouldAbort?.()) {
       return 0;
     }
-    const candidates = await findArchiveCandidates(packageDir);
-    if (candidates.length === 0) {
+    const ownedPaths = new Map<string, string>();
+    for (const itemId of pkg.itemIds) {
+      const item = this.session.items[itemId];
+      const rawPath = String(item?.targetPath || (item?.fileName ? path.join(pkg.outputDir, item.fileName) : "")).trim();
+      if (!rawPath || !isArchiveLikePath(rawPath) || !isPathInsideDir(rawPath, pkg.outputDir)) {
+        continue;
+      }
+      const resolved = path.resolve(rawPath);
+      ownedPaths.set(pathKey(resolved), resolved);
+    }
+    if (ownedPaths.size === 0) {
       return 0;
     }
 
     let removed = 0;
-    const dirFilesCache = new Map<string, string[]>();
+    const dirFiles = new Map<string, string[]>();
+    for (const ownedPath of ownedPaths.values()) {
+      const directory = path.dirname(ownedPath);
+      const directoryKey = pathKey(directory);
+      const files = dirFiles.get(directoryKey) || [];
+      files.push(path.basename(ownedPath));
+      dirFiles.set(directoryKey, files);
+    }
     const targets = new Set<string>();
-    for (const sourceFile of candidates) {
+    for (const sourceFile of ownedPaths.values()) {
       if (shouldAbort?.()) {
         return removed;
       }
       const dir = path.dirname(sourceFile);
-      let filesInDir = dirFilesCache.get(dir);
-      if (!filesInDir) {
-        try {
-          filesInDir = (await fs.promises.readdir(dir, { withFileTypes: true }))
-            .filter((entry) => entry.isFile())
-            .map((entry) => entry.name);
-        } catch {
-          filesInDir = [];
+      for (const target of collectArchiveCleanupTargets(sourceFile, dirFiles.get(pathKey(dir)) || [])) {
+        const resolved = path.resolve(target);
+        if (ownedPaths.has(pathKey(resolved))) {
+          targets.add(resolved);
         }
-        dirFilesCache.set(dir, filesInDir);
-      }
-      for (const target of collectArchiveCleanupTargets(sourceFile, filesInDir)) {
-        targets.add(target);
       }
     }
 
@@ -14599,22 +14607,11 @@ export class DownloadManager extends EventEmitter {
         } else {
           const sourceAndTargetEqual = path.resolve(pkg.outputDir).toLowerCase() === path.resolve(pkg.extractDir).toLowerCase();
           if (!sourceAndTargetEqual) {
-            const candidates = await findArchiveCandidates(pkg.outputDir);
-            if (candidates.length > 0) {
-              const removed = await cleanupArchives(candidates, this.settings.cleanupMode, { shouldAbort });
-              if (removed > 0) {
-                logger.info(`Deferred Archive-Cleanup: pkg=${pkg.name}, entfernt=${removed}`);
-              }
+            const removed = await this.cleanupRemainingArchiveArtifacts(pkg, shouldAbort);
+            if (removed > 0) {
+              logger.info(`Deferred Archive-Cleanup: pkg=${pkg.name}, entfernt=${removed}`);
             }
           }
-        }
-      }
-
-      if (this.settings.autoExtract && alreadyMarkedExtracted && failed === 0 && success > 0 && this.settings.cleanupMode !== "none" && !hasBlockingExtractError) {
-        throwIfAborted();
-        const removedArchives = await this.cleanupRemainingArchiveArtifacts(pkg.outputDir, shouldAbort);
-        if (removedArchives > 0) {
-          logger.info(`Hybrid-Post-Cleanup entfernte Archive: pkg=${pkg.name}, entfernt=${removedArchives}`);
         }
       }
 
@@ -14640,16 +14637,15 @@ export class DownloadManager extends EventEmitter {
         throwIfAborted();
         await clearExtractResumeState(pkg.outputDir, packageId);
         await clearExtractResumeState(pkg.outputDir);
-      }
-
-      if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0 && this.settings.cleanupMode === "delete") {
-        throwIfAborted();
-        if (!(await hasAnyFilesRecursive(pkg.outputDir))) {
-          const removedDirs = await removeEmptyDirectoryTree(pkg.outputDir);
-          if (removedDirs > 0) {
-            logger.info(`Deferred leere Download-Ordner entfernt: pkg=${pkg.name}, dirs=${removedDirs}`);
+        const archiveParents = new Set<string>();
+        for (const itemId of pkg.itemIds) {
+          const item = this.session.items[itemId];
+          const itemPath = String(item?.targetPath || (item?.fileName ? path.join(pkg.outputDir, item.fileName) : "")).trim();
+          if (itemPath && isArchiveLikePath(itemPath) && isPathInsideDir(itemPath, pkg.outputDir)) {
+            archiveParents.add(path.dirname(path.resolve(itemPath)));
           }
         }
+        await this.removeEmptyScopedParentChains(pkg.outputDir, archiveParents);
       }
 
       if (success > 0 && (pkg.status === "completed" || pkg.status === "failed")) {
