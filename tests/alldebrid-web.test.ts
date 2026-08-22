@@ -144,9 +144,15 @@ describe("alldebrid-web", () => {
 
   it("releases an aborted caller while the active web request ignores its signal", async () => {
     let rejectRequest!: (error: Error) => void;
-    mockFetch.mockReturnValue(new Promise<Response>((_resolve, reject) => {
-      rejectRequest = reject;
-    }));
+    mockFetch
+      .mockReturnValueOnce(new Promise<Response>((_resolve, reject) => {
+        rejectRequest = reject;
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        link: "https://alldebrid.direct/second.bin",
+        filename: "second.bin",
+        filesize: 333
+      }), { status: 200 }));
     const fallback = new AllDebridWebFallback(() => true);
     const controller = new AbortController();
     const running = fallback.unrestrict("https://rapidgator.net/file/abort-race", controller.signal)
@@ -160,6 +166,17 @@ describe("alldebrid-web", () => {
     ]);
 
     expect(outcome).toContain("aborted:alldebrid-web");
+    const secondOutcome = await Promise.race([
+      fallback.unrestrict("https://rapidgator.net/file/second"),
+      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 200))
+    ]);
+    expect(secondOutcome).toEqual({
+      directUrl: "https://alldebrid.direct/second.bin",
+      fileName: "second.bin",
+      fileSize: 333,
+      retriesUsed: 0
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(2);
     rejectRequest(new Error("late alldebrid rejection"));
     await Promise.resolve();
   });

@@ -275,8 +275,9 @@ export class BestDebridWebFallback {
       return job();
     };
     const run = this.queue.then(guardedJob, guardedJob);
-    this.queue = run.then(() => undefined, () => undefined);
-    return raceWithAbort(run, signal);
+    const result = raceWithAbort(run, signal);
+    this.queue = result.then(() => undefined, () => undefined);
+    return result;
   }
 
   private async generate(link: string, signal?: AbortSignal): Promise<{ kind: "success"; value: UnrestrictedLink } | { kind: "login_required" }> {

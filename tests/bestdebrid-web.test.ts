@@ -174,9 +174,16 @@ describe("bestdebrid-web", () => {
     const fallback = new BestDebridWebFallback(() => true);
     await fallback.importCookiesFromFile(filePath);
     let rejectRequest!: (error: Error) => void;
-    mockFetch.mockReturnValue(new Promise<Response>((_resolve, reject) => {
-      rejectRequest = reject;
-    }));
+    mockFetch
+      .mockReturnValueOnce(new Promise<Response>((_resolve, reject) => {
+        rejectRequest = reject;
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: 0,
+        link: "https://bestdebrid.direct/second.bin",
+        filename: "second.bin",
+        size: "444 B"
+      }), { status: 200 }));
     const controller = new AbortController();
     const running = fallback.unrestrict("https://1fichier.com/?abort-race", controller.signal)
       .then(() => "resolved" as const, (error) => String(error));
@@ -189,6 +196,17 @@ describe("bestdebrid-web", () => {
     ]);
 
     expect(outcome).toContain("aborted:bestdebrid-web");
+    const secondOutcome = await Promise.race([
+      fallback.unrestrict("https://1fichier.com/?second"),
+      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 200))
+    ]);
+    expect(secondOutcome).toEqual({
+      directUrl: "https://bestdebrid.direct/second.bin",
+      fileName: "second.bin",
+      fileSize: 444,
+      retriesUsed: 0
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(2);
     rejectRequest(new Error("late bestdebrid rejection"));
     await Promise.resolve();
   });

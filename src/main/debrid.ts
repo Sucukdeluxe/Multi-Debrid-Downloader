@@ -588,16 +588,6 @@ export function getProviderRuntimeSnapshot(now = Date.now()): ProviderRuntimeSna
   };
 }
 
-export function getNextProviderRuntimeRetryAt(now = Date.now()): number | null {
-  const deadlines = [
-    ...[...realDebridAccountCooldowns.values()].map((entry) => entry.until),
-    ...[...megaDebridAccountCooldowns.values()].map((entry) => entry.until),
-    ...debridLinkKeyCooldowns.values(),
-    ...debridLinkKeyHostCooldowns.values()
-  ].filter((deadline) => Number.isFinite(deadline) && deadline > now);
-  return deadlines.length > 0 ? Math.min(...deadlines) : null;
-}
-
 const LINKSNAPPY_API_BASE = "https://linksnappy.com/api";
 
 const PROVIDER_LABELS: Record<DebridProvider, string> = {
@@ -4157,6 +4147,95 @@ export class DebridService {
     for (const account of getMegaDebridAccountsForMode(next, "web")) validRuntimeKeys.add(`megadebrid-web:${account.id}`);
     for (const keyId of nextDebridLinkKeyIds) validRuntimeKeys.add(`debridlink:${keyId}`);
     pruneAccountRuntimeSession(validRuntimeKeys);
+  }
+
+  public getBlockingProviderRetryAt(link: string, preferredLeadProvider: DebridProvider | null = null, now = Date.now()): number | null {
+    const settings = cloneSettings(this.settings);
+    const configuredOrder = settings.providerOrder && settings.providerOrder.length > 0
+      ? uniqueProviderOrder(settings.providerOrder)
+      : toProviderOrder(settings.providerPrimary, settings.providerSecondary, settings.providerTertiary);
+    const orderedProviders = leadProviderChainWith(configuredOrder, preferredLeadProvider);
+    const hosterKey = extractHosterFromUrl(link);
+    const routedProvider = hosterKey ? settings.hosterRouting?.[hosterKey] : undefined;
+    const routedPlan = routedProvider
+      ? [routedProvider, ...orderedProviders.filter((provider) => provider !== routedProvider)]
+      : orderedProviders;
+    const plan = settings.autoProviderFallback || routedProvider ? routedPlan : routedPlan.slice(0, 1);
+    const deadlines: number[] = [];
+    const seen = new Set<DebridProvider>();
+    for (const provider of plan) {
+      const effectiveProvider = resolveMegaDebridProvider(settings, provider);
+      if (seen.has(effectiveProvider)) {
+        continue;
+      }
+      seen.add(effectiveProvider);
+      const state = this.getProviderRuntimeWaitState(settings, effectiveProvider, hosterKey, now);
+      if (!state.configured) {
+        continue;
+      }
+      if (state.retryAt === null) {
+        return null;
+      }
+      deadlines.push(state.retryAt);
+    }
+    return deadlines.length > 0 ? Math.min(...deadlines) : null;
+  }
+
+  private getProviderRuntimeWaitState(
+    settings: AppSettings,
+    provider: DebridProvider,
+    hosterKey: string,
+    now: number
+  ): { configured: boolean; retryAt: number | null } {
+    if ((settings.disabledProviders || []).includes(provider)) {
+      return { configured: false, retryAt: null };
+    }
+    if (provider === "realdebrid") {
+      const accounts = this.getConfiguredRealDebridAccounts(settings).filter((account) => account.enabled
+        && !isRealDebridAccountDailyLimitReached(settings, account.id, now));
+      if (accounts.length === 0) {
+        return { configured: false, retryAt: null };
+      }
+      const deadlines = accounts.map((account) => getRealDebridAccountCooldown(account.id, now)?.until ?? null);
+      return deadlines.some((deadline) => deadline === null)
+        ? { configured: true, retryAt: null }
+        : { configured: true, retryAt: Math.min(...deadlines as number[]) };
+    }
+    if (provider === "megadebrid-api" || provider === "megadebrid-web") {
+      const mode = provider === "megadebrid-web" ? "web" : "api";
+      if (!isMegaDebridModeEnabled(settings, mode) || (mode === "web" && !this.options.megaWebUnrestrict)) {
+        return { configured: false, retryAt: null };
+      }
+      const accounts = getMegaDebridAccountList(settings, mode).filter((account) => !isMegaDebridAccountDisabled(settings, account.id, mode)
+        && !isMegaDebridAccountDailyLimitReached(settings, account.id, now));
+      if (accounts.length === 0) {
+        return { configured: false, retryAt: null };
+      }
+      const deadlines = accounts.map((account) => getMegaDebridAccountCooldownState(`${account.id}:${mode}`, now)?.until ?? null);
+      return deadlines.some((deadline) => deadline === null)
+        ? { configured: true, retryAt: null }
+        : { configured: true, retryAt: Math.min(...deadlines as number[]) };
+    }
+    if (provider === "debridlink") {
+      const keys = parseDebridLinkApiKeys(settings.debridLinkApiKeys).filter((key) => !isDebridLinkApiKeyDisabled(settings, key.id)
+        && !isDebridLinkApiKeyDailyLimitReached(settings, key.id, now));
+      if (keys.length === 0) {
+        return { configured: false, retryAt: null };
+      }
+      const deadlines: number[] = [];
+      for (const key of keys) {
+        const keyRetryAt = getDebridLinkKeyCooldownState(key.id, now)?.until ?? 0;
+        const hostRetryAt = getDebridLinkKeyHostCooldownState(key.id, hosterKey, now)?.until ?? 0;
+        const retryAt = Math.max(keyRetryAt, hostRetryAt);
+        if (retryAt === 0) {
+          return { configured: true, retryAt: null };
+        }
+        deadlines.push(retryAt);
+      }
+      return { configured: true, retryAt: Math.min(...deadlines) };
+    }
+    const configured = this.isProviderConfiguredFor(settings, provider) && !this.isProviderDailyLimited(settings, provider);
+    return { configured, retryAt: null };
   }
 
   private getDebridLinkClient(apiKeysRaw: string): DebridLinkClient {

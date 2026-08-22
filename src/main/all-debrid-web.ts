@@ -317,8 +317,9 @@ export class AllDebridWebFallback {
       return job();
     };
     const run = this.queue.then(guardedJob, guardedJob);
-    this.queue = run.then(() => undefined, () => undefined);
-    return raceWithAbort(run, signal);
+    const result = raceWithAbort(run, signal);
+    this.queue = result.then(() => undefined, () => undefined);
+    return result;
   }
 
   private async ensureLoginWindow(): Promise<BrowserWindow> {

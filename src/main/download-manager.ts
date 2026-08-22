@@ -62,7 +62,7 @@ function releaseTlsSkip(): void {
 }
 import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 import { planDownloadCompletion, reconcileFinalizedSize, validateDownloadedFileCompletion } from "./download-completion";
-import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkDdownloadOnline, checkOneFichierLinks, checkRapidgatorOnline, fetchAllDebridHostInfo, filenameFromDdownloadUrlPath, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getNextProviderRuntimeRetryAt, getRealDebridAccountAttemptTimeoutMs, isDdownloadLink, isOneFichierLink, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown, type DdownloadCheckResult, type OneFichierCheckResult } from "./debrid";
+import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkDdownloadOnline, checkOneFichierLinks, checkRapidgatorOnline, fetchAllDebridHostInfo, filenameFromDdownloadUrlPath, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, isDdownloadLink, isOneFichierLink, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown, type DdownloadCheckResult, type OneFichierCheckResult } from "./debrid";
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo, type ExtractProgressUpdate } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { classifyDiskError } from "./fs-error";
@@ -3940,12 +3940,47 @@ export class DownloadManager extends EventEmitter {
   }
 
   private getEarliestProviderRetryAt(now: number): number | null {
-    const deadlines = [...this.providerFailures.values()]
-      .map((entry) => entry.cooldownUntil)
-      .filter((deadline) => Number.isFinite(deadline) && deadline > now);
-    const runtimeRetryAt = getNextProviderRuntimeRetryAt(now);
-    if (runtimeRetryAt) {
-      deadlines.push(runtimeRetryAt);
+    const queuedItems: DownloadItem[] = [];
+    for (const packageId of this.session.packageOrder) {
+      const pkg = this.session.packages[packageId];
+      if (!pkg || pkg.cancelled || !pkg.enabled) {
+        continue;
+      }
+      if (this.runPackageIds.size > 0 && !this.runPackageIds.has(packageId)) {
+        continue;
+      }
+      for (const itemId of pkg.itemIds) {
+        const item = this.session.items[itemId];
+        if (item && (item.status === "queued" || item.status === "reconnect_wait")) {
+          queuedItems.push(item);
+        }
+      }
+    }
+    if (queuedItems.length === 0) {
+      return null;
+    }
+    const deadlines: number[] = [];
+    for (const item of queuedItems) {
+      const itemDeadlines: number[] = [];
+      const failureKey = this.getProviderFailureKeyForItem(item);
+      const localRetryAt = this.providerFailures.get(failureKey)?.cooldownUntil || 0;
+      const localFallback = localRetryAt > now && this.settings.autoProviderFallback
+        ? this.findFallbackProviderNotInCooldown(item)
+        : null;
+      const hasLocalFallback = localRetryAt > now
+        && this.settings.autoProviderFallback
+        && localFallback !== null;
+      if (localRetryAt > now && !hasLocalFallback) {
+        itemDeadlines.push(localRetryAt);
+      }
+      const runtimeRetryAt = this.debridService.getBlockingProviderRetryAt(item.url, localFallback, now);
+      if (runtimeRetryAt) {
+        itemDeadlines.push(runtimeRetryAt);
+      }
+      if (itemDeadlines.length === 0) {
+        return null;
+      }
+      deadlines.push(Math.min(...itemDeadlines));
     }
     return deadlines.length > 0 ? Math.min(...deadlines) : null;
   }
@@ -6687,10 +6722,13 @@ export class DownloadManager extends EventEmitter {
 
   public stop(options?: { parkForRestart?: boolean }): void {
     const parkForRestart = options?.parkForRestart === true;
+    const wasStopping = this.lifecyclePhase === "stopping";
     this.lifecycleGeneration += 1;
     this.lifecyclePhase = "stopping";
     this.lifecycleReason = "Laufende Arbeit wird beendet";
-    this.pendingStartOptions = null;
+    if (!wasStopping) {
+      this.pendingStartOptions = null;
+    }
     this.healthManualStop = !parkForRestart;
     this.healthShuttingDown = parkForRestart;
     const abortReason: "stop" | "shutdown" = parkForRestart ? "shutdown" : "stop";

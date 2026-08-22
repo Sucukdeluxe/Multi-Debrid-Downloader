@@ -848,12 +848,16 @@ describe("deterministic stop and restart lifecycle", () => {
     await manager.start();
 
     expect(manager.getSnapshot().lifecycle).toMatchObject({ phase: "stopping", pendingStart: true });
+    manager.stop();
+    expect(manager.getSnapshot().lifecycle).toMatchObject({ phase: "stopping", pendingStart: true });
     finishFirstAbort();
     await waitFor(() => attempts.length === 2);
     expect(manager.getSnapshot()).toMatchObject({
       session: { running: true },
       lifecycle: { phase: "running", pendingStart: false }
     });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(attempts).toHaveLength(2);
 
     manager.stop();
   });
@@ -943,6 +947,89 @@ describe("deterministic stop and restart lifecycle", () => {
       lifecycle: { phase: "idle", retryAt: null }
     });
     vi.useRealTimers();
+  });
+
+  it("ignores cooldowns from disabled accounts when projecting provider wait state", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-disabled-cooldown-context-"));
+    tempDirs.push(root);
+    const accountId = "rda_disabled_cooldown";
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        realDebridApiTokens: serializeRealDebridApiAccounts([{ id: accountId, token: "token" }]),
+        realDebridDisabledAccountIds: [accountId],
+        providerOrder: ["realdebrid"],
+        autoExtract: false
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+    manager.addPackages([{ name: "disabled", links: ["https://rapidgator.net/file/disabled"] }]);
+    primeRealDebridRuntimeCooldownForTests(accountId, 60_000);
+
+    expect(manager.getSnapshot()).toMatchObject({
+      canStart: false,
+      lifecycle: { phase: "idle", retryAt: null }
+    });
+  });
+
+  it("ignores a primary provider cooldown when an alternative provider can start the queue", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-alternative-provider-context-"));
+    tempDirs.push(root);
+    const accountId = "rda_alternative_provider";
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        realDebridApiTokens: serializeRealDebridApiAccounts([{ id: accountId, token: "token" }]),
+        allDebridToken: "all-debrid-token",
+        providerOrder: ["realdebrid", "alldebrid"],
+        autoProviderFallback: true,
+        autoExtract: false
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+    manager.addPackages([{ name: "alternative", links: ["https://rapidgator.net/file/alternative"] }]);
+    primeRealDebridRuntimeCooldownForTests(accountId, 60_000);
+
+    expect(manager.getSnapshot()).toMatchObject({
+      canStart: true,
+      lifecycle: { phase: "idle", retryAt: null }
+    });
+  });
+
+  it("ignores cooldowns for another provider or hoster and for pure post-processing", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-irrelevant-cooldown-context-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        oneFichierApiKey: "onefichier-key",
+        providerOrder: ["onefichier"],
+        autoExtract: false
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+    manager.addPackages([{ name: "other-hoster", links: ["https://1fichier.com/?other-hoster"] }]);
+    const internal = manager as unknown as {
+      packagePostProcessTasks: Map<string, Promise<void>>;
+      providerFailures: Map<string, { count: number; lastFailAt: number; cooldownUntil: number }>;
+      session: ReturnType<typeof manager.getSession>;
+    };
+    internal.providerFailures.set("alldebrid:rapidgator", {
+      count: 20,
+      lastFailAt: Date.now(),
+      cooldownUntil: Date.now() + 60_000
+    });
+
+    expect(manager.getSnapshot().lifecycle).toMatchObject({ phase: "idle", retryAt: null });
+
+    const itemId = Object.keys(internal.session.items)[0];
+    internal.session.items[itemId].status = "completed";
+    internal.packagePostProcessTasks.set("postprocess-only", new Promise<void>(() => {}));
+
+    expect(manager.getSnapshot().lifecycle).toMatchObject({ phase: "postprocessing", retryAt: null });
   });
 
   it("keeps post-processing drain visible and starts the pending run after its abort settles", async () => {

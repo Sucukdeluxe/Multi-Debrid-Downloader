@@ -193,9 +193,16 @@ describe("realdebrid-web", () => {
 
   it("releases an aborted caller while the active web request ignores its signal", async () => {
     let rejectRequest!: (error: Error) => void;
-    mockSessionFetch.mockReturnValue(new Promise<Response>((_resolve, reject) => {
-      rejectRequest = reject;
-    }));
+    mockSessionFetch
+      .mockReturnValueOnce(new Promise<Response>((_resolve, reject) => {
+        rejectRequest = reject;
+      }))
+      .mockResolvedValueOnce(new Response("<input name=\"private_token\" value=\"second-token\">", { status: 200 }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      download: "https://cdn.real-debrid.example/second.bin",
+      filename: "second.bin",
+      filesize: 222
+    }), { status: 200 })));
     const fallback = new RealDebridWebFallback("persist:realdebrid-web-rdw_abort_race", () => true);
     const controller = new AbortController();
     const running = fallback.unrestrict("https://rapidgator.net/file/abort-race", controller.signal)
@@ -209,6 +216,17 @@ describe("realdebrid-web", () => {
     ]);
 
     expect(outcome).toContain("aborted:realdebrid-web");
+    const secondOutcome = await Promise.race([
+      fallback.unrestrict("https://rapidgator.net/file/second"),
+      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 200))
+    ]);
+    expect(secondOutcome).toEqual({
+      directUrl: "https://cdn.real-debrid.example/second.bin",
+      fileName: "second.bin",
+      fileSize: 222,
+      retriesUsed: 0
+    });
+    expect(mockSessionFetch).toHaveBeenCalledTimes(2);
     rejectRequest(new Error("late realdebrid rejection"));
     await Promise.resolve();
   });
