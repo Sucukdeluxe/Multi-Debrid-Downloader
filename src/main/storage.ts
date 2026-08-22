@@ -5,12 +5,13 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { getDebridLinkApiKeyIds } from "../shared/debrid-link-keys";
 import { getMegaDebridAccountIds, mergeMegaDebridCredentialPools, parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
-import { AppSettings, ArchiveOperationMetric, AudioStripSummary, BandwidthScheduleEntry, DebridAccountStatus, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, FailurePhase, HistoryEntry, HistoryRetentionMode, LogStorageLocation, PackageEntry, PackagePriority, RemuxOperationMetric, SessionState } from "../shared/types";
+import { AppSettings, ArchiveOperationMetric, AudioStripSummary, BandwidthScheduleEntry, DailyStartOutcome, DebridAccountStatus, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, FailurePhase, HistoryEntry, HistoryRetentionMode, LogStorageLocation, PackageEntry, PackagePriority, RemuxOperationMetric, SessionState } from "../shared/types";
 import { getProviderUsageDayKey } from "../shared/provider-daily-limits";
 import { getRealDebridAccountIds, normalizeRealDebridWebAccountIds, parseRealDebridApiAccounts, serializeRealDebridApiAccounts } from "../shared/real-debrid-accounts";
 import { defaultSettings } from "./constants";
 import { needsPersistedSettingsRewrite, protectPersistedSettings, restorePersistedSettings } from "./credential-protection";
 import { logger } from "./logger";
+import { isValidLocalDate } from "./daily-start-scheduler";
 
 export function migrateProductUserDataDirectory(appDataPath: string): string {
   const legacyPath = path.join(appDataPath, "Real-Debrid-Downloader");
@@ -518,6 +519,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     debridLinkApiKeyIds
   );
   const debridLinkDisabledKeyIds = normalizeStringList(settings.debridLinkDisabledKeyIds, debridLinkApiKeyIds);
+  const validDailyStartOutcomes = new Set<DailyStartOutcome>(["", "started", "already_active", "empty_queue", "missing_account", "start_failed", "missed"]);
   const normalized: AppSettings = {
     language: settings.language === "de" ? "de" : "en",
     token: asText(settings.token),
@@ -658,6 +660,12 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
       legacyRealDebridTargetId
     ),
     providerDailyUsageDay: providerDailyUsageDay === currentUsageDay ? providerDailyUsageDay : currentUsageDay,
+    dailyStartEnabled: settings.dailyStartEnabled !== undefined ? Boolean(settings.dailyStartEnabled) : defaults.dailyStartEnabled,
+    dailyStartMinuteOfDay: clampNumber(settings.dailyStartMinuteOfDay, defaults.dailyStartMinuteOfDay, 0, 1_439),
+    dailyStartFirstLocalDate: isValidLocalDate(asText(settings.dailyStartFirstLocalDate)) ? asText(settings.dailyStartFirstLocalDate) : "",
+    dailyStartLastHandledLocalDate: isValidLocalDate(asText(settings.dailyStartLastHandledLocalDate)) ? asText(settings.dailyStartLastHandledLocalDate) : "",
+    dailyStartPendingLocalDate: isValidLocalDate(asText(settings.dailyStartPendingLocalDate)) ? asText(settings.dailyStartPendingLocalDate) : "",
+    dailyStartLastOutcome: validDailyStartOutcomes.has(settings.dailyStartLastOutcome) ? settings.dailyStartLastOutcome : "",
     scheduledStartEpochMs: clampNumber(settings.scheduledStartEpochMs, defaults.scheduledStartEpochMs, 0, Number.MAX_SAFE_INTEGER)
   };
 
@@ -1211,7 +1219,12 @@ function sleepSyncMs(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-function readSessionFile(filePath: string): SessionState | null {
+interface LoadedSessionFile {
+  session: SessionState;
+  wasRunning: boolean;
+}
+
+function readSessionFile(filePath: string): LoadedSessionFile | null {
   let raw: string | null = null;
   const maxAttempts = 5;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -1239,11 +1252,13 @@ function readSessionFile(filePath: string): SessionState | null {
   }
   try {
     const parsed = JSON.parse(raw) as unknown;
-    const session = normalizeLoadedSessionTransientFields(normalizeLoadedSession(parsed));
+    const normalized = normalizeLoadedSession(parsed);
+    const wasRunning = normalized.running;
+    const session = normalizeLoadedSessionTransientFields(normalized);
     const pkgCount = Object.keys(session.packages).length;
     const itemCount = Object.keys(session.items).length;
     logger.info(`Session geladen: ${filePath} (${pkgCount} Pakete, ${itemCount} Items)`);
-    return session;
+    return { session, wasRunning };
   } catch (error) {
     logger.error(`Session-Datei beschädigt (JSON ungültig): ${filePath}: ${String(error)}`);
     return null;
@@ -1360,6 +1375,7 @@ export type SessionLoadStatus =
 export interface SessionLoadResult {
   session: SessionState;
   status: SessionLoadStatus;
+  wasRunning: boolean;
 }
 
 export function loadSessionWithStatus(paths: StoragePaths): SessionLoadResult {
@@ -1374,7 +1390,7 @@ export function loadSessionWithStatus(paths: StoragePaths): SessionLoadResult {
   if (!primaryExists) {
     if (!backupExists && !anyTempExists) {
       logger.info("Keine Session-Datei vorhanden, starte mit leerer Session");
-      return { session: emptySession(), status: "empty-fresh" };
+      return { session: emptySession(), status: "empty-fresh", wasRunning: false };
     }
     logger.warn("Session-Primaerdatei fehlt, aber Backup/Temp vorhanden — Wiederherstellung wird versucht");
   }
@@ -1382,60 +1398,60 @@ export function loadSessionWithStatus(paths: StoragePaths): SessionLoadResult {
   const primary = primaryExists ? readSessionFile(paths.sessionFile) : null;
 
   if (primary) {
-    const primaryPkgCount = Object.keys(primary.packages).length;
+    const primaryPkgCount = Object.keys(primary.session.packages).length;
     if (primaryPkgCount === 0 && backupExists) {
       const backup = readSessionFile(backupFile);
       if (backup) {
-        const backupPkgCount = Object.keys(backup.packages).length;
+        const backupPkgCount = Object.keys(backup.session.packages).length;
         if (backupPkgCount > 0) {
           logger.warn(`Session-Datei ist leer (0 Pakete), aber Backup hat ${backupPkgCount} Pakete — verwende Backup`);
           try {
-            const payload = JSON.stringify({ ...backup, updatedAt: Date.now() }, safeJsonReplacer);
+            const payload = JSON.stringify({ ...backup.session, updatedAt: Date.now() }, safeJsonReplacer);
             fs.writeFileSync(syncTempFile, payload, "utf8");
             syncRenameWithExdevFallback(syncTempFile, paths.sessionFile);
           } catch {
           }
-          return { session: backup, status: "recovered-backup" };
+          return { session: backup.session, status: "recovered-backup", wasRunning: backup.wasRunning };
         }
       }
     }
-    return { session: primary, status: "ok" };
+    return { session: primary.session, status: "ok", wasRunning: primary.wasRunning };
   }
 
   const backup = backupExists ? readSessionFile(backupFile) : null;
   if (backup) {
     logger.warn("Session defekt, Backup-Datei wird verwendet");
     try {
-      const payload = JSON.stringify({ ...backup, updatedAt: Date.now() }, safeJsonReplacer);
+      const payload = JSON.stringify({ ...backup.session, updatedAt: Date.now() }, safeJsonReplacer);
       fs.writeFileSync(syncTempFile, payload, "utf8");
       syncRenameWithExdevFallback(syncTempFile, paths.sessionFile);
     } catch {
     }
-    return { session: backup, status: "recovered-backup" };
+    return { session: backup.session, status: "recovered-backup", wasRunning: backup.wasRunning };
   }
 
   for (const kind of ["sync", "async"] as const) {
     const tmpPath = sessionTempPath(paths.sessionFile, kind);
     if (fs.existsSync(tmpPath)) {
       const tmpSession = readSessionFile(tmpPath);
-      if (tmpSession && Object.keys(tmpSession.packages).length > 0) {
-        logger.warn(`Session aus temporaerer Datei wiederhergestellt: ${tmpPath} (${Object.keys(tmpSession.packages).length} Pakete)`);
+      if (tmpSession && Object.keys(tmpSession.session.packages).length > 0) {
+        logger.warn(`Session aus temporaerer Datei wiederhergestellt: ${tmpPath} (${Object.keys(tmpSession.session.packages).length} Pakete)`);
         try {
-          const payload = JSON.stringify({ ...tmpSession, updatedAt: Date.now() }, safeJsonReplacer);
+          const payload = JSON.stringify({ ...tmpSession.session, updatedAt: Date.now() }, safeJsonReplacer);
           fs.writeFileSync(paths.sessionFile, payload, "utf8");
         } catch {
         }
-        return { session: tmpSession, status: "recovered-temp" };
+        return { session: tmpSession.session, status: "recovered-temp", wasRunning: tmpSession.wasRunning };
       }
     }
   }
 
   if (primaryExists || backupExists || anyTempExists) {
     logger.error("Session konnte nicht geladen werden (Primary, Backup und Temp-Dateien fehlgeschlagen) — Schutz gegen leeres Ueberschreiben aktiv");
-    return { session: emptySession(), status: "empty-unreadable" };
+    return { session: emptySession(), status: "empty-unreadable", wasRunning: false };
   }
 
-  return { session: emptySession(), status: "empty-fresh" };
+  return { session: emptySession(), status: "empty-fresh", wasRunning: false };
 }
 
 export function loadSession(paths: StoragePaths): SessionState {

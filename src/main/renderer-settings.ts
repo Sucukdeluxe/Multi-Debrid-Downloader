@@ -1,7 +1,16 @@
 import type { AppSettings, RendererSettingsUpdate } from "../shared/types";
 import { createRendererSettings } from "./renderer-state";
+import { isValidLocalDate } from "./daily-start-scheduler";
 
-const DERIVED_KEYS = new Set(["archivePasswordListConfigured", "notifyUrlConfigured", "configuredProviders"]);
+const DERIVED_KEYS = new Set([
+  "archivePasswordListConfigured",
+  "notifyUrlConfigured",
+  "configuredProviders",
+  "dailyStartLastHandledLocalDate",
+  "dailyStartPendingLocalDate",
+  "dailyStartLastOutcome",
+  "nextDailyStartEpochMs"
+]);
 const WRITE_ONLY_KEYS = new Set(["archivePasswordList", "notifyUrl"]);
 const MAX_SETTINGS_PAYLOAD_BYTES = 1_000_000;
 
@@ -83,6 +92,12 @@ export function validateRendererSettingsUpdate(value: unknown, current: AppSetti
       invalid();
     }
     if (key === "notifyPackageSuccessMode" && entry !== "digest" && entry !== "individual") {
+      invalid();
+    }
+    if (key === "dailyStartMinuteOfDay" && (!Number.isInteger(entry) || (entry as number) < 0 || (entry as number) > 1_439)) {
+      invalid();
+    }
+    if (key === "dailyStartFirstLocalDate" && entry !== "" && (typeof entry !== "string" || !isValidLocalDate(entry))) {
       invalid();
     }
     validateTopLevelType(entry, safe[key]);

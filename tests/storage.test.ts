@@ -9,7 +9,7 @@ import { parseRealDebridApiAccounts, serializeRealDebridApiAccounts } from "../s
 import { AppSettings } from "../src/shared/types";
 import { defaultSettings } from "../src/main/constants";
 import { configureCredentialProtector } from "../src/main/credential-protection";
-import { addHistoryEntryForRetention, createStoragePaths, emptySession, loadHistory, loadHistoryForRetention, loadSession, loadSettings, normalizeLoadedSession, normalizeSettings, removeHistoryEntries, resetHistoryForRetention, saveHistory, saveSession, saveSessionAsync, saveSettings, saveSettingsAsync } from "../src/main/storage";
+import { addHistoryEntryForRetention, createStoragePaths, emptySession, loadHistory, loadHistoryForRetention, loadSession, loadSessionWithStatus, loadSettings, normalizeLoadedSession, normalizeSettings, removeHistoryEntries, resetHistoryForRetention, saveHistory, saveSession, saveSessionAsync, saveSettings, saveSettingsAsync } from "../src/main/storage";
 
 const tempDirs: string[] = [];
 type SettingsSaveMode = "sync" | "async";
@@ -46,6 +46,48 @@ afterEach(() => {
 });
 
 describe("settings storage", () => {
+  it("defaults and normalizes persistent daily start calendar fields", () => {
+    const defaults = defaultSettings();
+
+    expect(defaults.dailyStartEnabled).toBe(false);
+    expect(defaults.dailyStartMinuteOfDay).toBe(0);
+    expect(defaults.dailyStartFirstLocalDate).toBe("");
+    expect(defaults.dailyStartLastHandledLocalDate).toBe("");
+    expect(defaults.dailyStartPendingLocalDate).toBe("");
+    expect(defaults.dailyStartLastOutcome).toBe("");
+
+    expect(normalizeSettings({
+      ...defaults,
+      dailyStartEnabled: true,
+      dailyStartMinuteOfDay: 1_500,
+      dailyStartFirstLocalDate: "2026-02-29",
+      dailyStartLastHandledLocalDate: "2026-08-21",
+      dailyStartPendingLocalDate: "not-a-day",
+      dailyStartLastOutcome: "unsupported"
+    } as unknown as AppSettings)).toMatchObject({
+      dailyStartEnabled: true,
+      dailyStartMinuteOfDay: 1_439,
+      dailyStartFirstLocalDate: "",
+      dailyStartLastHandledLocalDate: "2026-08-21",
+      dailyStartPendingLocalDate: "",
+      dailyStartLastOutcome: ""
+    });
+  });
+
+  it("reports whether a loaded session was active before transient normalization", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const session = emptySession();
+    session.running = true;
+    saveSession(paths, session);
+
+    const loaded = loadSessionWithStatus(paths);
+
+    expect(loaded.wasRunning).toBe(true);
+    expect(loaded.session.running).toBe(false);
+  });
+
   it("migrates legacy package success notifications without changing their delivery frequency", () => {
     expect(loadSettingsFrom({ notifyOnPackageCompleted: true }).notifyPackageSuccessMode).toBe("individual");
     expect(loadSettingsFrom({}).notifyPackageSuccessMode).toBe("digest");

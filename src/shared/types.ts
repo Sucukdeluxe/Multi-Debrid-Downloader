@@ -122,7 +122,18 @@ export interface DebridAccountStatus {
 
 export type NotifyPackageSuccessMode = "digest" | "individual";
 
-export interface AppSettings {
+export type DailyStartOutcome = "" | "started" | "already_active" | "empty_queue" | "missing_account" | "start_failed" | "missed";
+
+export interface DailyStartSettings {
+  dailyStartEnabled: boolean;
+  dailyStartMinuteOfDay: number;
+  dailyStartFirstLocalDate: string;
+  dailyStartLastHandledLocalDate: string;
+  dailyStartPendingLocalDate: string;
+  dailyStartLastOutcome: DailyStartOutcome;
+}
+
+export interface AppSettings extends DailyStartSettings {
   language: AppLanguage;
   token: string;
   realDebridUseWebLogin: boolean;
@@ -271,7 +282,7 @@ export interface RendererAccount {
   status: DebridAccountStatus | null;
 }
 
-export interface RendererSettings {
+export interface RendererSettings extends DailyStartSettings {
   language: AppLanguage;
   realDebridUseWebLogin: boolean;
   realDebridDisabledAccountIds: string[];
@@ -373,6 +384,7 @@ export interface RendererSettings {
   debridAccountStatuses: Record<string, DebridAccountStatus>;
   providerDailyUsageDay: string;
   scheduledStartEpochMs: number;
+  nextDailyStartEpochMs: number;
 }
 
 export type RendererSettingsUpdate = Partial<RendererSettings> & {

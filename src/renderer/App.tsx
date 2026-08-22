@@ -810,7 +810,14 @@ const emptySnapshot = (): UiSnapshot => ({
     megaDebridAccountTotalUsageBytes: {},
     debridAccountStatuses: {},
     providerDailyUsageDay: getProviderUsageDayKey(),
-    scheduledStartEpochMs: 0
+    dailyStartEnabled: false,
+    dailyStartMinuteOfDay: 0,
+    dailyStartFirstLocalDate: "",
+    dailyStartLastHandledLocalDate: "",
+    dailyStartPendingLocalDate: "",
+    dailyStartLastOutcome: "",
+    scheduledStartEpochMs: 0,
+    nextDailyStartEpochMs: 0
   },
   accounts: [],
   session: {

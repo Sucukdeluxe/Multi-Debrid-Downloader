@@ -81,6 +81,7 @@ import { normalizeStatisticsLedger, saveStatisticsLedger } from "./statistics-le
 import { NotificationOutbox } from "./notification-outbox";
 import { sendNotification } from "./notify";
 import { DownloadHealthMonitor } from "./download-health-monitor";
+import { prepareDailyStartSettingsPatch, shouldDeferAutoResumeToDailyStart } from "./daily-start-scheduler";
 
 function sanitizeSettingsPatch(partial: Partial<AppSettings>): Partial<AppSettings> {
   const entries = Object.entries(partial || {}).filter(([, value]) => value !== undefined);
@@ -254,7 +255,7 @@ export class AppController {
     }, 60_000);
     this.runtimeStatsTimer.unref?.();
 
-    if (this.settings.autoResumeOnStart) {
+    if (this.settings.autoResumeOnStart && !shouldDeferAutoResumeToDailyStart(this.settings, loadResult.wasRunning)) {
       const snapshot = this.manager.getSnapshot();
       const hasPending = Object.values(snapshot.session.items).some((item) => item.status === "queued" || item.status === "reconnect_wait");
       if (hasPending && this.hasAnyProviderToken(this.settings)) {
@@ -520,7 +521,7 @@ export class AppController {
   }
 
   public updateSettings(partial: Partial<AppSettings>): AppSettings {
-    const sanitizedPatch = sanitizeSettingsPatch(partial);
+    const sanitizedPatch = prepareDailyStartSettingsPatch(sanitizeSettingsPatch(partial)) as Partial<AppSettings>;
     const previousSettings = this.settings;
     let nextSettings = normalizeSettings({
       ...previousSettings,

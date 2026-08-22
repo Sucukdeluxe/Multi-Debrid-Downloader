@@ -264,6 +264,12 @@ function createSettings(): AppSettings {
       }
     },
     providerDailyUsageDay: "2026-08-10",
+    dailyStartEnabled: false,
+    dailyStartMinuteOfDay: 0,
+    dailyStartFirstLocalDate: "",
+    dailyStartLastHandledLocalDate: "",
+    dailyStartPendingLocalDate: "",
+    dailyStartLastOutcome: "",
     scheduledStartEpochMs: 0
   };
 }

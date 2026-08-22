@@ -159,6 +159,12 @@ export function defaultSettings(): AppSettings {
     megaDebridAccountTotalUsageBytes: {},
     debridAccountStatuses: {},
     providerDailyUsageDay: getProviderUsageDayKey(),
+    dailyStartEnabled: false,
+    dailyStartMinuteOfDay: 0,
+    dailyStartFirstLocalDate: "",
+    dailyStartLastHandledLocalDate: "",
+    dailyStartPendingLocalDate: "",
+    dailyStartLastOutcome: "",
     scheduledStartEpochMs: 0
   };
 }

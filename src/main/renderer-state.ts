@@ -3,6 +3,7 @@ import { getMegaDebridAccountsForMode, getMegaDebridDisabledAccountIdsForMode } 
 import { getRealDebridAccounts } from "../shared/real-debrid-accounts";
 import type { AppSettings, DebridAccountStatus, DebridProvider, RendererAccount, RendererAccountKind, RendererSettings } from "../shared/types";
 import { collectAccountStatusRedactionValues, sanitizeDebridAccountStatus } from "./account-status-sanitizer";
+import { nextDailyStartEpochMs } from "./daily-start-scheduler";
 
 function maskValue(value: string, keepStart = 3, keepEnd = 3): string {
   const trimmed = value.trim();
@@ -251,7 +252,14 @@ export function createRendererSettings(settings: AppSettings): RendererSettings 
     megaDebridAccountTotalUsageBytes: { ...settings.megaDebridAccountTotalUsageBytes },
     debridAccountStatuses: Object.fromEntries(Object.entries(settings.debridAccountStatuses).map(([id, status]) => [id, safeStatus(status, redactions)])),
     providerDailyUsageDay: settings.providerDailyUsageDay,
-    scheduledStartEpochMs: settings.scheduledStartEpochMs
+    dailyStartEnabled: settings.dailyStartEnabled,
+    dailyStartMinuteOfDay: settings.dailyStartMinuteOfDay,
+    dailyStartFirstLocalDate: settings.dailyStartFirstLocalDate,
+    dailyStartLastHandledLocalDate: settings.dailyStartLastHandledLocalDate,
+    dailyStartPendingLocalDate: settings.dailyStartPendingLocalDate,
+    dailyStartLastOutcome: settings.dailyStartLastOutcome,
+    scheduledStartEpochMs: settings.scheduledStartEpochMs,
+    nextDailyStartEpochMs: nextDailyStartEpochMs(settings)
   } as RendererSettings;
 }
 
