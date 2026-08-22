@@ -2,6 +2,15 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.59] - 2026-08-22
+
+### Extraction reliability
+
+- Recognize successfully extracted WinRAR, RAR, and 7-Zip files even when native progress output contains control characters or no parseable completion line.
+- Prevent completed extractions from being reported as `No extracted files detected` and allow affected packages to be retried normally after updating.
+- Preserve extractor-specific renamed filenames across shortened Windows extraction paths.
+- Keep 7-Zip directory structures intact when RAR flat extraction is active and reject colliding flat RAR targets before extraction starts.
+
 ## [2.0.58] - 2026-08-22
 
 ### DLC drag and drop
