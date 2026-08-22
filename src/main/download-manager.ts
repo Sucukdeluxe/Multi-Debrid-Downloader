@@ -480,6 +480,15 @@ type DownloadManagerOptions = {
   protectEmptyClobber?: boolean;
 };
 
+type PackageOutputOwnerMarker = {
+  version: 1;
+  packageId: string;
+  generation: number;
+  ownerId: string;
+};
+
+const PACKAGE_OUTPUT_OWNER_MARKER = ".rd-package-output-owner-v1.json";
+
 type RunLifecycleContext = {
   id: string;
   startedAt: number;
@@ -4429,9 +4438,131 @@ export class DownloadManager extends EventEmitter {
     return scope;
   }
 
+  private packageOutputOwnerMarkerPath(pkg: PackageEntry): string {
+    return path.join(pkg.extractDir, PACKAGE_OUTPUT_OWNER_MARKER);
+  }
+
+  private async readPackageOutputOwnerMarker(pkg: PackageEntry, requireSessionMatch: boolean): Promise<PackageOutputOwnerMarker | null> {
+    const markerPath = this.packageOutputOwnerMarkerPath(pkg);
+    try {
+      const stat = await fs.promises.lstat(markerPath);
+      if (!stat.isFile() || stat.isSymbolicLink()) {
+        return null;
+      }
+      const raw = JSON.parse(await fs.promises.readFile(markerPath, "utf8")) as Partial<PackageOutputOwnerMarker>;
+      const marker: PackageOutputOwnerMarker = {
+        version: 1,
+        packageId: String(raw.packageId || ""),
+        generation: Math.max(0, Math.floor(Number(raw.generation) || 0)),
+        ownerId: String(raw.ownerId || "").toLowerCase()
+      };
+      if (raw.version !== 1
+        || marker.packageId !== pkg.id
+        || marker.generation < 1
+        || !/^[a-f0-9-]{36}$/.test(marker.ownerId)) {
+        return null;
+      }
+      if (requireSessionMatch
+        && (marker.ownerId !== String(pkg.outputOwnerId || "").toLowerCase()
+          || marker.generation !== Number(pkg.outputOwnerGeneration || 0)
+          || marker.generation !== this.getPackageResultGeneration(pkg.id))) {
+        return null;
+      }
+      return marker;
+    } catch {
+      return null;
+    }
+  }
+
+  private async writePackageOutputOwnerMarkerAtomic(pkg: PackageEntry, marker: PackageOutputOwnerMarker): Promise<void> {
+    const markerPath = this.packageOutputOwnerMarkerPath(pkg);
+    const tempPath = path.join(pkg.extractDir, `.${PACKAGE_OUTPUT_OWNER_MARKER}.${uuidv4()}.tmp`);
+    const handle = await fs.promises.open(tempPath, "wx");
+    try {
+      await handle.writeFile(JSON.stringify(marker), "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    try {
+      await fs.promises.link(tempPath, markerPath);
+      await fs.promises.rm(tempPath, { force: true });
+    } catch (error) {
+      await fs.promises.rm(tempPath, { force: true }).catch(() => {});
+      throw error;
+    }
+  }
+
+  private async ensurePackageOutputOwnerMarker(pkg: PackageEntry): Promise<boolean> {
+    if (!this.isPackageSpecificExtractDir(pkg)
+      || this.isExtractDirSharedWithOtherPackages(pkg.id, pkg.extractDir)) {
+      return false;
+    }
+    await fs.promises.mkdir(pkg.extractDir, { recursive: true });
+    new PackageOutputScope([pkg.extractDir]).validateTarget(PACKAGE_OUTPUT_OWNER_MARKER, this.packageOutputOwnerMarkerPath(pkg));
+    const current = await this.readPackageOutputOwnerMarker(pkg, true);
+    if (current) {
+      return true;
+    }
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(pkg.extractDir, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    const rawExistingMarker = await this.readPackageOutputOwnerMarker(pkg, false);
+    const nonMarkerEntries = entries.filter((entry) => entry.name !== PACKAGE_OUTPUT_OWNER_MARKER);
+    if (nonMarkerEntries.length > 0) {
+      return false;
+    }
+    if (entries.some((entry) => entry.name === PACKAGE_OUTPUT_OWNER_MARKER)) {
+      if (!rawExistingMarker || rawExistingMarker.packageId !== pkg.id) {
+        return false;
+      }
+      await fs.promises.rm(this.packageOutputOwnerMarkerPath(pkg), { force: true });
+    }
+    const marker: PackageOutputOwnerMarker = {
+      version: 1,
+      packageId: pkg.id,
+      generation: this.getPackageResultGeneration(pkg.id),
+      ownerId: uuidv4().toLowerCase()
+    };
+    await this.writePackageOutputOwnerMarkerAtomic(pkg, marker);
+    pkg.outputOwnerId = marker.ownerId;
+    pkg.outputOwnerGeneration = marker.generation;
+    if (this.session.packages[pkg.id] === pkg) {
+      try {
+        await saveSessionAsync(this.storagePaths, this.session);
+      } catch (error) {
+        pkg.outputOwnerId = "";
+        pkg.outputOwnerGeneration = 0;
+        await fs.promises.rm(this.packageOutputOwnerMarkerPath(pkg), { force: true }).catch(() => {});
+        throw error;
+      }
+    }
+    return true;
+  }
+
+  private async removePackageOutputOwnerMarker(pkg: PackageEntry): Promise<boolean> {
+    if (!await this.readPackageOutputOwnerMarker(pkg, true)) {
+      return false;
+    }
+    try {
+      await fs.promises.rm(this.packageOutputOwnerMarkerPath(pkg), { force: true });
+      pkg.outputOwnerId = "";
+      pkg.outputOwnerGeneration = 0;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private async adoptLegacyPackageOutputsIfExclusive(pkg: PackageEntry, scope: PackageOutputScope): Promise<void> {
-    if (pkg.outputScopeAdopted || scope.records().length > 0) {
+    if (scope.records().length > 0) {
       pkg.outputScopeAdopted = true;
+      return;
+    }
+    if (pkg.outputScopeAdopted) {
       return;
     }
     pkg.outputScopeAdopted = true;
@@ -4439,9 +4570,7 @@ export class DownloadManager extends EventEmitter {
       && pkg.outputProvenanceVersion !== PACKAGE_OUTPUT_PROVENANCE_VERSION) {
       return;
     }
-    const packageExclusive = (this.settings.createExtractSubfolder || this.isPackageSpecificExtractDir(pkg))
-      && !this.isExtractDirSharedWithOtherPackages(pkg.id, pkg.extractDir);
-    if (!packageExclusive || !await this.existsAsync(pkg.extractDir)) {
+    if (!await this.readPackageOutputOwnerMarker(pkg, true)) {
       return;
     }
     const candidates: string[] = [];
@@ -4473,6 +4602,8 @@ export class DownloadManager extends EventEmitter {
         } else if (entry.isFile()
           && !/^\.rd-(?:output|replace)-/i.test(entry.name)
           && !/^\.rd_extract_progress(?:_[^.]+)?\.json$/i.test(entry.name)
+          && entry.name !== PACKAGE_OUTPUT_OWNER_MARKER
+          && !entry.name.startsWith(`.${PACKAGE_OUTPUT_OWNER_MARKER}.`)
           && !isIgnorableEmptyDirFileName(entry.name)) {
           candidates.push(fullPath);
         }
@@ -4507,10 +4638,19 @@ export class DownloadManager extends EventEmitter {
     const scope = this.getPackageOutputScope(pkg);
     try {
       await fs.promises.mkdir(pkg.extractDir, { recursive: true });
+      await this.ensurePackageOutputOwnerMarker(pkg);
       return await operation(pkg.extractDir, scope);
     } finally {
       if (!packageWasInSession || this.session.packages[pkg.id] === pkg) {
         this.syncPackageOutputScope(pkg, scope);
+        if (scope.records().length === 0 && await this.removePackageOutputOwnerMarker(pkg)) {
+          try {
+            if ((await fs.promises.readdir(pkg.extractDir)).length === 0) {
+              await fs.promises.rmdir(pkg.extractDir);
+            }
+          } catch {
+          }
+        }
       }
     }
   }
@@ -6140,6 +6280,9 @@ export class DownloadManager extends EventEmitter {
       const removedResidual = await this.cleanupNonMkvResidualFiles(scope, targetDir, touchedParents);
       if (removedResidual > 0) {
         logger.info(`MKV-Sammelordner entfernte Restdateien: pkg=${pkg.name}, dir=${cleanupDir}, entfernt=${removedResidual}`);
+      }
+      if (!scope.files().some((filePath) => isPathInsideDir(filePath, cleanupDir))) {
+        await this.removePackageOutputOwnerMarker(pkg);
       }
       const removedDirs = await this.removeEmptyScopedParentChains(cleanupDir, touchedParents);
       if (removedDirs > 0) {
@@ -9096,6 +9239,8 @@ export class DownloadManager extends EventEmitter {
       pkg.outputProvenance = [];
       pkg.outputRecords = [];
       pkg.outputScopeAdopted = false;
+      pkg.outputOwnerId = "";
+      pkg.outputOwnerGeneration = 0;
     }
     for (const itemId of itemIds) {
       this.retryAfterByItem.delete(itemId);
@@ -12411,6 +12556,8 @@ export class DownloadManager extends EventEmitter {
       pkg.outputProvenance = [];
       pkg.outputRecords = [];
       pkg.outputScopeAdopted = false;
+      pkg.outputOwnerId = "";
+      pkg.outputOwnerGeneration = 0;
       this.packageOutputScopes.delete(packageId);
       pkg.cleanupErrorCategory = "";
     }

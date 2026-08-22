@@ -29,6 +29,9 @@ import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
@@ -269,6 +272,7 @@ public final class JBindExtractorMain {
                 if (header.isDirectory()) {
                     File dir = resolveDirectory(request.targetDir, entryName);
                     ensureDirectory(dir);
+                    rejectLinkedPath(request.targetDir, dir);
                     reserved.add(pathKey(dir));
                     continue;
                 }
@@ -282,8 +286,10 @@ public final class JBindExtractorMain {
                     continue;
                 }
 
+                rejectLinkedPath(request.targetDir, output);
+                emitOutput(request.archiveFile, entryName, output, "opened", outputTarget.disposition);
                 ensureDirectory(output.getParentFile());
-                rejectSymlink(output);
+                rejectLinkedPath(request.targetDir, output);
                 long[] remaining = new long[] { itemUnits };
                 boolean extractionSuccess = false;
                 try {
@@ -335,11 +341,8 @@ public final class JBindExtractorMain {
                     if (!extractionSuccess && output.exists()) {
                         emitOutput(request.archiveFile, entryName, output, "partial", outputTarget.disposition);
                     }
-                    if (!extractionSuccess && output.exists()) {
-                        try {
-                            output.delete();
-                        } catch (Throwable ignored) {
-                        }
+                    if (!extractionSuccess && output.exists() && output.delete()) {
+                        emitOutput(request.archiveFile, entryName, output, "removed", outputTarget.disposition);
                     }
                 }
             }
@@ -389,6 +392,7 @@ public final class JBindExtractorMain {
                 if (Boolean.TRUE.equals(isFolder)) {
                     File dir = resolveDirectory(request.targetDir, entryName);
                     ensureDirectory(dir);
+                    rejectLinkedPath(request.targetDir, dir);
                     reserved.add(pathKey(dir));
                     continue;
                 }
@@ -446,17 +450,20 @@ public final class JBindExtractorMain {
             final Throwable[] firstError = new Throwable[1];
             final int[] currentPos = new int[] { -1 };
 
-            try {
-                archive.extract(indices, false, new BulkExtractCallback(
-                    archive, request.archiveFile, indexToPos, fileIndices, outputFiles, fileSizes, entryNames, dispositions,
+            BulkExtractCallback extractCallback = new BulkExtractCallback(
+                    archive, request.archiveFile, request.targetDir, indexToPos, fileIndices, outputFiles, fileSizes, entryNames, dispositions,
                     progress, encryptedFinal, effectivePassword, currentOutput,
                     currentStream, currentSuccess, currentRemaining, currentPos, firstError
-                ));
+                );
+            try {
+                archive.extract(indices, false, extractCallback);
             } catch (SevenZipException error) {
                 if (looksLikeWrongPassword(error, encryptedFinal)) {
                     throw new WrongPasswordException(error);
                 }
                 throw error;
+            } finally {
+                extractCallback.finishCurrentOutput();
             }
 
             if (firstError[0] != null) {
@@ -577,11 +584,13 @@ public final class JBindExtractorMain {
 
     private static File resolveDirectory(File targetDir, String entryName) throws IOException {
         File directory = secureResolve(targetDir, entryName);
+        rejectLinkedPath(targetDir, directory);
         return directory;
     }
 
     private static OutputTarget resolveOutputFile(File targetDir, String entryName, ConflictMode conflictMode, Set<String> reserved) throws IOException {
         File base = secureResolve(targetDir, entryName);
+        rejectLinkedPath(targetDir, base);
         String key = pathKey(base);
         boolean exists = base.exists() || reserved.contains(key);
 
@@ -596,7 +605,9 @@ public final class JBindExtractorMain {
 
         if (conflictMode == ConflictMode.OVERWRITE) {
             if (base.exists()) {
-                deleteRecursively(base);
+                if (!base.isFile() || !base.delete()) {
+                    throw new IOException("Konnte Datei nicht uberschreiben: " + base.getAbsolutePath());
+                }
             }
             reserved.add(key);
             return new OutputTarget(base, base, "overwritten");
@@ -612,6 +623,7 @@ public final class JBindExtractorMain {
         while (counter <= 10000) {
             String candidateName = stem + " (" + counter + ")" + ext;
             File candidate = new File(parent, candidateName);
+            rejectLinkedPath(targetDir, candidate);
             String candidateKey = pathKey(candidate);
             if (!candidate.exists() && !reserved.contains(candidateKey)) {
                 reserved.add(candidateKey);
@@ -621,23 +633,6 @@ public final class JBindExtractorMain {
         }
 
         throw new IOException("Rename-Limit erreicht fur " + entryName);
-    }
-
-    private static void deleteRecursively(File file) throws IOException {
-        if (file == null || !file.exists()) {
-            return;
-        }
-        if (file.isDirectory()) {
-            File[] children = file.listFiles();
-            if (children != null) {
-                for (File child : children) {
-                    deleteRecursively(child);
-                }
-            }
-        }
-        if (!file.delete()) {
-            throw new IOException("Konnte Datei nicht uberschreiben: " + file.getAbsolutePath());
-        }
     }
 
     private static File secureResolve(File targetDir, String entryName) throws IOException {
@@ -658,17 +653,19 @@ public final class JBindExtractorMain {
             }
         }
         File targetCanonical = targetDir.getCanonicalFile();
-        File output = new File(targetCanonical, normalized);
-        File outputCanonical = output.getCanonicalFile();
-        String targetPath = targetCanonical.getPath();
-        String outputPath = outputCanonical.getPath();
+        Path targetPathValue = targetCanonical.toPath().toAbsolutePath().normalize();
+        Path outputPathValue = targetPathValue.resolve(normalized).normalize();
+        String targetPath = targetPathValue.toString();
+        String outputPath = outputPathValue.toString();
         String targetPathNorm = isWindows() ? targetPath.toLowerCase(Locale.ROOT) : targetPath;
         String outputPathNorm = isWindows() ? outputPath.toLowerCase(Locale.ROOT) : outputPath;
         String targetPrefix = targetPathNorm.endsWith(File.separator) ? targetPathNorm : targetPathNorm + File.separator;
         if (!outputPathNorm.equals(targetPathNorm) && !outputPathNorm.startsWith(targetPrefix)) {
             throw new IOException("Path Traversal blockiert: " + entryName);
         }
-        return outputCanonical;
+        File output = outputPathValue.toFile();
+        rejectLinkedPath(targetCanonical, output);
+        return output;
     }
 
     private static String normalizeEntryName(String value, String fallback) {
@@ -710,20 +707,29 @@ public final class JBindExtractorMain {
         return size;
     }
 
-    private static void rejectSymlink(File file) throws IOException {
-        if (file == null) {
+    private static void rejectLinkedPath(File targetDir, File file) throws IOException {
+        if (targetDir == null || file == null) {
             return;
         }
-        if (Files.isSymbolicLink(file.toPath())) {
-            throw new IOException("Zieldatei ist ein Symlink, Schreiben verweigert: " + file.getAbsolutePath());
-        }
-
-        File parent = file.getParentFile();
-        while (parent != null) {
-            if (Files.isSymbolicLink(parent.toPath())) {
-                throw new IOException("Elternverzeichnis ist ein Symlink, Schreiben verweigert: " + parent.getAbsolutePath());
+        Path root = targetDir.getCanonicalFile().toPath().toAbsolutePath().normalize();
+        Path current = file.toPath().toAbsolutePath().normalize();
+        String rootValue = isWindows() ? root.toString().toLowerCase(Locale.ROOT) : root.toString();
+        while (current != null) {
+            String currentValue = isWindows() ? current.toString().toLowerCase(Locale.ROOT) : current.toString();
+            String prefix = rootValue.endsWith(File.separator) ? rootValue : rootValue + File.separator;
+            if (!currentValue.equals(rootValue) && !currentValue.startsWith(prefix)) {
+                throw new IOException("Path Traversal blockiert: " + file.getAbsolutePath());
             }
-            parent = parent.getParentFile();
+            if (Files.exists(current, LinkOption.NOFOLLOW_LINKS)) {
+                BasicFileAttributes attributes = Files.readAttributes(current, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+                if (attributes.isSymbolicLink() || attributes.isOther()) {
+                    throw new IOException("Symlink oder Reparse Point blockiert: " + current.toString());
+                }
+            }
+            if (currentValue.equals(rootValue)) {
+                break;
+            }
+            current = current.getParent();
         }
     }
 
@@ -917,6 +923,7 @@ public final class JBindExtractorMain {
     private static final class BulkExtractCallback implements IArchiveExtractCallback, ICryptoGetTextPassword {
         private final IInArchive archive;
         private final File archiveFile;
+        private final File targetDir;
         private final Map<Integer, Integer> indexToPos;
         private final List<Integer> fileIndices;
         private final List<File> outputFiles;
@@ -933,7 +940,7 @@ public final class JBindExtractorMain {
         private final int[] currentPos;
         private final Throwable[] firstError;
 
-        BulkExtractCallback(IInArchive archive, File archiveFile, Map<Integer, Integer> indexToPos,
+        BulkExtractCallback(IInArchive archive, File archiveFile, File targetDir, Map<Integer, Integer> indexToPos,
                 List<Integer> fileIndices, List<File> outputFiles, List<Long> fileSizes,
                 List<String> entryNames, List<String> dispositions,
                 ProgressTracker progress, boolean encrypted, String password,
@@ -942,6 +949,7 @@ public final class JBindExtractorMain {
                 Throwable[] firstError) {
             this.archive = archive;
             this.archiveFile = archiveFile;
+            this.targetDir = targetDir;
             this.indexToPos = indexToPos;
             this.fileIndices = fileIndices;
             this.outputFiles = outputFiles;
@@ -976,7 +984,7 @@ public final class JBindExtractorMain {
 
         @Override
         public ISequentialOutStream getStream(int index, ExtractAskMode extractAskMode) throws SevenZipException {
-            closeCurrentStream();
+            discardCurrentOutput();
 
             Integer pos = indexToPos.get(index);
             if (pos == null) {
@@ -998,8 +1006,10 @@ public final class JBindExtractorMain {
             }
 
             try {
+                rejectLinkedPath(targetDir, currentOutput[0]);
+                emitOutput(archiveFile, entryNames.get(currentPos[0]), currentOutput[0], "opened", dispositions.get(currentPos[0]));
                 ensureDirectory(currentOutput[0].getParentFile());
-                rejectSymlink(currentOutput[0]);
+                rejectLinkedPath(targetDir, currentOutput[0]);
                 currentStream[0] = new FileOutputStream(currentOutput[0]);
             } catch (IOException error) {
                 throw new SevenZipException("Fehler beim Erstellen: " + error.getMessage(), error);
@@ -1038,7 +1048,7 @@ public final class JBindExtractorMain {
 
             if (result == ExtractOperationResult.OK) {
                 currentSuccess[0] = true;
-                closeCurrentStream();
+                closeCurrentStreamOnly();
                 if (currentPos[0] >= 0 && currentOutput[0] != null) {
                     try {
                         int archiveIndex = fileIndices.get(currentPos[0]);
@@ -1052,14 +1062,7 @@ public final class JBindExtractorMain {
                     emitOutput(archiveFile, entryNames.get(currentPos[0]), currentOutput[0], "complete", dispositions.get(currentPos[0]));
                 }
             } else {
-                closeCurrentStream();
-                if (currentOutput[0] != null && currentOutput[0].exists()) {
-                    emitOutput(archiveFile, entryNames.get(currentPos[0]), currentOutput[0], "partial", dispositions.get(currentPos[0]));
-                    try {
-                        currentOutput[0].delete();
-                    } catch (Throwable ignored) {
-                    }
-                }
+                discardCurrentOutput();
                 if (firstError[0] == null) {
                     if (isPasswordFailure(result, encrypted)) {
                         firstError[0] = new WrongPasswordException(new IOException("Falsches Passwort"));
@@ -1070,7 +1073,11 @@ public final class JBindExtractorMain {
             }
         }
 
-        private void closeCurrentStream() {
+        void finishCurrentOutput() {
+            discardCurrentOutput();
+        }
+
+        private void closeCurrentStreamOnly() {
             if (currentStream[0] != null) {
                 try {
                     currentStream[0].close();
@@ -1078,10 +1085,17 @@ public final class JBindExtractorMain {
                 }
                 currentStream[0] = null;
             }
+        }
+
+        private void discardCurrentOutput() {
+            closeCurrentStreamOnly();
             if (!currentSuccess[0] && currentOutput[0] != null && currentOutput[0].exists()) {
-                try {
-                    currentOutput[0].delete();
-                } catch (Throwable ignored) {
+                int pos = currentPos[0];
+                if (pos >= 0) {
+                    emitOutput(archiveFile, entryNames.get(pos), currentOutput[0], "partial", dispositions.get(pos));
+                }
+                if (currentOutput[0].delete() && pos >= 0) {
+                    emitOutput(archiveFile, entryNames.get(pos), currentOutput[0], "removed", dispositions.get(pos));
                 }
             }
         }

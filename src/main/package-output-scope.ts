@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-export type ExtractOutputState = "complete" | "partial";
+export type ExtractOutputState = "opened" | "complete" | "partial" | "removed";
 export type ExtractOutputDisposition = "written" | "overwritten" | "renamed" | "skipped";
 
 export interface ExtractOutputEvent {
@@ -13,10 +13,12 @@ export interface ExtractOutputEvent {
   disposition: ExtractOutputDisposition;
 }
 
+export type OwnedExtractOutputEvent = ExtractOutputEvent & { state: "complete" | "partial" };
+
 export class PackageOutputScope {
   private readonly authorizedRoots: string[];
 
-  private readonly outputRecords = new Map<string, ExtractOutputEvent>();
+  private readonly outputRecords = new Map<string, OwnedExtractOutputEvent>();
 
   public constructor(authorizedRoots: readonly string[], records: readonly ExtractOutputEvent[] = []) {
     this.authorizedRoots = [...new Map(
@@ -94,20 +96,14 @@ export class PackageOutputScope {
     if (!path.isAbsolute(String(event.archivePath || ""))) {
       throw new Error(`Archivpfad muss absolut sein: ${event.archivePath}`);
     }
-    if (event.state !== "complete" && event.state !== "partial") {
+    if (!(["opened", "complete", "partial", "removed"] as const).includes(event.state)) {
       throw new Error(`Ungültiger Extract-Output-Status: ${String(event.state)}`);
     }
     if (!(["written", "overwritten", "renamed", "skipped"] as const).includes(event.disposition)) {
       throw new Error(`Ungültige Extract-Output-Disposition: ${String(event.disposition)}`);
     }
-    const entryPath = this.validateEntryPath(event.entryPath);
-    if (!path.isAbsolute(String(event.outputPath || ""))) {
-      throw new Error(`Finaler Ausgabepfad muss absolut sein: ${event.outputPath}`);
-    }
-    const outputPath = path.resolve(event.outputPath);
-    const authorizedRoot = this.findAuthorizedRoot(outputPath);
-    this.rejectLinkedPath(outputPath, authorizedRoot);
-    if (event.disposition !== "skipped") {
+    const { entryPath, outputPath } = this.validateTarget(event.entryPath, event.outputPath);
+    if (event.disposition !== "skipped" && event.state !== "opened" && event.state !== "removed") {
       let stat: fs.Stats;
       try {
         stat = fs.lstatSync(outputPath);
@@ -128,20 +124,35 @@ export class PackageOutputScope {
     };
   }
 
+  public validateTarget(entryPath: string, outputPath: string): { entryPath: string; outputPath: string } {
+    const normalizedEntryPath = this.validateEntryPath(entryPath);
+    if (!path.isAbsolute(String(outputPath || ""))) {
+      throw new Error(`Finaler Ausgabepfad muss absolut sein: ${outputPath}`);
+    }
+    const normalizedOutputPath = path.resolve(outputPath);
+    const authorizedRoot = this.findAuthorizedRoot(normalizedOutputPath);
+    this.rejectLinkedPath(normalizedOutputPath, authorizedRoot);
+    return { entryPath: normalizedEntryPath, outputPath: normalizedOutputPath };
+  }
+
   public add(event: ExtractOutputEvent): boolean {
     const normalized = this.normalizeEvent(event);
-    if (normalized.disposition === "skipped") {
+    const key = this.pathKey(normalized.outputPath);
+    if (normalized.state === "removed") {
+      return this.outputRecords.delete(key);
+    }
+    if (normalized.disposition === "skipped" || normalized.state === "opened") {
       return false;
     }
-    const key = this.pathKey(normalized.outputPath);
+    const owned = normalized as OwnedExtractOutputEvent;
     const current = this.outputRecords.get(key);
     if (current) {
-      if (current.state === "partial" && normalized.state === "complete") {
-        this.outputRecords.set(key, { ...normalized, outputPath: current.outputPath });
+      if (current.state === "partial" && owned.state === "complete") {
+        this.outputRecords.set(key, { ...owned, outputPath: current.outputPath });
       }
       return false;
     }
-    this.outputRecords.set(key, normalized);
+    this.outputRecords.set(key, owned);
     return true;
   }
 
@@ -155,7 +166,7 @@ export class PackageOutputScope {
     return added;
   }
 
-  public records(): ExtractOutputEvent[] {
+  public records(): OwnedExtractOutputEvent[] {
     return [...this.outputRecords.values()];
   }
 
@@ -175,7 +186,7 @@ export class PackageOutputScope {
     return this.completeFiles().filter((filePath) => /\.(?:7z|rar|zip|tar|gz|bz2|xz|tgz|tbz2|txz|001)$/i.test(filePath));
   }
 
-  public replacePath(sourcePath: string, targetPath: string, state?: ExtractOutputState): boolean {
+  public replacePath(sourcePath: string, targetPath: string, state?: OwnedExtractOutputEvent["state"]): boolean {
     const sourceKey = this.pathKey(sourcePath);
     const current = this.outputRecords.get(sourceKey);
     if (!current) {
@@ -187,7 +198,7 @@ export class PackageOutputScope {
       entryPath: path.basename(targetPath),
       state: state || current.state,
       disposition: targetPath === current.outputPath ? current.disposition : "renamed"
-    });
+    }) as OwnedExtractOutputEvent;
     this.outputRecords.delete(sourceKey);
     this.outputRecords.set(this.pathKey(next.outputPath), next);
     return true;

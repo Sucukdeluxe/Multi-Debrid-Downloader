@@ -156,4 +156,27 @@ describe("PackageOutputScope", () => {
     expect(scope.removePath(targetPath)).toBe(true);
     expect(scope.completeFiles()).toEqual([]);
   });
+
+  it("validates opened targets before creation and removes discarded partial ownership", () => {
+    const root = createRoot();
+    const outputPath = path.join(root, "episode.mkv");
+    const scope = new PackageOutputScope([root]);
+    const opened = {
+      version: 1 as const,
+      archivePath: path.join(root, "archive.rar"),
+      entryPath: "episode.mkv",
+      outputPath,
+      state: "opened" as const,
+      disposition: "written" as const
+    };
+
+    expect(scope.add(opened)).toBe(false);
+    expect(scope.records()).toEqual([]);
+    fs.writeFileSync(outputPath, "partial");
+    scope.add({ ...opened, state: "partial" });
+    expect(scope.partialFiles()).toEqual([outputPath]);
+    fs.rmSync(outputPath, { force: true });
+    expect(scope.add({ ...opened, state: "removed" })).toBe(true);
+    expect(scope.records()).toEqual([]);
+  });
 });

@@ -1063,6 +1063,8 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
       outputProvenance,
       outputRecords,
       outputScopeAdopted: Boolean(pkg.outputScopeAdopted),
+      outputOwnerId: /^[a-f0-9-]{36}$/i.test(asText(pkg.outputOwnerId)) ? asText(pkg.outputOwnerId).toLowerCase() : "",
+      outputOwnerGeneration: clampNumber(pkg.outputOwnerGeneration, 0, 0, Number.MAX_SAFE_INTEGER),
       cleanupErrorCategory: asText(pkg.cleanupErrorCategory),
       resultGeneration: clampNumber(pkg.resultGeneration, 1, 1, Number.MAX_SAFE_INTEGER),
       createdAt: clampNumber(pkg.createdAt, now, 0, Number.MAX_SAFE_INTEGER),

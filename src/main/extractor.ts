@@ -120,6 +120,13 @@ export class ExtractionError extends Error {
   }
 }
 
+class ExtractionOutputCallbackError extends Error {
+  public constructor(error: unknown) {
+    super(`extract_output_callback_failed: ${cleanErrorText(String(error))}`);
+    this.name = "ExtractionOutputCallbackError";
+  }
+}
+
 type ExtractionErrorWithHints = Error & {
   suggestRedownload?: boolean;
   jvmFailureReason?: string;
@@ -144,6 +151,15 @@ type JvmExtractResult = {
   errorText: string;
   usedPassword: string;
   backend: string;
+};
+
+type JvmParseState = {
+  bestPercent: number;
+  usedPassword: string;
+  backend: string;
+  reportedError: string;
+  outputError?: Error;
+  openedOutputs?: Map<string, ExtractOutputEvent>;
 };
 
 export interface ExtractResult {
@@ -193,7 +209,7 @@ interface DaemonRequest {
   onArchiveProgress?: (percent: number) => void;
   signal?: AbortSignal;
   timeoutMs?: number;
-  parseState: { bestPercent: number; usedPassword: string; backend: string; reportedError: string };
+  parseState: JvmParseState;
   archiveName: string;
   startedAt: number;
   passwordCount: number;
@@ -1556,7 +1572,7 @@ function resolveJvmExtractorLayout(): JvmExtractorLayout | null {
 function parseJvmLine(
   line: string,
   onArchiveProgress: ((percent: number) => void) | undefined,
-  state: { bestPercent: number; usedPassword: string; backend: string; reportedError: string },
+  state: JvmParseState,
   onOutput?: (event: ExtractOutputEvent) => void
 ): void {
   const trimmed = String(line || "").trim();
@@ -1597,18 +1613,33 @@ function parseJvmLine(
     const disposition = fields[3];
     if (fields.length !== 7
       || fields[1] !== "1"
-      || (stateValue !== "complete" && stateValue !== "partial")
+      || !(["opened", "complete", "partial", "removed"] as const).includes(stateValue as ExtractOutputEvent["state"])
       || !(["written", "overwritten", "renamed", "skipped"] as const).includes(disposition as ExtractOutputEvent["disposition"])) {
       return;
     }
-    onOutput?.({
+    const event: ExtractOutputEvent = {
       version: 1,
       archivePath: Buffer.from(fields[4], "base64").toString("utf8"),
       entryPath: Buffer.from(fields[5], "base64").toString("utf8"),
       outputPath: Buffer.from(fields[6], "base64").toString("utf8"),
-      state: stateValue,
+      state: stateValue as ExtractOutputEvent["state"],
       disposition: disposition as ExtractOutputEvent["disposition"]
-    });
+    };
+    const outputKey = pathSetKey(path.resolve(event.outputPath));
+    state.openedOutputs ||= new Map<string, ExtractOutputEvent>();
+    if (event.state === "opened") {
+      state.openedOutputs.set(outputKey, event);
+    } else if (event.state === "complete" || event.state === "removed") {
+      state.openedOutputs.delete(outputKey);
+    }
+    if (!state.outputError) {
+      try {
+        onOutput?.(event);
+      } catch (error) {
+        state.outputError = error instanceof Error ? error : new Error(String(error));
+        state.reportedError = state.outputError.message;
+      }
+    }
     return;
   }
 
@@ -1694,6 +1725,10 @@ function handleDaemonLine(line: string): void {
         return;
       }
       flushDaemonParseBuffers(req);
+      if (req.parseState.outputError) {
+        failDaemonOutputCallback(req);
+        return;
+      }
       const elapsedMs = Date.now() - req.startedAt;
       logger.info(
         `JVM Daemon Request Ende: archive=${req.archiveName}, code=${code}, ms=${elapsedMs}, pwCandidates=${req.passwordCount}, ` +
@@ -1728,7 +1763,9 @@ function handleDaemonLine(line: string): void {
   }
 
   if (daemonCurrentRequest) {
-    parseJvmLine(trimmed, daemonCurrentRequest.onArchiveProgress, daemonCurrentRequest.parseState, daemonCurrentRequest.onOutput);
+    const req = daemonCurrentRequest;
+    parseJvmLine(trimmed, req.onArchiveProgress, req.parseState, req.onOutput);
+    failDaemonOutputCallback(req);
   }
 }
 
@@ -1781,7 +1818,9 @@ function startDaemon(layout: JvmExtractorLayout): boolean {
       daemonStderrBuffer = lines.pop() || "";
       for (const line of lines) {
         if (daemonCurrentRequest) {
-          parseJvmLine(line, daemonCurrentRequest.onArchiveProgress, daemonCurrentRequest.parseState, daemonCurrentRequest.onOutput);
+          const req = daemonCurrentRequest;
+          parseJvmLine(line, req.onArchiveProgress, req.parseState, req.onOutput);
+          failDaemonOutputCallback(req);
         }
       }
     });
@@ -1999,9 +2038,10 @@ async function runJvmExtractCommand(
     let timedOutByWatchdog = false;
     let abortedBySignal = false;
     let onAbort: (() => void) | null = null;
-    const parseState = { bestPercent: 0, usedPassword: "", backend: "", reportedError: "" };
+    const parseState: JvmParseState = { bestPercent: 0, usedPassword: "", backend: "", reportedError: "" };
     let stdoutBuffer = "";
     let stderrBuffer = "";
+    let outputCallbackKillStarted = false;
 
     const child = spawn(layout.javaCommand, args, { windowsHide: true });
     lowerExtractProcessPriority(child.pid, currentExtractCpuPriority);
@@ -2016,6 +2056,10 @@ async function runJvmExtractCommand(
       const keep = lines.pop() || "";
       for (const line of lines) {
         parseJvmLine(line, onArchiveProgress, parseState, onOutput);
+      }
+      if (parseState.outputError && !outputCallbackKillStarted) {
+        outputCallbackKillStarted = true;
+        killProcessTree(child);
       }
       if (fromStdErr) {
         stderrBuffer = keep;
@@ -2111,6 +2155,20 @@ async function runJvmExtractCommand(
         return;
       }
 
+      if (parseState.outputError) {
+        finish({
+          ok: false,
+          missingCommand: false,
+          missingRuntime: false,
+          aborted: false,
+          timedOut: false,
+          errorText: cleanErrorText(parseState.outputError.message || String(parseState.outputError)),
+          usedPassword: parseState.usedPassword,
+          backend: parseState.backend
+        });
+        return;
+      }
+
       const message = cleanErrorText(parseState.reportedError || output) || `Exit Code ${String(code ?? "?")}`;
       if (code === 0) {
         onArchiveProgress?.(100);
@@ -2171,8 +2229,9 @@ export function parseNativeExtractOutput(
     const match = trimmed.match(/^[-+]\s+(.+)$/);
     reportedPath = match?.[1]?.trim() || "";
   } else if (isRarNativeCommand(command)) {
-    const match = trimmed.match(/^Extracting\s+(.+?)(?:\s+OK)?$/i);
-    reportedPath = match?.[1]?.trim() || "";
+    const localizedMatch = trimmed.match(/^.+?\s{2,}(.+?)\s{2,}OK$/);
+    const legacyMatch = trimmed.match(/^Extracting\s+(.+?)(?:\s+OK)?$/i);
+    reportedPath = localizedMatch?.[1]?.trim() || legacyMatch?.[1]?.trim() || "";
   }
   if (!reportedPath) {
     return [];
@@ -2212,6 +2271,24 @@ export function parseNativeExtractOutput(
   }
 }
 
+function failDaemonOutputCallback(req: DaemonRequest): void {
+  if (daemonCurrentRequest !== req || !req.parseState.outputError) {
+    return;
+  }
+  const message = cleanErrorText(req.parseState.outputError.message || String(req.parseState.outputError));
+  finishDaemonRequest({
+    ok: false,
+    missingCommand: false,
+    missingRuntime: false,
+    aborted: false,
+    timedOut: false,
+    errorText: message,
+    usedPassword: req.parseState.usedPassword,
+    backend: req.parseState.backend
+  });
+  shutdownDaemon();
+}
+
 function createNativeOutputCollector(
   command: string,
   archivePath: string,
@@ -2224,7 +2301,7 @@ function createNativeOutputCollector(
   const collectLine = (value: string): void => {
     const trimmed = value.trim();
     if ((extractorCommandKind(command) === "seven_zip" && /^[-+]\s+/.test(trimmed))
-      || (isRarNativeCommand(command) && /^Extracting\s+/i.test(trimmed))) {
+      || (isRarNativeCommand(command) && (/^.+?\s{2,}.+?\s{2,}OK$/.test(trimmed) || /^Extracting\s+/i.test(trimmed)))) {
       lines.add(trimmed);
     }
   };
@@ -2699,7 +2776,10 @@ function isZipSafetyGuardError(error: unknown): boolean {
   const text = String(error || "").toLowerCase();
   return text.includes("path traversal")
     || text.includes("zip-eintrag verdächtig groß")
-    || text.includes("zip-eintrag verdaechtig gross");
+    || text.includes("zip-eintrag verdaechtig gross")
+    || text.includes("symbolischer link")
+    || text.includes("reparse point")
+    || text.includes("extract_output_callback_failed");
 }
 
 function isZipInternalLimitError(error: unknown): boolean {
@@ -2736,7 +2816,8 @@ async function extractZipArchive(
   targetDir: string,
   conflictMode: ConflictMode,
   signal?: AbortSignal,
-  onOutput?: (event: ExtractOutputEvent) => void
+  onOutput?: (event: ExtractOutputEvent) => void,
+  validateTarget?: (entryPath: string, outputPath: string) => void
 ): Promise<void> {
   const mode = effectiveConflictMode(conflictMode);
   const memoryLimitBytes = zipEntryMemoryLimitBytes();
@@ -2756,7 +2837,9 @@ async function extractZipArchive(
       continue;
     }
     if (entry.isDirectory) {
+      validateTarget?.(entry.entryName.replace(/\\/g, "/").replace(/\/$/, "") || "directory", baseOutputPath);
       await fs.promises.mkdir(baseOutputPath, { recursive: true });
+      validateTarget?.(entry.entryName.replace(/\\/g, "/").replace(/\/$/, "") || "directory", baseOutputPath);
       continue;
     }
 
@@ -2797,7 +2880,6 @@ async function extractZipArchive(
     let outputKey = pathSetKey(outputPath);
     let disposition: ExtractOutputEvent["disposition"] = "written";
 
-    await fs.promises.mkdir(path.dirname(outputPath), { recursive: true });
     const outputExists = usedOutputs.has(outputKey) || await fs.promises.access(outputPath).then(() => true, () => false);
     if (outputExists) {
       if (mode === "skip") {
@@ -2843,6 +2925,18 @@ async function extractZipArchive(
     if (signal?.aborted) {
       throw new Error("aborted:extract");
     }
+    const normalizedEntryPath = entry.entryName.replace(/\\/g, "/");
+    validateTarget?.(normalizedEntryPath, outputPath);
+    onOutput?.({
+      version: 1,
+      archivePath: path.resolve(archivePath),
+      entryPath: normalizedEntryPath,
+      outputPath,
+      state: "opened",
+      disposition
+    });
+    await fs.promises.mkdir(path.dirname(outputPath), { recursive: true });
+    validateTarget?.(normalizedEntryPath, outputPath);
     const data = entry.getData();
     if (data.length > memoryLimitBytes) {
       const entryMb = Math.ceil(data.length / (1024 * 1024));
@@ -2856,14 +2950,6 @@ async function extractZipArchive(
     try {
       await fs.promises.writeFile(outputPath, data);
       usedOutputs.add(outputKey);
-      onOutput?.({
-        version: 1,
-        archivePath: path.resolve(archivePath),
-        entryPath: entry.entryName.replace(/\\/g, "/"),
-        outputPath,
-        state: "complete",
-        disposition
-      });
     } catch (error) {
       if (await fs.promises.access(outputPath).then(() => true, () => false)) {
         onOutput?.({
@@ -2877,6 +2963,14 @@ async function extractZipArchive(
       }
       throw error;
     }
+    onOutput?.({
+      version: 1,
+      archivePath: path.resolve(archivePath),
+      entryPath: normalizedEntryPath,
+      outputPath,
+      state: "complete",
+      disposition
+    });
   }
 }
 
@@ -3149,7 +3243,14 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
   const outputScope = new PackageOutputScope([options.targetDir]);
   const emitOutput = (event: ExtractOutputEvent): void => {
     outputScope.add(event);
-    options.onOutput?.(event);
+    try {
+      options.onOutput?.(event);
+    } catch (error) {
+      throw new ExtractionOutputCallbackError(error);
+    }
+  };
+  const validateOutputTarget = (entryPath: string, outputPath: string): void => {
+    outputScope.validateTarget(entryPath, outputPath);
   };
   options.onProgress?.({ current: 0, total: 0, percent: 0, archiveName: "Archive scannen...", phase: "preparing" });
   const allCandidates = await findArchiveCandidates(options.packageDir);
@@ -3428,14 +3529,14 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
             rememberLearnedPassword(usedPassword);
           } catch (error) {
             if (isNoExtractorError(String(error))) {
-              await extractZipArchive(archivePath, options.targetDir, options.conflictMode, options.signal, emitOutput);
+              await extractZipArchive(archivePath, options.targetDir, options.conflictMode, options.signal, emitOutput, validateOutputTarget);
             } else {
               throw error;
             }
           }
         } else {
           try {
-            await extractZipArchive(archivePath, options.targetDir, options.conflictMode, options.signal, emitOutput);
+            await extractZipArchive(archivePath, options.targetDir, options.conflictMode, options.signal, emitOutput, validateOutputTarget);
             archivePercent = 100;
           } catch (error) {
             if (!shouldFallbackToExternalZip(error)) {
@@ -3696,7 +3797,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
             const ext = path.extname(nestedArchive).toLowerCase();
             if (ext === ".zip" && !(await shouldPreferExternalZip(nestedArchive))) {
               try {
-                await extractZipArchive(nestedArchive, options.targetDir, options.conflictMode, options.signal, emitOutput);
+                await extractZipArchive(nestedArchive, options.targetDir, options.conflictMode, options.signal, emitOutput, validateOutputTarget);
                 nestedPercent = 100;
               } catch (zipErr) {
                 if (!shouldFallbackToExternalZip(zipErr)) throw zipErr;

@@ -602,6 +602,8 @@ export interface PackageEntry {
   outputProvenance?: string[];
   outputRecords?: PackageOutputRecord[];
   outputScopeAdopted?: boolean;
+  outputOwnerId?: string;
+  outputOwnerGeneration?: number;
   cleanupErrorCategory?: string;
   resultGeneration?: number;
   createdAt: number;

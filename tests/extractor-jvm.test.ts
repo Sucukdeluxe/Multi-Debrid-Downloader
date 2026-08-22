@@ -25,6 +25,23 @@ function hasJvmExtractorRuntime(): boolean {
   return fs.existsSync(classesMain) && requiredLibs.every((libPath) => fs.existsSync(libPath));
 }
 
+function corruptFirstZipPayload(zipPath: string): void {
+  const bytes = fs.readFileSync(zipPath);
+  const signature = bytes.indexOf(Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+  if (signature < 0) {
+    throw new Error("local ZIP header missing");
+  }
+  const compressedSize = bytes.readUInt32LE(signature + 18);
+  const nameLength = bytes.readUInt16LE(signature + 26);
+  const extraLength = bytes.readUInt16LE(signature + 28);
+  const dataOffset = signature + 30 + nameLength + extraLength;
+  if (compressedSize < 2 || dataOffset + compressedSize > bytes.length) {
+    throw new Error("ZIP payload missing");
+  }
+  bytes[dataOffset + Math.floor(compressedSize / 2)] ^= 0xff;
+  fs.writeFileSync(zipPath, bytes);
+}
+
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -71,6 +88,14 @@ describe.skipIf(!hasJavaRuntime() || !hasJvmExtractorRuntime())("extractor jvm b
         archivePath: path.resolve(zipPath),
         entryPath: "episode.txt",
         outputPath: path.join(targetDir, "episode.txt"),
+        state: "opened",
+        disposition: "written"
+      }),
+      expect.objectContaining({
+        version: 1,
+        archivePath: path.resolve(zipPath),
+        entryPath: "episode.txt",
+        outputPath: path.join(targetDir, "episode.txt"),
         state: "complete",
         disposition: "written"
       })
@@ -109,13 +134,140 @@ describe.skipIf(!hasJavaRuntime() || !hasJvmExtractorRuntime())("extractor jvm b
     ], { encoding: "utf8" });
 
     expect(run.status).toBe(0);
-    const outputLine = String(run.stdout).split(/\r?\n/).find((line) => line.startsWith("RD_OUTPUT "));
-    expect(outputLine).toBeTruthy();
-    const fields = String(outputLine).split(" ");
+    const outputLines = String(run.stdout).split(/\r?\n/).filter((line) => line.startsWith("RD_OUTPUT "));
+    expect(outputLines.map((line) => line.split(" ")[2])).toEqual(["opened", "complete"]);
+    const fields = outputLines[1].split(" ");
     expect(fields.slice(0, 5)).toEqual(["RD_OUTPUT", "1", "complete", "written", fields[4]]);
     expect(Buffer.from(fields[4], "base64").toString("utf8")).toBe(path.resolve(zipPath));
     expect(Buffer.from(fields[5], "base64").toString("utf8")).toBe("folder/episode.txt");
     expect(Buffer.from(fields[6], "base64").toString("utf8")).toBe(path.join(targetDir, "folder", "episode.txt"));
+  });
+
+  it.each(["7zjbinding", "zip4j"])("rejects %s output behind a junction before opening it", (backend) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `rd-jvm-junction-${backend}-`));
+    tempDirs.push(root);
+    const targetDir = path.join(root, "out");
+    const realDir = path.join(targetDir, "real");
+    const linkedDir = path.join(targetDir, "linked");
+    fs.mkdirSync(realDir, { recursive: true });
+    try {
+      fs.symlinkSync(realDir, linkedDir, process.platform === "win32" ? "junction" : "dir");
+    } catch {
+      return;
+    }
+    const protectedPath = path.join(realDir, "protected.txt");
+    fs.writeFileSync(protectedPath, "foreign");
+    const zipPath = path.join(root, "release.zip");
+    const zip = new AdmZip();
+    zip.addFile("linked/protected.txt", Buffer.from("package"));
+    zip.writeZip(zipPath);
+    const runtimeRoot = path.join(process.cwd(), "resources", "extractor-jvm");
+    const classPath = [
+      path.join(runtimeRoot, "classes"),
+      path.join(runtimeRoot, "lib", "sevenzipjbinding.jar"),
+      path.join(runtimeRoot, "lib", "sevenzipjbinding-all-platforms.jar"),
+      path.join(runtimeRoot, "lib", "zip4j.jar")
+    ].join(path.delimiter);
+
+    const run = spawnSync("java", [
+      "-cp",
+      classPath,
+      "com.sucukdeluxe.extractor.JBindExtractorMain",
+      "--archive",
+      zipPath,
+      "--target",
+      targetDir,
+      "--conflict",
+      "overwrite",
+      "--backend",
+      backend
+    ], { encoding: "utf8" });
+
+    expect(run.status).not.toBe(0);
+    expect(fs.readFileSync(protectedPath, "utf8")).toBe("foreign");
+  });
+
+  it("turns JVM output callback failures into a controlled archive failure and keeps the next request usable", async () => {
+    process.env.RD_EXTRACT_BACKEND = "jvm";
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-jvm-callback-"));
+    tempDirs.push(root);
+    const firstPackage = path.join(root, "first-pkg");
+    const secondPackage = path.join(root, "second-pkg");
+    fs.mkdirSync(firstPackage, { recursive: true });
+    fs.mkdirSync(secondPackage, { recursive: true });
+    const firstZip = new AdmZip();
+    firstZip.addFile("first.txt", Buffer.from("first"));
+    firstZip.writeZip(path.join(firstPackage, "first.zip"));
+    const secondZip = new AdmZip();
+    secondZip.addFile("second.txt", Buffer.from("second"));
+    secondZip.writeZip(path.join(secondPackage, "second.zip"));
+
+    const first = await extractPackageArchives({
+      packageDir: firstPackage,
+      targetDir: path.join(root, "first-out"),
+      cleanupMode: "none",
+      conflictMode: "overwrite",
+      removeLinks: false,
+      removeSamples: false,
+      onOutput: () => {
+        throw new Error("jvm-output-callback-failed");
+      }
+    });
+    const second = await extractPackageArchives({
+      packageDir: secondPackage,
+      targetDir: path.join(root, "second-out"),
+      cleanupMode: "none",
+      conflictMode: "overwrite",
+      removeLinks: false,
+      removeSamples: false
+    });
+
+    expect(first.extracted).toBe(0);
+    expect(first.failed).toBe(1);
+    expect(first.lastError).toContain("jvm-output-callback-failed");
+    expect(second).toEqual(expect.objectContaining({ extracted: 1, failed: 0 }));
+  }, 10000);
+
+  it.each(["7zjbinding", "zip4j"])("reports %s partial output before removing a failed file", (backend) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `rd-jvm-partial-${backend}-`));
+    tempDirs.push(root);
+    const targetDir = path.join(root, "out");
+    const zipPath = path.join(root, "corrupt.zip");
+    const zip = new AdmZip();
+    zip.addFile("episode.bin", Buffer.from("payload-".repeat(20_000)));
+    zip.writeZip(zipPath);
+    corruptFirstZipPayload(zipPath);
+    const runtimeRoot = path.join(process.cwd(), "resources", "extractor-jvm");
+    const classPath = [
+      path.join(runtimeRoot, "classes"),
+      path.join(runtimeRoot, "lib", "sevenzipjbinding.jar"),
+      path.join(runtimeRoot, "lib", "sevenzipjbinding-all-platforms.jar"),
+      path.join(runtimeRoot, "lib", "zip4j.jar")
+    ].join(path.delimiter);
+
+    const run = spawnSync("java", [
+      "-cp",
+      classPath,
+      "com.sucukdeluxe.extractor.JBindExtractorMain",
+      "--archive",
+      zipPath,
+      "--target",
+      targetDir,
+      "--conflict",
+      "overwrite",
+      "--backend",
+      backend
+    ], { encoding: "utf8" });
+    const states = String(run.stdout)
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("RD_OUTPUT "))
+      .map((line) => line.split(" ")[2]);
+
+    expect(run.status).not.toBe(0);
+    expect(states[0]).toBe("opened");
+    expect(states).toContain("partial");
+    expect(states[states.length - 1]).toBe("removed");
+    expect(fs.existsSync(path.join(targetDir, "episode.bin"))).toBe(false);
   });
 
   it("emits progress callbacks with archiveName and percent", async () => {

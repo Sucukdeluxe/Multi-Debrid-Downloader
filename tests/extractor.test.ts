@@ -1316,14 +1316,15 @@ describe("extractor", () => {
       });
 
       expect(fs.readFileSync(path.join(targetDir, "episode.mkv"), "utf8")).toBe(originalContent);
-      expect(events).toEqual([expect.objectContaining({
+      expect(events.map((event) => event.state)).toEqual(disposition === "skipped" ? ["complete"] : ["opened", "complete"]);
+      expect(events[events.length - 1]).toEqual(expect.objectContaining({
         version: 1,
         archivePath: path.resolve(archivePath),
         entryPath: "episode.mkv",
         outputPath: path.join(targetDir, outputNames[0] || "episode.mkv"),
         state: "complete",
         disposition
-      })]);
+      }));
       expect(result.outputFiles.map((filePath) => path.basename(filePath))).toEqual([...outputNames]);
     });
 
@@ -1462,10 +1463,99 @@ describe("extractor", () => {
         }
       })).rejects.toThrow("aborted:extract");
 
-      expect(events).toHaveLength(1);
-      expect(events[0]).toEqual(expect.objectContaining({ state: "complete", outputPath: path.join(targetDir, "first.txt") }));
+      expect(events.map((event) => event.state)).toEqual(["opened", "complete"]);
+      expect(events[1]).toEqual(expect.objectContaining({ state: "complete", outputPath: path.join(targetDir, "first.txt") }));
       expect(fs.existsSync(path.join(targetDir, "first.txt"))).toBe(true);
       expect(fs.existsSync(path.join(targetDir, "second.txt"))).toBe(false);
+    });
+
+    it("emits opened before writing and complete only after the internal ZIP write", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-output-lifecycle-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(packageDir, { recursive: true });
+      const archivePath = path.join(packageDir, "release.zip");
+      const zip = new AdmZip();
+      zip.addFile("episode.mkv", Buffer.from("video"));
+      zip.writeZip(archivePath);
+      const states: string[] = [];
+
+      const result = await extractPackageArchives({
+        packageDir,
+        targetDir,
+        cleanupMode: "none",
+        conflictMode: "overwrite",
+        removeLinks: false,
+        removeSamples: false,
+        onOutput: (event) => states.push(event.state)
+      });
+
+      expect(result.failed).toBe(0);
+      expect(states).toEqual(["opened", "complete"]);
+      expect(fs.readFileSync(path.join(targetDir, "episode.mkv"), "utf8")).toBe("video");
+    });
+
+    it("rejects an internal ZIP target behind a junction before changing it", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-output-junction-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      const targetDir = path.join(root, "out");
+      const realDir = path.join(targetDir, "real");
+      const linkedDir = path.join(targetDir, "linked");
+      fs.mkdirSync(packageDir, { recursive: true });
+      fs.mkdirSync(realDir, { recursive: true });
+      try {
+        fs.symlinkSync(realDir, linkedDir, process.platform === "win32" ? "junction" : "dir");
+      } catch {
+        return;
+      }
+      const protectedPath = path.join(realDir, "protected.txt");
+      fs.writeFileSync(protectedPath, "foreign");
+      const zip = new AdmZip();
+      zip.addFile("linked/protected.txt", Buffer.from("package"));
+      zip.writeZip(path.join(packageDir, "release.zip"));
+
+      const result = await extractPackageArchives({
+        packageDir,
+        targetDir,
+        cleanupMode: "none",
+        conflictMode: "overwrite",
+        removeLinks: false,
+        removeSamples: false
+      });
+
+      expect(result.extracted).toBe(0);
+      expect(result.failed).toBe(1);
+      expect(fs.readFileSync(protectedPath, "utf8")).toBe("foreign");
+    });
+
+    it("aborts an internal ZIP entry callback failure before opening the target", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-output-callback-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(packageDir, { recursive: true });
+      const zip = new AdmZip();
+      zip.addFile("episode.mkv", Buffer.from("video"));
+      zip.writeZip(path.join(packageDir, "release.zip"));
+
+      const result = await extractPackageArchives({
+        packageDir,
+        targetDir,
+        cleanupMode: "none",
+        conflictMode: "overwrite",
+        removeLinks: false,
+        removeSamples: false,
+        onOutput: () => {
+          throw new Error("output-callback-failed");
+        }
+      });
+
+      expect(result.extracted).toBe(0);
+      expect(result.failed).toBe(1);
+      expect(result.lastError).toContain("output-callback-failed");
+      expect(fs.existsSync(path.join(targetDir, "episode.mkv"))).toBe(false);
     });
 
     it("strictly parses native output paths and fails closed for ambiguous rename output", () => {
@@ -1492,6 +1582,19 @@ describe("extractor", () => {
       expect(parseNativeExtractOutput("7z.exe", "- episode.mkv", archivePath, targetDir, "rename")).toEqual([]);
       expect(parseNativeExtractOutput("7z.exe", "- episode (1).mkv", archivePath, targetDir, "rename")).toEqual([
         expect.objectContaining({ outputPath: renamedPath, disposition: "renamed" })
+      ]);
+    });
+
+    it.each(["Entpacke", "Extrayendo", "Extraction"])("parses verified native RAR candidates without depending on the %s locale verb", (verb) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-native-locale-"));
+      tempDirs.push(root);
+      const targetDir = path.join(root, "out");
+      const outputPath = path.join(targetDir, "episode.mkv");
+      fs.mkdirSync(targetDir, { recursive: true });
+      fs.writeFileSync(outputPath, "video");
+
+      expect(parseNativeExtractOutput("UnRAR.exe", `${verb}  ${outputPath}  OK`, path.join(root, "archive.rar"), targetDir, "overwrite")).toEqual([
+        expect.objectContaining({ outputPath, entryPath: "episode.mkv" })
       ]);
     });
 

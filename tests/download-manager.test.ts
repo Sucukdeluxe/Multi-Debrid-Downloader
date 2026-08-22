@@ -28,6 +28,20 @@ import type { AppSettings, DownloadItem, HistoryEntry, PackageEntry } from "../s
 const tempDirs: string[] = [];
 const originalFetch = globalThis.fetch;
 
+function writePackageOutputOwnerMarker(pkg: PackageEntry): void {
+  const ownerId = crypto.randomUUID().toLowerCase();
+  const generation = Math.max(1, Number(pkg.resultGeneration || 1));
+  pkg.outputOwnerId = ownerId;
+  pkg.outputOwnerGeneration = generation;
+  fs.mkdirSync(pkg.extractDir, { recursive: true });
+  fs.writeFileSync(path.join(pkg.extractDir, ".rd-package-output-owner-v1.json"), JSON.stringify({
+    version: 1,
+    packageId: pkg.id,
+    generation,
+    ownerId
+  }));
+}
+
 describe("runWithLimitedConcurrency", () => {
   it("processes the full batch without exceeding the configured worker count", async () => {
     let active = 0;
@@ -6760,7 +6774,6 @@ describe("download manager", () => {
       createdAt,
       updatedAt: createdAt
     };
-
     const manager = new DownloadManager(
       {
         ...defaultSettings(),
@@ -11605,6 +11618,7 @@ describe("download manager", () => {
       createdAt,
       updatedAt: createdAt
     };
+    writePackageOutputOwnerMarker(session.packages[packageId]);
 
     const manager = new DownloadManager(
       {
@@ -11716,6 +11730,7 @@ describe("download manager", () => {
     fs.writeFileSync(path.join(extractDir, "Season 1", "episode.links.txt"), "https://example.com/file", "utf8");
     fs.writeFileSync(path.join(extractDir, "Season 1", "sample", "sample.mkv"), "sample-video", "utf8");
     fs.writeFileSync(path.join(extractDir, "Season 1", "sample", "readme.txt"), "sample-text", "utf8");
+    writePackageOutputOwnerMarker(session.packages[packageId]);
 
     const mkvLibraryDir = path.join(root, "mkv-library");
     const manager = new DownloadManager(
@@ -11767,6 +11782,7 @@ describe("download manager", () => {
     session.items[itemId].fullStatus = "Entpackt - Done (<1s)";
     fs.mkdirSync(extractDir, { recursive: true });
     fs.writeFileSync(originalExtractedPath, "video", "utf8");
+    writePackageOutputOwnerMarker(session.packages[packageId]);
 
     const manager = new DownloadManager(
       {
@@ -12676,6 +12692,7 @@ describe("download manager", () => {
       createdAt,
       updatedAt: createdAt
     };
+    writePackageOutputOwnerMarker(session.packages[packageId]);
 
     const mkvLibraryDir = path.join(root, "mkv-library");
     const manager = new DownloadManager(
@@ -12738,6 +12755,7 @@ describe("download manager", () => {
       createdAt,
       updatedAt: createdAt
     };
+    writePackageOutputOwnerMarker(session.packages[packageId]);
 
     const mkvLibraryDir = path.join(root, "mkv-library");
     const manager = new DownloadManager(
@@ -12853,6 +12871,7 @@ describe("download manager", () => {
       createdAt,
       updatedAt: createdAt
     };
+    writePackageOutputOwnerMarker(session.packages[packageId]);
 
     const mkvLibraryDir = path.join(root, "mkv-library");
     const manager = new DownloadManager(
@@ -12908,6 +12927,7 @@ describe("download manager", () => {
       createdAt,
       updatedAt: createdAt
     };
+    writePackageOutputOwnerMarker(session.packages[packageId]);
 
     const mkvLibraryDir = path.join(root, "mkv-library");
     const manager = new DownloadManager(
@@ -12968,6 +12988,7 @@ describe("download manager", () => {
       createdAt,
       updatedAt: createdAt
     };
+    writePackageOutputOwnerMarker(session.packages[packageId]);
 
     const mkvLibraryDir = path.join(root, "mkv-library");
     const manager = new DownloadManager(
@@ -13025,6 +13046,7 @@ describe("download manager", () => {
       createdAt,
       updatedAt: createdAt
     };
+    writePackageOutputOwnerMarker(session.packages[packageId]);
 
     const mkvLibraryDir = path.join(root, "mkv-library");
     const manager = new DownloadManager(
@@ -13278,9 +13300,6 @@ describe("download manager", () => {
       "Ugly.Americans.S01E01.German.mkv",
       "Ugly.Americans.S01E02.German.mkv"
     ];
-    for (const mkv of s01Mkvs) {
-      fs.writeFileSync(path.join(extractDir, mkv), Buffer.alloc(4096, 9));
-    }
 
     const session = emptySession();
     const packageId = `${packageName}-pkg`;
@@ -13317,6 +13336,18 @@ describe("download manager", () => {
       createStoragePaths(path.join(root, "state"))
     );
 
+    expect(await (manager as any).ensurePackageOutputOwnerMarker(session.packages[packageId])).toBe(true);
+    const ownerMarkerPath = path.join(extractDir, ".rd-package-output-owner-v1.json");
+    const ownerMarker = JSON.parse(fs.readFileSync(ownerMarkerPath, "utf8"));
+    expect(ownerMarker).toEqual(expect.objectContaining({
+      version: 1,
+      packageId,
+      generation: 1,
+      ownerId: session.packages[packageId].outputOwnerId
+    }));
+    for (const mkv of s01Mkvs) {
+      fs.writeFileSync(path.join(extractDir, mkv), Buffer.alloc(4096, 9));
+    }
     await (manager as any).collectMkvFilesToLibrary(packageId, session.packages[packageId]);
 
     for (const mkv of s01Mkvs) {
@@ -13372,6 +13403,52 @@ describe("download manager", () => {
     expect(fs.existsSync(foreignPath)).toBe(true);
     expect(fs.existsSync(path.join(libraryDir, "foreign.mkv"))).toBe(false);
     expect(session.packages["package-a"].outputRecords).toEqual([]);
+  });
+
+  it("does not adopt foreign files from a reused package-name directory without its generation owner marker", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-reused-owner-"));
+    tempDirs.push(root);
+    const packageName = "reused-package";
+    const extractDir = path.join(root, "extract", packageName);
+    const libraryDir = path.join(root, "library");
+    fs.mkdirSync(extractDir, { recursive: true });
+    const foreignPath = path.join(extractDir, "foreign.mkv");
+    fs.writeFileSync(foreignPath, "foreign");
+    const session = emptySession();
+    const packageId = "reused-package-id";
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: packageName,
+      outputDir: path.join(root, "downloads", packageName),
+      extractDir,
+      status: "completed",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      outputProvenanceVersion: 1,
+      outputRecords: [],
+      createdAt: 1_000,
+      updatedAt: 1_000
+    };
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        autoExtract: true,
+        createExtractSubfolder: true,
+        collectMkvToLibrary: true,
+        mkvLibraryDir: libraryDir
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await (manager as any).collectMkvFilesToLibrary(packageId, session.packages[packageId]);
+
+    expect(fs.existsSync(foreignPath)).toBe(true);
+    expect(fs.existsSync(path.join(libraryDir, "foreign.mkv"))).toBe(false);
+    expect(session.packages[packageId].outputRecords).toEqual([]);
+    expect(fs.existsSync(path.join(extractDir, ".rd-package-output-owner-v1.json"))).toBe(false);
   });
 
   it("does NOT move bonus files from Extras subdirectory to flat library", async () => {
