@@ -61,6 +61,7 @@ export function createVisualElectronApi(
     addContainers: async () => ({ addedPackages: 0, addedLinks: 0 }),
     inspectCollectorText: async () => clone(fixture.collector),
     inspectCollectorContainers: async () => clone(fixture.collector),
+    getPathForDroppedFile: () => "",
     getStartConflicts: async () => [],
     resolveStartConflict: async (_packageId, policy) => ({
       skipped: policy === "skip",

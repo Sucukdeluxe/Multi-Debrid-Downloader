@@ -100,6 +100,21 @@ describe("collector inspection", () => {
     }));
   });
 
+  it("returns visible unknown links when metadata analysis reaches its deadline", async () => {
+    const link = "https://1fichier.com/?slow123";
+    const result = await inspectCollectorText({ rawText: link, addedAt: 3200 }, defaultSettings(), {
+      checkOneFichier: async () => new Promise(() => {}),
+      inspectionTimeoutMs: 10
+    });
+
+    expect(result.packages).toHaveLength(1);
+    expect(result.packages[0].links).toEqual([expect.objectContaining({
+      url: link,
+      availability: "unknown",
+      status: "unknown"
+    })]);
+  });
+
   it("resolves DDownload metadata before grouping without using a debrid account", async () => {
     const link = "https://ddownload.com/ntwscdw62gyb";
     let genericResolverCalls = 0;

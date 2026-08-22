@@ -4,7 +4,8 @@ import type { ElectronApi } from "../src/shared/preload-api";
 
 const electron = vi.hoisted(() => ({
   api: undefined as ElectronApi | undefined,
-  invoke: vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => undefined)
+  invoke: vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => undefined),
+  getPathForFile: vi.fn(() => "C:\\Imports\\dropped.dlc")
 }));
 
 vi.mock("electron", () => ({
@@ -18,7 +19,8 @@ vi.mock("electron", () => ({
     on: vi.fn(),
     removeListener: vi.fn(),
     send: vi.fn()
-  }
+  },
+  webUtils: { getPathForFile: electron.getPathForFile }
 }));
 
 describe("account preload contract", () => {
@@ -121,5 +123,13 @@ describe("account preload contract", () => {
       [IPC_CHANNELS.INSPECT_COLLECTOR_TEXT, { rawText: "https://1fichier.com/?abc12345", addedAt: 1234 }],
       [IPC_CHANNELS.INSPECT_COLLECTOR_CONTAINERS, ["C:\\Imports\\sample.dlc"], 5678]
     ]);
+  });
+
+  it("resolves dropped files through Electron webUtils without IPC", () => {
+    const file = { name: "dropped.dlc" } as File;
+
+    expect(electron.api?.getPathForDroppedFile(file)).toBe("C:\\Imports\\dropped.dlc");
+    expect(electron.getPathForFile).toHaveBeenCalledWith(file);
+    expect(electron.invoke).not.toHaveBeenCalled();
   });
 });

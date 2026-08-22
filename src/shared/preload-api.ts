@@ -82,6 +82,7 @@ export interface ElectronApi {
   addContainers: (filePaths: string[]) => Promise<{ addedPackages: number; addedLinks: number }>;
   inspectCollectorText: (request: CollectorInspectionRequest) => Promise<CollectorInspectionResult>;
   inspectCollectorContainers: (filePaths: string[], addedAt: number) => Promise<CollectorInspectionResult>;
+  getPathForDroppedFile: (file: File) => string;
   getStartConflicts: () => Promise<StartConflictEntry[]>;
   resolveStartConflict: (packageId: string, policy: DuplicatePolicy) => Promise<StartConflictResolutionResult>;
   clearAll: () => Promise<void>;

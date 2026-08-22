@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import {
   AddLinksPayload,
   AccountCheckScope,
@@ -56,6 +56,7 @@ const api: ElectronApi = {
     ipcRenderer.invoke(IPC_CHANNELS.INSPECT_COLLECTOR_TEXT, request),
   inspectCollectorContainers: (filePaths: string[], addedAt: number): Promise<CollectorInspectionResult> =>
     ipcRenderer.invoke(IPC_CHANNELS.INSPECT_COLLECTOR_CONTAINERS, filePaths, addedAt),
+  getPathForDroppedFile: (file: File): string => webUtils.getPathForFile(file),
   getStartConflicts: (): Promise<StartConflictEntry[]> => ipcRenderer.invoke(IPC_CHANNELS.GET_START_CONFLICTS),
   resolveStartConflict: (packageId: string, policy: DuplicatePolicy): Promise<StartConflictResolutionResult> =>
     ipcRenderer.invoke(IPC_CHANNELS.RESOLVE_START_CONFLICT, packageId, policy),

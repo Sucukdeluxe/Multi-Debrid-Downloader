@@ -49,6 +49,7 @@ import type { AccountEditState, AccountEditTarget, AccountKind, AccountService, 
 import { ACCOUNT_SERVICE_ICONS } from "./account-service-icons";
 import { DOWNLOAD_SPEED_MAX_SAMPLES, updateDownloadSpeedHistory } from "./download-speed-state";
 import { createUiLocalizer, normalizeLanguage } from "./i18n";
+import { importDroppedDlcFiles } from "./collector-drop";
 import { runLocalBackupExport, runLocalBackupImport, type BackupPassphraseMode } from "./backup-flow";
 import type { DownloadSpeedHistoryState } from "./download-speed-state";
 import { extractHoster, formatDateTime, formatSpeedMbps, humanSize, providerLabels } from "./download-format";
@@ -3649,11 +3650,20 @@ export function App(): ReactElement {
     const hasUri = event.dataTransfer.types.includes("text/uri-list");
     if (!hasFiles && !hasUri) { return; }
     const files = Array.from(event.dataTransfer.files ?? []) as File[];
-    const dlc = files.filter((f) => f.name.toLowerCase().endsWith(".dlc")).map((f) => (f as unknown as { path?: string }).path).filter((v): v is string => !!v);
+    const dlcFiles = files.filter((file) => file.name.toLowerCase().endsWith(".dlc"));
     const importFiles = files.filter((f) => /\.(json|txt)$/i.test(f.name));
     const droppedText = event.dataTransfer.getData("text/plain") || event.dataTransfer.getData("text/uri-list") || "";
-    if (dlc.length > 0) {
-      await enqueueCollectorInspection(() => window.rd.inspectCollectorContainers(dlc, Date.now()));
+    if (dlcFiles.length > 0) {
+      await performQuickAction(async () => {
+        const existingIds = new Set(Object.keys(snapshotRef.current.session.packages));
+        const result = await importDroppedDlcFiles(dlcFiles, window.rd.getPathForDroppedFile, window.rd.addContainers);
+        if (!result || result.addedLinks === 0) throw new Error("Keine gültigen Links in der DLC-Datei gefunden");
+        setTab("downloads");
+        showToast(`Importiert: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
+        if (snapshotRef.current.settings.collapseNewPackages) await collapseNewPackages(existingIds);
+      }, (error) => {
+        showToast(`DLC-Import fehlgeschlagen: ${String(error)}`, 3000);
+      });
     } else if (importFiles.length > 0) {
       const { queueJson, linkText } = await readCollectorImportFiles(importFiles);
       await importQueueJsonTexts(queueJson);

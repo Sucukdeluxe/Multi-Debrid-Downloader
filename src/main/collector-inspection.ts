@@ -14,6 +14,7 @@ interface CollectorInspectionDependencies {
   checkRapidgator?: typeof checkRapidgatorOnline;
   resolveFilenames?: (links: string[]) => Promise<Map<string, string>>;
   createId?: (prefix: "package" | "link") => string;
+  inspectionTimeoutMs?: number;
 }
 
 interface SourceLink {
@@ -62,6 +63,17 @@ async function runWithConcurrency<T>(items: T[], limit: number, worker: (item: T
     }
   });
   await Promise.all(runners);
+}
+
+async function waitForCollectorMetadata(tasks: Promise<unknown>[], timeoutMs: number): Promise<void> {
+  const all = Promise.all(tasks).then(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, Math.max(1, timeoutMs));
+    timer.unref?.();
+  });
+  await Promise.race([all, timeout]);
+  if (timer) clearTimeout(timer);
 }
 
 function countInputLines(rawText: string): { invalidCount: number; duplicateCount: number } {
@@ -172,7 +184,11 @@ export async function inspectCollectorPackages(
   const checkRapidgator = dependencies.checkRapidgator ?? checkRapidgatorOnline;
   const resolveFilenames = dependencies.resolveFilenames ?? ((urls) => new DebridService(settings).resolveFilenames(urls));
 
-  const oneFichierPromise = checkOneFichier(oneFichierLinks).catch(() => new Map<string, OneFichierCheckResult>());
+  let oneFichierResults = new Map<string, OneFichierCheckResult>();
+  let genericResults = new Map<string, string>();
+  const oneFichierPromise = checkOneFichier(oneFichierLinks)
+    .then((results) => { oneFichierResults = results; })
+    .catch(() => undefined);
   const rapidgatorPromise = runWithConcurrency(rapidgatorLinks, 8, async (url) => {
     const result = await checkRapidgator(url).catch(() => null);
     const link = linksByUrl.get(url);
@@ -192,10 +208,13 @@ export async function inspectCollectorPackages(
     if (result.fileSizeBytes !== null && result.fileSizeBytes >= 0) link.fileSizeBytes = result.fileSizeBytes;
   });
   const genericPromise = genericLinks.length > 0
-    ? resolveFilenames(genericLinks).catch(() => new Map<string, string>())
-    : Promise.resolve(new Map<string, string>());
+    ? resolveFilenames(genericLinks).then((results) => { genericResults = results; }).catch(() => undefined)
+    : Promise.resolve();
 
-  const [oneFichierResults, genericResults] = await Promise.all([oneFichierPromise, genericPromise, rapidgatorPromise, ddownloadPromise]).then(([one, generic]) => [one, generic] as const);
+  await waitForCollectorMetadata(
+    [oneFichierPromise, genericPromise, rapidgatorPromise, ddownloadPromise],
+    dependencies.inspectionTimeoutMs ?? 30_000
+  );
   for (const [url, result] of oneFichierResults) {
     const link = linksByUrl.get(url);
     if (!link) continue;
