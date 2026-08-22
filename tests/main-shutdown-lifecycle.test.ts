@@ -7,6 +7,7 @@ const electron = vi.hoisted(() => {
   const handlers = new Map<string, (...args: unknown[]) => void>();
   return {
     handlers,
+    nativeTheme: { themeSource: "system" },
     app: {
       isPackaged: false,
       getPath: vi.fn(() => "C:\\MDD\\Test"),
@@ -30,6 +31,7 @@ vi.mock("electron", () => ({
   dialog: {},
   ipcMain: { handle: vi.fn(), on: vi.fn() },
   Menu: { buildFromTemplate: vi.fn(), setApplicationMenu: vi.fn() },
+  nativeTheme: electron.nativeTheme,
   safeStorage: { isEncryptionAvailable: () => false, encryptString: vi.fn(), decryptString: vi.fn() },
   shell: { openExternal: vi.fn() },
   Tray: class {}
@@ -255,6 +257,7 @@ describe("main shutdown lifecycle", () => {
 
   it("prevents quit once, waits for shutdown, then allows exactly one loop-free quit", async () => {
     const main = await import("../src/main/main");
+    expect(electron.nativeTheme.themeSource).toBe("dark");
     const shutdown = deferred();
     const cleanup = vi.fn();
     const continueQuit = vi.fn();
