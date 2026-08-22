@@ -296,6 +296,23 @@ describe("NotificationOutbox", () => {
     }
   });
 
+  it("retries a transient Windows rename failure before persisting", async () => {
+    const filePath = createOutboxFile();
+    const actualRename = fsp.rename;
+    const rename = vi.spyOn(fsp, "rename")
+      .mockRejectedValueOnce(Object.assign(new Error("locked"), { code: "EPERM" }))
+      .mockImplementation((oldPath, newPath) => actualRename(oldPath, newPath));
+    try {
+      const outbox = new NotificationOutbox({ filePath, now: () => 1000, send: async () => true });
+      await outbox.enqueue(event("rename-retry"));
+
+      expect(rename).toHaveBeenCalledTimes(2);
+      expect(persisted(filePath).events.map((queuedEvent) => queuedEvent.id)).toEqual(["rename-retry"]);
+    } finally {
+      rename.mockRestore();
+    }
+  });
+
   it("persists a cleaned empty legacy file atomically during load", () => {
     const filePath = createOutboxFile();
     const rename = vi.spyOn(fs, "renameSync");
@@ -326,6 +343,26 @@ describe("NotificationOutbox", () => {
     expect(rename).toHaveBeenCalledWith(`${filePath}.tmp`, filePath);
     expect(fs.existsSync(`${filePath}.tmp`)).toBe(false);
     rename.mockRestore();
+  });
+
+  it("retries a transient synchronous Windows rename failure during load", () => {
+    const filePath = createOutboxFile();
+    fs.writeFileSync(filePath, JSON.stringify({ version: 1, events: [], lastSuccessAt: 0, lastFailureAt: 0 }), "utf8");
+    const actualRenameSync = fs.renameSync;
+    const rename = vi.spyOn(fs, "renameSync")
+      .mockImplementationOnce(() => {
+        throw Object.assign(new Error("locked"), { code: "EBUSY" });
+      })
+      .mockImplementation((oldPath, newPath) => actualRenameSync(oldPath, newPath));
+    try {
+      const outbox = new NotificationOutbox({ filePath, send: async () => true, now: () => 1000 });
+
+      expect(outbox.getStatus().queued).toBe(0);
+      expect(rename).toHaveBeenCalledTimes(2);
+      expect(fs.existsSync(`${filePath}.tmp`)).toBe(false);
+    } finally {
+      rename.mockRestore();
+    }
   });
 
   it("drops expired events before persisting or sending", async () => {

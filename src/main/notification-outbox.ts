@@ -160,6 +160,41 @@ function retryDelayMs(attempts: number): number {
   return Math.min(MAX_RETRY_DELAY_MS, 1000 * (2 ** Math.min(30, Math.max(0, attempts - 1))));
 }
 
+const RENAME_RETRY_DELAYS_MS = [15, 40, 90, 180];
+
+function isTransientRenameError(error: unknown): boolean {
+  const code = String((error as NodeJS.ErrnoException)?.code || "");
+  return code === "EPERM" || code === "EACCES" || code === "EBUSY";
+}
+
+async function renameWithRetry(oldPath: string, newPath: string): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await fsp.rename(oldPath, newPath);
+      return;
+    } catch (error) {
+      if (!isTransientRenameError(error) || attempt >= RENAME_RETRY_DELAYS_MS.length) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, RENAME_RETRY_DELAYS_MS[attempt]));
+    }
+  }
+}
+
+function renameSyncWithRetry(oldPath: string, newPath: string): void {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      fs.renameSync(oldPath, newPath);
+      return;
+    } catch (error) {
+      if (!isTransientRenameError(error) || attempt >= RENAME_RETRY_DELAYS_MS.length) {
+        throw error;
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, RENAME_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+}
+
 export class NotificationOutbox {
   private events: NotificationEvent[] = [];
   private lastSuccessAt = 0;
@@ -374,7 +409,7 @@ export class NotificationOutbox {
     };
     try {
       await fsp.writeFile(tempPath, JSON.stringify(state), "utf8");
-      await fsp.rename(tempPath, this.filePath);
+      await renameWithRetry(tempPath, this.filePath);
     } catch (error) {
       await fsp.rm(tempPath, { force: true }).catch(() => {});
       throw error;
@@ -393,7 +428,7 @@ export class NotificationOutbox {
     };
     try {
       fs.writeFileSync(tempPath, JSON.stringify(state), "utf8");
-      fs.renameSync(tempPath, this.filePath);
+      renameSyncWithRetry(tempPath, this.filePath);
     } catch (error) {
       try {
         fs.rmSync(tempPath, { force: true });
