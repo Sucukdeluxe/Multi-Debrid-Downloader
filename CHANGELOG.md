@@ -2,6 +2,12 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.57] - 2026-08-22
+
+### Window appearance
+
+- Force the native Electron window theme to dark so the Windows title bar remains black across local, server, and Remote Desktop user profiles.
+
 ## [2.0.56] - 2026-08-22
 
 ### Notification Center
