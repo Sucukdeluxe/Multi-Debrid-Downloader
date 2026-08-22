@@ -12265,7 +12265,25 @@ export class DownloadManager extends EventEmitter {
       pkg.outputProvenance = [];
       pkg.cleanupErrorCategory = "";
     }
+    this.pruneFinalizedPackageResults();
     return next;
+  }
+
+  private pruneFinalizedPackageResults(): void {
+    const retained = new Set(this.standalonePackageResults);
+    for (const context of this.runContexts.values()) {
+      for (const [packageId, generation] of context.packageGenerations) {
+        retained.add(this.packageResultKey(packageId, generation));
+      }
+    }
+    for (const pkg of Object.values(this.session.packages)) {
+      retained.add(this.packageResultKey(pkg.id, this.getPackageResultGeneration(pkg.id)));
+    }
+    for (const key of this.finalizedPackageResults.keys()) {
+      if (!retained.has(key)) {
+        this.finalizedPackageResults.delete(key);
+      }
+    }
   }
 
   private createRunContext(packageIds: Iterable<string>, startedAt: number, downloadsFinished: boolean): RunLifecycleContext {
@@ -12654,12 +12672,8 @@ export class DownloadManager extends EventEmitter {
         this.queueNotificationEvent(buildRunNotificationEvent(result));
       }
       this.runContexts.delete(context.id);
-      for (const [packageId, generation] of context.packageGenerations) {
-        if (!this.session.packages[packageId] && !this.isPackageResultTracked(packageId, generation)) {
-          this.finalizedPackageResults.delete(this.packageResultKey(packageId, generation));
-        }
-      }
     }
+    this.pruneFinalizedPackageResults();
   }
 
   private refreshPackageStatus(pkg: PackageEntry): void {
@@ -13051,11 +13065,18 @@ export class DownloadManager extends EventEmitter {
     }
     const completedAt = nowMs();
     const durationMs = Math.max(0, Math.floor(Number(progress.elapsedMs) || 0));
+    const itemIds = [...new Set(items.map((item) => item.id))];
+    const itemProvenance = items
+      .map((item) => String(item.targetPath || item.id).replace(/\\/g, "/").toLocaleLowerCase("de-DE"))
+      .sort();
+    const archiveIdentity = itemProvenance.length > 0
+      ? itemProvenance.join("|")
+      : `${progress.archiveName.toLocaleLowerCase("de-DE")}:${Math.max(0, Math.floor(progress.current))}`;
     const operation: ArchiveOperationMetric = {
-      id: `${pkg.id}:${progress.archiveName.toLocaleLowerCase("de-DE")}`,
+      id: `${pkg.id}:${createHash("sha256").update(archiveIdentity).digest("hex").slice(0, 24)}`,
       name: progress.archiveName,
-      itemIds: [...new Set(items.map((item) => item.id))],
-      partCount: Math.max(1, items.length),
+      itemIds,
+      partCount: itemIds.length,
       startedAt: Math.max(0, completedAt - durationMs),
       completedAt,
       durationMs,

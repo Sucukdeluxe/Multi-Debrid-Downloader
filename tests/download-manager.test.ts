@@ -15114,6 +15114,65 @@ describe("package priority ordering", () => {
 });
 
 describe("package lifecycle telemetry boundaries", () => {
+  it("uses item-path provenance for archive identity and leaves unknown part counts at zero", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-archive-identity-"));
+    tempDirs.push(root);
+    const session = emptySession();
+    const manager = new DownloadManager(defaultSettings(), session, createStoragePaths(path.join(root, "state")));
+    const pkg: PackageEntry = {
+      id: "archive-identity-package",
+      name: "Archive identity",
+      outputDir: path.join(root, "downloads"),
+      extractDir: path.join(root, "extract"),
+      status: "completed" as const,
+      itemIds: ["item-a", "item-b"],
+      cancelled: false,
+      enabled: true,
+      createdAt: 1_000,
+      updatedAt: 1_000
+    };
+    const item = (id: string, directory: string) => ({
+      id,
+      packageId: pkg.id,
+      url: `https://example.test/${id}`,
+      provider: "realdebrid" as const,
+      status: "completed" as const,
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 1,
+      totalBytes: 1,
+      progressPercent: 100,
+      fileName: "episode.rar",
+      targetPath: path.join(pkg.outputDir, directory, "episode.rar"),
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Fertig",
+      createdAt: 1_000,
+      updatedAt: 1_000
+    });
+    const progress = (current: number) => ({
+      current,
+      total: 3,
+      percent: 100,
+      archiveName: "episode.rar",
+      archivePercent: 100,
+      elapsedMs: 1_000,
+      archiveDone: true,
+      archiveSuccess: true
+    });
+    const state = manager as any;
+
+    state.recordArchiveOperation(pkg, progress(0), [item("item-a", "season-a")]);
+    state.recordArchiveOperation(pkg, progress(1), [item("item-b", "season-b")]);
+    state.recordArchiveOperation(pkg, { ...progress(2), archiveName: "unresolved.rar" }, []);
+
+    const operations = pkg.archiveOperations || [];
+    expect(operations).toHaveLength(3);
+    expect(new Set(operations.map((operation) => operation.id))).toHaveLength(3);
+    expect(operations.map((operation) => operation.partCount)).toEqual([1, 1, 0]);
+  });
+
   it("records queued, slot start and terminal timestamps around real post-processing", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-lifecycle-boundaries-"));
     tempDirs.push(root);

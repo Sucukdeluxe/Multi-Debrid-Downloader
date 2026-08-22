@@ -348,6 +348,30 @@ describe("authoritative package completion", () => {
     expect(events.map((event) => event.type)).toEqual(["package_completed"]);
     expect(events[0].payload.title).toContain("Paket-Digest");
   });
+
+  it.each([
+    ["digest", 4],
+    ["individual", 80]
+  ] as const)("delivers 80 successful packages in %s mode without loss", async (mode, expectedEvents) => {
+    const { manager, session, events } = setup({ notifyPackageSuccessMode: mode });
+    const state = internal(manager);
+    for (let index = 0; index < 80; index += 1) {
+      const pkg = addPackage(session, ["completed"], `bulk-package-${String(index).padStart(2, "0")}`);
+      state.runPackageIds.add(pkg.id);
+      state.tryFinalizePackageResult(pkg.id);
+    }
+    if (mode === "digest") {
+      state.flushPackageSuccessDigest();
+    }
+    await state.notificationEnqueueChain;
+
+    expect(events).toHaveLength(expectedEvents);
+    expect(new Set(events.map((event) => event.id))).toHaveLength(expectedEvents);
+    if (mode === "digest") {
+      expect(events.map((event) => event.payload.fields.length)).toEqual([20, 20, 20, 20]);
+      expect(events.every((event) => event.payload.description === "80 Pakete abgeschlossen")).toBe(true);
+    }
+  });
 });
 
 describe("authoritative run completion", () => {
@@ -595,6 +619,7 @@ describe("authoritative run completion", () => {
     expect(completedRun?.payload.fields.some((field) => field.name === "Dateien" && field.value === "1 erfolgreich · 0 fehlgeschlagen · 0 abgebrochen")).toBe(true);
     expect(history).toHaveLength(1);
     expect(history[0].id).toBe(`hist-${pkg.id}-2`);
+    expect([...state.finalizedPackageResults.keys()].filter((key) => key.startsWith(`${pkg.id}:`))).toEqual([`${pkg.id}:2`]);
   });
 
   it("tracks a main postprocess task created by triggerPendingExtractions after start begins", async () => {
