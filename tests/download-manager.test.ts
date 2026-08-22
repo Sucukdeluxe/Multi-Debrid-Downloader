@@ -15114,6 +15114,51 @@ describe("package priority ordering", () => {
 });
 
 describe("package lifecycle telemetry boundaries", () => {
+  it("serializes provenance capture for packages sharing one extract directory", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-output-provenance-lock-"));
+    tempDirs.push(root);
+    const extractDir = path.join(root, "extract");
+    fs.mkdirSync(extractDir, { recursive: true });
+    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(root, "state")));
+    const createPackage = (id: string): PackageEntry => ({
+      id,
+      name: id,
+      outputDir: path.join(root, "downloads", id),
+      extractDir,
+      status: "completed",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      createdAt: 1_000,
+      updatedAt: 1_000
+    });
+    const packageA = createPackage("package-a");
+    const packageB = createPackage("package-b");
+    let releaseA!: () => void;
+    const gateA = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
+    let enteredB = false;
+    const state = manager as any;
+
+    const first = state.runWithPackageOutputProvenance(packageA, async () => {
+      fs.writeFileSync(path.join(extractDir, "package-a.mkv"), "a");
+      await gateA;
+    });
+    await vi.waitFor(() => expect(fs.existsSync(path.join(extractDir, "package-a.mkv"))).toBe(true));
+    const second = state.runWithPackageOutputProvenance(packageB, async () => {
+      enteredB = true;
+      fs.writeFileSync(path.join(extractDir, "package-b.mkv"), "b");
+    });
+    await Promise.resolve();
+
+    expect(enteredB).toBe(false);
+    releaseA();
+    await Promise.all([first, second]);
+    expect(packageA.outputCount).toBe(1);
+    expect(packageB.outputCount).toBe(1);
+  });
+
   it("uses item-path provenance for archive identity and leaves unknown part counts at zero", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-archive-identity-"));
     tempDirs.push(root);
