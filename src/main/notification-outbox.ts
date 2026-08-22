@@ -173,6 +173,7 @@ export class NotificationOutbox {
   private retryTimer: NodeJS.Timeout | null = null;
   private shutdownRequested = false;
   private drainOperation: Promise<void> | null = null;
+  private inFlightEvent: NotificationEvent | null = null;
 
   public constructor(options: NotificationOutboxOptions) {
     this.filePath = options.filePath;
@@ -257,6 +258,7 @@ export class NotificationOutbox {
           }
           return null;
         }
+        this.inFlightEvent = next;
         return next;
       });
       if (!current) {
@@ -270,7 +272,8 @@ export class NotificationOutbox {
       }
       const outcomeAt = finiteInteger(this.clock(), currentNow);
       const delivered = await this.runExclusive(async () => {
-        const index = this.events.findIndex((event) => event.id === current.id);
+        const index = this.events.indexOf(current);
+        this.inFlightEvent = null;
         if (index < 0) {
           return false;
         }
@@ -346,10 +349,15 @@ export class NotificationOutbox {
   }
 
   private enforceLimits(now: number): void {
-    this.events = this.events.filter((event) => event.expiresAt > now);
+    this.events = this.events.filter((event) => event === this.inFlightEvent || event.expiresAt > now);
     while (this.events.length > MAX_EVENTS) {
-      const successIndex = oldestIndex(this.events, (event) => event.priority === "success");
-      const removeIndex = successIndex >= 0 ? successIndex : oldestIndex(this.events, () => true);
+      const successIndex = oldestIndex(this.events, (event) => event !== this.inFlightEvent && event.priority === "success");
+      const removeIndex = successIndex >= 0
+        ? successIndex
+        : oldestIndex(this.events, (event) => event !== this.inFlightEvent);
+      if (removeIndex < 0) {
+        break;
+      }
       this.events.splice(removeIndex, 1);
     }
   }

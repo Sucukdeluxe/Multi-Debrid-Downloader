@@ -579,6 +579,78 @@ describe("NotificationOutbox", () => {
     expect(stateBeforeRelease.events.map((queuedEvent) => queuedEvent.id)).toContain("late-digest");
   });
 
+  it("acknowledges a successful in-flight delivery after a parallel enqueue expires it", async () => {
+    const filePath = createOutboxFile();
+    let now = 1000;
+    let releaseSend = (_sent: boolean) => {};
+    let markSendStarted = () => {};
+    const sendStarted = new Promise<void>((resolve) => { markSendStarted = resolve; });
+    const sendResult = new Promise<boolean>((resolve) => { releaseSend = resolve; });
+    const delivered: Array<{ id: string; deliveredAt: number }> = [];
+    const outbox = new NotificationOutbox({
+      filePath,
+      now: () => now,
+      send: async () => {
+        markSendStarted();
+        return sendResult;
+      },
+      onDelivered: (queuedEvent, deliveredAt) => {
+        delivered.push({ id: queuedEvent.id, deliveredAt });
+      }
+    });
+    await outbox.enqueue(event("expires-in-flight", { expiresAt: 1500 }));
+    const draining = outbox.drain();
+    await sendStarted;
+
+    now = 2000;
+    await outbox.enqueue(event("late", { createdAt: 2000, nextAttemptAt: 3000 }));
+    expect(persisted(filePath).events.map((queuedEvent) => queuedEvent.id)).toContain("expires-in-flight");
+    releaseSend(true);
+    await draining;
+
+    expect(delivered).toEqual([{ id: "expires-in-flight", deliveredAt: 2000 }]);
+    expect(outbox.getStatus()).toEqual({ queued: 1, lastSuccessAt: 2000, lastFailureAt: 0 });
+    expect(persisted(filePath).events.map((queuedEvent) => queuedEvent.id)).toEqual(["late"]);
+  });
+
+  it("keeps a failed in-flight delivery queued for retry during a capacity-enforcing enqueue", async () => {
+    const filePath = createOutboxFile();
+    const queuedEvents = [
+      event("fails-in-flight", { createdAt: 1 }),
+      ...Array.from({ length: 249 }, (_, index) => event(`queued-${index}`, { createdAt: index + 2 }))
+    ];
+    fs.writeFileSync(filePath, JSON.stringify({
+      version: 1,
+      events: queuedEvents,
+      lastSuccessAt: 0,
+      lastFailureAt: 0
+    }), "utf8");
+    let releaseSend = (_sent: boolean) => {};
+    let markSendStarted = () => {};
+    const sendStarted = new Promise<void>((resolve) => { markSendStarted = resolve; });
+    const sendResult = new Promise<boolean>((resolve) => { releaseSend = resolve; });
+    const outbox = new NotificationOutbox({
+      filePath,
+      now: () => 1000,
+      send: async () => {
+        markSendStarted();
+        return sendResult;
+      }
+    });
+    const draining = outbox.drain();
+    await sendStarted;
+
+    await outbox.enqueue(event("late-capacity", { createdAt: 10000 }));
+    expect(persisted(filePath).events.map((queuedEvent) => queuedEvent.id)).toContain("fails-in-flight");
+    releaseSend(false);
+    await draining;
+
+    const state = persisted(filePath);
+    expect(state.events).toHaveLength(250);
+    expect(state.events[0]).toMatchObject({ id: "fails-in-flight", attempts: 1, nextAttemptAt: 2000 });
+    expect(state.lastFailureAt).toBe(1000);
+  });
+
   it("acknowledges only successful delivery with its actual completion time", async () => {
     const filePath = createOutboxFile();
     let now = 1000;
