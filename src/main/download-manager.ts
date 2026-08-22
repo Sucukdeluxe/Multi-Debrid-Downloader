@@ -470,6 +470,7 @@ type RunLifecycleContext = {
   id: string;
   startedAt: number;
   packageGenerations: Map<string, number>;
+  downloadsFinished: boolean;
 };
 
 function generateHistoryId(): string {
@@ -1940,6 +1941,8 @@ export class DownloadManager extends EventEmitter {
 
   private runContexts = new Map<string, RunLifecycleContext>();
 
+  private activeRunContextId: string | null = null;
+
   private standalonePackageResults = new Set<string>();
 
   private successDigestResults = new Map<string, PackageResultEnvelope>();
@@ -3005,6 +3008,7 @@ export class DownloadManager extends EventEmitter {
         }
       }
       this.runPackageIds.delete(packageId);
+      this.untrackActiveRunPackage(packageId);
       this.runCompletedPackages.delete(packageId);
     } else {
       if (pkg.status === "paused") {
@@ -3029,6 +3033,7 @@ export class DownloadManager extends EventEmitter {
       if (this.session.running) {
         if (hasReactivatedRunItems) {
           this.runPackageIds.add(packageId);
+          this.trackActiveRunPackage(packageId);
         }
         void this.ensureScheduler().catch((err) => logger.warn(`ensureScheduler Fehler (togglePackage): ${compactErrorText(err)}`));
       }
@@ -3122,6 +3127,7 @@ export class DownloadManager extends EventEmitter {
     this.historyRecordedPackages.clear();
     this.finalizedPackageResults.clear();
     this.runContexts.clear();
+    this.activeRunContextId = null;
     this.standalonePackageResults.clear();
     this.successDigestResults.clear();
     if (this.successDigestTimer) {
@@ -3239,6 +3245,7 @@ export class DownloadManager extends EventEmitter {
           this.runItemIds.add(itemId);
           this.runPackageIds.add(packageId);
           this.beginPackageResultGeneration(packageId);
+          this.trackActiveRunPackage(packageId);
         }
         if (looksLikeOpaqueFilename(fileName)) {
           const existing = unresolvedByLink.get(link) ?? [];
@@ -3373,6 +3380,7 @@ export class DownloadManager extends EventEmitter {
       this.abortPackagePostProcessing(packageId, "skip");
 
       this.runPackageIds.delete(packageId);
+      this.untrackActiveRunPackage(packageId);
       this.runCompletedPackages.delete(packageId);
 
       const items = pkg.itemIds
@@ -3451,6 +3459,7 @@ export class DownloadManager extends EventEmitter {
       this.runCompletedPackages.delete(packageId);
       if (this.session.running) {
         this.runPackageIds.add(packageId);
+        this.trackActiveRunPackage(packageId);
       }
       pkg.status = "queued";
       pkg.updatedAt = nowMs();
@@ -5785,6 +5794,7 @@ export class DownloadManager extends EventEmitter {
         this.runItemIds.add(itemId);
       }
       this.runPackageIds.add(packageId);
+      this.trackActiveRunPackage(packageId);
     }
 
     await Promise.allSettled(postProcessTasks);
@@ -5867,6 +5877,7 @@ export class DownloadManager extends EventEmitter {
       }
       if (this.session.running) {
         this.runPackageIds.add(pkgId);
+        this.trackActiveRunPackage(pkgId);
       }
     }
 
@@ -5961,6 +5972,11 @@ export class DownloadManager extends EventEmitter {
   public async startPackages(packageIds: string[]): Promise<void> {
     this.ensureUsableDownloadAccount();
     const targetSet = new Set(packageIds);
+    for (const packageId of this.packagePostProcessTasks.keys()) {
+      if (targetSet.has(packageId)) {
+        this.trackStandalonePackageResult(packageId);
+      }
+    }
 
     for (const pkgId of targetSet) {
       const pkg = this.session.packages[pkgId];
@@ -5990,6 +6006,7 @@ export class DownloadManager extends EventEmitter {
           this.runItemIds.add(item.id);
           this.runPackageIds.add(item.packageId);
           this.beginPackageResultGeneration(item.packageId);
+          this.trackActiveRunPackage(item.packageId);
         }
       }
       this.persistSoon();
@@ -6024,6 +6041,7 @@ export class DownloadManager extends EventEmitter {
     this.session.running = true;
     this.session.paused = false;
     this.session.runStartedAt = nowMs();
+    this.beginActiveRunContext(this.runPackageIds, this.session.runStartedAt);
     this.session.totalDownloadedBytes = 0;
     this.sessionCompletedFiles = 0;
     this.session.summaryText = "";
@@ -6062,6 +6080,11 @@ export class DownloadManager extends EventEmitter {
       const item = this.session.items[itemId];
       if (item) affectedPackageIds.add(item.packageId);
     }
+    for (const packageId of this.packagePostProcessTasks.keys()) {
+      if (affectedPackageIds.has(packageId)) {
+        this.trackStandalonePackageResult(packageId);
+      }
+    }
 
     for (const pkgId of affectedPackageIds) {
       const pkg = this.session.packages[pkgId];
@@ -6095,6 +6118,7 @@ export class DownloadManager extends EventEmitter {
           this.runItemIds.add(item.id);
           this.runPackageIds.add(item.packageId);
           this.beginPackageResultGeneration(item.packageId);
+          this.trackActiveRunPackage(item.packageId);
         }
       }
       this.persistSoon();
@@ -6130,6 +6154,7 @@ export class DownloadManager extends EventEmitter {
     this.session.running = true;
     this.session.paused = false;
     this.session.runStartedAt = nowMs();
+    this.beginActiveRunContext(this.runPackageIds, this.session.runStartedAt);
     this.session.totalDownloadedBytes = 0;
     this.sessionCompletedFiles = 0;
     this.session.summaryText = "";
@@ -6167,6 +6192,9 @@ export class DownloadManager extends EventEmitter {
     this.schedulerGeneration += 1;
 
     this.session.running = true;
+    for (const packageId of this.packagePostProcessTasks.keys()) {
+      this.trackStandalonePackageResult(packageId);
+    }
 
     const recoveredItems = await this.recoverRetryableItems("start");
 
@@ -6278,6 +6306,7 @@ export class DownloadManager extends EventEmitter {
     this.session.running = true;
     this.session.paused = false;
     this.session.runStartedAt = nowMs();
+    this.beginActiveRunContext(this.runPackageIds, this.session.runStartedAt);
     this.session.totalDownloadedBytes = 0;
     this.sessionCompletedFiles = 0;
     this.session.summaryText = "";
@@ -11702,13 +11731,51 @@ export class DownloadManager extends EventEmitter {
     return next;
   }
 
-  private captureRunContext(packageIds: Iterable<string>, startedAt: number): RunLifecycleContext {
+  private createRunContext(packageIds: Iterable<string>, startedAt: number, downloadsFinished: boolean): RunLifecycleContext {
     const packageGenerations = new Map<string, number>();
     for (const packageId of packageIds) {
       packageGenerations.set(packageId, this.getPackageResultGeneration(packageId));
     }
-    const context: RunLifecycleContext = { id: uuidv4(), startedAt, packageGenerations };
+    const context: RunLifecycleContext = { id: uuidv4(), startedAt, packageGenerations, downloadsFinished };
     this.runContexts.set(context.id, context);
+    return context;
+  }
+
+  private beginActiveRunContext(packageIds: Iterable<string>, startedAt: number): RunLifecycleContext {
+    const context = this.createRunContext(packageIds, startedAt, false);
+    this.activeRunContextId = context.id;
+    return context;
+  }
+
+  private trackActiveRunPackage(packageId: string): void {
+    if (!this.activeRunContextId) {
+      return;
+    }
+    const context = this.runContexts.get(this.activeRunContextId);
+    if (context && !context.packageGenerations.has(packageId)) {
+      context.packageGenerations.set(packageId, this.getPackageResultGeneration(packageId));
+    }
+  }
+
+  private untrackActiveRunPackage(packageId: string): void {
+    if (!this.activeRunContextId) {
+      return;
+    }
+    this.runContexts.get(this.activeRunContextId)?.packageGenerations.delete(packageId);
+  }
+
+  private finishActiveRunContext(packageIds: Iterable<string>, startedAt: number): RunLifecycleContext {
+    const active = this.activeRunContextId ? this.runContexts.get(this.activeRunContextId) : undefined;
+    const context = active || this.createRunContext(packageIds, startedAt, false);
+    for (const packageId of packageIds) {
+      if (!context.packageGenerations.has(packageId)) {
+        context.packageGenerations.set(packageId, this.getPackageResultGeneration(packageId));
+      }
+    }
+    context.downloadsFinished = true;
+    if (this.activeRunContextId === context.id) {
+      this.activeRunContextId = null;
+    }
     return context;
   }
 
@@ -11723,6 +11790,10 @@ export class DownloadManager extends EventEmitter {
       }
     }
     return false;
+  }
+
+  private trackStandalonePackageResult(packageId: string): void {
+    this.standalonePackageResults.add(this.packageResultKey(packageId, this.getPackageResultGeneration(packageId)));
   }
 
   private queueNotificationEvent(notification: NotificationEvent): void {
@@ -11850,6 +11921,9 @@ export class DownloadManager extends EventEmitter {
 
   private tryFinalizeRunResults(): void {
     for (const context of [...this.runContexts.values()]) {
+      if (!context.downloadsFinished) {
+        continue;
+      }
       const packageResults: PackageResult[] = [];
       let complete = true;
       for (const [packageId, generation] of context.packageGenerations) {
@@ -13640,7 +13714,7 @@ export class DownloadManager extends EventEmitter {
       averageSpeedBps: avgSpeed
     };
     this.session.summaryText = `Summary: Dauer ${duration}s, Ø Speed ${humanSize(avgSpeed)}/s, Erfolg ${success}/${total}`;
-    const runContext = total > 0 ? this.captureRunContext(this.runPackageIds, runStartedAt) : null;
+    const runContext = total > 0 ? this.finishActiveRunContext(this.runPackageIds, runStartedAt) : null;
     this.runItemIds.clear();
     this.runPackageIds.clear();
     this.runOutcomes.clear();
