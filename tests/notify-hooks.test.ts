@@ -755,6 +755,7 @@ describe("authoritative run completion", () => {
     await Promise.allSettled(deferredTasks);
     await flushNotifications();
 
+    expect(packageA.cleanupErrorCategory || "").toBe("");
     expect(events.filter((event) => event.type === "package_completed")).toHaveLength(1);
     expect(events.filter((event) => event.type === "run_completed")).toHaveLength(1);
     expect(history.map((entry) => entry.name)).toEqual([packageA.name]);

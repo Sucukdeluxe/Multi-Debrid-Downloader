@@ -1920,11 +1920,17 @@ export class DownloadManager extends EventEmitter {
 
   private packagePostProcessAbortControllers = new Map<string, AbortController>();
 
+  private packagePostProcessRunOwnerByController = new WeakMap<AbortController, string | null>();
+
   private packageDeferredPostProcessAbortControllers = new Map<string, AbortController>();
+
+  private packageDeferredRunOwnerByController = new WeakMap<AbortController, string | null>();
 
   private packageDeferredPostProcessTasks = new Map<string, Set<Promise<void>>>();
 
   private packageHybridPostProcessControllers = new Map<string, Set<AbortController>>();
+
+  private packageHybridRunOwnerByController = new WeakMap<AbortController, string | null>();
 
   private packageHybridPostProcessTasks = new Map<string, Set<Promise<void>>>();
 
@@ -6805,7 +6811,7 @@ export class DownloadManager extends EventEmitter {
     this.speedBytesLastWindow = 0;
     this.speedBytesPerPackage.clear();
     this.speedEventsHead = 0;
-    this.abortPostProcessing("stop");
+    this.abortPostProcessing("stop", stoppedRunContext?.id);
     for (const waiter of this.packagePostProcessWaiters) { waiter.resolve(); }
     this.packagePostProcessWaiters = [];
     this.packagePostProcessActive = 0;
@@ -8381,8 +8387,12 @@ export class DownloadManager extends EventEmitter {
     return claimed;
   }
 
-  private abortPostProcessing(reason: string): void {
+  private abortPostProcessing(reason: string, runContextId?: string): void {
     for (const [packageId, controller] of this.packagePostProcessAbortControllers.entries()) {
+      const owner = this.packagePostProcessRunOwnerByController.get(controller);
+      if (runContextId !== undefined && owner !== undefined && owner !== null && owner !== runContextId) {
+        continue;
+      }
       if (!controller.signal.aborted) {
         controller.abort(reason);
       }
@@ -8413,12 +8423,20 @@ export class DownloadManager extends EventEmitter {
     }
 
     for (const controller of this.packageDeferredPostProcessAbortControllers.values()) {
+      const owner = this.packageDeferredRunOwnerByController.get(controller);
+      if (runContextId !== undefined && owner !== undefined && owner !== null && owner !== runContextId) {
+        continue;
+      }
       if (!controller.signal.aborted) {
         controller.abort(reason);
       }
     }
     for (const hybridSet of this.packageHybridPostProcessControllers.values()) {
       for (const controller of hybridSet) {
+        const owner = this.packageHybridRunOwnerByController.get(controller);
+        if (runContextId !== undefined && owner !== undefined && owner !== null && owner !== runContextId) {
+          continue;
+        }
         if (!controller.signal.aborted) {
           controller.abort(reason);
         }
@@ -8473,6 +8491,7 @@ export class DownloadManager extends EventEmitter {
 
     const abortController = new AbortController();
     this.packagePostProcessAbortControllers.set(packageId, abortController);
+    this.packagePostProcessRunOwnerByController.set(abortController, this.getPackageResultRunOwner(packageId));
     const queuedPackage = this.session.packages[packageId];
     if (queuedPackage) {
       queuedPackage.postProcessQueuedAt = queuedPackage.postProcessQueuedAt || nowMs();
@@ -12367,6 +12386,16 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
+  private getPackageResultRunOwner(packageId: string): string | null {
+    const generation = this.getPackageResultGeneration(packageId);
+    for (const context of this.runContexts.values()) {
+      if (context.packageGenerations.get(packageId) === generation) {
+        return context.id;
+      }
+    }
+    return null;
+  }
+
   private queueNotificationEvent(notification: NotificationEvent): void {
     if (!this.enqueueNotificationCallback || !String(this.settings.notifyUrl || "").trim()) {
       return;
@@ -13389,6 +13418,7 @@ export class DownloadManager extends EventEmitter {
       if (result.extracted > 0) {
         this.trackPackagePostProcessResult(packageId);
         const hybridController = new AbortController();
+        this.packageHybridRunOwnerByController.set(hybridController, this.getPackageResultRunOwner(packageId));
         let hybridSet = this.packageHybridPostProcessControllers.get(packageId);
         if (!hybridSet) {
           hybridSet = new Set<AbortController>();
@@ -14095,6 +14125,7 @@ export class DownloadManager extends EventEmitter {
     }
     const deferredController = new AbortController();
     this.packageDeferredPostProcessAbortControllers.set(packageId, deferredController);
+    this.packageDeferredRunOwnerByController.set(deferredController, this.getPackageResultRunOwner(packageId));
     const deferredVersion = this.getPackagePostProcessVersion(packageId);
     const shouldAbort = (): boolean => !this.isDeferredPostProcessStillCurrent(packageId, pkg, deferredVersion, deferredController.signal);
     const throwIfAborted = (): void => this.throwIfDeferredPostProcessAborted(packageId, pkg, deferredVersion, deferredController.signal);
@@ -14254,7 +14285,11 @@ export class DownloadManager extends EventEmitter {
         || reason === "cancel"
         || reason === "overwrite"
         || reason === "skip"
-        || reason === "package_toggle") {
+        || reason === "package_toggle"
+        || reason === "stop"
+        || reason === "shutdown"
+        || reason === "Error: stop"
+        || reason === "Error: shutdown") {
         logger.info(`Deferred Post-Extraction abgebrochen: pkg=${pkg.name}, reason=${reason}`);
       } else {
         pkg.cleanupErrorCategory = reason.slice(0, 256) || "cleanup";
