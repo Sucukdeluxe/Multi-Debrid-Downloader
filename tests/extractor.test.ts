@@ -610,7 +610,7 @@ describe("extractor", () => {
     expect(selectZipFallbackError(internalError, externalError)).toBe(externalError);
   });
 
-  it.skipIf(process.platform !== "win32")("matches resume-state archive names case-insensitively on Windows", async () => {
+  it.skipIf(process.platform !== "win32")("invalidates legacy basename-only resume state on Windows", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-"));
     tempDirs.push(root);
     const packageDir = path.join(root, "pkg");
@@ -630,8 +630,8 @@ describe("extractor", () => {
       removeSamples: false
     });
 
-    expect(result.extracted).toBe(1);
-    expect(result.failed).toBe(0);
+    expect(result.extracted).toBe(0);
+    expect(result.failed).toBe(1);
   });
 
   describe("disk space check", () => {
@@ -1283,5 +1283,189 @@ describe("extractor", () => {
       expect(ordered[0]).toBe("WinRAR.exe");
       expect(ordered[1]).toBe("UnRAR.exe");
     });
+  });
+
+  describe("direct output scope", () => {
+    it.each([
+      ["overwrite", "new", "overwritten", ["episode.mkv"]],
+      ["ask", "old", "skipped", []],
+      ["rename", "old", "renamed", ["episode (1).mkv"]]
+    ] as const)("emits exact internal ZIP outputs for %s conflicts", async (conflictMode, originalContent, disposition, outputNames) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), `rd-direct-${conflictMode}-`));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(packageDir, { recursive: true });
+      fs.mkdirSync(targetDir, { recursive: true });
+      fs.writeFileSync(path.join(targetDir, "episode.mkv"), "old");
+      const archivePath = path.join(packageDir, "release.zip");
+      const zip = new AdmZip();
+      zip.addFile("episode.mkv", Buffer.from("new"));
+      zip.writeZip(archivePath);
+      const events: import("../src/main/extractor").ExtractOutputEvent[] = [];
+
+      const result = await extractPackageArchives({
+        packageDir,
+        targetDir,
+        cleanupMode: "none",
+        conflictMode,
+        removeLinks: false,
+        removeSamples: false,
+        onOutput: (event) => events.push(event)
+      });
+
+      expect(fs.readFileSync(path.join(targetDir, "episode.mkv"), "utf8")).toBe(originalContent);
+      expect(events).toEqual([expect.objectContaining({
+        version: 1,
+        archivePath: path.resolve(archivePath),
+        entryPath: "episode.mkv",
+        outputPath: path.join(targetDir, outputNames[0] || "episode.mkv"),
+        state: "complete",
+        disposition
+      })]);
+      expect(result.outputFiles.map((filePath) => path.basename(filePath))).toEqual([...outputNames]);
+    });
+
+    it("extracts only nested archives produced by the package in a shared root", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-direct-nested-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      const targetDir = path.join(root, "shared");
+      fs.mkdirSync(packageDir, { recursive: true });
+      fs.mkdirSync(targetDir, { recursive: true });
+      const foreign = new AdmZip();
+      foreign.addFile("foreign.txt", Buffer.from("foreign"));
+      foreign.writeZip(path.join(targetDir, "foreign.zip"));
+      const nested = new AdmZip();
+      nested.addFile("owned.txt", Buffer.from("owned"));
+      const outer = new AdmZip();
+      outer.addFile("owned.zip", nested.toBuffer());
+      outer.writeZip(path.join(packageDir, "outer.zip"));
+
+      const result = await extractPackageArchives({
+        packageDir,
+        targetDir,
+        cleanupMode: "none",
+        conflictMode: "overwrite",
+        removeLinks: false,
+        removeSamples: false
+      });
+
+      expect(result.extracted).toBe(2);
+      expect(fs.existsSync(path.join(targetDir, "owned.txt"))).toBe(true);
+      expect(fs.existsSync(path.join(targetDir, "foreign.txt"))).toBe(false);
+    });
+
+    it("resumes same-basename archives by relative path and invalidates changed multipart fingerprints", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-resume-v2-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      const targetDir = path.join(root, "out");
+      const firstDir = path.join(packageDir, "first");
+      const secondDir = path.join(packageDir, "second");
+      fs.mkdirSync(firstDir, { recursive: true });
+      fs.mkdirSync(secondDir, { recursive: true });
+      const firstArchive = path.join(firstDir, "release.zip");
+      const secondArchive = path.join(secondDir, "release.zip");
+      const companionPath = path.join(firstDir, "release.sfv");
+      const firstZip = new AdmZip();
+      firstZip.addFile("first.txt", Buffer.from("first"));
+      firstZip.writeZip(firstArchive);
+      fs.writeFileSync(companionPath, "part-a");
+      const secondZip = new AdmZip();
+      secondZip.addFile("second.txt", Buffer.from("second"));
+      secondZip.writeZip(secondArchive);
+
+      const firstResult = await extractPackageArchives({
+        packageDir,
+        targetDir,
+        cleanupMode: "none",
+        conflictMode: "overwrite",
+        removeLinks: false,
+        removeSamples: false,
+        onlyArchives: new Set([path.resolve(firstArchive).toLowerCase()])
+      });
+      expect(firstResult.extracted).toBe(1);
+      expect(firstResult.failed).toBe(0);
+      expect(fs.existsSync(path.join(packageDir, ".rd_extract_progress.json"))).toBe(true);
+      fs.writeFileSync(companionPath, "part-b-changed");
+      const emittedArchives: string[] = [];
+      const result = await extractPackageArchives({
+        packageDir,
+        targetDir,
+        cleanupMode: "none",
+        conflictMode: "overwrite",
+        removeLinks: false,
+        removeSamples: false,
+        onOutput: (event) => emittedArchives.push(event.archivePath)
+      });
+
+      expect(result.extracted).toBe(2);
+      expect(emittedArchives).toContain(path.resolve(firstArchive));
+      expect(emittedArchives).toContain(path.resolve(secondArchive));
+      expect(fs.existsSync(path.join(targetDir, "second.txt"))).toBe(true);
+    });
+
+    it("fails closed for an unknown resume-state version", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-resume-unknown-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(packageDir, { recursive: true });
+      fs.mkdirSync(targetDir, { recursive: true });
+      fs.writeFileSync(path.join(packageDir, "broken.zip"), "not-a-zip");
+      fs.writeFileSync(path.join(targetDir, "foreign.txt"), "foreign");
+      fs.writeFileSync(path.join(packageDir, ".rd_extract_progress.json"), JSON.stringify({
+        version: 99,
+        completedArchives: ["broken.zip"]
+      }));
+
+      const result = await extractPackageArchives({
+        packageDir,
+        targetDir,
+        cleanupMode: "none",
+        conflictMode: "overwrite",
+        removeLinks: false,
+        removeSamples: false
+      });
+
+      expect(result.extracted).toBe(0);
+      expect(result.failed).toBe(1);
+    });
+
+    it("retains concrete completed outputs when a later entry aborts", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-output-abort-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(packageDir, { recursive: true });
+      const archivePath = path.join(packageDir, "release.zip");
+      const zip = new AdmZip();
+      zip.addFile("first.txt", Buffer.from("first"));
+      zip.addFile("second.txt", Buffer.from("second"));
+      zip.writeZip(archivePath);
+      const controller = new AbortController();
+      const events: import("../src/main/extractor").ExtractOutputEvent[] = [];
+
+      await expect(extractPackageArchives({
+        packageDir,
+        targetDir,
+        cleanupMode: "none",
+        conflictMode: "overwrite",
+        removeLinks: false,
+        removeSamples: false,
+        signal: controller.signal,
+        onOutput: (event) => {
+          events.push(event);
+          controller.abort();
+        }
+      })).rejects.toThrow("aborted:extract");
+
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual(expect.objectContaining({ state: "complete", outputPath: path.join(targetDir, "first.txt") }));
+      expect(fs.existsSync(path.join(targetDir, "first.txt"))).toBe(true);
+      expect(fs.existsSync(path.join(targetDir, "second.txt"))).toBe(false);
+    });
+
   });
 });

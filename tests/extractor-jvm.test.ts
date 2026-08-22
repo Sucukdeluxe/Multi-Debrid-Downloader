@@ -50,6 +50,7 @@ describe.skipIf(!hasJavaRuntime() || !hasJvmExtractorRuntime())("extractor jvm b
     const zip = new AdmZip();
     zip.addFile("episode.txt", Buffer.from("ok"));
     zip.writeZip(zipPath);
+    const events: import("../src/main/extractor").ExtractOutputEvent[] = [];
 
     const result = await extractPackageArchives({
       packageDir,
@@ -57,12 +58,64 @@ describe.skipIf(!hasJavaRuntime() || !hasJvmExtractorRuntime())("extractor jvm b
       cleanupMode: "none",
       conflictMode: "overwrite",
       removeLinks: false,
-      removeSamples: false
+      removeSamples: false,
+      onOutput: (event) => events.push(event)
     });
 
     expect(result.extracted).toBe(1);
     expect(result.failed).toBe(0);
     expect(fs.existsSync(path.join(targetDir, "episode.txt"))).toBe(true);
+    expect(events).toEqual([
+      expect.objectContaining({
+        version: 1,
+        archivePath: path.resolve(zipPath),
+        entryPath: "episode.txt",
+        outputPath: path.join(targetDir, "episode.txt"),
+        state: "complete",
+        disposition: "written"
+      })
+    ]);
+    expect(result.outputFiles).toEqual([path.join(targetDir, "episode.txt")]);
+  });
+
+  it.each(["7zjbinding", "zip4j"])("emits versioned Base64 output lines from %s", (backend) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `rd-jvm-output-${backend}-`));
+    tempDirs.push(root);
+    const targetDir = path.join(root, "out");
+    const zipPath = path.join(root, "release.zip");
+    const zip = new AdmZip();
+    zip.addFile("folder/episode.txt", Buffer.from("ok"));
+    zip.writeZip(zipPath);
+    const runtimeRoot = path.join(process.cwd(), "resources", "extractor-jvm");
+    const classPath = [
+      path.join(runtimeRoot, "classes"),
+      path.join(runtimeRoot, "lib", "sevenzipjbinding.jar"),
+      path.join(runtimeRoot, "lib", "sevenzipjbinding-all-platforms.jar"),
+      path.join(runtimeRoot, "lib", "zip4j.jar")
+    ].join(path.delimiter);
+
+    const run = spawnSync("java", [
+      "-cp",
+      classPath,
+      "com.sucukdeluxe.extractor.JBindExtractorMain",
+      "--archive",
+      zipPath,
+      "--target",
+      targetDir,
+      "--conflict",
+      "overwrite",
+      "--backend",
+      backend
+    ], { encoding: "utf8" });
+
+    expect(run.status).toBe(0);
+    const outputLine = String(run.stdout).split(/\r?\n/).find((line) => line.startsWith("RD_OUTPUT "));
+    expect(outputLine).toBeTruthy();
+    const fields = String(outputLine).split(" ");
+    expect(fields.slice(0, 5)).toEqual(["RD_OUTPUT", "1", "complete", "written", fields[4]]);
+    expect(Buffer.from(fields[4], "base64").toString("utf8")).toBe(path.resolve(zipPath));
+    expect(Buffer.from(fields[5], "base64").toString("utf8")).toBe("folder/episode.txt");
+    expect(Buffer.from(fields[6], "base64").toString("utf8")).toBe(path.join(targetDir, "folder", "episode.txt"));
   });
 
   it("emits progress callbacks with archiveName and percent", async () => {

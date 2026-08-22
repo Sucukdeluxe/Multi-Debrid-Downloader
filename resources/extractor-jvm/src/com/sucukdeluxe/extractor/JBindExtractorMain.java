@@ -274,8 +274,10 @@ public final class JBindExtractorMain {
                 }
 
                 long itemUnits = safeSize(header.getUncompressedSize());
-                File output = resolveOutputFile(request.targetDir, entryName, request.conflictMode, reserved);
+                OutputTarget outputTarget = resolveOutputFile(request.targetDir, entryName, request.conflictMode, reserved);
+                File output = outputTarget.file;
                 if (output == null) {
+                    emitOutput(request.archiveFile, entryName, outputTarget.reportedFile, "complete", outputTarget.disposition);
                     progress.advance(itemUnits);
                     continue;
                 }
@@ -323,12 +325,16 @@ public final class JBindExtractorMain {
                         output.setLastModified(modified);
                     }
                     extractionSuccess = true;
+                    emitOutput(request.archiveFile, entryName, output, "complete", outputTarget.disposition);
                 } catch (ZipException error) {
                     if (isWrongPassword(error, encrypted)) {
                         throw new WrongPasswordException(error);
                     }
                     throw error;
                 } finally {
+                    if (!extractionSuccess && output.exists()) {
+                        emitOutput(request.archiveFile, entryName, output, "partial", outputTarget.disposition);
+                    }
                     if (!extractionSuccess && output.exists()) {
                         try {
                             output.delete();
@@ -371,6 +377,8 @@ public final class JBindExtractorMain {
             List<Integer> fileIndices = new ArrayList<Integer>();
             List<File> outputFiles = new ArrayList<File>();
             List<Long> fileSizes = new ArrayList<Long>();
+            List<String> entryNames = new ArrayList<String>();
+            List<String> dispositions = new ArrayList<String>();
             Set<String> reserved = new HashSet<String>();
 
             for (int i = 0; i < itemCount; i++) {
@@ -396,10 +404,16 @@ public final class JBindExtractorMain {
                 long itemSize = safeSize(rawSize);
                 totalUnits += itemSize;
 
-                File output = resolveOutputFile(request.targetDir, entryName, request.conflictMode, reserved);
+                OutputTarget outputTarget = resolveOutputFile(request.targetDir, entryName, request.conflictMode, reserved);
+                File output = outputTarget.file;
+                if (output == null) {
+                    emitOutput(request.archiveFile, entryName, outputTarget.reportedFile, "complete", outputTarget.disposition);
+                }
                 fileIndices.add(i);
                 outputFiles.add(output);
                 fileSizes.add(itemSize);
+                entryNames.add(entryName);
+                dispositions.add(outputTarget.disposition);
             }
 
             if (fileIndices.isEmpty()) {
@@ -434,7 +448,7 @@ public final class JBindExtractorMain {
 
             try {
                 archive.extract(indices, false, new BulkExtractCallback(
-                    archive, indexToPos, fileIndices, outputFiles, fileSizes,
+                    archive, request.archiveFile, indexToPos, fileIndices, outputFiles, fileSizes, entryNames, dispositions,
                     progress, encryptedFinal, effectivePassword, currentOutput,
                     currentStream, currentSuccess, currentRemaining, currentPos, firstError
                 ));
@@ -566,18 +580,18 @@ public final class JBindExtractorMain {
         return directory;
     }
 
-    private static File resolveOutputFile(File targetDir, String entryName, ConflictMode conflictMode, Set<String> reserved) throws IOException {
+    private static OutputTarget resolveOutputFile(File targetDir, String entryName, ConflictMode conflictMode, Set<String> reserved) throws IOException {
         File base = secureResolve(targetDir, entryName);
         String key = pathKey(base);
         boolean exists = base.exists() || reserved.contains(key);
 
         if (!exists) {
             reserved.add(key);
-            return base;
+            return new OutputTarget(base, base, "written");
         }
 
         if (conflictMode == ConflictMode.SKIP) {
-            return null;
+            return new OutputTarget(null, base, "skipped");
         }
 
         if (conflictMode == ConflictMode.OVERWRITE) {
@@ -585,7 +599,7 @@ public final class JBindExtractorMain {
                 deleteRecursively(base);
             }
             reserved.add(key);
-            return base;
+            return new OutputTarget(base, base, "overwritten");
         }
 
         File parent = base.getParentFile();
@@ -601,7 +615,7 @@ public final class JBindExtractorMain {
             String candidateKey = pathKey(candidate);
             if (!candidate.exists() && !reserved.contains(candidateKey)) {
                 reserved.add(candidateKey);
-                return candidate;
+                return new OutputTarget(candidate, candidate, "renamed");
             }
             counter += 1;
         }
@@ -820,6 +834,20 @@ public final class JBindExtractorMain {
         System.err.println("RD_ERROR " + message);
     }
 
+    private static String encodeField(String value) {
+        return Base64.getEncoder().encodeToString((value == null ? "" : value).getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static void emitOutput(File archiveFile, String entryPath, File outputFile, String state, String disposition) {
+        if (archiveFile == null || outputFile == null) {
+            return;
+        }
+        System.out.println("RD_OUTPUT 1 " + state + " " + disposition + " "
+                + encodeField(archiveFile.getAbsolutePath()) + " "
+                + encodeField(entryPath == null ? "" : entryPath.replace('\\', '/')) + " "
+                + encodeField(outputFile.getAbsolutePath()));
+    }
+
     private enum Backend {
         AUTO("auto"),
         SEVENZIPJBIND("7zjbinding"),
@@ -874,12 +902,27 @@ public final class JBindExtractorMain {
         private final List<String> passwords = new ArrayList<String>();
     }
 
+    private static final class OutputTarget {
+        private final File file;
+        private final File reportedFile;
+        private final String disposition;
+
+        OutputTarget(File file, File reportedFile, String disposition) {
+            this.file = file;
+            this.reportedFile = reportedFile;
+            this.disposition = disposition;
+        }
+    }
+
     private static final class BulkExtractCallback implements IArchiveExtractCallback, ICryptoGetTextPassword {
         private final IInArchive archive;
+        private final File archiveFile;
         private final Map<Integer, Integer> indexToPos;
         private final List<Integer> fileIndices;
         private final List<File> outputFiles;
         private final List<Long> fileSizes;
+        private final List<String> entryNames;
+        private final List<String> dispositions;
         private final ProgressTracker progress;
         private final boolean encrypted;
         private final String password;
@@ -890,17 +933,21 @@ public final class JBindExtractorMain {
         private final int[] currentPos;
         private final Throwable[] firstError;
 
-        BulkExtractCallback(IInArchive archive, Map<Integer, Integer> indexToPos,
+        BulkExtractCallback(IInArchive archive, File archiveFile, Map<Integer, Integer> indexToPos,
                 List<Integer> fileIndices, List<File> outputFiles, List<Long> fileSizes,
+                List<String> entryNames, List<String> dispositions,
                 ProgressTracker progress, boolean encrypted, String password,
                 File[] currentOutput, FileOutputStream[] currentStream,
                 boolean[] currentSuccess, long[] currentRemaining, int[] currentPos,
                 Throwable[] firstError) {
             this.archive = archive;
+            this.archiveFile = archiveFile;
             this.indexToPos = indexToPos;
             this.fileIndices = fileIndices;
             this.outputFiles = outputFiles;
             this.fileSizes = fileSizes;
+            this.entryNames = entryNames;
+            this.dispositions = dispositions;
             this.progress = progress;
             this.encrypted = encrypted;
             this.password = password;
@@ -1002,10 +1049,12 @@ public final class JBindExtractorMain {
                     } catch (Throwable ignored) {
 
                     }
+                    emitOutput(archiveFile, entryNames.get(currentPos[0]), currentOutput[0], "complete", dispositions.get(currentPos[0]));
                 }
             } else {
                 closeCurrentStream();
                 if (currentOutput[0] != null && currentOutput[0].exists()) {
+                    emitOutput(archiveFile, entryNames.get(currentPos[0]), currentOutput[0], "partial", dispositions.get(currentPos[0]));
                     try {
                         currentOutput[0].delete();
                     } catch (Throwable ignored) {
