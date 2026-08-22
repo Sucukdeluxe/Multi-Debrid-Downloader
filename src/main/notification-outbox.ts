@@ -1,0 +1,302 @@
+import fs from "node:fs";
+import fsp from "node:fs/promises";
+import path from "node:path";
+import type { DiscordEmbedFieldPayload } from "./notify";
+
+export type NotificationEventType =
+  | "package_completed"
+  | "package_partial"
+  | "package_failed"
+  | "run_completed"
+  | "run_stopped"
+  | "remaining_threshold_crossed"
+  | "download_stalled"
+  | "download_recovered";
+
+export type NotificationPriority = "success" | "error";
+
+export interface NotificationEventPayload {
+  title: string;
+  description?: string;
+  color?: number;
+  fields: DiscordEmbedFieldPayload[];
+}
+
+export interface NotificationEvent {
+  id: string;
+  type: NotificationEventType;
+  priority: NotificationPriority;
+  createdAt: number;
+  expiresAt: number;
+  attempts: number;
+  nextAttemptAt: number;
+  payload: NotificationEventPayload;
+}
+
+export interface NotificationOutboxStatus {
+  queued: number;
+  lastSuccessAt: number;
+  lastFailureAt: number;
+}
+
+export interface NotificationOutboxOptions {
+  filePath: string;
+  send: (event: NotificationEvent) => Promise<boolean>;
+  now?: () => number;
+  autoDrain?: boolean;
+}
+
+interface PersistedNotificationOutbox {
+  version: 1;
+  events: NotificationEvent[];
+  lastSuccessAt: number;
+  lastFailureAt: number;
+}
+
+const EVENT_TYPES = new Set<NotificationEventType>([
+  "package_completed",
+  "package_partial",
+  "package_failed",
+  "run_completed",
+  "run_stopped",
+  "remaining_threshold_crossed",
+  "download_stalled",
+  "download_recovered"
+]);
+const MAX_EVENTS = 250;
+const MAX_RETRY_DELAY_MS = 10 * 60 * 1000;
+const DEFAULT_SHUTDOWN_TIMEOUT_MS = 3000;
+
+function finiteInteger(value: unknown, fallback = 0): number {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : fallback;
+}
+
+function sanitizeEvent(value: unknown): NotificationEvent | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const raw = value as Partial<NotificationEvent>;
+  const id = typeof raw.id === "string" ? raw.id.trim().slice(0, 256) : "";
+  const type = EVENT_TYPES.has(raw.type as NotificationEventType) ? raw.type as NotificationEventType : null;
+  const priority = raw.priority === "success" || raw.priority === "error" ? raw.priority : null;
+  const payload = raw.payload && typeof raw.payload === "object" && !Array.isArray(raw.payload)
+    ? raw.payload as NotificationEventPayload
+    : null;
+  const title = typeof payload?.title === "string" ? payload.title.slice(0, 4096) : "";
+  if (!id || !type || !priority || !payload || !title) {
+    return null;
+  }
+  const fields = Array.isArray(payload.fields)
+    ? payload.fields.slice(0, 25).flatMap((field) => {
+      if (!field || typeof field !== "object") {
+        return [];
+      }
+      const name = typeof field.name === "string" ? field.name.slice(0, 1024) : "";
+      const fieldValue = typeof field.value === "string" ? field.value.slice(0, 4096) : "";
+      return name && fieldValue ? [{ name, value: fieldValue, inline: Boolean(field.inline) }] : [];
+    })
+    : [];
+  const description = typeof payload.description === "string" ? payload.description.slice(0, 8192) : undefined;
+  const color = Number.isFinite(payload.color)
+    ? Math.max(0, Math.min(0xffffff, Math.floor(payload.color as number)))
+    : undefined;
+  return {
+    id,
+    type,
+    priority,
+    createdAt: finiteInteger(raw.createdAt),
+    expiresAt: finiteInteger(raw.expiresAt),
+    attempts: finiteInteger(raw.attempts),
+    nextAttemptAt: finiteInteger(raw.nextAttemptAt),
+    payload: {
+      title,
+      ...(description !== undefined ? { description } : {}),
+      ...(color !== undefined ? { color } : {}),
+      fields
+    }
+  };
+}
+
+function oldestIndex(events: NotificationEvent[], predicate: (event: NotificationEvent) => boolean): number {
+  let selected = -1;
+  for (let index = 0; index < events.length; index += 1) {
+    if (!predicate(events[index])) {
+      continue;
+    }
+    if (selected < 0 || events[index].createdAt < events[selected].createdAt) {
+      selected = index;
+    }
+  }
+  return selected;
+}
+
+function retryDelayMs(attempts: number): number {
+  return Math.min(MAX_RETRY_DELAY_MS, 1000 * (2 ** Math.min(9, Math.max(0, attempts - 1))));
+}
+
+export class NotificationOutbox {
+  private events: NotificationEvent[] = [];
+  private lastSuccessAt = 0;
+  private lastFailureAt = 0;
+  private operationChain: Promise<void> = Promise.resolve();
+  private readonly filePath: string;
+  private readonly sendEvent: (event: NotificationEvent) => Promise<boolean>;
+  private readonly clock: () => number;
+  private readonly autoDrain: boolean;
+  private retryTimer: NodeJS.Timeout | null = null;
+  private shutdownRequested = false;
+
+  public constructor(options: NotificationOutboxOptions) {
+    this.filePath = options.filePath;
+    this.sendEvent = options.send;
+    this.clock = options.now || Date.now;
+    this.autoDrain = Boolean(options.autoDrain);
+    this.load();
+  }
+
+  public async enqueue(event: NotificationEvent): Promise<void> {
+    await this.runExclusive(async () => {
+      const normalized = sanitizeEvent(event);
+      if (normalized && !this.events.some((queuedEvent) => queuedEvent.id === normalized.id)) {
+        this.events.push(normalized);
+      }
+      await this.persist(this.clock());
+    });
+    if (this.autoDrain) {
+      this.scheduleDrain(0);
+    }
+  }
+
+  public drain(now?: number): Promise<void> {
+    return this.runExclusive(async () => {
+      const drainAt = finiteInteger(now ?? this.clock());
+      this.enforceLimits(drainAt);
+      while (this.events.length > 0) {
+        const current = this.events[0];
+        if (current.nextAttemptAt > drainAt) {
+          break;
+        }
+        let sent = false;
+        try {
+          sent = await this.sendEvent(current);
+        } catch {
+          sent = false;
+        }
+        if (!sent) {
+          current.attempts += 1;
+          current.nextAttemptAt = drainAt + retryDelayMs(current.attempts);
+          this.lastFailureAt = drainAt;
+          await this.persist(drainAt);
+          if (this.autoDrain) {
+            this.scheduleDrain(Math.max(0, current.nextAttemptAt - this.clock()));
+          }
+          break;
+        }
+        this.events.shift();
+        this.lastSuccessAt = drainAt;
+        await this.persist(drainAt);
+      }
+      if (this.events.length === 0) {
+        this.clearRetryTimer();
+        await this.persist(drainAt);
+      }
+    });
+  }
+
+  public async drainForShutdown(timeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS): Promise<void> {
+    this.shutdownRequested = true;
+    this.clearRetryTimer();
+    let timer: NodeJS.Timeout | null = null;
+    const timeout = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, Math.max(0, finiteInteger(timeoutMs, DEFAULT_SHUTDOWN_TIMEOUT_MS)));
+    });
+    await Promise.race([this.drain(), timeout]);
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+
+  public getStatus(): NotificationOutboxStatus {
+    return {
+      queued: this.events.length,
+      lastSuccessAt: this.lastSuccessAt,
+      lastFailureAt: this.lastFailureAt
+    };
+  }
+
+  private runExclusive(operation: () => Promise<void>): Promise<void> {
+    const result = this.operationChain.then(operation, operation);
+    this.operationChain = result.catch(() => {});
+    return result;
+  }
+
+  private scheduleDrain(delayMs: number): void {
+    if (this.shutdownRequested) {
+      return;
+    }
+    this.clearRetryTimer();
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      void this.drain().catch(() => {});
+    }, delayMs);
+    this.retryTimer.unref?.();
+  }
+
+  private clearRetryTimer(): void {
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+  }
+
+  private load(): void {
+    try {
+      if (!fs.existsSync(this.filePath)) {
+        return;
+      }
+      const parsed = JSON.parse(fs.readFileSync(this.filePath, "utf8")) as Partial<PersistedNotificationOutbox>;
+      this.events = Array.isArray(parsed.events)
+        ? parsed.events.flatMap((event) => {
+          const normalized = sanitizeEvent(event);
+          return normalized ? [normalized] : [];
+        })
+        : [];
+      this.lastSuccessAt = finiteInteger(parsed.lastSuccessAt);
+      this.lastFailureAt = finiteInteger(parsed.lastFailureAt);
+      this.enforceLimits(this.clock());
+    } catch {
+      this.events = [];
+      this.lastSuccessAt = 0;
+      this.lastFailureAt = 0;
+    }
+  }
+
+  private enforceLimits(now: number): void {
+    this.events = this.events.filter((event) => event.expiresAt > now);
+    while (this.events.length > MAX_EVENTS) {
+      const successIndex = oldestIndex(this.events, (event) => event.priority === "success");
+      const removeIndex = successIndex >= 0 ? successIndex : oldestIndex(this.events, () => true);
+      this.events.splice(removeIndex, 1);
+    }
+  }
+
+  private async persist(now: number): Promise<void> {
+    this.enforceLimits(now);
+    await fsp.mkdir(path.dirname(this.filePath), { recursive: true });
+    const tempPath = `${this.filePath}.tmp`;
+    const state: PersistedNotificationOutbox = {
+      version: 1,
+      events: this.events,
+      lastSuccessAt: this.lastSuccessAt,
+      lastFailureAt: this.lastFailureAt
+    };
+    try {
+      await fsp.writeFile(tempPath, JSON.stringify(state), "utf8");
+      await fsp.rename(tempPath, this.filePath);
+    } catch (error) {
+      await fsp.rm(tempPath, { force: true }).catch(() => {});
+      throw error;
+    }
+  }
+}

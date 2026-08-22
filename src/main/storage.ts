@@ -701,6 +701,7 @@ export interface StoragePaths {
   sessionFile: string;
   historyFile: string;
   statisticsFile: string;
+  notificationOutboxFile: string;
 }
 
 export function createStoragePaths(baseDir: string): StoragePaths {
@@ -709,7 +710,8 @@ export function createStoragePaths(baseDir: string): StoragePaths {
     configFile: path.join(baseDir, "rd_downloader_config.json"),
     sessionFile: path.join(baseDir, "rd_session_state.json"),
     historyFile: path.join(baseDir, "rd_history.json"),
-    statisticsFile: path.join(baseDir, "rd_statistics.json")
+    statisticsFile: path.join(baseDir, "rd_statistics.json"),
+    notificationOutboxFile: path.join(baseDir, "rd_notification_outbox.json")
   };
 }
 

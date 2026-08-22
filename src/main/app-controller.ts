@@ -78,6 +78,8 @@ import { createOnlineBackup, downloadOnlineBackup, uploadOnlineBackup } from "./
 import { overlayLiveUsageCounters } from "./settings-live-overlay";
 import { getLegacyDesktopLogDirectory, migrateLogDirectories, prepareLogDirectory, resolveLogDirectory } from "./log-storage";
 import { normalizeStatisticsLedger, saveStatisticsLedger } from "./statistics-ledger";
+import { NotificationOutbox } from "./notification-outbox";
+import { sendNotification } from "./notify";
 
 function sanitizeSettingsPatch(partial: Partial<AppSettings>): Partial<AppSettings> {
   const entries = Object.entries(partial || {}).filter(([, value]) => value !== undefined);
@@ -118,6 +120,8 @@ export class AppController {
 
   private storagePaths = createStoragePaths(path.join(app.getPath("userData"), "runtime"));
 
+  private notificationOutbox: NotificationOutbox;
+
   private logDirectory = this.storagePaths.baseDir;
 
   private onStateHandler: ((snapshot: UiSnapshot) => void) | null = null;
@@ -152,6 +156,21 @@ export class AppController {
     resetHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode);
     const loadResult = loadSessionWithStatus(this.storagePaths);
     const session = loadResult.session;
+    this.notificationOutbox = new NotificationOutbox({
+      filePath: this.storagePaths.notificationOutboxFile,
+      autoDrain: true,
+      send: (event) => sendNotification(this.settings.notifyUrl, {
+        title: event.payload.title,
+        message: event.payload.description || "",
+        mention: this.settings.notifyMention,
+        color: event.payload.color ?? (event.priority === "error" ? 0xe74c3c : 0x2ecc71),
+        fields: event.payload.fields,
+        timestamp: event.createdAt
+      })
+    });
+    void this.notificationOutbox.drain().catch((error) => {
+      logger.warn(`Notification-Outbox konnte nicht gestartet werden: ${String(error)}`);
+    });
     this.megaWebFallback = new MegaWebFallback(() => ({
       login: this.settings.megaLogin,
       password: this.settings.megaPassword
@@ -1276,6 +1295,9 @@ export class AppController {
     stopDebugServer();
     abortActiveUpdateDownload();
     cancelPendingAsyncSaves();
+    void this.notificationOutbox.drainForShutdown().catch((error) => {
+      logger.warn(`Notification-Outbox konnte beim Beenden nicht geleert werden: ${String(error)}`);
+    });
     this.manager.prepareForShutdown();
     this.megaWebFallback.dispose();
     for (const fallback of this.realDebridWebFallbacks.values()) {
