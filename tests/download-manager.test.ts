@@ -862,6 +862,74 @@ describe("deterministic stop and restart lifecycle", () => {
     manager.stop();
   });
 
+  it.each(["packages", "items"] as const)("keeps a targeted %s start pending until the stopped run drains", async (scope) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `rd-pending-${scope}-drain-`));
+    tempDirs.push(root);
+    const accountId = `rdw_pending_${scope}`;
+    const attempts: Array<{ link: string; signal: AbortSignal }> = [];
+    let finishFirstAbort!: () => void;
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        realDebridUseWebLogin: true,
+        realDebridWebAccountIds: [accountId],
+        providerOrder: ["realdebrid"],
+        autoExtract: false,
+        maxParallel: 1
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state")),
+      {
+        realDebridWebUnrestrict: async (_requestedAccountId, link, signal) => {
+          if (!signal) {
+            throw new Error("missing abort signal");
+          }
+          attempts.push({ link, signal });
+          return new Promise<UnrestrictedLink | null>((_resolve, reject) => {
+            const rejectAborted = () => {
+              if (attempts.length === 1) {
+                finishFirstAbort = () => reject(new Error("aborted:test-web"));
+              }
+            };
+            if (signal.aborted) {
+              rejectAborted();
+            } else {
+              signal.addEventListener("abort", rejectAborted, { once: true });
+            }
+          });
+        }
+      }
+    );
+    manager.addPackages([
+      { name: "old-run", links: ["https://rapidgator.net/file/old-run"] },
+      { name: "target-run", links: ["https://rapidgator.net/file/target-run"] }
+    ]);
+    const snapshot = manager.getSnapshot();
+    const oldPackageId = snapshot.session.packageOrder[0];
+    const targetPackageId = snapshot.session.packageOrder[1];
+    const targetItemId = snapshot.session.packages[targetPackageId].itemIds[0];
+
+    await manager.startPackages([oldPackageId]);
+    await waitFor(() => attempts.length === 1);
+    manager.stop();
+    if (scope === "packages") {
+      await manager.startPackages([targetPackageId]);
+    } else {
+      await manager.startItems([targetItemId]);
+    }
+
+    expect(manager.getSnapshot()).toMatchObject({
+      session: { running: false },
+      lifecycle: { phase: "stopping", pendingStart: true }
+    });
+    finishFirstAbort();
+    await waitFor(() => attempts.length === 2);
+    expect(attempts[1].link).toContain("target-run");
+    expect((manager as any).runPackageIds).toEqual(new Set([targetPackageId]));
+
+    manager.stop();
+  });
+
   it("keeps a newer task owner when cleanup from the previous generation arrives late", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-active-owner-generation-"));
     tempDirs.push(root);

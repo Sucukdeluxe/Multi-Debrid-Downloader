@@ -486,6 +486,11 @@ type RunLifecycleContext = {
   remainingNotification: RemainingThresholdState;
 };
 
+type StartRequest =
+  | { kind: "all"; excludePackageIds?: ReadonlySet<string> }
+  | { kind: "packages"; packageIds: readonly string[] }
+  | { kind: "items"; itemIds: readonly string[] };
+
 function generateHistoryId(): string {
   return `hist-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -1845,7 +1850,7 @@ export class DownloadManager extends EventEmitter {
   private lifecycleGeneration = 0;
   private lifecyclePhase: DownloadLifecycleSnapshot["phase"] = "idle";
   private lifecycleReason = "Bereit";
-  private pendingStartOptions: { excludePackageIds?: ReadonlySet<string> } | null = null;
+  private pendingStartRequest: StartRequest | null = null;
   private startOperations = new Set<number>();
 
   private persistTimer: NodeJS.Timeout | null = null;
@@ -4012,7 +4017,7 @@ export class DownloadManager extends EventEmitter {
   private getLifecycleSnapshot(retryAt: number | null, hasUsableAccount: boolean): DownloadLifecycleSnapshot {
     const activeDownloads = this.activeTasks.size;
     const activePostProcessing = this.getActivePostProcessingCount();
-    const pendingStart = this.pendingStartOptions !== null;
+    const pendingStart = this.pendingStartRequest !== null;
     if (this.lifecyclePhase === "stopping") {
       return {
         phase: "stopping",
@@ -4084,13 +4089,13 @@ export class DownloadManager extends EventEmitter {
       || this.getActivePostProcessingCount() > 0) {
       return;
     }
-    const pendingOptions = this.pendingStartOptions;
-    this.pendingStartOptions = null;
+    const pendingRequest = this.pendingStartRequest;
+    this.pendingStartRequest = null;
     this.lifecyclePhase = "idle";
     this.lifecycleReason = "Bereit";
     this.emitState(true);
-    if (pendingOptions) {
-      void this.start(pendingOptions).catch((error) => {
+    if (pendingRequest) {
+      void this.executeStartRequest(pendingRequest).catch((error) => {
         this.lifecyclePhase = "idle";
         this.lifecycleReason = compactErrorText(error);
         this.emitState(true);
@@ -6307,8 +6312,86 @@ export class DownloadManager extends EventEmitter {
   }
 
   public async startPackages(packageIds: string[]): Promise<void> {
+    await this.executeStartRequest({ kind: "packages", packageIds: [...packageIds] });
+  }
+
+  public async startItems(itemIds: string[]): Promise<void> {
+    await this.executeStartRequest({ kind: "items", itemIds: [...itemIds] });
+  }
+
+  public async start(options?: { excludePackageIds?: ReadonlySet<string> }): Promise<void> {
+    await this.executeStartRequest({
+      kind: "all",
+      excludePackageIds: options?.excludePackageIds ? new Set(options.excludePackageIds) : undefined
+    });
+  }
+
+  private cloneStartRequest(request: StartRequest): StartRequest {
+    if (request.kind === "packages") {
+      return { kind: "packages", packageIds: [...request.packageIds] };
+    }
+    if (request.kind === "items") {
+      return { kind: "items", itemIds: [...request.itemIds] };
+    }
+    return {
+      kind: "all",
+      excludePackageIds: request.excludePackageIds ? new Set(request.excludePackageIds) : undefined
+    };
+  }
+
+  private async executeStartRequest(request: StartRequest): Promise<void> {
+    if (this.lifecyclePhase === "stopping") {
+      if (!this.pendingStartRequest) {
+        this.pendingStartRequest = this.cloneStartRequest(request);
+        this.lifecycleReason = "Start vorgemerkt";
+        this.emitState(true);
+      }
+      return;
+    }
+    if (this.lifecyclePhase === "starting") {
+      return;
+    }
+    if (request.kind === "all" && this.session.running) {
+      return;
+    }
     this.beginHealthRun();
     this.ensureUsableDownloadAccount();
+    if (this.session.running) {
+      if (request.kind === "packages") {
+        await this.startPackagesNow(request.packageIds);
+      } else if (request.kind === "items") {
+        await this.startItemsNow(request.itemIds);
+      }
+      return;
+    }
+    const generation = this.lifecycleGeneration + 1;
+    this.lifecycleGeneration = generation;
+    this.lifecyclePhase = "starting";
+    this.lifecycleReason = "Warteschlange wird vorbereitet";
+    this.startOperations.add(generation);
+    this.emitState(true);
+    try {
+      if (request.kind === "packages") {
+        await this.startPackagesNow(request.packageIds);
+      } else if (request.kind === "items") {
+        await this.startItemsNow(request.itemIds);
+      } else {
+        await this.startAllNow(request.excludePackageIds, generation);
+      }
+    } catch (error) {
+      if (this.lifecycleGeneration === generation && this.lifecyclePhase === "starting") {
+        this.lifecyclePhase = "idle";
+        this.lifecycleReason = compactErrorText(error);
+        this.emitState(true);
+      }
+      throw error;
+    } finally {
+      this.startOperations.delete(generation);
+      this.completeStopIfDrained();
+    }
+  }
+
+  private async startPackagesNow(packageIds: readonly string[]): Promise<void> {
     const targetSet = new Set(packageIds);
     for (const packageId of this.packagePostProcessTasks.keys()) {
       if (targetSet.has(packageId)) {
@@ -6361,6 +6444,8 @@ export class DownloadManager extends EventEmitter {
         return Boolean(pkg && !pkg.cancelled && pkg.enabled);
       });
     if (runItems.length === 0) {
+      this.lifecyclePhase = "idle";
+      this.lifecycleReason = "Bereit";
       this.persistSoon();
       this.emitState(true);
       return;
@@ -6378,6 +6463,8 @@ export class DownloadManager extends EventEmitter {
     this.claimedTargetPathByItem.clear();
     this.session.running = true;
     this.session.paused = false;
+    this.lifecyclePhase = "running";
+    this.lifecycleReason = "Downloads laufen";
     this.session.runStartedAt = nowMs();
     this.beginActiveRunContext(this.runPackageIds, this.session.runStartedAt);
     this.session.totalDownloadedBytes = 0;
@@ -6408,9 +6495,7 @@ export class DownloadManager extends EventEmitter {
     });
   }
 
-  public async startItems(itemIds: string[]): Promise<void> {
-    this.beginHealthRun();
-    this.ensureUsableDownloadAccount();
+  private async startItemsNow(itemIds: readonly string[]): Promise<void> {
     const targetSet = new Set(itemIds);
 
     const affectedPackageIds = new Set<string>();
@@ -6474,6 +6559,8 @@ export class DownloadManager extends EventEmitter {
         return Boolean(pkg && !pkg.cancelled && pkg.enabled);
       });
     if (runItems.length === 0) {
+      this.lifecyclePhase = "idle";
+      this.lifecycleReason = "Bereit";
       this.persistSoon();
       this.emitState(true);
       return;
@@ -6491,6 +6578,8 @@ export class DownloadManager extends EventEmitter {
     this.claimedTargetPathByItem.clear();
     this.session.running = true;
     this.session.paused = false;
+    this.lifecyclePhase = "running";
+    this.lifecycleReason = "Downloads laufen";
     this.session.runStartedAt = nowMs();
     this.beginActiveRunContext(this.runPackageIds, this.session.runStartedAt);
     this.session.totalDownloadedBytes = 0;
@@ -6521,37 +6610,12 @@ export class DownloadManager extends EventEmitter {
     });
   }
 
-  public async start(options?: { excludePackageIds?: ReadonlySet<string> }): Promise<void> {
-    if (this.lifecyclePhase === "stopping") {
-      if (!this.pendingStartOptions) {
-        this.pendingStartOptions = options?.excludePackageIds
-          ? { excludePackageIds: new Set(options.excludePackageIds) }
-          : {};
-        this.lifecycleReason = "Start vorgemerkt";
-        this.emitState(true);
-      }
-      return;
-    }
-    if (this.session.running) {
-      return;
-    }
-    if (this.lifecyclePhase === "starting") {
-      return;
-    }
-    const generation = this.lifecycleGeneration + 1;
-    this.lifecycleGeneration = generation;
-    this.lifecyclePhase = "starting";
-    this.lifecycleReason = "Warteschlange wird vorbereitet";
-    this.startOperations.add(generation);
-    this.emitState(true);
-    try {
-      this.beginHealthRun();
-      this.ensureUsableDownloadAccount();
+  private async startAllNow(excludePackageIds: ReadonlySet<string> | undefined, generation: number): Promise<void> {
       this.session.running = true;
       this.session.paused = false;
     const recoveryRunPackageIds = new Set(this.session.packageOrder.filter((packageId) => {
       const pkg = this.session.packages[packageId];
-      return Boolean(pkg && !pkg.cancelled && pkg.enabled && !options?.excludePackageIds?.has(packageId));
+      return Boolean(pkg && !pkg.cancelled && pkg.enabled && !excludePackageIds?.has(packageId));
     }));
     for (const packageId of this.packagePostProcessTasks.keys()) {
       this.trackStandalonePackageResult(packageId);
@@ -6596,7 +6660,7 @@ export class DownloadManager extends EventEmitter {
         if (item.status !== "queued" && item.status !== "reconnect_wait") {
           return false;
         }
-        if (options?.excludePackageIds?.has(item.packageId)) {
+        if (excludePackageIds?.has(item.packageId)) {
           return false;
         }
         const pkg = this.session.packages[item.packageId];
@@ -6669,8 +6733,8 @@ export class DownloadManager extends EventEmitter {
     this.itemContributedBytes.clear();
     this.reservedTargetPaths.clear();
     this.claimedTargetPathByItem.clear();
-    if (options?.excludePackageIds) {
-      for (const excluded of options.excludePackageIds) {
+    if (excludePackageIds) {
+      for (const excluded of excludePackageIds) {
         this.runPackageIds.delete(excluded);
       }
     }
@@ -6707,17 +6771,6 @@ export class DownloadManager extends EventEmitter {
       this.persistSoon();
       this.emitState(true);
     });
-    } catch (error) {
-      if (this.lifecycleGeneration === generation && this.lifecyclePhase === "starting") {
-        this.lifecyclePhase = "idle";
-        this.lifecycleReason = compactErrorText(error);
-        this.emitState(true);
-      }
-      throw error;
-    } finally {
-      this.startOperations.delete(generation);
-      this.completeStopIfDrained();
-    }
   }
 
   public stop(options?: { parkForRestart?: boolean }): void {
@@ -6727,7 +6780,7 @@ export class DownloadManager extends EventEmitter {
     this.lifecyclePhase = "stopping";
     this.lifecycleReason = "Laufende Arbeit wird beendet";
     if (!wasStopping) {
-      this.pendingStartOptions = null;
+      this.pendingStartRequest = null;
     }
     this.healthManualStop = !parkForRestart;
     this.healthShuttingDown = parkForRestart;

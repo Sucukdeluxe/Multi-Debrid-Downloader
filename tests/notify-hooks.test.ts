@@ -664,11 +664,13 @@ describe("authoritative run completion", () => {
 
     const packageB = addPackage(session, ["queued"], "follow-up-package");
     await manager.start();
-    expect(session.running).toBe(true);
-    expect(state.runPackageIds).toEqual(new Set([packageB.id]));
+    expect(session.running).toBe(false);
+    expect(manager.getSnapshot().lifecycle).toMatchObject({ phase: "stopping", pendingStart: true });
 
     releasePostProcess();
     await latePostProcess;
+    await vi.waitFor(() => expect(manager.getSnapshot().lifecycle).toMatchObject({ phase: "running", pendingStart: false }));
+    expect(state.runPackageIds).toEqual(new Set([packageB.id]));
     await flushNotifications();
     expect(events.filter((event) => event.type === "package_completed")).toHaveLength(0);
     expect(history).toHaveLength(0);
