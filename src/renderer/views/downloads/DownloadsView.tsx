@@ -1,4 +1,5 @@
 import type { ReactElement } from "react";
+import type { DownloadLifecycleSnapshot } from "../../../shared/types";
 import { RollingMetricValue } from "../../ui/RollingMetricValue";
 import { SlidingSelection } from "../../ui/SlidingSelection";
 import type { DownloadsViewModelCore, DownloadDisplayMode, DownloadSidebarFilter } from "./downloads-model";
@@ -54,6 +55,8 @@ export interface DownloadsViewModel extends DownloadsViewModelCore {
   sortDirection?: "asc" | "desc";
   disclosureRevision: number;
   animationsEnabled: boolean;
+  lifecycle: DownloadLifecycleSnapshot;
+  lifecycleNow: number;
   status: DownloadsStatusModel;
 }
 
@@ -134,7 +137,7 @@ export function DownloadsToolbar({ actions, model }: { actions: DownloadsViewAct
   const scheduleSlotClass = `downloads-schedule-slot ${scheduleSlotOpen ? "is-open" : "is-closed"}${model.animationsEnabled ? "" : " is-motion-disabled"}`;
   return (
     <div className="downloads-toolbar" data-visual-region="downloads-toolbar">
-      <button disabled={model.actionBusy || !model.canStart} onClick={actions.onStartDownloads} type="button">Start</button>
+      <button disabled={model.actionBusy || !model.canStart} onClick={actions.onStartDownloads} type="button">{model.lifecycle.pendingStart ? "Start vorgemerkt" : "Start"}</button>
       <button disabled={!model.canPause || model.paused} onClick={actions.onPauseDownloads} type="button">Pause</button>
       <button disabled={!model.canStop || model.actionBusy} onClick={actions.onStopDownloads} type="button">Stop</button>
       {!model.scheduleActive ? <button aria-expanded={model.scheduleOpen} onClick={actions.onToggleSchedule} type="button">Zeitplan</button> : null}
@@ -172,12 +175,41 @@ export function DownloadsContent({ actions, model }: { actions: DownloadsViewAct
   );
 }
 
+function formatLifecycleStatus(model: DownloadsViewModel): string {
+  const phaseLabels: Record<DownloadLifecycleSnapshot["phase"], string> = {
+    idle: "Bereit",
+    starting: "Startet",
+    running: "Läuft",
+    stopping: "Stoppt",
+    waiting_provider: "Wartet auf Provider",
+    postprocessing: "Nachbearbeitung"
+  };
+  const parts = [phaseLabels[model.lifecycle.phase]];
+  if (model.lifecycle.reason && model.lifecycle.reason !== parts[0]) {
+    parts.push(model.lifecycle.reason);
+  }
+  if (model.lifecycle.retryAt && model.lifecycle.retryAt > model.lifecycleNow) {
+    parts.push(`Noch ${Math.max(1, Math.ceil((model.lifecycle.retryAt - model.lifecycleNow) / 1000))} s`);
+  }
+  const remaining: string[] = [];
+  if (model.lifecycle.activeDownloads > 0) {
+    remaining.push(`${model.lifecycle.activeDownloads} ${model.lifecycle.activeDownloads === 1 ? "Download" : "Downloads"}`);
+  }
+  if (model.lifecycle.activePostProcessing > 0) {
+    remaining.push(`${model.lifecycle.activePostProcessing} ${model.lifecycle.activePostProcessing === 1 ? "Nachbearbeitung" : "Nachbearbeitungen"}`);
+  }
+  if (remaining.length > 0) {
+    parts.push(`Restarbeit: ${remaining.join(", ")}`);
+  }
+  return parts.join(" · ");
+}
+
 export function DownloadsFooter({ actions, model }: { actions: DownloadsViewActions; model: DownloadsViewModel }): ReactElement {
   return (
     <footer className="downloads-footer" data-visual-region="downloads-pagination">
       <span>{model.paginationLabel}</span>
       {model.limited ? <button onClick={actions.onShowAllPackages} type="button">Alle anzeigen</button> : null}
-      <span>{model.running ? model.paused ? "Pausiert" : "Download läuft" : "Bereit"}</span>
+      <span role="status">{formatLifecycleStatus(model)}</span>
     </footer>
   );
 }

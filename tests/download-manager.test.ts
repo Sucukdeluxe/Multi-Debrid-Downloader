@@ -899,6 +899,109 @@ describe("deterministic stop and restart lifecycle", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(internal.activeTasks.get(itemId)).toBe(newOwner);
   });
+
+  it("emits an idle snapshot when the earliest provider cooldown expires", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-22T08:00:00.000Z"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-provider-cooldown-event-"));
+    tempDirs.push(root);
+    const accountId = "rda_cooldown_event";
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        realDebridApiTokens: serializeRealDebridApiAccounts([{ id: accountId, token: "token" }]),
+        providerOrder: ["realdebrid"],
+        autoExtract: false
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+    manager.addPackages([{ name: "cooldown", links: ["https://rapidgator.net/file/cooldown"] }]);
+    const internal = manager as unknown as { stateEmitTimer: NodeJS.Timeout | null };
+    if (internal.stateEmitTimer) {
+      clearTimeout(internal.stateEmitTimer);
+      internal.stateEmitTimer = null;
+    }
+    primeRealDebridRuntimeCooldownForTests(accountId, 1_000);
+    const events: Array<ReturnType<typeof manager.getSnapshot>> = [];
+    manager.on("state", (snapshot) => events.push(snapshot));
+
+    const waiting = manager.getSnapshot();
+    expect(waiting).toMatchObject({
+      canStart: false,
+      lifecycle: {
+        phase: "waiting_provider",
+        retryAt: Date.parse("2026-08-22T08:00:01.000Z")
+      }
+    });
+
+    await vi.advanceTimersByTimeAsync(999);
+    expect(events.some((snapshot) => snapshot.canStart)).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(events.at(-1)).toMatchObject({
+      canStart: true,
+      lifecycle: { phase: "idle", retryAt: null }
+    });
+    vi.useRealTimers();
+  });
+
+  it("keeps post-processing drain visible and starts the pending run after its abort settles", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-postprocess-stop-drain-"));
+    tempDirs.push(root);
+    const packageId = "postprocess-drain";
+    const session = emptySession();
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "postprocess-drain",
+      outputDir: path.join(root, "downloads"),
+      extractDir: path.join(root, "extract"),
+      status: "extracting",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+    const manager = new DownloadManager(
+      { ...defaultSettings(), token: "rd-token", autoExtract: true, autoExtractWhenStopped: true },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+    let postProcessSignal!: AbortSignal;
+    let finishPostProcessing!: () => void;
+    const recoverRetryableItems = vi.fn().mockResolvedValue(0);
+    const internal = manager as unknown as {
+      handlePackagePostProcessing: (packageId: string, signal: AbortSignal) => Promise<void>;
+      recoverRetryableItems: () => Promise<number>;
+      runPackagePostProcessing: (packageId: string) => Promise<void>;
+    };
+    internal.handlePackagePostProcessing = async (_requestedPackageId, signal) => {
+      postProcessSignal = signal;
+      await new Promise<void>((resolve) => {
+        finishPostProcessing = resolve;
+      });
+    };
+    internal.recoverRetryableItems = recoverRetryableItems;
+
+    const processing = internal.runPackagePostProcessing(packageId);
+    await waitFor(() => postProcessSignal !== undefined);
+    manager.stop();
+
+    expect(postProcessSignal.aborted).toBe(true);
+    await manager.start();
+    expect(manager.getSnapshot().lifecycle).toMatchObject({
+      phase: "stopping",
+      activePostProcessing: 1,
+      pendingStart: true
+    });
+
+    finishPostProcessing();
+    await processing;
+    await waitFor(() => manager.getSnapshot().lifecycle?.phase === "idle");
+    expect(recoverRetryableItems).toHaveBeenCalledTimes(1);
+    expect(manager.getSnapshot().lifecycle).toMatchObject({ activePostProcessing: 0, pendingStart: false });
+  });
 });
 
 describe("extractArchiveNameFromExtractorLogMessage", () => {
@@ -14146,8 +14249,12 @@ describe("download manager", () => {
         manager.start().then(() => "started" as const, (error) => String(error)),
         timeout
       ]);
-      expect(result).toContain("Kein aktiver Download-Account verfügbar");
-      expect(manager.getSnapshot().session.running).toBe(false);
+      expect(result).toBe("started");
+      await waitFor(() => manager.getSnapshot().lifecycle?.reason.includes("Kein aktiver Download-Account verfügbar") === true);
+      expect(manager.getSnapshot()).toMatchObject({
+        session: { running: false },
+        lifecycle: { phase: "idle", pendingStart: false }
+      });
     } finally {
       server.close();
       await once(server, "close");

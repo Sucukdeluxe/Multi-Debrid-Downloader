@@ -142,6 +142,28 @@ describe("alldebrid-web", () => {
     }));
   });
 
+  it("releases an aborted caller while the active web request ignores its signal", async () => {
+    let rejectRequest!: (error: Error) => void;
+    mockFetch.mockReturnValue(new Promise<Response>((_resolve, reject) => {
+      rejectRequest = reject;
+    }));
+    const fallback = new AllDebridWebFallback(() => true);
+    const controller = new AbortController();
+    const running = fallback.unrestrict("https://rapidgator.net/file/abort-race", controller.signal)
+      .then(() => "resolved" as const, (error) => String(error));
+
+    await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+    controller.abort("test-stop");
+    const outcome = await Promise.race([
+      running,
+      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 200))
+    ]);
+
+    expect(outcome).toContain("aborted:alldebrid-web");
+    rejectRequest(new Error("late alldebrid rejection"));
+    await Promise.resolve();
+  });
+
   it("opens the login window after login_required and retries generation with the same session partition", async () => {
     mockFetch
       .mockResolvedValueOnce(new Response("login", { status: 200 }))

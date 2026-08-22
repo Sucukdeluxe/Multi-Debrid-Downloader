@@ -62,7 +62,7 @@ function releaseTlsSkip(): void {
 }
 import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 import { planDownloadCompletion, reconcileFinalizedSize, validateDownloadedFileCompletion } from "./download-completion";
-import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkDdownloadOnline, checkOneFichierLinks, checkRapidgatorOnline, fetchAllDebridHostInfo, filenameFromDdownloadUrlPath, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, isDdownloadLink, isOneFichierLink, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown, type DdownloadCheckResult, type OneFichierCheckResult } from "./debrid";
+import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkDdownloadOnline, checkOneFichierLinks, checkRapidgatorOnline, fetchAllDebridHostInfo, filenameFromDdownloadUrlPath, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getNextProviderRuntimeRetryAt, getRealDebridAccountAttemptTimeoutMs, isDdownloadLink, isOneFichierLink, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown, type DdownloadCheckResult, type OneFichierCheckResult } from "./debrid";
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo, type ExtractProgressUpdate } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { classifyDiskError } from "./fs-error";
@@ -1858,6 +1858,8 @@ export class DownloadManager extends EventEmitter {
 
   private stateEmitTimer: NodeJS.Timeout | null = null;
   private lastStateEmitAt = 0;
+  private providerRetryTimer: NodeJS.Timeout | null = null;
+  private providerRetryAt = 0;
 
   private speedBytesLastWindow = 0;
 
@@ -2732,6 +2734,10 @@ export class DownloadManager extends EventEmitter {
     const now = nowMs();
     this.ensureProviderDailyUsageFresh(now, true);
     this.pruneSpeedEvents(now);
+    const hasUsableAccount = this.hasUsableDownloadAccount();
+    const providerRetryAt = this.getEarliestProviderRetryAt(now);
+    this.syncProviderRetryTimer(providerRetryAt, now);
+    const lifecycle = this.getLifecycleSnapshot(providerRetryAt, hasUsableAccount);
     const paused = this.session.running && this.session.paused;
     const speedBps = !this.session.running || paused ? 0 : this.speedBytesLastWindow / SPEED_WINDOW_SECONDS;
 
@@ -2781,7 +2787,7 @@ export class DownloadManager extends EventEmitter {
     return {
       rotationEvents: getRecentRotationEvents(40),
       accountRuntime: createAccountRuntimeEntries(rendererState.accounts, Object.values(snapshotSession.items), now),
-      lifecycle: this.getLifecycleSnapshot(),
+      lifecycle,
       settings: rendererState.settings,
       accounts: rendererState.accounts,
       session: snapshotSession,
@@ -2789,7 +2795,9 @@ export class DownloadManager extends EventEmitter {
       stats: this.getStats(now),
       speedText: `Geschwindigkeit: ${humanSize(Math.max(0, Math.floor(speedBps)))}/s`,
       etaText: paused || !this.session.running ? "ETA: --" : `ETA: ${formatEta(eta)}`,
-      canStart: (!this.session.running || paused) && this.hasUsableDownloadAccount(),
+      canStart: hasUsableAccount && (paused || (!this.session.running
+        && lifecycle.phase !== "waiting_provider"
+        && (lifecycle.phase !== "stopping" || !lifecycle.pendingStart))),
       canStop: this.session.running,
       canPause: this.session.running,
       clipboardActive: this.settings.clipboardWatch,
@@ -3260,6 +3268,11 @@ export class DownloadManager extends EventEmitter {
     if (this.stateEmitTimer) {
       clearTimeout(this.stateEmitTimer);
       this.stateEmitTimer = null;
+    }
+    if (this.providerRetryTimer) {
+      clearTimeout(this.providerRetryTimer);
+      this.providerRetryTimer = null;
+      this.providerRetryAt = 0;
     }
     this.session.packageOrder = [];
     this.session.packages = {};
@@ -3926,7 +3939,42 @@ export class DownloadManager extends EventEmitter {
     return tasks.size;
   }
 
-  private getLifecycleSnapshot(): DownloadLifecycleSnapshot {
+  private getEarliestProviderRetryAt(now: number): number | null {
+    const deadlines = [...this.providerFailures.values()]
+      .map((entry) => entry.cooldownUntil)
+      .filter((deadline) => Number.isFinite(deadline) && deadline > now);
+    const runtimeRetryAt = getNextProviderRuntimeRetryAt(now);
+    if (runtimeRetryAt) {
+      deadlines.push(runtimeRetryAt);
+    }
+    return deadlines.length > 0 ? Math.min(...deadlines) : null;
+  }
+
+  private syncProviderRetryTimer(retryAt: number | null, now: number): void {
+    if (!retryAt || retryAt <= now) {
+      if (this.providerRetryTimer) {
+        clearTimeout(this.providerRetryTimer);
+        this.providerRetryTimer = null;
+      }
+      this.providerRetryAt = 0;
+      return;
+    }
+    if (this.providerRetryTimer && this.providerRetryAt === retryAt) {
+      return;
+    }
+    if (this.providerRetryTimer) {
+      clearTimeout(this.providerRetryTimer);
+    }
+    this.providerRetryAt = retryAt;
+    this.providerRetryTimer = setTimeout(() => {
+      this.providerRetryTimer = null;
+      this.providerRetryAt = 0;
+      this.emitState(true);
+    }, Math.min(2_147_483_647, Math.max(0, retryAt - now)));
+    this.providerRetryTimer.unref?.();
+  }
+
+  private getLifecycleSnapshot(retryAt: number | null, hasUsableAccount: boolean): DownloadLifecycleSnapshot {
     const activeDownloads = this.activeTasks.size;
     const activePostProcessing = this.getActivePostProcessingCount();
     const pendingStart = this.pendingStartOptions !== null;
@@ -3934,7 +3982,7 @@ export class DownloadManager extends EventEmitter {
       return {
         phase: "stopping",
         reason: pendingStart ? "Start vorgemerkt, laufende Arbeit wird beendet" : "Laufende Arbeit wird beendet",
-        retryAt: null,
+        retryAt,
         activeDownloads,
         activePostProcessing,
         pendingStart
@@ -3944,18 +3992,28 @@ export class DownloadManager extends EventEmitter {
       return {
         phase: "starting",
         reason: this.lifecycleReason,
-        retryAt: null,
+        retryAt,
         activeDownloads,
         activePostProcessing,
         pendingStart
       };
     }
     if (this.session.running) {
+      if (activeDownloads === 0 && retryAt) {
+        return {
+          phase: "waiting_provider",
+          reason: "Provider vorübergehend nicht verfügbar",
+          retryAt,
+          activeDownloads,
+          activePostProcessing,
+          pendingStart
+        };
+      }
       const postprocessing = activeDownloads === 0 && activePostProcessing > 0;
       return {
         phase: postprocessing ? "postprocessing" : "running",
         reason: postprocessing ? "Nachbearbeitung läuft" : this.session.paused ? "Downloads pausiert" : "Downloads laufen",
-        retryAt: null,
+        retryAt,
         activeDownloads,
         activePostProcessing,
         pendingStart
@@ -3965,16 +4023,19 @@ export class DownloadManager extends EventEmitter {
       return {
         phase: "postprocessing",
         reason: "Nachbearbeitung läuft",
-        retryAt: null,
+        retryAt,
         activeDownloads,
         activePostProcessing,
         pendingStart
       };
     }
+    const waitingForProvider = !hasUsableAccount && retryAt !== null;
     return {
-      phase: "idle",
-      reason: this.lifecycleReason,
-      retryAt: null,
+      phase: waitingForProvider ? "waiting_provider" : "idle",
+      reason: waitingForProvider
+        ? "Provider vorübergehend nicht verfügbar"
+        : hasUsableAccount ? this.lifecycleReason : "Kein aktiver Download-Account verfügbar",
+      retryAt,
       activeDownloads,
       activePostProcessing,
       pendingStart
@@ -6451,6 +6512,8 @@ export class DownloadManager extends EventEmitter {
     try {
       this.beginHealthRun();
       this.ensureUsableDownloadAccount();
+      this.session.running = true;
+      this.session.paused = false;
     const recoveryRunPackageIds = new Set(this.session.packageOrder.filter((packageId) => {
       const pkg = this.session.packages[packageId];
       return Boolean(pkg && !pkg.cancelled && pkg.enabled && !options?.excludePackageIds?.has(packageId));
@@ -6460,12 +6523,12 @@ export class DownloadManager extends EventEmitter {
     }
 
     const recoveredItems = await this.recoverRetryableItems("start", recoveryRunPackageIds);
-    if (this.lifecycleGeneration !== generation || this.lifecyclePhase === "stopping") {
+    if (this.lifecycleGeneration !== generation) {
       return;
     }
 
     await sleep(0);
-    if (this.lifecycleGeneration !== generation || this.lifecyclePhase === "stopping") {
+    if (this.lifecycleGeneration !== generation) {
       return;
     }
 
@@ -6631,7 +6694,6 @@ export class DownloadManager extends EventEmitter {
     this.healthManualStop = !parkForRestart;
     this.healthShuttingDown = parkForRestart;
     const abortReason: "stop" | "shutdown" = parkForRestart ? "shutdown" : "stop";
-    const keepExtraction = this.settings.autoExtractWhenStopped;
     const wasRunning = this.session.running;
     const stoppedRunContext = wasRunning
       ? this.stopActiveRunContext(this.runPackageIds, this.session.runStartedAt)
@@ -6652,12 +6714,10 @@ export class DownloadManager extends EventEmitter {
     this.speedBytesLastWindow = 0;
     this.speedBytesPerPackage.clear();
     this.speedEventsHead = 0;
-    if (!keepExtraction) {
-      this.abortPostProcessing("stop");
-      for (const waiter of this.packagePostProcessWaiters) { waiter.resolve(); }
-      this.packagePostProcessWaiters = [];
-      this.packagePostProcessActive = 0;
-    }
+    this.abortPostProcessing("stop");
+    for (const waiter of this.packagePostProcessWaiters) { waiter.resolve(); }
+    this.packagePostProcessWaiters = [];
+    this.packagePostProcessActive = 0;
     for (const active of this.activeTasks.values()) {
       active.abortReason = abortReason;
       active.abortController.abort(abortReason);
@@ -6672,9 +6732,6 @@ export class DownloadManager extends EventEmitter {
       }
     }
     for (const pkg of Object.values(this.session.packages)) {
-      if (keepExtraction && (pkg.status === "extracting" || pkg.status === "integrity_check")) {
-        continue;
-      }
       if (pkg.status === "downloading" || pkg.status === "validating"
         || pkg.status === "extracting" || pkg.status === "integrity_check"
         || pkg.status === "paused" || pkg.status === "reconnect_wait") {
@@ -6716,6 +6773,11 @@ export class DownloadManager extends EventEmitter {
     if (this.stateEmitTimer) {
       clearTimeout(this.stateEmitTimer);
       this.stateEmitTimer = null;
+    }
+    if (this.providerRetryTimer) {
+      clearTimeout(this.providerRetryTimer);
+      this.providerRetryTimer = null;
+      this.providerRetryAt = 0;
     }
     this.session.running = false;
     this.session.paused = false;
@@ -14250,6 +14312,8 @@ export class DownloadManager extends EventEmitter {
     const completedAt = nowMs();
     this.session.running = false;
     this.session.paused = false;
+    this.lifecyclePhase = "idle";
+    this.lifecycleReason = "Bereit";
     this.session.runStartedAt = 0;
     const total = this.runItemIds.size;
     const outcomes = Array.from(this.runOutcomes.values());

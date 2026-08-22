@@ -797,6 +797,15 @@ function withRuntime(input: DownloadsModelInput, overrides: Partial<DownloadsVie
     packageSpeedBps: { "package-a": 12_000_000 },
     disclosureRevision: 0,
     animationsEnabled: true,
+    lifecycle: {
+      phase: "running",
+      reason: "Downloads laufen",
+      retryAt: null,
+      activeDownloads: 1,
+      activePostProcessing: 0,
+      pendingStart: false
+    },
+    lifecycleNow: now,
     editingPackageId: null,
     editingName: "",
     columnOrder: ["name", "size", "hoster", "progress"] as const,
@@ -1146,6 +1155,61 @@ describe("downloads view", () => {
     expect(findButton(toolbar, "Pause").props.disabled).toBe(true);
     expect(findButton(toolbar, "Stop").props.disabled).toBe(true);
     expect(renderToStaticMarkup(toolbar)).not.toContain("Reconnect");
+  });
+
+  it("accepts a start during stopping and then shows the accepted pending request", () => {
+    const actions = createActions();
+    const stopping = {
+      ...withRuntime(createInput(), { running: false, canStart: true, canPause: false }),
+      lifecycle: {
+        phase: "stopping",
+        reason: "Laufende Arbeit wird beendet",
+        retryAt: null,
+        activeDownloads: 1,
+        activePostProcessing: 0,
+        pendingStart: false
+      },
+      lifecycleNow: now
+    } as DownloadsViewModel;
+    const pending = {
+      ...stopping,
+      canStart: false,
+      lifecycle: { ...stopping.lifecycle, pendingStart: true, reason: "Start vorgemerkt, laufende Arbeit wird beendet" }
+    } as DownloadsViewModel;
+
+    expect(findButton(DownloadsToolbar({ actions, model: stopping }), "Start").props.disabled).toBe(false);
+    expect(findButton(DownloadsToolbar({ actions, model: pending }), "Start vorgemerkt").props.disabled).toBe(true);
+  });
+
+  it("shows lifecycle phase, reason, retry countdown and remaining drain work", () => {
+    const stopping = {
+      ...withRuntime(createInput(), { running: false }),
+      lifecycle: {
+        phase: "stopping",
+        reason: "Laufende Arbeit wird beendet",
+        retryAt: null,
+        activeDownloads: 2,
+        activePostProcessing: 1,
+        pendingStart: false
+      },
+      lifecycleNow: now
+    } as DownloadsViewModel;
+    const waiting = {
+      ...stopping,
+      lifecycle: {
+        phase: "waiting_provider",
+        reason: "Provider vorübergehend nicht verfügbar",
+        retryAt: now + 3_200,
+        activeDownloads: 0,
+        activePostProcessing: 0,
+        pendingStart: false
+      }
+    } as DownloadsViewModel;
+
+    const stoppingHtml = renderToStaticMarkup(<DownloadsFooter actions={createActions()} model={stopping} />);
+    const waitingHtml = renderToStaticMarkup(<DownloadsFooter actions={createActions()} model={waiting} />);
+    expect(stoppingHtml).toContain("Stoppt · Laufende Arbeit wird beendet · Restarbeit: 2 Downloads, 1 Nachbearbeitung");
+    expect(waitingHtml).toContain("Wartet auf Provider · Provider vorübergehend nicht verfügbar · Noch 4 s");
   });
 
   it("blocks resume without a usable account and keeps pause independent from unrelated action busy state", () => {

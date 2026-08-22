@@ -588,6 +588,16 @@ export function getProviderRuntimeSnapshot(now = Date.now()): ProviderRuntimeSna
   };
 }
 
+export function getNextProviderRuntimeRetryAt(now = Date.now()): number | null {
+  const deadlines = [
+    ...[...realDebridAccountCooldowns.values()].map((entry) => entry.until),
+    ...[...megaDebridAccountCooldowns.values()].map((entry) => entry.until),
+    ...debridLinkKeyCooldowns.values(),
+    ...debridLinkKeyHostCooldowns.values()
+  ].filter((deadline) => Number.isFinite(deadline) && deadline > now);
+  return deadlines.length > 0 ? Math.min(...deadlines) : null;
+}
+
 const LINKSNAPPY_API_BASE = "https://linksnappy.com/api";
 
 const PROVIDER_LABELS: Record<DebridProvider, string> = {

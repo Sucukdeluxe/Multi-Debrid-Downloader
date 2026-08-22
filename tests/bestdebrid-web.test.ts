@@ -164,4 +164,32 @@ describe("bestdebrid-web", () => {
     expect(mockFetch.mock.calls[0]?.[0]).toBe("https://bestdebrid.com/api/v1/generateLink");
     expect(mockFetch.mock.calls[1]?.[0]).toBe("https://bestdebrid.com/en/downloader/");
   });
+
+  it("releases an aborted caller while the active web request ignores its signal", async () => {
+    const filePath = createCookieFile([
+      "# Netscape HTTP Cookie File",
+      "bestdebrid.com\tFALSE\t/\tTRUE\t1803585385\tPHPSESSID\tsecret-session"
+    ].join("\n"));
+    tempFiles.push(filePath);
+    const fallback = new BestDebridWebFallback(() => true);
+    await fallback.importCookiesFromFile(filePath);
+    let rejectRequest!: (error: Error) => void;
+    mockFetch.mockReturnValue(new Promise<Response>((_resolve, reject) => {
+      rejectRequest = reject;
+    }));
+    const controller = new AbortController();
+    const running = fallback.unrestrict("https://1fichier.com/?abort-race", controller.signal)
+      .then(() => "resolved" as const, (error) => String(error));
+
+    await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+    controller.abort("test-stop");
+    const outcome = await Promise.race([
+      running,
+      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 200))
+    ]);
+
+    expect(outcome).toContain("aborted:bestdebrid-web");
+    rejectRequest(new Error("late bestdebrid rejection"));
+    await Promise.resolve();
+  });
 });

@@ -191,6 +191,28 @@ describe("realdebrid-web", () => {
     expect(mockBrowserWindowCtor).not.toHaveBeenCalled();
   });
 
+  it("releases an aborted caller while the active web request ignores its signal", async () => {
+    let rejectRequest!: (error: Error) => void;
+    mockSessionFetch.mockReturnValue(new Promise<Response>((_resolve, reject) => {
+      rejectRequest = reject;
+    }));
+    const fallback = new RealDebridWebFallback("persist:realdebrid-web-rdw_abort_race", () => true);
+    const controller = new AbortController();
+    const running = fallback.unrestrict("https://rapidgator.net/file/abort-race", controller.signal)
+      .then(() => "resolved" as const, (error) => String(error));
+
+    await vi.waitFor(() => expect(mockSessionFetch).toHaveBeenCalledTimes(1));
+    controller.abort("test-stop");
+    const outcome = await Promise.race([
+      running,
+      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 200))
+    ]);
+
+    expect(outcome).toContain("aborted:realdebrid-web");
+    rejectRequest(new Error("late realdebrid rejection"));
+    await Promise.resolve();
+  });
+
   it("does not open a login window for an authenticated account with a fair-use error", async () => {
     mockSessionFetch.mockResolvedValue(new Response("<input name=\"private_token\" value=\"session-token\">", { status: 200 }));
     vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => new Response(JSON.stringify({

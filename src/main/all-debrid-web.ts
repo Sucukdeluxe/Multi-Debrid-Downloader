@@ -71,6 +71,42 @@ async function sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void> 
   });
 }
 
+async function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) {
+    return promise;
+  }
+  if (signal.aborted) {
+    throw abortError();
+  }
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const onAbort = (): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      reject(abortError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then((value) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      resolve(value);
+    }, (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      reject(error);
+    });
+  });
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -282,7 +318,7 @@ export class AllDebridWebFallback {
     };
     const run = this.queue.then(guardedJob, guardedJob);
     this.queue = run.then(() => undefined, () => undefined);
-    return run;
+    return raceWithAbort(run, signal);
   }
 
   private async ensureLoginWindow(): Promise<BrowserWindow> {

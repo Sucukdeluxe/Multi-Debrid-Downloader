@@ -827,7 +827,8 @@ const emptySnapshot = (): UiSnapshot => ({
     paused: false, running: false, updatedAt: Date.now()
   },
   summary: null, stats: emptyStats(), speedText: "Geschwindigkeit: 0 B/s", etaText: "ETA: --",
-  canStart: false, canStop: false, canPause: false, clipboardActive: false, reconnectSeconds: 0, packageSpeedBps: {}
+  canStart: false, canStop: false, canPause: false, clipboardActive: false, reconnectSeconds: 0, packageSpeedBps: {},
+  lifecycle: { phase: "idle", reason: "Bereit", retryAt: null, activeDownloads: 0, activePostProcessing: 0, pendingStart: false }
 });
 
 const cleanupLabels: Record<string, string> = {
@@ -4816,6 +4817,14 @@ export function App(): ReactElement {
   }, [liveDownloadSpeedBps, snapshot.packageSpeedBps, snapshot.session.paused, snapshot.session.running]);
   const downloadQueueTotalBytes = useMemo(() => getDownloadQueueTotalBytes(Object.values(snapshot.session.items)), [snapshot.session.items]);
   const downloadRemaining = useMemo(() => getRemainingDownloadBytes(Object.values(snapshot.session.items)), [snapshot.session.items]);
+  const downloadLifecycle = useMemo(() => snapshot.lifecycle ?? {
+    phase: snapshot.session.running ? "running" as const : "idle" as const,
+    reason: snapshot.session.running ? "Downloads laufen" : "Bereit",
+    retryAt: null,
+    activeDownloads: Object.values(snapshot.session.items).filter((item) => item.status === "downloading" || item.status === "validating").length,
+    activePostProcessing: 0,
+    pendingStart: false
+  }, [snapshot.lifecycle, snapshot.session.items, snapshot.session.running]);
   const downloadsViewModel = useMemo<DownloadsViewModel>(() => ({
     ...downloadsViewCore,
     running: snapshot.session.running,
@@ -4846,6 +4855,8 @@ export function App(): ReactElement {
     sortDirection: downloadsSortDescending ? "desc" : "asc",
     disclosureRevision: downloadDisclosureRevision,
     animationsEnabled: snapshot.settings.animatePackageDisclosure,
+    lifecycle: downloadLifecycle,
+    lifecycleNow: runtimeNow,
     status: {
       packages: snapshot.stats.totalPackages,
       links: getPendingDownloadItemCount(Object.values(snapshot.session.items)),
@@ -4860,7 +4871,7 @@ export function App(): ReactElement {
       speed: liveDownloadSpeedBps > 0 ? formatSpeedMbps(liveDownloadSpeedBps) : "0 B/s",
       eta: snapshot.etaText
     }
-  }), [actionBusy, columnOrder, downloadDisclosureRevision, downloadPackageSpeeds, downloadQueueTotalBytes, downloadRemaining, downloadsSortColumn, downloadsSortDescending, downloadsViewCore, editingName, editingPackageId, gridTemplate, liveDownloadSpeedBps, providerStats.length, scheduleCountdown, schedulePickerOpen, scheduleStartDay, scheduleTimeInput, snapshot.canPause, snapshot.canStart, snapshot.canStop, snapshot.clipboardActive, snapshot.etaText, snapshot.reconnectSeconds, snapshot.session.items, snapshot.session.paused, snapshot.session.reconnectReason, snapshot.session.running, snapshot.settings.animatePackageDisclosure, snapshot.settings.dailyStartEnabled, snapshot.settings.dailyStartMinuteOfDay, snapshot.settings.scheduledStartEpochMs, snapshot.stats.totalDownloaded, snapshot.stats.totalPackages]);
+  }), [actionBusy, columnOrder, downloadDisclosureRevision, downloadLifecycle, downloadPackageSpeeds, downloadQueueTotalBytes, downloadRemaining, downloadsSortColumn, downloadsSortDescending, downloadsViewCore, editingName, editingPackageId, gridTemplate, liveDownloadSpeedBps, providerStats.length, runtimeNow, scheduleCountdown, schedulePickerOpen, scheduleStartDay, scheduleTimeInput, snapshot.canPause, snapshot.canStart, snapshot.canStop, snapshot.clipboardActive, snapshot.etaText, snapshot.reconnectSeconds, snapshot.session.items, snapshot.session.paused, snapshot.session.reconnectReason, snapshot.session.running, snapshot.settings.animatePackageDisclosure, snapshot.settings.dailyStartEnabled, snapshot.settings.dailyStartMinuteOfDay, snapshot.settings.scheduledStartEpochMs, snapshot.stats.totalDownloaded, snapshot.stats.totalPackages]);
 
   const resetColumnLayout = useCallback((): void => {
     if (columnDragSettleTimerRef.current !== null) {
