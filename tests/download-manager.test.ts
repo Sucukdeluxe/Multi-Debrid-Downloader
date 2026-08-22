@@ -611,6 +611,14 @@ describe("disk write recovery", () => {
       deficitBytes: 640
     }));
     expect((manager as any).diskReservations.getReservedBytesByVolume().get("remux-volume") ?? 0).toBe(0);
+    expect(pkg.remuxOperations).toHaveLength(1);
+    expect(pkg.remuxOperations?.[0]).toMatchObject({
+      fileName: "Show.S01E01.German.DL.720p.mkv",
+      status: "failed",
+      errorCategory: "disk_full"
+    });
+    expect(pkg.remuxOperations?.[0].completedAt).toBeGreaterThanOrEqual(pkg.remuxOperations?.[0].startedAt || 0);
+    expect(pkg.remuxOperations?.[0].durationMs).toBeGreaterThanOrEqual(0);
   });
 });
 
@@ -11038,6 +11046,15 @@ describe("download manager", () => {
     const snapshot = manager.getSnapshot();
     expect(snapshot.session.packages[packageId]?.status).toBe("completed");
     expect(snapshot.session.items[itemId]?.fullStatus.startsWith("Entpackt - Done")).toBe(true);
+    expect(snapshot.session.packages[packageId]?.archiveOperations).toHaveLength(1);
+    expect(snapshot.session.packages[packageId]?.archiveOperations?.[0]).toMatchObject({
+      name: "episode.zip",
+      itemIds: [itemId],
+      partCount: 1,
+      status: "completed",
+      errorCategory: ""
+    });
+    expect(snapshot.session.packages[packageId]?.archiveOperations?.[0].durationMs).toBeGreaterThanOrEqual(0);
   }, 30000);
 
   it("does not fail startup post-processing when source package dir is missing but extract output exists", async () => {
@@ -14596,5 +14613,71 @@ describe("package priority ordering", () => {
     manager.setPackagePriority("high-a", "high");
 
     expect(session.packageOrder).toEqual(["high-a", "high-b", "normal-a"]);
+  });
+});
+
+describe("package lifecycle telemetry boundaries", () => {
+  it("records queued, slot start and terminal timestamps around real post-processing", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-lifecycle-boundaries-"));
+    tempDirs.push(root);
+    const session = emptySession();
+    const packageId = "lifecycle-package";
+    const itemId = "lifecycle-item";
+    const createdAt = Date.now() - 5_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "Lifecycle",
+      outputDir: path.join(root, "downloads", "lifecycle"),
+      extractDir: path.join(root, "extract", "lifecycle"),
+      status: "completed",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      downloadStartedAt: createdAt,
+      downloadCompletedAt: createdAt + 1_000,
+      downloadEndedAt: createdAt + 1_000,
+      createdAt,
+      updatedAt: createdAt + 1_000
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/lifecycle",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 65_536,
+      totalBytes: 65_536,
+      progressPercent: 100,
+      fileName: "lifecycle.txt",
+      targetPath: path.join(root, "downloads", "lifecycle", "lifecycle.txt"),
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Fertig",
+      createdAt,
+      updatedAt: createdAt + 1_000
+    };
+    fs.mkdirSync(path.dirname(session.items[itemId].targetPath), { recursive: true });
+    fs.writeFileSync(session.items[itemId].targetPath, Buffer.alloc(65_536, 1));
+    const manager = new DownloadManager(
+      { ...defaultSettings(), autoExtract: false },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+    const state = manager as any;
+    state.runPackageIds.add(packageId);
+    state.handlePackagePostProcessing = vi.fn(async () => undefined);
+
+    await state.runPackagePostProcessing(packageId);
+
+    const pkg = session.packages[packageId];
+    expect(session.items[itemId].status).toBe("completed");
+    expect(pkg.postProcessQueuedAt).toBeGreaterThan(0);
+    expect(pkg.postProcessStartedAt).toBeGreaterThanOrEqual(pkg.postProcessQueuedAt || 0);
+    expect(pkg.postProcessCompletedAt).toBeGreaterThanOrEqual(pkg.postProcessStartedAt || 0);
+    expect(pkg.terminalAt).toBe(pkg.postProcessCompletedAt);
   });
 });

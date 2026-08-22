@@ -345,6 +345,18 @@
   color: var(--ui-danger-text);
 }
 
+.history-status-partial {
+  background: color-mix(in srgb, var(--ui-warning) 16%, transparent);
+  border-color: color-mix(in srgb, var(--ui-warning) 60%, var(--ui-border));
+  color: var(--ui-warning-text);
+}
+
+.history-status-cancelled {
+  background: color-mix(in srgb, var(--ui-text-muted) 14%, transparent);
+  border-color: color-mix(in srgb, var(--ui-text-muted) 48%, var(--ui-border));
+  color: var(--ui-text-secondary);
+}
+
 .history-row-size,
 .history-row-hoster,
 .history-row-time {
@@ -426,6 +438,52 @@
   grid-column: span 2;
 }
 
+.history-operation-groups {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 12px;
+}
+
+.history-operation-group {
+  background: color-mix(in srgb, var(--ui-panel) 72%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ui-border) 82%, transparent);
+  border-radius: 6px;
+  min-width: 0;
+  padding: 10px 11px;
+}
+
+.history-operation-group h3 {
+  color: var(--ui-text-muted);
+  font-size: 11px;
+  margin: 0 0 8px;
+  text-transform: uppercase;
+}
+
+.history-operation-group p,
+.history-operation-group ul {
+  color: var(--ui-text-secondary);
+  margin: 0;
+}
+
+.history-operation-group ul {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  padding: 0;
+}
+
+.history-operation-group li {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.history-operation-group strong,
+.history-operation-group span {
+  overflow-wrap: anywhere;
+}
+
 .history-copyable {
   overflow-wrap: anywhere;
   user-select: text;
@@ -496,6 +554,10 @@
 
   .history-action {
     padding: 0 9px;
+  }
+
+  .history-operation-groups {
+    grid-template-columns: 1fr;
   }
 
 }

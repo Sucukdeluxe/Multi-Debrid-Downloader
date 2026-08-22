@@ -197,6 +197,20 @@ describe("history model", () => {
     expect(row.providerLabel).toBe("Real-Debrid");
   });
 
+  it("uses the authoritative lifecycle start instead of reconstructing it from completion", () => {
+    const lifecycleStartedAt = todayStart - 45_000;
+    const lifecycle = entry({
+      id: "lifecycle-start",
+      name: "Lifecycle",
+      startedAt: lifecycleStartedAt,
+      completedAt: todayStart + 60_000,
+      durationSeconds: 5
+    });
+
+    expect(deriveHistoryStartAt(lifecycle)).toBe(lifecycleStartedAt);
+    expect(filterHistoryRows([lifecycle], "all", "", now)[0].startAt).toBe(lifecycleStartedAt);
+  });
+
   it("prunes removed ids and preserves the original set instance when every id survives", () => {
     const stable = new Set(["today", "week"]);
     expect(pruneHistoryIds(stable, ["today", "week", "older"])).toBe(stable);
@@ -595,6 +609,94 @@ describe("HistoryView", () => {
     expect(html).toContain("history-copyable");
     expect(html).toContain("C:\\Downloads\\Heute Paket");
     expect(html).toContain("https://rapidgator.net/file/test");
+  });
+
+  it("renders authoritative lifecycle timings, counts, failure phase and operation details", () => {
+    const structured = entry({
+      id: "structured",
+      name: "Strukturiert",
+      status: "partial",
+      startedAt: todayStart,
+      downloadEndedAt: todayStart + 60_000,
+      postProcessStartedAt: todayStart + 65_000,
+      completedAt: todayStart + 90_000,
+      downloadDurationSeconds: 60,
+      extractionDurationSeconds: 12,
+      remuxDurationSeconds: 8,
+      postProcessDurationSeconds: 25,
+      totalDurationSeconds: 90,
+      successfulFiles: 3,
+      failedFiles: 1,
+      cancelledFiles: 0,
+      archiveCount: 1,
+      partCount: 16,
+      outputCount: 10,
+      failurePhase: "remux",
+      archiveOperations: [{
+        id: "archive-1",
+        name: "show.part01.rar",
+        itemIds: ["item-1"],
+        partCount: 16,
+        startedAt: todayStart + 65_000,
+        completedAt: todayStart + 77_000,
+        durationMs: 12_000,
+        status: "completed",
+        errorCategory: ""
+      }],
+      remuxOperations: [{
+        id: "remux-1",
+        fileName: "episode.mkv",
+        startedAt: todayStart + 77_000,
+        completedAt: todayStart + 85_000,
+        durationMs: 8_000,
+        status: "failed",
+        errorCategory: "ffmpeg"
+      }]
+    });
+    const html = renderToStaticMarkup(
+      <HistoryView
+        actions={createActions()}
+        model={buildHistoryViewModel([structured], "all", "", [], [structured.id], false, "", now)}
+      />
+    );
+
+    for (const label of [
+      "Download gestartet",
+      "Download beendet",
+      "Nachbearbeitung gestartet",
+      "Abgeschlossen",
+      "Downloaddauer",
+      "Entpackdauer",
+      "Remuxdauer",
+      "Nachbearbeitungsdauer",
+      "Gesamtdauer",
+      "Erfolgreich / Fehlgeschlagen / Abgebrochen",
+      "Archive / Parts / Ausgaben",
+      "Fehlerphase",
+      "Archivvorgänge",
+      "Remuxvorgänge"
+    ]) {
+      expect(html).toContain(label);
+    }
+    expect(html).toContain("show.part01.rar");
+    expect(html).toContain("16 Parts");
+    expect(html).toContain("episode.mkv");
+    expect(html).toContain("ffmpeg");
+    expect(html).not.toContain("Downloaddauer (Altbestand)");
+  });
+
+  it("labels durationSeconds honestly for legacy entries", () => {
+    const legacy = entry({ id: "legacy", name: "Altbestand" });
+    const html = renderToStaticMarkup(
+      <HistoryView
+        actions={createActions()}
+        model={buildHistoryViewModel([legacy], "all", "", [], [legacy.id], false, "", now)}
+      />
+    );
+
+    expect(html).toContain("Downloaddauer (Altbestand)");
+    expect(html).not.toContain("Download beendet");
+    expect(html).not.toContain("Nachbearbeitung gestartet");
   });
 
   it("uses the global animation setting for the history disclosure surface", () => {

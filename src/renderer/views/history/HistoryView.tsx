@@ -20,6 +20,7 @@ import { Toolbar, ToolbarGroup, ToolbarSearch } from "../../ui/Toolbar";
 import { SlidingSelection } from "../../ui/SlidingSelection";
 import {
   createHistoryTableColumnWidths,
+  formatHistoryDuration,
   getHistoryTableGridTemplate,
   getHistoryTableMinWidth,
   HISTORY_TABLE_COLUMN_IDS,
@@ -68,6 +69,12 @@ const HISTORY_TABLE_COLUMN_STORAGE_KEY = "mdd.history-table-columns.v1";
 const HISTORY_DISCLOSURE_DURATION_MS = 520;
 const useRendererLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 let historyTableResizeSession: { column: HistoryTableColumnId; startX: number; initial: HistoryTableColumnWidths } | null = null;
+
+function operationStatusLabel(status: "completed" | "failed" | "cancelled"): string {
+  if (status === "completed") return "Abgeschlossen";
+  if (status === "failed") return "Fehlgeschlagen";
+  return "Abgebrochen";
+}
 
 function loadHistoryTableColumnWidths(): HistoryTableColumnWidths {
   try {
@@ -183,11 +190,59 @@ function HistoryRowDetails({
             <dl className="history-details-grid">
               <div><dt>Provider</dt><dd>{row.providerLabel}</dd></div>
               <div><dt>Dateien</dt><dd>{row.fileCount}</dd></div>
-              <div><dt>Dauer</dt><dd>{row.durationLabel}</dd></div>
+              {row.hasStructuredLifecycle ? (
+                <>
+                  <div><dt>Download gestartet</dt><dd>{row.startedLabel}</dd></div>
+                  <div><dt>Download beendet</dt><dd>{row.downloadEndedLabel}</dd></div>
+                  <div><dt>Nachbearbeitung gestartet</dt><dd>{row.postProcessStartedLabel}</dd></div>
+                  <div><dt>Abgeschlossen</dt><dd>{row.completedLabel}</dd></div>
+                  <div><dt>Downloaddauer</dt><dd>{row.downloadDurationLabel}</dd></div>
+                  <div><dt>Entpackdauer</dt><dd>{row.extractionDurationLabel}</dd></div>
+                  <div><dt>Remuxdauer</dt><dd>{row.remuxDurationLabel}</dd></div>
+                  <div><dt>Nachbearbeitungsdauer</dt><dd>{row.postProcessDurationLabel}</dd></div>
+                  <div><dt>Gesamtdauer</dt><dd>{row.totalDurationLabel}</dd></div>
+                  <div><dt>Status</dt><dd>{row.statusLabel}</dd></div>
+                  <div><dt>Erfolgreich / Fehlgeschlagen / Abgebrochen</dt><dd>{row.successfulFiles ?? 0} / {row.failedFiles ?? 0} / {row.cancelledFiles ?? 0}</dd></div>
+                  <div><dt>Archive / Parts / Ausgaben</dt><dd>{row.archiveCount ?? 0} / {row.partCount ?? 0} / {row.outputCount ?? 0}</dd></div>
+                  <div><dt>Fehlerphase</dt><dd>{row.failurePhaseLabel}</dd></div>
+                </>
+              ) : (
+                <div><dt>Downloaddauer (Altbestand)</dt><dd>{row.durationLabel}</dd></div>
+              )}
               <div><dt>Durchschnitt</dt><dd>{row.averageSpeedLabel}</dd></div>
               <div className="history-detail-wide"><dt>Zielordner</dt><dd className="history-copyable">{row.outputDir || "—"}</dd></div>
               <div className="history-detail-wide"><dt>URLs</dt><dd className="history-copyable">{row.urls?.length ? row.urls.join("\n") : "—"}</dd></div>
             </dl>
+            {row.hasStructuredLifecycle ? (
+              <div className="history-operation-groups">
+                <section className="history-operation-group">
+                  <h3>Archivvorgänge</h3>
+                  {row.archiveOperations?.length ? (
+                    <ul>
+                      {row.archiveOperations.map((operation) => (
+                        <li key={operation.id}>
+                          <strong>{operation.name}</strong>
+                          <span>{operation.partCount} Parts · {formatHistoryDuration(operation.durationMs / 1000)} · {operationStatusLabel(operation.status)}{operation.errorCategory ? ` · ${operation.errorCategory}` : ""}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : <p>Keine Archivvorgänge</p>}
+                </section>
+                <section className="history-operation-group">
+                  <h3>Remuxvorgänge</h3>
+                  {row.remuxOperations?.length ? (
+                    <ul>
+                      {row.remuxOperations.map((operation) => (
+                        <li key={operation.id}>
+                          <strong>{operation.fileName}</strong>
+                          <span>{formatHistoryDuration(operation.durationMs / 1000)} · {operationStatusLabel(operation.status)}{operation.errorCategory ? ` · ${operation.errorCategory}` : ""}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : <p>Keine Remuxvorgänge</p>}
+                </section>
+              </div>
+            ) : null}
           </div>
         </div>
       </div>

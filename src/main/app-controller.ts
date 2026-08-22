@@ -184,6 +184,7 @@ export class AppController {
       bestDebridWebUnrestrict: (link: string, signal?: AbortSignal) => this.bestDebridWebFallback.unrestrict(link, signal),
       invalidateMegaSession: () => this.megaWebFallback.invalidateSession(),
       protectEmptyClobber: loadResult.status === "empty-unreadable",
+      enqueueNotification: (event) => this.notificationOutbox.enqueue(event),
       onHistoryEntry: (entry: HistoryEntry) => {
         this.recordHistoryEntry(entry);
       }
@@ -1295,6 +1296,10 @@ export class AppController {
     stopDebugServer();
     abortActiveUpdateDownload();
     cancelPendingAsyncSaves();
+    const notificationFlush = this.manager.flushNotificationsForShutdown?.();
+    if (notificationFlush) {
+      await notificationFlush;
+    }
     await this.notificationOutbox.drainForShutdown(3000).catch((error) => {
       logger.warn(`Notification-Outbox konnte beim Beenden nicht geleert werden: ${String(error)}`);
     });

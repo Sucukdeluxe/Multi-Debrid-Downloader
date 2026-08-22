@@ -14,8 +14,10 @@ import {
   DownloadStatus,
   DuplicatePolicy,
   HistoryEntry,
+  ArchiveOperationMetric,
   PackageEntry,
   PackagePriority,
+  PackageResult,
   ParsedPackageInput,
   SessionState,
   StatisticsLedger,
@@ -59,11 +61,10 @@ function releaseTlsSkip(): void {
 import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 import { planDownloadCompletion, reconcileFinalizedSize, validateDownloadedFileCompletion } from "./download-completion";
 import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkDdownloadOnline, checkOneFichierLinks, checkRapidgatorOnline, fetchAllDebridHostInfo, filenameFromDdownloadUrlPath, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, isDdownloadLink, isOneFichierLink, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown, type DdownloadCheckResult, type OneFichierCheckResult } from "./debrid";
-import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo } from "./extractor";
+import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo, type ExtractProgressUpdate } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { classifyDiskError } from "./fs-error";
 import { processVideoFile, resolveVideoTooling, stripDualLangMarker, hasDualLangMarker, isRemuxableVideoFile, type GermanAudioMode, type VideoProcessResult } from "./video-processor";
-import { sendNotification } from "./notify";
 import { logger } from "./logger";
 import { getRecentRotationEvents, runWithRotationItemSink, setRotationEventListener } from "./account-rotation-log";
 import { createAccountRuntimeEntries } from "./account-runtime-snapshot";
@@ -90,6 +91,16 @@ import {
   saveStatisticsLedger,
   seedStatisticsDayProviderBytes
 } from "./statistics-ledger";
+import { finalizePackageResult } from "./package-telemetry";
+import type { NotificationEvent } from "./notification-outbox";
+import {
+  buildHistoryEntry,
+  buildPackageDigestEvents,
+  buildPackageNotificationEvent,
+  buildRunNotificationEvent,
+  buildRunResult,
+  type PackageResultEnvelope
+} from "./notification-events";
 
 type ActiveTask = {
   itemId: string;
@@ -451,7 +462,14 @@ type DownloadManagerOptions = {
   bestDebridWebUnrestrict?: BestDebridWebUnrestrictor;
   invalidateMegaSession?: () => void;
   onHistoryEntry?: HistoryEntryCallback;
+  enqueueNotification?: (event: NotificationEvent) => Promise<void>;
   protectEmptyClobber?: boolean;
+};
+
+type PendingRunResult = {
+  id: string;
+  startedAt: number;
+  packageGenerations: Map<string, number>;
 };
 
 function generateHistoryId(): string {
@@ -1918,7 +1936,19 @@ export class DownloadManager extends EventEmitter {
 
   private historyRecordedPackages = new Set<string>();
 
-  private notifiedPackages = new Set<string>();
+  private packageResultGenerations = new Map<string, number>();
+
+  private finalizedPackageResults = new Map<string, PackageResult>();
+
+  private runPackageGenerations = new Map<string, number>();
+
+  private pendingRunResult: PendingRunResult | null = null;
+
+  private successDigestResults = new Map<string, PackageResultEnvelope>();
+
+  private successDigestTimer: NodeJS.Timeout | null = null;
+
+  private notificationEnqueueChain: Promise<void> = Promise.resolve();
 
   private itemCount = 0;
 
@@ -1963,6 +1993,8 @@ export class DownloadManager extends EventEmitter {
 
   private onHistoryEntryCallback?: HistoryEntryCallback;
 
+  private enqueueNotificationCallback?: (event: NotificationEvent) => Promise<void>;
+
   public constructor(settings: AppSettings, session: SessionState, storagePaths: StoragePaths, options: DownloadManagerOptions = {}) {
     super();
     this.settings = settings;
@@ -1991,6 +2023,7 @@ export class DownloadManager extends EventEmitter {
     });
     this.invalidateMegaSessionFn = options.invalidateMegaSession;
     this.onHistoryEntryCallback = options.onHistoryEntry;
+    this.enqueueNotificationCallback = options.enqueueNotification;
     logger.info(`DownloadManager Init: ${Object.keys(this.session.packages).length} Pakete, ${this.itemCount} Items, cleanupPolicy=${this.settings.completedCleanupPolicy}`);
     for (const pkg of Object.values(this.session.packages)) {
       this.ensurePackageLogForPackage(pkg);
@@ -3089,7 +3122,15 @@ export class DownloadManager extends EventEmitter {
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
     this.historyRecordedPackages.clear();
-    this.notifiedPackages.clear();
+    this.packageResultGenerations.clear();
+    this.finalizedPackageResults.clear();
+    this.runPackageGenerations.clear();
+    this.pendingRunResult = null;
+    this.successDigestResults.clear();
+    if (this.successDigestTimer) {
+      clearTimeout(this.successDigestTimer);
+      this.successDigestTimer = null;
+    }
     this.retryAfterByItem.clear();
     this.providerStartReservations.clear();
     this.pacedStartReservationByItem.clear();
@@ -3199,6 +3240,7 @@ export class DownloadManager extends EventEmitter {
         if (this.session.running) {
           this.runItemIds.add(itemId);
           this.runPackageIds.add(packageId);
+          this.runPackageGenerations.set(packageId, this.beginPackageResultGeneration(packageId));
         }
         if (looksLikeOpaqueFilename(fileName)) {
           const existing = unresolvedByLink.get(link) ?? [];
@@ -4400,6 +4442,7 @@ export class DownloadManager extends EventEmitter {
       if (this.packageFileOpChain.get(pkgId) === result) {
         this.packageFileOpChain.delete(pkgId);
       }
+      this.tryFinalizePackageResult(pkgId);
     });
   }
 
@@ -4517,6 +4560,7 @@ export class DownloadManager extends EventEmitter {
         return processed;
       }
       const sourceName = path.basename(sourcePath);
+      const remuxStartedAt = nowMs();
       let result: VideoProcessResult | null = null;
       let remuxLease: DiskReservationLease | null = null;
       try {
@@ -4551,6 +4595,18 @@ export class DownloadManager extends EventEmitter {
         result = { action: "error", reason: "exception", error: "Unbekannter Remux-Status" };
       }
       if (result.action === "aborted") {
+        if (pkg) {
+          const completedAt = nowMs();
+          pkg.remuxOperations = [...(pkg.remuxOperations || []), {
+            id: uuidv4(),
+            fileName: sourceName,
+            startedAt: remuxStartedAt,
+            completedAt,
+            durationMs: Math.max(0, completedAt - remuxStartedAt),
+            status: "cancelled",
+            errorCategory: "aborted"
+          }];
+        }
         return processed;
       }
       const langs = (result.audioLanguages || []).join(",");
@@ -4594,6 +4650,24 @@ export class DownloadManager extends EventEmitter {
       // unprocessed state stays visible.
       if (result.action === "remuxed" || result.action === "kept-single") {
         await this.stripDualLangFromFileName(sourcePath, pkg);
+      }
+      if (pkg) {
+        const completedAt = nowMs();
+        const failedOperation = result.action === "error" || result.action === "skipped-no-space";
+        const errorCategory = result.action === "skipped-no-space"
+          ? "disk_full"
+          : failedOperation
+            ? compactErrorText(result.error || result.reason || "remux").slice(0, 256)
+            : "";
+        pkg.remuxOperations = [...(pkg.remuxOperations || []), {
+          id: uuidv4(),
+          fileName: result.action === "remuxed" || result.action === "kept-single" ? stripDualLangMarker(sourceName) : sourceName,
+          startedAt: remuxStartedAt,
+          completedAt,
+          durationMs: Math.max(0, completedAt - remuxStartedAt),
+          status: failedOperation ? "failed" : "completed",
+          errorCategory
+        }];
       }
     }
     writeSummary();
@@ -5701,17 +5775,16 @@ export class DownloadManager extends EventEmitter {
     pkg.cleanedTotalBytes = 0;
     pkg.cleanedUrls = [];
     pkg.cleanedProviders = [];
-    pkg.downloadStartedAt = 0;
-    pkg.downloadCompletedAt = 0;
+    this.beginPackageResultGeneration(packageId, true);
     pkg.updatedAt = nowMs();
     this.historyRecordedPackages.delete(packageId);
-    this.notifiedPackages.delete(packageId);
 
     if (this.session.running) {
       for (const itemId of itemIds) {
         this.runItemIds.add(itemId);
       }
       this.runPackageIds.add(packageId);
+      this.runPackageGenerations.set(packageId, this.getPackageResultGeneration(packageId));
     }
 
     await Promise.allSettled(postProcessTasks);
@@ -5781,7 +5854,6 @@ export class DownloadManager extends EventEmitter {
       for (const task of this.abortPackagePostProcessing(pkgId, "reset")) postProcessTasks.add(task);
       this.runCompletedPackages.delete(pkgId);
       this.historyRecordedPackages.delete(pkgId);
-      this.notifiedPackages.delete(pkgId);
 
       const pkg = this.session.packages[pkgId];
       if (pkg) {
@@ -5789,11 +5861,13 @@ export class DownloadManager extends EventEmitter {
         pkg.postProcessLabel = undefined;
         pkg.audioStripSummary = undefined;
         pkg.downloadCompletedAt = 0;
+        this.beginPackageResultGeneration(pkgId, false, true);
         this.refreshPackageStatus(pkg);
         pkg.updatedAt = nowMs();
       }
       if (this.session.running) {
         this.runPackageIds.add(pkgId);
+        this.runPackageGenerations.set(pkgId, this.getPackageResultGeneration(pkgId));
       }
     }
 
@@ -5916,6 +5990,7 @@ export class DownloadManager extends EventEmitter {
         if (item.status === "queued" || item.status === "reconnect_wait") {
           this.runItemIds.add(item.id);
           this.runPackageIds.add(item.packageId);
+          this.runPackageGenerations.set(item.packageId, this.beginPackageResultGeneration(item.packageId));
         }
       }
       this.persistSoon();
@@ -5939,6 +6014,8 @@ export class DownloadManager extends EventEmitter {
     this.runItemIds = new Set(runItems.map((item) => item.id));
     this.runPackageIds = new Set(runItems.map((item) => item.packageId));
     this.addTrailingPostProcessPackageIds(this.runPackageIds);
+    this.runPackageGenerations.clear();
+    this.ensureRunPackageGenerations(this.runPackageIds);
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
@@ -6021,6 +6098,7 @@ export class DownloadManager extends EventEmitter {
         if (item.status === "queued" || item.status === "reconnect_wait") {
           this.runItemIds.add(item.id);
           this.runPackageIds.add(item.packageId);
+          this.runPackageGenerations.set(item.packageId, this.beginPackageResultGeneration(item.packageId));
         }
       }
       this.persistSoon();
@@ -6045,6 +6123,8 @@ export class DownloadManager extends EventEmitter {
     this.runItemIds = new Set(runItems.map((item) => item.id));
     this.runPackageIds = new Set(runItems.map((item) => item.packageId));
     this.addTrailingPostProcessPackageIds(this.runPackageIds);
+    this.runPackageGenerations.clear();
+    this.ensureRunPackageGenerations(this.runPackageIds);
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
@@ -6139,6 +6219,8 @@ export class DownloadManager extends EventEmitter {
         this.runItemIds.clear();
         this.runPackageIds.clear();
         this.addTrailingPostProcessPackageIds(this.runPackageIds);
+        this.runPackageGenerations.clear();
+        this.ensureRunPackageGenerations(this.runPackageIds);
         this.runOutcomes.clear();
         this.runCompletedPackages.clear();
         this.session.running = true;
@@ -6158,6 +6240,8 @@ export class DownloadManager extends EventEmitter {
       this.runItemIds.clear();
       this.runPackageIds.clear();
       this.addTrailingPostProcessPackageIds(this.runPackageIds);
+      this.runPackageGenerations.clear();
+      this.ensureRunPackageGenerations(this.runPackageIds);
       this.runOutcomes.clear();
       this.runCompletedPackages.clear();
       this.retryAfterByItem.clear();
@@ -6189,6 +6273,8 @@ export class DownloadManager extends EventEmitter {
     this.runItemIds = new Set(runItems.map((item) => item.id));
     this.runPackageIds = new Set(runItems.map((item) => item.packageId));
     this.addTrailingPostProcessPackageIds(this.runPackageIds);
+    this.runPackageGenerations.clear();
+    this.ensureRunPackageGenerations(this.runPackageIds);
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
@@ -6286,18 +6372,30 @@ export class DownloadManager extends EventEmitter {
         pkg.updatedAt = nowMs();
       }
     }
-    // A manual stop ends the run without ever reaching finishRun (the scheduler
-    // loop exits at its while condition), so the run summary would be lost.
-    // Suppressed for the restart/shutdown path: the process is about to die.
     if (wasRunning && !parkForRestart && this.settings.notifyOnRunFinished && this.runItemIds.size > 0) {
       const outcomes = Array.from(this.runOutcomes.values());
       const success = outcomes.filter((s) => s === "completed").length;
       const failed = outcomes.filter((s) => s === "failed").length;
-      void sendNotification(this.settings.notifyUrl, {
-        title: "⏹️ Durchlauf gestoppt",
-        message: `${success}/${this.runItemIds.size} erfolgreich, ${failed} fehlgeschlagen — Rest zurueck in der Warteschlange`,
-        mention: this.settings.notifyMention
-      });
+      const cancelled = outcomes.filter((s) => s === "cancelled").length;
+      this.ensureRunPackageGenerations(this.runPackageIds);
+      const packageResults = [...this.runPackageGenerations]
+        .flatMap(([packageId, generation]) => {
+          const result = this.finalizedPackageResults.get(this.packageResultKey(packageId, generation));
+          return result ? [result] : [];
+        });
+      this.flushPackageSuccessDigest();
+      this.queueNotificationEvent(buildRunNotificationEvent(buildRunResult({
+        id: uuidv4(),
+        stopped: true,
+        startedAt: this.session.runStartedAt,
+        completedAt: nowMs(),
+        packages: packageResults,
+        totalPackages: this.runPackageIds.size,
+        successfulFiles: success,
+        failedFiles: failed,
+        cancelledFiles: cancelled
+      })));
+      this.pendingRunResult = null;
     }
     this.persistSoon();
     this.emitState(true);
@@ -7907,6 +8005,11 @@ export class DownloadManager extends EventEmitter {
 
     const abortController = new AbortController();
     this.packagePostProcessAbortControllers.set(packageId, abortController);
+    const queuedPackage = this.session.packages[packageId];
+    if (queuedPackage) {
+      queuedPackage.postProcessQueuedAt = queuedPackage.postProcessQueuedAt || nowMs();
+      queuedPackage.updatedAt = nowMs();
+    }
 
     // Holder so the task's own finally can identity-check itself (the task Promise
     // cannot reference its own const inside its initializer). Assigned right after.
@@ -7914,6 +8017,11 @@ export class DownloadManager extends EventEmitter {
     const task = (async () => {
       const slotWaitStart = nowMs();
       await this.acquirePostProcessSlot(packageId);
+      const startedPackage = this.session.packages[packageId];
+      if (startedPackage) {
+        startedPackage.postProcessStartedAt = startedPackage.postProcessStartedAt || nowMs();
+        startedPackage.updatedAt = nowMs();
+      }
       const slotWaitMs = nowMs() - slotWaitStart;
       if (slotWaitMs > 100) {
         logger.info(`Post-Process Slot erhalten nach ${(slotWaitMs / 1000).toFixed(1)}s Wartezeit: pkg=${packageId.slice(0, 8)}`);
@@ -7973,6 +8081,8 @@ export class DownloadManager extends EventEmitter {
           void this.runPackagePostProcessing(packageId).catch((err) =>
             logger.warn(`runPackagePostProcessing Fehler (hybridRequeue): ${compactErrorText(err)}`)
           );
+        } else {
+          this.tryFinalizePackageResult(packageId);
         }
       }
     })();
@@ -8198,11 +8308,9 @@ export class DownloadManager extends EventEmitter {
       completedItems: completedItems.length,
       targetedItems: targetItems.length
     });
-    // Fresh outcome must notify again (the corrective checkmark after a notified
-    // extraction failure); unconditional run-membership so the notify guard also
-    // passes when the retry happens after the run already ended.
-    this.notifiedPackages.delete(packageId);
+    const generation = this.beginPackageResultGeneration(packageId, false, true);
     this.runPackageIds.add(packageId);
+    this.runPackageGenerations.set(packageId, generation);
     this.persistSoon();
     this.emitState(true);
     void this.runPackagePostProcessing(packageId).catch((err) => logger.warn(`runPackagePostProcessing Fehler (retryExtraction): ${compactErrorText(err)}`));
@@ -8231,8 +8339,9 @@ export class DownloadManager extends EventEmitter {
       completedItems: completedItems.length,
       targetedItems: targetItems.length
     });
-    this.notifiedPackages.delete(packageId);
+    const generation = this.beginPackageResultGeneration(packageId, false, true);
     this.runPackageIds.add(packageId);
+    this.runPackageGenerations.set(packageId, generation);
     this.persistSoon();
     this.emitState(true);
     void this.runPackagePostProcessing(packageId).catch((err) => logger.warn(`runPackagePostProcessing Fehler (extractNow): ${compactErrorText(err)}`));
@@ -8332,7 +8441,6 @@ export class DownloadManager extends EventEmitter {
       }
     }
     this.historyRecordedPackages.delete(packageId);
-    this.notifiedPackages.delete(packageId);
     this.abortPackagePostProcessing(packageId, "package_removed");
     for (const itemId of itemIds) {
       this.retryAfterByItem.delete(itemId);
@@ -8526,6 +8634,11 @@ export class DownloadManager extends EventEmitter {
       return Boolean(this.settings.linkSnappyLogin.trim() && this.settings.linkSnappyPassword.trim());
     }
     return false;
+  }
+
+  public async flushNotificationsForShutdown(): Promise<void> {
+    this.flushPackageSuccessDigest();
+    await this.notificationEnqueueChain;
   }
 
   private updateStatisticsActivity(now: number): void {
@@ -9451,6 +9564,7 @@ export class DownloadManager extends EventEmitter {
         this.nonResumableActive = Math.max(0, this.nonResumableActive - 1);
       }
       this.activeTasks.delete(itemId);
+      this.tryFinalizePackageResult(packageId);
       this.persistSoon();
       this.emitState();
     });
@@ -11494,10 +11608,10 @@ export class DownloadManager extends EventEmitter {
         if (!pkg) {
           continue;
         }
-        // The package gets a fresh chance — its next outcome must notify again
-        // (a recovery success after a notified failure is the message the user
-        // most wants). History dedup stays untouched (separate semantics).
-        this.notifiedPackages.delete(packageId);
+        const generation = this.beginPackageResultGeneration(packageId, false, true);
+        if (this.runPackageIds.has(packageId)) {
+          this.runPackageGenerations.set(packageId, generation);
+        }
         this.refreshPackageStatus(pkg);
       }
       logger.warn(
@@ -11562,38 +11676,208 @@ export class DownloadManager extends EventEmitter {
     return /\b0\s*B\b/i.test(item.fullStatus || "");
   }
 
-  // Once per package and run; trailing post-processing after run-end still
-  // notifies (runPackageIds keeps the id), startup recovery does not (set empty).
-  private notifyPackageOutcome(pkg: PackageEntry, kind: "completed" | "failed", detail: string): void {
-    const url = String(this.settings.notifyUrl || "").trim();
-    if (!url) {
-      return;
+  private packageResultKey(packageId: string, generation: number): string {
+    return `${packageId}:${generation}`;
+  }
+
+  private getPackageResultGeneration(packageId: string): number {
+    const existing = this.packageResultGenerations.get(packageId);
+    if (existing && existing > 0) {
+      return existing;
     }
-    if (kind === "completed" && !this.settings.notifyOnPackageCompleted) {
-      return;
-    }
-    if (kind === "failed" && !this.settings.notifyOnPackageFailed) {
-      return;
-    }
-    if (!this.session.running && !this.runPackageIds.has(pkg.id)) {
-      return;
-    }
-    if (this.notifiedPackages.has(pkg.id)) {
-      return;
-    }
-    this.notifiedPackages.add(pkg.id);
-    // Release the dedup marker if the delivery ultimately failed (after the
-    // sender's own retries), so a later manual re-run can notify again instead
-    // of a transient outage permanently consuming the once-per-package slot.
-    void sendNotification(url, {
-      title: kind === "completed" ? "✅ Paket fertig" : "❌ Paket fehlgeschlagen",
-      message: `${pkg.name}\n${detail}`,
-      mention: this.settings.notifyMention
-    }).then((ok) => {
-      if (!ok) {
-        this.notifiedPackages.delete(pkg.id);
+    this.packageResultGenerations.set(packageId, 1);
+    return 1;
+  }
+
+  private beginPackageResultGeneration(packageId: string, resetDownloadTelemetry = false, forceReset = false): number {
+    const current = this.getPackageResultGeneration(packageId);
+    const currentKey = this.packageResultKey(packageId, current);
+    const wasFinalized = this.finalizedPackageResults.has(currentKey);
+    const next = wasFinalized ? current + 1 : current;
+    this.packageResultGenerations.set(packageId, next);
+    const pkg = this.session.packages[packageId];
+    if (pkg && (wasFinalized || resetDownloadTelemetry || forceReset)) {
+      if (resetDownloadTelemetry) {
+        pkg.downloadStartedAt = 0;
+        pkg.downloadCompletedAt = 0;
+        pkg.downloadEndedAt = 0;
       }
+      pkg.postProcessQueuedAt = 0;
+      pkg.postProcessStartedAt = 0;
+      pkg.postProcessCompletedAt = 0;
+      pkg.terminalAt = 0;
+      pkg.archiveOperations = [];
+      pkg.remuxOperations = [];
+      pkg.outputCount = 0;
+      pkg.cleanupErrorCategory = "";
+    }
+    return next;
+  }
+
+  private ensureRunPackageGenerations(packageIds: Iterable<string>): void {
+    for (const packageId of packageIds) {
+      if (this.runPackageGenerations.has(packageId)) {
+        continue;
+      }
+      const generation = this.getPackageResultGeneration(packageId);
+      this.runPackageGenerations.set(packageId, generation);
+    }
+  }
+
+  private queueNotificationEvent(notification: NotificationEvent): void {
+    if (!this.enqueueNotificationCallback || !String(this.settings.notifyUrl || "").trim()) {
+      return;
+    }
+    this.notificationEnqueueChain = this.notificationEnqueueChain
+      .then(() => this.enqueueNotificationCallback?.(notification))
+      .then(() => undefined)
+      .catch((error) => {
+        logger.warn(`Notification konnte nicht eingereiht werden: ${compactErrorText(error)}`);
+      });
+  }
+
+  private queueSuccessfulPackageResult(envelope: PackageResultEnvelope): void {
+    const key = this.packageResultKey(envelope.result.packageId, envelope.generation);
+    this.successDigestResults.set(key, envelope);
+    if (this.successDigestTimer) {
+      return;
+    }
+    this.successDigestTimer = setTimeout(() => {
+      this.successDigestTimer = null;
+      this.flushPackageSuccessDigest();
+    }, 2 * 60 * 1000);
+    this.successDigestTimer.unref?.();
+  }
+
+  private flushPackageSuccessDigest(createdAt = nowMs()): void {
+    if (this.successDigestTimer) {
+      clearTimeout(this.successDigestTimer);
+      this.successDigestTimer = null;
+    }
+    if (this.successDigestResults.size === 0) {
+      return;
+    }
+    const envelopes = [...this.successDigestResults.values()];
+    this.successDigestResults.clear();
+    for (const notification of buildPackageDigestEvents(envelopes, createdAt)) {
+      this.queueNotificationEvent(notification);
+    }
+  }
+
+  private getPackageHistoryProvider(pkg: PackageEntry, items: DownloadItem[]): DebridProvider | null {
+    const providers = [...new Set([
+      ...(pkg.cleanedProviders || []),
+      ...items.map((item) => item.provider).filter(Boolean) as DebridProvider[]
+    ])];
+    return providers.length === 1 ? providers[0] : null;
+  }
+
+  private hasPackageLifecycleWork(packageId: string): boolean {
+    if ([...this.activeTasks.values()].some((task) => task.packageId === packageId)) {
+      return true;
+    }
+    return this.packagePostProcessTasks.has(packageId)
+      || this.hasDeferredPostProcessPending(packageId)
+      || (this.packageHybridPostProcessTasks.get(packageId)?.size || 0) > 0
+      || this.packageFileOpChain.has(packageId);
+  }
+
+  private tryFinalizePackageResult(packageId: string): PackageResult | null {
+    const pkg = this.session.packages[packageId];
+    if (!pkg || (!this.runPackageIds.has(packageId) && !this.runPackageGenerations.has(packageId))) {
+      return null;
+    }
+    const items = pkg.itemIds.map((itemId) => this.session.items[itemId]).filter(Boolean) as DownloadItem[];
+    if (items.some((item) => !isFinishedStatus(item.status)) || this.hasPackageLifecycleWork(packageId)) {
+      return null;
+    }
+    const generation = this.runPackageGenerations.get(packageId) || this.getPackageResultGeneration(packageId);
+    const key = this.packageResultKey(packageId, generation);
+    const existing = this.finalizedPackageResults.get(key);
+    if (existing) {
+      return existing;
+    }
+    const completedAt = nowMs();
+    if (!(pkg.downloadEndedAt || 0)) {
+      pkg.downloadEndedAt = completedAt;
+    }
+    if (!(pkg.postProcessStartedAt || 0) && (pkg.postProcessQueuedAt || 0) > 0) {
+      pkg.postProcessStartedAt = pkg.postProcessQueuedAt;
+    }
+    pkg.postProcessCompletedAt = completedAt;
+    pkg.terminalAt = completedAt;
+    const result = finalizePackageResult({
+      package: pkg,
+      items,
+      archiveOperations: pkg.archiveOperations,
+      remuxOperations: pkg.remuxOperations,
+      outputCount: pkg.outputCount,
+      cleanupErrorCategory: pkg.cleanupErrorCategory
     });
+    this.finalizedPackageResults.set(key, result);
+    pkg.status = result.status === "partial" ? "failed" : result.status;
+    pkg.updatedAt = completedAt;
+    if (this.onHistoryEntryCallback) {
+      this.onHistoryEntryCallback(buildHistoryEntry(result, {
+        generation,
+        outputDir: pkg.outputDir,
+        urls: [...new Set([...(pkg.cleanedUrls || []), ...items.map((item) => item.url).filter(Boolean)])],
+        provider: this.getPackageHistoryProvider(pkg, items)
+      }));
+    }
+    const envelope = { generation, result };
+    if (result.status === "completed") {
+      if (this.settings.notifyOnPackageCompleted) {
+        if (this.settings.notifyPackageSuccessMode === "individual") {
+          this.queueNotificationEvent(buildPackageNotificationEvent(envelope, completedAt));
+        } else {
+          this.queueSuccessfulPackageResult(envelope);
+        }
+      }
+    } else if (this.settings.notifyOnPackageFailed) {
+      this.queueNotificationEvent(buildPackageNotificationEvent(envelope, completedAt));
+    }
+    this.persistSoon();
+    this.emitState();
+    this.tryFinalizeRunResult();
+    return result;
+  }
+
+  private tryFinalizeRunResult(): void {
+    const pending = this.pendingRunResult;
+    if (!pending) {
+      return;
+    }
+    const packageResults: PackageResult[] = [];
+    for (const [packageId, generation] of pending.packageGenerations) {
+      const result = this.finalizedPackageResults.get(this.packageResultKey(packageId, generation));
+      if (!result) {
+        return;
+      }
+      packageResults.push(result);
+    }
+    const result = buildRunResult({
+      id: pending.id,
+      stopped: false,
+      startedAt: pending.startedAt,
+      completedAt: nowMs(),
+      packages: packageResults,
+      totalPackages: pending.packageGenerations.size
+    });
+    this.flushPackageSuccessDigest(result.completedAt);
+    if (this.settings.notifyOnRunFinished) {
+      this.queueNotificationEvent(buildRunNotificationEvent(result));
+    }
+    this.pendingRunResult = null;
+    for (const [packageId, generation] of pending.packageGenerations) {
+      if (!this.session.packages[packageId]) {
+        this.finalizedPackageResults.delete(this.packageResultKey(packageId, generation));
+        this.packageResultGenerations.delete(packageId);
+      }
+    }
+    this.runPackageIds.clear();
+    this.runPackageGenerations.clear();
+    this.runCompletedPackages.clear();
   }
 
   private refreshPackageStatus(pkg: PackageEntry): void {
@@ -11633,7 +11917,7 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    const prevStatus = pkg.status;
+    pkg.downloadEndedAt = Math.max(pkg.downloadEndedAt || 0, nowMs());
     if (failed > 0 || extractFailed > 0) {
       pkg.status = "failed";
     } else if (cancelled > 0) {
@@ -11642,18 +11926,7 @@ export class DownloadManager extends EventEmitter {
       pkg.status = "completed";
     }
     pkg.updatedAt = nowMs();
-    // A package whose LAST terminal event is a failure never (re-)enters
-    // post-processing (its trigger sits only on completion paths), so the
-    // post-process notify hook can't fire — cover every failed-transition here.
-    // That includes mixed packages (success > 0): the dedup set prevents a
-    // double-fire if post-processing does run later.
-    if (pkg.status === "failed" && prevStatus !== "failed") {
-      this.notifyPackageOutcome(pkg, "failed", `${failed + extractFailed} von ${total} Datei(en) fehlgeschlagen`);
-      if (success > 0) {
-        const items = pkg.itemIds.map((id) => this.session.items[id]).filter(Boolean) as DownloadItem[];
-        this.recordPackageHistory(pkg.id, pkg, items);
-      }
-    }
+    this.tryFinalizePackageResult(pkg.id);
   }
 
   private cachedSpeedLimitKbps = 0;
@@ -11935,6 +12208,38 @@ export class DownloadManager extends EventEmitter {
     return false;
   }
 
+  private recordArchiveOperation(
+    pkg: PackageEntry,
+    progress: ExtractProgressUpdate,
+    items: DownloadItem[],
+    errorCategory = ""
+  ): void {
+    if (!progress.archiveName || progress.archiveDone !== true) {
+      return;
+    }
+    const completedAt = nowMs();
+    const durationMs = Math.max(0, Math.floor(Number(progress.elapsedMs) || 0));
+    const operation: ArchiveOperationMetric = {
+      id: `${pkg.id}:${progress.archiveName.toLocaleLowerCase("de-DE")}`,
+      name: progress.archiveName,
+      itemIds: [...new Set(items.map((item) => item.id))],
+      partCount: Math.max(1, items.length),
+      startedAt: Math.max(0, completedAt - durationMs),
+      completedAt,
+      durationMs,
+      status: progress.archiveSuccess === false ? "failed" : "completed",
+      errorCategory: progress.archiveSuccess === false ? (errorCategory || "extract") : ""
+    };
+    const operations = [...(pkg.archiveOperations || [])];
+    const existingIndex = operations.findIndex((entry) => entry.id === operation.id);
+    if (existingIndex >= 0) {
+      operations[existingIndex] = operation;
+    } else {
+      operations.push(operation);
+    }
+    pkg.archiveOperations = operations;
+  }
+
   private async runHybridExtraction(packageId: string, pkg: PackageEntry, items: DownloadItem[], signal?: AbortSignal): Promise<number> {
     const completedForDeobfuscation = items.filter((item) => item.status === "completed");
     await this.deobfuscateArchiveFiles(pkg, completedForDeobfuscation, signal);
@@ -12072,6 +12377,7 @@ export class DownloadManager extends EventEmitter {
 
     const autoRecoveredArchives = new Set<string>();
     const failedArchiveErrors = new Map<string, string>();
+    const failedArchiveCategories = new Map<string, string>();
     const hybridResolvedItems = new Map<string, DownloadItem[]>();
     const hybridStartTimes = new Map<string, number>();
     let hybridLastEmitAt = 0;
@@ -12123,6 +12429,7 @@ export class DownloadManager extends EventEmitter {
         extractCpuPriority: "high",
         onLog: (level, message) => this.logExtractionForItems(pkg, items, "Hybrid-Extractor", level, message),
         onArchiveFailure: (failure) => {
+          failedArchiveCategories.set(String(failure.archiveName || "").toLowerCase(), failure.category);
           const failedArchiveKey = readyArchiveKeyByName.get(String(failure.archiveName || "").toLowerCase());
           if (failedArchiveKey) {
             failedArchiveErrors.set(failedArchiveKey, failure.errorText || failure.jvmFailureReason || "Entpacken fehlgeschlagen");
@@ -12189,6 +12496,12 @@ export class DownloadManager extends EventEmitter {
               if (archiveKey && progress.archiveSuccess !== false) {
                 this.clearHybridArchiveState(packageId, archiveKey);
               }
+              this.recordArchiveOperation(
+                pkg,
+                progress,
+                archItems,
+                failedArchiveCategories.get(progress.archiveName.toLowerCase()) || ""
+              );
               for (const entry of archItems) {
                 if (entry.status !== "completed" || isExtractedLabel(entry.fullStatus)) continue;
                 entry.fullStatus = doneLabel;
@@ -12320,6 +12633,7 @@ export class DownloadManager extends EventEmitter {
             if (tasks?.size === 0) {
               this.packageHybridPostProcessTasks.delete(packageId);
             }
+            this.tryFinalizePackageResult(packageId);
           }
         })();
         hybridHandle.task = hybridTask;
@@ -12603,6 +12917,7 @@ export class DownloadManager extends EventEmitter {
       try {
         const autoRecoveredArchives = new Set<string>();
         const fullFailedArchiveErrors = new Map<string, string>();
+        const fullFailedArchiveCategories = new Map<string, string>();
         const fullResolvedItems = new Map<string, DownloadItem[]>();
         const fullStartTimes = new Map<string, number>();
         let fullLastProgressCurrent: number | null = null;
@@ -12685,6 +13000,7 @@ export class DownloadManager extends EventEmitter {
           extractCpuPriority: "high",
           onLog: (level, message) => this.logExtractionForItems(pkg, completedItems, "Extractor", level, message),
           onArchiveFailure: (failure) => {
+            fullFailedArchiveCategories.set(failure.archiveName.toLowerCase(), failure.category);
             if (autoRecoveredArchives.has(failure.archiveName)) {
               return;
             }
@@ -12692,6 +13008,7 @@ export class DownloadManager extends EventEmitter {
             if (changed > 0) {
               autoRecoveredArchives.add(failure.archiveName);
               fullFailedArchiveErrors.delete(failure.archiveName);
+              fullFailedArchiveCategories.delete(failure.archiveName.toLowerCase());
               return;
             }
             fullFailedArchiveErrors.set(
@@ -12745,6 +13062,12 @@ export class DownloadManager extends EventEmitter {
                 const doneLabel = progress.archiveSuccess === false
                   ? "Entpacken - Error"
                   : formatExtractDone(doneAt - startedAt);
+                this.recordArchiveOperation(
+                  pkg,
+                  progress,
+                  archiveItems,
+                  fullFailedArchiveCategories.get(progress.archiveName.toLowerCase()) || ""
+                );
                 for (const entry of archiveItems) {
                   if (entry.status !== "completed" || isExtractedLabel(entry.fullStatus)) continue;
                   entry.fullStatus = doneLabel;
@@ -12924,16 +13247,6 @@ export class DownloadManager extends EventEmitter {
     pkg.postProcessLabel = undefined;
     pkg.updatedAt = nowMs();
 
-    if (pkg.status === "completed") {
-      this.notifyPackageOutcome(pkg, "completed", `${success} Datei(en)${extractedCount > 0 ? `, ${extractedCount} entpackt` : ""}`);
-    } else if (pkg.status === "failed") {
-      this.notifyPackageOutcome(pkg, "failed", `${failed} von ${success + failed + cancelled} Datei(en) fehlgeschlagen`);
-    }
-
-    if (pkg.status === "completed" || (pkg.status === "failed" && success > 0)) {
-      this.recordPackageHistory(packageId, pkg, items);
-    }
-
     if (this.runPackageIds.has(packageId)) {
       if (pkg.status === "completed" || pkg.status === "failed") {
         this.runCompletedPackages.add(packageId);
@@ -12969,6 +13282,8 @@ export class DownloadManager extends EventEmitter {
         if (tasks?.size === 0) {
           this.packageDeferredPostProcessTasks.delete(packageId);
         }
+        this.tryFinalizePackageResult(packageId);
+        this.applyPackageDoneCleanup(packageId);
       });
     const tasks = this.packageDeferredPostProcessTasks.get(packageId) || new Set<Promise<void>>();
     tasks.add(task);
@@ -13012,6 +13327,8 @@ export class DownloadManager extends EventEmitter {
             nestedCandidates: nestedCandidates.length,
             extractDir: pkg.extractDir
           });
+          const nestedFailureCategories = new Map<string, string>();
+          const nestedItems = pkg.itemIds.map((itemId) => this.session.items[itemId]).filter(Boolean) as DownloadItem[];
           const nestedResult = await extractPackageArchives({
             packageDir: pkg.extractDir,
             targetDir: pkg.extractDir,
@@ -13026,6 +13343,17 @@ export class DownloadManager extends EventEmitter {
             maxParallel: this.settings.maxParallelExtract || 2,
             extractCpuPriority: this.settings.extractCpuPriority,
             onLog: (level, message) => this.logPackageForPackage(pkg, level, `Nested-Extractor: ${message}`),
+            onArchiveFailure: (failure) => {
+              nestedFailureCategories.set(failure.archiveName.toLowerCase(), failure.category);
+            },
+            onProgress: (progress) => {
+              this.recordArchiveOperation(
+                pkg,
+                progress,
+                resolveArchiveItemsFromList(progress.archiveName, nestedItems),
+                nestedFailureCategories.get(progress.archiveName.toLowerCase()) || ""
+              );
+            }
           });
           throwIfAborted();
           extractedCount += nestedResult.extracted;
@@ -13126,7 +13454,6 @@ export class DownloadManager extends EventEmitter {
       this.persistSoon();
       this.emitState();
 
-      this.applyPackageDoneCleanup(packageId);
     } catch (error) {
       const reason = compactErrorText(error);
       if (reason.includes("aborted:deferred")
@@ -13139,6 +13466,7 @@ export class DownloadManager extends EventEmitter {
         || reason === "package_toggle") {
         logger.info(`Deferred Post-Extraction abgebrochen: pkg=${pkg.name}, reason=${reason}`);
       } else {
+        pkg.cleanupErrorCategory = reason.slice(0, 256) || "cleanup";
         logger.warn(`Deferred Post-Extraction Fehler: pkg=${pkg.name}, reason=${reason}`);
       }
     } finally {
@@ -13281,6 +13609,7 @@ export class DownloadManager extends EventEmitter {
 
   private finishRun(): void {
     const runStartedAt = this.session.runStartedAt;
+    const completedAt = nowMs();
     this.session.running = false;
     this.session.paused = false;
     this.session.runStartedAt = 0;
@@ -13290,7 +13619,7 @@ export class DownloadManager extends EventEmitter {
     const failed = outcomes.filter((status) => status === "failed").length;
     const cancelled = outcomes.filter((status) => status === "cancelled").length;
     const extracted = this.runCompletedPackages.size;
-    const duration = runStartedAt > 0 ? Math.max(1, Math.floor((nowMs() - runStartedAt) / 1000)) : 1;
+    const duration = runStartedAt > 0 ? Math.max(1, Math.floor((completedAt - runStartedAt) / 1000)) : 1;
     const avgSpeed = Math.floor(this.session.totalDownloadedBytes / duration);
     this.summary = {
       total,
@@ -13302,24 +13631,14 @@ export class DownloadManager extends EventEmitter {
       averageSpeedBps: avgSpeed
     };
     this.session.summaryText = `Summary: Dauer ${duration}s, Ø Speed ${humanSize(avgSpeed)}/s, Erfolg ${success}/${total}`;
-    if (this.settings.notifyOnRunFinished && total > 0) {
-      // With autoExtractWhenStopped (default) the run ends as soon as downloads
-      // are done while extraction may still be running — say so instead of
-      // claiming the whole run is finished.
-      const postProcessPending = this.packagePostProcessTasks.size > 0 || this.hasAnyDeferredPostProcessPending();
-      const scope = postProcessPending ? "Downloads beendet" : "Durchlauf beendet";
-      void sendNotification(this.settings.notifyUrl, {
-        title: failed > 0 ? `⚠️ ${scope}` : `🏁 ${scope}`,
-        message: `${success}/${total} erfolgreich, ${failed} fehlgeschlagen, ${cancelled} abgebrochen\nDauer ${duration}s, Durchschnitt ${humanSize(avgSpeed)}/s${postProcessPending ? "\nEntpacken laeuft noch — Paket-Meldungen folgen." : ""}`,
-        mention: this.settings.notifyMention
-      });
-    }
+    this.ensureRunPackageGenerations(this.runPackageIds);
+    this.pendingRunResult = total > 0 ? {
+      id: uuidv4(),
+      startedAt: runStartedAt,
+      packageGenerations: new Map(this.runPackageGenerations)
+    } : null;
     this.runItemIds.clear();
     this.runOutcomes.clear();
-    if (this.packagePostProcessTasks.size === 0 && !this.hasAnyDeferredPostProcessPending()) {
-      this.runPackageIds.clear();
-      this.runCompletedPackages.clear();
-    }
     this.retryAfterByItem.clear();
     this.providerStartReservations.clear();
     this.pacedStartReservationByItem.clear();
@@ -13339,6 +13658,10 @@ export class DownloadManager extends EventEmitter {
     this.lastSettingsPersistAt = 0;
     this.persistNow();
     this.emitState();
+    for (const packageId of this.runPackageIds) {
+      this.tryFinalizePackageResult(packageId);
+    }
+    this.tryFinalizeRunResult();
   }
 
   public getSessionStats(): import("../shared/types").SessionStats {
