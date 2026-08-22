@@ -786,6 +786,8 @@ const emptySnapshot = (): UiSnapshot => ({
     updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, minimizeToTray: false,
     theme: "dark", logStorageLocation: "appdata", collapseNewPackages: true, animatePackageDisclosure: true, historyRetentionMode: "permanent", historyMaxEntries: 500, historyMaxAgeDays: 0, autoSortPackagesByProgress: false, autoSkipExtracted: false, hideExtractedItems: true, confirmDeleteSelection: true, backupIncludeDownloads: false, backupIncludeRemoteDiagnostics: false,
     notifyMention: "", notifyOnPackageCompleted: false, notifyOnPackageFailed: false, notifyOnRunFinished: false,
+    notifyPackageSuccessMode: "digest", notifyOnRemainingBelow: false, notifyRemainingThresholdGb: 50,
+    notifyOnDownloadStall: false, notifyStallAfterSeconds: 90, notifyStallCooldownMinutes: 10, notifyOnDownloadRecovery: true,
     accountListShowDetailedDebridLinkKeys: false,
     bandwidthSchedules: [], totalDownloadedAllTime: 0, totalCompletedFilesAllTime: 0, totalRuntimeAllTimeMs: 0,
     columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed", "availability"],

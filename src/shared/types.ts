@@ -120,6 +120,8 @@ export interface DebridAccountStatus {
   checkedAt: number;
 }
 
+export type NotifyPackageSuccessMode = "digest" | "individual";
+
 export interface AppSettings {
   language: AppLanguage;
   token: string;
@@ -205,6 +207,13 @@ export interface AppSettings {
   notifyOnPackageCompleted: boolean;
   notifyOnPackageFailed: boolean;
   notifyOnRunFinished: boolean;
+  notifyPackageSuccessMode: NotifyPackageSuccessMode;
+  notifyOnRemainingBelow: boolean;
+  notifyRemainingThresholdGb: number;
+  notifyOnDownloadStall: boolean;
+  notifyStallAfterSeconds: number;
+  notifyStallCooldownMinutes: number;
+  notifyOnDownloadRecovery: boolean;
   totalDownloadedAllTime: number;
   totalCompletedFilesAllTime: number;
   totalRuntimeAllTimeMs: number;
@@ -332,6 +341,13 @@ export interface RendererSettings {
   notifyOnPackageCompleted: boolean;
   notifyOnPackageFailed: boolean;
   notifyOnRunFinished: boolean;
+  notifyPackageSuccessMode: NotifyPackageSuccessMode;
+  notifyOnRemainingBelow: boolean;
+  notifyRemainingThresholdGb: number;
+  notifyOnDownloadStall: boolean;
+  notifyStallAfterSeconds: number;
+  notifyStallCooldownMinutes: number;
+  notifyOnDownloadRecovery: boolean;
   totalDownloadedAllTime: number;
   totalCompletedFilesAllTime: number;
   totalRuntimeAllTimeMs: number;

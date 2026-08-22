@@ -22,6 +22,14 @@ async function saveSettingsInMode(mode: SettingsSaveMode, paths: ReturnType<type
   }
 }
 
+function loadSettingsFrom(raw: Record<string, unknown>): AppSettings {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+  tempDirs.push(dir);
+  const paths = createStoragePaths(dir);
+  fs.writeFileSync(paths.configFile, JSON.stringify(raw), "utf8");
+  return loadSettings(paths);
+}
+
 beforeEach(() => {
   configureCredentialProtector({
     isEncryptionAvailable: () => true,
@@ -38,6 +46,37 @@ afterEach(() => {
 });
 
 describe("settings storage", () => {
+  it("migrates legacy package success notifications without changing their delivery frequency", () => {
+    expect(loadSettingsFrom({ notifyOnPackageCompleted: true }).notifyPackageSuccessMode).toBe("individual");
+    expect(loadSettingsFrom({}).notifyPackageSuccessMode).toBe("digest");
+    expect(loadSettingsFrom({ notifyOnPackageCompleted: true, notifyPackageSuccessMode: "digest" }).notifyPackageSuccessMode).toBe("digest");
+  });
+
+  it("normalizes notification defaults and numeric limits", () => {
+    const defaults = loadSettingsFrom({});
+    const normalized = normalizeSettings({
+      ...defaultSettings(),
+      notifyRemainingThresholdGb: 0,
+      notifyStallAfterSeconds: 3_601,
+      notifyStallCooldownMinutes: 1
+    });
+
+    expect(defaults).toEqual(expect.objectContaining({
+      notifyPackageSuccessMode: "digest",
+      notifyOnRemainingBelow: false,
+      notifyRemainingThresholdGb: 50,
+      notifyOnDownloadStall: false,
+      notifyStallAfterSeconds: 90,
+      notifyStallCooldownMinutes: 10,
+      notifyOnDownloadRecovery: true
+    }));
+    expect(normalized).toEqual(expect.objectContaining({
+      notifyRemainingThresholdGb: 1,
+      notifyStallAfterSeconds: 3_600,
+      notifyStallCooldownMinutes: 5
+    }));
+  });
+
   it("enables package disclosure motion by default and preserves an explicit opt-out", () => {
     const legacy = { ...defaultSettings() } as Partial<AppSettings>;
     delete legacy.animatePackageDisclosure;

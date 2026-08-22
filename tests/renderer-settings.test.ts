@@ -4,6 +4,24 @@ import { createRendererSettings } from "../src/main/renderer-state";
 import { validateRendererSettingsUpdate } from "../src/main/renderer-settings";
 
 describe("renderer settings validation", () => {
+  it("accepts every editable notification control while keeping the webhook write-only", () => {
+    const current = { ...defaultSettings(), notifyUrl: "https://notify.example.test/private-hook" };
+    const update = {
+      notifyPackageSuccessMode: "individual",
+      notifyOnRemainingBelow: true,
+      notifyRemainingThresholdGb: 25,
+      notifyOnDownloadStall: true,
+      notifyStallAfterSeconds: 120,
+      notifyStallCooldownMinutes: 15,
+      notifyOnDownloadRecovery: false
+    };
+    const projected = createRendererSettings(current);
+
+    expect(projected).not.toHaveProperty("notifyUrl");
+    expect(projected.notifyUrlConfigured).toBe(true);
+    expect(validateRendererSettingsUpdate(update, current)).toEqual(update);
+  });
+
   it("accepts a complete settings save when an account status has no optional email", () => {
     const current = defaultSettings();
     current.debridAccountStatuses = {

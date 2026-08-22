@@ -416,6 +416,10 @@ function migrateUpdateRepo(raw: string, fallback: string): string {
 export function normalizeSettings(settings: AppSettings): AppSettings {
   const defaults = defaultSettings();
   const directorySettings = migrateLegacyDefaultDirectories(settings, defaults);
+  const legacySuccessMode = settings.notifyOnPackageCompleted === true ? "individual" : "digest";
+  const notifyPackageSuccessMode = settings.notifyPackageSuccessMode === "individual" || settings.notifyPackageSuccessMode === "digest"
+    ? settings.notifyPackageSuccessMode
+    : legacySuccessMode;
   const currentUsageDay = getProviderUsageDayKey();
   const legacyMegaLogin = asText(settings.megaLogin);
   const legacyMegaPassword = asText(settings.megaPassword);
@@ -607,6 +611,13 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     notifyOnPackageCompleted: settings.notifyOnPackageCompleted !== undefined ? Boolean(settings.notifyOnPackageCompleted) : defaults.notifyOnPackageCompleted,
     notifyOnPackageFailed: settings.notifyOnPackageFailed !== undefined ? Boolean(settings.notifyOnPackageFailed) : defaults.notifyOnPackageFailed,
     notifyOnRunFinished: settings.notifyOnRunFinished !== undefined ? Boolean(settings.notifyOnRunFinished) : defaults.notifyOnRunFinished,
+    notifyPackageSuccessMode,
+    notifyOnRemainingBelow: settings.notifyOnRemainingBelow !== undefined ? Boolean(settings.notifyOnRemainingBelow) : defaults.notifyOnRemainingBelow,
+    notifyRemainingThresholdGb: clampNumber(settings.notifyRemainingThresholdGb, 50, 1, 100000),
+    notifyOnDownloadStall: settings.notifyOnDownloadStall !== undefined ? Boolean(settings.notifyOnDownloadStall) : defaults.notifyOnDownloadStall,
+    notifyStallAfterSeconds: clampNumber(settings.notifyStallAfterSeconds, 90, 60, 3600),
+    notifyStallCooldownMinutes: clampNumber(settings.notifyStallCooldownMinutes, 10, 5, 1440),
+    notifyOnDownloadRecovery: settings.notifyOnDownloadRecovery !== undefined ? Boolean(settings.notifyOnDownloadRecovery) : defaults.notifyOnDownloadRecovery,
     totalDownloadedAllTime: typeof settings.totalDownloadedAllTime === "number" && settings.totalDownloadedAllTime >= 0 ? settings.totalDownloadedAllTime : defaults.totalDownloadedAllTime,
     totalCompletedFilesAllTime: typeof settings.totalCompletedFilesAllTime === "number" && settings.totalCompletedFilesAllTime >= 0 ? settings.totalCompletedFilesAllTime : defaults.totalCompletedFilesAllTime,
     totalRuntimeAllTimeMs: typeof settings.totalRuntimeAllTimeMs === "number" && settings.totalRuntimeAllTimeMs >= 0 ? settings.totalRuntimeAllTimeMs : defaults.totalRuntimeAllTimeMs,
@@ -800,6 +811,9 @@ function readSettingsFile(filePath: string): LoadedSettingsFile | null {
     }
     if (!Object.prototype.hasOwnProperty.call(parsed, "realDebridWebAccountIds")) {
       delete (mergedInput as Partial<AppSettings>).realDebridWebAccountIds;
+    }
+    if (!Object.prototype.hasOwnProperty.call(parsed, "notifyPackageSuccessMode")) {
+      delete (mergedInput as Partial<AppSettings>).notifyPackageSuccessMode;
     }
     const merged = normalizeSettings(mergedInput);
     return { settings: merged, needsCredentialRewrite };
