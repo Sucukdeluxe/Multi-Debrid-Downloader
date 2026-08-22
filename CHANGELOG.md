@@ -2,6 +2,27 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.62] - 2026-08-23
+
+### Manual extraction
+
+- Run package and child archive extraction while downloads are stopped or paused and while sibling downloads remain open.
+- Validate manual targets before replacing stale post-processing, then drain the previous extractor and coordinator before starting the new operation.
+- Return actionable manual extraction errors through IPC instead of silently leaving items pending.
+- Keep queued and delayed sibling downloads unchanged when starting or stopping a selected-item run.
+
+### Archive progress and recovery
+
+- Preserve password-attempt status across progress pulses and show the real finalization percentage instead of counting an active archive as complete.
+- Include finalization progress in the package progress bar and retain archive names, elapsed time, and counters in tooltips.
+- Retry complete archive sets that were previously marked attempted without a terminal extraction result.
+- Add automatically recovered archive parts to the active run so every reset file is downloaded again.
+
+### Package status
+
+- Replace misleading aggregate counts such as `20 retries` with the actionable `Retrying link conversion` package state.
+- Keep mixed extraction failures concise while retaining detailed item-level attempts and diagnostics.
+
 ## [2.0.61] - 2026-08-23
 
 ### RAR extraction reliability
