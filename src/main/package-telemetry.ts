@@ -97,6 +97,7 @@ function getFailure(
   remuxOperations: readonly RemuxOperationMetric[],
   remuxFallbackFailures: number,
   archiveOperations: readonly ArchiveOperationMetric[],
+  extractionErrors: readonly string[],
   downloadErrors: readonly string[]
 ): { failurePhase: FailurePhase; errorCategory: string } {
   if (cleanupErrorCategory) {
@@ -107,8 +108,8 @@ function getFailure(
     return { failurePhase: "remux", errorCategory: projectPackageFailureCategory("remux", failedRemux?.errorCategory) };
   }
   const failedArchive = archiveOperations.find((operation) => operation.status === "failed");
-  if (failedArchive) {
-    return { failurePhase: "extract", errorCategory: projectPackageFailureCategory("extract", failedArchive.errorCategory) };
+  if (failedArchive || extractionErrors.length > 0) {
+    return { failurePhase: "extract", errorCategory: projectPackageFailureCategory("extract", failedArchive?.errorCategory || extractionErrors[0]) };
   }
   const downloadError = downloadErrors.find(Boolean);
   if (downloadErrors.length > 0) {
@@ -126,8 +127,13 @@ export function finalizePackageResult(telemetry: PackageTelemetry): PackageResul
   const cleanedCompletedDownloads = Math.max(0, Math.floor(finiteNonNegative(packageEntry.cleanedCompletedItemCount)));
   const completedDownloads = cleanedCompletedDownloads + telemetry.items.filter((item) => item.status === "completed").length;
   const failedDownloads = telemetry.items.filter((item) => item.status === "failed");
+  const itemExtractionFailures = telemetry.items.filter((item) => item.status === "completed" && /^(?:Entpack-Fehler|Entpacken\s*-\s*(?:Fehler|Error))/i.test(item.fullStatus || ""));
+  const itemExtractionFailureCount = new Set(itemExtractionFailures.map((item) => {
+    const archiveName = String(item.fullStatus || "").match(/^Entpack-Fehler\s*\[([^\]]+)\]/i)?.[1];
+    return archiveName?.toLocaleLowerCase("de-DE") || String(item.fullStatus || "").toLocaleLowerCase("de-DE") || item.id;
+  })).size;
   const cancelledDownloads = telemetry.items.filter((item) => item.status === "cancelled").length;
-  const failedArchives = archiveOperations.filter((operation) => operation.status === "failed").length;
+  const failedArchives = Math.max(archiveOperations.filter((operation) => operation.status === "failed").length, itemExtractionFailureCount);
   const cancelledArchives = archiveOperations.filter((operation) => operation.status === "cancelled").length;
   const failedRemuxOperations = remuxOperations.filter((operation) => operation.status === "failed").length;
   const cancelledRemuxOperations = remuxOperations.filter((operation) => operation.status === "cancelled").length;
@@ -163,6 +169,7 @@ export function finalizePackageResult(telemetry: PackageTelemetry): PackageResul
     remuxOperations,
     audioStripFailures,
     archiveOperations,
+    itemExtractionFailures.map((item) => item.lastError || item.fullStatus),
     failedDownloads.map((item) => item.lastError || item.fullStatus)
   );
 

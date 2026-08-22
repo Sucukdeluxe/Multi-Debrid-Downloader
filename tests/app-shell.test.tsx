@@ -12,9 +12,10 @@ describe("desktop shell", () => {
     const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
 
     expect(source).not.toMatch(/<span[^>]*className="[^"]*link-popup-click/);
-    expect(source.match(/<button[^>]*className="[^"]*link-popup-click[^>]*type="button"/g)).toHaveLength(3);
+    expect(source.match(/<button[^>]*className="[^"]*link-popup-click[^>]*type="button"/g)).toHaveLength(1);
     expect(source).not.toContain("navigator.clipboard.writeText(key.token)");
-    expect(source).toContain("navigator.clipboard.writeText(key.masked)");
+    expect(source).not.toContain("navigator.clipboard.writeText");
+    expect(source).toContain("window.rd.writeClipboardText(key.masked)");
     expect(source).toContain("Maskierte Kennung kopiert");
   });
 

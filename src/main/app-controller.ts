@@ -3,6 +3,7 @@ import os from "node:os";
 import v8 from "node:v8";
 import { randomUUID } from "node:crypto";
 import { app } from "electron";
+import type { ExtractNowRequest } from "../shared/extract-now";
 import {
   AddLinksPayload,
   AccountCheckScope,
@@ -1038,9 +1039,9 @@ export class AppController {
     this.manager.retryExtraction(packageId);
   }
 
-  public extractNow(packageId: string): void {
-    this.audit("INFO", "Jetzt entpacken ausgelöst", { packageId });
-    this.manager.extractNow(packageId);
+  public extractNow(request: ExtractNowRequest): void {
+    this.audit("INFO", "Jetzt entpacken ausgelöst", { packageIds: request.packageIds, itemIds: request.itemIds });
+    this.manager.extractNow(request);
   }
 
   public resetPackage(packageId: string): void {

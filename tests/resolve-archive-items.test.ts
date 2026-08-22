@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { resolveArchiveItemsFromList } from "../src/main/download-manager";
+import {
+  markPlannedHybridArchiveItemsPending,
+  resolveArchiveItemsFromList,
+  resolveSelectedArchiveSetsFromCandidates,
+} from "../src/main/download-manager";
 
 type MinimalItem = {
   targetPath?: string;
@@ -153,5 +157,105 @@ describe("resolveArchiveItemsFromList", () => {
     const result2 = resolveArchiveItemsFromList("Episode.S01E02.part1.rar", items as any);
     expect(result2).toHaveLength(2);
     expect(result2.every((i: any) => i.fileName.includes("S01E02"))).toBe(true);
+  });
+
+  it("resolves every multipart volume beside the selected non-first part without crossing directories", () => {
+    const items = [
+      {
+        targetPath: "C:\\Downloads\\Package\\Disc A\\Movie.part1.rar",
+        fileName: "Movie.part1.rar",
+        id: "disc-a-part-1",
+        status: "completed",
+      },
+      {
+        targetPath: "C:\\Downloads\\Package\\Disc A\\Movie.part2.rar",
+        fileName: "Movie.part2.rar",
+        id: "disc-a-part-2",
+        status: "completed",
+      },
+      {
+        targetPath: "C:\\Downloads\\Package\\Disc B\\Movie.part1.rar",
+        fileName: "Movie.part1.rar",
+        id: "disc-b-part-1",
+        status: "completed",
+      },
+      {
+        targetPath: "C:\\Downloads\\Package\\Disc B\\Movie.part2.rar",
+        fileName: "Movie.part2.rar",
+        id: "disc-b-part-2",
+        status: "completed",
+      },
+    ];
+
+    const result = resolveArchiveItemsFromList(
+      "Movie.part2.rar",
+      items as any,
+      "C:\\Downloads\\Package\\Disc A\\Movie.part2.rar"
+    );
+
+    expect(result.map((item: any) => item.id)).toEqual([
+      "disc-a-part-1",
+      "disc-a-part-2",
+    ]);
+  });
+});
+
+describe("resolveSelectedArchiveSetsFromCandidates", () => {
+  it("maps a selected non-first part to its canonical archive and complete multipart set", () => {
+    const items = [
+      { id: "e01-1", fileName: "Episode.E01.part1.rar", targetPath: "C:\\Downloads\\Episode.E01.part1.rar", status: "completed" },
+      { id: "e01-2", fileName: "Episode.E01.part2.rar", targetPath: "C:\\Downloads\\Episode.E01.part2.rar", status: "completed" },
+      { id: "e02-1", fileName: "Episode.E02.part1.rar", targetPath: "C:\\Downloads\\Episode.E02.part1.rar", status: "completed" },
+      { id: "e02-2", fileName: "Episode.E02.part2.rar", targetPath: "C:\\Downloads\\Episode.E02.part2.rar", status: "completed" }
+    ];
+    const selected = resolveSelectedArchiveSetsFromCandidates(
+      ["C:\\Downloads\\Episode.E01.part1.rar", "C:\\Downloads\\Episode.E02.part1.rar"],
+      items as any,
+      new Set(["e01-2"])
+    );
+
+    expect([...selected.archivePaths]).toEqual(["C:\\Downloads\\Episode.E01.part1.rar"]);
+    expect([...selected.itemIds].sort()).toEqual(["e01-1", "e01-2"]);
+  });
+});
+
+describe("markPlannedHybridArchiveItemsPending", () => {
+  it("keeps unplanned incomplete archive groups waiting", () => {
+    const items = [
+      {
+        id: "planned-part-1",
+        status: "completed",
+        fullStatus: "Entpacken - Warten auf Parts",
+        updatedAt: 1,
+      },
+      {
+        id: "foreign-part-1",
+        status: "completed",
+        fullStatus: "Entpacken - Warten auf Parts",
+        updatedAt: 2,
+      },
+    ];
+
+    const changed = markPlannedHybridArchiveItemsPending(
+      items as any,
+      new Set(["planned-part-1"]),
+      100
+    );
+
+    expect(changed).toBe(true);
+    expect(items).toEqual([
+      {
+        id: "planned-part-1",
+        status: "completed",
+        fullStatus: "Entpacken - Ausstehend",
+        updatedAt: 100,
+      },
+      {
+        id: "foreign-part-1",
+        status: "completed",
+        fullStatus: "Entpacken - Warten auf Parts",
+        updatedAt: 2,
+      },
+    ]);
   });
 });

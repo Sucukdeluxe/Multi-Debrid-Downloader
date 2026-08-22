@@ -359,10 +359,19 @@ export function createVisualElectronApi(
         entry.status = "extracting";
       }
     },
-    extractNow: async (packageId) => {
-      const entry = fixture.snapshot.session.packages[packageId];
-      if (entry) {
-        entry.status = "extracting";
+    extractNow: async (request) => {
+      for (const packageId of request.packageIds) {
+        const entry = fixture.snapshot.session.packages[packageId];
+        if (entry) {
+          entry.status = "extracting";
+        }
+      }
+      for (const itemId of request.itemIds) {
+        const item = fixture.snapshot.session.items[itemId];
+        const entry = item ? fixture.snapshot.session.packages[item.packageId] : undefined;
+        if (entry) {
+          entry.status = "extracting";
+        }
       }
     },
     resetPackage: async (packageId) => {

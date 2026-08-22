@@ -1807,6 +1807,14 @@ function withTimeoutSignal(signal: AbortSignal | undefined, timeoutMs: number): 
   return AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
 }
 
+function isCallerAbortSignal(signal?: AbortSignal): boolean {
+  if (!signal?.aborted) {
+    return false;
+  }
+  const reason = signal.reason;
+  return !(reason && typeof reason === "object" && "name" in reason && reason.name === "TimeoutError");
+}
+
 async function readResponseTextLimited(response: Response, maxBytes: number, signal?: AbortSignal): Promise<string> {
   const body = response.body;
   if (!body) {
@@ -2509,14 +2517,17 @@ class MegaDebridClient {
       } catch (error) {
         const elapsedMs = Date.now() - testStartedAt;
         const abortText = compactErrorText(error).replace(/^Error:\s*/i, "");
-        // Timeout/abort on THIS account (the shared unrestrict timeout fired). The
-        // account-wide cooldown exists ONLY to make the retry rotate to another
-        // account — so it is set only when another usable account actually exists.
-        // With no rotation target (single account / all others busy), cooling the
-        // sole account would freeze EVERY queued item while the account is healthy;
-        // a >60s timeout is a slow-LINK signal, not an unhealthy-account signal, so
-        // we park just this link (mega_debrid_slow_link) and leave the account free
-        // for other items. A quick user-cancel (below the min run) parks nothing.
+        if (isCallerAbortSignal(signal)) {
+          traceConversionPhase({
+            phase: "mega-account",
+            provider: providerName.includes("API") ? "megadebrid-api" : "megadebrid-web",
+            account: rotationLabel,
+            workMs: elapsedMs,
+            outcome: "aborted",
+            detail: abortText
+          });
+          throw error;
+        }
         if (/aborted/i.test(abortText) && !/timeout/i.test(abortText)) {
           const ranLongEnough = elapsedMs >= getMegaDebridAbortMinRunMs();
           const otherUsableAccounts = orderedEntries.reduce((count, candidate) => {
@@ -3259,9 +3270,12 @@ class DebridLinkClient {
           sourceAccountLabel: apiKey.label
         };
       } catch (error) {
-        const failure = await this.classifyKeyFailure(error, apiKey, link, signal);
         const elapsedMs = Date.now() - testStartedAt;
         const abortText = compactErrorText(error).replace(/^Error:\s*/i, "");
+        if (isCallerAbortSignal(signal)) {
+          throw error;
+        }
+        const failure = await this.classifyKeyFailure(error, apiKey, link, signal);
         if (/aborted/i.test(abortText) && !/timeout/i.test(abortText)) {
           const ranLongEnough = elapsedMs >= getMegaDebridAbortMinRunMs();
           if (ranLongEnough) {

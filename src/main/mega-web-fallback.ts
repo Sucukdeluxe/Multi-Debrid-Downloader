@@ -177,52 +177,31 @@ async function sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void> 
   });
 }
 
-async function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal, abortErrorFactory: () => Error = abortError): Promise<T> {
-  if (!signal) {
-    return promise;
-  }
-  if (signal.aborted) {
-    throw abortErrorFactory();
-  }
+type MegaWebQueueTask = {
+  run: (canMutate: () => boolean) => Promise<unknown>;
+  resolve: (value: unknown) => void;
+  reject: (reason?: unknown) => void;
+  signal?: AbortSignal;
+  queuedAt: number;
+  workStartedAt: number | null;
+  owner: symbol;
+  settled: boolean;
+  onAbort: () => void;
+};
 
-  return new Promise<T>((resolve, reject) => {
-    let settled = false;
-
-    const onAbort = (): void => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      signal.removeEventListener("abort", onAbort);
-      reject(abortErrorFactory());
-    };
-
-    signal.addEventListener("abort", onAbort, { once: true });
-
-    promise.then((value) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      signal.removeEventListener("abort", onAbort);
-      resolve(value);
-    }, (error) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      signal.removeEventListener("abort", onAbort);
-      reject(error);
-    });
-  });
-}
+type MegaWebQueueState = {
+  active: MegaWebQueueTask | null;
+  pending: MegaWebQueueTask[];
+};
 
 export class MegaWebFallback {
   // Pro Account eine eigene Warteschlange: Umwandlungen auf DEMSELBEN Account laufen
   // seriell (kein Doppel-Login, kein Hammern eines einzelnen Accounts), verschiedene
   // Accounts laufen parallel. So koennen die Links eines Pakets ueber mehrere Accounts
   // gleichzeitig umgewandelt werden statt global eine nach der anderen.
-  private queues = new Map<string, Promise<unknown>>();
+  private queues = new Map<string, MegaWebQueueState>();
+
+  private activeQueueOwners = new Map<string, symbol>();
 
   private getCredentials: () => MegaCredentials;
 
@@ -248,14 +227,16 @@ export class MegaWebFallback {
     }
     const key = creds.login.trim().toLowerCase();
     const sessionGeneration = this.sessionGeneration;
-    return this.runExclusive(async () => {
+    return this.runExclusive(async (canMutate) => {
       throwIfAborted(overallSignal);
-      let cookie = await this.ensureSession(key, creds.login, creds.password, overallSignal, sessionGeneration);
+      let cookie = await this.ensureSession(key, creds.login, creds.password, overallSignal, sessionGeneration, canMutate);
 
       let generated = await this.generate(link, cookie, overallSignal);
       if (!generated) {
-        this.sessions.delete(key);
-        cookie = await this.ensureSession(key, creds.login, creds.password, overallSignal, sessionGeneration);
+        if (canMutate()) {
+          this.sessions.delete(key);
+        }
+        cookie = await this.ensureSession(key, creds.login, creds.password, overallSignal, sessionGeneration, canMutate);
         generated = await this.generate(link, cookie, overallSignal);
         if (!generated) {
           return null;
@@ -275,14 +256,15 @@ export class MegaWebFallback {
     login: string,
     password: string,
     signal?: AbortSignal,
-    generation = this.sessionGeneration
+    generation = this.sessionGeneration,
+    canMutate: () => boolean = () => true
   ): Promise<string> {
     const existing = this.sessions.get(key);
     if (existing && existing.cookie && Date.now() - existing.setAt <= 20 * 60 * 1000) {
       return existing.cookie;
     }
     const cookie = await this.login(login, password, signal);
-    if (generation === this.sessionGeneration) {
+    if (generation === this.sessionGeneration && canMutate()) {
       this.sessions.set(key, { cookie, setAt: Date.now() });
     }
     return cookie;
@@ -293,36 +275,119 @@ export class MegaWebFallback {
     this.sessions.clear();
   }
 
-  private async runExclusive<T>(job: () => Promise<T>, key: string, signal?: AbortSignal): Promise<T> {
-    const queuedAt = Date.now();
-    const QUEUE_WAIT_TIMEOUT_MS = 90000;
-    let workStarted = false;
-    const guardedJob = async (): Promise<T> => {
-      throwIfAborted(signal);
-      const waited = Date.now() - queuedAt;
-      if (waited > QUEUE_WAIT_TIMEOUT_MS) {
-        traceConversionPhase({ phase: "web-queue", provider: "megadebrid-web", queueWaitMs: waited, outcome: "queue-timeout", detail: `${Math.floor(waited / 1000)}s in Web-Queue gewartet` });
-        throw new Error(`Mega-Web Queue-Timeout (${Math.floor(waited / 1000)}s gewartet)`);
+  private runExclusive<T>(job: (canMutate: () => boolean) => Promise<T>, key: string, signal?: AbortSignal): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const state = this.queues.get(key) ?? { active: null, pending: [] };
+      let task: MegaWebQueueTask;
+      task = {
+        run: job,
+        resolve: (value: unknown) => resolve(value as T),
+        reject,
+        signal,
+        queuedAt: Date.now(),
+        workStartedAt: null,
+        owner: Symbol(key),
+        settled: false,
+        onAbort: () => this.abortQueueTask(key, state, task)
+      };
+      state.pending.push(task);
+      this.queues.set(key, state);
+      if (signal?.aborted) {
+        task.onAbort();
+        return;
       }
-      workStarted = true;
-      const workStartedAt = Date.now();
-      try {
-        const result = await job();
-        traceConversionPhase({ phase: "web-queue", provider: "megadebrid-web", queueWaitMs: waited, workMs: Date.now() - workStartedAt, outcome: "ok" });
-        return result;
-      } catch (jobError) {
-        traceConversionPhase({ phase: "web-queue", provider: "megadebrid-web", queueWaitMs: waited, workMs: Date.now() - workStartedAt, outcome: "error", detail: compactErrorText(jobError).slice(0, 100) });
-        throw jobError;
+      signal?.addEventListener("abort", task.onAbort, { once: true });
+      this.startNextQueueTask(key, state);
+    });
+  }
+
+  private startNextQueueTask(key: string, state: MegaWebQueueState): void {
+    if (state.active) {
+      return;
+    }
+    const task = state.pending.shift();
+    if (!task) {
+      if (this.queues.get(key) === state) {
+        this.queues.delete(key);
       }
-    };
-    const prev = this.queues.get(key) ?? Promise.resolve();
-    const run = prev.then(guardedJob, guardedJob);
-    this.queues.set(key, run.then(() => undefined, () => undefined));
-    return raceWithAbort(run, signal, () =>
-      workStarted
+      return;
+    }
+    if (task.settled) {
+      this.startNextQueueTask(key, state);
+      return;
+    }
+    const waited = Date.now() - task.queuedAt;
+    if (waited > 90000) {
+      traceConversionPhase({ phase: "web-queue", provider: "megadebrid-web", queueWaitMs: waited, outcome: "queue-timeout", detail: `${Math.floor(waited / 1000)}s in Web-Queue gewartet` });
+      this.settleQueueTask(task, undefined, new Error(`Mega-Web Queue-Timeout (${Math.floor(waited / 1000)}s gewartet)`));
+      this.startNextQueueTask(key, state);
+      return;
+    }
+    if (task.signal?.aborted) {
+      this.settleQueueTask(task, undefined, new Error(`Mega-Web Queue-Timeout (abgebrochen nach ${Math.floor(waited / 1000)}s Wartezeit, Account war belegt)`));
+      this.startNextQueueTask(key, state);
+      return;
+    }
+    state.active = task;
+    task.workStartedAt = Date.now();
+    this.activeQueueOwners.set(key, task.owner);
+    const canMutate = (): boolean => state.active === task && this.activeQueueOwners.get(key) === task.owner;
+    void task.run(canMutate).then((result) => {
+      traceConversionPhase({ phase: "web-queue", provider: "megadebrid-web", queueWaitMs: waited, workMs: Date.now() - (task.workStartedAt ?? Date.now()), outcome: "ok" });
+      this.settleQueueTask(task, result);
+    }, (error) => {
+      traceConversionPhase({ phase: "web-queue", provider: "megadebrid-web", queueWaitMs: waited, workMs: Date.now() - (task.workStartedAt ?? Date.now()), outcome: "error", detail: compactErrorText(error).slice(0, 100) });
+      this.settleQueueTask(task, undefined, error);
+    }).finally(() => {
+      if (state.active === task) {
+        state.active = null;
+        if (this.activeQueueOwners.get(key) === task.owner) {
+          this.activeQueueOwners.delete(key);
+        }
+        this.startNextQueueTask(key, state);
+      }
+    });
+  }
+
+  private abortQueueTask(key: string, state: MegaWebQueueState, task: MegaWebQueueTask): void {
+    if (task.settled) {
+      return;
+    }
+    const waited = Date.now() - task.queuedAt;
+    const wasActive = state.active === task;
+    if (!wasActive) {
+      const index = state.pending.indexOf(task);
+      if (index >= 0) {
+        state.pending.splice(index, 1);
+      }
+    }
+    this.settleQueueTask(
+      task,
+      undefined,
+      wasActive
         ? abortError()
-        : new Error(`Mega-Web Queue-Timeout (abgebrochen nach ${Math.floor((Date.now() - queuedAt) / 1000)}s Wartezeit, Account war belegt)`)
+        : new Error(`Mega-Web Queue-Timeout (abgebrochen nach ${Math.floor(waited / 1000)}s Wartezeit, Account war belegt)`)
     );
+    if (wasActive) {
+      state.active = null;
+      if (this.activeQueueOwners.get(key) === task.owner) {
+        this.activeQueueOwners.delete(key);
+      }
+    }
+    this.startNextQueueTask(key, state);
+  }
+
+  private settleQueueTask(task: MegaWebQueueTask, value?: unknown, error?: unknown): void {
+    if (task.settled) {
+      return;
+    }
+    task.settled = true;
+    task.signal?.removeEventListener("abort", task.onAbort);
+    if (error !== undefined) {
+      task.reject(error);
+    } else {
+      task.resolve(value);
+    }
   }
 
   private async login(login: string, password: string, signal?: AbortSignal): Promise<string> {

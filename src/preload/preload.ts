@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
+import type { ExtractNowRequest } from "../shared/extract-now";
 import {
   AddLinksPayload,
   AccountCheckScope,
@@ -118,7 +119,7 @@ const api: ElectronApi = {
   revealAccountSecret: (input: AccountSecretRequest): Promise<AccountSecretResult> => ipcRenderer.invoke(IPC_CHANNELS.REVEAL_ACCOUNT_SECRET, input),
   getArchivePasswordList: () => ipcRenderer.invoke(IPC_CHANNELS.GET_ARCHIVE_PASSWORD_LIST),
   retryExtraction: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.RETRY_EXTRACTION, packageId),
-  extractNow: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.EXTRACT_NOW, packageId),
+  extractNow: (request: ExtractNowRequest): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.EXTRACT_NOW, request),
   resetPackage: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.RESET_PACKAGE, packageId),
   getHistory: (): Promise<HistoryEntry[]> => ipcRenderer.invoke(IPC_CHANNELS.GET_HISTORY),
   onHistoryEntryAdded: (callback: (entry: HistoryEntry) => void): (() => void) => {

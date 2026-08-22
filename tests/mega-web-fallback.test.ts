@@ -397,6 +397,56 @@ describe("mega-web-fallback", () => {
       }
     });
 
+    it("starts an already queued account job after caller abort even when the old raw job ignores its signal", async () => {
+      let releaseFirstLogin: () => void = () => {};
+      let markFirstLoginStarted: () => void = () => {};
+      const firstLoginGate = new Promise<void>((resolve) => {
+        releaseFirstLogin = resolve;
+      });
+      const firstLoginStarted = new Promise<void>((resolve) => {
+        markFirstLoginStarted = resolve;
+      });
+      const fallback = new MegaWebFallback(() => ({ login: "same", password: "pw" }));
+      const internals = fallback as unknown as {
+        login: (login: string, password: string) => Promise<string>;
+        generate: (link: string, cookie: string) => Promise<{ directUrl: string; fileName: string }>;
+        sessions: Map<string, { cookie: string; setAt: number }>;
+      };
+      let loginCount = 0;
+      vi.spyOn(internals, "login").mockImplementation(async () => {
+        loginCount += 1;
+        if (loginCount === 1) {
+          markFirstLoginStarted();
+          await firstLoginGate;
+          return "stale-cookie";
+        }
+        return "fresh-cookie";
+      });
+      vi.spyOn(internals, "generate").mockImplementation(async (link, cookie) => ({
+        directUrl: `https://mega.direct/${cookie}/${link.endsWith("second") ? "second" : "first"}`,
+        fileName: "result.bin"
+      }));
+      const firstController = new AbortController();
+      const first = fallback.unrestrict("https://mega.debrid/first", firstController.signal, { login: "same", password: "pw" });
+      await firstLoginStarted;
+      const second = fallback.unrestrict("https://mega.debrid/second", undefined, { login: "same", password: "pw" });
+      firstController.abort("stop");
+      await expect(first).rejects.toThrow(/aborted/i);
+
+      try {
+        const outcome = await Promise.race([
+          second.then((result) => result?.directUrl || "missing"),
+          new Promise<string>((resolve) => setTimeout(() => resolve("blocked"), 150))
+        ]);
+        expect(outcome).toBe("https://mega.direct/fresh-cookie/second");
+      } finally {
+        releaseFirstLogin();
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(internals.sessions.get("same")?.cookie).toBe("fresh-cookie");
+    });
+
     it("klassifiziert einen Abbruch WAEHREND in der Queue als Queue-Timeout (nicht harter Abbruch), damit der belegte Account nicht bestraft wird", async () => {
       let releaseLogin: () => void = () => {};
       const loginGate = new Promise<void>((resolve) => { releaseLogin = resolve; });

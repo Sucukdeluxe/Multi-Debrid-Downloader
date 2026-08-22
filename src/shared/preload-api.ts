@@ -33,6 +33,7 @@ import type {
   UpdateInstallProgress,
   UpdateInstallResult
 } from "./types";
+import type { ExtractNowRequest } from "./extract-now";
 import { isRealDebridWebAccountId } from "./real-debrid-accounts";
 import type { CollectorInspectionRequest, CollectorInspectionResult } from "./collector";
 
@@ -143,7 +144,7 @@ export interface ElectronApi {
   revealAccountSecret: (input: AccountSecretRequest) => Promise<AccountSecretResult>;
   getArchivePasswordList: () => Promise<ArchivePasswordListResult>;
   retryExtraction: (packageId: string) => Promise<void>;
-  extractNow: (packageId: string) => Promise<void>;
+  extractNow: (request: ExtractNowRequest) => Promise<void>;
   resetPackage: (packageId: string) => Promise<void>;
   getHistory: () => Promise<HistoryEntry[]>;
   onHistoryEntryAdded: (callback: (entry: HistoryEntry) => void) => () => void;

@@ -656,8 +656,7 @@ describe("debrid service", () => {
     expect(getDebridLinkKeyCooldownStateForTests(keyId)).toBeNull();
   });
 
-  it("cools down a Debrid-Link key on an abort that ran long enough (retry rotates to the next key)", async () => {
-    process.env.RD_MEGA_ABORT_MIN_RUN_MS = "0";
+  it("does not cool down a Debrid-Link key when the caller aborts after more than eight seconds", async () => {
     const settings = {
       ...defaultSettings(),
       token: "",
@@ -674,10 +673,13 @@ describe("debrid service", () => {
       autoProviderFallback: false
     };
     const controller = new AbortController();
+    let now = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
     globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       if (url.includes("/downloader/add")) {
-        controller.abort();
+        now += 9_000;
+        controller.abort("stop");
         throw new Error("aborted");
       }
       return new Response("not-found", { status: 404 });
@@ -689,8 +691,47 @@ describe("debrid service", () => {
       service.unrestrictLink("https://rapidgator.net/file/dl-long-abort", controller.signal)
     ).rejects.toThrow();
 
-    const cooldown = getDebridLinkKeyCooldownStateForTests(keyId);
-    expect(cooldown?.remainingMs ?? 0).toBeGreaterThan(60_000);
+    expect(getDebridLinkKeyCooldownStateForTests(keyId)).toBeNull();
+  });
+
+  it("cools down a Debrid-Link key after an internal timeout", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      megaLogin: "",
+      megaPassword: "",
+      megaCredentials: "",
+      debridLinkApiKeys: "dl-key-one",
+      providerOrder: ["debridlink"] as const,
+      providerPrimary: "debridlink" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+    const callerController = new AbortController();
+    const timeoutController = new AbortController();
+    const signal = AbortSignal.any([callerController.signal, timeoutController.signal]);
+    let now = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/downloader/add")) {
+        now += 9_000;
+        timeoutController.abort(new DOMException("The operation timed out", "TimeoutError"));
+        throw new Error("aborted");
+      }
+      return new Response("not-found", { status: 404 });
+    }) as typeof fetch;
+
+    const keyId = parseDebridLinkApiKeys("dl-key-one")[0].id;
+    const service = new DebridService(settings);
+    await expect(
+      service.unrestrictLink("https://rapidgator.net/file/dl-internal-timeout", signal)
+    ).rejects.toThrow();
+
+    expect(getDebridLinkKeyCooldownStateForTests(keyId)?.remainingMs ?? 0).toBeGreaterThan(60_000);
   });
 
   it("treats bad Debrid-Link file passwords as fatal and does not rotate keys", async () => {
@@ -2158,12 +2199,10 @@ describe("debrid service", () => {
     };
     globalThis.fetch = (async () => new Response("error", { status: 500 })) as typeof fetch;
 
-    const controller = new AbortController();
     let calls = 0;
     const megaWeb = vi.fn((): Promise<{ fileName: string; directUrl: string; fileSize: number | null; retriesUsed: number }> => {
       calls += 1;
-      if (calls === 1) {
-        controller.abort("simulated-60s-timeout");
+      if (calls <= REQUEST_RETRIES) {
         return Promise.reject(new Error("aborted"));
       }
       return Promise.resolve({
@@ -2176,7 +2215,7 @@ describe("debrid service", () => {
 
     const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
 
-    const err = await service.unrestrictLink("https://rapidgator.net/file/slow-link.rar.html", controller.signal).then(() => null, (e: unknown) => e);
+    const err = await service.unrestrictLink("https://rapidgator.net/file/slow-link.rar.html").then(() => null, (e: unknown) => e);
     expect(err).toBeTruthy();
     expect(String(err)).toMatch(/mega_debrid_slow_link:\d+:/i);
 
@@ -2347,10 +2386,14 @@ describe("debrid service", () => {
     };
     globalThis.fetch = (async () => new Response("error", { status: 500 })) as typeof fetch;
 
+    const callerController = new AbortController();
+    const timeoutController = new AbortController();
+    const signal = AbortSignal.any([callerController.signal, timeoutController.signal]);
     const loginsSeen: Array<string | undefined> = [];
     const megaWeb = vi.fn(async (_link: string, _signal: AbortSignal | undefined, account?: { login: string; password: string }) => {
       loginsSeen.push(account?.login);
       if (account?.login === "user1") {
+        timeoutController.abort(new DOMException("The operation timed out", "TimeoutError"));
         throw new Error("aborted:debrid");
       }
       return { fileName: "acc2.rar", directUrl: "https://mega-web.example/acc2.rar", fileSize: null, retriesUsed: 0 };
@@ -2359,7 +2402,7 @@ describe("debrid service", () => {
     const user1Key = `${getMegaDebridAccountId("user1")}:web`;
 
     // Call 1: account 1 aborts -> rotation stops this pass, account 2 NOT tried, but account 1 is cooled down.
-    await expect(service.unrestrictLink("https://rapidgator.net/file/abort-call-1")).rejects.toThrow();
+    await expect(service.unrestrictLink("https://rapidgator.net/file/abort-call-1", signal)).rejects.toThrow();
     expect(loginsSeen).toContain("user1");
     expect(loginsSeen).not.toContain("user2");
     expect(getMegaDebridAccountCooldownState(user1Key)).not.toBeNull();
@@ -2396,6 +2439,41 @@ describe("debrid service", () => {
     const user1Key = `${getMegaDebridAccountId("user1")}:web`;
 
     await expect(service.unrestrictLink("https://rapidgator.net/file/quick-cancel")).rejects.toThrow();
+    expect(getMegaDebridAccountCooldownState(user1Key)).toBeNull();
+  }, 20000);
+
+  it("does not cool down a Mega-Web account when the caller aborts after more than eight seconds", async () => {
+    const settings = {
+      ...defaultSettings(),
+      token: "",
+      bestToken: "",
+      allDebridToken: "",
+      megaLogin: "user1",
+      megaPassword: "pass1",
+      megaCredentials: "user1:pass1\nuser2:pass2",
+      megaDebridPreferApi: false,
+      providerOrder: [] as const,
+      providerPrimary: "megadebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+    const controller = new AbortController();
+    let now = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    globalThis.fetch = (async () => new Response("error", { status: 500 })) as typeof fetch;
+    const megaWeb = vi.fn(async () => {
+      now += 9_000;
+      controller.abort("stop");
+      throw new Error("aborted:debrid");
+    });
+    const service = new DebridService(settings, { megaWebUnrestrict: megaWeb });
+    const user1Key = `${getMegaDebridAccountId("user1")}:web`;
+
+    await expect(
+      service.unrestrictLink("https://rapidgator.net/file/long-caller-cancel", controller.signal)
+    ).rejects.toThrow(/aborted/i);
+
     expect(getMegaDebridAccountCooldownState(user1Key)).toBeNull();
   }, 20000);
 

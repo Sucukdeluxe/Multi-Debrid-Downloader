@@ -63,6 +63,7 @@ import { BackupPassphraseDialog } from "./ui/BackupPassphraseDialog";
 import { Dialog } from "./ui/Dialog";
 import { Icon } from "./ui/Icon";
 import { Toast } from "./ui/Toast";
+import { LinkAddressesDialog } from "./ui/LinkAddressesDialog";
 import {
   buildCollectorTransferPackages,
   buildCollectorWorkspaceViewModel,
@@ -106,6 +107,7 @@ import {
 import { buildDownloadsViewModel, formatRemainingDownloadBytes, formatRemainingDownloadTooltip, getDownloadQueueTotalBytes, getDownloadSpeedBps, getPendingDownloadItemCount, getRemainingDownloadBytes, type DownloadDisplayMode, type DownloadSidebarFilter } from "./views/downloads/downloads-model";
 import { downloadColumnDefinitions, type DownloadSortColumn } from "./views/downloads/DownloadsTable";
 import { DeleteConfirmationDialog } from "./views/downloads/DeleteConfirmationDialog";
+import { buildExtractNowContextAction } from "./views/downloads/extract-action";
 import { beginDownloadColumnDrag, clearDownloadColumnDrag, commitDownloadColumnDrag, createDownloadColumnOrderPersistence, DOWNLOAD_COLUMN_MOVE_DURATION_MS, updateDownloadColumnDrag, type DownloadColumnDragSession, type DownloadColumnOrderPersistence } from "./views/downloads/column-drag";
 import {
   DownloadsContent,
@@ -1467,6 +1469,29 @@ function formatUpdateInstallProgress(progress: UpdateInstallProgress): string {
     return "Installer gestartet";
   }
   return `Update-Fehler: ${progress.message}`;
+}
+
+export function sortPackageOrderByService(
+  order: string[],
+  packages: Record<string, PackageEntry>,
+  items: Record<string, DownloadItem>,
+  descending: boolean,
+  visibleItemsByPackage: Record<string, readonly DownloadItem[]> = {}
+): string[] {
+  const sorted = [...order];
+  const itemsFor = (packageId: string): readonly DownloadItem[] => visibleItemsByPackage[packageId]
+    ?? (packages[packageId]?.itemIds ?? []).map((id) => items[id]).filter((item): item is DownloadItem => Boolean(item));
+  sorted.sort((a, b) => {
+    const serviceA = [...new Set(itemsFor(a).map((item) => {
+      return item?.providerLabel || (item?.provider ? providerLabels[item.provider] : "");
+    }).filter(Boolean))].join(",").toLocaleLowerCase("de-DE");
+    const serviceB = [...new Set(itemsFor(b).map((item) => {
+      return item?.providerLabel || (item?.provider ? providerLabels[item.provider] : "");
+    }).filter(Boolean))].join(",").toLocaleLowerCase("de-DE");
+    const cmp = serviceA.localeCompare(serviceB, "de");
+    return descending ? -cmp : cmp;
+  });
+  return sorted;
 }
 
 export function shouldApplyUpdateCheckResult(
@@ -4426,7 +4451,7 @@ export function App(): ReactElement {
   const onCopyOnlineBackupKey = async (): Promise<void> => {
     if (!onlineBackupDialog?.key) return;
     try {
-      await navigator.clipboard.writeText(onlineBackupDialog.key);
+      if (!(await window.rd.writeClipboardText(onlineBackupDialog.key))) throw new Error("clipboard_write_rejected");
       showToast("Online-Schlüssel kopiert", 2200);
     } catch {
       showToast("Schlüssel konnte nicht kopiert werden", 2600);
@@ -4495,11 +4520,11 @@ export function App(): ReactElement {
         detailsLabel: "Einträge anzeigen"
       });
       if (copy && entries.length > 0) {
-        await navigator.clipboard.writeText(details);
+        if (!(await window.rd.writeClipboardText(details))) throw new Error("clipboard_write_rejected");
         showToast("Fehlerliste kopiert", 2600);
       }
     } catch (error) {
-      showToast(`Fehler-Ansicht fehlgeschlagen: ${String(error)}`, 3000);
+      showToast(String(error).includes("clipboard_write_rejected") ? "Kopieren fehlgeschlagen" : `Fehler-Ansicht fehlgeschlagen: ${String(error)}`, 3000);
     }
   };
 
@@ -4598,7 +4623,7 @@ export function App(): ReactElement {
       return;
     }
     try {
-      await navigator.clipboard.writeText(remoteDiag.code);
+      if (!(await window.rd.writeClipboardText(remoteDiag.code))) throw new Error("clipboard_write_rejected");
       showToast("Verbindungscode kopiert", 2200);
     } catch {
       showToast("Kopieren fehlgeschlagen", 2200);
@@ -4720,6 +4745,14 @@ export function App(): ReactElement {
         ? sortPackageOrderBySize(baseOrder, snapshot.session.packages, snapshot.session.items, nextDescending)
         : column === "hoster"
           ? sortPackageOrderByHoster(baseOrder, snapshot.session.packages, snapshot.session.items, nextDescending)
+          : column === "service"
+            ? sortPackageOrderByService(
+              baseOrder,
+              snapshot.session.packages,
+              snapshot.session.items,
+              nextDescending,
+              Object.fromEntries(downloadsViewCore.packageRows.map((row) => [row.package.id, row.items]))
+            )
           : sortPackageOrderByName(baseOrder, snapshot.session.packages, nextDescending);
     pendingPackageOrderRef.current = [...sorted];
     pendingPackageOrderAtRef.current = Date.now();
@@ -4732,7 +4765,7 @@ export function App(): ReactElement {
       setSnapshot((current) => ({ ...current, session: { ...current.session, packageOrder: serverPackageOrderRef.current } }));
       showToast(`Sortierung fehlgeschlagen: ${String(error)}`, 2400);
     });
-  }, [downloadsSortColumn, downloadsSortDescending, showToast, snapshot.session.items, snapshot.session.packageOrder, snapshot.session.packages]);
+  }, [downloadsSortColumn, downloadsSortDescending, downloadsViewCore.packageRows, showToast, snapshot.session.items, snapshot.session.packageOrder, snapshot.session.packages]);
 
   const clearDownloadQueue = useCallback((): void => {
     void performQuickAction(async () => {
@@ -5374,7 +5407,7 @@ export function App(): ReactElement {
     },
     onCopyIdentity: (label, value) => {
       void window.rd.writeClipboardText(value)
-        .then(() => showToast(`${label} kopiert`))
+        .then((copied) => copied ? showToast(`${label} kopiert`) : showToast("Kopieren fehlgeschlagen"))
         .catch(() => showToast("Kopieren fehlgeschlagen"));
     },
     onAdd: openCreateAccountDialog,
@@ -6416,18 +6449,27 @@ export function App(): ReactElement {
         const startableStatuses = new Set(["queued", "cancelled", "reconnect_wait"]);
         const hasStartableItems = actionableSelectedIds.some((id) => { const it = snapshot.session.items[id]; return it && startableStatuses.has(it.status); });
         const hasItems = selectedItemIds.length > 0;
+        const extractAction = buildExtractNowContextAction({
+          contextItemId: contextMenu.itemId,
+          selectedPackageIds,
+          selectedItemIds,
+          packages: snapshot.session.packages,
+          items: snapshot.session.items
+        });
         return (
         <ContextMenu ariaLabel="Downloadaktionen" onClose={() => setContextMenu(null)} open ref={ctxMenuRef} x={contextMenu.x} y={contextMenu.y}>
           {(hasPackages || hasStartableItems) && (
-            <button className="ctx-menu-item" onClick={() => {
+            <button className="ctx-menu-item" disabled={actionBusy || (!snapshot.canStart && !snapshot.session.running)} onClick={() => {
               const pkgIds = selectedPackageIds;
               const itemIds = selectedItemIds.filter((id) => { const it = snapshot.session.items[id]; return it && startableStatuses.has(it.status); });
-              if (pkgIds.length > 0) void window.rd.startPackages(pkgIds).catch(() => {});
-              if (itemIds.length > 0) void window.rd.startItems(itemIds).catch(() => {});
               setContextMenu(null);
+              void performQuickAction(async () => {
+                if (pkgIds.length > 0) await window.rd.startPackages(pkgIds);
+                if (itemIds.length > 0) await window.rd.startItems(itemIds);
+              }, (error) => showToast(`Start fehlgeschlagen: ${String(error)}`, 2600));
             }}>Ausgewählte Downloads starten{multi ? ` (${actionableSelectedIds.length})` : ""}</button>
           )}
-          <button className="ctx-menu-item" onClick={() => { downloadsActions.onStartDownloads(); setContextMenu(null); }}>Alle Downloads starten</button>
+          <button className="ctx-menu-item" disabled={actionBusy || !snapshot.canStart} onClick={() => { downloadsActions.onStartDownloads(); setContextMenu(null); }}>Alle Downloads starten</button>
           <div className="ctx-menu-sep" />
           <button className="ctx-menu-item" onClick={() => showLinksPopup(contextMenu.packageId, contextMenu.itemId)}>Linkadressen anzeigen</button>
           {hasPackages && !contextMenu.itemId && (
@@ -6497,16 +6539,13 @@ export function App(): ReactElement {
               setContextMenu(null);
             }}>Zurücksetzen{multi ? ` (${selectedItemIds.length})` : ""}</button>
           )}
-          {hasPackages && !multi && (() => {
-            const pkg = snapshot.session.packages[contextMenu.packageId];
-            const items = pkg?.itemIds.map((id) => snapshot.session.items[id]).filter(Boolean) || [];
-            const someCompleted = items.some((item) => item && item.status === "completed" && !/^Entpackt\b/i.test(item.fullStatus || ""));
-            return (<>
-              {someCompleted && (
-                <button className="ctx-menu-item" onClick={() => { void window.rd.extractNow(contextMenu.packageId).catch(() => {}); setContextMenu(null); }}>Jetzt entpacken</button>
-              )}
-            </>);
-          })()}
+          {extractAction && (
+            <button className="ctx-menu-item" onClick={() => {
+              void window.rd.extractNow(extractAction.request)
+                .catch((error) => showToast(`Entpacken fehlgeschlagen: ${String(error)}`, 2600));
+              setContextMenu(null);
+            }}>{extractAction.label}</button>
+          )}
           {hasPackages && !contextMenu.itemId && (<>
             <div className="ctx-menu-sep" />
             <div className="ctx-menu-sub">
@@ -6687,8 +6726,8 @@ export function App(): ReactElement {
                       type="button"
                       title={`${key.masked}\nMaskierte Kennung kopieren`}
                       onClick={() => {
-                        void navigator.clipboard.writeText(key.masked)
-                          .then(() => showToast("Maskierte Kennung kopiert", 1800))
+                        void window.rd.writeClipboardText(key.masked)
+                          .then((copied) => copied ? showToast("Maskierte Kennung kopiert", 1800) : showToast("Kopieren fehlgeschlagen", 2200))
                           .catch(() => showToast("Kopieren fehlgeschlagen", 2200));
                       }}
                     >
@@ -6739,32 +6778,14 @@ export function App(): ReactElement {
               />
             ) : null}
             {linkPopup ? (
-          <Dialog actions={null} className="link-popup" onClose={() => setLinkPopup(null)} open size="wide" title="Linkadressen anzeigen">
-            <p>{linkPopup.title}</p>
-            <div className="link-popup-list">
-              {linkPopup.links.map((link, i) => (
-                <div key={i} className="link-popup-row">
-                  <button aria-label={`${link.name} kopieren`} className="link-popup-name link-popup-click" type="button" title={`${link.name}\nKlicken zum Kopieren`} onClick={() => { void navigator.clipboard.writeText(link.name).then(() => showToast("Name kopiert")).catch(() => showToast("Kopieren fehlgeschlagen")); }}>{link.name}</button>
-                  <button aria-label="Link kopieren" className="link-popup-url link-popup-click" type="button" title={`${link.url}\nKlicken zum Kopieren`} onClick={() => { void navigator.clipboard.writeText(link.url).then(() => showToast("Link kopiert")).catch(() => showToast("Kopieren fehlgeschlagen")); }}>{link.url}</button>
-                </div>
-              ))}
-            </div>
-            <div className="modal-actions">
-              {linkPopup.isPackage && (
-                <button className="btn" onClick={() => {
-                  const text = linkPopup.links.map((l) => l.name).join("\n");
-                  void navigator.clipboard.writeText(text).then(() => showToast("Alle Namen kopiert")).catch(() => showToast("Kopieren fehlgeschlagen"));
-                }}>Alle Namen kopieren</button>
-              )}
-              {linkPopup.isPackage && (
-                <button className="btn" onClick={() => {
-                  const text = linkPopup.links.map((l) => l.url).join("\n");
-                  void navigator.clipboard.writeText(text).then(() => showToast("Alle Links kopiert")).catch(() => showToast("Kopieren fehlgeschlagen"));
-                }}>Alle Links kopieren</button>
-              )}
-              <button className="btn" onClick={() => setLinkPopup(null)}>Schließen</button>
-            </div>
-          </Dialog>
+              <LinkAddressesDialog
+                isPackage={linkPopup.isPackage}
+                links={linkPopup.links}
+                onClose={() => setLinkPopup(null)}
+                onToast={showToast}
+                title={linkPopup.title}
+                writeClipboardText={window.rd.writeClipboardText}
+              />
             ) : null}
           </>
         )}

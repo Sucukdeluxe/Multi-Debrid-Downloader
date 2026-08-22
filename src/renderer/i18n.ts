@@ -64,7 +64,7 @@ const pairs = [
   ["Alle sichtbaren Einträge auswählen", "Select all visible entries"], ["Details anzeigen", "Show details"], ["Details ausblenden", "Hide details"],
   ["Sichtbar:", "Visible:"], ["pro Seite", "per page"],
   ["Verfügbarkeit", "Availability"], ["Hinzugefügt am", "Added on"], ["Ungeprüft", "Unchecked"], ["Paket gestoppt", "Package stopped"], ["Alle anzeigen", "Show all"], ["Planen", "Schedule"], ["Startzeit", "Start time"], ["Starttag", "Start day"], ["Ab heute", "Starting today"], ["Ab morgen", "Starting tomorrow"], ["Bitte eine gültige Startzeit auswählen.", "Select a valid start time."],
-  ["Keine Downloads", "No downloads"], ["Keine passenden Downloads", "No matching downloads"], ["Füge Links hinzu, um Downloads vorzubereiten.", "Add links to prepare downloads."], ["Passe Filter oder Suche an.", "Adjust the filter or search."],
+  ["Keine Downloads", "No downloads"], ["Keine passenden Downloads", "No matching downloads"], ["Füge Links hinzu, um Downloads vorzubereiten.", "Add links to prepare downloads."], ["Passe Filter oder Suche an.", "Adjust the filter or search."], ["Warte auf Festplatte", "Waiting for disk"],
   ["Keine Links gesammelt", "No links collected"], ["Keine passenden Links", "No matching links"], ["Füge Links oder Text ein, um sie zu sammeln.", "Paste links or text to collect them."], ["Links durchsuchen", "Search links"],
   ["Datenmenge", "Data volume"], ["Sitzungszähler", "Session counter"], ["Sieben Tage", "Seven days"], ["30 Tage", "30 days"], ["Zeitraum", "Period"], ["Erfolgreich", "Successful"],
   ["Sitzungszähler und Ergebnisse der aktuellen Queue werden angezeigt.", "Session counters and results for the current queue are shown."], ["Sitzung zurücksetzen", "Reset session"], ["Gesamt zurücksetzen", "Reset total"], ["Fehler zurücksetzen", "Reset errors"],
@@ -222,11 +222,41 @@ export function normalizeLanguage(value: unknown): AppLanguage {
   return value === "de" ? "de" : "en";
 }
 
+function translatePackageStatusParts(value: string, language: AppLanguage): string | null {
+  const parts = value.split(" · ");
+  if (parts.length < 2) return null;
+  const translated = parts.map((part): string | null => {
+    if (language === "en") {
+      const extractionError = part.match(/^(\d+) Entpackfehler$/);
+      if (extractionError) return `${extractionError[1]} extraction error${extractionError[1] === "1" ? "" : "s"}`;
+      const retry = part.match(/^(\d+) Wiederholung(?:en)?$/);
+      if (retry) return `${retry[1]} retr${retry[1] === "1" ? "y" : "ies"}`;
+      const error = part.match(/^(\d+) Fehler$/);
+      if (error) return `${error[1]} error${error[1] === "1" ? "" : "s"}`;
+      const cancelled = part.match(/^(\d+) abgebrochen$/);
+      if (cancelled) return `${cancelled[1]} cancelled`;
+      return null;
+    }
+    const extractionError = part.match(/^(\d+) extraction errors?$/);
+    if (extractionError) return `${extractionError[1]} Entpackfehler`;
+    const retry = part.match(/^(\d+) retr(?:y|ies)$/);
+    if (retry) return `${retry[1]} Wiederholung${retry[1] === "1" ? "" : "en"}`;
+    const error = part.match(/^(\d+) errors?$/);
+    if (error) return `${error[1]} Fehler`;
+    const cancelled = part.match(/^(\d+) cancelled$/);
+    if (cancelled) return `${cancelled[1]} abgebrochen`;
+    return null;
+  });
+  return translated.every((part): part is string => part !== null) ? translated.join(" · ") : null;
+}
+
 function translateDynamic(value: string, language: AppLanguage): string {
   for (const [german, english] of prefixedPairs) {
     const source = language === "en" ? german : english;
     if (value.startsWith(source)) return `${language === "en" ? english : german}${value.slice(source.length)}`;
   }
+  const packageStatus = translatePackageStatusParts(value, language);
+  if (packageStatus) return packageStatus;
   if (language === "en") {
     const update = value.match(/^(.+) ist verfügbar\. Installierte Version: (.+)\.$/);
     if (update) return `${update[1]} is available. Installed version: ${update[2]}.`;
@@ -274,6 +304,17 @@ function translateDynamic(value: string, language: AppLanguage): string {
     if (audio) return `Audio track: ${audio[1].replace(/ohne DE-Tag/g, "without DE tag").replace(/ffmpeg fehlt/g, "ffmpeg missing").replace(/(\d+) Fehler/g, "$1 errors")}`;
     const result = value.match(/^(\d+\/\d+) fertig(.*)$/);
     if (result) return `${result[1]} completed${result[2].replace(/(\d+) Fehler/g, "$1 errors").replace(/(\d+) abgebrochen/g, "$1 cancelled")}`;
+    const extractionErrorsAndRetries = value.match(/^(\d+) Entpackfehler · (\d+) Wiederholung(?:en)?$/);
+    if (extractionErrorsAndRetries) return `${extractionErrorsAndRetries[1]} extraction error${extractionErrorsAndRetries[1] === "1" ? "" : "s"} · ${extractionErrorsAndRetries[2]} retr${extractionErrorsAndRetries[2] === "1" ? "y" : "ies"}`;
+    const extractionErrors = value.match(/^(\d+) Entpackfehler$/);
+    if (extractionErrors) return `${extractionErrors[1]} extraction error${extractionErrors[1] === "1" ? "" : "s"}`;
+    const retries = value.match(/^(\d+) Wiederholung(?:en)?$/);
+    if (retries) return `${retries[1]} retr${retries[1] === "1" ? "y" : "ies"}`;
+    const downloadCompleteExtractionErrors = value.match(/^Download fertig · (\d+) Entpackfehler$/);
+    if (downloadCompleteExtractionErrors) return `Download complete · ${downloadCompleteExtractionErrors[1]} extraction error${downloadCompleteExtractionErrors[1] === "1" ? "" : "s"}`;
+    if (value === "Download fertig") return "Download complete";
+    const extractSelection = value.match(/^Jetzt entpacken \((\d+)\)$/);
+    if (extractSelection) return `Extract now (${extractSelection[1]})`;
     const extracting = value.match(/^Entpacken (\d+%)$/);
     if (extracting) return `Extracting ${extracting[1]}`;
     const finalizing = value.match(/^Finalisieren - (\d+%)$/);
@@ -447,6 +488,17 @@ function translateDynamic(value: string, language: AppLanguage): string {
     if (audio) return `Tonspur: ${audio[1].replace(/without DE tag/g, "ohne DE-Tag").replace(/ffmpeg missing/g, "ffmpeg fehlt").replace(/(\d+) errors/g, "$1 Fehler")}`;
     const result = value.match(/^(\d+\/\d+) completed(.*)$/);
     if (result) return `${result[1]} fertig${result[2].replace(/(\d+) errors/g, "$1 Fehler").replace(/(\d+) cancelled/g, "$1 abgebrochen")}`;
+    const extractionErrorsAndRetries = value.match(/^(\d+) extraction errors? · (\d+) retr(?:y|ies)$/);
+    if (extractionErrorsAndRetries) return `${extractionErrorsAndRetries[1]} Entpackfehler · ${extractionErrorsAndRetries[2]} Wiederholung${extractionErrorsAndRetries[2] === "1" ? "" : "en"}`;
+    const extractionErrors = value.match(/^(\d+) extraction errors?$/);
+    if (extractionErrors) return `${extractionErrors[1]} Entpackfehler`;
+    const retries = value.match(/^(\d+) retr(?:y|ies)$/);
+    if (retries) return `${retries[1]} Wiederholung${retries[1] === "1" ? "" : "en"}`;
+    const downloadCompleteExtractionErrors = value.match(/^Download complete · (\d+) extraction errors?$/);
+    if (downloadCompleteExtractionErrors) return `Download fertig · ${downloadCompleteExtractionErrors[1]} Entpackfehler`;
+    if (value === "Download complete") return "Download fertig";
+    const extractSelection = value.match(/^Extract now \((\d+)\)$/);
+    if (extractSelection) return `Jetzt entpacken (${extractSelection[1]})`;
     const extracting = value.match(/^Extracting (\d+%)$/);
     if (extracting) return `Entpacken ${extracting[1]}`;
     const finalizing = value.match(/^Finalizing - (\d+%)$/);

@@ -85,6 +85,7 @@ export interface ExtractProgressUpdate {
 
 export interface ExtractArchiveFailureInfo {
   archiveName: string;
+  archivePath: string;
   errorText: string;
   category: ExtractErrorCategory;
   suggestRedownload: boolean;
@@ -4195,6 +4196,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
       const hintedError = error as ExtractionErrorWithHints;
       options.onArchiveFailure?.({
         archiveName,
+        archivePath,
         errorText,
         category: errorCategory,
         suggestRedownload: hintedError?.suggestRedownload === true,

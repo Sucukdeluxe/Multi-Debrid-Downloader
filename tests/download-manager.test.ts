@@ -997,7 +997,7 @@ describe("deterministic stop and restart lifecycle", () => {
     expect(internal.activeTasks.get(itemId)).toBe(newOwner);
   });
 
-  it("emits an idle snapshot when the earliest provider cooldown expires", async () => {
+  it("keeps Start available while a configured account is temporarily cooling down", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-22T08:00:00.000Z"));
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-provider-cooldown-event-"));
@@ -1025,15 +1025,14 @@ describe("deterministic stop and restart lifecycle", () => {
 
     const waiting = manager.getSnapshot();
     expect(waiting).toMatchObject({
-      canStart: false,
+      canStart: true,
       lifecycle: {
-        phase: "waiting_provider",
+        phase: "idle",
         retryAt: Date.parse("2026-08-22T08:00:01.000Z")
       }
     });
 
     await vi.advanceTimersByTimeAsync(999);
-    expect(events.some((snapshot) => snapshot.canStart)).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
     expect(events.at(-1)).toMatchObject({
       canStart: true,
@@ -2388,6 +2387,189 @@ describe("download manager", () => {
     expect((manager as any).session.items["extract-now-item-2"].fullStatus).toBe("Entpackt - Done (1.2s)");
     expect((manager as any).session.items["extract-now-item-3"].fullStatus).toBe("Entpacken - Ausstehend");
     expect((manager as any).session.packages[packageId].status).toBe("queued");
+  });
+
+  it("extractNow on one multipart child arms only its complete archive set", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-child-"));
+    tempDirs.push(root);
+    const session = emptySession();
+    const packageId = "extract-child-pkg";
+    const outputDir = path.join(root, "downloads", "Extract Child");
+    const extractDir = path.join(root, "extract", "Extract Child");
+    fs.mkdirSync(outputDir, { recursive: true });
+    const createdAt = Date.now();
+    const specs = [
+      ["e01-1", "Episode.E01.part1.rar"],
+      ["e01-2", "Episode.E01.part2.rar"],
+      ["e02-1", "Episode.E02.part1.rar"],
+      ["e02-2", "Episode.E02.part2.rar"]
+    ] as const;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "Extract Child",
+      outputDir,
+      extractDir,
+      status: "failed",
+      itemIds: specs.map(([id]) => id),
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    for (const [id, fileName] of specs) {
+      const targetPath = path.join(outputDir, fileName);
+      fs.writeFileSync(targetPath, Buffer.alloc(128, 3));
+      session.items[id] = {
+        id,
+        packageId,
+        url: `https://example.invalid/${fileName}`,
+        provider: "realdebrid",
+        status: "completed",
+        retries: 0,
+        speedBps: 0,
+        downloadedBytes: 128,
+        totalBytes: 128,
+        progressPercent: 100,
+        fileName,
+        targetPath,
+        resumable: true,
+        attempts: 1,
+        lastError: "Keine entpackten Dateien erkannt",
+        fullStatus: "Entpack-Fehler: Keine entpackten Dateien erkannt",
+        createdAt,
+        updatedAt: createdAt
+      };
+    }
+    const manager = new DownloadManager(
+      { ...defaultSettings(), token: "rd-token", outputDir, extractDir, autoExtract: true, hybridExtract: true },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+    const postProcess = vi.fn(async () => {});
+    (manager as any).runPackagePostProcessing = postProcess;
+
+    manager.extractNow({ packageIds: [], itemIds: ["e01-2"] });
+    await waitFor(() => postProcess.mock.calls.length === 1);
+
+    expect((manager as any).session.items["e01-1"].fullStatus).toBe("Entpacken - Ausstehend");
+    expect((manager as any).session.items["e01-2"].fullStatus).toBe("Entpacken - Ausstehend");
+    expect((manager as any).session.items["e02-1"].fullStatus).toMatch(/^Entpack-Fehler/);
+    expect((manager as any).session.items["e02-2"].fullStatus).toMatch(/^Entpack-Fehler/);
+    const filter = (manager as any).manualExtractArchiveFilters.get(packageId) as Set<string>;
+    expect([...filter].map((filePath) => path.basename(filePath).toLowerCase())).toEqual(["episode.e01.part1.rar"]);
+  });
+
+  it("extractNow item selection runs only the selected archive through real post-processing", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-selected-real-"));
+    tempDirs.push(root);
+    const outputDir = path.join(root, "downloads", "Selected");
+    const extractDir = path.join(root, "extract", "Selected");
+    fs.mkdirSync(outputDir, { recursive: true });
+    const firstArchive = path.join(outputDir, "Episode.E01.zip");
+    const secondArchive = path.join(outputDir, "Episode.E02.zip");
+    const firstZip = new AdmZip();
+    firstZip.addFile("Episode.E01.mkv", Buffer.from("episode-one"));
+    firstZip.writeZip(firstArchive);
+    const secondZip = new AdmZip();
+    secondZip.addFile("Episode.E02.mkv", Buffer.from("episode-two"));
+    secondZip.writeZip(secondArchive);
+    const createdAt = Date.now();
+    const session = emptySession();
+    const packageId = "selected-real-package";
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "Selected",
+      outputDir,
+      extractDir,
+      status: "failed",
+      itemIds: ["selected-e01", "selected-e02"],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    for (const [id, archivePath] of [["selected-e01", firstArchive], ["selected-e02", secondArchive]] as const) {
+      const size = fs.statSync(archivePath).size;
+      session.items[id] = {
+        id,
+        packageId,
+        url: `https://example.invalid/${path.basename(archivePath)}`,
+        provider: "realdebrid",
+        status: "completed",
+        retries: 0,
+        speedBps: 0,
+        downloadedBytes: size,
+        totalBytes: size,
+        progressPercent: 100,
+        fileName: path.basename(archivePath),
+        targetPath: archivePath,
+        resumable: true,
+        attempts: 1,
+        lastError: "Keine entpackten Dateien erkannt",
+        fullStatus: "Entpack-Fehler: Keine entpackten Dateien erkannt",
+        createdAt,
+        updatedAt: createdAt
+      };
+    }
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir,
+        extractDir,
+        autoExtract: false,
+        hybridExtract: true,
+        cleanupMode: "none",
+        removeLinkFilesAfterExtract: false,
+        removeSamplesAfterExtract: false,
+        autoRename4sf4sj: false,
+        keepGermanAudioOnly: false
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    manager.extractNow({ packageIds: [], itemIds: ["selected-e01"] });
+    await waitFor(() => fs.existsSync(path.join(extractDir, "Episode.E01.mkv")), 10_000);
+    await waitFor(() => !(manager as any).packagePostProcessTasks.has(packageId), 10_000);
+    await waitFor(() => !(manager as any).packageDeferredPostProcessTasks.has(packageId), 10_000);
+
+    const snapshot = manager.getSnapshot().session;
+    expect(snapshot.items["selected-e01"].fullStatus).toMatch(/^Entpackt/);
+    expect(snapshot.items["selected-e02"].fullStatus).toMatch(/^Entpack-Fehler/);
+    expect(snapshot.packages[packageId].status).toBe("failed");
+    expect(fs.existsSync(path.join(extractDir, "Episode.E02.mkv"))).toBe(false);
+  }, 15_000);
+
+  it("assigns same-named archive failures only to the matching directory", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-failure-scope-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(root, "state")));
+    const firstPath = path.join(root, "Season 01", "release.part1.rar");
+    const secondPath = path.join(root, "Season 02", "release.part1.rar");
+    const items = [
+      { id: "season-1", status: "completed", fullStatus: "Entpacken - Error", fileName: "release.part1.rar", targetPath: firstPath, downloadedBytes: 100 },
+      { id: "season-2", status: "completed", fullStatus: "Entpack-Fehler: Previous", fileName: "release.part1.rar", targetPath: secondPath, downloadedBytes: 100 }
+    ] as unknown as DownloadItem[];
+    const failures = new Map([[firstPath.toLowerCase(), {
+      archiveName: "release.part1.rar",
+      archivePath: firstPath,
+      errorText: "CRC failed"
+    }]]);
+
+    (manager as any).applyPackageExtractFailureStatuses(
+      items,
+      (archiveName: string, archivePath: string) => resolveArchiveItemsFromList(archiveName, items, archivePath),
+      failures,
+      "Entpacken fehlgeschlagen",
+      new Map(items.map((item) => [item.id, item.fullStatus])),
+      Date.now()
+    );
+
+    expect(items[0].fullStatus).toMatch(/^Entpack-Fehler/);
+    expect(items[1].fullStatus).toBe("Entpack-Fehler: Previous");
   });
 
   it("merges duplicate-suffixed completed startup items back into the canonical queued item", () => {
@@ -6833,6 +7015,7 @@ describe("download manager", () => {
       itemIds.map((itemId) => session.items[itemId]!),
       {
         archiveName: "show.s01e01.part1.rar",
+        archivePath: path.join(outputDir, "show.s01e01.part1.rar"),
         errorText: "Checksum error in the encrypted file",
         category: "crc_error",
         suggestRedownload: true,
@@ -6926,6 +7109,7 @@ describe("download manager", () => {
       itemIds.map((itemId) => session.items[itemId]!),
       {
         archiveName: "show.s01e01.part1.rar",
+        archivePath: path.join(outputDir, "show.s01e01.part1.rar"),
         errorText: "Checksum error in the encrypted file",
         category: "crc_error",
         suggestRedownload: true,
@@ -7019,6 +7203,7 @@ describe("download manager", () => {
       itemIds.map((itemId) => session.items[itemId]!),
       {
         archiveName: "show.s01e01.part1.rar",
+        archivePath: path.join(outputDir, "show.s01e01.part1.rar"),
         errorText: "Checksum error in the encrypted file",
         category: "crc_error",
         suggestRedownload: true,
@@ -7358,7 +7543,7 @@ describe("download manager", () => {
     }
     completedItems[0].fullStatus = "Entpacken - Error";
     completedItems[1].fullStatus = "Entpacken - Error";
-    const resolveArchiveItems = (archiveName: string) => {
+    const resolveArchiveItems = (archiveName: string, _archivePath?: string) => {
       const base = archiveName.replace(/\.part0*1\.rar$/i, "");
       return completedItems.filter((item: any) => String(item.fileName || "").toLowerCase().startsWith(`${base}.part`));
     };
@@ -7367,7 +7552,11 @@ describe("download manager", () => {
       {},
       completedItems,
       resolveArchiveItems,
-      new Map([["show.s01e01.part1.rar", "Checksum error in the encrypted file"]]),
+      new Map([["show.s01e01.part1.rar", {
+        archiveName: "show.s01e01.part1.rar",
+        archivePath: path.resolve("show.s01e01.part1.rar"),
+        errorText: "Checksum error in the encrypted file"
+      }]]),
       "Checksum error in the encrypted file",
       previousStatuses,
       createdAt + 5_000
@@ -7415,8 +7604,12 @@ describe("download manager", () => {
     (DownloadManager.prototype as any).applyPackageExtractFailureStatuses.call(
       {},
       completedItems,
-      (archiveName: string) => resolveArchiveItemsFromList(archiveName, completedItems),
-      new Map([["show.s01e01.part1.rar", "Checksum error in the encrypted file"]]),
+      (archiveName: string, archivePath: string) => resolveArchiveItemsFromList(archiveName, completedItems, archivePath),
+      new Map([["show.s01e01.part1.rar", {
+        archiveName: "show.s01e01.part1.rar",
+        archivePath: path.resolve("show.s01e01.part1.rar"),
+        errorText: "Checksum error in the encrypted file"
+      }]]),
       "Checksum error in the encrypted file",
       previousStatuses,
       createdAt + 5_000
@@ -8231,6 +8424,8 @@ describe("download manager", () => {
       createStoragePaths(path.join(root, "state"))
     );
 
+    (manager as any).manualExtractArchiveFilters.set(packageId, new Set([targetPath]));
+    (manager as any).manualExtractPackages.add(packageId);
     manager.clearAll();
     const snapshot = manager.getSnapshot();
     expect(snapshot.stats.totalPackages).toBe(0);
@@ -8238,6 +8433,8 @@ describe("download manager", () => {
     expect(snapshot.stats.totalDownloaded).toBe(0);
     expect(snapshot.session.totalDownloadedBytes).toBe(0);
     expect(snapshot.session.runStartedAt).toBe(0);
+    expect((manager as any).manualExtractArchiveFilters.size).toBe(0);
+    expect((manager as any).manualExtractPackages.size).toBe(0);
   });
 
   it("keeps cumulative session totals when completed items are removed from the queue", () => {
@@ -9237,7 +9434,7 @@ describe("download manager", () => {
     expect(snap.settings.providerDailyUsageBytes || {}).toEqual({});
   });
 
-  it("resets extraction state atomically for selected package items", () => {
+  it("resets extraction state without discarding definitive link availability", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
     const session = emptySession();
@@ -9293,7 +9490,9 @@ describe("download manager", () => {
       createStoragePaths(path.join(root, "state"))
     );
 
-    manager.resetItems(itemIds);
+    (manager as any).manualExtractArchiveFilters.set(packageId, new Set(["stale-archive"]));
+    await manager.resetItems(itemIds);
+    expect((manager as any).manualExtractArchiveFilters.has(packageId)).toBe(false);
 
     const snapshot = manager.getSnapshot().session;
     expect(snapshot.packages[packageId]).toEqual(expect.objectContaining({
@@ -9309,8 +9508,14 @@ describe("download manager", () => {
         progressPercent: 0,
         lastError: "",
         fullStatus: "Wartet",
-        onlineStatus: undefined
+        onlineStatus: "online"
       }));
+    }
+
+    await manager.resetPackage(packageId);
+    const packageSnapshot = manager.getSnapshot().session;
+    for (const itemId of itemIds) {
+      expect(packageSnapshot.items[itemId].onlineStatus).toBe("online");
     }
   });
 

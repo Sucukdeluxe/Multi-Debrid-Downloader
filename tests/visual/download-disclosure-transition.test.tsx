@@ -274,6 +274,35 @@ describe("download disclosure in the headless visual harness", () => {
     throw new Error(`Visual driver capture did not reach its ready state: ${name}`);
   }
 
+  it("sorts package rows through a real captured pointer click", async () => {
+    await loadDenseDownloads(1500);
+    if (!client) throw new Error("Chrome DevTools client is missing");
+    const point = await client.evaluate<{ x: number; y: number }>(`(() => {
+      const button = [...document.querySelectorAll('.downloads-column-sort')].find((entry) => entry.textContent?.startsWith('Name'));
+      if (!(button instanceof HTMLElement)) throw new Error('Name sort button missing');
+      const rect = button.getBoundingClientRect();
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    })()`);
+    const readState = (): Promise<{ ariaSort: string | null; names: string[] }> => client!.evaluate(`(() => ({
+      ariaSort: document.querySelector('[data-download-column="name"]')?.getAttribute('aria-sort') || null,
+      names: [...document.querySelectorAll('.downloads-package-row .downloads-name-cell strong')].map((entry) => entry.textContent || '')
+    }))()`);
+
+    await client.send("Input.dispatchMouseEvent", { type: "mousePressed", x: point.x, y: point.y, button: "left", clickCount: 1 });
+    await client.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x, y: point.y, button: "left", clickCount: 1 });
+    await delay(120);
+    const descending = await readState();
+    await client.send("Input.dispatchMouseEvent", { type: "mousePressed", x: point.x, y: point.y, button: "left", clickCount: 1 });
+    await client.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x, y: point.y, button: "left", clickCount: 1 });
+    await delay(120);
+    const ascending = await readState();
+
+    expect(descending.ariaSort).toBe("descending");
+    expect(ascending.ariaSort).toBe("ascending");
+    expect(descending.names.length).toBeGreaterThan(1);
+    expect(ascending.names).toEqual([...descending.names].reverse());
+  });
+
   async function measureDisclosure(action: "einklappen" | "ausklappen"): Promise<DisclosureSample[]> {
     if (!client) throw new Error("Chrome DevTools client is missing");
     return client.evaluate<DisclosureSample[]>(`(async () => {

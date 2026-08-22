@@ -26,6 +26,8 @@ import { migrateProductUserDataDirectory } from "./storage";
 import { validateCollectorContainerInspectionRequest, validateCollectorInspectionRequest } from "../shared/collector";
 import { DailyStartScheduler, hasDailyStartRulePatch, prepareDailyStartSettingsPatch } from "./daily-start-scheduler";
 import { forceDarkNativeTheme } from "./native-theme";
+import { normalizeExtractNowRequest } from "../shared/extract-now";
+import { validateClipboardWriteText } from "./clipboard-write";
 
 forceDarkNativeTheme(nativeTheme);
 
@@ -44,7 +46,6 @@ function validatePlainObject(value: unknown, name: string): Record<string, unkno
 }
 
 const IMPORT_QUEUE_MAX_BYTES = 10 * 1024 * 1024;
-const CLIPBOARD_WRITE_MAX_BYTES = 4096;
 const RENAME_PACKAGE_MAX_CHARS = 240;
 const RESETTABLE_PROVIDER_KEYS = new Set<DebridProvider>([
   "realdebrid",
@@ -645,9 +646,8 @@ function registerIpcHandlers(): void {
     validateString(packageId, "packageId");
     return controller.retryExtraction(packageId);
   });
-  handleTrusted(IPC_CHANNELS.EXTRACT_NOW, (_event: IpcMainInvokeEvent, packageId: string) => {
-    validateString(packageId, "packageId");
-    return controller.extractNow(packageId);
+  handleTrusted(IPC_CHANNELS.EXTRACT_NOW, (_event: IpcMainInvokeEvent, request: unknown) => {
+    return controller.extractNow(normalizeExtractNowRequest(request));
   });
   handleTrusted(IPC_CHANNELS.RESET_PACKAGE, (_event: IpcMainInvokeEvent, packageId: string) => {
     validateString(packageId, "packageId");
@@ -714,14 +714,8 @@ function registerIpcHandlers(): void {
     return next;
   });
   handleTrusted(IPC_CHANNELS.WRITE_CLIPBOARD_TEXT, (_event: IpcMainInvokeEvent, rawText: unknown) => {
-    const text = validateString(rawText, "text");
+    const text = validateClipboardWriteText(rawText);
     const bytes = Buffer.byteLength(text, "utf8");
-    if (!text.trim()) {
-      throw new Error("text darf nicht leer sein");
-    }
-    if (bytes > CLIPBOARD_WRITE_MAX_BYTES) {
-      throw new Error(`text ist zu groß (max ${CLIPBOARD_WRITE_MAX_BYTES} Bytes)`);
-    }
     try {
       clipboard.writeText(text);
       return true;

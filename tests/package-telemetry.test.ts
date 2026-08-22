@@ -158,6 +158,24 @@ describe("package lifecycle telemetry", () => {
     }));
   });
 
+  it("keeps a completed download with an extraction error out of successful package results", () => {
+    const item = { ...downloadItem("item-1"), fullStatus: "Entpack-Fehler: falsches Passwort", lastError: "falsches Passwort" };
+    const result = finalizePackageResult(telemetry({
+      package: packageEntry({ status: "failed", itemIds: [item.id] }),
+      items: [item],
+      archiveOperations: []
+    }));
+
+    expect(result).toEqual(expect.objectContaining({
+      status: "failed",
+      successfulFiles: 0,
+      failedFiles: 1,
+      extractionFailures: 1,
+      failurePhase: "extract",
+      errorCategory: "Entpacken"
+    }));
+  });
+
   it("classifies a package with no successful files and a download failure as failed", () => {
     const item = downloadItem("item-1", "failed");
     const result = finalizePackageResult(telemetry({
