@@ -655,6 +655,17 @@ export interface AccountRuntimeEntry {
   dailyUsageBytes: number;
 }
 
+export type DownloadLifecyclePhase = "idle" | "starting" | "running" | "stopping" | "waiting_provider" | "postprocessing";
+
+export interface DownloadLifecycleSnapshot {
+  phase: DownloadLifecyclePhase;
+  reason: string;
+  retryAt: number | null;
+  activeDownloads: number;
+  activePostProcessing: number;
+  pendingStart: boolean;
+}
+
 export interface UiSnapshot {
   settings: RendererSettings;
   accounts: RendererAccount[];
@@ -685,6 +696,7 @@ export interface UiSnapshot {
   removedPackageIds?: string[];
   rotationEvents?: RotationEvent[];
   accountRuntime?: AccountRuntimeEntry[];
+  lifecycle?: DownloadLifecycleSnapshot;
 }
 
 export interface AddLinksPayload {

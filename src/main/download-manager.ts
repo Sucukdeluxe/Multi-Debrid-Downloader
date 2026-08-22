@@ -10,6 +10,7 @@ import {
   DebridProvider,
   AudioStripSummary,
   DownloadItem,
+  DownloadLifecycleSnapshot,
   DownloadStats,
   DownloadSummary,
   DownloadStatus,
@@ -126,6 +127,7 @@ type ActiveTask = {
   phase?: "validating" | "downloading" | "integrity_check";
   phaseStartedAt?: number;
   phaseDeadlineAt?: number;
+  generation: number;
 };
 
 const DOWNLOAD_ACCOUNT_PROVIDERS: readonly DebridProvider[] = [
@@ -1840,6 +1842,11 @@ export class DownloadManager extends EventEmitter {
 
   private scheduleRunning = false;
   private schedulerGeneration = 0;
+  private lifecycleGeneration = 0;
+  private lifecyclePhase: DownloadLifecycleSnapshot["phase"] = "idle";
+  private lifecycleReason = "Bereit";
+  private pendingStartOptions: { excludePackageIds?: ReadonlySet<string> } | null = null;
+  private startOperations = new Set<number>();
 
   private persistTimer: NodeJS.Timeout | null = null;
 
@@ -2774,6 +2781,7 @@ export class DownloadManager extends EventEmitter {
     return {
       rotationEvents: getRecentRotationEvents(40),
       accountRuntime: createAccountRuntimeEntries(rendererState.accounts, Object.values(snapshotSession.items), now),
+      lifecycle: this.getLifecycleSnapshot(),
       settings: rendererState.settings,
       accounts: rendererState.accounts,
       session: snapshotSession,
@@ -3898,6 +3906,100 @@ export class DownloadManager extends EventEmitter {
     }
     this.persistSoon();
     this.emitState();
+  }
+
+  private getActivePostProcessingCount(): number {
+    const tasks = new Set<Promise<void>>();
+    for (const task of this.packagePostProcessTasks.values()) {
+      tasks.add(task);
+    }
+    for (const group of this.packageDeferredPostProcessTasks.values()) {
+      for (const task of group) {
+        tasks.add(task);
+      }
+    }
+    for (const group of this.packageHybridPostProcessTasks.values()) {
+      for (const task of group) {
+        tasks.add(task);
+      }
+    }
+    return tasks.size;
+  }
+
+  private getLifecycleSnapshot(): DownloadLifecycleSnapshot {
+    const activeDownloads = this.activeTasks.size;
+    const activePostProcessing = this.getActivePostProcessingCount();
+    const pendingStart = this.pendingStartOptions !== null;
+    if (this.lifecyclePhase === "stopping") {
+      return {
+        phase: "stopping",
+        reason: pendingStart ? "Start vorgemerkt, laufende Arbeit wird beendet" : "Laufende Arbeit wird beendet",
+        retryAt: null,
+        activeDownloads,
+        activePostProcessing,
+        pendingStart
+      };
+    }
+    if (this.lifecyclePhase === "starting") {
+      return {
+        phase: "starting",
+        reason: this.lifecycleReason,
+        retryAt: null,
+        activeDownloads,
+        activePostProcessing,
+        pendingStart
+      };
+    }
+    if (this.session.running) {
+      const postprocessing = activeDownloads === 0 && activePostProcessing > 0;
+      return {
+        phase: postprocessing ? "postprocessing" : "running",
+        reason: postprocessing ? "Nachbearbeitung läuft" : this.session.paused ? "Downloads pausiert" : "Downloads laufen",
+        retryAt: null,
+        activeDownloads,
+        activePostProcessing,
+        pendingStart
+      };
+    }
+    if (activePostProcessing > 0) {
+      return {
+        phase: "postprocessing",
+        reason: "Nachbearbeitung läuft",
+        retryAt: null,
+        activeDownloads,
+        activePostProcessing,
+        pendingStart
+      };
+    }
+    return {
+      phase: "idle",
+      reason: this.lifecycleReason,
+      retryAt: null,
+      activeDownloads,
+      activePostProcessing,
+      pendingStart
+    };
+  }
+
+  private completeStopIfDrained(): void {
+    if (this.lifecyclePhase !== "stopping"
+      || this.startOperations.size > 0
+      || this.activeTasks.size > 0
+      || this.getActivePostProcessingCount() > 0) {
+      return;
+    }
+    const pendingOptions = this.pendingStartOptions;
+    this.pendingStartOptions = null;
+    this.lifecyclePhase = "idle";
+    this.lifecycleReason = "Bereit";
+    this.emitState(true);
+    if (pendingOptions) {
+      void this.start(pendingOptions).catch((error) => {
+        this.lifecyclePhase = "idle";
+        this.lifecycleReason = compactErrorText(error);
+        this.emitState(true);
+      });
+    }
   }
 
   private applyOneFichierCheckResult(item: DownloadItem, result: OneFichierCheckResult | null): void {
@@ -6324,14 +6426,31 @@ export class DownloadManager extends EventEmitter {
   }
 
   public async start(options?: { excludePackageIds?: ReadonlySet<string> }): Promise<void> {
+    if (this.lifecyclePhase === "stopping") {
+      if (!this.pendingStartOptions) {
+        this.pendingStartOptions = options?.excludePackageIds
+          ? { excludePackageIds: new Set(options.excludePackageIds) }
+          : {};
+        this.lifecycleReason = "Start vorgemerkt";
+        this.emitState(true);
+      }
+      return;
+    }
     if (this.session.running) {
       return;
     }
-    this.beginHealthRun();
-    this.ensureUsableDownloadAccount();
-    this.schedulerGeneration += 1;
-
-    this.session.running = true;
+    if (this.lifecyclePhase === "starting") {
+      return;
+    }
+    const generation = this.lifecycleGeneration + 1;
+    this.lifecycleGeneration = generation;
+    this.lifecyclePhase = "starting";
+    this.lifecycleReason = "Warteschlange wird vorbereitet";
+    this.startOperations.add(generation);
+    this.emitState(true);
+    try {
+      this.beginHealthRun();
+      this.ensureUsableDownloadAccount();
     const recoveryRunPackageIds = new Set(this.session.packageOrder.filter((packageId) => {
       const pkg = this.session.packages[packageId];
       return Boolean(pkg && !pkg.cancelled && pkg.enabled && !options?.excludePackageIds?.has(packageId));
@@ -6341,8 +6460,14 @@ export class DownloadManager extends EventEmitter {
     }
 
     const recoveredItems = await this.recoverRetryableItems("start", recoveryRunPackageIds);
+    if (this.lifecycleGeneration !== generation || this.lifecyclePhase === "stopping") {
+      return;
+    }
 
     await sleep(0);
+    if (this.lifecycleGeneration !== generation || this.lifecyclePhase === "stopping") {
+      return;
+    }
 
     let recoveredStoppedItems = 0;
     for (const item of Object.values(this.session.items)) {
@@ -6385,8 +6510,11 @@ export class DownloadManager extends EventEmitter {
         this.runPackageIds.clear();
         this.runOutcomes.clear();
         this.runCompletedPackages.clear();
+        this.schedulerGeneration += 1;
         this.session.running = true;
         this.session.paused = false;
+        this.lifecyclePhase = "postprocessing";
+        this.lifecycleReason = "Nachbearbeitung läuft";
         this.session.runStartedAt = this.session.runStartedAt || nowMs();
         this.persistSoon();
         this.emitState(true);
@@ -6425,6 +6553,8 @@ export class DownloadManager extends EventEmitter {
       this.lastGlobalProgressAt = nowMs();
       this.summary = null;
       this.nonResumableActive = 0;
+      this.lifecyclePhase = "idle";
+      this.lifecycleReason = "Bereit";
       this.persistSoon();
       this.emitState(true);
       return;
@@ -6447,8 +6577,11 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
+    this.schedulerGeneration += 1;
     this.session.running = true;
     this.session.paused = false;
+    this.lifecyclePhase = "running";
+    this.lifecycleReason = "Downloads laufen";
     this.session.runStartedAt = nowMs();
     this.beginActiveRunContext(this.runPackageIds, this.session.runStartedAt);
     this.session.totalDownloadedBytes = 0;
@@ -6476,10 +6609,25 @@ export class DownloadManager extends EventEmitter {
       this.persistSoon();
       this.emitState(true);
     });
+    } catch (error) {
+      if (this.lifecycleGeneration === generation && this.lifecyclePhase === "starting") {
+        this.lifecyclePhase = "idle";
+        this.lifecycleReason = compactErrorText(error);
+        this.emitState(true);
+      }
+      throw error;
+    } finally {
+      this.startOperations.delete(generation);
+      this.completeStopIfDrained();
+    }
   }
 
   public stop(options?: { parkForRestart?: boolean }): void {
     const parkForRestart = options?.parkForRestart === true;
+    this.lifecycleGeneration += 1;
+    this.lifecyclePhase = "stopping";
+    this.lifecycleReason = "Laufende Arbeit wird beendet";
+    this.pendingStartOptions = null;
     this.healthManualStop = !parkForRestart;
     this.healthShuttingDown = parkForRestart;
     const abortReason: "stop" | "shutdown" = parkForRestart ? "shutdown" : "stop";
@@ -6556,6 +6704,7 @@ export class DownloadManager extends EventEmitter {
     this.runCompletedPackages.clear();
     this.persistSoon();
     this.emitState(true);
+    this.completeStopIfDrained();
   }
 
   public prepareForShutdown(): void {
@@ -8243,13 +8392,15 @@ export class DownloadManager extends EventEmitter {
         }
         this.persistSoon();
         this.emitState();
-        if (this.hybridExtractRequeue.delete(packageId)) {
+        if (this.lifecyclePhase !== "stopping" && this.hybridExtractRequeue.delete(packageId)) {
           void this.runPackagePostProcessing(packageId).catch((err) =>
             logger.warn(`runPackagePostProcessing Fehler (hybridRequeue): ${compactErrorText(err)}`)
           );
         } else {
+          this.hybridExtractRequeue.delete(packageId);
           this.tryFinalizePackageResult(packageId);
         }
+        this.completeStopIfDrained();
       }
     })();
 
@@ -9725,7 +9876,8 @@ export class DownloadManager extends EventEmitter {
       blockedOnThrottleUntil: 0,
       phase: "validating",
       phaseStartedAt: item.updatedAt,
-      phaseDeadlineAt: item.updatedAt + getUnrestrictTimeoutMs() + 15_000
+      phaseDeadlineAt: item.updatedAt + getUnrestrictTimeoutMs() + 15_000,
+      generation: this.lifecycleGeneration
     };
     this.activeTasks.set(itemId, active);
     this.notePacedStartForItem(item, nowMs());
@@ -9734,18 +9886,21 @@ export class DownloadManager extends EventEmitter {
     void this.processItem(active).catch((err) => {
       logger.warn(`processItem unbehandelt (${itemId}): ${compactErrorText(err)}`);
     }).finally(() => {
-      this.diskLeasesByOwner.get(itemId)?.release();
-      this.diskLeasesByOwner.delete(itemId);
-      if (!this.retryAfterByItem.has(item.id)) {
-        this.releaseTargetPath(item.id);
-      }
       if (active.nonResumableCounted) {
         this.nonResumableActive = Math.max(0, this.nonResumableActive - 1);
       }
-      this.activeTasks.delete(itemId);
-      this.tryFinalizePackageResult(packageId);
-      this.persistSoon();
-      this.emitState();
+      if (this.activeTasks.get(itemId) === active) {
+        this.diskLeasesByOwner.get(itemId)?.release();
+        this.diskLeasesByOwner.delete(itemId);
+        if (!this.retryAfterByItem.has(item.id)) {
+          this.releaseTargetPath(item.id);
+        }
+        this.activeTasks.delete(itemId);
+        this.tryFinalizePackageResult(packageId);
+        this.persistSoon();
+        this.emitState();
+      }
+      this.completeStopIfDrained();
     });
   }
 
@@ -13112,6 +13267,7 @@ export class DownloadManager extends EventEmitter {
               this.packageHybridPostProcessTasks.delete(packageId);
             }
             this.tryFinalizePackageResult(packageId);
+            this.completeStopIfDrained();
           }
         })();
         hybridHandle.task = hybridTask;
@@ -13764,6 +13920,7 @@ export class DownloadManager extends EventEmitter {
         }
         this.tryFinalizePackageResult(packageId);
         this.applyPackageDoneCleanup(packageId);
+        this.completeStopIfDrained();
       });
     const tasks = this.packageDeferredPostProcessTasks.get(packageId) || new Set<Promise<void>>();
     tasks.add(task);

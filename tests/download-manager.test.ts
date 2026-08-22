@@ -771,6 +771,136 @@ describe("download start account gate", () => {
   });
 });
 
+describe("deterministic stop and restart lifecycle", () => {
+  it("does not let a start recovery revive a run after stop invalidated its generation", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-start-recovery-generation-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager(
+      { ...defaultSettings(), token: "rd-token", autoExtract: false },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+    manager.addPackages([{ name: "generation", links: ["https://rapidgator.net/file/generation"] }]);
+
+    let finishRecovery!: (recovered: number) => void;
+    const internal = manager as unknown as {
+      recoverRetryableItems: () => Promise<number>;
+    };
+    internal.recoverRetryableItems = () => new Promise<number>((resolve) => {
+      finishRecovery = resolve;
+    });
+
+    const starting = manager.start();
+    expect(finishRecovery).toBeTypeOf("function");
+    manager.stop();
+    finishRecovery(0);
+    await starting;
+
+    expect(manager.getSnapshot()).toMatchObject({
+      session: { running: false },
+      lifecycle: { phase: "idle", pendingStart: false }
+    });
+  });
+
+  it("accepts one pending start during stopping and dispatches it after the old download drains", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-pending-start-drain-"));
+    tempDirs.push(root);
+    const accountId = "rdw_pending_start";
+    const attempts: AbortSignal[] = [];
+    let finishFirstAbort!: () => void;
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        realDebridUseWebLogin: true,
+        realDebridWebAccountIds: [accountId],
+        providerOrder: ["realdebrid"],
+        autoExtract: false,
+        maxParallel: 1
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state")),
+      {
+        realDebridWebUnrestrict: async (_requestedAccountId, _link, signal) => {
+          if (!signal) {
+            throw new Error("missing abort signal");
+          }
+          attempts.push(signal);
+          return new Promise<UnrestrictedLink | null>((_resolve, reject) => {
+            const rejectAborted = () => {
+              if (attempts.length === 1) {
+                finishFirstAbort = () => reject(new Error("aborted:test-web"));
+              }
+            };
+            if (signal.aborted) {
+              rejectAborted();
+            } else {
+              signal.addEventListener("abort", rejectAborted, { once: true });
+            }
+          });
+        }
+      }
+    );
+    manager.addPackages([{ name: "pending", links: ["https://rapidgator.net/file/pending"] }]);
+
+    await manager.start();
+    await waitFor(() => attempts.length === 1);
+    manager.stop();
+    await manager.start();
+
+    expect(manager.getSnapshot().lifecycle).toMatchObject({ phase: "stopping", pendingStart: true });
+    finishFirstAbort();
+    await waitFor(() => attempts.length === 2);
+    expect(manager.getSnapshot()).toMatchObject({
+      session: { running: true },
+      lifecycle: { phase: "running", pendingStart: false }
+    });
+
+    manager.stop();
+  });
+
+  it("keeps a newer task owner when cleanup from the previous generation arrives late", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-active-owner-generation-"));
+    tempDirs.push(root);
+    const accountId = "rdw_owner_generation";
+    let rejectUnrestrict!: (error: Error) => void;
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        realDebridUseWebLogin: true,
+        realDebridWebAccountIds: [accountId],
+        providerOrder: ["realdebrid"],
+        autoExtract: false,
+        maxParallel: 1
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state")),
+      {
+        realDebridWebUnrestrict: async () => new Promise<UnrestrictedLink | null>((_resolve, reject) => {
+          rejectUnrestrict = reject;
+        })
+      }
+    );
+    manager.addPackages([{ name: "owner", links: ["https://rapidgator.net/file/owner"] }]);
+    const snapshot = manager.getSnapshot();
+    const packageId = snapshot.session.packageOrder[0];
+    const itemId = snapshot.session.packages[packageId].itemIds[0];
+    const internal = manager as unknown as {
+      activeTasks: Map<string, { abortController: AbortController; abortReason: string }>;
+      startItem: (packageId: string, itemId: string) => void;
+    };
+
+    internal.startItem(packageId, itemId);
+    await waitFor(() => rejectUnrestrict !== undefined);
+    const oldOwner = internal.activeTasks.get(itemId)!;
+    const newOwner = { ...oldOwner, abortController: new AbortController(), abortReason: "none" };
+    internal.activeTasks.set(itemId, newOwner);
+    rejectUnrestrict(new Error("aborted:late-owner"));
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(internal.activeTasks.get(itemId)).toBe(newOwner);
+  });
+});
+
 describe("extractArchiveNameFromExtractorLogMessage", () => {
   it("detects archive names from extractor log variants", () => {
     expect(extractArchiveNameFromExtractorLogMessage("Extract-Backend Start: archive=scn-dhanbs7-S02E008.rar, mode=legacy")).toBe("scn-dhanbs7-S02E008.rar");
