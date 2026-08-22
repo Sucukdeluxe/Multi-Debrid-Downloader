@@ -37,8 +37,20 @@ export class PackageOutputScope {
     return path.resolve(value).replace(/[\\/]+$/, "").toLocaleLowerCase("en-US");
   }
 
+  private validateWindowsSegments(segments: readonly string[], sourcePath: string): void {
+    for (const segment of segments) {
+      const reservedBase = segment.split(".", 1)[0];
+      if (segment.includes(":")
+        || /[<>"|?*\u0000-\u001f]/.test(segment)
+        || /[. ]$/.test(segment)
+        || /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])$/i.test(reservedBase)) {
+        throw new Error(`Ungültiger Win32-Entry-Ausgabepfad: ${sourcePath}`);
+      }
+    }
+  }
+
   private validateEntryPath(entryPath: string): string {
-    const normalized = String(entryPath || "").trim().replace(/\\/g, "/");
+    const normalized = String(entryPath || "").replace(/\\/g, "/");
     const segments = normalized.split("/");
     if (!normalized
       || normalized.startsWith("/")
@@ -47,6 +59,7 @@ export class PackageOutputScope {
       || segments.some((segment) => segment === ".." || segment === "")) {
       throw new Error(`Ungültiger Archive-Entry-Ausgabepfad: ${entryPath}`);
     }
+    this.validateWindowsSegments(segments, entryPath);
     return segments.filter((segment) => segment !== ".").join("/");
   }
 
@@ -131,6 +144,8 @@ export class PackageOutputScope {
     }
     const normalizedOutputPath = path.resolve(outputPath);
     const authorizedRoot = this.findAuthorizedRoot(normalizedOutputPath);
+    const relativeOutputPath = path.relative(authorizedRoot, normalizedOutputPath).replace(/\\/g, "/");
+    this.validateWindowsSegments(relativeOutputPath.split("/"), outputPath);
     this.rejectLinkedPath(normalizedOutputPath, authorizedRoot);
     return { entryPath: normalizedEntryPath, outputPath: normalizedOutputPath };
   }

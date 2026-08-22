@@ -52,7 +52,13 @@ describe("PackageOutputScope", () => {
     "../foreign.mkv",
     "folder/../../foreign.mkv",
     "/absolute.mkv",
-    "C:\\absolute.mkv"
+    "C:\\absolute.mkv",
+    "file.mkv:stream",
+    "CON",
+    "aux.txt",
+    "folder/LPT1.mkv",
+    "name.",
+    "name "
   ])("rejects unsafe archive entry path %s", (entryPath) => {
     const root = createRoot();
     const outputPath = path.join(root, "safe.mkv");

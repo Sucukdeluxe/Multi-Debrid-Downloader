@@ -5,6 +5,7 @@ import AdmZip from "adm-zip";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   buildExternalExtractArgs,
+  buildExternalListArgs,
   cleanErrorText,
   collectArchiveCleanupTargets,
   extractPackageArchives,
@@ -18,9 +19,11 @@ import {
   findArchiveCandidates,
   orderExtractorCandidatesForArchive,
   parseNativeExtractOutput,
+  parseNativeArchiveEntryList,
   resolveExtractorBackendModeForArchive,
   resolveExtractorBackendMode,
   shouldFallbackLegacyRarToJvm,
+  validateNativeArchiveEntryCandidates,
 } from "../src/main/extractor";
 
 const tempDirs: string[] = [];
@@ -1595,6 +1598,66 @@ describe("extractor", () => {
 
       expect(parseNativeExtractOutput("UnRAR.exe", `${verb}  ${outputPath}  OK`, path.join(root, "archive.rar"), targetDir, "overwrite")).toEqual([
         expect.objectContaining({ outputPath, entryPath: "episode.mkv" })
+      ]);
+    });
+
+    it.each([
+      ["file.mkv:stream", "file.mkv"],
+      ["name.", "name"],
+      ["name ", "name"],
+      ["CON", "safe-base.txt"],
+      ["aux.txt", "safe-base.txt"],
+      ["folder/LPT1.mkv", "safe-base.txt"]
+    ] as const)("rejects Win32-unsafe internal ZIP entry %s before changing its alias", async (entryName, baseName) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-win32-entry-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(packageDir, { recursive: true });
+      fs.mkdirSync(targetDir, { recursive: true });
+      const basePath = path.join(targetDir, baseName);
+      fs.writeFileSync(basePath, "foreign");
+      const zip = new AdmZip();
+      zip.addFile(entryName, Buffer.from("package"));
+      zip.writeZip(path.join(packageDir, "release.zip"));
+
+      const result = await extractPackageArchives({
+        packageDir,
+        targetDir,
+        cleanupMode: "none",
+        conflictMode: "overwrite",
+        removeLinks: false,
+        removeSamples: false
+      });
+
+      expect(result.extracted).toBe(0);
+      expect(result.failed).toBe(1);
+      expect(fs.readFileSync(basePath, "utf8")).toBe("foreign");
+    });
+
+    it.each(["file.mkv:stream", "name.", "name ", "CON", "aux.txt", "folder/LPT1.mkv"])("rejects native preflight entry %s before extraction", (entryName) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-native-preflight-"));
+      tempDirs.push(root);
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(targetDir, { recursive: true });
+
+      expect(validateNativeArchiveEntryCandidates).toBeTypeOf("function");
+      expect(() => validateNativeArchiveEntryCandidates([entryName], targetDir)).toThrow(/Ausgabepfad|entry/i);
+    });
+
+    it("uses deterministic native list commands and parses entry-only output", () => {
+      expect(buildExternalListArgs("7z.exe", "archive.7z")).toEqual(["l", "-slt", "-sccUTF-8", "-p", "archive.7z"]);
+      expect(buildExternalListArgs("UnRAR.exe", "archive.rar")).toEqual(["lb", "-p-", "-y", "archive.rar"]);
+      expect(parseNativeArchiveEntryList("7z.exe", [
+        "Path = archive.7z",
+        "Type = 7z",
+        "----------",
+        "Path = folder/episode.mkv",
+        "Size = 10"
+      ].join("\n"))).toEqual(["folder/episode.mkv"]);
+      expect(parseNativeArchiveEntryList("UnRAR.exe", "folder/episode.mkv\r\nsubtitle.srt\r\n")).toEqual([
+        "folder/episode.mkv",
+        "subtitle.srt"
       ]);
     });
 

@@ -270,6 +270,97 @@ describe.skipIf(!hasJavaRuntime() || !hasJvmExtractorRuntime())("extractor jvm b
     expect(fs.existsSync(path.join(targetDir, "episode.bin"))).toBe(false);
   });
 
+  it.each([
+    ["7zjbinding", "file.mkv:stream", "file.mkv"],
+    ["7zjbinding", "name.", "name"],
+    ["7zjbinding", "name ", "name"],
+    ["7zjbinding", "CON", "safe-base.txt"],
+    ["7zjbinding", "aux.txt", "safe-base.txt"],
+    ["7zjbinding", "folder/LPT1.mkv", "safe-base.txt"],
+    ["zip4j", "file.mkv:stream", "file.mkv"],
+    ["zip4j", "name.", "name"],
+    ["zip4j", "name ", "name"],
+    ["zip4j", "CON", "safe-base.txt"],
+    ["zip4j", "aux.txt", "safe-base.txt"],
+    ["zip4j", "folder/LPT1.mkv", "safe-base.txt"]
+  ] as const)("rejects %s Win32-unsafe entry %s before changing its alias", (backend, entryName, baseName) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `rd-jvm-win32-${backend}-`));
+    tempDirs.push(root);
+    const targetDir = path.join(root, "out");
+    fs.mkdirSync(targetDir, { recursive: true });
+    const basePath = path.join(targetDir, baseName);
+    fs.writeFileSync(basePath, "foreign");
+    const zipPath = path.join(root, "unsafe.zip");
+    const zip = new AdmZip();
+    zip.addFile(entryName, Buffer.from("package"));
+    zip.writeZip(zipPath);
+    const runtimeRoot = path.join(process.cwd(), "resources", "extractor-jvm");
+    const classPath = [
+      path.join(runtimeRoot, "classes"),
+      path.join(runtimeRoot, "lib", "sevenzipjbinding.jar"),
+      path.join(runtimeRoot, "lib", "sevenzipjbinding-all-platforms.jar"),
+      path.join(runtimeRoot, "lib", "zip4j.jar")
+    ].join(path.delimiter);
+
+    const run = spawnSync("java", [
+      "-cp",
+      classPath,
+      "com.sucukdeluxe.extractor.JBindExtractorMain",
+      "--archive",
+      zipPath,
+      "--target",
+      targetDir,
+      "--conflict",
+      "overwrite",
+      "--backend",
+      backend
+    ], { encoding: "utf8" });
+
+    expect(run.status).not.toBe(0);
+    expect(fs.readFileSync(basePath, "utf8")).toBe("foreign");
+  });
+
+  it("reconciles a real aborted JVM opened output to partial or removed", async () => {
+    process.env.RD_EXTRACT_BACKEND = "jvm";
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-jvm-abort-output-"));
+    tempDirs.push(root);
+    const packageDir = path.join(root, "pkg");
+    const targetDir = path.join(root, "out");
+    fs.mkdirSync(packageDir, { recursive: true });
+    const zip = new AdmZip();
+    zip.addFile("episode.bin", Buffer.alloc(8 * 1024 * 1024, 7));
+    zip.writeZip(path.join(packageDir, "large.zip"));
+    const controller = new AbortController();
+    const events: import("../src/main/extractor").ExtractOutputEvent[] = [];
+
+    const extraction = extractPackageArchives({
+      packageDir,
+      targetDir,
+      cleanupMode: "none",
+      conflictMode: "overwrite",
+      removeLinks: false,
+      removeSamples: false,
+      signal: controller.signal,
+      onOutput: (event) => {
+        events.push(event);
+        if (event.state === "opened") {
+          controller.abort();
+        }
+      }
+    });
+
+    await expect(extraction).rejects.toThrow("aborted:extract");
+    expect(events[0]?.state).toBe("opened");
+    expect(["partial", "removed"]).toContain(events[events.length - 1]?.state);
+    const outputPath = path.join(targetDir, "episode.bin");
+    if (events[events.length - 1]?.state === "partial") {
+      expect(fs.statSync(outputPath).isFile()).toBe(true);
+    } else {
+      expect(fs.existsSync(outputPath)).toBe(false);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }, 10000);
+
   it("emits progress callbacks with archiveName and percent", async () => {
     process.env.RD_EXTRACT_BACKEND = "jvm";
 

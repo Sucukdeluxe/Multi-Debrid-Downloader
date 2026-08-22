@@ -13451,6 +13451,136 @@ describe("download manager", () => {
     expect(fs.existsSync(path.join(extractDir, ".rd-package-output-owner-v1.json"))).toBe(false);
   });
 
+  it("creates a package owner marker without hardlink support", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-owner-no-link-"));
+    tempDirs.push(root);
+    const packageName = "no-link-package";
+    const session = emptySession();
+    const packageId = "no-link-package-id";
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: packageName,
+      outputDir: path.join(root, "downloads", packageName),
+      extractDir: path.join(root, "extract", packageName),
+      status: "completed",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      createdAt: 1_000,
+      updatedAt: 1_000
+    };
+    const manager = new DownloadManager(defaultSettings(), session, createStoragePaths(path.join(root, "state")));
+    const linkSpy = vi.spyOn(fs.promises, "link").mockRejectedValue(Object.assign(new Error("link unsupported"), { code: "ENOTSUP" }));
+
+    try {
+      await expect((manager as any).ensurePackageOutputOwnerMarker(session.packages[packageId])).resolves.toBe(true);
+      expect(fs.existsSync(path.join(session.packages[packageId].extractDir, ".rd-package-output-owner-v1.json"))).toBe(true);
+    } finally {
+      linkSpy.mockRestore();
+    }
+  });
+
+  it("continues direct scoped output when owner marker creation is denied", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-owner-denied-"));
+    tempDirs.push(root);
+    const packageName = "denied-marker-package";
+    const session = emptySession();
+    const packageId = "denied-marker-package-id";
+    const pkg: PackageEntry = {
+      id: packageId,
+      name: packageName,
+      outputDir: path.join(root, "downloads", packageName),
+      extractDir: path.join(root, "extract", packageName),
+      status: "completed",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      createdAt: 1_000,
+      updatedAt: 1_000
+    };
+    session.packageOrder = [packageId];
+    session.packages[packageId] = pkg;
+    const manager = new DownloadManager(defaultSettings(), session, createStoragePaths(path.join(root, "state")));
+    const originalOpen = fs.promises.open.bind(fs.promises);
+    const openSpy = vi.spyOn(fs.promises, "open").mockImplementation(async (filePath: any, ...args: any[]) => {
+      if (String(filePath).includes("rd-package-output-owner-v1")) {
+        throw Object.assign(new Error("marker denied"), { code: "EPERM" });
+      }
+      return originalOpen(filePath, ...(args as [any, any]));
+    });
+
+    try {
+      await expect((manager as any).runWithPackageOutputProvenance(pkg, async (targetDir: string, scope: any) => {
+        const outputPath = path.join(targetDir, "owned.mkv");
+        fs.writeFileSync(outputPath, "owned");
+        scope.add({
+          version: 1,
+          archivePath: path.join(pkg.outputDir, "archive.rar"),
+          entryPath: "owned.mkv",
+          outputPath,
+          state: "complete",
+          disposition: "written"
+        });
+      })).resolves.toBeUndefined();
+    } finally {
+      openSpy.mockRestore();
+    }
+
+    expect(fs.readFileSync(path.join(pkg.extractDir, "owned.mkv"), "utf8")).toBe("owned");
+    expect(pkg.outputRecords).toEqual([expect.objectContaining({ entryPath: "owned.mkv" })]);
+    expect(fs.existsSync(path.join(pkg.extractDir, ".rd-package-output-owner-v1.json"))).toBe(false);
+  });
+
+  it("rejects a replayed owner marker from an older package generation", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-owner-replay-"));
+    tempDirs.push(root);
+    const packageName = "replay-package";
+    const extractDir = path.join(root, "extract", packageName);
+    const libraryDir = path.join(root, "library");
+    fs.mkdirSync(extractDir, { recursive: true });
+    const foreignPath = path.join(extractDir, "foreign.mkv");
+    fs.writeFileSync(foreignPath, "foreign");
+    const ownerId = crypto.randomUUID().toLowerCase();
+    fs.writeFileSync(path.join(extractDir, ".rd-package-output-owner-v1.json"), JSON.stringify({
+      version: 1,
+      packageId: "replay-package-id",
+      generation: 1,
+      ownerId
+    }));
+    const session = emptySession();
+    const packageId = "replay-package-id";
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: packageName,
+      outputDir: path.join(root, "downloads", packageName),
+      extractDir,
+      status: "completed",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      outputProvenanceVersion: 1,
+      outputRecords: [],
+      outputOwnerId: ownerId,
+      outputOwnerGeneration: 1,
+      resultGeneration: 2,
+      createdAt: 1_000,
+      updatedAt: 1_000
+    };
+    const manager = new DownloadManager(
+      { ...defaultSettings(), autoExtract: true, collectMkvToLibrary: true, mkvLibraryDir: libraryDir },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await (manager as any).collectMkvFilesToLibrary(packageId, session.packages[packageId]);
+
+    expect(fs.existsSync(foreignPath)).toBe(true);
+    expect(fs.existsSync(path.join(libraryDir, "foreign.mkv"))).toBe(false);
+    expect(session.packages[packageId].outputRecords).toEqual([]);
+  });
+
   it("does NOT move bonus files from Extras subdirectory to flat library", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);

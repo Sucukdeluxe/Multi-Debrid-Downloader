@@ -4477,19 +4477,26 @@ export class DownloadManager extends EventEmitter {
   private async writePackageOutputOwnerMarkerAtomic(pkg: PackageEntry, marker: PackageOutputOwnerMarker): Promise<void> {
     const markerPath = this.packageOutputOwnerMarkerPath(pkg);
     const tempPath = path.join(pkg.extractDir, `.${PACKAGE_OUTPUT_OWNER_MARKER}.${uuidv4()}.tmp`);
-    const handle = await fs.promises.open(tempPath, "wx");
+    const reservation = await fs.promises.open(markerPath, "wx");
     try {
-      await handle.writeFile(JSON.stringify(marker), "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    try {
-      await fs.promises.link(tempPath, markerPath);
-      await fs.promises.rm(tempPath, { force: true });
+      await reservation.writeFile("{}", "utf8");
+      await reservation.sync();
+      await reservation.close();
+      const temp = await fs.promises.open(tempPath, "wx");
+      try {
+        await temp.writeFile(JSON.stringify(marker), "utf8");
+        await temp.sync();
+      } finally {
+        await temp.close().catch(() => {});
+      }
+      await fs.promises.rename(tempPath, markerPath);
     } catch (error) {
+      await reservation.close().catch(() => {});
       await fs.promises.rm(tempPath, { force: true }).catch(() => {});
+      await fs.promises.rm(markerPath, { force: true }).catch(() => {});
       throw error;
+    } finally {
+      await reservation.close().catch(() => {});
     }
   }
 
@@ -4638,7 +4645,13 @@ export class DownloadManager extends EventEmitter {
     const scope = this.getPackageOutputScope(pkg);
     try {
       await fs.promises.mkdir(pkg.extractDir, { recursive: true });
-      await this.ensurePackageOutputOwnerMarker(pkg);
+      try {
+        await this.ensurePackageOutputOwnerMarker(pkg);
+      } catch (error) {
+        pkg.outputOwnerId = "";
+        pkg.outputOwnerGeneration = 0;
+        logger.warn(`Output-Owner-Marker nicht verfügbar: pkg=${pkg.id}, reason=${compactErrorText(error)}`);
+      }
       return await operation(pkg.extractDir, scope);
     } finally {
       if (!packageWasInSession || this.session.packages[pkg.id] === pkg) {

@@ -669,8 +669,8 @@ public final class JBindExtractorMain {
     }
 
     private static String normalizeEntryName(String value, String fallback) {
-        String entry = value == null ? "" : value.trim();
-        if (entry.length() == 0) {
+        String entry = value == null ? "" : value;
+        if (entry.trim().length() == 0) {
             return fallback;
         }
         entry = entry.replace('\\', '/');
@@ -680,6 +680,11 @@ public final class JBindExtractorMain {
         if (entry.length() == 0) {
             return fallback;
         }
+
+        while (entry.endsWith("/")) {
+            entry = entry.substring(0, entry.length() - 1);
+        }
+        validateWindowsEntryName(entry);
 
         String[] segments = entry.split("/", -1);
         StringBuilder sanitized = new StringBuilder();
@@ -694,6 +699,31 @@ public final class JBindExtractorMain {
             return fallback;
         }
         return entry;
+    }
+
+    private static void validateWindowsEntryName(String entry) {
+        if (entry.startsWith("/") || entry.matches("^[a-zA-Z]:.*")) {
+            throw new IllegalArgumentException("Ungueltiger Windows-Archivpfad: " + entry);
+        }
+        String[] segments = entry.split("/", -1);
+        for (String segment : segments) {
+            if (segment.length() == 0 || ".".equals(segment) || "..".equals(segment)
+                    || segment.endsWith(".") || segment.endsWith(" ")
+                    || WINDOWS_SPECIAL_CHARS_RE.matcher(segment).find()) {
+                throw new IllegalArgumentException("Ungueltiger Windows-Archivpfad: " + entry);
+            }
+            for (int i = 0; i < segment.length(); i++) {
+                if (segment.charAt(i) < 32) {
+                    throw new IllegalArgumentException("Ungueltiger Windows-Archivpfad: " + entry);
+                }
+            }
+            int dot = segment.indexOf('.');
+            String base = (dot >= 0 ? segment.substring(0, dot) : segment).toUpperCase(Locale.ROOT);
+            if ("CON".equals(base) || "PRN".equals(base) || "AUX".equals(base) || "NUL".equals(base)
+                    || base.matches("COM[1-9¹²³]") || base.matches("LPT[1-9¹²³]")) {
+                throw new IllegalArgumentException("Reservierter Windows-Archivpfad: " + entry);
+            }
+        }
     }
 
     private static long safeSize(Long value) {

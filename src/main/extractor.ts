@@ -214,6 +214,7 @@ interface DaemonRequest {
   startedAt: number;
   passwordCount: number;
   onOutput?: (event: ExtractOutputEvent) => void;
+  targetDir: string;
 }
 
 const activeSubstDrives = new Set<string>();
@@ -1629,17 +1630,10 @@ function parseJvmLine(
     state.openedOutputs ||= new Map<string, ExtractOutputEvent>();
     if (event.state === "opened") {
       state.openedOutputs.set(outputKey, event);
-    } else if (event.state === "complete" || event.state === "removed") {
+    } else if (event.state === "complete" || event.state === "partial" || event.state === "removed") {
       state.openedOutputs.delete(outputKey);
     }
-    if (!state.outputError) {
-      try {
-        onOutput?.(event);
-      } catch (error) {
-        state.outputError = error instanceof Error ? error : new Error(String(error));
-        state.reportedError = state.outputError.message;
-      }
-    }
+    dispatchJvmOutputEvent(state, onOutput, event);
     return;
   }
 
@@ -1679,6 +1673,23 @@ export function shutdownDaemon(): void {
 function finishDaemonRequest(result: JvmExtractResult): void {
   const req = daemonCurrentRequest;
   if (!req) return;
+  const openedCount = reconcileJvmOpenedOutputs(req.parseState, req.onOutput, req.targetDir);
+  let finalResult = result;
+  if (req.parseState.outputError) {
+    finalResult = {
+      ...result,
+      ok: false,
+      aborted: false,
+      timedOut: false,
+      errorText: cleanErrorText(req.parseState.outputError.message || String(req.parseState.outputError))
+    };
+  } else if (result.ok && openedCount > 0) {
+    finalResult = {
+      ...result,
+      ok: false,
+      errorText: "JVM-Output blieb ohne Abschlussstatus"
+    };
+  }
   daemonCurrentRequest = null;
   daemonBusy = false;
   daemonStdoutBuffer = "";
@@ -1689,7 +1700,7 @@ function finishDaemonRequest(result: JvmExtractResult): void {
     req.signal.removeEventListener("abort", daemonAbortHandler);
     daemonAbortHandler = null;
   }
-  req.resolve(result);
+  req.resolve(finalResult);
 }
 
 function flushDaemonParseBuffers(req: DaemonRequest | null): void {
@@ -1908,7 +1919,8 @@ function sendDaemonRequest(
       archiveName,
       startedAt: Date.now(),
       passwordCount: passwordCandidates.length,
-      onOutput
+      onOutput,
+      targetDir
     };
     logger.info(`JVM Daemon Request Start: archive=${archiveName}, pwCandidates=${passwordCandidates.length}, timeoutMs=${timeoutMs || 0}, conflict=${mode}`);
 
@@ -2076,6 +2088,23 @@ async function runJvmExtractCommand(
       if (settled) {
         return;
       }
+      const openedCount = reconcileJvmOpenedOutputs(parseState, onOutput, targetDir);
+      let finalResult = result;
+      if (parseState.outputError) {
+        finalResult = {
+          ...result,
+          ok: false,
+          aborted: false,
+          timedOut: false,
+          errorText: cleanErrorText(parseState.outputError.message || String(parseState.outputError))
+        };
+      } else if (result.ok && openedCount > 0) {
+        finalResult = {
+          ...result,
+          ok: false,
+          errorText: "JVM-Output blieb ohne Abschlussstatus"
+        };
+      }
       settled = true;
       if (timeoutId) {
         clearTimeout(timeoutId);
@@ -2085,7 +2114,7 @@ async function runJvmExtractCommand(
         signal.removeEventListener("abort", onAbort);
       }
       cleanupTmpDir();
-      resolve(result);
+      resolve(finalResult);
     };
 
     if (timeoutMs && timeoutMs > 0) {
@@ -2214,6 +2243,137 @@ export function buildExternalExtractArgs(
   const overwrite = mode === "overwrite" ? "-aoa" : mode === "rename" ? "-aou" : "-aos";
   const pass = password ? `-p${password}` : "-p";
   return ["x", "-y", "-bb1", "-sccUTF-8", overwrite, pass, archivePath, `-o${targetDir}`];
+}
+
+export function buildExternalListArgs(command: string, archivePath: string, password = ""): string[] {
+  if (isRarNativeCommand(command)) {
+    const pass = password ? `-p${password}` : "-p-";
+    return ["lb", pass, "-y", archivePath];
+  }
+  const pass = password ? `-p${password}` : "-p";
+  return ["l", "-slt", "-sccUTF-8", pass, archivePath];
+}
+
+export function parseNativeArchiveEntryList(command: string, output: string): string[] {
+  const lines = String(output || "").split(/\r?\n/);
+  if (isRarNativeCommand(command)) {
+    return lines.map((line) => line.trim()).filter(Boolean);
+  }
+  const entries: string[] = [];
+  let inEntries = false;
+  for (const line of lines) {
+    if (/^-{8,}\s*$/.test(line.trim())) {
+      inEntries = true;
+      continue;
+    }
+    if (!inEntries) {
+      continue;
+    }
+    const match = line.match(/^Path = (.*)$/);
+    if (match?.[1]) {
+      entries.push(match[1]);
+    }
+  }
+  return entries;
+}
+
+export function validateNativeArchiveEntryCandidates(entries: readonly string[], targetDir: string): void {
+  const scope = new PackageOutputScope([targetDir]);
+  for (const rawEntry of entries) {
+    const entryPath = String(rawEntry || "").replace(/\\/g, "/").replace(/\/$/, "");
+    if (!entryPath) {
+      continue;
+    }
+    const outputPath = path.resolve(targetDir, ...entryPath.split("/"));
+    scope.validateTarget(entryPath, outputPath);
+  }
+}
+
+function dispatchJvmOutputEvent(
+  state: JvmParseState,
+  onOutput: ((event: ExtractOutputEvent) => void) | undefined,
+  event: ExtractOutputEvent
+): void {
+  if (state.outputError) {
+    return;
+  }
+  try {
+    onOutput?.(event);
+  } catch (error) {
+    state.outputError = error instanceof Error ? error : new Error(String(error));
+    state.reportedError = state.outputError.message;
+  }
+}
+
+function reconcileJvmOpenedOutputs(
+  state: JvmParseState,
+  onOutput: ((event: ExtractOutputEvent) => void) | undefined,
+  targetDir: string
+): number {
+  const opened = [...(state.openedOutputs?.values() || [])];
+  state.openedOutputs?.clear();
+  if (state.outputError || opened.length === 0) {
+    return opened.length;
+  }
+  const validator = new PackageOutputScope([targetDir]);
+  for (const event of opened) {
+    let next: ExtractOutputEvent = { ...event, state: "removed" };
+    try {
+      const stat = fs.lstatSync(event.outputPath);
+      if (stat.isFile() && !stat.isSymbolicLink()) {
+        next = { ...event, state: "partial" };
+      }
+      validator.add(next);
+    } catch {
+      next = { ...event, state: "removed" };
+      try {
+        validator.add(next);
+      } catch (error) {
+        state.outputError = error instanceof Error ? error : new Error(String(error));
+        state.reportedError = state.outputError.message;
+        return opened.length;
+      }
+    }
+    dispatchJvmOutputEvent(state, onOutput, next);
+  }
+  return opened.length;
+}
+
+async function runNativeEntryPreflight(
+  command: string,
+  archivePath: string,
+  targetDir: string,
+  password: string,
+  signal: AbortSignal | undefined,
+  timeoutMs: number
+): Promise<ExtractSpawnResult> {
+  const chunks: string[] = [];
+  const result = await runExtractCommand(
+    command,
+    buildExternalListArgs(command, archivePath, password),
+    (chunk) => chunks.push(chunk),
+    signal,
+    timeoutMs
+  );
+  if (!result.ok) {
+    return result;
+  }
+  try {
+    const entries = parseNativeArchiveEntryList(command, chunks.join(""));
+    if (entries.length === 0) {
+      throw new Error("Native Archivliste enthält keine validierbaren Einträge");
+    }
+    validateNativeArchiveEntryCandidates(entries, targetDir);
+    return result;
+  } catch (error) {
+    return {
+      ok: false,
+      missingCommand: false,
+      aborted: false,
+      timedOut: false,
+      errorText: cleanErrorText(String(error))
+    };
+  }
 }
 
 export function parseNativeExtractOutput(
@@ -2359,7 +2519,11 @@ async function runExternalExtractInner(
   const summarizeResultError = (errorText: string): string => cleanErrorText(errorText);
   let createErrorText = "";
   let createErrorPassword = "";
-  const runNativeAttempt = async (args: string[]): Promise<ExtractSpawnResult> => {
+  const runNativeAttempt = async (args: string[], password: string): Promise<ExtractSpawnResult> => {
+    const preflight = await runNativeEntryPreflight(command, archivePath, targetDir, password, signal, timeoutMs);
+    if (!preflight.ok) {
+      return preflight;
+    }
     const outputs = createNativeOutputCollector(command, archivePath, targetDir, conflictMode, onOutput);
     const result = await runExtractCommand(command, args, (chunk) => {
       outputs.push(chunk);
@@ -2386,7 +2550,7 @@ async function runExternalExtractInner(
       onLog?.("INFO", `Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length}: archive=${path.basename(archivePath)}, password=<redacted>`);
       logger.info(`Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length} für ${path.basename(archivePath)} (password=<redacted>)`);
       const args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password, usePerformanceFlags, hybridMode, true);
-      const result = await runNativeAttempt(args);
+      const result = await runNativeAttempt(args, password);
       logger.info(`Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length}: ok=${result.ok}, bestPercent=${bestPercent}`);
       onLog?.("INFO", `Flach-Extraktion Ergebnis ${passwordAttempt}/${passwords.length}: archive=${path.basename(archivePath)}, ok=${result.ok}, timedOut=${result.timedOut}, missingCommand=${result.missingCommand}, bestPercent=${bestPercent}`);
       if (result.ok) { if (flatModeResult) flatModeResult.needed = true; onArchiveProgress?.(100); return password; }
@@ -2413,7 +2577,7 @@ async function runExternalExtractInner(
       onPasswordAttempt?.(passwordAttempt, passwords.length);
     }
     let args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password, usePerformanceFlags, hybridMode);
-    let result = await runNativeAttempt(args);
+    let result = await runNativeAttempt(args, password);
 
     if (!result.ok && usePerformanceFlags && isUnsupportedExtractorSwitchError(result.errorText)) {
       usePerformanceFlags = false;
@@ -2421,7 +2585,7 @@ async function runExternalExtractInner(
       onLog?.("WARN", `Entpacker ohne Performance-Flags fortgesetzt: ${path.basename(archivePath)}`);
       logger.warn(`Entpacker ohne Performance-Flags fortgesetzt: ${path.basename(archivePath)}`);
       args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password, false, hybridMode);
-      result = await runNativeAttempt(args);
+      result = await runNativeAttempt(args, password);
     }
 
       logger.info(
@@ -2484,7 +2648,7 @@ async function runExternalExtractInner(
       logger.info(`Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length} für ${path.basename(archivePath)} (password=<redacted>)`);
       onLog?.("INFO", `Flach-Extraktion Versuch ${passwordAttempt}/${flatPasswords.length}: archive=${path.basename(archivePath)}, password=<redacted>`);
       const args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password, usePerformanceFlags, hybridMode, true);
-      const result = await runNativeAttempt(args);
+      const result = await runNativeAttempt(args, password);
       logger.info(`Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length}: ok=${result.ok}, bestPercent=${bestPercent}`);
       onLog?.("INFO", `Flach-Extraktion Ergebnis ${passwordAttempt}/${flatPasswords.length}: archive=${path.basename(archivePath)}, ok=${result.ok}, timedOut=${result.timedOut}, missingCommand=${result.missingCommand}, bestPercent=${bestPercent}`);
       if (result.ok) { if (flatModeResult) flatModeResult.needed = true; onArchiveProgress?.(100); return password; }
