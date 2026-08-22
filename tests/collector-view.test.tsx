@@ -127,6 +127,29 @@ describe("CollectorView", () => {
     expect(html).not.toContain(">Lokal<");
   });
 
+  it("renders known hosters as icons with their full name as tooltip", () => {
+    const ddownloadPackages: CollectorPackage[] = [{
+      id: "package-ddownload",
+      name: "Archive",
+      addedAt: 3000,
+      links: [{
+        id: "link-ddownload",
+        url: "https://ddownload.com/ntwscdw62gyb",
+        fileName: "Archive.part01.rar",
+        fileSizeBytes: 526_385_152,
+        hoster: "ddownload",
+        availability: "online",
+        status: "ready",
+        addedAt: 3000
+      }]
+    }];
+    const html = renderToStaticMarkup(<CollectorContent actions={createActions()} model={buildCollectorWorkspaceViewModel(ddownloadPackages, "all", "", false, [], [], "", true)} />);
+
+    expect(html).toContain('class="collector-hoster-label" title="DDownload"');
+    expect(html).toContain('class="collector-hoster-icon" data-hoster="ddownload" src="./provider-icons/ddownload.ico"');
+    expect(html).not.toContain('title="DDownload">DD<');
+  });
+
   it("renders collapsed packages without child rows", () => {
     const html = renderToStaticMarkup(<CollectorContent actions={createActions()} model={buildCollectorWorkspaceViewModel(packages, "all", "", false, [], ["package-sbs"], "", false)} />);
     expect(html).toContain("aria-label=\"SBS14HD ausklappen\"");

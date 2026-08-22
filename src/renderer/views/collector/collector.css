@@ -46,6 +46,9 @@
 .collector-size-cell, .collector-added-cell { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .collector-hoster-cell { align-items: center; display: flex; gap: 5px; }
 .collector-hoster-cell span { color: var(--ui-text); font-weight: 600; }
+.collector-hoster-label { align-items: center; display: inline-flex; justify-content: center; min-width: 18px; }
+.collector-hoster-icon { display: block; height: 18px; object-fit: contain; width: 18px; }
+.collector-hoster-icon[data-hoster="rapidgator"] { transform: translateY(-4px) scale(2); }
 .collector-status-cell, .collector-added-cell { color: var(--ui-text-muted); }
 .collector-availability-cell { font-weight: 600; white-space: nowrap; }
 .collector-availability-cell.is-online { color: var(--ui-success); }

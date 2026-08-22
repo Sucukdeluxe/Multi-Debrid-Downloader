@@ -22,6 +22,7 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 - Rebuilt the link collector as a package-oriented preview with expandable file rows, resolved metadata, availability filters, stable selection, and selected or complete transfer to Downloads.
 - Route pasted links, clipboard detections, text files, drag-and-drop, and DLC containers through inspection before they enter the download queue.
+- Show known hosters as icons with full-name tooltips and a text fallback when an icon cannot be loaded.
 
 ## [2.0.54] - 2026-08-21
 

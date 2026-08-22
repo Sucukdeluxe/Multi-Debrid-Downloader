@@ -58,6 +58,14 @@ function packageSize(row: CollectorWorkspacePackageRow): string {
   return `${row.unknownSizeCount > 0 ? "≥ " : ""}${humanSize(row.totalBytes)}`;
 }
 
+function CollectorHosterLabel({ hoster }: { hoster: ReturnType<typeof formatHosterLabel> }): ReactElement {
+  return (
+    <span className="collector-hoster-label" title={hoster.title}>
+      {hoster.iconSrc ? <><img alt="" className="collector-hoster-icon" data-hoster={hoster.title.toLowerCase()} onError={(event) => { event.currentTarget.hidden = true; event.currentTarget.nextElementSibling?.removeAttribute("hidden"); }} src={hoster.iconSrc} /><span hidden>{hoster.compact}</span></> : hoster.compact}
+    </span>
+  );
+}
+
 export function CollectorSidebar({ model, actions }: CollectorViewProps): ReactElement {
   return (
     <div aria-label="Linksammler-Filter" className="collector-sidebar" data-visual-region="collector-sidebar">
@@ -103,7 +111,7 @@ function CollectorPackageGroup({ row, model, actions }: { row: CollectorWorkspac
         <span className="collector-column-select" role="cell"><input aria-checked={partiallySelected ? "mixed" : allSelected} aria-label={`Paket ${row.name} auswählen`} checked={allSelected} onChange={(event) => actions.onPackageSelectionChange(row.id, event.target.checked)} ref={(node) => { if (node) node.indeterminate = partiallySelected; }} type="checkbox" /></span>
         <span className="collector-name-cell" role="cell"><button aria-expanded={!row.collapsed} aria-label={row.collapsed ? `${row.name} ausklappen` : `${row.name} einklappen`} className="collector-collapse-button" onClick={() => actions.onPackageCollapseChange(row.id)} type="button">{row.collapsed ? "+" : "−"}</button><strong title={row.name}>{row.name}</strong><small>{row.totalCount} Dateien</small></span>
         <span className="collector-size-cell" role="cell">{packageSize(row)}</span>
-        <span className="collector-hoster-cell" role="cell">{row.hosters.map(formatHosterLabel).map((hoster) => <span key={hoster.title} title={hoster.title}>{hoster.compact}</span>)}</span>
+        <span className="collector-hoster-cell" role="cell">{row.hosters.map(formatHosterLabel).map((hoster) => <CollectorHosterLabel hoster={hoster} key={hoster.title} />)}</span>
         <span className="collector-status-cell" role="cell">{packageStatus(row)}</span>
         <span className={`collector-availability-cell is-${row.offlineCount === row.totalCount ? "offline" : row.onlineCount === row.totalCount ? "online" : "unknown"}`} role="cell">{packageAvailability(row)}</span>
         <span className="collector-added-cell" role="cell">{formatDateTime(row.addedAt)}</span>
@@ -115,7 +123,7 @@ function CollectorPackageGroup({ row, model, actions }: { row: CollectorWorkspac
             <span className="collector-column-select" role="cell"><input aria-label={`${link.fileName} auswählen`} checked={selected.has(link.id)} onChange={(event) => actions.onLinkSelectionChange(link.id, event.target.checked)} type="checkbox" /></span>
             <span className="collector-name-cell is-file" role="cell" title={link.url}><span className={`collector-link-state is-${link.availability}`} />{link.fileName}</span>
             <span className="collector-size-cell" role="cell">{link.fileSizeBytes === null ? "Unbekannt" : humanSize(link.fileSizeBytes)}</span>
-            <span className="collector-hoster-cell" role="cell"><span title={hoster.title}>{hoster.compact}</span></span>
+            <span className="collector-hoster-cell" role="cell"><CollectorHosterLabel hoster={hoster} /></span>
             <span className="collector-status-cell" role="cell">{link.status === "ready" ? "Bereit" : link.status === "offline" ? "Offline" : "Ungeprüft"}</span>
             <span className={`collector-availability-cell is-${link.availability}`} role="cell">{link.availability === "online" ? "Online" : link.availability === "offline" ? "Offline" : "Ungeprüft"}</span>
             <span className="collector-added-cell" role="cell">{formatDateTime(link.addedAt)}</span>
