@@ -262,6 +262,20 @@ public final class JBindExtractorMain {
             ProgressTracker progress = new ProgressTracker(totalUnits);
             progress.emitStart();
 
+            Set<String> preflightReserved = new HashSet<String>();
+            for (FileHeader header : fileHeaders) {
+                if (header == null) {
+                    continue;
+                }
+                String entryName = normalizeEntryName(header.getFileName(), "file");
+                if (header.isDirectory()) {
+                    File dir = resolveDirectory(request.targetDir, entryName);
+                    preflightReserved.add(pathKey(dir));
+                } else {
+                    resolveOutputFile(request.targetDir, entryName, request.conflictMode, preflightReserved);
+                }
+            }
+
             Set<String> reserved = new HashSet<String>();
             for (FileHeader header : fileHeaders) {
                 if (header == null) {
@@ -382,6 +396,7 @@ public final class JBindExtractorMain {
             List<Long> fileSizes = new ArrayList<Long>();
             List<String> entryNames = new ArrayList<String>();
             List<String> dispositions = new ArrayList<String>();
+            List<File> outputDirectories = new ArrayList<File>();
             Set<String> reserved = new HashSet<String>();
 
             for (int i = 0; i < itemCount; i++) {
@@ -391,8 +406,7 @@ public final class JBindExtractorMain {
 
                 if (Boolean.TRUE.equals(isFolder)) {
                     File dir = resolveDirectory(request.targetDir, entryName);
-                    ensureDirectory(dir);
-                    rejectLinkedPath(request.targetDir, dir);
+                    outputDirectories.add(dir);
                     reserved.add(pathKey(dir));
                     continue;
                 }
@@ -418,6 +432,11 @@ public final class JBindExtractorMain {
                 fileSizes.add(itemSize);
                 entryNames.add(entryName);
                 dispositions.add(outputTarget.disposition);
+            }
+
+            for (File directory : outputDirectories) {
+                ensureDirectory(directory);
+                rejectLinkedPath(request.targetDir, directory);
             }
 
             if (fileIndices.isEmpty()) {
@@ -605,7 +624,7 @@ public final class JBindExtractorMain {
 
         if (conflictMode == ConflictMode.OVERWRITE) {
             if (base.exists()) {
-                if (!base.isFile() || !base.delete()) {
+                if (!base.isFile()) {
                     throw new IOException("Konnte Datei nicht uberschreiben: " + base.getAbsolutePath());
                 }
             }

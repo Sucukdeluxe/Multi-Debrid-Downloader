@@ -4517,16 +4517,12 @@ export class DownloadManager extends EventEmitter {
     } catch {
       return false;
     }
-    const rawExistingMarker = await this.readPackageOutputOwnerMarker(pkg, false);
     const nonMarkerEntries = entries.filter((entry) => entry.name !== PACKAGE_OUTPUT_OWNER_MARKER);
     if (nonMarkerEntries.length > 0) {
       return false;
     }
     if (entries.some((entry) => entry.name === PACKAGE_OUTPUT_OWNER_MARKER)) {
-      if (!rawExistingMarker || rawExistingMarker.packageId !== pkg.id) {
-        return false;
-      }
-      await fs.promises.rm(this.packageOutputOwnerMarkerPath(pkg), { force: true });
+      return false;
     }
     const marker: PackageOutputOwnerMarker = {
       version: 1,

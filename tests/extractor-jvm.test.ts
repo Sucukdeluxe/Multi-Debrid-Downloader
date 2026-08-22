@@ -361,6 +361,47 @@ describe.skipIf(!hasJavaRuntime() || !hasJvmExtractorRuntime())("extractor jvm b
     await new Promise((resolve) => setTimeout(resolve, 500));
   }, 10000);
 
+  it.each(["7zjbinding", "zip4j"])("preflights every %s entry before overwriting an earlier safe target", (backend) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `rd-jvm-full-preflight-${backend}-`));
+    tempDirs.push(root);
+    const targetDir = path.join(root, "out");
+    fs.mkdirSync(targetDir, { recursive: true });
+    const safePath = path.join(targetDir, "00-safe.txt");
+    const aliasPath = path.join(targetDir, "zz-name");
+    fs.writeFileSync(safePath, "foreign-safe");
+    fs.writeFileSync(aliasPath, "foreign-alias");
+    const zipPath = path.join(root, "preflight.zip");
+    const zip = new AdmZip();
+    zip.addFile("00-safe.txt", Buffer.from("package-safe"));
+    zip.addFile("zz-name.", Buffer.from("package-invalid"));
+    zip.writeZip(zipPath);
+    const runtimeRoot = path.join(process.cwd(), "resources", "extractor-jvm");
+    const classPath = [
+      path.join(runtimeRoot, "classes"),
+      path.join(runtimeRoot, "lib", "sevenzipjbinding.jar"),
+      path.join(runtimeRoot, "lib", "sevenzipjbinding-all-platforms.jar"),
+      path.join(runtimeRoot, "lib", "zip4j.jar")
+    ].join(path.delimiter);
+
+    const run = spawnSync("java", [
+      "-cp",
+      classPath,
+      "com.sucukdeluxe.extractor.JBindExtractorMain",
+      "--archive",
+      zipPath,
+      "--target",
+      targetDir,
+      "--conflict",
+      "overwrite",
+      "--backend",
+      backend
+    ], { encoding: "utf8" });
+
+    expect(run.status).not.toBe(0);
+    expect(fs.readFileSync(safePath, "utf8")).toBe("foreign-safe");
+    expect(fs.readFileSync(aliasPath, "utf8")).toBe("foreign-alias");
+  });
+
   it("emits progress callbacks with archiveName and percent", async () => {
     process.env.RD_EXTRACT_BACKEND = "jvm";
 

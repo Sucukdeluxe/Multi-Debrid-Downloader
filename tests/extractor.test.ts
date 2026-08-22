@@ -1661,5 +1661,44 @@ describe("extractor", () => {
       ]);
     });
 
+    it("preflights every internal ZIP entry before overwriting an earlier safe target", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-zip-full-preflight-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(packageDir, { recursive: true });
+      fs.mkdirSync(targetDir, { recursive: true });
+      const safePath = path.join(targetDir, "00-safe.txt");
+      const aliasPath = path.join(targetDir, "zz-name");
+      fs.writeFileSync(safePath, "foreign-safe");
+      fs.writeFileSync(aliasPath, "foreign-alias");
+      const zip = new AdmZip();
+      zip.addFile("00-safe.txt", Buffer.from("package-safe"));
+      zip.addFile("zz-name.", Buffer.from("package-invalid"));
+      zip.writeZip(path.join(packageDir, "release.zip"));
+
+      const result = await extractPackageArchives({
+        packageDir,
+        targetDir,
+        cleanupMode: "none",
+        conflictMode: "overwrite",
+        removeLinks: false,
+        removeSamples: false
+      });
+
+      expect(result.extracted).toBe(0);
+      expect(result.failed).toBe(1);
+      expect(fs.readFileSync(safePath, "utf8")).toBe("foreign-safe");
+      expect(fs.readFileSync(aliasPath, "utf8")).toBe("foreign-alias");
+    });
+
+    it("preserves raw RAR list trailing whitespace and dots for validation", () => {
+      const entries = parseNativeArchiveEntryList("UnRAR.exe", "safe.mkv\r\nname \r\nname.\r\n");
+      expect(entries).toEqual(["safe.mkv", "name ", "name."]);
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-native-raw-list-"));
+      tempDirs.push(root);
+      expect(() => validateNativeArchiveEntryCandidates(entries, root)).toThrow(/Ausgabepfad|entry/i);
+    });
+
   });
 });

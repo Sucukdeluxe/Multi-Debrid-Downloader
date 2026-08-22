@@ -2257,7 +2257,7 @@ export function buildExternalListArgs(command: string, archivePath: string, pass
 export function parseNativeArchiveEntryList(command: string, output: string): string[] {
   const lines = String(output || "").split(/\r?\n/);
   if (isRarNativeCommand(command)) {
-    return lines.map((line) => line.trim()).filter(Boolean);
+    return lines.filter((line) => line.length > 0);
   }
   const entries: string[] = [];
   let inEntries = false;
@@ -2988,8 +2988,18 @@ async function extractZipArchive(
   const zip = new AdmZip(archivePath);
   const entries = zip.getEntries();
   const resolvedTarget = path.resolve(targetDir);
-  const usedOutputs = new Set<string>();
+  const plannedOutputs = new Set<string>();
   const renameCounters = new Map<string, number>();
+  const directoryPlans: Array<{ entryPath: string; outputPath: string }> = [];
+  const filePlans: Array<{
+    entry: (typeof entries)[number];
+    entryPath: string;
+    outputPath: string;
+    outputKey: string;
+    disposition: ExtractOutputEvent["disposition"];
+    uncompressedSize: number;
+    compressedSize: number;
+  }> = [];
 
   for (const entry of entries) {
     if (signal?.aborted) {
@@ -2997,13 +3007,12 @@ async function extractZipArchive(
     }
     const baseOutputPath = path.resolve(targetDir, entry.entryName);
     if (!baseOutputPath.startsWith(resolvedTarget + path.sep) && baseOutputPath !== resolvedTarget) {
-      logger.warn(`ZIP-Eintrag übersprungen (Path Traversal): ${entry.entryName}`);
-      continue;
+      throw new Error(`ZIP-Eintrag Path Traversal blockiert: ${entry.entryName}`);
     }
     if (entry.isDirectory) {
-      validateTarget?.(entry.entryName.replace(/\\/g, "/").replace(/\/$/, "") || "directory", baseOutputPath);
-      await fs.promises.mkdir(baseOutputPath, { recursive: true });
-      validateTarget?.(entry.entryName.replace(/\\/g, "/").replace(/\/$/, "") || "directory", baseOutputPath);
+      const entryPath = entry.entryName.replace(/\\/g, "/").replace(/\/$/, "") || "directory";
+      validateTarget?.(entryPath, baseOutputPath);
+      directoryPlans.push({ entryPath, outputPath: baseOutputPath });
       continue;
     }
 
@@ -3044,16 +3053,19 @@ async function extractZipArchive(
     let outputKey = pathSetKey(outputPath);
     let disposition: ExtractOutputEvent["disposition"] = "written";
 
-    const outputExists = usedOutputs.has(outputKey) || await fs.promises.access(outputPath).then(() => true, () => false);
+    const outputExists = plannedOutputs.has(outputKey) || await fs.promises.access(outputPath).then(() => true, () => false);
     if (outputExists) {
       if (mode === "skip") {
-        onOutput?.({
-          version: 1,
-          archivePath: path.resolve(archivePath),
-          entryPath: entry.entryName.replace(/\\/g, "/"),
+        const entryPath = entry.entryName.replace(/\\/g, "/");
+        validateTarget?.(entryPath, baseOutputPath);
+        filePlans.push({
+          entry,
+          entryPath,
           outputPath: baseOutputPath,
-          state: "complete",
-          disposition: "skipped"
+          outputKey,
+          disposition: "skipped",
+          uncompressedSize,
+          compressedSize
         });
         continue;
       }
@@ -3066,7 +3078,7 @@ async function extractZipArchive(
         while (n <= 10000) {
           candidate = path.join(parsed.dir, `${parsed.name} (${n})${parsed.ext}`);
           candidateKey = pathSetKey(candidate);
-          if (!usedOutputs.has(candidateKey) && !(await fs.promises.access(candidate).then(() => true, () => false))) {
+          if (!plannedOutputs.has(candidateKey) && !(await fs.promises.access(candidate).then(() => true, () => false))) {
             break;
           }
           n += 1;
@@ -3086,43 +3098,74 @@ async function extractZipArchive(
       }
     }
 
+    const normalizedEntryPath = entry.entryName.replace(/\\/g, "/");
+    validateTarget?.(normalizedEntryPath, outputPath);
+    plannedOutputs.add(outputKey);
+    filePlans.push({
+      entry,
+      entryPath: normalizedEntryPath,
+      outputPath,
+      outputKey,
+      disposition,
+      uncompressedSize,
+      compressedSize
+    });
+  }
+
+  for (const directoryPlan of directoryPlans) {
     if (signal?.aborted) {
       throw new Error("aborted:extract");
     }
-    const normalizedEntryPath = entry.entryName.replace(/\\/g, "/");
-    validateTarget?.(normalizedEntryPath, outputPath);
+    await fs.promises.mkdir(directoryPlan.outputPath, { recursive: true });
+    validateTarget?.(directoryPlan.entryPath, directoryPlan.outputPath);
+  }
+
+  for (const plan of filePlans) {
+    if (signal?.aborted) {
+      throw new Error("aborted:extract");
+    }
+    if (plan.disposition === "skipped") {
+      onOutput?.({
+        version: 1,
+        archivePath: path.resolve(archivePath),
+        entryPath: plan.entryPath,
+        outputPath: plan.outputPath,
+        state: "complete",
+        disposition: "skipped"
+      });
+      continue;
+    }
     onOutput?.({
       version: 1,
       archivePath: path.resolve(archivePath),
-      entryPath: normalizedEntryPath,
-      outputPath,
+      entryPath: plan.entryPath,
+      outputPath: plan.outputPath,
       state: "opened",
-      disposition
+      disposition: plan.disposition
     });
-    await fs.promises.mkdir(path.dirname(outputPath), { recursive: true });
-    validateTarget?.(normalizedEntryPath, outputPath);
-    const data = entry.getData();
+    await fs.promises.mkdir(path.dirname(plan.outputPath), { recursive: true });
+    validateTarget?.(plan.entryPath, plan.outputPath);
+    const data = plan.entry.getData();
     if (data.length > memoryLimitBytes) {
       const entryMb = Math.ceil(data.length / (1024 * 1024));
       const limitMb = Math.ceil(memoryLimitBytes / (1024 * 1024));
       throw new Error(`ZIP-Eintrag zu groß für internen Entpacker (${entryMb} MB > ${limitMb} MB)`);
     }
-    const maxDeclaredSize = Math.max(uncompressedSize, compressedSize);
+    const maxDeclaredSize = Math.max(plan.uncompressedSize, plan.compressedSize);
     if (maxDeclaredSize > 0 && data.length > maxDeclaredSize * 20) {
-      throw new Error(`ZIP-Eintrag verdächtig groß nach Entpacken (${entry.entryName})`);
+      throw new Error(`ZIP-Eintrag verdächtig groß nach Entpacken (${plan.entry.entryName})`);
     }
     try {
-      await fs.promises.writeFile(outputPath, data);
-      usedOutputs.add(outputKey);
+      await fs.promises.writeFile(plan.outputPath, data);
     } catch (error) {
-      if (await fs.promises.access(outputPath).then(() => true, () => false)) {
+      if (await fs.promises.access(plan.outputPath).then(() => true, () => false)) {
         onOutput?.({
           version: 1,
           archivePath: path.resolve(archivePath),
-          entryPath: entry.entryName.replace(/\\/g, "/"),
-          outputPath,
+          entryPath: plan.entryPath,
+          outputPath: plan.outputPath,
           state: "partial",
-          disposition
+          disposition: plan.disposition
         });
       }
       throw error;
@@ -3130,10 +3173,10 @@ async function extractZipArchive(
     onOutput?.({
       version: 1,
       archivePath: path.resolve(archivePath),
-      entryPath: normalizedEntryPath,
-      outputPath,
+      entryPath: plan.entryPath,
+      outputPath: plan.outputPath,
       state: "complete",
-      disposition
+      disposition: plan.disposition
     });
   }
 }

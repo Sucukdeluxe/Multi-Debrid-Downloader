@@ -13581,6 +13581,62 @@ describe("download manager", () => {
     expect(session.packages[packageId].outputRecords).toEqual([]);
   });
 
+  it.each([
+    ["stale-generation", 2, 1, "11111111-1111-4111-8111-111111111111", "11111111-1111-4111-8111-111111111111"],
+    ["stale-owner", 1, 1, "22222222-2222-4222-8222-222222222222", "33333333-3333-4333-8333-333333333333"]
+  ] as const)("keeps a %s marker unchanged while direct scoped output continues", async (_label, currentGeneration, markerGeneration, currentOwner, markerOwner) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-owner-stale-empty-"));
+    tempDirs.push(root);
+    const packageName = "stale-empty-package";
+    const extractDir = path.join(root, "extract", packageName);
+    fs.mkdirSync(extractDir, { recursive: true });
+    const packageId = "stale-empty-package-id";
+    const markerPath = path.join(extractDir, ".rd-package-output-owner-v1.json");
+    const markerContent = JSON.stringify({
+      version: 1,
+      packageId,
+      generation: markerGeneration,
+      ownerId: markerOwner
+    });
+    fs.writeFileSync(markerPath, markerContent);
+    const session = emptySession();
+    const pkg: PackageEntry = {
+      id: packageId,
+      name: packageName,
+      outputDir: path.join(root, "downloads", packageName),
+      extractDir,
+      status: "completed",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      outputOwnerId: currentOwner,
+      outputOwnerGeneration: currentGeneration,
+      resultGeneration: currentGeneration,
+      createdAt: 1_000,
+      updatedAt: 1_000
+    };
+    session.packageOrder = [packageId];
+    session.packages[packageId] = pkg;
+    const manager = new DownloadManager(defaultSettings(), session, createStoragePaths(path.join(root, "state")));
+
+    await (manager as any).runWithPackageOutputProvenance(pkg, async (targetDir: string, scope: any) => {
+      const outputPath = path.join(targetDir, "owned.mkv");
+      fs.writeFileSync(outputPath, "owned");
+      scope.add({
+        version: 1,
+        archivePath: path.join(pkg.outputDir, "archive.rar"),
+        entryPath: "owned.mkv",
+        outputPath,
+        state: "complete",
+        disposition: "written"
+      });
+    });
+
+    expect(fs.readFileSync(markerPath, "utf8")).toBe(markerContent);
+    expect(fs.readFileSync(path.join(extractDir, "owned.mkv"), "utf8")).toBe("owned");
+    expect(pkg.outputRecords).toEqual([expect.objectContaining({ entryPath: "owned.mkv" })]);
+  });
+
   it("does NOT move bonus files from Extras subdirectory to flat library", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
