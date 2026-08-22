@@ -93,6 +93,26 @@ describe("visual fixtures", () => {
     expect(createVisualFixture("dense")).toEqual(dense);
   });
 
+  it("keeps the complete notification center state deterministic without exposing its webhook", () => {
+    const settings = createVisualFixture("dense").snapshot.settings;
+
+    expect(settings).toEqual(expect.objectContaining({
+      notifyUrlConfigured: true,
+      notifyMention: "@visual",
+      notifyOnPackageCompleted: true,
+      notifyOnPackageFailed: true,
+      notifyPackageSuccessMode: "digest",
+      notifyOnRunFinished: true,
+      notifyOnRemainingBelow: true,
+      notifyRemainingThresholdGb: 75,
+      notifyOnDownloadStall: true,
+      notifyStallAfterSeconds: 120,
+      notifyStallCooldownMinutes: 15,
+      notifyOnDownloadRecovery: true
+    }));
+    expect(settings).not.toHaveProperty("notifyUrl");
+  });
+
   it("freezes runtime and recurring chart timers across visual frames", async () => {
     const dense = createVisualFixture("dense");
     const originalDateNow = Date.now;

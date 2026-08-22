@@ -4,13 +4,49 @@ import path from "node:path";
 import AdmZip from "adm-zip";
 import { describe, expect, it } from "vitest";
 import { defaultSettings } from "../src/main/constants";
-import { buildAccountSummary, buildStatsPayload } from "../src/main/support-data";
+import { buildAccountSummary, buildNotificationSupportPayload, buildStatsPayload } from "../src/main/support-data";
 import { buildSupportBundle } from "../src/main/support-bundle";
 import { createStoragePaths } from "../src/main/storage";
 import { serializeRealDebridApiAccounts } from "../src/shared/real-debrid-accounts";
 import { createVisualFixture } from "./visual/fixtures";
 
 describe("Real-Debrid support summary", () => {
+  it("projects only safe notification delivery and incident aggregates", () => {
+    const payload = buildNotificationSupportPayload(
+      {
+        queued: 7,
+        lastSuccessAt: 1_700_000_000_000,
+        lastFailureAt: 1_700_000_010_000,
+        events: [{ payload: { url: "https://private.example.test/hook", mention: "@private" } }]
+      } as Parameters<typeof buildNotificationSupportPayload>[0],
+      {
+        status: "alerted",
+        incidentType: "no_data",
+        incidentStartedAt: 1_700_000_020_000,
+        runFingerprint: "private-run",
+        url: "https://private.example.test/hook",
+        mention: "@private"
+      } as Parameters<typeof buildNotificationSupportPayload>[1],
+      1_700_000_050_000
+    );
+
+    expect(payload).toEqual({
+      queued: 7,
+      lastSuccessAt: 1_700_000_000_000,
+      incidentType: "no_data",
+      incidentAgeMs: 30_000
+    });
+    expect(JSON.stringify(payload)).not.toMatch(/payload|https?:|mention|private|lastFailure/i);
+  });
+
+  it("reports no active incident when the health state has no incident", () => {
+    expect(buildNotificationSupportPayload(
+      { queued: 0, lastSuccessAt: 0 },
+      { incidentType: null, incidentStartedAt: 0 },
+      1_700_000_050_000
+    )).toEqual({ queued: 0, lastSuccessAt: null, incidentType: null, incidentAgeMs: null });
+  });
+
   it("reports pool counts without exposing account IDs or credentials", () => {
     const summary = buildAccountSummary({
       ...defaultSettings(),

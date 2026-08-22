@@ -2,9 +2,39 @@ import { getDebridLinkApiKeyIds } from "../shared/debrid-link-keys";
 import { getRealDebridAccounts } from "../shared/real-debrid-accounts";
 import { isNotifyUrlValid } from "./notify";
 import type { AppSettings, HistoryEntry, UiSnapshot } from "../shared/types";
+import type { DownloadHealthState } from "./download-health-monitor";
+import type { NotificationOutboxStatus } from "./notification-outbox";
 
 function hasText(value: unknown): boolean {
   return String(value || "").trim().length > 0;
+}
+
+export interface NotificationSupportPayload {
+  queued: number;
+  lastSuccessAt: number | null;
+  incidentType: DownloadHealthState["incidentType"];
+  incidentAgeMs: number | null;
+}
+
+export function buildNotificationSupportPayload(
+  outbox: Pick<NotificationOutboxStatus, "queued" | "lastSuccessAt">,
+  health: Pick<DownloadHealthState, "incidentType" | "incidentStartedAt">,
+  now: number = Date.now()
+): NotificationSupportPayload {
+  const queued = Number.isFinite(outbox.queued) ? Math.max(0, Math.floor(outbox.queued)) : 0;
+  const lastSuccessAt = Number.isFinite(outbox.lastSuccessAt) && outbox.lastSuccessAt > 0
+    ? Math.floor(outbox.lastSuccessAt)
+    : null;
+  const incidentType = health.incidentType === "scheduler" || health.incidentType === "no_data"
+    ? health.incidentType
+    : null;
+  const incidentStartedAt = Number.isFinite(health.incidentStartedAt) && health.incidentStartedAt > 0
+    ? Math.floor(health.incidentStartedAt)
+    : 0;
+  const incidentAgeMs = incidentType && incidentStartedAt > 0
+    ? Math.max(0, Math.floor(Number.isFinite(now) ? now : Date.now()) - incidentStartedAt)
+    : null;
+  return { queued, lastSuccessAt, incidentType, incidentAgeMs };
 }
 
 export function buildAccountSummary(settings: AppSettings): Record<string, unknown> {

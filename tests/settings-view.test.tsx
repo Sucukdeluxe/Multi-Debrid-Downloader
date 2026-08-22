@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { defaultSettings } from "../src/main/constants";
 import { createRendererSettings, createRendererState } from "../src/main/renderer-state";
-import { buildAccountAddFields, createAccountDialogState } from "../src/renderer/App";
+import { buildAccountAddFields, createAccountDialogState, createSettingsDraft } from "../src/renderer/App";
 import { buildAccountReplaceCommand, createAccountEditState, type AccountEditTarget } from "../src/renderer/account-edit";
 import {
   buildScopedAccountEnabledState,
@@ -23,6 +23,7 @@ import {
   filterAccountAddOptions,
   getSettingsSaveLabel,
   getSettingsSelectNavigationIndex,
+  normalizeNotificationNumberField,
   projectAccountRows,
   pruneAccountSelection,
   reconcileAccountAddDraft,
@@ -577,6 +578,108 @@ describe("settings views", () => {
       label: "Animationen",
       value: true
     });
+  });
+
+  it("projects every notification control in the required order with exact bounds", () => {
+    const form = buildSettingsFormViewModel({
+      settings: {
+        ...createRendererSettings(defaultSettings()),
+        archivePasswordList: "",
+        notifyUrl: "https://discord.com/api/webhooks/example",
+        notifyOnPackageCompleted: true,
+        notifyOnRemainingBelow: true,
+        notifyOnDownloadStall: true
+      },
+      section: "allgemein",
+      speedLimitInput: "0",
+      scheduleSpeedInputs: {}
+    });
+    const fields = form.groups.find((group) => group.id === "general-notifications")?.fields ?? [];
+
+    expect(fields.map((field) => field.id)).toEqual([
+      "notifyUrl",
+      "notifyMention",
+      "notifyOnPackageCompleted",
+      "notifyOnPackageFailed",
+      "notifyPackageSuccessMode",
+      "notifyOnRunFinished",
+      "notifyOnRemainingBelow",
+      "notifyRemainingThresholdGb",
+      "notifyOnDownloadStall",
+      "notifyStallAfterSeconds",
+      "notifyStallCooldownMinutes",
+      "notifyOnDownloadRecovery"
+    ]);
+    expect(fields.find((field) => field.id === "notifyPackageSuccessMode")).toEqual({
+      id: "notifyPackageSuccessMode",
+      kind: "select",
+      label: "Erfolgsmeldungen senden",
+      value: "digest",
+      disabled: false,
+      options: [
+        { value: "digest", label: "Gesammelt (alle 2 Minuten)" },
+        { value: "individual", label: "Jedes Paket einzeln" }
+      ]
+    });
+    expect(fields.find((field) => field.id === "notifyRemainingThresholdGb")).toEqual({
+      id: "notifyRemainingThresholdGb",
+      kind: "number",
+      label: "Restmengenschwelle (GB)",
+      value: "50",
+      min: 1,
+      max: 100000,
+      disabled: false
+    });
+    expect(fields.find((field) => field.id === "notifyStallAfterSeconds")).toEqual({
+      id: "notifyStallAfterSeconds",
+      kind: "number",
+      label: "Stillstand bestätigen nach (Sek.)",
+      value: "90",
+      min: 60,
+      max: 3600,
+      disabled: false
+    });
+    expect(fields.find((field) => field.id === "notifyStallCooldownMinutes")).toEqual({
+      id: "notifyStallCooldownMinutes",
+      kind: "number",
+      label: "Frühestens erneut melden nach (Min.)",
+      value: "10",
+      min: 5,
+      max: 1440,
+      disabled: false
+    });
+  });
+
+  it("disables notification controls that depend on an inactive switch", () => {
+    const form = buildSettingsFormViewModel({
+      settings: { ...createRendererSettings(defaultSettings()), archivePasswordList: "", notifyUrl: "" },
+      section: "allgemein",
+      speedLimitInput: "0",
+      scheduleSpeedInputs: {}
+    });
+    const fields = form.groups.find((group) => group.id === "general-notifications")?.fields ?? [];
+    const disabled = Object.fromEntries(fields.map((field) => [field.id, Boolean(field.disabled)]));
+
+    expect(disabled).toMatchObject({
+      notifyPackageSuccessMode: true,
+      notifyRemainingThresholdGb: true,
+      notifyStallAfterSeconds: true,
+      notifyStallCooldownMinutes: true,
+      notifyOnDownloadRecovery: true
+    });
+  });
+
+  it("clamps notification number fields and restores their exact defaults", () => {
+    expect(normalizeNotificationNumberField("notifyRemainingThresholdGb", "0")).toBe(1);
+    expect(normalizeNotificationNumberField("notifyRemainingThresholdGb", "100001")).toBe(100000);
+    expect(normalizeNotificationNumberField("notifyRemainingThresholdGb", "invalid")).toBe(50);
+    expect(normalizeNotificationNumberField("notifyStallAfterSeconds", "59")).toBe(60);
+    expect(normalizeNotificationNumberField("notifyStallAfterSeconds", "3601")).toBe(3600);
+    expect(normalizeNotificationNumberField("notifyStallAfterSeconds", "invalid")).toBe(90);
+    expect(normalizeNotificationNumberField("notifyStallCooldownMinutes", "4")).toBe(5);
+    expect(normalizeNotificationNumberField("notifyStallCooldownMinutes", "1441")).toBe(1440);
+    expect(normalizeNotificationNumberField("notifyStallCooldownMinutes", "invalid")).toBe(10);
+    expect(normalizeNotificationNumberField("maxParallel", "8")).toBeUndefined();
   });
 
   it("supports keyboard navigation in animated settings selects", () => {
@@ -1165,6 +1268,15 @@ describe("account workspace", () => {
 });
 
 describe("settings App integration", () => {
+  it("preserves the write-only webhook during live snapshots and clears it for backup reseeding", () => {
+    const safe = createRendererSettings({ ...defaultSettings(), notifyUrl: "https://private.example.test/hook" });
+    const current = { ...safe, archivePasswordList: "loaded-password", notifyUrl: "https://private.example.test/hook" };
+
+    expect(createSettingsDraft(safe, current).notifyUrl).toBe("https://private.example.test/hook");
+    expect(createSettingsDraft(safe).notifyUrl).toBe("");
+    expect(appSource).toContain("applyPersistedSettings(fresh.settings, false)");
+  });
+
   it("loads and preserves the stored archive password list in the extraction section", () => {
     const revealBlock = sourceBlock(appSource, "const showToast", "const clearImportQueueFocusListener");
     const applyBlock = sourceBlock(appSource, "const applyPersistedSettings", "const syncLiveProviderUsageSettings");

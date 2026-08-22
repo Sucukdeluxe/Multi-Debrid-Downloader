@@ -16,6 +16,22 @@ describe("renderer localization", () => {
     expect(translateUiText("Animations", "de")).toBe("Animationen");
   });
 
+  it.each([
+    ["Erfolgsmeldungen senden", "Send success notifications"],
+    ["Gesammelt (alle 2 Minuten)", "Grouped (every 2 minutes)"],
+    ["Jedes Paket einzeln", "Each package individually"],
+    ["Melden, wenn der gesamte Lauf fertig ist", "Notify when the entire run completes"],
+    ["Melden, wenn die Restmenge unterschritten wird", "Notify when the remaining amount falls below the threshold"],
+    ["Restmengenschwelle (GB)", "Remaining amount threshold (GB)"],
+    ["Melden, wenn Downloads stillstehen", "Notify when downloads stall"],
+    ["Stillstand bestätigen nach (Sek.)", "Confirm stall after (sec.)"],
+    ["Frühestens erneut melden nach (Min.)", "Notify again after at least (min.)"],
+    ["Melden, wenn Downloads wieder laufen", "Notify when downloads resume"]
+  ])("translates notification center setting %s in both directions", (german, english) => {
+    expect(translateUiText(german, "en")).toBe(english);
+    expect(translateUiText(english, "de")).toBe(german);
+  });
+
   it("translates dynamic update and pagination text", () => {
     expect(translateUiText("v2.0.14 ist verfügbar. Installierte Version: 2.0.13.", "en"))
       .toBe("v2.0.14 is available. Installed version: 2.0.13.");

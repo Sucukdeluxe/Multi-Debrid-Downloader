@@ -120,6 +120,7 @@ import {
   buildTargetedAccountCheck,
   projectAccountRows,
   resolveHistoryRetentionSelection,
+  normalizeNotificationNumberField,
   sortAccountRows,
   formatAccountContextHeading,
   type AccountAddOption,
@@ -279,7 +280,7 @@ interface RendererSettingsDraft extends RendererSettings {
   notifyUrl: string;
 }
 
-function createSettingsDraft(settings: RendererSettings, current?: RendererSettingsDraft): RendererSettingsDraft {
+export function createSettingsDraft(settings: RendererSettings, current?: RendererSettingsDraft): RendererSettingsDraft {
   return {
     ...settings,
     archivePasswordList: current?.archivePasswordList || "",
@@ -5309,6 +5310,11 @@ export function App(): ReactElement {
       }
       if (typeof value === "boolean") {
         setBool(fieldId as keyof RendererSettingsDraft, value);
+        return;
+      }
+      const notificationNumber = normalizeNotificationNumberField(fieldId, value);
+      if (notificationNumber !== undefined) {
+        setNum(fieldId as keyof RendererSettingsDraft, notificationNumber);
         return;
       }
       const numericLimits: Partial<Record<keyof RendererSettingsDraft, [number, number, number]>> = {
