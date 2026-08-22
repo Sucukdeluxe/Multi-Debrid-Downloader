@@ -172,6 +172,8 @@ describe("renderer localization", () => {
     ["Tonspur: 2 OK · 1 ohne DE-Tag · ffmpeg fehlt · 3 Fehler", "Audio track: 2 OK · 1 without DE tag · ffmpeg missing · 3 errors"],
     ["4/8 fertig · 2 Fehler", "4/8 completed · 2 errors"],
     ["7 Entpackfehler · 1 Wiederholung", "7 extraction errors · 1 retry"],
+    ["Link-Umwandlung erneut", "Retrying link conversion"],
+    ["7 Entpackfehler · Link-Umwandlung erneut", "7 extraction errors · Retrying link conversion"],
     ["Download fertig · 1 Entpackfehler", "Download complete · 1 extraction error"],
     ["Jetzt entpacken (2)", "Extract now (2)"],
     ["1 Entpackfehler", "1 extraction error"],

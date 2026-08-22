@@ -388,6 +388,43 @@ function getPostExtractTimeoutMs(): number {
   return DEFAULT_POST_EXTRACT_TIMEOUT_MS;
 }
 
+export function formatExtractionProgressLabels(progress: Pick<ExtractProgressUpdate,
+  "current" | "total" | "percent" | "archiveName" | "archivePercent" | "elapsedMs"
+  | "passwordAttempt" | "passwordTotal" | "passwordFound" | "archiveDone"
+>): { itemLabel: string; packageLabel: string } {
+  const archivePercent = Math.max(0, Math.min(100, Math.floor(Number(progress.archivePercent ?? 0))));
+  const overallPercent = Math.max(0, Math.min(100, Math.floor(Number(progress.percent ?? 0))));
+  const total = Math.max(1, Math.floor(Number(progress.total) || 1));
+  const current = Math.max(0, Math.min(total, Math.floor(Number(progress.current) || 0)));
+  const archive = progress.archiveName ? ` · ${progress.archiveName}` : "";
+  const elapsed = progress.elapsedMs && progress.elapsedMs >= 1000
+    ? ` · ${Math.floor(progress.elapsedMs / 1000)}s`
+    : "";
+  if (progress.passwordFound) {
+    return {
+      itemLabel: `Passwort gefunden${archive}`,
+      packageLabel: "Passwort gefunden"
+    };
+  }
+  if (progress.passwordAttempt && progress.passwordTotal && progress.passwordTotal > 1) {
+    const passwordPercent = Math.round((progress.passwordAttempt / progress.passwordTotal) * 100);
+    return {
+      itemLabel: `Passwort knacken: ${passwordPercent}% (${progress.passwordAttempt}/${progress.passwordTotal})${archive}`,
+      packageLabel: `Passwort knacken: ${passwordPercent}% (${progress.passwordAttempt}/${progress.passwordTotal})`
+    };
+  }
+  if (archivePercent >= 99 && progress.archiveDone !== true) {
+    return {
+      itemLabel: `Finalisieren - ${archivePercent}%${archive}${elapsed}`,
+      packageLabel: `Finalisieren - ${overallPercent}% (${current}/${total})${archive}${elapsed}`
+    };
+  }
+  return {
+    itemLabel: `Entpacken ${archivePercent}%${archive}${elapsed}`,
+    packageLabel: `Entpacken ${overallPercent}% (${current}/${total})${archive}${elapsed}`
+  };
+}
+
 function getUnrestrictTimeoutMs(): number {
   const fromEnv = Number(process.env.RD_UNRESTRICT_TIMEOUT_MS ?? NaN);
   if (Number.isFinite(fromEnv) && fromEnv >= 5000 && fromEnv <= 15 * 60 * 1000) {
@@ -3024,8 +3061,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   private abortPackagePostProcessing(packageId: string, reason: string, invalidateDeferred = true): Promise<void>[] {
-    const tasks: Promise<void>[] = [];
-    void this.extractionCoordinator.cancelPackage(packageId, reason);
+    const tasks: Promise<void>[] = [this.extractionCoordinator.cancelPackage(packageId, reason)];
     if (invalidateDeferred) {
       this.bumpPackagePostProcessVersion(packageId);
     }
@@ -6849,7 +6885,6 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    this.triggerPendingExtractions();
     const runItems = Object.values(this.session.items)
       .filter((item) => {
         if (!targetSet.has(item.packageId)) return false;
@@ -6858,6 +6893,7 @@ export class DownloadManager extends EventEmitter {
         return Boolean(pkg && !pkg.cancelled && pkg.enabled);
       });
     if (runItems.length === 0) {
+      this.triggerPendingExtractions();
       this.lifecyclePhase = "idle";
       this.lifecycleReason = "Bereit";
       this.persistSoon();
@@ -6881,6 +6917,7 @@ export class DownloadManager extends EventEmitter {
     this.lifecycleReason = "Downloads laufen";
     this.session.runStartedAt = nowMs();
     this.beginActiveRunContext(this.runPackageIds, this.session.runStartedAt);
+    this.triggerPendingExtractions();
     this.session.totalDownloadedBytes = 0;
     this.sessionCompletedFiles = 0;
     this.session.summaryText = "";
@@ -6963,7 +7000,6 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    this.triggerPendingExtractions();
     const runItems = [...targetSet]
       .map((id) => this.session.items[id])
       .filter((item) => {
@@ -6973,6 +7009,7 @@ export class DownloadManager extends EventEmitter {
         return Boolean(pkg && !pkg.cancelled && pkg.enabled);
       });
     if (runItems.length === 0) {
+      this.triggerPendingExtractions();
       this.lifecyclePhase = "idle";
       this.lifecycleReason = "Bereit";
       this.persistSoon();
@@ -6996,6 +7033,7 @@ export class DownloadManager extends EventEmitter {
     this.lifecycleReason = "Downloads laufen";
     this.session.runStartedAt = nowMs();
     this.beginActiveRunContext(this.runPackageIds, this.session.runStartedAt);
+    this.triggerPendingExtractions();
     this.session.totalDownloadedBytes = 0;
     this.sessionCompletedFiles = 0;
     this.session.summaryText = "";
@@ -7189,6 +7227,7 @@ export class DownloadManager extends EventEmitter {
 
   public stop(options?: { parkForRestart?: boolean }): void {
     const parkForRestart = options?.parkForRestart === true;
+    const previousLifecyclePhase = this.lifecyclePhase;
     const wasStopping = this.lifecyclePhase === "stopping";
     this.lifecycleGeneration += 1;
     this.lifecyclePhase = "stopping";
@@ -7200,31 +7239,60 @@ export class DownloadManager extends EventEmitter {
     this.healthShuttingDown = parkForRestart;
     const abortReason: "stop" | "shutdown" = parkForRestart ? "shutdown" : "stop";
     const wasRunning = this.session.running;
+    const stoppedItemIds = new Set(this.runItemIds);
+    const stoppedPackageIds = new Set(this.runPackageIds);
+    const hasScopedRun = wasRunning && stoppedItemIds.size > 0;
+    const stopsStandalonePostProcessing = wasRunning && !hasScopedRun && previousLifecyclePhase === "postprocessing";
     const stoppedRunContext = wasRunning
       ? this.stopActiveRunContext(this.runPackageIds, this.session.runStartedAt)
       : null;
-    this.suppressStandalonePackageResults();
+    if (!stoppedRunContext || stopsStandalonePostProcessing) {
+      this.suppressStandalonePackageResults();
+    }
     this.schedulerGeneration += 1;
     this.session.running = false;
     this.session.paused = false;
     this.session.reconnectUntil = 0;
     this.session.reconnectReason = "";
-    this.retryAfterByItem.clear();
-    this.providerStartReservations.clear();
-    this.pacedStartReservationByItem.clear();
-    this.retryStateByItem.clear();
+    if (hasScopedRun) {
+      const paceKeys = new Set<string>();
+      for (const itemId of stoppedItemIds) {
+        const item = this.session.items[itemId];
+        const paceKey = item ? this.getPacedStartKeyForItem(item) : "";
+        if (paceKey) paceKeys.add(paceKey);
+        this.retryAfterByItem.delete(itemId);
+        this.pacedStartReservationByItem.delete(itemId);
+        this.retryStateByItem.delete(itemId);
+      }
+      for (const paceKey of paceKeys) {
+        if (this.countFuturePacedStarts(paceKey, nowMs()) <= 0) {
+          this.providerStartReservations.delete(paceKey);
+        }
+      }
+    } else {
+      this.retryAfterByItem.clear();
+      this.providerStartReservations.clear();
+      this.pacedStartReservationByItem.clear();
+      this.retryStateByItem.clear();
+    }
     this.lastGlobalProgressBytes = this.session.totalDownloadedBytes;
     this.lastGlobalProgressAt = nowMs();
     this.speedEvents = [];
     this.speedBytesLastWindow = 0;
     this.speedBytesPerPackage.clear();
     this.speedEventsHead = 0;
-    this.abortPostProcessing("stop", stoppedRunContext?.id);
+    this.abortPostProcessing("stop", stopsStandalonePostProcessing ? undefined : stoppedRunContext?.id);
     for (const active of this.activeTasks.values()) {
+      if (hasScopedRun && !stoppedItemIds.has(active.itemId)) {
+        continue;
+      }
       active.abortReason = abortReason;
       active.abortController.abort(abortReason);
     }
     for (const item of Object.values(this.session.items)) {
+      if (hasScopedRun && !stoppedItemIds.has(item.id)) {
+        continue;
+      }
       if (!isFinishedStatus(item.status)) {
         item.status = "queued";
         item.speedBps = 0;
@@ -7234,6 +7302,9 @@ export class DownloadManager extends EventEmitter {
       }
     }
     for (const pkg of Object.values(this.session.packages)) {
+      if (hasScopedRun && !stoppedPackageIds.has(pkg.id)) {
+        continue;
+      }
       if (pkg.status === "downloading" || pkg.status === "validating"
         || pkg.status === "extracting" || pkg.status === "integrity_check"
         || pkg.status === "paused" || pkg.status === "reconnect_wait") {
@@ -8418,6 +8489,14 @@ export class DownloadManager extends EventEmitter {
     }
 
     if (changed > 0) {
+      if (this.session.running) {
+        for (const { item } of corruptArchiveItems) {
+          this.runItemIds.add(item.id);
+          this.runOutcomes.delete(item.id);
+        }
+        this.runPackageIds.add(pkg.id);
+        this.trackActiveRunPackage(pkg.id);
+      }
       this.clearHybridArchiveState(pkg.id);
       pkg.status = (pkg.enabled && this.session.running && !this.session.paused) ? "downloading" : "queued";
       pkg.updatedAt = queuedAt;
@@ -9153,55 +9232,51 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
-  public retryExtraction(packageId: string): void {
-    const pkg = this.session.packages[packageId];
-    if (!pkg) return;
-    if (this.packagePostProcessTasks.has(packageId)) return;
-    this.clearHybridArchiveState(packageId);
-    const items = pkg.itemIds.map((id) => this.session.items[id]).filter(Boolean) as DownloadItem[];
-    const completedItems = items.filter((item) => item.status === "completed");
-    const targetItems = completedItems.filter((item) => !isExtractedLabel(item.fullStatus));
-    if (targetItems.length === 0) return;
-    pkg.status = "queued";
-    pkg.updatedAt = nowMs();
-    for (const item of targetItems) {
-      if (!isExtractedLabel(item.fullStatus)) {
-        item.fullStatus = "Entpacken - Ausstehend";
-        item.updatedAt = nowMs();
-      }
+  public async retryExtraction(packageId: string): Promise<void> {
+    if (!(await this.armExtractNowPackage(packageId))) {
+      throw new Error("Kein entpackbarer Archivsatz ausgewählt");
     }
-    logger.info(`Extraktion manuell wiederholt: pkg=${pkg.name}`);
-    this.logPackageForPackage(pkg, "INFO", "Extraktion manuell wiederholt", {
-      completedItems: completedItems.length,
-      targetedItems: targetItems.length
-    });
-    this.beginPackageResultGeneration(packageId, false, true);
-    this.reactivateStandalonePackageResult(packageId);
-    this.manualExtractPackages.add(packageId);
-    this.persistSoon();
-    this.emitState(true);
-    void this.runPackagePostProcessing(packageId).catch((err) => logger.warn(`runPackagePostProcessing Fehler (retryExtraction): ${compactErrorText(err)}`));
   }
 
-  private armExtractNowPackage(
+  private async armExtractNowPackage(
     packageId: string,
     selectedItemIds?: ReadonlySet<string>,
     archiveFilter?: ReadonlySet<string>
-  ): boolean {
-    const pkg = this.session.packages[packageId];
+  ): Promise<boolean> {
+    let pkg = this.session.packages[packageId];
     if (!pkg || pkg.cancelled) return false;
-    if (this.packagePostProcessTasks.has(packageId)) return false;
-    this.clearHybridArchiveState(packageId);
-    if (!pkg.enabled) {
-      pkg.enabled = true;
-    }
-    const items = pkg.itemIds.map((id) => this.session.items[id]).filter(Boolean) as DownloadItem[];
-    const completedItems = items.filter((item) => item.status === "completed");
-    const targetItems = completedItems.filter((item) => !isExtractedLabel(item.fullStatus) && (!selectedItemIds || selectedItemIds.has(item.id)));
+    let items = pkg.itemIds.map((id) => this.session.items[id]).filter(Boolean) as DownloadItem[];
+    let completedItems = items.filter((item) => item.status === "completed");
+    let targetItems = completedItems.filter((item) => !isExtractedLabel(item.fullStatus) && (!selectedItemIds || selectedItemIds.has(item.id)));
     if (targetItems.length === 0) {
       this.manualExtractArchiveFilters.delete(packageId);
       this.manualExtractPackages.delete(packageId);
       return false;
+    }
+    const initialTargetIds = new Set(targetItems.map((item) => item.id));
+    if (this.packagePostProcessTasks.has(packageId) || this.hasDeferredPostProcessPending(packageId)) {
+      pkg.postProcessLabel = "Entpacken wird neu gestartet...";
+      pkg.updatedAt = nowMs();
+      this.emitState(true);
+      await Promise.allSettled(this.abortPackagePostProcessing(packageId, "manual_extract_restart"));
+      pkg = this.session.packages[packageId];
+      if (!pkg || pkg.cancelled) return false;
+      items = pkg.itemIds.map((id) => this.session.items[id]).filter(Boolean) as DownloadItem[];
+      completedItems = items.filter((item) => item.status === "completed");
+      targetItems = completedItems.filter((item) => !isExtractedLabel(item.fullStatus) && (!selectedItemIds || selectedItemIds.has(item.id)));
+      if (targetItems.length === 0) {
+        pkg.postProcessLabel = undefined;
+        pkg.updatedAt = nowMs();
+        this.emitState(true);
+        return [...initialTargetIds].every((itemId) => {
+          const item = this.session.items[itemId];
+          return Boolean(item && item.status === "completed" && isExtractedLabel(item.fullStatus));
+        });
+      }
+    }
+    this.clearHybridArchiveState(packageId);
+    if (!pkg.enabled) {
+      pkg.enabled = true;
     }
     if (archiveFilter) this.manualExtractArchiveFilters.set(packageId, new Set(archiveFilter));
     else this.manualExtractArchiveFilters.delete(packageId);
@@ -9225,8 +9300,9 @@ export class DownloadManager extends EventEmitter {
     return true;
   }
 
-  private async extractNowItems(itemIds: readonly string[], excludedPackageIds: ReadonlySet<string>): Promise<void> {
+  private async extractNowItems(itemIds: readonly string[], excludedPackageIds: ReadonlySet<string>): Promise<number> {
     const selectedByPackage = new Map<string, Set<string>>();
+    let armed = 0;
     for (const itemId of itemIds) {
       const item = this.session.items[itemId];
       if (!item || excludedPackageIds.has(item.packageId)) {
@@ -9238,7 +9314,7 @@ export class DownloadManager extends EventEmitter {
     }
     for (const [packageId, selectedItemIds] of selectedByPackage) {
       const pkg = this.session.packages[packageId];
-      if (!pkg || pkg.cancelled || this.packagePostProcessTasks.has(packageId)) {
+      if (!pkg || pkg.cancelled) {
         continue;
       }
       const completedItems = pkg.itemIds
@@ -9250,27 +9326,36 @@ export class DownloadManager extends EventEmitter {
         logger.warn(`Jetzt entpacken: Kein vollständiger Archivsatz für ${selectedItemIds.size} ausgewählte Datei(en) in pkg=${pkg.name}`);
         continue;
       }
-      this.armExtractNowPackage(
+      if (await this.armExtractNowPackage(
         packageId,
         selection.itemIds,
         new Set([...selection.archivePaths].map((archivePath) => pathKey(archivePath)))
-      );
+      )) {
+        armed += 1;
+      }
     }
+    return armed;
   }
 
-  public extractNow(target: string | ExtractNowRequest): void {
+  public async extractNow(target: string | ExtractNowRequest): Promise<void> {
     if (typeof target === "string") {
-      this.armExtractNowPackage(target);
+      if (!(await this.armExtractNowPackage(target))) {
+        throw new Error("Kein entpackbarer Archivsatz ausgewählt");
+      }
       return;
     }
     const packageIds = [...new Set(target.packageIds)];
     const packageSet = new Set(packageIds);
+    let armed = 0;
     for (const packageId of packageIds) {
-      this.armExtractNowPackage(packageId);
+      if (await this.armExtractNowPackage(packageId)) {
+        armed += 1;
+      }
     }
-    void this.extractNowItems(target.itemIds, packageSet).catch((error) => {
-      logger.warn(`Jetzt entpacken für Dateiauswahl fehlgeschlagen: ${compactErrorText(error)}`);
-    });
+    armed += await this.extractNowItems(target.itemIds, packageSet);
+    if (armed === 0) {
+      throw new Error("Kein vollständiger entpackbarer Archivsatz ausgewählt");
+    }
   }
 
   private notePackageDownloadStarted(pkg: PackageEntry, startedAt = nowMs()): void {
@@ -10254,6 +10339,7 @@ export class DownloadManager extends EventEmitter {
       if (normalCandidate && pkgPrio === "normal") continue;
 
       for (const itemId of pkg.itemIds) {
+        if (this.runItemIds.size > 0 && !this.runItemIds.has(itemId)) continue;
         const item = this.session.items[itemId];
         if (!item) continue;
         const retryAfter = this.retryAfterByItem.get(itemId) || 0;
@@ -10293,6 +10379,9 @@ export class DownloadManager extends EventEmitter {
       if (!pkg || pkg.cancelled || !pkg.enabled) continue;
       if (this.runPackageIds.size > 0 && !this.runPackageIds.has(packageId)) continue;
       for (const itemId of pkg.itemIds) {
+        if (this.runItemIds.size > 0 && !this.runItemIds.has(itemId)) {
+          continue;
+        }
         const item = this.session.items[itemId];
         if (!item) continue;
         if (item.status !== "queued" && item.status !== "reconnect_wait") continue;
@@ -10327,6 +10416,9 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
       for (const itemId of pkg.itemIds) {
+        if (this.runItemIds.size > 0 && !this.runItemIds.has(itemId)) {
+          continue;
+        }
         const item = this.session.items[itemId];
         if (!item) {
           continue;
@@ -13588,9 +13680,18 @@ export class DownloadManager extends EventEmitter {
     const alreadyTried = this.hybridExtractedPaths.get(packageId);
     if (alreadyTried) {
       for (const key of [...readyArchives]) {
-        if (alreadyTried.has(key)) {
-          readyArchives.delete(key);
+        if (!alreadyTried.has(key)) {
+          continue;
         }
+        const archiveItems = resolveArchiveItemsFromList(path.basename(key), completedItems, key);
+        if (archiveItems.length === 0 || archiveItems.every((item) => isExtractedLabel(item.fullStatus))) {
+          readyArchives.delete(key);
+        } else {
+          alreadyTried.delete(key);
+        }
+      }
+      if (alreadyTried.size === 0) {
+        this.hybridExtractedPaths.delete(packageId);
       }
     }
 
@@ -13668,6 +13769,7 @@ export class DownloadManager extends EventEmitter {
     const autoRecoveredArchives = new Set<string>();
     const failedArchiveErrors = new Map<string, string>();
     const failedArchiveCategories = new Map<string, string>();
+    const successfulArchiveKeys = new Set<string>();
     const hybridResolvedItems = new Map<string, DownloadItem[]>();
     const hybridStartTimes = new Map<string, number>();
     let hybridLastEmitAt = 0;
@@ -13783,6 +13885,7 @@ export class DownloadManager extends EventEmitter {
                 : formatExtractDone(doneAt - startedAt);
               const archiveKey = readyArchives.has(progressKey) ? progressKey : undefined;
               if (archiveKey && progress.archiveSuccess !== false) {
+                successfulArchiveKeys.add(archiveKey);
                 this.clearHybridArchiveState(packageId, archiveKey);
               }
               this.recordArchiveOperation(
@@ -13804,23 +13907,7 @@ export class DownloadManager extends EventEmitter {
                 this.emitState();
               }
             } else {
-              const archiveLabel = ` · ${progress.archiveName}`;
-              const elapsed = progress.elapsedMs && progress.elapsedMs >= 1000
-                ? ` · ${Math.floor(progress.elapsedMs / 1000)}s`
-                : "";
-              const archivePct = Math.max(0, Math.min(100, Math.floor(Number(progress.archivePercent ?? 0))));
-              const isFinalizing = archivePct >= 99;
-              let label: string;
-              if (progress.passwordFound) {
-                label = `Passwort gefunden · ${progress.archiveName}`;
-              } else if (progress.passwordAttempt && progress.passwordTotal && progress.passwordTotal > 1) {
-                const pwPct = Math.round((progress.passwordAttempt / progress.passwordTotal) * 100);
-                label = `Passwort knacken: ${pwPct}% (${progress.passwordAttempt}/${progress.passwordTotal}) · ${progress.archiveName}`;
-              } else if (isFinalizing) {
-                label = `Finalisieren${archiveLabel}${elapsed}`;
-              } else {
-                label = `Entpacken ${archivePct}%${archiveLabel}${elapsed}`;
-              }
+              const label = formatExtractionProgressLabels(progress).itemLabel;
               const updatedAt = nowMs();
               for (const entry of archItems) {
                 if (entry.status !== "completed" || isExtractedLabel(entry.fullStatus) || entry.fullStatus === label) continue;
@@ -13830,22 +13917,7 @@ export class DownloadManager extends EventEmitter {
             }
           }
 
-          const activeArchive = !archiveFinished && Number(progress.archivePercent ?? 0) > 0 ? 1 : 0;
-          const currentDisplay = Math.max(0, Math.min(progress.total, progress.current + activeArchive));
-          if (progress.passwordFound) {
-            pkg.postProcessLabel = "Passwort gefunden";
-          } else if (progress.passwordAttempt && progress.passwordTotal && progress.passwordTotal > 1) {
-            const pwPct = Math.round((progress.passwordAttempt / progress.passwordTotal) * 100);
-            pkg.postProcessLabel = `Passwort knacken: ${pwPct}%`;
-          } else if (Number(progress.archivePercent ?? 0) >= 99) {
-            const archive = progress.archiveName ? ` · ${progress.archiveName}` : "";
-            const elapsed = progress.elapsedMs && progress.elapsedMs >= 1000
-              ? ` · ${Math.floor(progress.elapsedMs / 1000)}s`
-              : "";
-            pkg.postProcessLabel = `Finalisieren (${currentDisplay}/${progress.total})${archive}${elapsed}`;
-          } else {
-            pkg.postProcessLabel = `Entpacken ${progress.percent}% (${currentDisplay}/${progress.total})`;
-          }
+          pkg.postProcessLabel = formatExtractionProgressLabels(progress).packageLabel;
 
           const now = nowMs();
           if (now - hybridLastEmitAt >= EXTRACT_PROGRESS_EMIT_INTERVAL_MS) {
@@ -13864,7 +13936,8 @@ export class DownloadManager extends EventEmitter {
       {
         let tried = this.hybridExtractedPaths.get(packageId);
         if (!tried) { tried = new Set(); this.hybridExtractedPaths.set(packageId, tried); }
-        for (const key of readyArchives) { tried.add(key); }
+        for (const key of successfulArchiveKeys) { tried.add(key); }
+        if (tried.size === 0) this.hybridExtractedPaths.delete(packageId);
       }
       if (failedArchiveErrors.size > 0) {
         let failed = this.hybridFailedArchives.get(packageId);
@@ -14119,7 +14192,7 @@ export class DownloadManager extends EventEmitter {
         );
       }
 
-    if (!allDone && this.settings.hybridExtract && shouldExtract && failed === 0 && success > 0) {
+    if (!manualExtraction && !allDone && this.settings.hybridExtract && shouldExtract && failed === 0 && success > 0) {
       pkg.postProcessLabel = "Entpacken vorbereiten...";
       this.emitState();
       const hybridExtracted = await this.runHybridExtraction(packageId, pkg, items, signal);
@@ -14147,7 +14220,7 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    if (!allDone) {
+    if (!manualExtraction && !allDone) {
       pkg.postProcessLabel = undefined;
       pkg.status = (pkg.enabled && this.session.running && !this.session.paused) ? "downloading" : "queued";
       logger.info(`Post-Processing verschoben: pkg=${pkg.name}, noch offene items`);
@@ -14180,7 +14253,7 @@ export class DownloadManager extends EventEmitter {
         }
         lastExtractEmitAt = now;
         pkg.postProcessLabel = text || "Entpacken...";
-        this.emitState();
+        this.emitState(force);
       };
 
       const extractTimeoutMs = getPostExtractTimeoutMs();
@@ -14362,23 +14435,7 @@ export class DownloadManager extends EventEmitter {
                   emitExtractStatus(`Entpacken (${done}/${progress.total}) - Nächstes Archiv...`, true);
                 }
               } else {
-                const archiveTag = progress.archiveName ? ` · ${progress.archiveName}` : "";
-                const elapsed = progress.elapsedMs && progress.elapsedMs >= 1000
-                  ? ` · ${Math.floor(progress.elapsedMs / 1000)}s`
-                  : "";
-                const archivePct = Math.max(0, Math.min(100, Math.floor(Number(progress.archivePercent ?? 0))));
-                const isFinalizing = archivePct >= 99;
-                let label: string;
-                if (progress.passwordFound) {
-                  label = `Passwort gefunden · ${progress.archiveName}`;
-                } else if (progress.passwordAttempt && progress.passwordTotal && progress.passwordTotal > 1) {
-                  const pwPct = Math.round((progress.passwordAttempt / progress.passwordTotal) * 100);
-                  label = `Passwort knacken: ${pwPct}% (${progress.passwordAttempt}/${progress.passwordTotal}) · ${progress.archiveName}`;
-                } else if (isFinalizing) {
-                  label = `Finalisieren${archiveTag}${elapsed}`;
-                } else {
-                  label = `Entpacken ${archivePct}%${archiveTag}${elapsed}`;
-                }
+                const label = formatExtractionProgressLabels(progress).itemLabel;
                 const updatedAt = nowMs();
                 for (const entry of archiveItems) {
                   if (entry.status !== "completed" || isExtractedLabel(entry.fullStatus) || entry.fullStatus === label) continue;
@@ -14388,24 +14445,7 @@ export class DownloadManager extends EventEmitter {
               }
             }
 
-            const archive = progress.archiveName ? ` · ${progress.archiveName}` : "";
-            const elapsed = progress.elapsedMs && progress.elapsedMs >= 1000
-              ? ` · ${Math.floor(progress.elapsedMs / 1000)}s`
-              : "";
-            const activeArchive = !archiveFinished && Number(progress.archivePercent ?? 0) > 0 ? 1 : 0;
-            const currentDisplay = Math.max(0, Math.min(progress.total, progress.current + activeArchive));
-            let overallLabel: string;
-            if (progress.passwordFound) {
-              overallLabel = `Passwort gefunden · ${progress.archiveName || ""}`;
-            } else if (progress.passwordAttempt && progress.passwordTotal && progress.passwordTotal > 1) {
-              const pwPct = Math.round((progress.passwordAttempt / progress.passwordTotal) * 100);
-              overallLabel = `Passwort knacken: ${pwPct}% (${progress.passwordAttempt}/${progress.passwordTotal}) · ${progress.archiveName || ""}`;
-            } else if (Number(progress.archivePercent ?? 0) >= 99) {
-              overallLabel = `Finalisieren (${currentDisplay}/${progress.total})${archive}${elapsed}`;
-            } else {
-              overallLabel = `Entpacken ${progress.percent}% (${currentDisplay}/${progress.total})${archive}${elapsed}`;
-            }
-            emitExtractStatus(overallLabel);
+            emitExtractStatus(formatExtractionProgressLabels(progress).packageLabel);
           }
           }));
         } catch (error) {
@@ -14490,7 +14530,14 @@ export class DownloadManager extends EventEmitter {
               entry.updatedAt = finalAt;
             }
           }
-          if (manualArchiveFilter) {
+          if (manualExtraction && !allDone) {
+            const hasRemainingExtractError = completedItems.some((entry) => isExtractErrorLabel(entry.fullStatus || ""));
+            pkg.status = hasRemainingExtractError
+              ? "failed"
+              : this.session.paused
+                ? "paused"
+                : (pkg.enabled && this.session.running ? "downloading" : "queued");
+          } else if (manualArchiveFilter) {
             const hasRemainingExtractError = completedItems.some((entry) => isExtractErrorLabel(entry.fullStatus || ""));
             const hasRemainingExtractWork = completedItems.some((entry) => !isExtractedLabel(entry.fullStatus || "") && /^Entpack/i.test(entry.fullStatus || ""));
             pkg.status = hasRemainingExtractError ? "failed" : hasRemainingExtractWork ? "queued" : "completed";

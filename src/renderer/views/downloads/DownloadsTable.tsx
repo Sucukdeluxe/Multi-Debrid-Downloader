@@ -175,6 +175,8 @@ export function compactDownloadStatus(value: string): string {
   if (extractingEnglish) return `Extracting - ${extractingEnglish[1]}%`;
   const finalizing = status.match(/^(Finalisieren|Finalizing)\b/i);
   if (finalizing) {
+    const percentage = status.match(/-\s*(-?\d+(?:\.\d+)?)%/);
+    if (percentage) return `${finalizing[1]} - ${progress(Number(percentage[1]))}%`;
     const fraction = status.match(/\(([^)]*)\)/);
     if (fraction) {
       const values = fraction[1].split("/");
@@ -184,8 +186,6 @@ export function compactDownloadStatus(value: string): string {
       if (Number.isFinite(current) && Number.isFinite(total) && total > 0) return `${finalizing[1]} - ${progress((current / total) * 100)}%`;
       return finalizing[1];
     }
-    const percentage = status.match(/-\s*(-?\d+(?:\.\d+)?)%/);
-    if (percentage) return `${finalizing[1]} - ${progress(Number(percentage[1]))}%`;
     return finalizing[1];
   }
   return status;
@@ -205,7 +205,7 @@ function DownloadMeter({ value, text }: { value: number; text: string }): ReactE
 
 function DownloadStatusCell({ status, title }: { status: string; title?: string }): ReactElement {
   const visibleStatus = compactDownloadStatus(status);
-  const statusTitle = /^(Finalisieren|Finalizing)\b/i.test(status) ? visibleStatus : title || status;
+  const statusTitle = title || status;
   return (
     <span aria-label={visibleStatus} className="downloads-cell downloads-status-cell" title={statusTitle}>
       <span aria-hidden="true" className="downloads-status-full">{visibleStatus}</span>
@@ -392,7 +392,8 @@ function packageCell(row: DownloadPackageRow, column: string, packageSpeedBps: n
     const postProcessLabel = entry.status === "extracting" && compactPostProcessLabel === rawPostProcessLabel && /(?:^|[\\/])[^\\/]+\.(?:rar|zip|7z|tar|gz|bz2|xz)(?:\.\d+)?$/i.test(rawPostProcessLabel)
       ? "Entpacken - Ausstehend"
       : compactPostProcessLabel;
-    const details = `${presentation.details}${postProcessLabel ? ` · ${postProcessLabel}` : ""}${audio ? ` · ${audio.text}` : ""}`;
+    const detailPostProcessLabel = rawPostProcessLabel || postProcessLabel;
+    const details = `${presentation.details}${detailPostProcessLabel ? ` · ${detailPostProcessLabel}` : ""}${audio ? ` · ${audio.text}` : ""}`;
     const status = presentation.extractFailureCount === 0
       && presentation.retryCount === 0
       && postProcessLabel

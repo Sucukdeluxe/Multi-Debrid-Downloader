@@ -175,6 +175,7 @@ const pairs = [
   ["Token neu (Code ungueltig machen)", "New token (invalidate code)"], ["Enthaelt das Zugriffstoken - wie ein Passwort behandeln. Token neu = alter Code wird sofort ungueltig.", "Contains the access token - treat it like a password. New token = old code becomes invalid immediately."],
   ["Möchtest Du wirklich diese Aufräumaktion(en) durchführen?", "Do you really want to perform these cleanup action(s)?"], ["Ausgewählte Links löschen", "Delete selected links"], ["Nicht mehr anzeigen", "Do not show again"],
   ["Paket bereits entpackt", "Package already extracted"], ["ist im Ziel bereits vorhanden.", "already exists at the destination."], ["Für alle weiteren Pakete dieselbe Auswahl verwenden", "Use the same selection for all remaining packages"],
+  ["Link-Umwandlung erneut", "Retrying link conversion"],
   ["Entpacktes überspringen", "Skip extracted content"], ["Links, .dlc oder Export-Dateien hier ablegen", "Drop links, .dlc or export files here"], ["Account prüfen", "Check account"],
   ["Account aktivieren", "Enable account"], ["Account deaktivieren", "Disable account"], ["Ausgewählte Downloads starten", "Start selected downloads"], ["Alle Downloads starten", "Start all downloads"],
   ["Linkadressen anzeigen", "Show link addresses"], ["Paket exportieren", "Export package"], ["Log öffnen", "Open log"], ["Item-Log öffnen", "Open item log"], ["Jetzt entpacken", "Extract now"],
@@ -227,6 +228,8 @@ function translatePackageStatusParts(value: string, language: AppLanguage): stri
   if (parts.length < 2) return null;
   const translated = parts.map((part): string | null => {
     if (language === "en") {
+      const exact = deToEn.get(part);
+      if (exact) return exact;
       const extractionError = part.match(/^(\d+) Entpackfehler$/);
       if (extractionError) return `${extractionError[1]} extraction error${extractionError[1] === "1" ? "" : "s"}`;
       const retry = part.match(/^(\d+) Wiederholung(?:en)?$/);
@@ -237,6 +240,8 @@ function translatePackageStatusParts(value: string, language: AppLanguage): stri
       if (cancelled) return `${cancelled[1]} cancelled`;
       return null;
     }
+    const exact = enToDe.get(part);
+    if (exact) return exact;
     const extractionError = part.match(/^(\d+) extraction errors?$/);
     if (extractionError) return `${extractionError[1]} Entpackfehler`;
     const retry = part.match(/^(\d+) retr(?:y|ies)$/);

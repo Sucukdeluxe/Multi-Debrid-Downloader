@@ -21,7 +21,7 @@ export interface PackagePresentation {
 }
 
 function extractionPercent(fullStatus: string): number {
-  const match = fullStatus.match(/^Entpacken\s+(\d+)%/i);
+  const match = fullStatus.match(/^(?:Entpacken\s+|Finalisieren\s*-\s*)(\d+)%/i);
   return match ? Math.max(0, Math.min(100, Number(match[1]))) / 100 : 0;
 }
 
@@ -30,7 +30,7 @@ function isExtractFailure(fullStatus: string): boolean {
 }
 
 function isExtractionLifecycle(fullStatus: string): boolean {
-  return /^(?:Entpack|Passwort)/i.test(fullStatus);
+  return /^(?:Entpack|Passwort|Finalisieren)/i.test(fullStatus);
 }
 
 function isArchiveItem(item: DownloadItem): boolean {
@@ -40,6 +40,10 @@ function isArchiveItem(item: DownloadItem): boolean {
 function isRetrying(item: DownloadItem): boolean {
   return /(?:Link-Umwandlung erneut|Wiederholung|Retry|erneut)/i.test(item.fullStatus || "")
     || (item.retries > 0 && (item.status === "queued" || item.status === "validating" || item.status === "reconnect_wait"));
+}
+
+function isLinkConversionRetry(item: DownloadItem): boolean {
+  return /(?:Link-Umwandlung erneut|Retrying link conversion)/i.test(item.fullStatus || "");
 }
 
 function downloadFraction(item: DownloadItem): number {
@@ -65,6 +69,7 @@ export function buildPackagePresentation(row: DownloadPackageRow): PackagePresen
     || (row.allItems.some(isArchiveItem) && !row.allItems.every((item) => /^Fertig\b/i.test(item.fullStatus || "")));
   let extracting = 0;
   let retrying = 0;
+  let linkConversionRetrying = 0;
   let waitsForDisk = 0;
   const extractFailures: DownloadItem[] = [];
 
@@ -79,7 +84,7 @@ export function buildPackagePresentation(row: DownloadPackageRow): PackagePresen
       extractionLifecycle = true;
     } else {
       const progress = extractionPercent(fullStatus);
-      if (progress > 0 || /^Entpacken\b/i.test(fullStatus)) {
+      if (progress > 0 || /^(?:Entpacken|Finalisieren)\b/i.test(fullStatus)) {
         extracting += 1;
         extractionUnits += progress;
       }
@@ -90,7 +95,10 @@ export function buildPackagePresentation(row: DownloadPackageRow): PackagePresen
         extractionLifecycle = true;
       }
     }
-    if (isRetrying(item)) retrying += 1;
+    if (isRetrying(item)) {
+      retrying += 1;
+      if (isLinkConversionRetry(item)) linkConversionRetrying += 1;
+    }
     if (/Warte auf Festplatte/i.test(fullStatus)) waitsForDisk += 1;
   }
 
@@ -101,8 +109,11 @@ export function buildPackagePresentation(row: DownloadPackageRow): PackagePresen
   const value = allExtracted ? 100 : Math.min(extractionLifecycle ? 99 : 100, downloadValue + extractionValue);
 
   const parts: string[] = [];
+  const retryLabel = linkConversionRetrying > 0
+    ? "Link-Umwandlung erneut"
+    : `${retrying} Wiederholung${retrying === 1 ? "" : "en"}`;
   if (extractFailures.length > 0) parts.push(`${extractFailures.length} Entpackfehler`);
-  if (retrying > 0) parts.push(`${retrying} Wiederholung${retrying === 1 ? "" : "en"}`);
+  if (retrying > 0) parts.push(retryLabel);
   if (failed > 0) parts.push(`${failed} Fehler`);
   if (cancelled > 0) parts.push(`${cancelled} abgebrochen`);
   const details = parts.length > 0 ? parts.join(" · ") : done >= total ? "Fertig" : `${done}/${total} fertig`;
@@ -114,7 +125,7 @@ export function buildPackagePresentation(row: DownloadPackageRow): PackagePresen
 
   let status = allExtracted ? "Entpackt" : details;
   if (extractFailures.length > 0 && retrying > 0) {
-    status = `${extractFailures.length} Entpackfehler · ${retrying} Wiederholung${retrying === 1 ? "" : "en"}`;
+    status = `${extractFailures.length} Entpackfehler · ${retryLabel}`;
   } else if (extractFailures.length > 0) {
     status = downloadsComplete ? `Download fertig · ${extractFailures.length} Entpackfehler` : `${extractFailures.length} Entpackfehler`;
   } else if (waitsForDisk > 0) {
@@ -122,7 +133,7 @@ export function buildPackagePresentation(row: DownloadPackageRow): PackagePresen
   } else if (extracting > 0 || row.package.status === "extracting") {
     status = packageExtractLabel || "Entpacken";
   } else if (retrying > 0) {
-    status = `${retrying} Wiederholung${retrying === 1 ? "" : "en"}`;
+    status = retryLabel;
   } else if (downloading) {
     status = "Download läuft";
   }

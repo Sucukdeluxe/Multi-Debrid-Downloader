@@ -1691,7 +1691,7 @@ describe("download table row contracts", () => {
     ["package", "Finalizing - 50% * release.part1.rar", "Finalizing - 50%"],
     ["item", "Finalizing (3/4) · release.part1.rar", "Finalizing - 75%"],
     ["item", "Finalisieren - 50% * release.part1.rar", "Finalisieren - 50%"]
-  ])("shows %s finalization status without archive details", (target, rawStatus, expectedStatus) => {
+  ])("shows compact %s finalization text while retaining archive details in the tooltip", (target, rawStatus, expectedStatus) => {
     const html = target === "package"
       ? renderToStaticMarkup(PackageCardContent({
         actions: createActions(),
@@ -1720,10 +1720,11 @@ describe("download table row contracts", () => {
     expect(html).toContain(`aria-label="${expectedStatus}"`);
     expect(html.match(new RegExp(`>${expectedStatus}</span>`, "g"))).toHaveLength(2);
     expect(html).not.toContain(">release.part1.rar</span>");
-    if (target === "item") expect(html).not.toMatch(/title="[^"]*release\.part1\.rar/);
+    expect(html).toMatch(/title="[^"]*release\.part1\.rar/);
   });
 
   it.each([
+    ["Finalisieren - 99% (0/1) · release.part1.rar", "Finalisieren - 99%"],
     ["Finalisieren (3/2) · release.part1.rar", "Finalisieren - 100%"],
     ["Finalizing (-1/2) · release.part1.rar", "Finalizing - 0%"],
     ["Finalisieren (/2) · release.part1.rar", "Finalisieren"],
@@ -2210,7 +2211,7 @@ describe("download table row contracts", () => {
       selectedVersion: 0
     }));
 
-    expect(html).toMatch(/title="0\/1 fertig · Entpacken - 1% · Tonspur: 1 OK[^\"]*episode\.mkv: remuxed \(German kept\)"/s);
+    expect(html).toMatch(/title="0\/1 fertig · Entpacken 1% · Tonspur: 1 OK[^\"]*episode\.mkv: remuxed \(German kept\)"/s);
   });
 
   it("shows only a compact extraction error while retaining diagnostics in the tooltip", () => {

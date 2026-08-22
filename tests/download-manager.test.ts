@@ -63,6 +63,95 @@ describe("runWithLimitedConcurrency", () => {
   });
 });
 
+describe("selected item run scope", () => {
+  function createSelectedItemManager(root: string): { manager: DownloadManager; packageId: string; itemIds: string[] } {
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        autoExtract: true,
+        hybridExtract: true,
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract")
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+    manager.addPackages([{ name: "selected-items", links: ["https://dummy/first", "https://dummy/second"] }]);
+    const snapshot = manager.getSnapshot().session;
+    const packageId = snapshot.packageOrder[0];
+    return { manager, packageId, itemIds: snapshot.packages[packageId].itemIds };
+  }
+
+  it("creates the active run context before triggering pending hybrid extraction", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-selected-owner-"));
+    tempDirs.push(root);
+    const { manager, itemIds } = createSelectedItemManager(root);
+    const internal = manager as any;
+    const owners: Array<string | null> = [];
+    internal.ensureScheduler = async () => {};
+    internal.triggerPendingExtractions = () => owners.push(internal.activeRunContextId);
+
+    await internal.startItemsNow([itemIds[1]]);
+
+    expect(owners).toHaveLength(1);
+    expect(owners[0]).toBeTypeOf("string");
+    expect(owners[0]).toBe(internal.activeRunContextId);
+  });
+
+  it("never schedules an unselected queued sibling from the same package", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-selected-scope-"));
+    tempDirs.push(root);
+    const { manager, itemIds } = createSelectedItemManager(root);
+    const internal = manager as any;
+    internal.ensureScheduler = async () => {};
+    internal.triggerPendingExtractions = () => {};
+
+    await internal.startItemsNow([itemIds[0]]);
+    expect(internal.findNextQueuedItem()).toEqual(expect.objectContaining({ itemId: itemIds[0] }));
+    internal.session.items[itemIds[0]].status = "downloading";
+
+    expect(internal.findNextQueuedItem()).toBeNull();
+    expect(internal.getQueuePresence()).toEqual({ hasImmediate: false, hasDelayed: false });
+  });
+
+  it("stops only selected run items without erasing sibling wait state", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-selected-stop-"));
+    tempDirs.push(root);
+    const { manager, packageId, itemIds } = createSelectedItemManager(root);
+    const internal = manager as any;
+    internal.ensureScheduler = async () => {};
+    internal.triggerPendingExtractions = () => {};
+
+    await internal.startItemsNow([itemIds[0]]);
+    internal.session.items[itemIds[0]].status = "downloading";
+    internal.session.items[itemIds[0]].fullStatus = "Download läuft";
+    internal.session.items[itemIds[1]].status = "reconnect_wait";
+    internal.session.items[itemIds[1]].fullStatus = "Unselektierter Backoff";
+    internal.session.packages[packageId].status = "downloading";
+    internal.retryAfterByItem.set(itemIds[0], 100);
+    internal.retryAfterByItem.set(itemIds[1], 200);
+    internal.retryStateByItem.set(itemIds[0], { freshRetryUsed: true, resumeHardResetUsed: false });
+    internal.retryStateByItem.set(itemIds[1], { freshRetryUsed: false, resumeHardResetUsed: true });
+    internal.pacedStartReservationByItem.set(itemIds[0], 100);
+    internal.pacedStartReservationByItem.set(itemIds[1], 200);
+    internal.standalonePackageResults.add("foreign-package:1");
+
+    manager.stop();
+
+    expect(internal.session.items[itemIds[0]]).toEqual(expect.objectContaining({ status: "queued", fullStatus: "Wartet" }));
+    expect(internal.session.items[itemIds[1]]).toEqual(expect.objectContaining({ status: "reconnect_wait", fullStatus: "Unselektierter Backoff" }));
+    expect(internal.retryAfterByItem.has(itemIds[0])).toBe(false);
+    expect(internal.retryAfterByItem.get(itemIds[1])).toBe(200);
+    expect(internal.retryStateByItem.has(itemIds[0])).toBe(false);
+    expect(internal.retryStateByItem.has(itemIds[1])).toBe(true);
+    expect(internal.pacedStartReservationByItem.has(itemIds[0])).toBe(false);
+    expect(internal.pacedStartReservationByItem.get(itemIds[1])).toBe(200);
+    expect(internal.standalonePackageResults.has("foreign-package:1")).toBe(true);
+    expect(internal.suppressedPackageResults.has("foreign-package:1")).toBe(false);
+  });
+});
+
 describe("download live update cadence", () => {
   it.each([69, 661, 2_470])("emits a running queue snapshot no sooner than 750 ms for %i items", async (itemCount) => {
     vi.useFakeTimers();
@@ -2311,7 +2400,7 @@ describe("download manager", () => {
     expect((manager as any).shouldCollapseQuickPostProcessRequeue(packageId)).toBe(false);
   });
 
-  it("extractNow only re-arms completed items that are not already extracted", () => {
+  it("extractNow only re-arms completed items that are not already extracted", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-now-"));
     tempDirs.push(root);
 
@@ -2380,9 +2469,17 @@ describe("download manager", () => {
       session,
       createStoragePaths(path.join(root, "state"))
     );
+    const staleController = new AbortController();
+    const restartPostProcessing = vi.fn(() => Promise.resolve());
+    (manager as any).packagePostProcessTasks.set(packageId, Promise.resolve());
+    (manager as any).packagePostProcessAbortControllers.set(packageId, staleController);
+    (manager as any).runPackagePostProcessing = restartPostProcessing;
+    session.packages[packageId].status = "paused";
 
-    manager.extractNow(packageId);
+    await manager.extractNow(packageId);
 
+    expect(staleController.signal.aborted).toBe(true);
+    expect(restartPostProcessing).toHaveBeenCalledTimes(1);
     expect((manager as any).session.items["extract-now-item-1"].fullStatus).toBe("Entpackt - Done (<1s)");
     expect((manager as any).session.items["extract-now-item-2"].fullStatus).toBe("Entpackt - Done (1.2s)");
     expect((manager as any).session.items["extract-now-item-3"].fullStatus).toBe("Entpacken - Ausstehend");
@@ -2541,6 +2638,111 @@ describe("download manager", () => {
     expect(snapshot.items["selected-e02"].fullStatus).toMatch(/^Entpack-Fehler/);
     expect(snapshot.packages[packageId].status).toBe("failed");
     expect(fs.existsSync(path.join(extractDir, "Episode.E02.mkv"))).toBe(false);
+  }, 15_000);
+
+  it.each([
+    ["package", false],
+    ["package", true],
+    ["item", false],
+    ["item", true]
+  ] as const)("extractNow %s runs with an open sibling while session paused=%s", async (scope, paused) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `rd-extract-open-${scope}-${paused}-`));
+    tempDirs.push(root);
+    const outputDir = path.join(root, "downloads", "Open sibling");
+    const extractDir = path.join(root, "extract", "Open sibling");
+    fs.mkdirSync(outputDir, { recursive: true });
+    const archivePath = path.join(outputDir, "Episode.E01.zip");
+    const zip = new AdmZip();
+    zip.addFile("Episode.E01.mkv", Buffer.from("episode-one"));
+    zip.writeZip(archivePath);
+    const archiveSize = fs.statSync(archivePath).size;
+    const session = emptySession();
+    const packageId = `open-${scope}-${paused}`;
+    const archiveItemId = `${packageId}-archive`;
+    const queuedItemId = `${packageId}-queued`;
+    const createdAt = Date.now() - 1000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "Open sibling",
+      outputDir,
+      extractDir,
+      status: paused ? "paused" : "queued",
+      itemIds: [archiveItemId, queuedItemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[archiveItemId] = {
+      id: archiveItemId,
+      packageId,
+      url: "https://dummy/Episode.E01.zip",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: archiveSize,
+      totalBytes: archiveSize,
+      progressPercent: 100,
+      fileName: "Episode.E01.zip",
+      targetPath: archivePath,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Entpacken - Ausstehend",
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[queuedItemId] = {
+      id: queuedItemId,
+      packageId,
+      url: "https://dummy/Episode.E02.zip",
+      provider: "realdebrid",
+      status: "queued",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 0,
+      totalBytes: null,
+      progressPercent: 0,
+      fileName: "Episode.E02.zip",
+      targetPath: "",
+      resumable: true,
+      attempts: 0,
+      lastError: "",
+      fullStatus: "Wartet",
+      createdAt,
+      updatedAt: createdAt
+    };
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir,
+        extractDir,
+        autoExtract: false,
+        hybridExtract: false,
+        cleanupMode: "none",
+        removeLinkFilesAfterExtract: false,
+        removeSamplesAfterExtract: false,
+        autoRename4sf4sj: false,
+        keepGermanAudioOnly: false
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+    session.running = paused;
+    session.paused = paused;
+
+    manager.extractNow(scope === "package"
+      ? { packageIds: [packageId], itemIds: [] }
+      : { packageIds: [], itemIds: [archiveItemId] });
+
+    await waitFor(() => fs.existsSync(path.join(extractDir, "Episode.E01.mkv")), 10_000);
+    await waitFor(() => !(manager as any).packagePostProcessTasks.has(packageId), 10_000);
+    expect(session.items[archiveItemId].fullStatus).toMatch(/^Entpackt/);
+    expect(session.items[queuedItemId]).toEqual(expect.objectContaining({ status: "queued", fullStatus: "Wartet" }));
+    expect(session.packages[packageId].status).toBe(paused ? "paused" : "queued");
   }, 15_000);
 
   it("assigns same-named archive failures only to the matching directory", () => {
@@ -7010,6 +7212,13 @@ describe("download manager", () => {
       createStoragePaths(path.join(root, "state"))
     );
 
+    session.running = true;
+    (manager as any).runItemIds.add("selected-item");
+    (manager as any).runPackageIds.add(packageId);
+    for (const itemId of itemIds) {
+      (manager as any).runOutcomes.set(itemId, "completed");
+    }
+
     const changed = (manager as any).autoRecoverArchiveCrcFailure(
       session.packages[packageId],
       itemIds.map((itemId) => session.items[itemId]!),
@@ -7035,7 +7244,11 @@ describe("download manager", () => {
     }
     expect(fs.existsSync(path.join(outputDir, archiveNames[0]!))).toBe(false);
     expect(fs.existsSync(path.join(outputDir, archiveNames[1]!))).toBe(false);
-    expect(session.packages[packageId]?.status).toBe("queued");
+    expect(session.packages[packageId]?.status).toBe("downloading");
+    for (const itemId of itemIds) {
+      expect((manager as any).runItemIds.has(itemId)).toBe(true);
+      expect((manager as any).runOutcomes.has(itemId)).toBe(false);
+    }
   });
 
   it("requeues archive parts on CRC error when file has invalid archive signature (corrupt content)", () => {
@@ -7392,6 +7605,78 @@ describe("download manager", () => {
     const ready = await (manager as any).findReadyArchiveSets(session.packages[packageId]);
     expect(Array.from(ready)).toEqual([part1Path.toLowerCase()]);
   });
+
+  it("retries a complete archive that was marked attempted without a terminal extraction result", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-hybrid-stale-attempt-"));
+    tempDirs.push(root);
+    const outputDir = path.join(root, "downloads", "stale-attempt");
+    const extractDir = path.join(root, "extract", "stale-attempt");
+    fs.mkdirSync(outputDir, { recursive: true });
+    const archivePath = path.join(outputDir, "Episode.E01.zip");
+    const zip = new AdmZip();
+    zip.addFile("Episode.E01.mkv", Buffer.from("episode"));
+    zip.writeZip(archivePath);
+    const archiveSize = fs.statSync(archivePath).size;
+    const session = emptySession();
+    const packageId = "stale-attempt-pkg";
+    const itemId = "stale-attempt-item";
+    const createdAt = Date.now() - 1000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "stale-attempt",
+      outputDir,
+      extractDir,
+      status: "queued",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/Episode.E01.zip",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: archiveSize,
+      totalBytes: archiveSize,
+      progressPercent: 100,
+      fileName: "Episode.E01.zip",
+      targetPath: archivePath,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Entpacken - Warten auf Parts",
+      createdAt,
+      updatedAt: createdAt
+    };
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir,
+        extractDir,
+        autoExtract: true,
+        hybridExtract: true,
+        cleanupMode: "none",
+        autoRename4sf4sj: false,
+        keepGermanAudioOnly: false
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+    (manager as any).hybridExtractedPaths.set(packageId, new Set([archivePath.toLowerCase()]));
+
+    const extracted = await (manager as any).runHybridExtraction(packageId, session.packages[packageId], [session.items[itemId]]);
+
+    expect(extracted).toBe(1);
+    expect(fs.existsSync(path.join(extractDir, "Episode.E01.mkv"))).toBe(true);
+    expect(session.items[itemId].fullStatus).toMatch(/^Entpackt/);
+  }, 10_000);
 
   it("skips unchanged hybrid archives after a previous extraction failure", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));

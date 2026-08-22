@@ -1458,6 +1458,18 @@ function nextArchivePercent(previous: number, incoming: number): number {
   return next >= prev ? next : prev;
 }
 
+type ExtractPasswordProgress = Pick<ExtractProgressUpdate, "passwordAttempt" | "passwordTotal" | "passwordFound">;
+
+export function mergeExtractPasswordProgress(
+  current: ExtractPasswordProgress | undefined,
+  update: ExtractPasswordProgress | undefined
+): ExtractPasswordProgress | undefined {
+  if (update?.passwordFound || (update?.passwordAttempt && update?.passwordTotal)) {
+    return { ...update };
+  }
+  return current;
+}
+
 function runExtractCommand(
   command: string,
   args: string[],
@@ -4091,9 +4103,10 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
     let archivePercent = 0;
     let reached99At: number | null = null;
     let archiveOutcome: "success" | "failed" | "skipped" = "failed";
+    let activePasswordProgress: ExtractPasswordProgress | undefined;
     emitProgress(extracted + failed, archiveName, "extracting", archivePercent, 0, undefined, undefined, archivePath);
     const pulseTimer = setInterval(() => {
-      emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt, undefined, undefined, archivePath);
+      emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt, activePasswordProgress, undefined, archivePath);
     }, 1100);
     const hybrid = Boolean(options.hybridMode);
     const filenamePasswords = archiveFilenamePasswords(archiveName);
@@ -4110,7 +4123,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
         reached99At = Date.now();
         logger.info(`Extract-Trace 99%: archive=${archiveName}, elapsedMs=${reached99At - archiveStartedAt}`);
       }
-      emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt, undefined, undefined, archivePath);
+      emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt, activePasswordProgress, undefined, archivePath);
     };
 
     const isGenericSplit = /\.\d{3}$/i.test(archiveName) && !/\.(zip|7z)\.\d{3}$/i.test(archiveName);
@@ -4140,7 +4153,8 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
     }
     const onPwAttempt = hasManyPasswords
       ? (attempt: number, total: number) => {
-        emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt, { passwordAttempt: attempt, passwordTotal: total }, undefined, archivePath);
+        activePasswordProgress = mergeExtractPasswordProgress(activePasswordProgress, { passwordAttempt: attempt, passwordTotal: total });
+        emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt, activePasswordProgress, undefined, archivePath);
         options.onLog?.("INFO", `Passwort-Versuch ${attempt}/${total}: archive=${archiveName}, password=<redacted>`);
       }
       : undefined;

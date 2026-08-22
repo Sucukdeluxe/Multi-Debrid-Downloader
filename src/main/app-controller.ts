@@ -1034,14 +1034,14 @@ export class AppController {
     return paused;
   }
 
-  public retryExtraction(packageId: string): void {
+  public async retryExtraction(packageId: string): Promise<void> {
     this.audit("INFO", "Extraktion manuell wiederholt", { packageId });
-    this.manager.retryExtraction(packageId);
+    await this.manager.retryExtraction(packageId);
   }
 
-  public extractNow(request: ExtractNowRequest): void {
+  public async extractNow(request: ExtractNowRequest): Promise<void> {
     this.audit("INFO", "Jetzt entpacken ausgelöst", { packageIds: request.packageIds, itemIds: request.itemIds });
-    this.manager.extractNow(request);
+    await this.manager.extractNow(request);
   }
 
   public resetPackage(packageId: string): void {

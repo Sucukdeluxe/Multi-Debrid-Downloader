@@ -85,6 +85,15 @@ describe("download package presentation", () => {
     expect(after.progress.value).toBe(90);
   });
 
+  it("includes finalization progress in the reserved extraction range", () => {
+    const presentation = buildPackagePresentation(row([
+      item("archive", "Finalisieren - 99% · release.part01.rar")
+    ], { status: "extracting", postProcessLabel: "Finalisieren - 99% (0/1) · release.part01.rar" }));
+
+    expect(presentation.progress.value).toBe(99);
+    expect(presentation.status).toBe("Finalisieren - 99% (0/1) · release.part01.rar");
+  });
+
   it("summarizes mixed extraction errors and a live retry instead of showing a fraction", () => {
     const items = [
       ...Array.from({ length: 7 }, (_, index) => item(`failed-${index}`, "Entpack-Fehler: Keine entpackten Dateien erkannt")),
@@ -97,9 +106,23 @@ describe("download package presentation", () => {
     ];
     const presentation = buildPackagePresentation(row(items, { status: "queued" }));
 
-    expect(presentation.status).toBe("7 Entpackfehler · 1 Wiederholung");
+    expect(presentation.status).toBe("7 Entpackfehler · Link-Umwandlung erneut");
     expect(presentation.details).toContain("7 Entpackfehler");
-    expect(presentation.details).toContain("1 Wiederholung");
+    expect(presentation.details).toContain("Link-Umwandlung erneut");
+  });
+
+  it("describes parallel link conversion retries without presenting the item count as attempts", () => {
+    const retries = Array.from({ length: 20 }, (_, index) => item(`retry-${index}`, "Link-Umwandlung erneut, Versuch 2/...", {
+      status: "validating",
+      retries: 2,
+      downloadedBytes: 0,
+      progressPercent: 0
+    }));
+
+    const presentation = buildPackagePresentation(row(retries, { status: "queued" }));
+
+    expect(presentation.status).toBe("Link-Umwandlung erneut");
+    expect(presentation.status).not.toContain("20");
   });
 
   it("keeps a single normal active download compact", () => {
