@@ -9,6 +9,7 @@ import { createStoragePaths, emptySession } from "../src/main/storage";
 import { shutdownItemLogs } from "../src/main/item-log";
 import { shutdownPackageLogs } from "../src/main/package-log";
 import { shutdownRenameLog } from "../src/main/rename-log";
+import { registerPackageCompleteOutputs } from "./helpers/package-output-scope";
 
 const tempDirs: string[] = [];
 
@@ -65,6 +66,7 @@ function setup(keepGermanAudioOnly: boolean): { extractDir: string; libraryDir: 
   for (const f of [DL_MKV, PLAIN_MKV, DL_AVI]) {
     fs.writeFileSync(path.join(extractDir, f), "x");
   }
+  registerPackageCompleteOutputs(pkg, [DL_MKV, PLAIN_MKV, DL_AVI].map((fileName) => path.join(extractDir, fileName)));
   return { extractDir, libraryDir, manager, pkg };
 }
 

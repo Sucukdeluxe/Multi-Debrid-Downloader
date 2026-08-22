@@ -18,6 +18,7 @@ import { shutdownItemLogs } from "../src/main/item-log";
 import { shutdownPackageLogs } from "../src/main/package-log";
 import { shutdownRenameLog } from "../src/main/rename-log";
 import { processVideoFile, resolveVideoTooling, type VideoProcessResult } from "../src/main/video-processor";
+import { registerPackageCompleteOutputs } from "./helpers/package-output-scope";
 
 const mockedProcess = processVideoFile as unknown as ReturnType<typeof vi.fn>;
 const mockedTooling = resolveVideoTooling as unknown as ReturnType<typeof vi.fn>;
@@ -79,19 +80,23 @@ const PLAIN_MKV = "Show.S01E02.German.1080p.x264.mkv";
 const SAMPLE_DL = "Show.sample.DL.mkv";
 const DL_AVI = "Show.S01E03.German.DL.avi";
 
-function stage(extractDir: string): void {
+function stage(extractDir: string, pkg: any) {
+  const outputPaths: string[] = [];
   for (const f of [DL_MKV, PLAIN_MKV, SAMPLE_DL, DL_AVI]) {
-    fs.writeFileSync(path.join(extractDir, f), "x");
+    const outputPath = path.join(extractDir, f);
+    fs.writeFileSync(outputPath, "x");
+    outputPaths.push(outputPath);
   }
+  return registerPackageCompleteOutputs(pkg, outputPaths);
 }
 
 describe("keepGermanAudioOnly integration", () => {
   it("processes only .DL. mkv/mp4 and strips .DL. after a successful remux", async () => {
     const { extractDir, manager, pkg } = setup(true);
-    stage(extractDir);
+    const scope = stage(extractDir, pkg);
     mockedProcess.mockResolvedValue({ action: "remuxed", reason: "german-tag", totalAudioTracks: 2, keptTrackIndex: 0 } as VideoProcessResult);
 
-    const n = await (manager as any).keepGermanAudioOnlyImpl(extractDir, pkg);
+    const n = await (manager as any).keepGermanAudioOnlyImpl(extractDir, scope, pkg);
 
     expect(mockedProcess).toHaveBeenCalledTimes(1);
     expect(mockedProcess.mock.calls[0][0]).toBe(path.join(extractDir, DL_MKV));
@@ -107,8 +112,8 @@ describe("keepGermanAudioOnly integration", () => {
 
   it("does nothing when the setting is off", async () => {
     const { extractDir, manager, pkg } = setup(false);
-    stage(extractDir);
-    const n = await (manager as any).keepGermanAudioOnlyImpl(extractDir, pkg);
+    const scope = stage(extractDir, pkg);
+    const n = await (manager as any).keepGermanAudioOnlyImpl(extractDir, scope, pkg);
     expect(n).toBe(0);
     expect(mockedProcess).not.toHaveBeenCalled();
     expect(fs.readdirSync(extractDir)).toContain(DL_MKV); // untouched
@@ -116,10 +121,10 @@ describe("keepGermanAudioOnly integration", () => {
 
   it("leaves the file fully untouched (name included) when no German track is found", async () => {
     const { extractDir, manager, pkg } = setup(true);
-    stage(extractDir);
+    const scope = stage(extractDir, pkg);
     mockedProcess.mockResolvedValue({ action: "skipped-no-german", reason: "no-german-track", totalAudioTracks: 2 } as VideoProcessResult);
 
-    await (manager as any).keepGermanAudioOnlyImpl(extractDir, pkg);
+    await (manager as any).keepGermanAudioOnlyImpl(extractDir, scope, pkg);
 
     expect(mockedProcess).toHaveBeenCalledTimes(1);
     expect(fs.readdirSync(extractDir)).toContain(DL_MKV); // NOT renamed -> stays visible as unprocessed
@@ -127,10 +132,10 @@ describe("keepGermanAudioOnly integration", () => {
 
   it("still strips .DL. for a single-audio file (no remux needed)", async () => {
     const { extractDir, manager, pkg } = setup(true);
-    stage(extractDir);
+    const scope = stage(extractDir, pkg);
     mockedProcess.mockResolvedValue({ action: "kept-single", reason: "single-german", totalAudioTracks: 1, keptTrackIndex: 0 } as VideoProcessResult);
 
-    const n = await (manager as any).keepGermanAudioOnlyImpl(extractDir, pkg);
+    const n = await (manager as any).keepGermanAudioOnlyImpl(extractDir, scope, pkg);
 
     expect(n).toBe(0); // not counted as a remux
     expect(fs.readdirSync(extractDir)).toContain("Show.S01E01.German.720p.x264.mkv");
@@ -138,10 +143,10 @@ describe("keepGermanAudioOnly integration", () => {
 
   it("skips up front (no processVideoFile calls) and leaves files untouched when ffmpeg is missing", async () => {
     const { extractDir, manager, pkg } = setup(true);
-    stage(extractDir);
+    const scope = stage(extractDir, pkg);
     mockedTooling.mockResolvedValue(null); // ffmpeg/ffprobe not found
 
-    const n = await (manager as any).keepGermanAudioOnlyImpl(extractDir, pkg);
+    const n = await (manager as any).keepGermanAudioOnlyImpl(extractDir, scope, pkg);
 
     expect(n).toBe(0);
     expect(mockedProcess).not.toHaveBeenCalled(); // bailed before touching any file
@@ -152,10 +157,10 @@ describe("keepGermanAudioOnly integration", () => {
 
   it("stores a per-package summary with counts and file details", async () => {
     const { extractDir, manager, pkg } = setup(true);
-    stage(extractDir);
+    const scope = stage(extractDir, pkg);
     mockedProcess.mockResolvedValue({ action: "skipped-no-german", reason: "no-german-track", totalAudioTracks: 2, audioLanguages: ["eng", "fre"] } as VideoProcessResult);
 
-    await (manager as any).keepGermanAudioOnlyImpl(extractDir, pkg);
+    await (manager as any).keepGermanAudioOnlyImpl(extractDir, scope, pkg);
 
     expect(pkg.audioStripSummary).toMatchObject({ candidates: 1, skippedNoGerman: 1, remuxed: 0, failed: 0 });
     expect(pkg.audioStripSummary.files).toHaveLength(1);

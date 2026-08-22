@@ -3518,7 +3518,7 @@ export class DownloadManager extends EventEmitter {
       const extractDirKey = pathKey(pkg.extractDir);
       const hasExtractedFiles = hasFilesByExtractDir.has(extractDirKey)
         ? Boolean(hasFilesByExtractDir.get(extractDirKey))
-        : this.getPackageOutputScope(pkg).completeFiles().some((filePath) => isPathInsideDir(filePath, pkg.extractDir));
+        : await this.directoryHasAnyFiles(pkg.extractDir);
       if (!hasFilesByExtractDir.has(extractDirKey)) {
         hasFilesByExtractDir.set(extractDirKey, hasExtractedFiles);
       }
@@ -4335,11 +4335,9 @@ export class DownloadManager extends EventEmitter {
 
           if (removed > 0) {
             logger.info(`Nachträgliches Archive-Cleanup für ${pkg.name}: ${removed} Datei(en) gelöscht`);
-            if (!await this.directoryHasAnyFiles(pkg.outputDir)) {
-              const removedDirs = await this.removeEmptyDirectoryTree(pkg.outputDir);
-              if (removedDirs > 0) {
-                logger.info(`Nachträgliches Cleanup entfernte leere Download-Ordner für ${pkg.name}: ${removedDirs}`);
-              }
+            const removedDirs = await this.removeEmptyDirectoryTree(pkg.outputDir);
+            if (removedDirs > 0) {
+              logger.info(`Nachträgliches Cleanup entfernte leere Download-Ordner für ${pkg.name}: ${removedDirs}`);
             }
           } else {
             logger.info(`Nachträgliches Archive-Cleanup für ${pkg.name}: keine Dateien entfernt`);
@@ -4377,7 +4375,9 @@ export class DownloadManager extends EventEmitter {
       }
 
       for (const entry of entries) {
-        if (entry.isFile() && !isIgnorableEmptyDirFileName(entry.name)) {
+        const isOwnerMarker = entry.name === PACKAGE_OUTPUT_OWNER_MARKER
+          || entry.name.startsWith(`.${PACKAGE_OUTPUT_OWNER_MARKER}.`);
+        if (entry.isFile() && !isOwnerMarker && !isIgnorableEmptyDirFileName(entry.name)) {
           return true;
         }
         if (entry.isDirectory()) {

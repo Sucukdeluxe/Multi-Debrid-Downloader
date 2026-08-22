@@ -131,15 +131,15 @@ async function driveActiveDownload(root: string): Promise<{ manager: DownloadMan
 }
 
 describe("update restart resume", () => {
-  it("characterization: a plain stop() leaves an in-flight item cancelled across a restart", async () => {
+  it("persists a drained plain stop as cancelled across a restart", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-update-resume-"));
     tempDirs.push(root);
     const { manager, paths, serverStop } = await driveActiveDownload(root);
     try {
       manager.stop();
-      manager.persistNowSync();
       await waitFor(() => (manager as unknown as { activeTasks: Map<string, unknown> }).activeTasks.size === 0);
       manager.prepareForShutdown();
+      manager.persistForShutdown();
 
       const reloaded = loadSession(paths);
       const item = Object.values(reloaded.items)[0];
@@ -150,15 +150,17 @@ describe("update restart resume", () => {
     }
   });
 
-  it("parks an in-flight item as queued for an update restart so it auto-resumes", async () => {
+  it("checkpoints and finally persists an update-parked item as queued so it auto-resumes", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-update-resume-"));
     tempDirs.push(root);
     const { manager, paths, serverStop } = await driveActiveDownload(root);
     try {
       manager.stop({ parkForRestart: true });
       manager.persistNowSync();
+      expect(Object.values(loadSession(paths).items)[0]?.status).toBe("queued");
       await waitFor(() => (manager as unknown as { activeTasks: Map<string, unknown> }).activeTasks.size === 0);
       manager.prepareForShutdown();
+      manager.persistForShutdown();
 
       const reloaded = loadSession(paths);
       const item = Object.values(reloaded.items)[0];

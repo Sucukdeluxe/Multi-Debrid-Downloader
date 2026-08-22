@@ -25,6 +25,7 @@ import { UnrestrictedLink } from "../src/main/realdebrid";
 import { resetVideoToolingCache } from "../src/main/video-processor";
 import { createDownloadHealthState, evaluateDownloadHealth } from "../src/main/download-health-monitor";
 import type { AppSettings, DownloadItem, HistoryEntry, PackageEntry } from "../src/shared/types";
+import { registerPackageCompleteOutputs } from "./helpers/package-output-scope";
 
 const tempDirs: string[] = [];
 const originalFetch = globalThis.fetch;
@@ -41,19 +42,6 @@ function writePackageOutputOwnerMarker(pkg: PackageEntry): void {
     generation,
     ownerId
   }));
-}
-
-function setExtractOutputRecords(pkg: PackageEntry, outputPaths: string[]): void {
-  pkg.outputProvenanceVersion = 1;
-  pkg.outputRecords = outputPaths.map((outputPath) => ({
-    version: 1,
-    archivePath: path.join(pkg.outputDir, "source.zip"),
-    entryPath: path.relative(pkg.extractDir, outputPath).replace(/\\/g, "/"),
-    outputPath,
-    state: "complete",
-    disposition: "written"
-  }));
-  pkg.outputCount = outputPaths.length;
 }
 
 describe("runWithLimitedConcurrency", () => {
@@ -7885,7 +7873,8 @@ describe("download manager", () => {
     fs.writeFileSync(part2, Buffer.alloc(123, 0x62));
     fs.writeFileSync(part3, Buffer.alloc(123, 0x63));
     fs.writeFileSync(keep, "keep", "utf8");
-    fs.writeFileSync(path.join(extractDir, "episode.mkv"), "video", "utf8");
+    const episodePath = path.join(extractDir, "episode.mkv");
+    fs.writeFileSync(episodePath, "video", "utf8");
 
     const session = emptySession();
     const packageId = "legacy-old-pkg";
@@ -7905,6 +7894,7 @@ describe("download manager", () => {
       createdAt,
       updatedAt: createdAt
     };
+    registerPackageCompleteOutputs(session.packages[packageId], [episodePath]);
     session.items[itemId] = {
       id: itemId,
       packageId,
@@ -12077,7 +12067,7 @@ describe("download manager", () => {
       createdAt,
       updatedAt: createdAt
     };
-    setExtractOutputRecords(session.packages[packageId], [
+    registerPackageCompleteOutputs(session.packages[packageId], [
       path.join(extractDir, "episode.links.txt"),
       path.join(extractDir, "sample", "sample.mkv")
     ]);
@@ -12166,7 +12156,7 @@ describe("download manager", () => {
         updatedAt: createdAt
       };
     }
-    setExtractOutputRecords(session.packages[packageId], [extractedPath]);
+    registerPackageCompleteOutputs(session.packages[packageId], [extractedPath]);
     const manager = new DownloadManager(
       {
         ...defaultSettings(),
@@ -13183,7 +13173,7 @@ describe("download manager", () => {
       createStoragePaths(path.join(root, "state"))
     );
     (manager as any).fileStabilizeMinAgeMs = 30_000;
-    setExtractOutputRecords(session.packages[packageId], [scenePath]);
+    registerPackageCompleteOutputs(session.packages[packageId], [scenePath]);
 
     const expectedBase = "Test.Show.S02E05.Title.GERMAN.WS.720p.HDTV.x264-aWake";
     const renamedLibPath = path.join(mkvLibraryDir, `${expectedBase}.mkv`);
@@ -13249,7 +13239,7 @@ describe("download manager", () => {
     (manager as any).fileStabilizeMinAgeMs = 30_000;
 
     const expectedBase = "Test.Show.S02E05.Title.GERMAN.WS.720p.HDTV.x264-aWake";
-    setExtractOutputRecords(session.packages[packageId], [path.join(epFolder, sceneName)]);
+    registerPackageCompleteOutputs(session.packages[packageId], [path.join(epFolder, sceneName)]);
     await (manager as any).runDeferredPostExtraction(packageId, session.packages[packageId], 1, 0, true, 1);
 
     expect(fs.existsSync(path.join(mkvLibraryDir, `${expectedBase}.mkv`))).toBe(true);
@@ -14979,9 +14969,10 @@ describe("download manager", () => {
       downloadCompletedAt: 0
     };
 
+    const scope = registerPackageCompleteOutputs(pkg, episodes.map((ep) => path.join(extractDir, ep.folder, ep.file)));
     const [n1, n2] = await Promise.all([
-      (manager as any).autoRenameExtractedVideoFiles(extractDir, pkg),
-      (manager as any).autoRenameExtractedVideoFiles(extractDir, pkg)
+      (manager as any).autoRenameExtractedVideoFiles(extractDir, scope, pkg),
+      (manager as any).autoRenameExtractedVideoFiles(extractDir, scope, pkg)
     ]);
 
     expect(typeof n1).toBe("number");
@@ -15109,6 +15100,11 @@ describe("download manager", () => {
       status: "completed", itemIds: [], cancelled: false, enabled: true, priority: "normal",
       createdAt: 0, updatedAt: 0, downloadStartedAt: 0, downloadCompletedAt: 0
     };
+    registerPackageCompleteOutputs(pkg, [
+      path.join(epFolder, "Show.S01E01.GERMAN.x264-GROUP.mkv"),
+      path.join(epFolder, "Show.S01E01.GERMAN.x264-GROUP.srt"),
+      path.join(epFolder, "Show.S01E01.GERMAN.x264-GROUP.nfo")
+    ]);
 
     await (manager as any).collectMkvFilesToLibrary("movecomp-pkg", pkg);
 
@@ -15142,8 +15138,14 @@ describe("download manager", () => {
       status: "completed", itemIds: [], cancelled: false, enabled: true, priority: "normal",
       createdAt: 0, updatedAt: 0, downloadStartedAt: 0, downloadCompletedAt: 0
     };
+    const scope = registerPackageCompleteOutputs(pkg, [
+      path.join(epFolder, "awa-testshow02e05hd.mkv"),
+      path.join(epFolder, "awa-testshow02e05hd.srt"),
+      path.join(epFolder, "awa-testshow02e05hd.de.srt"),
+      path.join(epFolder, "awa-testshow02e05hd.nfo")
+    ]);
 
-    const renamed = await (manager as any).autoRenameExtractedVideoFiles(extractDir, pkg);
+    const renamed = await (manager as any).autoRenameExtractedVideoFiles(extractDir, scope, pkg);
     expect(renamed).toBe(1);
     const expectedBase = "Test.Show.S02E05.Title.GERMAN.WS.720p.HDTV.x264-aWake";
     const files = fs.readdirSync(epFolder);
@@ -15179,8 +15181,12 @@ describe("download manager", () => {
       status: "completed", itemIds: [], cancelled: false, enabled: true, priority: "normal",
       createdAt: 0, updatedAt: 0, downloadStartedAt: 0, downloadCompletedAt: 0
     };
+    const scope = registerPackageCompleteOutputs(pkg, [
+      path.join(epFolder, "awa-testshow02e05hd.mkv"),
+      path.join(epFolder, "awa-testshow02e05hd.alt.mkv")
+    ]);
 
-    const renamed = await (manager as any).autoRenameExtractedVideoFiles(extractDir, pkg);
+    const renamed = await (manager as any).autoRenameExtractedVideoFiles(extractDir, scope, pkg);
     expect(renamed).toBe(2);
     const expectedBase = "Test.Show.S02E05.Title.GERMAN.WS.720p.HDTV.x264-aWake";
     const files = fs.readdirSync(epFolder).sort();
@@ -15281,6 +15287,44 @@ describe("start conflict guard + selective resume", () => {
 
     const conflicts = await manager.getStartConflicts();
     expect(conflicts.map((c) => c.packageId)).toContain(packageId);
+  });
+
+  it("does not flag a fresh package when its extract dir contains only current or atomic owner markers", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-startconflict-markers-"));
+    tempDirs.push(root);
+    const storagePaths = createStoragePaths(path.join(root, "state"));
+    initPackageLogs(storagePaths.baseDir);
+    initItemLogs(storagePaths.baseDir);
+
+    const session = emptySession();
+    const packageId = "pkg-marker-only";
+    const extractDir = path.join(root, "extract", "MarkerOnly");
+    const ownerId = crypto.randomUUID().toLowerCase();
+    fs.mkdirSync(extractDir, { recursive: true });
+    fs.writeFileSync(path.join(extractDir, ".rd-package-output-owner-v1.json"), JSON.stringify({
+      version: 1,
+      packageId,
+      generation: 1,
+      ownerId
+    }));
+    fs.writeFileSync(path.join(extractDir, `..rd-package-output-owner-v1.json.${crypto.randomUUID()}.tmp`), "{}");
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId, name: "MarkerOnly",
+      outputDir: path.join(root, "downloads", "MarkerOnly"), extractDir,
+      status: "queued", itemIds: ["marker-pending"], cancelled: false, enabled: true,
+      outputOwnerId: ownerId, outputOwnerGeneration: 1, resultGeneration: 1,
+      createdAt: Date.now(), updatedAt: Date.now()
+    } as any;
+    session.items["marker-pending"] = makeItem("marker-pending", packageId, "queued", "marker.rar");
+
+    const manager = new DownloadManager(
+      { ...defaultSettings(), token: "rd-token", outputDir: path.join(root, "downloads"), extractDir: path.join(root, "extract") },
+      session, storagePaths
+    );
+
+    const conflicts = await manager.getStartConflicts();
+    expect(conflicts.map((c) => c.packageId)).not.toContain(packageId);
   });
 
   it("start() holds excluded packages out of the run set and runs the rest", async () => {
