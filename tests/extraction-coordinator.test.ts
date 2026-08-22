@@ -296,6 +296,48 @@ describe("ExtractionCoordinator", () => {
     await operation.finalize();
   });
 
+  it("keeps the reservation unknown when any deduplicated multipart member has unknown size", async () => {
+    const coordinator = new ExtractionCoordinator(1);
+    const heldLease = lease();
+    const requiredBytes: Array<number | null> = [];
+    const operation = await coordinator.beginOperation({
+      context: context("multipart-partial-unknown", "package-a", "run"),
+      targetPath: "C:\\target",
+      members: [
+        { path: "C:\\archives\\show.part1.rar", size: 100 },
+        { path: "C:\\archives\\show.part2.rar", size: null }
+      ],
+      acquireLease: async (request) => {
+        requiredBytes.push(request.requiredBytes);
+        return heldLease;
+      }
+    });
+
+    expect(requiredBytes).toEqual([null]);
+    await operation.finalize();
+  });
+
+  it("keeps the reservation unknown when all multipart member sizes are unknown", async () => {
+    const coordinator = new ExtractionCoordinator(1);
+    const heldLease = lease();
+    const requiredBytes: Array<number | null> = [];
+    const operation = await coordinator.beginOperation({
+      context: context("multipart-all-unknown", "package-a", "run"),
+      targetPath: "C:\\target",
+      members: [
+        { path: "C:\\archives\\show.part1.rar", size: null },
+        { path: "C:\\archives\\show.part2.rar", size: null }
+      ],
+      acquireLease: async (request) => {
+        requiredBytes.push(request.requiredBytes);
+        return heldLease;
+      }
+    });
+
+    expect(requiredBytes).toEqual([null]);
+    await operation.finalize();
+  });
+
   it("shuts down in queue-close, waiter-cancel, active-abort, child-drain, finalization and lease-release order", async () => {
     const coordinator = new ExtractionCoordinator(1);
     const events: string[] = [];
@@ -360,6 +402,36 @@ describe("ExtractionCoordinator", () => {
 
     scopeClose.resolve();
     await Promise.all([finalization, shutdown]);
+    expect(heldLease.release).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns incomplete at the deadline without releasing an active job lease or reopening the queue", async () => {
+    const coordinator = new ExtractionCoordinator(1);
+    const heldLease = lease();
+    const operation = await coordinator.beginOperation({
+      context: context("deadline-active", "package-a", "run"),
+      targetPath: "C:\\target",
+      members: [{ path: "C:\\archives\\one.rar", size: 100 }],
+      acquireLease: async () => heldLease
+    });
+    const childClose = deferred<void>();
+    const job = coordinator.scheduleArchive(operation, "active", async () => childClose.promise);
+    const finalization = operation.finalize();
+    await flush();
+
+    const result = await coordinator.shutdownAndDrain(Date.now() + 10);
+
+    expect(result).toEqual(expect.objectContaining({
+      completed: false,
+      timedOut: true,
+      activeJobs: 1,
+      pendingOperations: 1
+    }));
+    expect(heldLease.release).not.toHaveBeenCalled();
+    await expect(coordinator.scheduleArchive(operation, "late", async () => undefined)).rejects.toBeInstanceOf(ExtractionCancelledError);
+
+    childClose.resolve();
+    await Promise.all([job, finalization]);
     expect(heldLease.release).toHaveBeenCalledTimes(1);
   });
 });

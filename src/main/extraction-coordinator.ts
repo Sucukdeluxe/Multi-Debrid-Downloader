@@ -35,6 +35,14 @@ export type ExtractionOperation = {
   finalize(finalizeScope?: () => void | Promise<void>): Promise<void>;
 };
 
+export type ExtractionShutdownResult = Readonly<{
+  completed: boolean;
+  timedOut: boolean;
+  activeJobs: number;
+  pendingOperations: number;
+  queuedJobs: number;
+}>;
+
 type ArchiveJob = {
   archiveId: string;
   execute: (signal: AbortSignal) => Promise<unknown>;
@@ -97,10 +105,10 @@ function deduplicateMembers(members: readonly ExtractionArchiveMember[]): Extrac
 }
 
 function reservationBytes(members: readonly ExtractionArchiveMember[]): number | null {
-  const known = members
-    .map((member) => member.size)
-    .filter((size): size is number => typeof size === "number" && Number.isFinite(size));
-  return known.length > 0 ? known.reduce((total, size) => total + Math.max(0, Math.floor(size)), 0) : null;
+  if (members.length === 0 || members.some((member) => member.size === null)) {
+    return null;
+  }
+  return members.reduce((total, member) => total + Math.max(0, Math.floor(member.size as number)), 0);
 }
 
 export class ExtractionCancelledError extends Error {
@@ -216,7 +224,7 @@ export class ExtractionCoordinator {
     await this.cancelMatching((state) => state.context.packageId === packageId, reason);
   }
 
-  public async shutdownAndDrain(deadlineAt: number): Promise<void> {
+  public async shutdownAndDrain(deadlineAt: number): Promise<ExtractionShutdownResult> {
     this.closed = true;
     const states = [...this.operations.values()];
     for (const state of states) {
@@ -234,9 +242,16 @@ export class ExtractionCoordinator {
     }
     await this.waitUntilDeadline(Promise.all(states.map((state) => state.drain.promise)), deadlineAt);
     await this.waitForFinalization(states, deadlineAt);
-    for (const state of states) {
-      this.releaseLease(state);
-    }
+    const pendingOperations = states.filter((state) => this.operations.get(state.context.operationId) === state).length;
+    const queuedJobs = states.reduce((total, state) => total + state.queued.length, 0);
+    const completed = this.activeCount === 0 && pendingOperations === 0 && queuedJobs === 0;
+    return Object.freeze({
+      completed,
+      timedOut: !completed && Date.now() >= deadlineAt,
+      activeJobs: this.activeCount,
+      pendingOperations,
+      queuedJobs
+    });
   }
 
   private async finalizeOperation(state: OperationState, finalizeScope?: () => void | Promise<void>): Promise<void> {

@@ -83,7 +83,7 @@ import { mergeKnownTotalBytes } from "./download-size";
 import { DiskCapacityError, DiskReservationCoordinator, type DiskReservationLease } from "./disk-space";
 import { createRendererState } from "./renderer-state";
 import { PackageOutputScope } from "./package-output-scope";
-import { ExtractionCoordinator, type ExtractionArchiveMember } from "./extraction-coordinator";
+import { ExtractionCoordinator, type ExtractionArchiveMember, type ExtractionShutdownResult } from "./extraction-coordinator";
 import {
   RollingAccountStatisticsAccumulator,
   addStatisticsActiveIntervalInPlace,
@@ -7300,8 +7300,8 @@ export class DownloadManager extends EventEmitter {
     logger.info(`Shutdown-Vorbereitung beendet: requeued=${requeuedItems}`);
   }
 
-  public async shutdownAndDrain(deadlineAt: number): Promise<void> {
-    await this.extractionCoordinator.shutdownAndDrain(deadlineAt);
+  public async shutdownAndDrain(deadlineAt: number): Promise<ExtractionShutdownResult> {
+    return this.extractionCoordinator.shutdownAndDrain(deadlineAt);
   }
 
   public persistForShutdown(): void {

@@ -1818,9 +1818,9 @@ function handleDaemonLine(line: string): void {
   if (trimmed.startsWith("RD_REQUEST_DONE ")) {
     const code = parseInt(trimmed.slice("RD_REQUEST_DONE ".length).trim(), 10);
     const req = daemonCurrentRequest;
-    if (!req) return;
+    if (!req || req.terminationStarted) return;
     const finalize = (): void => {
-      if (daemonCurrentRequest !== req) {
+      if (daemonCurrentRequest !== req || req.terminationStarted) {
         return;
       }
       flushDaemonParseBuffers(req);
@@ -1985,16 +1985,49 @@ function isDaemonAvailable(layout: JvmExtractorLayout): boolean {
   return Boolean(daemonProcess && daemonReady && !daemonBusy);
 }
 
+function abortedJvmExtractResult(): JvmExtractResult {
+  return {
+    ok: false,
+    missingCommand: false,
+    missingRuntime: false,
+    aborted: true,
+    timedOut: false,
+    errorText: "aborted:extract",
+    usedPassword: "",
+    backend: ""
+  };
+}
+
 function waitForDaemonReady(maxWaitMs: number, signal?: AbortSignal): Promise<boolean> {
   return new Promise((resolve) => {
     const start = Date.now();
-    const check = () => {
-      if (signal?.aborted) { resolve(false); return; }
-      if (daemonProcess && daemonReady && !daemonBusy) { resolve(true); return; }
-      if (!daemonProcess) { resolve(false); return; }
-      if (Date.now() - start >= maxWaitMs) { resolve(false); return; }
-      setTimeout(check, 50);
+    let settled = false;
+    let timer: NodeJS.Timeout | null = null;
+    const finish = (ready: boolean): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      signal?.removeEventListener("abort", onAbort);
+      resolve(ready);
     };
+    const onAbort = (): void => finish(false);
+    const check = () => {
+      if (signal?.aborted) { finish(false); return; }
+      if (daemonProcess && daemonReady && !daemonBusy) { finish(true); return; }
+      if (!daemonProcess) { finish(false); return; }
+      if (Date.now() - start >= maxWaitMs) { finish(false); return; }
+      timer = setTimeout(check, 50);
+    };
+    if (signal?.aborted) {
+      finish(false);
+      return;
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
     check();
   });
 }
@@ -2009,6 +2042,9 @@ function sendDaemonRequest(
   timeoutMs?: number,
   onOutput?: (event: ExtractOutputEvent) => void
 ): Promise<JvmExtractResult> {
+  if (signal?.aborted) {
+    return Promise.resolve(abortedJvmExtractResult());
+  }
   return new Promise((resolve) => {
     const mode = effectiveConflictMode(conflictMode);
     const parseState = { bestPercent: 0, usedPassword: "", backend: "", reportedError: "" };
@@ -2096,11 +2132,7 @@ async function runJvmExtractCommand(
   onOutput?: (event: ExtractOutputEvent) => void
 ): Promise<JvmExtractResult> {
   if (signal?.aborted) {
-    return Promise.resolve({
-      ok: false, missingCommand: false, missingRuntime: false,
-      aborted: true, timedOut: false, errorText: "aborted:extract",
-      usedPassword: "", backend: ""
-    });
+    return Promise.resolve(abortedJvmExtractResult());
   }
 
   if (isDaemonAvailable(layout)) {
@@ -2115,12 +2147,19 @@ async function runJvmExtractCommand(
     logger.info(`JVM Daemon: Warte auf ${reason} Daemon für ${path.basename(archivePath)}...`);
     const ready = await waitForDaemonReady(15_000, signal);
     const waitedMs = Date.now() - waitStartedAt;
+    if (signal?.aborted) {
+      return abortedJvmExtractResult();
+    }
     if (ready) {
       lowerExtractProcessPriority(daemonProcess?.pid, currentExtractCpuPriority);
       logger.info(`JVM Daemon: Bereit nach ${waitedMs}ms — sende Request für ${path.basename(archivePath)}`);
       return sendDaemonRequest(archivePath, targetDir, conflictMode, passwordCandidates, onArchiveProgress, signal, timeoutMs, onOutput);
     }
     logger.warn(`JVM Daemon: Timeout nach ${waitedMs}ms beim Warten — Fallback auf neuen Prozess für ${path.basename(archivePath)}`);
+  }
+
+  if (signal?.aborted) {
+    return abortedJvmExtractResult();
   }
 
   logger.info(`JVM Spawn: Neuer Prozess für ${path.basename(archivePath)}`);
@@ -2149,6 +2188,11 @@ async function runJvmExtractCommand(
   ];
   for (const password of passwordCandidates) {
     args.push("--password", password);
+  }
+
+  if (signal?.aborted) {
+    fs.rm(jvmTmpDir, { recursive: true, force: true }, () => {});
+    return abortedJvmExtractResult();
   }
 
   return new Promise((resolve) => {
