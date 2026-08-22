@@ -296,6 +296,38 @@ describe("NotificationOutbox", () => {
     }
   });
 
+  it("persists a cleaned empty legacy file atomically during load", () => {
+    const filePath = createOutboxFile();
+    const rename = vi.spyOn(fs, "renameSync");
+    fs.writeFileSync(filePath, JSON.stringify({
+      version: 1,
+      events: [
+        event("expired-private", {
+          expiresAt: 999,
+          payload: {
+            title: "Paket fehlgeschlagen",
+            fields: [{ name: "Fehler", value: `Download · ${privateFailureDetails}`, inline: false }]
+          }
+        }),
+        { id: "", privateSentinel: privateFailureDetails }
+      ],
+      lastSuccessAt: 0,
+      lastFailureAt: 0,
+      privateSentinel: privateFailureDetails
+    }), "utf8");
+
+    const outbox = new NotificationOutbox({ filePath, send: async () => true, now: () => 1000 });
+
+    const raw = fs.readFileSync(filePath, "utf8");
+    expect(outbox.getStatus().queued).toBe(0);
+    expect(JSON.parse(raw).events).toEqual([]);
+    expect(raw).not.toContain("private.example.test");
+    expect(raw).not.toContain("SUPERSECRET");
+    expect(rename).toHaveBeenCalledWith(`${filePath}.tmp`, filePath);
+    expect(fs.existsSync(`${filePath}.tmp`)).toBe(false);
+    rename.mockRestore();
+  });
+
   it("drops expired events before persisting or sending", async () => {
     const filePath = createOutboxFile();
     const send = vi.fn().mockResolvedValue(true);
@@ -510,6 +542,102 @@ describe("NotificationOutbox", () => {
     for (const sensitiveValue of privateFailureValues) {
       expect(emittedText).not.toContain(sensitiveValue);
     }
+  });
+
+  it("persists an enqueue while an earlier delivery is blocked", async () => {
+    const filePath = createOutboxFile();
+    let releaseSend = (_sent: boolean) => {};
+    let markSendStarted = () => {};
+    const sendStarted = new Promise<void>((resolve) => { markSendStarted = resolve; });
+    const sendResult = new Promise<boolean>((resolve) => { releaseSend = resolve; });
+    const outbox = new NotificationOutbox({
+      filePath,
+      send: async () => {
+        markSendStarted();
+        return sendResult;
+      },
+      now: () => 1000
+    });
+    await outbox.enqueue(event("blocked"));
+    const draining = outbox.drain();
+    await sendStarted;
+
+    const lateEnqueue = outbox.enqueue(event("late-digest", {
+      type: "package_completed",
+      priority: "success"
+    }));
+    const persistedBeforeRelease = await Promise.race([
+      lateEnqueue.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 25))
+    ]);
+    const stateBeforeRelease = persisted(filePath);
+    releaseSend(true);
+    await draining;
+    await lateEnqueue;
+
+    expect(persistedBeforeRelease).toBe(true);
+    expect(stateBeforeRelease.events.map((queuedEvent) => queuedEvent.id)).toContain("late-digest");
+  });
+
+  it("acknowledges only successful delivery with its actual completion time", async () => {
+    const filePath = createOutboxFile();
+    let now = 1000;
+    const delivered: Array<{ id: string; deliveredAt: number }> = [];
+    const failedOutbox = new NotificationOutbox({
+      filePath,
+      now: () => now,
+      send: async () => {
+        now = 2000;
+        return false;
+      },
+      onDelivered: (queuedEvent, deliveredAt) => {
+        delivered.push({ id: queuedEvent.id, deliveredAt });
+      }
+    });
+
+    await failedOutbox.enqueue(event("failed"));
+    await failedOutbox.drain();
+    expect(delivered).toEqual([]);
+
+    const deliveredFilePath = createOutboxFile();
+    now = 3000;
+    const deliveredOutbox = new NotificationOutbox({
+      filePath: deliveredFilePath,
+      now: () => now,
+      send: async () => true,
+      onDelivered: (queuedEvent, deliveredAt) => {
+        delivered.push({ id: queuedEvent.id, deliveredAt });
+      }
+    });
+    await deliveredOutbox.enqueue(event("delivered", { nextAttemptAt: 3000 }));
+    await deliveredOutbox.drain();
+
+    expect(delivered).toEqual([{ id: "delivered", deliveredAt: 3000 }]);
+  });
+
+  it("does not redeliver or block later events when delivery acknowledgement fails", async () => {
+    const filePath = createOutboxFile();
+    const sent: string[] = [];
+    const outbox = new NotificationOutbox({
+      filePath,
+      now: () => 1000,
+      send: async (queuedEvent) => {
+        sent.push(queuedEvent.id);
+        return true;
+      },
+      onDelivered: (queuedEvent) => {
+        if (queuedEvent.id === "first") {
+          throw new Error("health state unavailable");
+        }
+      }
+    });
+    await outbox.enqueue(event("first"));
+    await outbox.enqueue(event("second"));
+
+    await expect(outbox.drain()).resolves.toBeUndefined();
+
+    expect(sent).toEqual(["first", "second"]);
+    expect(persisted(filePath).events).toEqual([]);
   });
 
   it("returns after the default three-second shutdown budget when sending hangs", async () => {

@@ -166,7 +166,7 @@ function event(
     type,
     priority,
     createdAt,
-    expiresAt: createdAt + (priority === "success" ? SUCCESS_TTL_MS : IMPORTANT_TTL_MS),
+    expiresAt: createdAt + (type === "run_completed" || priority === "error" ? IMPORTANT_TTL_MS : SUCCESS_TTL_MS),
     attempts: 0,
     nextAttemptAt: createdAt,
     payload: { title, description, color, fields }

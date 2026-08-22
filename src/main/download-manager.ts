@@ -1964,6 +1964,8 @@ export class DownloadManager extends EventEmitter {
 
   private notificationEnqueueChain: Promise<void> = Promise.resolve();
 
+  private notificationsShuttingDown = false;
+
   private itemCount = 0;
 
   private lastSchedulerHeartbeatAt = 0;
@@ -8807,6 +8809,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   public async flushNotificationsForShutdown(): Promise<void> {
+    this.notificationsShuttingDown = true;
     this.flushPackageSuccessDigest();
     await this.notificationEnqueueChain;
   }
@@ -12151,6 +12154,10 @@ export class DownloadManager extends EventEmitter {
   private queueSuccessfulPackageResult(envelope: PackageResultEnvelope): void {
     const key = this.packageResultKey(envelope.result.packageId, envelope.generation);
     this.successDigestResults.set(key, envelope);
+    if (this.notificationsShuttingDown) {
+      this.flushPackageSuccessDigest();
+      return;
+    }
     if (this.successDigestTimer) {
       return;
     }
@@ -12219,9 +12226,6 @@ export class DownloadManager extends EventEmitter {
     if (!(pkg.downloadEndedAt || 0)) {
       pkg.downloadEndedAt = completedAt;
     }
-    if (!(pkg.postProcessStartedAt || 0) && (pkg.postProcessQueuedAt || 0) > 0) {
-      pkg.postProcessStartedAt = pkg.postProcessQueuedAt;
-    }
     pkg.postProcessCompletedAt = completedAt;
     pkg.terminalAt = completedAt;
     const result = finalizePackageResult({
@@ -12236,6 +12240,7 @@ export class DownloadManager extends EventEmitter {
     pkg.status = result.status === "partial" ? "failed" : result.status;
     pkg.updatedAt = completedAt;
     if (this.onHistoryEntryCallback) {
+      this.historyRecordedPackages.add(packageId);
       this.onHistoryEntryCallback(buildHistoryEntry(result, {
         generation,
         outputDir: pkg.outputDir,

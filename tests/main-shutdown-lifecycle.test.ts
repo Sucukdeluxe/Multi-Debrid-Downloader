@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const electron = vi.hoisted(() => {
   const handlers = new Map<string, (...args: unknown[]) => void>();
@@ -43,12 +43,30 @@ import {
   saveDownloadHealthState,
   type DownloadHealthSnapshot
 } from "../src/main/download-health-monitor";
+import { NotificationOutbox, type NotificationEvent } from "../src/main/notification-outbox";
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve = () => {};
   const promise = new Promise<void>((done) => { resolve = done; });
   return { promise, resolve };
 }
+
+function shutdownEvent(id: string, priority: "success" | "error" = "success"): NotificationEvent {
+  return {
+    id,
+    type: "package_completed",
+    priority,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + 6 * 60 * 60 * 1000,
+    attempts: 0,
+    nextAttemptAt: Date.now(),
+    payload: { title: "Paket-Digest", fields: [] }
+  };
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("main shutdown lifecycle", () => {
   it("AppController waits for the bounded outbox drain before disposing runtime owners", async () => {
@@ -70,11 +88,120 @@ describe("main shutdown lifecycle", () => {
     const shutdown = controller.shutdown();
 
     expect(shutdown).toBeInstanceOf(Promise);
-    expect(controller.notificationOutbox.drainForShutdown).toHaveBeenCalledWith(3000);
-    expect(manager.prepareForShutdown).not.toHaveBeenCalled();
+    const drainBudget = controller.notificationOutbox.drainForShutdown.mock.calls[0][0];
+    expect(drainBudget).toBeGreaterThan(0);
+    expect(drainBudget).toBeLessThanOrEqual(3000);
+    expect(manager.prepareForShutdown).toHaveBeenCalledTimes(1);
     drain.resolve();
     await shutdown;
-    expect(manager.prepareForShutdown).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses one three-second deadline even when a running health evaluation never settles", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1000);
+    const runningEvaluation = deferred();
+    const controller = Object.create(AppController.prototype) as any;
+    controller.downloadHealthTimer = setInterval(() => {}, 60_000);
+    controller.downloadHealthEvaluation = runningEvaluation.promise;
+    controller.downloadHealthMonitor = null;
+    controller.runtimeStatsTimer = null;
+    controller.notificationOutbox = { drainForShutdown: vi.fn(async () => undefined) };
+    controller.manager = {
+      suspendDownloadHealthMonitoring: vi.fn(),
+      prepareForShutdown: vi.fn(),
+      flushNotificationsForShutdown: vi.fn(async () => undefined)
+    };
+    controller.megaWebFallback = { dispose: vi.fn() };
+    controller.realDebridWebFallbacks = new Map();
+    controller.pendingRealDebridWebAccountIds = new Map();
+    controller.allDebridWebFallback = { dispose: vi.fn() };
+    controller.bestDebridWebFallback = { dispose: vi.fn() };
+    controller.shutdownLogStorage = vi.fn();
+    controller.audit = vi.fn();
+    controller.settings = { historyRetentionMode: "never" };
+    let completed = false;
+
+    const shutdown = controller.shutdown().then(() => { completed = true; });
+    await vi.advanceTimersByTimeAsync(2999);
+    expect(completed).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const completedAtDeadline = completed;
+    runningEvaluation.resolve();
+    await vi.runAllTimersAsync();
+    await shutdown;
+
+    expect(completedAtDeadline).toBe(true);
+    expect(controller.manager.prepareForShutdown).toHaveBeenCalledTimes(1);
+  });
+
+  it("persists a digest completed inside the shared shutdown window while an earlier send is blocked", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1000);
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-shutdown-outbox-"));
+    const filePath = path.join(root, "outbox.json");
+    let releaseSend = (_sent: boolean) => {};
+    let markSendStarted = () => {};
+    const sendStarted = new Promise<void>((resolve) => { markSendStarted = resolve; });
+    const blockedSend = new Promise<boolean>((resolve) => { releaseSend = resolve; });
+    const lateEnqueued = deferred();
+    const outbox = new NotificationOutbox({
+      filePath,
+      now: Date.now,
+      send: async (event) => {
+        if (event.id === "already-sending") {
+          markSendStarted();
+          return blockedSend;
+        }
+        return true;
+      }
+    });
+    await outbox.enqueue(shutdownEvent("already-sending", "error"));
+    const activeDrain = outbox.drain();
+    await sendStarted;
+    const controller = Object.create(AppController.prototype) as any;
+    controller.downloadHealthTimer = null;
+    controller.downloadHealthEvaluation = null;
+    controller.downloadHealthMonitor = null;
+    controller.runtimeStatsTimer = null;
+    controller.notificationOutbox = outbox;
+    controller.manager = {
+      suspendDownloadHealthMonitoring: vi.fn(),
+      prepareForShutdown: vi.fn(),
+      flushNotificationsForShutdown: vi.fn(() => new Promise<void>((resolve) => {
+        setTimeout(() => {
+          void outbox.enqueue(shutdownEvent("late-digest")).then(() => {
+            lateEnqueued.resolve();
+            resolve();
+          });
+        }, 500);
+      }))
+    };
+    controller.megaWebFallback = { dispose: vi.fn() };
+    controller.realDebridWebFallbacks = new Map();
+    controller.pendingRealDebridWebAccountIds = new Map();
+    controller.allDebridWebFallback = { dispose: vi.fn() };
+    controller.bestDebridWebFallback = { dispose: vi.fn() };
+    controller.shutdownLogStorage = vi.fn();
+    controller.audit = vi.fn();
+    controller.settings = { historyRetentionMode: "never" };
+    let completed = false;
+
+    const shutdown = controller.shutdown().then(() => { completed = true; });
+    await vi.advanceTimersByTimeAsync(500);
+    await lateEnqueued.promise;
+    const stateDuringWindow = JSON.parse(fs.readFileSync(filePath, "utf8")) as { events: NotificationEvent[] };
+    await vi.advanceTimersByTimeAsync(2500);
+    const completedAtDeadline = completed;
+    releaseSend(true);
+    await vi.runAllTimersAsync();
+    await activeDrain;
+    await shutdown;
+
+    expect(stateDuringWindow.events.map((event) => event.id)).toContain("late-digest");
+    expect(completedAtDeadline).toBe(true);
+    expect(controller.manager.prepareForShutdown.mock.invocationCallOrder[0])
+      .toBeLessThan(controller.manager.flushNotificationsForShutdown.mock.invocationCallOrder[0]);
+    fs.rmSync(root, { recursive: true, force: true });
   });
 
   it("prevents quit once, waits for shutdown, then allows exactly one loop-free quit", async () => {

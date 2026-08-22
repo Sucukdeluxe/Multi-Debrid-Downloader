@@ -11,6 +11,7 @@ import {
   type DownloadHealthSnapshot,
   type DownloadHealthState
 } from "../src/main/download-health-monitor";
+import { NotificationOutbox } from "../src/main/notification-outbox";
 
 const RUN_FINGERPRINT = "a".repeat(64);
 const QUEUE_FINGERPRINT = "b".repeat(64);
@@ -250,8 +251,13 @@ describe("evaluateDownloadHealth", () => {
     expect(result.state.alertedAt).toBe(0);
   });
 
-  it("applies a ten-minute cooldown before another incident event", () => {
-    const firstAlert = alertedState();
+  it("applies a ten-minute cooldown after a delivered incident event", () => {
+    const firstAlert = createDownloadHealthState({
+      ...alertedState(),
+      lastAlertAt: 90_000,
+      cooldownUntil: 690_000,
+      lastDeliveredStallEventId: `health:stall:${RUN_FINGERPRINT.slice(0, 16)}:0`
+    });
     const recovered = evaluate(firstAlert, snapshot({ itemCompletionSequence: 1 }), 105_000).state;
     const duringCooldown = sampleTimes(recovered, [120_000, 165_000, 210_000]);
     const afterCooldown = evaluate(duringCooldown.state, snapshot(), 690_000);
@@ -261,6 +267,83 @@ describe("evaluateDownloadHealth", () => {
     expect(afterCooldown.events).toEqual([
       expect.objectContaining({ type: "download_stalled" })
     ]);
+  });
+
+  it("starts the cooldown at actual Discord delivery after a buffered outage", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-health-delivery-ack-"));
+    tempDirs.push(root);
+    const healthFile = path.join(root, "health.json");
+    const outboxFile = path.join(root, "outbox.json");
+    const suspicious = sampleTimes(createDownloadHealthState(), [0, 45_000]).state;
+    const monitor = new DownloadHealthMonitor(healthFile, suspicious);
+    let now = 90_000;
+    let deliveryAvailable = false;
+    const deliveredIds: string[] = [];
+    const outbox = new NotificationOutbox({
+      filePath: outboxFile,
+      now: () => now,
+      send: async (queuedEvent) => {
+        if (deliveryAvailable) deliveredIds.push(queuedEvent.id);
+        return deliveryAvailable;
+      },
+      onDelivered: (queuedEvent, deliveredAt) => {
+        return monitor.acknowledgeDelivery(queuedEvent, deliveredAt, 600_000);
+      }
+    });
+
+    const confirmed = await monitor.sample(snapshot(), now, {
+      stallAfterMs: 90_000,
+      cooldownMs: 600_000,
+      notifyOnStall: true,
+      notifyOnRecovery: true
+    }, (event) => outbox.enqueue(event));
+    await outbox.drain();
+    now = 300_000;
+    const repeated = await monitor.sample(snapshot(), now, {
+      stallAfterMs: 90_000,
+      cooldownMs: 600_000,
+      notifyOnStall: true,
+      notifyOnRecovery: true
+    }, (event) => outbox.enqueue(event));
+
+    expect(confirmed.events).toHaveLength(1);
+    expect(repeated.events).toEqual([]);
+    expect(outbox.getStatus().queued).toBe(1);
+    expect(monitor.getState().cooldownUntil).toBe(0);
+
+    deliveryAvailable = true;
+    now = 420_000;
+    await outbox.drain(now);
+
+    expect(deliveredIds).toEqual([confirmed.events[0].id]);
+    expect(monitor.getState().lastAlertAt).toBe(420_000);
+    expect(monitor.getState().cooldownUntil).toBe(1_020_000);
+  });
+
+  it("serializes a delivery acknowledgement behind a concurrent recovery sample", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-health-ack-race-"));
+    tempDirs.push(root);
+    const filePath = path.join(root, "health.json");
+    const confirmed = sampleTimes(createDownloadHealthState(), [0, 45_000, 90_000]);
+    const monitor = new DownloadHealthMonitor(filePath, confirmed.state);
+    let releaseEnqueue = () => {};
+    const enqueueBlocked = new Promise<void>((resolve) => { releaseEnqueue = resolve; });
+    const recovery = monitor.sample(snapshot({ itemCompletionSequence: 1 }), 105_000, {
+      stallAfterMs: 90_000,
+      cooldownMs: 600_000,
+      notifyOnStall: true,
+      notifyOnRecovery: true
+    }, async () => enqueueBlocked);
+    await Promise.resolve();
+
+    const acknowledgement = monitor.acknowledgeDelivery(confirmed.events[0], 300_000, 600_000);
+    releaseEnqueue();
+    await Promise.all([recovery, acknowledgement]);
+
+    expect(monitor.getState().status).toBe("healthy");
+    expect(monitor.getState().lastAlertAt).toBe(300_000);
+    expect(monitor.getState().cooldownUntil).toBe(900_000);
+    expect(monitor.getState().lastDeliveredStallEventId).toBe(confirmed.events[0].id);
   });
 
   it("keeps the incident event id stable when outbox persistence rejects the state transition", () => {
@@ -367,7 +450,8 @@ describe("download health restart persistence", () => {
       ...alertedState(),
       privateUrl: "https://private.example.test/file",
       privatePath: "C:\\private\\download.bin",
-      privateAccount: "private@example.test"
+      privateAccount: "private@example.test",
+      lastDeliveredStallEventId: "https://private.example.test/stall"
     } as DownloadHealthState;
 
     saveDownloadHealthState(filePath, state);

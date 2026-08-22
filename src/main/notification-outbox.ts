@@ -44,6 +44,7 @@ export interface NotificationOutboxStatus {
 export interface NotificationOutboxOptions {
   filePath: string;
   send: (event: NotificationEvent) => Promise<boolean>;
+  onDelivered?: (event: NotificationEvent, deliveredAt: number) => void | Promise<void>;
   now?: () => number;
   autoDrain?: boolean;
 }
@@ -166,14 +167,17 @@ export class NotificationOutbox {
   private operationChain: Promise<void> = Promise.resolve();
   private readonly filePath: string;
   private readonly sendEvent: (event: NotificationEvent) => Promise<boolean>;
+  private readonly onDelivered: ((event: NotificationEvent, deliveredAt: number) => void | Promise<void>) | null;
   private readonly clock: () => number;
   private readonly autoDrain: boolean;
   private retryTimer: NodeJS.Timeout | null = null;
   private shutdownRequested = false;
+  private drainOperation: Promise<void> | null = null;
 
   public constructor(options: NotificationOutboxOptions) {
     this.filePath = options.filePath;
     this.sendEvent = options.send;
+    this.onDelivered = options.onDelivered || null;
     this.clock = options.now || Date.now;
     this.autoDrain = Boolean(options.autoDrain);
     this.load();
@@ -196,45 +200,16 @@ export class NotificationOutbox {
   }
 
   public drain(now?: number): Promise<void> {
-    return this.runExclusive(async () => {
-      let currentNow = finiteInteger(now ?? this.clock());
-      this.enforceLimits(currentNow);
-      while (this.events.length > 0) {
-        const current = this.events[0];
-        if (current.nextAttemptAt > currentNow) {
-          await this.persist(currentNow);
-          if (this.autoDrain) {
-            this.scheduleDrain(Math.max(0, current.nextAttemptAt - this.clock()));
-          }
-          break;
-        }
-        let sent = false;
-        try {
-          sent = await this.sendEvent(current);
-        } catch {
-          sent = false;
-        }
-        const outcomeAt = finiteInteger(this.clock(), currentNow);
-        if (!sent) {
-          current.attempts += 1;
-          current.nextAttemptAt = outcomeAt + retryDelayMs(current.attempts);
-          this.lastFailureAt = outcomeAt;
-          await this.persist(outcomeAt);
-          if (this.autoDrain) {
-            this.scheduleDrain(Math.max(0, current.nextAttemptAt - this.clock()));
-          }
-          break;
-        }
-        this.events.shift();
-        this.lastSuccessAt = outcomeAt;
-        await this.persist(outcomeAt);
-        currentNow = finiteInteger(this.clock(), outcomeAt);
-      }
-      if (this.events.length === 0) {
-        this.clearRetryTimer();
-        await this.persist(finiteInteger(this.clock(), currentNow));
+    if (this.drainOperation) {
+      return this.drainOperation;
+    }
+    const operation = this.performDrain(now).finally(() => {
+      if (this.drainOperation === operation) {
+        this.drainOperation = null;
       }
     });
+    this.drainOperation = operation;
+    return operation;
   }
 
   public async drainForShutdown(timeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS): Promise<void> {
@@ -258,10 +233,74 @@ export class NotificationOutbox {
     };
   }
 
-  private runExclusive(operation: () => Promise<void>): Promise<void> {
+  private runExclusive<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.operationChain.then(operation, operation);
-    this.operationChain = result.catch(() => {});
+    this.operationChain = result.then(() => undefined, () => undefined);
     return result;
+  }
+
+  private async performDrain(now?: number): Promise<void> {
+    let currentNow = finiteInteger(now ?? this.clock());
+    while (true) {
+      const current = await this.runExclusive(async () => {
+        this.enforceLimits(currentNow);
+        const next = this.events[0] || null;
+        if (!next) {
+          this.clearRetryTimer();
+          await this.persist(finiteInteger(this.clock(), currentNow));
+          return null;
+        }
+        if (next.nextAttemptAt > currentNow) {
+          await this.persist(currentNow);
+          if (this.autoDrain) {
+            this.scheduleDrain(Math.max(0, next.nextAttemptAt - this.clock()));
+          }
+          return null;
+        }
+        return next;
+      });
+      if (!current) {
+        return;
+      }
+      let sent = false;
+      try {
+        sent = await this.sendEvent(current);
+      } catch {
+        sent = false;
+      }
+      const outcomeAt = finiteInteger(this.clock(), currentNow);
+      const delivered = await this.runExclusive(async () => {
+        const index = this.events.findIndex((event) => event.id === current.id);
+        if (index < 0) {
+          return false;
+        }
+        if (!sent) {
+          const queued = this.events[index];
+          queued.attempts += 1;
+          queued.nextAttemptAt = outcomeAt + retryDelayMs(queued.attempts);
+          this.lastFailureAt = outcomeAt;
+          await this.persist(outcomeAt);
+          if (this.autoDrain) {
+            this.scheduleDrain(Math.max(0, queued.nextAttemptAt - this.clock()));
+          }
+          return false;
+        }
+        this.events.splice(index, 1);
+        this.lastSuccessAt = outcomeAt;
+        await this.persist(outcomeAt);
+        return true;
+      });
+      if (!sent) {
+        return;
+      }
+      if (delivered && this.onDelivered) {
+        try {
+          await this.onDelivered(current, outcomeAt);
+        } catch {
+        }
+      }
+      currentNow = finiteInteger(this.clock(), outcomeAt);
+    }
   }
 
   private scheduleDrain(delayMs: number): void {
@@ -284,10 +323,10 @@ export class NotificationOutbox {
   }
 
   private load(): void {
+    if (!fs.existsSync(this.filePath)) {
+      return;
+    }
     try {
-      if (!fs.existsSync(this.filePath)) {
-        return;
-      }
       const parsed = JSON.parse(fs.readFileSync(this.filePath, "utf8")) as Partial<PersistedNotificationOutbox>;
       this.events = Array.isArray(parsed.events)
         ? parsed.events.flatMap((event) => {
@@ -303,6 +342,7 @@ export class NotificationOutbox {
       this.lastSuccessAt = 0;
       this.lastFailureAt = 0;
     }
+    this.persistSync(this.clock());
   }
 
   private enforceLimits(now: number): void {
@@ -329,6 +369,28 @@ export class NotificationOutbox {
       await fsp.rename(tempPath, this.filePath);
     } catch (error) {
       await fsp.rm(tempPath, { force: true }).catch(() => {});
+      throw error;
+    }
+  }
+
+  private persistSync(now: number): void {
+    this.enforceLimits(now);
+    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+    const tempPath = `${this.filePath}.tmp`;
+    const state: PersistedNotificationOutbox = {
+      version: 1,
+      events: this.events,
+      lastSuccessAt: this.lastSuccessAt,
+      lastFailureAt: this.lastFailureAt
+    };
+    try {
+      fs.writeFileSync(tempPath, JSON.stringify(state), "utf8");
+      fs.renameSync(tempPath, this.filePath);
+    } catch (error) {
+      try {
+        fs.rmSync(tempPath, { force: true });
+      } catch {
+      }
       throw error;
     }
   }

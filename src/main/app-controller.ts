@@ -173,7 +173,14 @@ export class AppController {
         color: event.payload.color ?? (event.priority === "error" ? 0xe74c3c : 0x2ecc71),
         fields: event.payload.fields,
         timestamp: event.createdAt
-      })
+      }),
+      onDelivered: (event, deliveredAt) => {
+        return this.downloadHealthMonitor?.acknowledgeDelivery(
+          event,
+          deliveredAt,
+          this.settings.notifyStallCooldownMinutes * 60_000
+        );
+      }
     });
     this.downloadHealthMonitor = new DownloadHealthMonitor(this.storagePaths.notificationHealthFile);
     void this.notificationOutbox.drain().catch((error) => {
@@ -1338,17 +1345,12 @@ export class AppController {
   }
 
   public async shutdown(): Promise<void> {
+    const deadlineAt = Date.now() + 3000;
     if (this.downloadHealthTimer) {
       clearInterval(this.downloadHealthTimer);
       this.downloadHealthTimer = null;
     }
     this.manager.suspendDownloadHealthMonitoring?.();
-    if (this.downloadHealthEvaluation) {
-      await this.downloadHealthEvaluation;
-    }
-    if (this.downloadHealthMonitor) {
-      await this.evaluateDownloadHealth();
-    }
     if (this.runtimeStatsTimer) {
       clearInterval(this.runtimeStatsTimer);
       this.runtimeStatsTimer = null;
@@ -1356,14 +1358,20 @@ export class AppController {
     stopDebugServer();
     abortActiveUpdateDownload();
     cancelPendingAsyncSaves();
-    const notificationFlush = this.manager.flushNotificationsForShutdown?.();
-    if (notificationFlush) {
-      await notificationFlush;
+    this.manager.prepareForShutdown();
+    if (this.downloadHealthEvaluation) {
+      await this.waitForShutdownTask(this.downloadHealthEvaluation, deadlineAt);
     }
-    await this.notificationOutbox.drainForShutdown(3000).catch((error) => {
+    if (this.downloadHealthMonitor && Date.now() < deadlineAt) {
+      await this.waitForShutdownTask(this.evaluateDownloadHealth(), deadlineAt);
+    }
+    const notificationFlush = this.manager.flushNotificationsForShutdown?.();
+    if (notificationFlush && Date.now() < deadlineAt) {
+      await this.waitForShutdownTask(notificationFlush, deadlineAt);
+    }
+    await this.notificationOutbox.drainForShutdown(Math.max(0, deadlineAt - Date.now())).catch((error) => {
       logger.warn(`Notification-Outbox konnte beim Beenden nicht geleert werden: ${String(error)}`);
     });
-    this.manager.prepareForShutdown();
     this.megaWebFallback.dispose();
     for (const fallback of this.realDebridWebFallbacks.values()) {
       fallback.dispose();
@@ -1382,6 +1390,21 @@ export class AppController {
       clearHistory(this.storagePaths);
     }
     logger.info("App beendet");
+  }
+
+  private async waitForShutdownTask(task: Promise<unknown>, deadlineAt: number): Promise<void> {
+    const remainingMs = Math.max(0, deadlineAt - Date.now());
+    if (remainingMs <= 0) {
+      return;
+    }
+    let timer: NodeJS.Timeout | null = null;
+    const timeout = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, remainingMs);
+    });
+    await Promise.race([task.then(() => undefined, () => undefined), timeout]);
+    if (timer) {
+      clearTimeout(timer);
+    }
   }
 
   private getDesktopDirectory(): string | null {

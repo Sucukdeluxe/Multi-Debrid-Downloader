@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DownloadManager } from "../src/main/download-manager";
 import { defaultSettings } from "../src/main/constants";
+import { buildRunNotificationEvent, buildRunResult } from "../src/main/notification-events";
 import type { NotificationEvent } from "../src/main/notification-outbox";
 import { createStoragePaths, emptySession } from "../src/main/storage";
 import { shutdownItemLogs } from "../src/main/item-log";
@@ -152,6 +153,35 @@ describe("authoritative package completion", () => {
     expect(history).toHaveLength(1);
     expect(pkg.postProcessCompletedAt).toBeGreaterThan(0);
     expect(pkg.terminalAt).toBe(pkg.postProcessCompletedAt);
+  });
+
+  it("keeps postprocess start unset when a queued package never receives a slot", async () => {
+    const { manager, session, history } = setup();
+    const pkg = addPackage(session);
+    const state = internal(manager);
+    pkg.postProcessQueuedAt = Date.now() - 5000;
+    state.runPackageIds.add(pkg.id);
+
+    state.tryFinalizePackageResult(pkg.id);
+    await flushNotifications();
+
+    expect(history).toHaveLength(1);
+    expect(history[0].postProcessStartedAt).toBe(0);
+    expect(history[0].postProcessDurationSeconds).toBe(0);
+  });
+
+  it("records exactly one business history entry when a finalized package is manually deleted", async () => {
+    const { manager, session, history } = setup();
+    const pkg = addPackage(session);
+    const state = internal(manager);
+    state.runPackageIds.add(pkg.id);
+
+    state.tryFinalizePackageResult(pkg.id);
+    await flushNotifications();
+    manager.cancelPackage(pkg.id);
+
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({ id: `hist-${pkg.id}-1`, status: "completed" });
   });
 
   it("turns a deferred remux failure into one immediate failed package event", async () => {
@@ -304,9 +334,41 @@ describe("authoritative package completion", () => {
     expect(events.map((event) => event.type)).toEqual(["package_completed"]);
     expect(events[0].payload.title).toContain("Paket-Digest");
   });
+
+  it("persists a success digest that finalizes after shutdown flushing has started", async () => {
+    const { manager, session, events } = setup({ notifyPackageSuccessMode: "digest" });
+    const pkg = addPackage(session);
+    const state = internal(manager);
+    state.runPackageIds.add(pkg.id);
+
+    await state.flushNotificationsForShutdown();
+    state.tryFinalizePackageResult(pkg.id);
+    await flushNotifications();
+
+    expect(events.map((event) => event.type)).toEqual(["package_completed"]);
+    expect(events[0].payload.title).toContain("Paket-Digest");
+  });
 });
 
 describe("authoritative run completion", () => {
+  it.each([
+    ["successful", 0, "success"],
+    ["failed", 1, "error"]
+  ] as const)("keeps a %s run_completed event for 24 hours", (_label, failedFiles, priority) => {
+    const notification = buildRunNotificationEvent(buildRunResult({
+      id: `run-${priority}`,
+      stopped: false,
+      startedAt: 1000,
+      completedAt: 2000,
+      packages: [],
+      failedFiles
+    }));
+
+    expect(notification.type).toBe("run_completed");
+    expect(notification.priority).toBe(priority);
+    expect(notification.expiresAt - notification.createdAt).toBe(24 * 60 * 60 * 1000);
+  });
+
   it("emits run_stopped without run_completed for a manual stop", async () => {
     const { manager, session, events } = setup();
     const pkg = addPackage(session, ["completed", "queued"]);

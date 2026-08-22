@@ -53,6 +53,7 @@ export interface DownloadHealthState {
   alertedAt: number;
   lastAlertAt: number;
   cooldownUntil: number;
+  lastDeliveredStallEventId: string | null;
   recoverySamples: number;
   lastSampleAt: number | null;
   downloadProgressSequence: number;
@@ -87,6 +88,7 @@ const HEALTH_STATUSES = new Set<DownloadHealthStatus>([
 ]);
 const INCIDENT_TYPES = new Set<DownloadHealthIncidentType>(["scheduler", "no_data"]);
 const FINGERPRINT_PATTERN = /^[a-f0-9]{64}$/;
+const STALL_EVENT_ID_PATTERN = /^health:stall:[a-f0-9]{16}:\d+$/;
 const MIN_SUSPICIOUS_SAMPLES = 3;
 const SCHEDULER_STALE_AFTER_MS = 30_000;
 const ERROR_EVENT_TTL_MS = 24 * 60 * 60 * 1000;
@@ -99,6 +101,10 @@ function finiteInteger(value: unknown, fallback = 0): number {
 
 function validFingerprint(value: unknown): string | null {
   return typeof value === "string" && FINGERPRINT_PATTERN.test(value) ? value : null;
+}
+
+function validStallEventId(value: unknown): string | null {
+  return typeof value === "string" && STALL_EVENT_ID_PATTERN.test(value) ? value : null;
 }
 
 function durationText(durationMs: number): string {
@@ -195,6 +201,7 @@ export function createDownloadHealthState(overrides: Partial<DownloadHealthState
     alertedAt: 0,
     lastAlertAt: 0,
     cooldownUntil: 0,
+    lastDeliveredStallEventId: null,
     recoverySamples: 0,
     lastSampleAt: null,
     downloadProgressSequence: 0,
@@ -217,6 +224,7 @@ function resetForSnapshot(
     queueFingerprint: snapshot.queueFingerprint,
     lastAlertAt: state.lastAlertAt,
     cooldownUntil: state.cooldownUntil,
+    lastDeliveredStallEventId: state.lastDeliveredStallEventId,
     lastSampleAt: now,
     downloadProgressSequence: finiteInteger(snapshot.downloadProgressSequence),
     itemCompletionSequence: finiteInteger(snapshot.itemCompletionSequence),
@@ -229,6 +237,7 @@ function endIncident(state: DownloadHealthState): DownloadHealthState {
   return createDownloadHealthState({
     lastAlertAt: state.lastAlertAt,
     cooldownUntil: state.cooldownUntil,
+    lastDeliveredStallEventId: state.lastDeliveredStallEventId,
     downloadProgressSequence: state.downloadProgressSequence,
     itemCompletionSequence: state.itemCompletionSequence,
     lastPositiveByteAt: state.lastPositiveByteAt,
@@ -378,14 +387,11 @@ export function evaluateDownloadHealth(
   state.lastSampleAt = now;
 
   const stallAfterMs = Math.max(0, finiteInteger(options.stallAfterMs, 90_000));
-  const cooldownMs = Math.max(0, finiteInteger(options.cooldownMs, 600_000));
   const confirmed = state.suspiciousDurationMs >= stallAfterMs
     && state.suspiciousSamples >= MIN_SUSPICIOUS_SAMPLES;
   if (confirmed && options.notifyOnStall && now >= state.cooldownUntil) {
     state.status = "alerted";
     state.alertedAt = now;
-    state.lastAlertAt = now;
-    state.cooldownUntil = now + cooldownMs;
     state.recoverySamples = 0;
     events.push(incidentEvent(state, snapshot, now));
   }
@@ -406,6 +412,7 @@ function persistedState(state: DownloadHealthState): Omit<DownloadHealthState, "
     alertedAt: finiteInteger(state.alertedAt),
     lastAlertAt: finiteInteger(state.lastAlertAt),
     cooldownUntil: finiteInteger(state.cooldownUntil),
+    lastDeliveredStallEventId: validStallEventId(state.lastDeliveredStallEventId),
     recoverySamples: finiteInteger(state.recoverySamples),
     lastSampleAt: state.lastSampleAt === null ? null : finiteInteger(state.lastSampleAt),
     downloadProgressSequence: finiteInteger(state.downloadProgressSequence),
@@ -455,6 +462,7 @@ export function loadDownloadHealthState(filePath: string): DownloadHealthState {
       alertedAt: finiteInteger(raw.alertedAt),
       lastAlertAt: finiteInteger(raw.lastAlertAt),
       cooldownUntil: finiteInteger(raw.cooldownUntil),
+      lastDeliveredStallEventId: validStallEventId(raw.lastDeliveredStallEventId),
       recoverySamples: finiteInteger(raw.recoverySamples),
       lastSampleAt: null,
       downloadProgressSequence: finiteInteger(raw.downloadProgressSequence),
@@ -472,6 +480,8 @@ export function loadDownloadHealthState(filePath: string): DownloadHealthState {
 export class DownloadHealthMonitor {
   private state: DownloadHealthState;
 
+  private operationChain: Promise<void> = Promise.resolve();
+
   public constructor(private readonly filePath: string, initialState?: DownloadHealthState) {
     this.state = initialState ? createDownloadHealthState(initialState) : loadDownloadHealthState(filePath);
   }
@@ -480,18 +490,43 @@ export class DownloadHealthMonitor {
     return createDownloadHealthState(this.state);
   }
 
-  public async sample(
+  public acknowledgeDelivery(event: NotificationEvent, deliveredAt: number, cooldownMs: number): Promise<void> {
+    return this.runExclusive(async () => {
+      const eventId = validStallEventId(event.id);
+      if (event.type !== "download_stalled" || !eventId || this.state.lastDeliveredStallEventId === eventId) {
+        return;
+      }
+      const acknowledgedAt = finiteInteger(deliveredAt);
+      this.state = createDownloadHealthState({
+        ...this.state,
+        lastAlertAt: acknowledgedAt,
+        cooldownUntil: acknowledgedAt + finiteInteger(cooldownMs),
+        lastDeliveredStallEventId: eventId
+      });
+      saveDownloadHealthState(this.filePath, this.state);
+    });
+  }
+
+  public sample(
     snapshot: DownloadHealthSnapshot,
     now: number,
     options: DownloadHealthOptions,
     enqueue: (event: NotificationEvent) => Promise<void>
   ): Promise<DownloadHealthEvaluation> {
-    const evaluation = evaluateDownloadHealth(this.state, snapshot, now, options);
-    for (const event of evaluation.events) {
-      await enqueue(event);
-    }
-    saveDownloadHealthState(this.filePath, evaluation.state);
-    this.state = evaluation.state;
-    return evaluation;
+    return this.runExclusive(async () => {
+      const evaluation = evaluateDownloadHealth(this.state, snapshot, now, options);
+      for (const event of evaluation.events) {
+        await enqueue(event);
+      }
+      saveDownloadHealthState(this.filePath, evaluation.state);
+      this.state = evaluation.state;
+      return evaluation;
+    });
+  }
+
+  private runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.operationChain.then(operation, operation);
+    this.operationChain = result.then(() => undefined, () => undefined);
+    return result;
   }
 }
