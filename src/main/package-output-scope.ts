@@ -172,7 +172,7 @@ export class PackageOutputScope {
   }
 
   public archiveFiles(): string[] {
-    return this.completeFiles().filter((filePath) => /\.(?:7z|rar|zip|tar|gz|bz2|xz|001)$/i.test(filePath));
+    return this.completeFiles().filter((filePath) => /\.(?:7z|rar|zip|tar|gz|bz2|xz|tgz|tbz2|txz|001)$/i.test(filePath));
   }
 
   public replacePath(sourcePath: string, targetPath: string, state?: ExtractOutputState): boolean {

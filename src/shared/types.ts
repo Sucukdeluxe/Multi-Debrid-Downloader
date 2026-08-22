@@ -497,6 +497,15 @@ export type PackageResultStatus = "completed" | "partial" | "failed" | "cancelle
 export type FailurePhase = "download" | "extract" | "remux" | "cleanup" | null;
 export const PACKAGE_OUTPUT_PROVENANCE_VERSION = 1;
 
+export interface PackageOutputRecord {
+  version: 1;
+  archivePath: string;
+  entryPath: string;
+  outputPath: string;
+  state: "complete" | "partial";
+  disposition: "written" | "overwritten" | "renamed" | "skipped";
+}
+
 export interface ArchiveOperationMetric {
   id: string;
   name: string;
@@ -591,6 +600,8 @@ export interface PackageEntry {
   outputCount?: number;
   outputProvenanceVersion?: number;
   outputProvenance?: string[];
+  outputRecords?: PackageOutputRecord[];
+  outputScopeAdopted?: boolean;
   cleanupErrorCategory?: string;
   resultGeneration?: number;
   createdAt: number;

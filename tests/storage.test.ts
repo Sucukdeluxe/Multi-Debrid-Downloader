@@ -1271,6 +1271,101 @@ describe("settings storage", () => {
     }));
   });
 
+  it("fails closed for unknown package output provenance versions without relabeling", () => {
+    const normalized = normalizeLoadedSession({
+      version: 2,
+      packageOrder: ["future-output"],
+      packages: {
+        "future-output": {
+          id: "future-output",
+          name: "Future output",
+          outputDir: "C:\\Downloads\\Future",
+          extractDir: "C:\\Downloads\\Shared",
+          status: "completed",
+          itemIds: [],
+          cancelled: false,
+          enabled: true,
+          outputCount: 2,
+          outputProvenanceVersion: 99,
+          outputProvenance: ["a".repeat(64), "b".repeat(64)],
+          outputRecords: [{
+            version: 1,
+            archivePath: "C:\\Downloads\\Future\\archive.rar",
+            entryPath: "episode.mkv",
+            outputPath: "C:\\Downloads\\Shared\\episode.mkv",
+            state: "complete",
+            disposition: "written"
+          }],
+          createdAt: 1_000,
+          updatedAt: 2_000
+        }
+      },
+      items: {},
+      runStartedAt: 0,
+      totalDownloadedBytes: 0,
+      summaryText: "",
+      reconnectUntil: 0,
+      reconnectReason: "",
+      paused: false,
+      running: false,
+      updatedAt: 2_000
+    });
+
+    expect(normalized.packages["future-output"]).toEqual(expect.objectContaining({
+      outputCount: 0,
+      outputProvenanceVersion: 99,
+      outputProvenance: [],
+      outputRecords: []
+    }));
+  });
+
+  it("migrates unversioned valid provenance hashes and concrete output records to v1", () => {
+    const normalized = normalizeLoadedSession({
+      version: 2,
+      packageOrder: ["legacy-hashes"],
+      packages: {
+        "legacy-hashes": {
+          id: "legacy-hashes",
+          name: "Legacy hashes",
+          outputDir: "C:\\Downloads\\Legacy",
+          extractDir: "C:\\Downloads\\Shared",
+          status: "completed",
+          itemIds: [],
+          cancelled: false,
+          enabled: true,
+          outputCount: 40_000,
+          outputProvenance: ["a".repeat(64)],
+          outputRecords: [{
+            version: 1,
+            archivePath: "C:\\Downloads\\Legacy\\archive.rar",
+            entryPath: "episode.mkv",
+            outputPath: "C:\\Downloads\\Shared\\episode.mkv",
+            state: "complete",
+            disposition: "written"
+          }],
+          createdAt: 1_000,
+          updatedAt: 2_000
+        }
+      },
+      items: {},
+      runStartedAt: 0,
+      totalDownloadedBytes: 0,
+      summaryText: "",
+      reconnectUntil: 0,
+      reconnectReason: "",
+      paused: false,
+      running: false,
+      updatedAt: 2_000
+    });
+
+    expect(normalized.packages["legacy-hashes"]).toEqual(expect.objectContaining({
+      outputCount: 1,
+      outputProvenanceVersion: 1,
+      outputProvenance: ["a".repeat(64)],
+      outputRecords: [expect.objectContaining({ entryPath: "episode.mkv", state: "complete" })]
+    }));
+  });
+
   it("skips adding persisted history entries when history retention is never", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
     tempDirs.push(dir);

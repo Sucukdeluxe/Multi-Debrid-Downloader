@@ -5,7 +5,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import AdmZip from "adm-zip";
 import { CleanupMode, ConflictMode } from "../shared/types";
 import { logger } from "./logger";
-import { removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
+import { removeDownloadLinkArtifactsFromScope, removeSampleArtifactsFromScope } from "./cleanup";
 import { PackageOutputScope, type ExtractOutputEvent } from "./package-output-scope";
 
 export type { ExtractOutputEvent } from "./package-output-scope";
@@ -170,7 +170,7 @@ type ExtractResumeMember = {
 type ExtractResumeOutput = {
   entryPath: string;
   path: string;
-  disposition: ExtractOutputEvent["disposition"];
+  disposition: Exclude<ExtractOutputEvent["disposition"], "skipped">;
 };
 
 type ExtractResumeArchive = {
@@ -369,7 +369,7 @@ export async function findArchiveCandidates(packageDir: string): Promise<string[
         continue;
       }
       if (entry.isDirectory()) {
-        if (!/^\.rd-(?:output|replace)-/i.test(entry.name)) {
+        if (!/^\.rd-(?:output|replace)-/i.test(entry.name) && !/^\.rd-trash$/i.test(entry.name)) {
           stack.push(fullPath);
         }
       } else if (entry.isFile()) {
@@ -2155,7 +2155,98 @@ export function buildExternalExtractArgs(
 
   const overwrite = mode === "overwrite" ? "-aoa" : mode === "rename" ? "-aou" : "-aos";
   const pass = password ? `-p${password}` : "-p";
-  return ["x", "-y", overwrite, pass, archivePath, `-o${targetDir}`];
+  return ["x", "-y", "-bb1", "-sccUTF-8", overwrite, pass, archivePath, `-o${targetDir}`];
+}
+
+export function parseNativeExtractOutput(
+  command: string,
+  line: string,
+  archivePath: string,
+  targetDir: string,
+  conflictMode: ConflictMode
+): ExtractOutputEvent[] {
+  const trimmed = String(line || "").trim();
+  let reportedPath = "";
+  if (extractorCommandKind(command) === "seven_zip") {
+    const match = trimmed.match(/^[-+]\s+(.+)$/);
+    reportedPath = match?.[1]?.trim() || "";
+  } else if (isRarNativeCommand(command)) {
+    const match = trimmed.match(/^Extracting\s+(.+?)(?:\s+OK)?$/i);
+    reportedPath = match?.[1]?.trim() || "";
+  }
+  if (!reportedPath) {
+    return [];
+  }
+  const targetRoot = path.resolve(targetDir);
+  const rawPath = reportedPath.replace(/^"|"$/g, "");
+  const outputPath = path.isAbsolute(rawPath) ? path.resolve(rawPath) : path.resolve(targetRoot, rawPath);
+  const relativePath = path.relative(targetRoot, outputPath);
+  if (!relativePath
+    || relativePath === ".."
+    || relativePath.startsWith(`..${path.sep}`)
+    || path.isAbsolute(relativePath)) {
+    return [];
+  }
+  const entryPath = relativePath.replace(/\\/g, "/");
+  if (entryPath.split("/").some((segment) => !segment || segment === "..")) {
+    return [];
+  }
+  const mode = effectiveConflictMode(conflictMode);
+  if (mode === "rename" && !/ \(\d+\)(?=\.[^./]+$|$)/.test(path.basename(outputPath))) {
+    return [];
+  }
+  const event: ExtractOutputEvent = {
+    version: 1,
+    archivePath: path.resolve(archivePath),
+    entryPath,
+    outputPath,
+    state: "complete",
+    disposition: mode === "rename" ? "renamed" : mode === "overwrite" ? "overwritten" : "written"
+  };
+  try {
+    const scope = new PackageOutputScope([targetRoot]);
+    scope.add(event);
+    return [event];
+  } catch {
+    return [];
+  }
+}
+
+function createNativeOutputCollector(
+  command: string,
+  archivePath: string,
+  targetDir: string,
+  conflictMode: ConflictMode,
+  onOutput?: (event: ExtractOutputEvent) => void
+): { push: (chunk: string) => void; finish: (state: ExtractOutputEvent["state"]) => void } {
+  let buffer = "";
+  const lines = new Set<string>();
+  const collectLine = (value: string): void => {
+    const trimmed = value.trim();
+    if ((extractorCommandKind(command) === "seven_zip" && /^[-+]\s+/.test(trimmed))
+      || (isRarNativeCommand(command) && /^Extracting\s+/i.test(trimmed))) {
+      lines.add(trimmed);
+    }
+  };
+  return {
+    push: (chunk) => {
+      buffer += chunk;
+      const parts = buffer.split(/[\r\n]+/);
+      buffer = parts.pop() || "";
+      for (const part of parts) {
+        collectLine(part);
+      }
+    },
+    finish: (state) => {
+      collectLine(buffer);
+      buffer = "";
+      for (const outputLine of lines) {
+        for (const event of parseNativeExtractOutput(command, outputLine, archivePath, targetDir, conflictMode)) {
+          onOutput?.({ ...event, state });
+        }
+      }
+    }
+  };
 }
 
 const extractRetryDelay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -2191,6 +2282,23 @@ async function runExternalExtractInner(
   const summarizeResultError = (errorText: string): string => cleanErrorText(errorText);
   let createErrorText = "";
   let createErrorPassword = "";
+  const runNativeAttempt = async (args: string[]): Promise<ExtractSpawnResult> => {
+    const outputs = createNativeOutputCollector(command, archivePath, targetDir, conflictMode, onOutput);
+    const result = await runExtractCommand(command, args, (chunk) => {
+      outputs.push(chunk);
+      const parsed = parseProgressPercent(chunk);
+      if (parsed === null) {
+        return;
+      }
+      const next = nextArchivePercent(bestPercent, parsed);
+      if (next !== bestPercent) {
+        bestPercent = next;
+        onArchiveProgress?.(bestPercent);
+      }
+    }, signal, timeoutMs);
+    outputs.finish(result.ok ? "complete" : "partial");
+    return result;
+  };
 
   if (forceFlatMode) {
     logger.info(`Flat-Modus direkt (gespeichert vom vorherigen Archiv): ${path.basename(archivePath)}`);
@@ -2201,12 +2309,7 @@ async function runExternalExtractInner(
       onLog?.("INFO", `Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length}: archive=${path.basename(archivePath)}, password=<redacted>`);
       logger.info(`Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length} für ${path.basename(archivePath)} (password=<redacted>)`);
       const args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password, usePerformanceFlags, hybridMode, true);
-      const result = await runExtractCommand(command, args, (chunk) => {
-        const parsed = parseProgressPercent(chunk);
-        if (parsed === null) return;
-        const next = nextArchivePercent(bestPercent, parsed);
-        if (next !== bestPercent) { bestPercent = next; onArchiveProgress?.(bestPercent); }
-      }, signal, timeoutMs);
+      const result = await runNativeAttempt(args);
       logger.info(`Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length}: ok=${result.ok}, bestPercent=${bestPercent}`);
       onLog?.("INFO", `Flach-Extraktion Ergebnis ${passwordAttempt}/${passwords.length}: archive=${path.basename(archivePath)}, ok=${result.ok}, timedOut=${result.timedOut}, missingCommand=${result.missingCommand}, bestPercent=${bestPercent}`);
       if (result.ok) { if (flatModeResult) flatModeResult.needed = true; onArchiveProgress?.(100); return password; }
@@ -2233,17 +2336,7 @@ async function runExternalExtractInner(
       onPasswordAttempt?.(passwordAttempt, passwords.length);
     }
     let args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password, usePerformanceFlags, hybridMode);
-    let result = await runExtractCommand(command, args, (chunk) => {
-      const parsed = parseProgressPercent(chunk);
-      if (parsed === null) {
-        return;
-      }
-      const next = nextArchivePercent(bestPercent, parsed);
-      if (next !== bestPercent) {
-        bestPercent = next;
-        onArchiveProgress?.(bestPercent);
-      }
-    }, signal, timeoutMs);
+    let result = await runNativeAttempt(args);
 
     if (!result.ok && usePerformanceFlags && isUnsupportedExtractorSwitchError(result.errorText)) {
       usePerformanceFlags = false;
@@ -2251,17 +2344,7 @@ async function runExternalExtractInner(
       onLog?.("WARN", `Entpacker ohne Performance-Flags fortgesetzt: ${path.basename(archivePath)}`);
       logger.warn(`Entpacker ohne Performance-Flags fortgesetzt: ${path.basename(archivePath)}`);
       args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password, false, hybridMode);
-      result = await runExtractCommand(command, args, (chunk) => {
-        const parsed = parseProgressPercent(chunk);
-        if (parsed === null) {
-          return;
-        }
-        const next = nextArchivePercent(bestPercent, parsed);
-        if (next !== bestPercent) {
-          bestPercent = next;
-          onArchiveProgress?.(bestPercent);
-        }
-      }, signal, timeoutMs);
+      result = await runNativeAttempt(args);
     }
 
       logger.info(
@@ -2324,12 +2407,7 @@ async function runExternalExtractInner(
       logger.info(`Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length} für ${path.basename(archivePath)} (password=<redacted>)`);
       onLog?.("INFO", `Flach-Extraktion Versuch ${passwordAttempt}/${flatPasswords.length}: archive=${path.basename(archivePath)}, password=<redacted>`);
       const args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password, usePerformanceFlags, hybridMode, true);
-      const result = await runExtractCommand(command, args, (chunk) => {
-        const parsed = parseProgressPercent(chunk);
-        if (parsed === null) return;
-        const next = nextArchivePercent(bestPercent, parsed);
-        if (next !== bestPercent) { bestPercent = next; onArchiveProgress?.(bestPercent); }
-      }, signal, timeoutMs);
+      const result = await runNativeAttempt(args);
       logger.info(`Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length}: ok=${result.ok}, bestPercent=${bestPercent}`);
       onLog?.("INFO", `Flach-Extraktion Ergebnis ${passwordAttempt}/${flatPasswords.length}: archive=${path.basename(archivePath)}, ok=${result.ok}, timedOut=${result.timedOut}, missingCommand=${result.missingCommand}, bestPercent=${bestPercent}`);
       if (result.ok) { if (flatModeResult) flatModeResult.needed = true; onArchiveProgress?.(100); return password; }
@@ -2439,6 +2517,12 @@ async function runExternalExtract(
     } else {
       onLog?.("INFO", `Legacy-Zielpfad unveraendert: archive=${archiveName}, effectiveTargetDir=${effectiveTargetDir}`);
     }
+    const legacyOnOutput = subst && onOutput
+      ? (event: ExtractOutputEvent): void => onOutput({
+        ...event,
+        outputPath: path.resolve(targetDir, ...event.entryPath.split("/"))
+      })
+      : onOutput;
 
     const command = await resolveExtractorCommand(archivePath);
     const legacyStartedAt = Date.now();
@@ -2449,7 +2533,7 @@ async function runExternalExtract(
         password = await runExternalExtractInner(
           command, archivePath, effectiveTargetDir, conflictMode, passwordCandidates,
           onArchiveProgress, signal, timeoutMs, hybridMode, onPasswordAttempt,
-          forceFlatMode, flatModeResult, onLog
+          forceFlatMode, flatModeResult, onLog, legacyOnOutput
         );
       } catch (primaryError) {
         const isRar = /\.rar$/i.test(archiveName) || /\.r\d{2,3}$/i.test(archiveName);
@@ -2465,7 +2549,7 @@ async function runExternalExtract(
             password = await runExternalExtractInner(
               alt, archivePath, effectiveTargetDir, conflictMode, passwordCandidates,
               onArchiveProgress, signal, timeoutMs, hybridMode, onPasswordAttempt,
-              forceFlatMode, flatModeResult, onLog
+              forceFlatMode, flatModeResult, onLog, legacyOnOutput
             );
           } else {
             throw primaryError;
@@ -2507,7 +2591,8 @@ async function runExternalExtract(
               onPasswordAttempt,
               forceFlatMode,
               flatModeResult,
-              onLog
+              onLog,
+              legacyOnOutput
             );
             logger.info(`Legacy-Retry erfolgreich: ${archiveName}`);
             onLog?.("INFO", `Legacy-Retry erfolgreich: ${archiveName}`);
@@ -3660,7 +3745,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
   }
 
   if (extracted > 0) {
-    const hasOutputAfter = await hasAnyFilesRecursive(options.targetDir);
+    const hasOutputAfter = outputScope.completeFiles().length > 0;
     const hadResumeProgress = resumeCompletedAtStart > 0;
     if (!hasOutputAfter && conflictMode !== "skip" && !hadResumeProgress) {
       lastError = "Keine entpackten Dateien erkannt";
@@ -3682,11 +3767,19 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
           logger.info(`Archive-Cleanup abgeschlossen: ${removedArchives} Datei(en) entfernt`);
         }
         if (options.removeLinks) {
-          const removedLinks = await removeDownloadLinkArtifacts(options.targetDir);
+          const removedLinks = await removeDownloadLinkArtifactsFromScope(outputScope.completeFiles(), {
+            shouldAbort: () => options.signal?.aborted === true,
+            rootDir: options.targetDir
+          });
+          outputScope.pruneMissing();
           logger.info(`Link-Artefakt-Cleanup: ${removedLinks} Datei(en) entfernt`);
         }
         if (options.removeSamples) {
-          const removedSamples = await removeSampleArtifacts(options.targetDir);
+          const removedSamples = await removeSampleArtifactsFromScope(outputScope.completeFiles(), {
+            shouldAbort: () => options.signal?.aborted === true,
+            rootDir: options.targetDir
+          });
+          outputScope.pruneMissing();
           logger.info(`Sample-Cleanup: ${removedSamples.files} Datei(en), ${removedSamples.dirs} Ordner entfernt`);
         }
       }

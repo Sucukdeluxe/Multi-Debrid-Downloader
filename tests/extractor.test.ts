@@ -17,6 +17,7 @@ import {
   shouldSerialRetryParallelFailures,
   findArchiveCandidates,
   orderExtractorCandidatesForArchive,
+  parseNativeExtractOutput,
   resolveExtractorBackendModeForArchive,
   resolveExtractorBackendMode,
   shouldFallbackLegacyRarToJvm,
@@ -1465,6 +1466,33 @@ describe("extractor", () => {
       expect(events[0]).toEqual(expect.objectContaining({ state: "complete", outputPath: path.join(targetDir, "first.txt") }));
       expect(fs.existsSync(path.join(targetDir, "first.txt"))).toBe(true);
       expect(fs.existsSync(path.join(targetDir, "second.txt"))).toBe(false);
+    });
+
+    it("strictly parses native output paths and fails closed for ambiguous rename output", () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-native-output-"));
+      tempDirs.push(root);
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(targetDir, { recursive: true });
+      const archivePath = path.join(root, "archive.7z");
+      const exactPath = path.join(targetDir, "folder", "episode.mkv");
+      fs.mkdirSync(path.dirname(exactPath), { recursive: true });
+      fs.writeFileSync(exactPath, "video");
+
+      expect(parseNativeExtractOutput("7z.exe", "- folder\\episode.mkv", archivePath, targetDir, "overwrite")).toEqual([
+        expect.objectContaining({ entryPath: "folder/episode.mkv", outputPath: exactPath, disposition: "overwritten" })
+      ]);
+      expect(parseNativeExtractOutput("UnRAR.exe", `Extracting  ${exactPath}  OK`, archivePath, targetDir, "overwrite")).toEqual([
+        expect.objectContaining({ entryPath: "folder/episode.mkv", outputPath: exactPath })
+      ]);
+      expect(parseNativeExtractOutput("7z.exe", "- ..\\foreign.mkv", archivePath, targetDir, "overwrite")).toEqual([]);
+
+      const renamedPath = path.join(targetDir, "episode (1).mkv");
+      fs.writeFileSync(path.join(targetDir, "episode.mkv"), "foreign");
+      fs.writeFileSync(renamedPath, "owned");
+      expect(parseNativeExtractOutput("7z.exe", "- episode.mkv", archivePath, targetDir, "rename")).toEqual([]);
+      expect(parseNativeExtractOutput("7z.exe", "- episode (1).mkv", archivePath, targetDir, "rename")).toEqual([
+        expect.objectContaining({ outputPath: renamedPath, disposition: "renamed" })
+      ]);
     });
 
   });

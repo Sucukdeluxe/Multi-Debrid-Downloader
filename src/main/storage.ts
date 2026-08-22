@@ -5,7 +5,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { getDebridLinkApiKeyIds } from "../shared/debrid-link-keys";
 import { getMegaDebridAccountIds, mergeMegaDebridCredentialPools, parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
-import { AppSettings, ArchiveOperationMetric, AudioStripSummary, BandwidthScheduleEntry, DailyStartOutcome, DebridAccountStatus, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, FailurePhase, HistoryEntry, HistoryRetentionMode, LogStorageLocation, PACKAGE_OUTPUT_PROVENANCE_VERSION, PackageEntry, PackagePriority, RemuxOperationMetric, SessionState } from "../shared/types";
+import { AppSettings, ArchiveOperationMetric, AudioStripSummary, BandwidthScheduleEntry, DailyStartOutcome, DebridAccountStatus, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, FailurePhase, HistoryEntry, HistoryRetentionMode, LogStorageLocation, PACKAGE_OUTPUT_PROVENANCE_VERSION, PackageEntry, PackageOutputRecord, PackagePriority, RemuxOperationMetric, SessionState } from "../shared/types";
 import { getProviderUsageDayKey } from "../shared/provider-daily-limits";
 import { getRealDebridAccountIds, normalizeRealDebridWebAccountIds, parseRealDebridApiAccounts, serializeRealDebridApiAccounts } from "../shared/real-debrid-accounts";
 import { defaultSettings } from "./constants";
@@ -838,6 +838,44 @@ function normalizeRemuxOperations(raw: unknown): RemuxOperationMetric[] {
   });
 }
 
+function normalizePackageOutputRecords(raw: unknown): PackageOutputRecord[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const records = new Map<string, PackageOutputRecord>();
+  for (const value of raw.slice(0, 1_000_000)) {
+    const record = asRecord(value);
+    if (!record || Number(record.version) !== 1) {
+      continue;
+    }
+    const archivePath = asText(record.archivePath);
+    const outputPath = asText(record.outputPath);
+    const entryPath = asText(record.entryPath).replace(/\\/g, "/");
+    const state = asText(record.state);
+    const disposition = asText(record.disposition);
+    if (!path.isAbsolute(archivePath)
+      || !path.isAbsolute(outputPath)
+      || !entryPath
+      || entryPath.startsWith("/")
+      || /^[a-zA-Z]:/.test(entryPath)
+      || entryPath.split("/").some((segment) => !segment || segment === "..")
+      || (state !== "complete" && state !== "partial")
+      || !["written", "overwritten", "renamed", "skipped"].includes(disposition)) {
+      continue;
+    }
+    const key = path.resolve(outputPath).toLocaleLowerCase("en-US");
+    records.set(key, {
+      version: 1,
+      archivePath: path.resolve(archivePath),
+      entryPath,
+      outputPath: path.resolve(outputPath),
+      state,
+      disposition: disposition as PackageOutputRecord["disposition"]
+    });
+  }
+  return [...records.values()];
+}
+
 function optionalClampedNumber(record: Record<string, unknown>, key: string, max = Number.MAX_SAFE_INTEGER): number | undefined {
   return Object.prototype.hasOwnProperty.call(record, key)
     ? clampNumber(record[key], 0, 0, max)
@@ -974,9 +1012,18 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
     const statusRaw = asText(pkg.status) as DownloadStatus;
     const status: DownloadStatus = VALID_DOWNLOAD_STATUSES.has(statusRaw) ? statusRaw : "queued";
     const rawItemIds = Array.isArray(pkg.itemIds) ? pkg.itemIds : [];
-    const outputProvenance = Array.isArray(pkg.outputProvenance)
+    const normalizedOutputProvenance = Array.isArray(pkg.outputProvenance)
       ? [...new Set(pkg.outputProvenance.map((value) => asText(value).toLowerCase()).filter((value) => /^[a-f0-9]{64}$/.test(value)))].slice(0, 1_000_000)
       : [];
+    const hasOutputProvenanceVersion = pkg.outputProvenanceVersion !== undefined && pkg.outputProvenanceVersion !== null;
+    const rawOutputProvenanceVersion = Number(pkg.outputProvenanceVersion);
+    const unknownOutputProvenanceVersion = hasOutputProvenanceVersion
+      && rawOutputProvenanceVersion !== PACKAGE_OUTPUT_PROVENANCE_VERSION;
+    const outputProvenance = unknownOutputProvenanceVersion ? [] : normalizedOutputProvenance;
+    const outputRecords = unknownOutputProvenanceVersion
+      || (!hasOutputProvenanceVersion && outputProvenance.length === 0)
+      ? []
+      : normalizePackageOutputRecords(pkg.outputRecords);
     packagesById[id] = {
       id,
       name: asText(pkg.name) || "Paket",
@@ -1010,8 +1057,12 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
       archiveOperations: normalizeArchiveOperations(pkg.archiveOperations),
       remuxOperations: normalizeRemuxOperations(pkg.remuxOperations),
       outputCount: outputProvenance.length,
-      outputProvenanceVersion: PACKAGE_OUTPUT_PROVENANCE_VERSION,
+      outputProvenanceVersion: unknownOutputProvenanceVersion
+        ? rawOutputProvenanceVersion
+        : PACKAGE_OUTPUT_PROVENANCE_VERSION,
       outputProvenance,
+      outputRecords,
+      outputScopeAdopted: Boolean(pkg.outputScopeAdopted),
       cleanupErrorCategory: asText(pkg.cleanupErrorCategory),
       resultGeneration: clampNumber(pkg.resultGeneration, 1, 1, Number.MAX_SAFE_INTEGER),
       createdAt: clampNumber(pkg.createdAt, now, 0, Number.MAX_SAFE_INTEGER),

@@ -61,7 +61,7 @@ function releaseTlsSkip(): void {
     delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
   }
 }
-import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
+import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifactsFromScope, removeSampleArtifactsFromScope } from "./cleanup";
 import { planDownloadCompletion, reconcileFinalizedSize, validateDownloadedFileCompletion } from "./download-completion";
 import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkDdownloadOnline, checkOneFichierLinks, checkRapidgatorOnline, fetchAllDebridHostInfo, filenameFromDdownloadUrlPath, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, isDdownloadLink, isOneFichierLink, isProviderDisabledForSelection, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown, type DdownloadCheckResult, type OneFichierCheckResult } from "./debrid";
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo, type ExtractProgressUpdate } from "./extractor";
@@ -82,6 +82,7 @@ import { compactErrorText, ensureDirPath, filenameFromUrl, formatEta, humanSize,
 import { mergeKnownTotalBytes } from "./download-size";
 import { DiskCapacityError, DiskReservationCoordinator, type DiskReservationLease } from "./disk-space";
 import { createRendererState } from "./renderer-state";
+import { PackageOutputScope } from "./package-output-scope";
 import {
   RollingAccountStatisticsAccumulator,
   addStatisticsActiveIntervalInPlace,
@@ -477,7 +478,6 @@ type DownloadManagerOptions = {
   onHistoryEntry?: HistoryEntryCallback;
   enqueueNotification?: (event: NotificationEvent) => Promise<void>;
   protectEmptyClobber?: boolean;
-  readOutputDirectory?: (directory: string) => Promise<fs.Dirent[]>;
 };
 
 type RunLifecycleContext = {
@@ -1930,7 +1930,7 @@ export class DownloadManager extends EventEmitter {
 
   private cleanupQueue: Promise<void> = Promise.resolve();
 
-  private packageOutputProvenanceTails = new Map<string, Promise<void>>();
+  private packageOutputScopes = new Map<string, PackageOutputScope>();
 
   private packagePostProcessQueue: Promise<void> = Promise.resolve();
 
@@ -2069,8 +2069,6 @@ export class DownloadManager extends EventEmitter {
 
   private enqueueNotificationCallback?: (event: NotificationEvent) => Promise<void>;
 
-  private readOutputDirectoryFn: (directory: string) => Promise<fs.Dirent[]>;
-
   public constructor(settings: AppSettings, session: SessionState, storagePaths: StoragePaths, options: DownloadManagerOptions = {}) {
     super();
     this.settings = settings;
@@ -2100,7 +2098,6 @@ export class DownloadManager extends EventEmitter {
     this.invalidateMegaSessionFn = options.invalidateMegaSession;
     this.onHistoryEntryCallback = options.onHistoryEntry;
     this.enqueueNotificationCallback = options.enqueueNotification;
-    this.readOutputDirectoryFn = options.readOutputDirectory || ((directory) => fs.promises.readdir(directory, { withFileTypes: true }));
     logger.info(`DownloadManager Init: ${Object.keys(this.session.packages).length} Pakete, ${this.itemCount} Items, cleanupPolicy=${this.settings.completedCleanupPolicy}`);
     for (const pkg of Object.values(this.session.packages)) {
       this.ensurePackageLogForPackage(pkg);
@@ -3515,7 +3512,7 @@ export class DownloadManager extends EventEmitter {
       const extractDirKey = pathKey(pkg.extractDir);
       const hasExtractedFiles = hasFilesByExtractDir.has(extractDirKey)
         ? Boolean(hasFilesByExtractDir.get(extractDirKey))
-        : await this.directoryHasAnyFiles(pkg.extractDir);
+        : this.getPackageOutputScope(pkg).completeFiles().some((filePath) => isPathInsideDir(filePath, pkg.extractDir));
       if (!hasFilesByExtractDir.has(extractDirKey)) {
         hasFilesByExtractDir.set(extractDirKey, hasExtractedFiles);
       }
@@ -4268,7 +4265,8 @@ export class DownloadManager extends EventEmitter {
 
       const hasExtractMarker = items.some((item) => isExtractedLabel(item.fullStatus));
       const extractDirIsUnique = (extractDirUsage.get(pathKey(pkg.extractDir)) || 0) === 1;
-      const hasExtractedOutput = extractDirIsUnique && await this.directoryHasAnyFiles(pkg.extractDir);
+      const hasExtractedOutput = extractDirIsUnique
+        && this.getPackageOutputScope(pkg).completeFiles().some((filePath) => isPathInsideDir(filePath, pkg.extractDir));
       if (!hasExtractMarker && !hasExtractedOutput) {
         continue;
       }
@@ -4384,103 +4382,6 @@ export class DownloadManager extends EventEmitter {
     return false;
   }
 
-  private async listStagedOutputFiles(stagingDir: string): Promise<string[]> {
-    const files: string[] = [];
-    const stack = [stagingDir];
-    while (stack.length > 0) {
-      const current = stack.pop() as string;
-      let entries: fs.Dirent[] = [];
-      try {
-        entries = await this.readOutputDirectoryFn(current);
-      } catch {
-        continue;
-      }
-      for (const entry of entries) {
-        const fullPath = path.join(current, entry.name);
-        if (entry.isSymbolicLink()) {
-          continue;
-        }
-        if (entry.isDirectory()) {
-          stack.push(fullPath);
-        } else if (entry.isFile()) {
-          files.push(fullPath);
-        }
-      }
-    }
-    return files.sort((left, right) => path.relative(stagingDir, left).localeCompare(path.relative(stagingDir, right)));
-  }
-
-  private async resolveStagedOutputDestination(targetDir: string, relativePath: string): Promise<string | null> {
-    const targetRoot = path.resolve(targetDir);
-    const destination = path.resolve(targetRoot, relativePath);
-    if (destination !== targetRoot && !destination.startsWith(`${targetRoot}${path.sep}`)) {
-      throw new Error(`Ungültiger Staging-Ausgabepfad: ${relativePath}`);
-    }
-    let existing: fs.Stats | null = null;
-    try {
-      existing = await fs.promises.lstat(destination);
-    } catch {
-    }
-    if (!existing) {
-      return destination;
-    }
-    if (this.settings.extractConflictMode === "skip" || this.settings.extractConflictMode === "ask") {
-      return null;
-    }
-    if (this.settings.extractConflictMode === "overwrite") {
-      return existing.isFile() ? destination : null;
-    }
-    const parsed = path.parse(destination);
-    for (let index = 1; index <= 10_000; index += 1) {
-      const candidate = path.join(parsed.dir, `${parsed.name} (${index})${parsed.ext}`);
-      try {
-        await fs.promises.lstat(candidate);
-      } catch {
-        return candidate;
-      }
-    }
-    throw new Error(`Staging-Rename-Limit erreicht für ${relativePath}`);
-  }
-
-  private async moveStagedOutputFile(sourcePath: string, destinationPath: string): Promise<void> {
-    await fs.promises.mkdir(path.dirname(destinationPath), { recursive: true });
-    try {
-      await fs.promises.rename(sourcePath, destinationPath);
-      return;
-    } catch (error) {
-      const code = String((error as NodeJS.ErrnoException)?.code || "");
-      if (this.settings.extractConflictMode !== "overwrite" || (code !== "EEXIST" && code !== "EPERM" && code !== "EACCES")) {
-        throw error;
-      }
-    }
-    const displacedPath = path.join(path.dirname(destinationPath), `.rd-replace-${uuidv4()}`);
-    await fs.promises.rename(destinationPath, displacedPath);
-    try {
-      await fs.promises.rename(sourcePath, destinationPath);
-    } catch (error) {
-      await fs.promises.rename(displacedPath, destinationPath);
-      throw error;
-    }
-    await fs.promises.rm(displacedPath, { force: true });
-  }
-
-  private async mergeStagedPackageOutputs(stagingDir: string, targetDir: string): Promise<string[]> {
-    const movedOutputs: string[] = [];
-    const stagedFiles = await this.listStagedOutputFiles(stagingDir);
-    for (const stagedFile of stagedFiles) {
-      const relativePath = path.relative(stagingDir, stagedFile);
-      const destination = await this.resolveStagedOutputDestination(targetDir, relativePath);
-      if (!destination) {
-        continue;
-      }
-      await this.moveStagedOutputFile(stagedFile, destination);
-      if (!isArchiveLikePath(destination) && !isIgnorableEmptyDirFileName(path.basename(destination))) {
-        movedOutputs.push(destination);
-      }
-    }
-    return movedOutputs;
-  }
-
   private normalizePackageProvenancePath(pkg: PackageEntry, sourcePath: string): string {
     const absolutePath = path.resolve(sourcePath);
     for (const rootDir of [pkg.outputDir, pkg.extractDir]) {
@@ -4490,81 +4391,128 @@ export class DownloadManager extends EventEmitter {
       }
       const relativePath = path.relative(path.resolve(root), absolutePath);
       if (!relativePath.startsWith(`..${path.sep}`) && relativePath !== ".." && !path.isAbsolute(relativePath)) {
-        const segments = relativePath.replace(/\\/g, "/").split("/");
-        if (/^\.rd-output-[^/]+$/i.test(segments[0] || "")) {
-          segments.shift();
-        }
-        return segments.join("/").toLocaleLowerCase("de-DE");
+        return relativePath.replace(/\\/g, "/").toLocaleLowerCase("de-DE");
       }
     }
     return absolutePath.replace(/\\/g, "/").toLocaleLowerCase("de-DE");
   }
 
-  private recordPackageOutputFiles(pkg: PackageEntry, outputFiles: readonly string[]): void {
-    const provenance = new Set(pkg.outputProvenance || []);
-    for (const outputFile of outputFiles) {
+  private syncPackageOutputScope(pkg: PackageEntry, scope: PackageOutputScope): void {
+    scope.pruneMissing();
+    const provenance = new Set<string>();
+    for (const outputFile of scope.files()) {
       const key = this.normalizePackageProvenancePath(pkg, outputFile);
       provenance.add(createHash("sha256").update(key).digest("hex"));
     }
     pkg.outputProvenance = [...provenance];
     pkg.outputProvenanceVersion = PACKAGE_OUTPUT_PROVENANCE_VERSION;
     pkg.outputCount = provenance.size;
+    pkg.outputRecords = scope.records();
   }
 
-  private async runWithPackageOutputProvenance<T>(pkg: PackageEntry, operation: (targetDir: string) => Promise<T>): Promise<T> {
-    const key = pathKey(pkg.extractDir);
+  private getPackageOutputScope(pkg: PackageEntry): PackageOutputScope {
+    const current = this.packageOutputScopes.get(pkg.id);
+    if (current) {
+      return current;
+    }
+    const roots = [pkg.outputDir, pkg.extractDir, String(this.settings.mkvLibraryDir || "").trim()].filter(Boolean);
+    const scope = new PackageOutputScope(roots);
+    if (pkg.outputProvenanceVersion === PACKAGE_OUTPUT_PROVENANCE_VERSION) {
+      for (const record of pkg.outputRecords || []) {
+        try {
+          scope.add(record);
+        } catch {
+        }
+      }
+    }
+    this.packageOutputScopes.set(pkg.id, scope);
+    return scope;
+  }
+
+  private async adoptLegacyPackageOutputsIfExclusive(pkg: PackageEntry, scope: PackageOutputScope): Promise<void> {
+    if (pkg.outputScopeAdopted || scope.records().length > 0) {
+      pkg.outputScopeAdopted = true;
+      return;
+    }
+    pkg.outputScopeAdopted = true;
+    if (pkg.outputProvenanceVersion !== undefined
+      && pkg.outputProvenanceVersion !== PACKAGE_OUTPUT_PROVENANCE_VERSION) {
+      return;
+    }
+    const packageExclusive = (this.settings.createExtractSubfolder || this.isPackageSpecificExtractDir(pkg))
+      && !this.isExtractDirSharedWithOtherPackages(pkg.id, pkg.extractDir);
+    if (!packageExclusive || !await this.existsAsync(pkg.extractDir)) {
+      return;
+    }
+    const candidates: string[] = [];
+    const stack = [pkg.extractDir];
+    let inspected = 0;
+    let overflow = false;
+    while (stack.length > 0 && !overflow) {
+      const current = stack.pop() as string;
+      let entries: fs.Dirent[] = [];
+      try {
+        entries = await fs.promises.readdir(current, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        inspected += 1;
+        if (inspected > 100_000) {
+          overflow = true;
+          break;
+        }
+        const fullPath = path.join(current, entry.name);
+        if (entry.isSymbolicLink()) {
+          continue;
+        }
+        if (entry.isDirectory()) {
+          if (!/^\.rd-(?:output|replace)-/i.test(entry.name) && !/^\.rd-trash$/i.test(entry.name)) {
+            stack.push(fullPath);
+          }
+        } else if (entry.isFile()
+          && !/^\.rd-(?:output|replace)-/i.test(entry.name)
+          && !/^\.rd_extract_progress(?:_[^.]+)?\.json$/i.test(entry.name)
+          && !isIgnorableEmptyDirFileName(entry.name)) {
+          candidates.push(fullPath);
+        }
+      }
+    }
+    if (overflow) {
+      return;
+    }
+    const archivePath = path.resolve(pkg.outputDir || pkg.extractDir, ".legacy-output-scope");
+    for (const outputPath of candidates) {
+      const entryPath = path.relative(pkg.extractDir, outputPath).replace(/\\/g, "/");
+      try {
+        scope.add({
+          version: 1,
+          archivePath,
+          entryPath,
+          outputPath,
+          state: "complete",
+          disposition: "written"
+        });
+      } catch {
+      }
+    }
+    this.syncPackageOutputScope(pkg, scope);
+  }
+
+  private async runWithPackageOutputProvenance<T>(
+    pkg: PackageEntry,
+    operation: (targetDir: string, scope: PackageOutputScope) => Promise<T>
+  ): Promise<T> {
     const packageWasInSession = this.session.packages[pkg.id] === pkg;
-    const previous = this.packageOutputProvenanceTails.get(key) || Promise.resolve();
-    let release!: () => void;
-    const current = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    this.packageOutputProvenanceTails.set(key, current);
-    let stagingDir = "";
-    let result: T | undefined;
-    let operationError: unknown;
-    let mergeError: unknown;
-    let mergeTurnReached = false;
+    const scope = this.getPackageOutputScope(pkg);
     try {
       await fs.promises.mkdir(pkg.extractDir, { recursive: true });
-      stagingDir = await fs.promises.mkdtemp(path.join(pkg.extractDir, ".rd-output-"));
-      try {
-        result = await operation(stagingDir);
-      } catch (error) {
-        operationError = error;
-      }
-      await previous;
-      mergeTurnReached = true;
-      try {
-        if (!packageWasInSession || this.session.packages[pkg.id] === pkg) {
-          const outputFiles = await this.mergeStagedPackageOutputs(stagingDir, pkg.extractDir);
-          this.recordPackageOutputFiles(pkg, outputFiles);
-        }
-      } catch (error) {
-        mergeError = error;
-      }
+      return await operation(pkg.extractDir, scope);
     } finally {
-      try {
-        if (stagingDir) {
-          await fs.promises.rm(stagingDir, { recursive: true, force: true });
-        }
-      } finally {
-        if (!mergeTurnReached) {
-          await previous;
-        }
-        release();
-        if (this.packageOutputProvenanceTails.get(key) === current) {
-          this.packageOutputProvenanceTails.delete(key);
-        }
+      if (!packageWasInSession || this.session.packages[pkg.id] === pkg) {
+        this.syncPackageOutputScope(pkg, scope);
       }
     }
-    if (operationError) {
-      throw operationError;
-    }
-    if (mergeError) {
-      throw mergeError;
-    }
-    return result as T;
   }
 
   private async removeEmptyDirectoryTree(rootDir: string): Promise<number> {
@@ -4622,13 +4570,8 @@ export class DownloadManager extends EventEmitter {
     return removed;
   }
 
-  private async collectFilesByExtensions(rootDir: string, extensions: Set<string>): Promise<string[]> {
-    if (!rootDir || extensions.size === 0) {
-      return [];
-    }
-    try {
-      await fs.promises.access(rootDir);
-    } catch {
+  private async collectFilesByExtensions(scope: PackageOutputScope, extensions: Set<string>): Promise<string[]> {
+    if (extensions.size === 0) {
       return [];
     }
 
@@ -4644,46 +4587,24 @@ export class DownloadManager extends EventEmitter {
     }
 
     const files: string[] = [];
-    const stack = [rootDir];
-    while (stack.length > 0) {
-      const current = stack.pop() as string;
-      let entries: fs.Dirent[] = [];
-      try {
-        entries = await fs.promises.readdir(current, { withFileTypes: true });
-      } catch {
+    for (const filePath of scope.completeFiles()) {
+      const fileName = path.basename(filePath);
+      if (fileName.startsWith("~rd") || !normalizedExtensions.has(path.extname(fileName).toLowerCase())) {
         continue;
       }
-
-      for (const entry of entries) {
-        const fullPath = path.join(current, entry.name);
-        if (entry.isSymbolicLink()) {
-          continue;
+      try {
+        const stat = await fs.promises.lstat(filePath);
+        if (stat.isFile() && !stat.isSymbolicLink()) {
+          files.push(filePath);
         }
-        if (entry.isDirectory()) {
-          stack.push(fullPath);
-          continue;
-        }
-        if (!entry.isFile()) {
-          continue;
-        }
-        // Never collect our own remux temp/orphan sidecars (~rd<token>.<ext>): a
-        // partial file left by a crash mid-remux must not be swept into the library.
-        if (entry.name.startsWith("~rd")) {
-          continue;
-        }
-        const extension = path.extname(entry.name).toLowerCase();
-        if (!normalizedExtensions.has(extension)) {
-          continue;
-        }
-        files.push(fullPath);
+      } catch {
       }
     }
-
     return files;
   }
 
-  private async collectVideoFiles(rootDir: string): Promise<string[]> {
-    return await this.collectFilesByExtensions(rootDir, SAMPLE_VIDEO_EXTENSIONS);
+  private async collectVideoFiles(scope: PackageOutputScope): Promise<string[]> {
+    return await this.collectFilesByExtensions(scope, SAMPLE_VIDEO_EXTENSIONS);
   }
 
   private async existsAsync(filePath: string): Promise<boolean> {
@@ -4780,6 +4701,7 @@ export class DownloadManager extends EventEmitter {
   private async renameCompanionFiles(
     sourceVideoPath: string,
     targetVideoPath: string,
+    scope: PackageOutputScope,
     pkg?: PackageEntry
   ): Promise<void> {
     const COMPANION_EXTENSIONS = new Set([".srt", ".ass", ".ssa", ".sub", ".idx", ".vtt", ".smi", ".nfo"]);
@@ -4790,17 +4712,9 @@ export class DownloadManager extends EventEmitter {
     if (!sourceVideoBase || !targetVideoBase || sourceVideoBase === targetVideoBase) {
       return;
     }
-    let entries: fs.Dirent[];
-    try {
-      entries = await fs.promises.readdir(sourceDir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      if (!entry.isFile() || entry.isSymbolicLink()) {
-        continue;
-      }
-      const entryName = entry.name;
+    const companionFiles = scope.completeFiles().filter((filePath) => pathKey(path.dirname(filePath)) === pathKey(sourceDir));
+    for (const sourceCompanionPath of companionFiles) {
+      const entryName = path.basename(sourceCompanionPath);
       const entryExt = path.extname(entryName).toLowerCase();
       if (!COMPANION_EXTENSIONS.has(entryExt)) {
         continue;
@@ -4813,13 +4727,13 @@ export class DownloadManager extends EventEmitter {
       }
       const suffixAfterBase = isExactMatch ? "" : entryBase.slice(sourceVideoBase.length);
       const newCompanionName = `${targetVideoBase}${suffixAfterBase}${entryExt}`;
-      const sourceCompanionPath = path.join(sourceDir, entryName);
       const targetCompanionPath = path.join(targetDir, newCompanionName);
       if (sourceCompanionPath === targetCompanionPath) {
         continue;
       }
       try {
         await this.renamePathWithExdevFallback(sourceCompanionPath, targetCompanionPath, { label: "companion" });
+        scope.replacePath(sourceCompanionPath, targetCompanionPath);
         logger.info(`Auto-Rename Companion: ${entryName} -> ${newCompanionName}`);
         if (pkg) {
           this.logPackageForPackage(pkg, "INFO", "Auto-Rename Companion umbenannt", {
@@ -4836,6 +4750,7 @@ export class DownloadManager extends EventEmitter {
   private async moveCompanionFiles(
     sourceVideoPath: string,
     targetVideoPath: string,
+    scope: PackageOutputScope,
     pkg?: PackageEntry
   ): Promise<void> {
     const COMPANION_EXTENSIONS = new Set([".srt", ".ass", ".ssa", ".sub", ".idx", ".vtt", ".smi"]);
@@ -4846,17 +4761,9 @@ export class DownloadManager extends EventEmitter {
     if (!sourceVideoBase || !targetVideoBase) {
       return;
     }
-    let entries: fs.Dirent[];
-    try {
-      entries = await fs.promises.readdir(sourceDir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      if (!entry.isFile() || entry.isSymbolicLink()) {
-        continue;
-      }
-      const entryName = entry.name;
+    const companionFiles = scope.completeFiles().filter((filePath) => pathKey(path.dirname(filePath)) === pathKey(sourceDir));
+    for (const sourceCompanionPath of companionFiles) {
+      const entryName = path.basename(sourceCompanionPath);
       const entryExt = path.extname(entryName).toLowerCase();
       if (!COMPANION_EXTENSIONS.has(entryExt)) {
         continue;
@@ -4869,13 +4776,13 @@ export class DownloadManager extends EventEmitter {
       }
       const suffixAfterBase = isExactMatch ? "" : entryBase.slice(sourceVideoBase.length);
       const newCompanionName = `${targetVideoBase}${suffixAfterBase}${entryExt}`;
-      const sourceCompanionPath = path.join(sourceDir, entryName);
       const targetCompanionPath = path.join(targetDir, newCompanionName);
       if (sourceCompanionPath === targetCompanionPath) {
         continue;
       }
       try {
         await this.moveFileWithExdevFallback(sourceCompanionPath, targetCompanionPath);
+        scope.replacePath(sourceCompanionPath, targetCompanionPath);
         logger.info(`MKV-Move Companion: ${entryName} -> ${newCompanionName}`);
         if (pkg) {
           this.logPackageForPackage(pkg, "INFO", "Companion mit-verschoben", {
@@ -5007,29 +4914,31 @@ export class DownloadManager extends EventEmitter {
 
   private async autoRenameExtractedVideoFiles(
     extractDir: string,
+    scope: PackageOutputScope,
     pkg?: PackageEntry,
     shouldAbort?: () => boolean,
     treatFilesAsStable = false
   ): Promise<number> {
     if (!pkg) {
-      return this.autoRenameExtractedVideoFilesImpl(extractDir, undefined, shouldAbort, treatFilesAsStable);
+      return this.autoRenameExtractedVideoFilesImpl(extractDir, scope, undefined, shouldAbort, treatFilesAsStable);
     }
     return this.chainPackageFileOp(pkg.id, () =>
-      this.autoRenameExtractedVideoFilesImpl(extractDir, pkg, shouldAbort, treatFilesAsStable)
+      this.autoRenameExtractedVideoFilesImpl(extractDir, scope, pkg, shouldAbort, treatFilesAsStable)
     );
   }
 
   private async keepGermanAudioOnly(
     extractDir: string,
+    scope: PackageOutputScope,
     pkg?: PackageEntry,
     shouldAbort?: () => boolean,
     signal?: AbortSignal
   ): Promise<number> {
     if (!pkg) {
-      return this.keepGermanAudioOnlyImpl(extractDir, undefined, shouldAbort, signal);
+      return this.keepGermanAudioOnlyImpl(extractDir, scope, undefined, shouldAbort, signal);
     }
     return this.chainPackageFileOp(pkg.id, () =>
-      this.keepGermanAudioOnlyImpl(extractDir, pkg, shouldAbort, signal)
+      this.keepGermanAudioOnlyImpl(extractDir, scope, pkg, shouldAbort, signal)
     );
   }
 
@@ -5039,6 +4948,7 @@ export class DownloadManager extends EventEmitter {
   // error never fails the package. Original is never lost (see video-processor).
   private async keepGermanAudioOnlyImpl(
     extractDir: string,
+    scope: PackageOutputScope,
     pkg?: PackageEntry,
     shouldAbort?: () => boolean,
     signal?: AbortSignal
@@ -5052,7 +4962,7 @@ export class DownloadManager extends EventEmitter {
       return 0;
     }
 
-    const videoFiles = await this.collectVideoFiles(extractDir);
+    const videoFiles = await this.collectVideoFiles(scope);
     const sampleTokenRe = /(^|[._\-\s])sample([._\-\s]|$)/i;
     const targets = videoFiles.filter((p) => {
       const name = path.basename(p);
@@ -5208,7 +5118,7 @@ export class DownloadManager extends EventEmitter {
       // already single-track. Skips/errors leave the file fully untouched so the
       // unprocessed state stays visible.
       if (result.action === "remuxed" || result.action === "kept-single") {
-        await this.stripDualLangFromFileName(sourcePath, pkg);
+        await this.stripDualLangFromFileName(sourcePath, scope, pkg);
       }
       if (pkg) {
         const completedAt = nowMs();
@@ -5237,7 +5147,7 @@ export class DownloadManager extends EventEmitter {
     return processed;
   }
 
-  private async stripDualLangFromFileName(sourcePath: string, pkg?: PackageEntry): Promise<void> {
+  private async stripDualLangFromFileName(sourcePath: string, scope: PackageOutputScope, pkg?: PackageEntry): Promise<void> {
     const dir = path.dirname(sourcePath);
     const name = path.basename(sourcePath);
     const newName = stripDualLangMarker(name);
@@ -5251,7 +5161,8 @@ export class DownloadManager extends EventEmitter {
     }
     try {
       await this.renamePathWithExdevFallback(sourcePath, targetPath, { label: "audio-strip" });
-      await this.renameCompanionFiles(sourcePath, targetPath, pkg);
+      scope.replacePath(sourcePath, targetPath);
+      await this.renameCompanionFiles(sourcePath, targetPath, scope, pkg);
       if (pkg) {
         const resolved = this.inferItemForMediaLog(pkg, targetPath, path.basename(targetPath));
         this.logRenameProcess(pkg, "INFO", "audio-strip", ".DL. aus Dateiname entfernt", { sourcePath, targetPath }, resolved.item, resolved.matchedBy);
@@ -5263,6 +5174,7 @@ export class DownloadManager extends EventEmitter {
 
   private async autoRenameExtractedVideoFilesImpl(
     extractDir: string,
+    scope: PackageOutputScope,
     pkg?: PackageEntry,
     shouldAbort?: () => boolean,
     treatFilesAsStable = false
@@ -5287,7 +5199,7 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
-    const videoFiles = await this.collectVideoFiles(extractDir);
+    const videoFiles = await this.collectVideoFiles(scope);
     logger.info(`Auto-Rename: ${videoFiles.length} Video-Dateien gefunden in ${extractDir}`);
     if (pkg) {
       this.logPackageForPackage(pkg, "INFO", "Auto-Rename Scan gestartet", {
@@ -5532,6 +5444,7 @@ export class DownloadManager extends EventEmitter {
       if (pathKey(targetPath) === pathKey(sourcePath) && targetPath !== sourcePath) {
         try {
           await this.renamePathWithExdevFallback(sourcePath, targetPath, { label: "auto-rename (Schreibweise)" });
+          scope.replacePath(sourcePath, targetPath);
           renamed += 1;
           if (pkg) {
             const resolved = resolveRenameItem(targetPath);
@@ -5593,6 +5506,7 @@ export class DownloadManager extends EventEmitter {
 
       try {
         await this.renamePathWithExdevFallback(sourcePath, targetPath, { label: "auto-rename" });
+        scope.replacePath(sourcePath, targetPath);
         if (pkg) {
           this.logPackageForPackage(pkg, "INFO", "Auto-Rename durchgeführt", {
             sourcePath,
@@ -5610,7 +5524,7 @@ export class DownloadManager extends EventEmitter {
         }
         logger.info(`Auto-Rename: ${sourceName} -> ${path.basename(targetPath)}`);
         renamed += 1;
-        await this.renameCompanionFiles(sourcePath, targetPath, pkg);
+        await this.renameCompanionFiles(sourcePath, targetPath, scope, pkg);
       } catch (error) {
         if (this.isPathLengthRenameError(error)) {
           const fallbackCandidates = [
@@ -5628,6 +5542,7 @@ export class DownloadManager extends EventEmitter {
             }
             try {
               await this.renamePathWithExdevFallback(sourcePath, fallbackPath, { label: "auto-rename (Pfadlaenge-Fallback)" });
+              scope.replacePath(sourcePath, fallbackPath);
               logger.warn(`Auto-Rename Fallback wegen Pfadlänge: ${sourceName} -> ${path.basename(fallbackPath)}`);
               renamed += 1;
               if (pkg) {
@@ -5687,46 +5602,58 @@ export class DownloadManager extends EventEmitter {
     await this.renamePathWithExdevFallback(sourcePath, targetPath, { label: "mkv-move" });
   }
 
-  private async cleanupNonMkvResidualFiles(rootDir: string, targetDir: string): Promise<number> {
-    if (!rootDir || !await this.existsAsync(rootDir)) {
-      return 0;
-    }
-
+  private async cleanupNonMkvResidualFiles(
+    scope: PackageOutputScope,
+    targetDir: string,
+    touchedParents: Set<string>
+  ): Promise<number> {
     let removed = 0;
-    const stack = [rootDir];
-    while (stack.length > 0) {
-      const current = stack.pop() as string;
-      let entries: fs.Dirent[] = [];
-      try {
-        entries = await fs.promises.readdir(current, { withFileTypes: true });
-      } catch {
+    for (const fullPath of scope.completeFiles()) {
+      if (isPathInsideDir(fullPath, targetDir)) {
         continue;
       }
-
-      for (const entry of entries) {
-        const fullPath = path.join(current, entry.name);
-        if (entry.isDirectory()) {
-          if (isPathInsideDir(fullPath, targetDir)) {
-            continue;
-          }
-          stack.push(fullPath);
-          continue;
-        }
-        if (!entry.isFile()) {
-          continue;
-        }
-        const extension = path.extname(entry.name).toLowerCase();
-        if (SAMPLE_VIDEO_EXTENSIONS.has(extension)) {
-          continue;
-        }
-        try {
-          await fs.promises.rm(toWindowsLongPathIfNeeded(fullPath), { force: true });
-          removed += 1;
-        } catch {
-        }
+      if (SAMPLE_VIDEO_EXTENSIONS.has(path.extname(fullPath).toLowerCase())) {
+        continue;
+      }
+      try {
+        await fs.promises.rm(toWindowsLongPathIfNeeded(fullPath), { force: true });
+        touchedParents.add(path.dirname(fullPath));
+        scope.removePath(fullPath);
+        removed += 1;
+      } catch {
       }
     }
+    return removed;
+  }
 
+  private async removeEmptyScopedParentChains(rootDir: string, parents: ReadonlySet<string>): Promise<number> {
+    const rootPath = path.resolve(rootDir);
+    const candidates = new Set<string>();
+    for (const parent of parents) {
+      let current = path.resolve(parent);
+      while (isPathInsideDir(current, rootPath) && pathKey(current) !== pathKey(rootPath)) {
+        candidates.add(current);
+        const next = path.dirname(current);
+        if (next === current) {
+          break;
+        }
+        current = next;
+      }
+    }
+    if (parents.size > 0) {
+      candidates.add(rootPath);
+    }
+    let removed = 0;
+    for (const directory of [...candidates].sort((left, right) => right.length - left.length)) {
+      try {
+        const entries = await fs.promises.readdir(directory);
+        if (entries.length === 0) {
+          await fs.promises.rmdir(directory);
+          removed += 1;
+        }
+      } catch {
+      }
+    }
     return removed;
   }
 
@@ -5965,6 +5892,26 @@ export class DownloadManager extends EventEmitter {
       return;
     }
     const targetDir = path.resolve(targetDirRaw);
+    const scope = this.getPackageOutputScope(pkg);
+    await this.adoptLegacyPackageOutputsIfExclusive(pkg, scope);
+    for (const itemId of pkg.itemIds) {
+      const item = this.session.items[itemId];
+      const outputPath = String(item?.targetPath || "").trim();
+      if (!item || item.status !== "completed" || !outputPath || !isPathInsideDir(outputPath, pkg.outputDir)) {
+        continue;
+      }
+      try {
+        scope.add({
+          version: 1,
+          archivePath: path.resolve(outputPath),
+          entryPath: path.basename(outputPath),
+          outputPath: path.resolve(outputPath),
+          state: "complete",
+          disposition: "written"
+        });
+      } catch {
+      }
+    }
 
     const sourceDirs: string[] = [];
     for (const dir of sourceDirsAll) {
@@ -6000,14 +5947,16 @@ export class DownloadManager extends EventEmitter {
 
     const seenBasenames = new Set<string>();
     const collected: { filePath: string; sourceRoot: string }[] = [];
-    for (const dir of sourceDirs) {
-      const filesInDir = await this.collectFilesByExtensions(dir, SAMPLE_VIDEO_EXTENSIONS);
-      for (const filePath of filesInDir) {
-        const baseLower = path.basename(filePath).toLowerCase();
-        if (seenBasenames.has(baseLower)) continue;
-        seenBasenames.add(baseLower);
-        collected.push({ filePath, sourceRoot: dir });
+    const scopedVideoFiles = await this.collectFilesByExtensions(scope, SAMPLE_VIDEO_EXTENSIONS);
+    for (const filePath of scopedVideoFiles) {
+      const sourceRoot = sourceDirs.find((dir) => isPathInsideDir(filePath, dir));
+      if (!sourceRoot) {
+        continue;
       }
+      const baseLower = path.basename(filePath).toLowerCase();
+      if (seenBasenames.has(baseLower)) continue;
+      seenBasenames.add(baseLower);
+      collected.push({ filePath, sourceRoot });
     }
     if (collected.length === 0) {
       logger.info(`MKV-Sammelordner: pkg=${pkg.name}, keine MKV gefunden`);
@@ -6059,6 +6008,7 @@ export class DownloadManager extends EventEmitter {
     let failed = 0;
     let sourceArtifactsChanged = false;
     let sourceCleanupRelevant = false;
+    const touchedParents = new Set<string>();
 
     for (const { filePath: sourcePath, sourceRoot } of mkvFiles) {
       if (shouldAbort?.()) {
@@ -6131,6 +6081,8 @@ export class DownloadManager extends EventEmitter {
           }, resolved.item, resolved.matchedBy);
           try {
             await fs.promises.unlink(sourcePath);
+            touchedParents.add(path.dirname(sourcePath));
+            scope.removePath(sourcePath);
             sourceArtifactsChanged = true;
           } catch {
           }
@@ -6149,6 +6101,8 @@ export class DownloadManager extends EventEmitter {
 
       try {
         await this.moveFileWithExdevFallback(sourcePath, targetPath);
+        touchedParents.add(path.dirname(sourcePath));
+        scope.replacePath(sourcePath, targetPath);
         moved += 1;
         sourceArtifactsChanged = true;
         sourceCleanupRelevant = true;
@@ -6163,7 +6117,7 @@ export class DownloadManager extends EventEmitter {
           targetPath,
           sourceSize
         }, resolved.item, resolved.matchedBy);
-        await this.moveCompanionFiles(sourcePath, targetPath, pkg);
+        await this.moveCompanionFiles(sourcePath, targetPath, scope, pkg);
       } catch (error) {
         failed += 1;
         logger.warn(`MKV verschieben fehlgeschlagen: ${sourcePath} -> ${targetPath} (${compactErrorText(error)})`);
@@ -6183,11 +6137,11 @@ export class DownloadManager extends EventEmitter {
     }
 
     if ((sourceArtifactsChanged || sourceCleanupRelevant) && cleanupDir && await this.existsAsync(cleanupDir)) {
-      const removedResidual = await this.cleanupNonMkvResidualFiles(cleanupDir, targetDir);
+      const removedResidual = await this.cleanupNonMkvResidualFiles(scope, targetDir, touchedParents);
       if (removedResidual > 0) {
         logger.info(`MKV-Sammelordner entfernte Restdateien: pkg=${pkg.name}, dir=${cleanupDir}, entfernt=${removedResidual}`);
       }
-      const removedDirs = await this.removeEmptyDirectoryTree(cleanupDir);
+      const removedDirs = await this.removeEmptyScopedParentChains(cleanupDir, touchedParents);
       if (removedDirs > 0) {
         logger.info(`MKV-Sammelordner entfernte leere Ordner: pkg=${pkg.name}, dir=${cleanupDir}, entfernt=${removedDirs}`);
       }
@@ -9140,6 +9094,8 @@ export class DownloadManager extends EventEmitter {
       pkg.outputCount = 0;
       pkg.outputProvenanceVersion = PACKAGE_OUTPUT_PROVENANCE_VERSION;
       pkg.outputProvenance = [];
+      pkg.outputRecords = [];
+      pkg.outputScopeAdopted = false;
     }
     for (const itemId of itemIds) {
       this.retryAfterByItem.delete(itemId);
@@ -12453,6 +12409,9 @@ export class DownloadManager extends EventEmitter {
       pkg.outputCount = 0;
       pkg.outputProvenanceVersion = PACKAGE_OUTPUT_PROVENANCE_VERSION;
       pkg.outputProvenance = [];
+      pkg.outputRecords = [];
+      pkg.outputScopeAdopted = false;
+      this.packageOutputScopes.delete(packageId);
       pkg.cleanupErrorCategory = "";
     }
     this.pruneFinalizedPackageResults();
@@ -12477,6 +12436,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   private pruneRemovedPackageResultState(packageId: string): void {
+    this.packageOutputScopes.delete(packageId);
     const prefix = `${packageId}:`;
     for (const key of [...this.finalizedPackageResults.keys()]) {
       if (key.startsWith(prefix)) {
@@ -13482,7 +13442,7 @@ export class DownloadManager extends EventEmitter {
         return 0;
       }
 
-      const result = await this.runWithPackageOutputProvenance(pkg, (targetDir) => extractPackageArchives({
+      const result = await this.runWithPackageOutputProvenance(pkg, (targetDir, scope) => extractPackageArchives({
         packageDir: pkg.outputDir,
         targetDir,
         cleanupMode: this.settings.cleanupMode,
@@ -13498,6 +13458,7 @@ export class DownloadManager extends EventEmitter {
         maxParallel: this.settings.maxParallelExtract || 2,
         extractCpuPriority: "high",
         onLog: (level, message) => this.logExtractionForItems(pkg, items, "Hybrid-Extractor", level, message),
+        onOutput: (event) => scope.add(event),
         onArchiveFailure: (failure) => {
           failedArchiveCategories.set(String(failure.archiveName || "").toLowerCase(), failure.category);
           const failedArchiveKey = readyArchiveKeyByName.get(String(failure.archiveName || "").toLowerCase());
@@ -13681,18 +13642,22 @@ export class DownloadManager extends EventEmitter {
           this.packageHybridPostProcessControllers.set(packageId, hybridSet);
         }
         hybridSet.add(hybridController);
+        const hybridOutputScope = this.getPackageOutputScope(pkg);
         const hybridShouldAbort = (): boolean => hybridController.signal.aborted || this.session.packages[packageId] !== pkg;
         const hybridHandle: { task?: Promise<void> } = {};
         const hybridTask = (async () => {
           try {
             await this.chainPackageFileOp(pkg.id, async () => {
-              await this.autoRenameExtractedVideoFilesImpl(pkg.extractDir, pkg, hybridShouldAbort);
-              await this.keepGermanAudioOnlyImpl(pkg.extractDir, pkg, hybridShouldAbort, hybridController.signal);
+              await this.autoRenameExtractedVideoFilesImpl(pkg.extractDir, hybridOutputScope, pkg, hybridShouldAbort);
+              await this.keepGermanAudioOnlyImpl(pkg.extractDir, hybridOutputScope, pkg, hybridShouldAbort, hybridController.signal);
               await this.collectMkvFilesToLibrary(packageId, pkg, hybridShouldAbort, true);
             });
           } catch (err) {
             logger.warn(`Hybrid Post-Extract (Rename+Collect) Fehler: pkg=${pkg.name}, reason=${compactErrorText(err)}`);
           } finally {
+            if (this.session.packages[packageId] === pkg) {
+              this.syncPackageOutputScope(pkg, hybridOutputScope);
+            }
             const set = this.packageHybridPostProcessControllers.get(packageId);
             if (set) {
               set.delete(hybridController);
@@ -13772,6 +13737,8 @@ export class DownloadManager extends EventEmitter {
     if (signal?.aborted) {
       return;
     }
+    const packageOutputScope = this.getPackageOutputScope(pkg);
+    await this.adoptLegacyPackageOutputsIfExclusive(pkg, packageOutputScope);
     const items = pkg.itemIds.map((id) => this.session.items[id]).filter(Boolean) as DownloadItem[];
 
     const recoveryStart = nowMs();
@@ -14057,7 +14024,7 @@ export class DownloadManager extends EventEmitter {
           entry.updatedAt = pendingAt;
         }
         this.emitState();
-        const result = await this.runWithPackageOutputProvenance(pkg, (targetDir) => extractPackageArchives({
+        const result = await this.runWithPackageOutputProvenance(pkg, (targetDir, scope) => extractPackageArchives({
           packageDir: pkg.outputDir,
           targetDir,
           cleanupMode: this.settings.cleanupMode,
@@ -14072,6 +14039,7 @@ export class DownloadManager extends EventEmitter {
           maxParallel: this.settings.maxParallelExtract || 2,
           extractCpuPriority: "high",
           onLog: (level, message) => this.logExtractionForItems(pkg, completedItems, "Extractor", level, message),
+          onOutput: (event) => scope.add(event),
           onArchiveFailure: (failure) => {
             fullFailedArchiveCategories.set(failure.archiveName.toLowerCase(), failure.category);
             if (autoRecoveredArchives.has(failure.archiveName)) {
@@ -14240,7 +14208,8 @@ export class DownloadManager extends EventEmitter {
           );
           pkg.status = "failed";
         } else {
-          const hasExtractedOutput = await this.directoryHasAnyFiles(pkg.extractDir);
+          const hasExtractedOutput = this.getPackageOutputScope(pkg).completeFiles()
+            .some((filePath) => isPathInsideDir(filePath, pkg.extractDir));
           const sourceExists = await this.existsAsync(pkg.outputDir);
           let finalStatusText = "";
 
@@ -14388,13 +14357,15 @@ export class DownloadManager extends EventEmitter {
       const item = this.session.items[itemId];
       return Boolean(item && item.status === "completed" && isExtractErrorLabel(item.fullStatus || ""));
     });
+    const outputScope = this.getPackageOutputScope(pkg);
+    await this.adoptLegacyPackageOutputsIfExclusive(pkg, outputScope);
 
     try {
       throwIfAborted();
       if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0 && this.settings.autoExtract) {
         const nestedBlacklist = /\.(iso|img|bin|dmg|vhd|vhdx|vmdk|wim)$/i;
-        const nestedCandidates = (await findArchiveCandidates(pkg.extractDir))
-          .filter((p) => !nestedBlacklist.test(p));
+        const nestedCandidates = outputScope.archiveFiles()
+          .filter((candidate) => isPathInsideDir(candidate, pkg.extractDir) && !nestedBlacklist.test(candidate));
         if (nestedCandidates.length > 0) {
           pkg.postProcessLabel = "Nested Entpacken...";
           this.emitState();
@@ -14405,7 +14376,7 @@ export class DownloadManager extends EventEmitter {
           });
           const nestedFailureCategories = new Map<string, string>();
           const nestedItems = pkg.itemIds.map((itemId) => this.session.items[itemId]).filter(Boolean) as DownloadItem[];
-          const nestedResult = await this.runWithPackageOutputProvenance(pkg, (targetDir) => extractPackageArchives({
+          const nestedResult = await this.runWithPackageOutputProvenance(pkg, (targetDir, scope) => extractPackageArchives({
             packageDir: pkg.extractDir,
             targetDir,
             cleanupMode: this.settings.cleanupMode,
@@ -14419,6 +14390,7 @@ export class DownloadManager extends EventEmitter {
             maxParallel: this.settings.maxParallelExtract || 2,
             extractCpuPriority: this.settings.extractCpuPriority,
             onLog: (level, message) => this.logPackageForPackage(pkg, level, `Nested-Extractor: ${message}`),
+            onOutput: (event) => scope.add(event),
             onArchiveFailure: (failure) => {
               nestedFailureCategories.set(failure.archiveName.toLowerCase(), failure.category);
             },
@@ -14448,12 +14420,12 @@ export class DownloadManager extends EventEmitter {
           extractDir: pkg.extractDir
         });
         throwIfAborted();
-        await this.autoRenameExtractedVideoFiles(pkg.extractDir, pkg, shouldAbort, true);
+        await this.autoRenameExtractedVideoFiles(pkg.extractDir, outputScope, pkg, shouldAbort, true);
         if (this.settings.keepGermanAudioOnly) {
           pkg.postProcessLabel = "Tonspur...";
           this.emitState();
           throwIfAborted();
-          await this.keepGermanAudioOnly(pkg.extractDir, pkg, shouldAbort, deferredController.signal);
+          await this.keepGermanAudioOnly(pkg.extractDir, outputScope, pkg, shouldAbort, deferredController.signal);
         }
       }
 
@@ -14488,13 +14460,15 @@ export class DownloadManager extends EventEmitter {
       if (extractedCount > 0 || alreadyMarkedExtracted) {
         throwIfAborted();
         if (this.settings.removeLinkFilesAfterExtract) {
-          const removedLinks = await removeDownloadLinkArtifacts(pkg.extractDir, { shouldAbort });
+          const removedLinks = await removeDownloadLinkArtifactsFromScope(outputScope.completeFiles(), { shouldAbort, rootDir: pkg.extractDir });
+          outputScope.pruneMissing();
           if (removedLinks > 0) {
             logger.info(`Deferred Link-Cleanup: pkg=${pkg.name}, entfernt=${removedLinks}`);
           }
         }
         if (this.settings.removeSamplesAfterExtract) {
-          const removedSamples = await removeSampleArtifacts(pkg.extractDir, { shouldAbort });
+          const removedSamples = await removeSampleArtifactsFromScope(outputScope.completeFiles(), { shouldAbort, rootDir: pkg.extractDir });
+          outputScope.pruneMissing();
           if (removedSamples.files > 0 || removedSamples.dirs > 0) {
             logger.info(`Deferred Sample-Cleanup: pkg=${pkg.name}, files=${removedSamples.files}, dirs=${removedSamples.dirs}`);
           }
@@ -14554,6 +14528,7 @@ export class DownloadManager extends EventEmitter {
         this.packageDeferredPostProcessAbortControllers.delete(packageId);
       }
       if (this.session.packages[packageId] === pkg && this.getPackagePostProcessVersion(packageId) === deferredVersion) {
+        this.syncPackageOutputScope(pkg, outputScope);
         pkg.postProcessLabel = undefined;
         pkg.updatedAt = nowMs();
         this.persistSoon();

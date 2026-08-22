@@ -2,7 +2,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanupCancelledPackageArtifacts, removeDownloadLinkArtifacts, removeSampleArtifacts } from "../src/main/cleanup";
+import {
+  cleanupCancelledPackageArtifacts,
+  removeDownloadLinkArtifacts,
+  removeDownloadLinkArtifactsFromScope,
+  removeSampleArtifacts,
+  removeSampleArtifactsFromScope
+} from "../src/main/cleanup";
 
 const tempDirs: string[] = [];
 
@@ -96,5 +102,31 @@ describe("cleanup", () => {
     const result = await removeSampleArtifacts(dir);
     expect(result.files).toBe(0);
     expect(fs.existsSync(outsideFile)).toBe(true);
+  });
+
+  it("removes only scoped link and sample outputs from a shared root", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-clean-scope-"));
+    tempDirs.push(dir);
+    const sampleDir = path.join(dir, "Samples");
+    fs.mkdirSync(sampleDir, { recursive: true });
+    const ownedLink = path.join(dir, "owned.url");
+    const foreignLink = path.join(dir, "foreign.url");
+    const ownedSample = path.join(sampleDir, "owned-sample.mkv");
+    const foreignSample = path.join(sampleDir, "foreign-sample.mkv");
+    fs.writeFileSync(ownedLink, "owned");
+    fs.writeFileSync(foreignLink, "foreign");
+    fs.writeFileSync(ownedSample, "owned");
+    fs.writeFileSync(foreignSample, "foreign");
+
+    const removedLinks = await removeDownloadLinkArtifactsFromScope([ownedLink]);
+    const removedSamples = await removeSampleArtifactsFromScope([ownedSample]);
+
+    expect(removedLinks).toBe(1);
+    expect(removedSamples).toEqual({ files: 1, dirs: 0 });
+    expect(fs.existsSync(ownedLink)).toBe(false);
+    expect(fs.existsSync(ownedSample)).toBe(false);
+    expect(fs.existsSync(foreignLink)).toBe(true);
+    expect(fs.existsSync(foreignSample)).toBe(true);
+    expect(fs.existsSync(sampleDir)).toBe(true);
   });
 });

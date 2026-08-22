@@ -587,7 +587,16 @@ describe("disk write recovery", () => {
       })
     });
 
-    const processed = await (manager as any).keepGermanAudioOnlyImpl(extractDir, pkg);
+    const outputScope = (manager as any).getPackageOutputScope(pkg);
+    outputScope.add({
+      version: 1,
+      archivePath: path.join(pkg.outputDir, "archive.rar"),
+      entryPath: path.basename(sourcePath),
+      outputPath: sourcePath,
+      state: "complete",
+      disposition: "written"
+    });
+    const processed = await (manager as any).keepGermanAudioOnlyImpl(extractDir, outputScope, pkg);
 
     expect(processed).toBe(0);
     expect(fs.existsSync(sourcePath)).toBe(true);
@@ -12758,7 +12767,7 @@ describe("download manager", () => {
     void manager;
   }, 20000);
 
-  it("collect cleans a raw file sitting OUTSIDE extractDir (Downloader-Unfertig case) AND its .srt follows the rename", async () => {
+  it("does not collect unscoped raw files outside the package extract directory", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
 
@@ -12808,10 +12817,9 @@ describe("download manager", () => {
 
     await (manager as any).collectMkvFilesToLibrary(packageId, session.packages[packageId], undefined, false);
 
-    const cleanBase = "Fritzie.-.Der.Himmel.muss.warten.S04E01.GERMAN.720p.WEB.AVC-4SF";
-    expect(fs.existsSync(path.join(mkvLibraryDir, `${cleanBase}.mkv`))).toBe(true);
-    expect(fs.existsSync(path.join(mkvLibraryDir, rawName))).toBe(false);
-    expect(fs.existsSync(path.join(mkvLibraryDir, `${cleanBase}.de.srt`))).toBe(true);
+    expect(fs.existsSync(path.join(outputDir, rawName))).toBe(true);
+    expect(fs.existsSync(path.join(outputDir, rawSrt))).toBe(true);
+    expect(fs.existsSync(mkvLibraryDir) ? fs.readdirSync(mkvLibraryDir) : []).toEqual([]);
 
     void manager;
   }, 20000);
@@ -13320,6 +13328,51 @@ describe("download manager", () => {
 
     void manager;
   }, 20000);
+
+  it("does not adopt unscoped files from an extraction root shared by packages", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-shared-adoption-"));
+    tempDirs.push(root);
+    const sharedExtractDir = path.join(root, "shared");
+    const libraryDir = path.join(root, "library");
+    fs.mkdirSync(sharedExtractDir, { recursive: true });
+    const foreignPath = path.join(sharedExtractDir, "foreign.mkv");
+    fs.writeFileSync(foreignPath, "foreign");
+    const session = emptySession();
+    for (const id of ["package-a", "package-b"]) {
+      session.packages[id] = {
+        id,
+        name: id,
+        outputDir: path.join(root, "downloads", id),
+        extractDir: sharedExtractDir,
+        status: "completed",
+        itemIds: [],
+        cancelled: false,
+        enabled: true,
+        outputProvenanceVersion: 1,
+        outputRecords: [],
+        createdAt: 1_000,
+        updatedAt: 1_000
+      };
+    }
+    session.packageOrder = ["package-a", "package-b"];
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        autoExtract: true,
+        createExtractSubfolder: true,
+        collectMkvToLibrary: true,
+        mkvLibraryDir: libraryDir
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await (manager as any).collectMkvFilesToLibrary("package-a", session.packages["package-a"]);
+
+    expect(fs.existsSync(foreignPath)).toBe(true);
+    expect(fs.existsSync(path.join(libraryDir, "foreign.mkv"))).toBe(false);
+    expect(session.packages["package-a"].outputRecords).toEqual([]);
+  });
 
   it("does NOT move bonus files from Extras subdirectory to flat library", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
@@ -15114,7 +15167,7 @@ describe("package priority ordering", () => {
 });
 
 describe("package lifecycle telemetry boundaries", () => {
-  it("captures shared-root provenance from package staging without scanning unrelated files", async () => {
+  it("captures direct package output scopes concurrently without scanning a shared root", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-output-provenance-lock-"));
     tempDirs.push(root);
     const extractDir = path.join(root, "extract");
@@ -15122,17 +15175,10 @@ describe("package lifecycle telemetry boundaries", () => {
     for (let index = 0; index < 2_000; index += 1) {
       fs.writeFileSync(path.join(extractDir, `foreign-${index}.txt`), "foreign");
     }
-    const traversedDirectories: string[] = [];
     const manager = new DownloadManager(
       { ...defaultSettings(), extractConflictMode: "overwrite" },
       emptySession(),
-      createStoragePaths(path.join(root, "state")),
-      {
-        readOutputDirectory: async (directory: string) => {
-          traversedDirectories.push(path.resolve(directory));
-          return fs.promises.readdir(directory, { withFileTypes: true });
-        }
-      } as any
+      createStoragePaths(path.join(root, "state"))
     );
     const createPackage = (id: string): PackageEntry => ({
       id,
@@ -15155,79 +15201,51 @@ describe("package lifecycle telemetry boundaries", () => {
     let enteredB = false;
     const state = manager as any;
 
-    const first = state.runWithPackageOutputProvenance(packageA, async (operationTarget = extractDir) => {
-      fs.writeFileSync(path.join(operationTarget, "package-a.mkv"), "a");
+    const first = state.runWithPackageOutputProvenance(packageA, async (operationTarget: string, scope: any) => {
+      const outputPath = path.join(operationTarget, "package-a.mkv");
+      fs.writeFileSync(outputPath, "a");
+      scope.add({
+        version: 1,
+        archivePath: path.join(packageA.outputDir, "archive.rar"),
+        entryPath: "package-a.mkv",
+        outputPath,
+        state: "complete",
+        disposition: "written"
+      });
       await gateA;
     });
     await vi.waitFor(() => expect(enteredB).toBe(false));
-    const second = state.runWithPackageOutputProvenance(packageB, async (operationTarget = extractDir) => {
+    const second = state.runWithPackageOutputProvenance(packageB, async (operationTarget: string, scope: any) => {
       enteredB = true;
-      fs.writeFileSync(path.join(operationTarget, "package-b.mkv"), "b");
+      const outputPath = path.join(operationTarget, "package-b.mkv");
+      fs.writeFileSync(outputPath, "b");
+      scope.add({
+        version: 1,
+        archivePath: path.join(packageB.outputDir, "archive.rar"),
+        entryPath: "package-b.mkv",
+        outputPath,
+        state: "complete",
+        disposition: "written"
+      });
     });
     await vi.waitFor(() => expect(enteredB).toBe(true));
     releaseA();
     await Promise.all([first, second]);
     expect(packageA.outputCount).toBe(1);
     expect(packageB.outputCount).toBe(1);
-    expect(traversedDirectories.length).toBeGreaterThan(0);
-    expect(traversedDirectories).not.toContain(path.resolve(extractDir));
-    expect(traversedDirectories.length).toBeLessThanOrEqual(4);
+    expect(packageA.outputRecords).toEqual([expect.objectContaining({ outputPath: path.join(extractDir, "package-a.mkv") })]);
+    expect(packageB.outputRecords).toEqual([expect.objectContaining({ outputPath: path.join(extractDir, "package-b.mkv") })]);
   });
 
-  it.each([
-    ["overwrite", "package", ["episode.mkv"]],
-    ["skip", "foreign", ["episode.mkv"]],
-    ["rename", "foreign", ["episode (1).mkv", "episode.mkv"]]
-  ] as const)("preserves %s conflicts while merging staged package outputs", async (conflictMode, expectedOriginal, expectedFiles) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), `rd-output-${conflictMode}-`));
-    tempDirs.push(root);
-    const extractDir = path.join(root, "extract");
-    fs.mkdirSync(extractDir, { recursive: true });
-    fs.writeFileSync(path.join(extractDir, "episode.mkv"), "foreign");
-    const manager = new DownloadManager(
-      { ...defaultSettings(), extractConflictMode: conflictMode },
-      emptySession(),
-      createStoragePaths(path.join(root, "state"))
-    );
-    const pkg: PackageEntry = {
-      id: `conflict-${conflictMode}`,
-      name: `conflict-${conflictMode}`,
-      outputDir: path.join(root, "downloads"),
-      extractDir,
-      status: "completed",
-      itemIds: [],
-      cancelled: false,
-      enabled: true,
-      createdAt: 1_000,
-      updatedAt: 1_000
-    };
-    const state = manager as any;
-
-    await state.runWithPackageOutputProvenance(pkg, async (operationTarget = extractDir) => {
-      fs.writeFileSync(path.join(operationTarget, "episode.mkv"), "package");
-    });
-
-    expect(fs.readFileSync(path.join(extractDir, "episode.mkv"), "utf8")).toBe(expectedOriginal);
-    expect(fs.readdirSync(extractDir).filter((name) => name.endsWith(".mkv")).sort()).toEqual([...expectedFiles]);
-    expect(pkg.outputCount).toBe(conflictMode === "skip" ? 0 : 1);
-  });
-
-  it("retains partial staged outputs deterministically when extraction aborts", async () => {
+  it("retains directly reported partial outputs when extraction aborts", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-output-abort-"));
     tempDirs.push(root);
     const extractDir = path.join(root, "extract");
     fs.mkdirSync(extractDir, { recursive: true });
-    const traversedDirectories: string[] = [];
     const manager = new DownloadManager(
       defaultSettings(),
       emptySession(),
-      createStoragePaths(path.join(root, "state")),
-      {
-        readOutputDirectory: async (directory: string) => {
-          traversedDirectories.push(path.resolve(directory));
-          return fs.promises.readdir(directory, { withFileTypes: true });
-        }
-      } as any
+      createStoragePaths(path.join(root, "state"))
     );
     const pkg: PackageEntry = {
       id: "aborted-output",
@@ -15243,16 +15261,23 @@ describe("package lifecycle telemetry boundaries", () => {
     };
     const state = manager as any;
 
-    await expect(state.runWithPackageOutputProvenance(pkg, async (operationTarget = extractDir) => {
-      fs.writeFileSync(path.join(operationTarget, "partial.mkv"), "partial");
+    await expect(state.runWithPackageOutputProvenance(pkg, async (operationTarget: string, scope: any) => {
+      const outputPath = path.join(operationTarget, "partial.mkv");
+      fs.writeFileSync(outputPath, "partial");
+      scope.add({
+        version: 1,
+        archivePath: path.join(pkg.outputDir, "archive.rar"),
+        entryPath: "partial.mkv",
+        outputPath,
+        state: "partial",
+        disposition: "written"
+      });
       throw new Error("aborted:extract");
     })).rejects.toThrow("aborted:extract");
 
     expect(fs.readFileSync(path.join(extractDir, "partial.mkv"), "utf8")).toBe("partial");
     expect(pkg.outputCount).toBe(1);
-    expect(traversedDirectories.length).toBeGreaterThan(0);
-    expect(traversedDirectories).not.toContain(path.resolve(extractDir));
-    expect(fs.readdirSync(extractDir).filter((name) => name.startsWith(".rd-output-"))).toEqual([]);
+    expect(pkg.outputRecords).toEqual([expect.objectContaining({ state: "partial", outputPath: path.join(extractDir, "partial.mkv") })]);
   });
 
   it("uses normalized nested item paths for archive identity and leaves empty item provenance at zero", () => {

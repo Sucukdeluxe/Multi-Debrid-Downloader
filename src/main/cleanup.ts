@@ -8,6 +8,53 @@ async function yieldToLoop(): Promise<void> {
   });
 }
 
+async function isDownloadLinkArtifact(filePath: string): Promise<boolean> {
+  const fileName = path.basename(filePath);
+  const ext = path.extname(fileName).toLowerCase();
+  const name = fileName.toLowerCase();
+  if (LINK_ARTIFACT_EXTENSIONS.has(ext)) {
+    return true;
+  }
+  if (![".txt", ".html", ".htm", ".nfo"].includes(ext)
+    || !/[._\- ](links?|downloads?|urls?|dlc)([._\- ]|$)/i.test(name)) {
+    return false;
+  }
+  try {
+    const stat = await fs.promises.lstat(filePath);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_LINK_ARTIFACT_BYTES) {
+      return false;
+    }
+    const text = await fs.promises.readFile(filePath, "utf8");
+    return /https?:\/\//i.test(text);
+  } catch {
+    return false;
+  }
+}
+
+async function removeEmptyParentChains(rootDir: string, parents: ReadonlySet<string>): Promise<number> {
+  const rootPath = path.resolve(rootDir);
+  const candidates = new Set<string>();
+  for (const parent of parents) {
+    let current = path.resolve(parent);
+    while (current !== rootPath && current.startsWith(`${rootPath}${path.sep}`)) {
+      candidates.add(current);
+      current = path.dirname(current);
+    }
+  }
+  let removed = 0;
+  for (const directory of [...candidates].sort((left, right) => right.length - left.length)) {
+    try {
+      const entries = await fs.promises.readdir(directory);
+      if (entries.length === 0) {
+        await fs.promises.rmdir(directory);
+        removed += 1;
+      }
+    } catch {
+    }
+  }
+  return removed;
+}
+
 export function isArchiveOrTempFile(filePath: string): boolean {
   const lowerName = path.basename(filePath).toLowerCase();
   const ext = path.extname(lowerName);
@@ -126,22 +173,7 @@ export async function removeDownloadLinkArtifacts(
         continue;
       }
 
-      const ext = path.extname(entry.name).toLowerCase();
-      const name = entry.name.toLowerCase();
-      let shouldDelete = LINK_ARTIFACT_EXTENSIONS.has(ext);
-      if (!shouldDelete && [".txt", ".html", ".htm", ".nfo"].includes(ext)) {
-        if (/[._\- ](links?|downloads?|urls?|dlc)([._\- ]|$)/i.test(name)) {
-          try {
-            const stat = await fs.promises.stat(full);
-            if (stat.size <= MAX_LINK_ARTIFACT_BYTES) {
-              const text = await fs.promises.readFile(full, "utf8");
-              shouldDelete = /https?:\/\//i.test(text);
-            }
-          } catch {
-            shouldDelete = false;
-          }
-        }
-      }
+      const shouldDelete = await isDownloadLinkArtifact(full);
 
       if (shouldDelete) {
         try {
@@ -151,6 +183,32 @@ export async function removeDownloadLinkArtifacts(
         }
       }
     }
+  }
+  return removed;
+}
+
+export async function removeDownloadLinkArtifactsFromScope(
+  outputFiles: readonly string[],
+  options: { shouldAbort?: () => boolean; rootDir?: string } = {}
+): Promise<number> {
+  let removed = 0;
+  const parents = new Set<string>();
+  for (const outputFile of outputFiles) {
+    if (options.shouldAbort?.()) {
+      return removed;
+    }
+    if (!await isDownloadLinkArtifact(outputFile)) {
+      continue;
+    }
+    try {
+      await fs.promises.rm(outputFile, { force: true });
+      parents.add(path.dirname(outputFile));
+      removed += 1;
+    } catch {
+    }
+  }
+  if (options.rootDir) {
+    await removeEmptyParentChains(options.rootDir, parents);
   }
   return removed;
 }
@@ -262,5 +320,56 @@ export async function removeSampleArtifacts(
     }
   }
 
+  return { files: removedFiles, dirs: removedDirs };
+}
+
+export async function removeSampleArtifactsFromScope(
+  outputFiles: readonly string[],
+  options: { shouldAbort?: () => boolean; rootDir?: string } = {}
+): Promise<{ files: number; dirs: number }> {
+  let removedFiles = 0;
+  const candidateParents = new Set<string>();
+  for (const outputFile of outputFiles) {
+    if (options.shouldAbort?.()) {
+      return { files: removedFiles, dirs: 0 };
+    }
+    const fileName = path.basename(outputFile);
+    const stem = path.parse(fileName).name.toLowerCase();
+    const ext = path.extname(fileName).toLowerCase();
+    const parentDir = path.dirname(outputFile);
+    const inSampleDir = SAMPLE_DIR_NAMES.has(path.basename(parentDir).toLowerCase());
+    if (!inSampleDir && !(SAMPLE_VIDEO_EXTENSIONS.has(ext) && SAMPLE_TOKEN_RE.test(stem))) {
+      continue;
+    }
+    try {
+      const stat = await fs.promises.lstat(outputFile);
+      if (!stat.isFile() || stat.isSymbolicLink()) {
+        continue;
+      }
+      await fs.promises.rm(outputFile, { force: true });
+      removedFiles += 1;
+      if (inSampleDir) {
+        candidateParents.add(parentDir);
+      }
+    } catch {
+    }
+  }
+  let removedDirs = 0;
+  for (const parentDir of candidateParents) {
+    if (options.shouldAbort?.()) {
+      return { files: removedFiles, dirs: removedDirs };
+    }
+    try {
+      const entries = await fs.promises.readdir(parentDir);
+      if (entries.length === 0) {
+        await fs.promises.rmdir(parentDir);
+        removedDirs += 1;
+      }
+    } catch {
+    }
+  }
+  if (options.rootDir) {
+    removedDirs += await removeEmptyParentChains(options.rootDir, candidateParents);
+  }
   return { files: removedFiles, dirs: removedDirs };
 }
