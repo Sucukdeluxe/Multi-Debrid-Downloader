@@ -2,6 +2,29 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.60] - 2026-08-22
+
+### Manual extraction
+
+- Extract a selected archive part together with its complete multipart set instead of requiring the parent package action.
+- Extract multiple selected packages in one action and keep each archive set isolated by its full source path.
+- Re-read the current archive password list for every manual retry and keep unrelated failed archives untouched.
+- Keep child and package extraction states synchronized through pending, active, completed, and failed phases.
+
+### Download status and controls
+
+- Separate download completion from post-processing with a stable 90 percent download and 10 percent extraction progress model.
+- Replace ambiguous package counters with actionable download, retry, extraction, disk-wait, and failure summaries.
+- Restore pointer and keyboard sorting for every Downloads column, including the visible service column.
+- Preserve verified availability while downloads start or retry and infer online state for active or completed transfers.
+
+### Runtime reliability
+
+- Release cancelled provider conversion work promptly so Stop returns to a startable state without assigning false account cooldowns.
+- Prevent stale Mega-Debrid web jobs from blocking later conversions after cancellation.
+- Route link-address copying through the validated Electron clipboard bridge with explicit success and failure feedback.
+- Clear manual extraction state when packages or the complete queue are removed.
+
 ## [2.0.59] - 2026-08-22
 
 ### Extraction reliability
