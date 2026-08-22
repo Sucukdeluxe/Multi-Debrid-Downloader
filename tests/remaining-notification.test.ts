@@ -1,6 +1,8 @@
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { once } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DownloadManager } from "../src/main/download-manager";
 import { defaultSettings } from "../src/main/constants";
@@ -37,6 +39,7 @@ function snapshot(overrides: Partial<RunRemainingSnapshot> = {}): RunRemainingSn
     openItems: 2,
     openPackages: 1,
     unknownCount: 0,
+    finalizingItems: 0,
     speedBps: 1024 ** 2,
     etaSeconds: 51 * 1024,
     ...overrides
@@ -179,6 +182,158 @@ describe("remaining threshold evaluation", () => {
 });
 
 describe("run-scoped remaining notifications", () => {
+  it("waits for real HTTP finalization before crossing and keeps genuine remaining work in the event", async () => {
+    const payload = Buffer.alloc(256 * 1024, 7);
+    const server = http.createServer((_request, response) => {
+      response.statusCode = 200;
+      response.setHeader("Accept-Ranges", "bytes");
+      response.setHeader("Content-Length", String(payload.length));
+      response.end(payload);
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+
+    const { manager, session, events, settings } = setupManager({
+      notifyRemainingThresholdGb: (128 * 1024) / GIB
+    });
+    const downloadingPackage = addPackage(session, "http-final-package", payload.length);
+    downloadingPackage.outputDir = path.join(settings.outputDir, downloadingPackage.id);
+    downloadingPackage.extractDir = path.join(settings.extractDir, downloadingPackage.id);
+    const remainingPackage = addPackage(session, "genuine-remaining-package", 64 * 1024);
+    remainingPackage.outputDir = path.join(settings.outputDir, remainingPackage.id);
+    remainingPackage.extractDir = path.join(settings.extractDir, remainingPackage.id);
+    const downloadingItem = session.items[downloadingPackage.itemIds[0]];
+    const state = internal(manager);
+    vi.spyOn(state, "ensureScheduler").mockResolvedValue(undefined);
+    state.debridService.unrestrictLink = vi.fn(async () => ({
+      fileName: downloadingItem.fileName,
+      directUrl: `http://127.0.0.1:${address.port}/download`,
+      fileSize: payload.length,
+      retriesUsed: 0,
+      provider: "realdebrid",
+      providerLabel: "Real-Debrid"
+    }));
+    const eventStatuses: string[] = [];
+    state.enqueueNotificationCallback = async (event: NotificationEvent) => {
+      events.push(event);
+      eventStatuses.push(downloadingItem.status);
+    };
+
+    try {
+      await manager.start();
+      const active = {
+        itemId: downloadingItem.id,
+        packageId: downloadingPackage.id,
+        abortController: new AbortController(),
+        abortReason: "none",
+        resumable: true,
+        nonResumableCounted: false,
+        stallRetries: 0,
+        genericErrorRetries: 0,
+        unrestrictRetries: 0
+      };
+      state.activeTasks.set(downloadingItem.id, active);
+
+      await state.processItem(active);
+      await flushNotifications();
+
+      expect(downloadingItem.status).toBe("completed");
+      expect(events.filter((event) => event.type === "remaining_threshold_crossed")).toHaveLength(1);
+      expect(eventStatuses).toEqual(["completed"]);
+      expect(events[0].payload.fields).toContainEqual({ name: "Restmenge", value: "64 KB", inline: true });
+      expect(events[0].payload.fields).toContainEqual({ name: "Offene Dateien", value: "1", inline: true });
+    } finally {
+      manager.stop();
+      server.close();
+      await once(server, "close");
+    }
+  }, 15_000);
+
+  it("creates a stable run context when public download work joins a postprocess-only start", async () => {
+    const { manager, session, events } = setupManager();
+    const postprocessPackage = addPackage(session, "postprocess-only-package", GIB, GIB);
+    const postprocessItem = session.items[postprocessPackage.itemIds[0]];
+    postprocessItem.status = "completed";
+    postprocessItem.progressPercent = 100;
+    postprocessItem.fullStatus = "Fertig";
+    postprocessPackage.status = "completed";
+    const state = internal(manager);
+    vi.spyOn(state, "ensureScheduler").mockResolvedValue(undefined);
+    let releasePostprocess = (): void => {};
+    const postprocessGate = new Promise<void>((resolve) => {
+      releasePostprocess = resolve;
+    });
+    state.handlePackagePostProcessing = vi.fn(async () => postprocessGate);
+    const postprocessTask = state.runPackagePostProcessing(postprocessPackage.id);
+    await Promise.resolve();
+
+    await manager.start();
+    expect(session.running).toBe(true);
+    expect(state.activeRunContextId).toBeNull();
+
+    manager.addPackages([{
+      name: "late-download-package",
+      links: ["https://dummy/late-download.bin"],
+      fileNames: ["late-download.bin"]
+    }]);
+    const latePackageId = session.packageOrder.find((packageId) => packageId !== postprocessPackage.id);
+    if (!latePackageId) {
+      throw new Error("late package missing");
+    }
+    const latePackage = session.packages[latePackageId];
+    const lateItem = session.items[latePackage.itemIds[0]];
+    lateItem.totalBytes = 51 * GIB;
+    await manager.startItems([lateItem.id]);
+    const runContextId = state.activeRunContextId;
+    expect(runContextId).toEqual(expect.any(String));
+    expect(state.runContexts.get(runContextId)?.packageGenerations.has(latePackage.id)).toBe(true);
+
+    lateItem.downloadedBytes = 2 * GIB;
+    manager.setPackagePriority(latePackage.id, "high");
+    await flushNotifications();
+
+    expect(state.activeRunContextId).toBe(runContextId);
+    expect(events.filter((event) => event.type === "remaining_threshold_crossed")).toHaveLength(1);
+
+    manager.stop();
+    releasePostprocess();
+    await postprocessTask;
+  });
+
+  it("derives speed and ETA only from open enabled current run items", async () => {
+    const { manager, session } = setupManager();
+    const activePackage = addPackage(session, "scoped-speed-package", 60 * GIB, 10 * GIB);
+    const disabledPackage = addPackage(session, "disabled-speed-package", 100 * GIB);
+    const removedPackage = addPackage(session, "removed-speed-package", 200 * GIB);
+    const activeItem = session.items[activePackage.itemIds[0]];
+    const disabledItem = session.items[disabledPackage.itemIds[0]];
+    const removedItem = session.items[removedPackage.itemIds[0]];
+    activeItem.speedBps = 2 * GIB;
+    disabledItem.speedBps = 100 * GIB;
+    removedItem.speedBps = 200 * GIB;
+    const state = internal(manager);
+    vi.spyOn(state, "ensureScheduler").mockResolvedValue(undefined);
+
+    await manager.start();
+    disabledPackage.enabled = false;
+    delete session.items[removedItem.id];
+    state.speedBytesLastWindow = 500 * GIB;
+
+    expect(state.buildRunRemainingSnapshot()).toEqual({
+      remainingBytes: 50 * GIB,
+      openItems: 1,
+      openPackages: 1,
+      unknownCount: 0,
+      finalizingItems: 0,
+      speedBps: 2 * GIB,
+      etaSeconds: 25
+    });
+  });
+
   it("calculates known remainder, speed and ETA only from open enabled items in the active run", async () => {
     const { manager, session } = setupManager();
     const active = addPackage(session, "active-package", 60 * GIB, 9 * GIB);
@@ -208,6 +363,7 @@ describe("run-scoped remaining notifications", () => {
     vi.spyOn(state, "ensureScheduler").mockResolvedValue(undefined);
 
     await manager.start({ excludePackageIds: new Set([notStarted.id]) });
+    session.items[active.itemIds[0]].speedBps = GIB;
     state.speedBytesLastWindow = GIB;
 
     expect(state.buildRunRemainingSnapshot()).toEqual({
@@ -215,6 +371,7 @@ describe("run-scoped remaining notifications", () => {
       openItems: 2,
       openPackages: 1,
       unknownCount: 0,
+      finalizingItems: 0,
       speedBps: GIB,
       etaSeconds: 51
     });
@@ -230,6 +387,7 @@ describe("run-scoped remaining notifications", () => {
     vi.spyOn(state, "ensureScheduler").mockResolvedValue(undefined);
 
     await manager.start();
+    item.speedBps = GIB;
     state.speedBytesLastWindow = GIB;
     item.downloadedBytes = GIB;
     state.evaluateRemainingNotification();

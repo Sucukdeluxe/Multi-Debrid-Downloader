@@ -11784,10 +11784,12 @@ export class DownloadManager extends EventEmitter {
   }
 
   private trackActiveRunPackage(packageId: string): void {
-    if (!this.activeRunContextId) {
-      return;
+    let context = this.activeRunContextId ? this.runContexts.get(this.activeRunContextId) : undefined;
+    if (!context && this.session.running && this.runItemIds.size > 0) {
+      const startedAt = this.session.runStartedAt || nowMs();
+      this.session.runStartedAt = startedAt;
+      context = this.beginActiveRunContext(this.runPackageIds, startedAt);
     }
-    const context = this.runContexts.get(this.activeRunContextId);
     if (context) {
       const generation = this.getPackageResultGeneration(packageId);
       context.packageGenerations.set(packageId, generation);
@@ -11910,6 +11912,8 @@ export class DownloadManager extends EventEmitter {
     let remainingBytes = 0;
     let openItems = 0;
     let unknownCount = 0;
+    let finalizingItems = 0;
+    let speedBps = 0;
     for (const itemId of this.runItemIds) {
       const item = this.session.items[itemId];
       if (!item || isFinishedStatus(item.status)) {
@@ -11919,17 +11923,25 @@ export class DownloadManager extends EventEmitter {
       if (!pkg || pkg.cancelled || !pkg.enabled) {
         continue;
       }
+      if ((item.status === "downloading" || item.status === "integrity_check")
+        && item.totalBytes !== null
+        && item.totalBytes > 0
+        && item.downloadedBytes >= item.totalBytes) {
+        finalizingItems += 1;
+        continue;
+      }
       openItems += 1;
       openPackages.add(pkg.id);
+      speedBps += Math.max(0, Math.floor(item.speedBps));
       if (item.totalBytes === null) {
         unknownCount += 1;
       } else {
         remainingBytes += Math.max(0, item.totalBytes - item.downloadedBytes);
       }
     }
-    const speedBps = !this.session.running || this.session.paused
-      ? 0
-      : Math.max(0, Math.floor(this.speedBytesLastWindow / SPEED_WINDOW_SECONDS));
+    if (!this.session.running || this.session.paused) {
+      speedBps = 0;
+    }
     const etaSeconds = unknownCount === 0 && speedBps > 0
       ? Math.ceil(remainingBytes / speedBps)
       : remainingBytes === 0 && unknownCount === 0
@@ -11940,6 +11952,7 @@ export class DownloadManager extends EventEmitter {
       openItems,
       openPackages: openPackages.size,
       unknownCount,
+      finalizingItems,
       speedBps,
       etaSeconds
     };
@@ -11951,6 +11964,9 @@ export class DownloadManager extends EventEmitter {
       return;
     }
     const current = this.buildRunRemainingSnapshot();
+    if (current.finalizingItems > 0) {
+      return;
+    }
     const previous = context.remainingNotification.snapshot;
     context.remainingNotification.snapshot = current;
     if (!this.settings.notifyOnRemainingBelow) {

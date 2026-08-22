@@ -67,6 +67,7 @@ export interface RunRemainingSnapshot {
   openItems: number;
   openPackages: number;
   unknownCount: number;
+  finalizingItems: number;
   speedBps: number;
   etaSeconds: number;
 }
@@ -104,6 +105,8 @@ export function evaluateRemainingThreshold(
     || current.openItems <= 0
     || previous.unknownCount > 0
     || current.unknownCount > 0
+    || previous.finalizingItems > 0
+    || current.finalizingItems > 0
     || previous.remainingBytes <= threshold
     || current.remainingBytes > threshold) {
     return { emit: false };
