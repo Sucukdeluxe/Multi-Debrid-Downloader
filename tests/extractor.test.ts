@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import AdmZip from "adm-zip";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildExternalExtractArgs,
   buildExternalListArgs,
@@ -1425,6 +1425,49 @@ describe("extractor", () => {
       expect(result.extracted).toBe(2);
       expect(fs.existsSync(path.join(targetDir, "owned.txt"))).toBe(true);
       expect(fs.existsSync(path.join(targetDir, "foreign.txt"))).toBe(false);
+    });
+
+    it("uses an explicit archive list without traversing a shared package root", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-explicit-archives-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "shared");
+      const foreignDir = path.join(packageDir, "foreign-package");
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(foreignDir, { recursive: true });
+      const ownedArchive = path.join(packageDir, "owned.zip");
+      const foreignArchive = path.join(foreignDir, "foreign.zip");
+      const owned = new AdmZip();
+      owned.addFile("owned.txt", Buffer.from("owned"));
+      owned.writeZip(ownedArchive);
+      const foreign = new AdmZip();
+      foreign.addFile("foreign.txt", Buffer.from("foreign"));
+      foreign.writeZip(foreignArchive);
+      const readdirSpy = vi.spyOn(fs.promises, "readdir");
+      let sharedRootTraversals = 0;
+
+      try {
+        const result = await extractPackageArchives({
+          packageDir,
+          targetDir,
+          cleanupMode: "none",
+          conflictMode: "overwrite",
+          removeLinks: false,
+          removeSamples: false,
+          onlyArchives: new Set([path.resolve(ownedArchive).toLowerCase()])
+        });
+        const sharedRoot = path.resolve(packageDir);
+        sharedRootTraversals = readdirSpy.mock.calls.filter(([directory]) => {
+          const candidate = path.resolve(String(directory));
+          return candidate === sharedRoot || candidate.startsWith(`${sharedRoot}${path.sep}`);
+        }).length;
+
+        expect(result.extracted).toBe(1);
+        expect(fs.readFileSync(path.join(targetDir, "owned.txt"), "utf8")).toBe("owned");
+        expect(fs.existsSync(path.join(targetDir, "foreign.txt"))).toBe(false);
+        expect(sharedRootTraversals).toBe(0);
+      } finally {
+        readdirSpy.mockRestore();
+      }
     });
 
     it("delegates top-level and nested archive jobs through one scheduler", async () => {

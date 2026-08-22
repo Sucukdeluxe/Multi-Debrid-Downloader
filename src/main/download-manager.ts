@@ -7178,9 +7178,6 @@ export class DownloadManager extends EventEmitter {
     this.speedBytesPerPackage.clear();
     this.speedEventsHead = 0;
     this.abortPostProcessing("stop", stoppedRunContext?.id);
-    if (stoppedRunContext) {
-      void this.extractionCoordinator.cancelRun(stoppedRunContext.id, "stop");
-    }
     for (const active of this.activeTasks.values()) {
       active.abortReason = abortReason;
       active.abortController.abort(abortReason);
@@ -8761,12 +8758,17 @@ export class DownloadManager extends EventEmitter {
   }
 
   private abortPostProcessing(reason: string, runContextId?: string): void {
+    if (runContextId !== undefined) {
+      void this.extractionCoordinator.cancelRun(runContextId, reason);
+    }
     for (const [packageId, controller] of this.packagePostProcessAbortControllers.entries()) {
       const owner = this.packagePostProcessRunOwnerByController.get(controller);
       if (runContextId !== undefined && owner !== runContextId) {
         continue;
       }
-      void this.extractionCoordinator.cancelPackage(packageId, reason);
+      if (runContextId === undefined) {
+        void this.extractionCoordinator.cancelPackage(packageId, reason);
+      }
       if (!controller.signal.aborted) {
         controller.abort(reason);
       }
@@ -8801,7 +8803,9 @@ export class DownloadManager extends EventEmitter {
       if (runContextId !== undefined && owner !== runContextId) {
         continue;
       }
-      void this.extractionCoordinator.cancelPackage(packageId, reason);
+      if (runContextId === undefined) {
+        void this.extractionCoordinator.cancelPackage(packageId, reason);
+      }
       if (!controller.signal.aborted) {
         controller.abort(reason);
       }
@@ -8812,7 +8816,9 @@ export class DownloadManager extends EventEmitter {
         if (runContextId !== undefined && owner !== runContextId) {
           continue;
         }
-        void this.extractionCoordinator.cancelPackage(packageId, reason);
+        if (runContextId === undefined) {
+          void this.extractionCoordinator.cancelPackage(packageId, reason);
+        }
         if (!controller.signal.aborted) {
           controller.abort(reason);
         }

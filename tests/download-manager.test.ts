@@ -15491,6 +15491,56 @@ describe("package priority ordering", () => {
   });
 });
 
+describe("selective extraction cancellation", () => {
+  it("stops only the selected run when two generations share one package id", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-run-cancel-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(root, "state")));
+    const state = manager as any;
+    const coordinator = new ExtractionCoordinator(2);
+    state.extractionCoordinator = coordinator;
+    const packageId = "shared-package";
+    const operationA = await coordinator.beginOperation({
+      context: { operationId: "operation-a", packageId, generation: 1, runOwnerId: "run-a" },
+      targetPath: path.join(root, "out"),
+      members: []
+    });
+    const operationB = await coordinator.beginOperation({
+      context: { operationId: "operation-b", packageId, generation: 2, runOwnerId: "run-b" },
+      targetPath: path.join(root, "out"),
+      members: []
+    });
+    const started = new Set<string>();
+    let completeRunA = (): void => {};
+    const jobA = coordinator.scheduleArchive(operationA, "archive-a", (signal) => new Promise<void>((resolve, reject) => {
+      started.add("run-a");
+      completeRunA = resolve;
+      signal.addEventListener("abort", () => reject(new Error(String(signal.reason || "aborted"))), { once: true });
+    }));
+    const jobB = coordinator.scheduleArchive(operationB, "archive-b", (signal) => new Promise<void>((_resolve, reject) => {
+      started.add("run-b");
+      signal.addEventListener("abort", () => reject(new Error(String(signal.reason || "aborted"))), { once: true });
+    }));
+    const outcomeA = jobA.then(() => "completed", (error) => `cancelled:${String(error)}`);
+    const outcomeB = jobB.then(() => "completed", (error) => `cancelled:${String(error)}`);
+    await vi.waitFor(() => expect(started).toEqual(new Set(["run-a", "run-b"])));
+    const controllerA = new AbortController();
+    const controllerB = new AbortController();
+    state.packageHybridPostProcessControllers.set(packageId, new Set([controllerA, controllerB]));
+    state.packageHybridRunOwnerByController.set(controllerA, "run-a");
+    state.packageHybridRunOwnerByController.set(controllerB, "run-b");
+
+    state.abortPostProcessing("stop", "run-b");
+
+    await vi.waitFor(() => expect(controllerB.signal.aborted).toBe(true));
+    expect(controllerA.signal.aborted).toBe(false);
+    expect(await outcomeB).toContain("stop");
+    completeRunA();
+    expect(await outcomeA).toBe("completed");
+    await Promise.all([operationA.finalize(), operationB.finalize()]);
+  });
+});
+
 describe("package lifecycle telemetry boundaries", () => {
   it("captures direct package output scopes concurrently without scanning a shared root", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-output-provenance-lock-"));

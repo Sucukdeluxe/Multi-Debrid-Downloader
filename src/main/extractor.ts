@@ -3657,15 +3657,32 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
     outputScope.validateTarget(entryPath, outputPath);
   };
   options.onProgress?.({ current: 0, total: 0, percent: 0, archiveName: "Archive scannen...", phase: "preparing" });
-  const allCandidates = await findArchiveCandidates(options.packageDir);
-  const candidates = options.onlyArchives
-    ? allCandidates.filter((archivePath) => {
-      const key = process.platform === "win32" ? path.resolve(archivePath).toLowerCase() : path.resolve(archivePath);
-      return options.onlyArchives!.has(key);
-    })
-    : allCandidates;
-  logger.info(`Entpacken gestartet: packageDir=${options.packageDir}, targetDir=${options.targetDir}, archives=${candidates.length}${options.onlyArchives ? ` (hybrid, gesamt=${allCandidates.length})` : ""}, cleanupMode=${options.cleanupMode}, conflictMode=${options.conflictMode}`);
-  options.onLog?.("INFO", `Entpacken gestartet: packageDir=${options.packageDir}, targetDir=${options.targetDir}, archives=${candidates.length}${options.onlyArchives ? ` (hybrid, gesamt=${allCandidates.length})` : ""}, cleanupMode=${options.cleanupMode}, conflictMode=${options.conflictMode}`);
+  const candidates: string[] = [];
+  if (options.onlyArchives) {
+    const packageRoot = path.resolve(options.packageDir);
+    const inputScope = new PackageOutputScope([packageRoot]);
+    const seen = new Set<string>();
+    for (const archivePath of options.onlyArchives) {
+      const candidate = path.resolve(String(archivePath));
+      const entryPath = path.relative(packageRoot, candidate).replace(/\\/g, "/");
+      inputScope.validateTarget(entryPath, candidate);
+      let stat: fs.Stats;
+      try {
+        stat = await fs.promises.lstat(candidate);
+      } catch {
+        continue;
+      }
+      const key = pathSetKey(candidate);
+      if (stat.isFile() && !stat.isSymbolicLink() && !seen.has(key)) {
+        seen.add(key);
+        candidates.push(candidate);
+      }
+    }
+  } else {
+    candidates.push(...await findArchiveCandidates(options.packageDir));
+  }
+  logger.info(`Entpacken gestartet: packageDir=${options.packageDir}, targetDir=${options.targetDir}, archives=${candidates.length}${options.onlyArchives ? " (explizite Liste)" : ""}, cleanupMode=${options.cleanupMode}, conflictMode=${options.conflictMode}`);
+  options.onLog?.("INFO", `Entpacken gestartet: packageDir=${options.packageDir}, targetDir=${options.targetDir}, archives=${candidates.length}${options.onlyArchives ? " (explizite Liste)" : ""}, cleanupMode=${options.cleanupMode}, conflictMode=${options.conflictMode}`);
 
   if (candidates.length > 0) {
     options.onProgress?.({ current: 0, total: candidates.length, percent: 0, archiveName: "Speicherplatz prüfen...", phase: "preparing" });
@@ -4303,7 +4320,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
         }
       }
 
-      if (failed === 0 && resumeCompleted.size >= allCandidates.length && !options.skipPostCleanup) {
+      if (!options.onlyArchives && failed === 0 && resumeCompleted.size >= candidates.length && !options.skipPostCleanup) {
         await clearExtractResumeState(options.packageDir, options.packageId);
       }
 
