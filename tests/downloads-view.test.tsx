@@ -1108,11 +1108,21 @@ describe("downloads view", () => {
     visitElements(toolbar, (element) => {
       if (element.type === "button") toolbarButtons.push(element);
     });
+    const tail = findElement(toolbar, (element) => String(element.props.className || "").includes("downloads-toolbar-tail"));
 
     expect(sidebar).not.toContain("Alle ein-/ausklappen");
+    expect(tail.props.children).toBeTruthy();
     expect(toolbarButtons.at(-1)?.props.children).toBe("Alle ein-/ausklappen");
     findButton(toolbar, "Alle ein-/ausklappen").props.onClick();
     expect(toggles).toBe(1);
+  });
+
+  it("disables the global package disclosure action for a truly empty queue", () => {
+    const model = withRuntime(createInput({ packageOrder: [], packages: {}, items: {} }), { running: false });
+    const toolbar = DownloadsToolbar({ actions: createActions(), model });
+
+    expect(model.empty).toBe(true);
+    expect(findButton(toolbar, "Alle ein-/ausklappen").props.disabled).toBe(true);
   });
 
   it("blocks native package dragging while preserving explicit reorder actions", () => {

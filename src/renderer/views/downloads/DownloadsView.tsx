@@ -152,7 +152,9 @@ export function DownloadsToolbar({ actions, model }: { actions: DownloadsViewAct
       <button disabled={!hasSelectedPackage} onClick={actions.onMoveSelectionDown} type="button">Nach unten</button>
       <button disabled={!onePackage} onClick={actions.onRenameSelection} type="button">Umbenennen</button>
       <button disabled={!hasSelection} onClick={actions.onRemoveSelection} type="button">Entfernen</button>
-      <button className="downloads-toolbar-toggle-all" onClick={actions.onToggleAllPackages} type="button">Alle ein-/ausklappen</button>
+      <span aria-label="Paketdarstellung" className="downloads-toolbar-tail" role="group">
+        <button className="downloads-toolbar-toggle-all" disabled={model.empty} onClick={actions.onToggleAllPackages} type="button">Alle ein-/ausklappen</button>
+      </span>
     </div>
   );
 }

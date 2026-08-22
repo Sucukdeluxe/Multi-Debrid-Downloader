@@ -204,8 +204,10 @@
 .downloads-toolbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   min-height: 52px;
+  overflow-x: hidden;
   padding: 8px 10px;
   border-bottom: 1px solid var(--ui-border);
   background: var(--ui-surface);
@@ -237,7 +239,10 @@
   background: var(--ui-border);
 }
 
-.downloads-toolbar-toggle-all {
+.downloads-toolbar-tail {
+  display: flex;
+  flex: 1 0 auto;
+  justify-content: flex-end;
   margin-left: auto;
 }
 
@@ -945,7 +950,6 @@
 }
 
 @media (max-width: 1120px) {
-  .downloads-toolbar,
   .downloads-footer {
     overflow-x: auto;
   }
