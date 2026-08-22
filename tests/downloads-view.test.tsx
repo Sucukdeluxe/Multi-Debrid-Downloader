@@ -371,7 +371,7 @@ describe("virtualisierte Paketanimation", () => {
     expect(prepared.animated).toBe(true);
     expect(prepared.rows.map((row) => [row.id, row.height, row.disclosurePhase, row.disclosureOpacity])).toEqual([
       ["package-a", 40, "stable", 1],
-      ["package-a:items", 0, "entering", 1],
+      ["package-a:items", 0, "entering", 0],
       ["package-b", 40, "stable", 1],
       ["b-1", 38, "stable", 1]
     ]);
@@ -411,7 +411,7 @@ describe("virtualisierte Paketanimation", () => {
     expect(preparedGroup?.type === "item-group" ? preparedGroup.items.map((row) => row.height) : []).toEqual([38, 38]);
     expect(activateDownloadDisclosureTransition(prepared.rows).map((row) => [row.id, row.height, row.disclosureOpacity])).toEqual([
       ["package-a", 40, 1],
-      ["package-a:items", 0, 1],
+      ["package-a:items", 0, 0],
       ["package-b", 40, 1],
       ["b-1", 38, 1]
     ]);
@@ -1096,6 +1096,23 @@ describe("downloads view", () => {
     expect(sidebar).toContain("downloads-sidebar-search");
     expect(sidebar).toContain("Paket, Datei oder Service");
     expect(toolbar).not.toContain("downloads-search-input");
+  });
+
+  it("places the global package disclosure action at the right toolbar edge", () => {
+    let toggles = 0;
+    const model = withRuntime(createInput({ filter: "paused" }));
+    const actions = createActions({ onToggleAllPackages: () => { toggles += 1; } });
+    const sidebar = renderToStaticMarkup(<DownloadsSidebar actions={actions} model={model} />);
+    const toolbar = DownloadsToolbar({ actions, model });
+    const toolbarButtons: ReactElement[] = [];
+    visitElements(toolbar, (element) => {
+      if (element.type === "button") toolbarButtons.push(element);
+    });
+
+    expect(sidebar).not.toContain("Alle ein-/ausklappen");
+    expect(toolbarButtons.at(-1)?.props.children).toBe("Alle ein-/ausklappen");
+    findButton(toolbar, "Alle ein-/ausklappen").props.onClick();
+    expect(toggles).toBe(1);
   });
 
   it("blocks native package dragging while preserving explicit reorder actions", () => {

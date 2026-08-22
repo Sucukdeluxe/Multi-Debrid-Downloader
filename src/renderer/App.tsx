@@ -75,6 +75,7 @@ import {
   CollectorInputDialog,
   CollectorSidebar,
   CollectorToolbar,
+  toggleAllCollectorPackageIds,
   type CollectorViewActions
 } from "./views/collector/CollectorView";
 import {
@@ -5113,6 +5114,10 @@ export function App(): ReactElement {
       else next.add(packageId);
       return next;
     }),
+    onToggleAllPackages: () => setCollapsedCollectorPackageIds((current) => toggleAllCollectorPackageIds(
+      collectorPackagesRef.current.map((pkg) => pkg.id),
+      current
+    )),
     onRemoveSelected: removeSelectedCollectorRows
   };
 

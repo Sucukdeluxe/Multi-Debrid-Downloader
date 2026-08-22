@@ -18,6 +18,7 @@ export interface CollectorViewActions {
   onLinkSelectionChange: (linkId: string, selected: boolean) => void;
   onPackageSelectionChange: (packageId: string, selected: boolean) => void;
   onPackageCollapseChange: (packageId: string) => void;
+  onToggleAllPackages: () => void;
   onRemoveSelected: () => void;
 }
 
@@ -58,6 +59,15 @@ function packageSize(row: CollectorWorkspacePackageRow): string {
   return `${row.unknownSizeCount > 0 ? "≥ " : ""}${humanSize(row.totalBytes)}`;
 }
 
+export function toggleAllCollectorPackageIds(
+  packageIds: readonly string[],
+  collapsedPackageIds: ReadonlySet<string>
+): Set<string> {
+  return packageIds.some((packageId) => !collapsedPackageIds.has(packageId))
+    ? new Set(packageIds)
+    : new Set();
+}
+
 function CollectorHosterLabel({ hoster }: { hoster: ReturnType<typeof formatHosterLabel> }): ReactElement {
   return (
     <span className="collector-hoster-label" title={hoster.title}>
@@ -94,7 +104,10 @@ export function CollectorToolbar({ model, actions }: CollectorViewProps): ReactE
         <button className="collector-action" disabled={model.busy || model.totalCount === 0} onClick={actions.onSubmitAll} type="button">{`Alle übergeben (${model.totalCount})`}</button>
         <button className="collector-action collector-action-danger" disabled={model.busy || model.selectedCount === 0} onClick={actions.onRemoveSelected} type="button">Auswahl entfernen</button>
       </ToolbarGroup>
-      <ToolbarSearch label="Links durchsuchen" onChange={(event) => actions.onQueryChange(event.target.value)} placeholder="Name, URL oder Hoster" value={model.query} />
+      <ToolbarGroup className="collector-toolbar-tail" label="Suche und Paketdarstellung">
+        <ToolbarSearch label="Links durchsuchen" onChange={(event) => actions.onQueryChange(event.target.value)} placeholder="Name, URL oder Hoster" value={model.query} />
+        <button className="collector-action" disabled={model.busy || model.totalCount === 0} onClick={actions.onToggleAllPackages} type="button">Alle ein-/ausklappen</button>
+      </ToolbarGroup>
     </Toolbar>
   );
 }

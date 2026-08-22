@@ -11,6 +11,7 @@ import {
   selectCollectorPackageLinks
 } from "../src/renderer/views/collector/collector-model";
 import { CollectorContent, CollectorInputDialog, CollectorSidebar, CollectorToolbar, CollectorView, type CollectorViewActions } from "../src/renderer/views/collector/CollectorView";
+import * as collectorViewModule from "../src/renderer/views/collector/CollectorView";
 
 function visitElements(node: ReactNode, visit: (element: ReactElement) => void): void {
   if (Array.isArray(node)) {
@@ -48,6 +49,7 @@ function createActions(overrides: Partial<CollectorViewActions> = {}): Collector
     onLinkSelectionChange: () => {},
     onPackageSelectionChange: () => {},
     onPackageCollapseChange: () => {},
+    onToggleAllPackages: () => {},
     onRemoveSelected: () => {},
     ...overrides
   };
@@ -111,6 +113,19 @@ describe("collector workspace model", () => {
       { id: "all", label: "Alle Links", count: 4 }, { id: "online", label: "Online", count: 2 }, { id: "unknown", label: "Ungeprüft", count: 1 }, { id: "offline", label: "Offline", count: 1 }
     ]);
   });
+
+  it("toggles every raw package even when the workspace shows only a filtered subset", () => {
+    const toggleAllCollectorPackageIds = (collectorViewModule as unknown as {
+      toggleAllCollectorPackageIds?: (packageIds: readonly string[], collapsedPackageIds: ReadonlySet<string>) => Set<string>;
+    }).toggleAllCollectorPackageIds;
+    expect(toggleAllCollectorPackageIds).toBeTypeOf("function");
+    if (!toggleAllCollectorPackageIds) return;
+
+    const rawPackageIds = packages.map((pkg) => pkg.id);
+    expect([...toggleAllCollectorPackageIds(rawPackageIds, new Set())].sort()).toEqual(["package-mixed", "package-sbs"]);
+    expect([...toggleAllCollectorPackageIds(rawPackageIds, new Set(["package-sbs"]))].sort()).toEqual(["package-mixed", "package-sbs"]);
+    expect([...toggleAllCollectorPackageIds(rawPackageIds, new Set(rawPackageIds))]).toEqual([]);
+  });
 });
 
 describe("CollectorView", () => {
@@ -164,6 +179,24 @@ describe("CollectorView", () => {
     findButton(toolbar, "Alle übergeben (4)").props.onClick();
     expect(selected).toBe(1);
     expect(all).toBe(1);
+  });
+
+  it("keeps the global package toggle enabled at the right toolbar edge despite active filters", () => {
+    let toggles = 0;
+    const model = buildCollectorWorkspaceViewModel(packages, "online", "no-visible-result", false, [], [], "", true);
+    const toolbar = CollectorToolbar({ actions: createActions({ onToggleAllPackages: () => { toggles += 1; } }), model });
+    const toolbarButtons: ReactElement[] = [];
+    visitElements(toolbar, (element) => {
+      if (element.type === "button") toolbarButtons.push(element);
+    });
+    const toggle = findButton(toolbar, "Alle ein-/ausklappen");
+
+    expect(model.empty).toBe(true);
+    expect(model.totalCount).toBe(4);
+    expect(toggle.props.disabled).toBe(false);
+    expect(toolbarButtons.at(-1)?.props.children).toBe("Alle ein-/ausklappen");
+    toggle.props.onClick();
+    expect(toggles).toBe(1);
   });
 
   it("renders accessible mixed package selection", () => {

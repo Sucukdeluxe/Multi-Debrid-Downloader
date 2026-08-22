@@ -10,6 +10,8 @@
 .collector-sidebar-filter span:last-child { color: var(--ui-text-muted); font-variant-numeric: tabular-nums; }
 .collector-toolbar { --collector-toolbar-action-gap: 4px; gap: var(--collector-toolbar-action-gap); min-width: 0; width: 100%; }
 .collector-toolbar .ui-toolbar-group { gap: var(--collector-toolbar-action-gap); }
+.collector-toolbar-tail { flex: 1 1 auto; justify-content: flex-end; margin-left: auto; }
+.collector-toolbar-tail .ui-toolbar-search { margin-left: 0; }
 .collector-action { background: var(--ui-input); border: 1px solid var(--ui-border); border-radius: 6px; color: var(--ui-text-secondary); font: inherit; height: 36px; padding: 0 12px; white-space: nowrap; }
 .collector-action:hover:not(:disabled) { background: var(--ui-hover); color: var(--ui-text); }
 .collector-action-primary { background: var(--ui-primary); border-color: var(--ui-primary); color: var(--ui-primary-text); }
@@ -62,4 +64,4 @@
 .collector-dialog-primary { background: var(--ui-primary); border-color: var(--ui-primary); color: var(--ui-primary-text); }
 .collector-dialog-secondary { background: var(--ui-modal-secondary); color: var(--ui-text-secondary); }
 @media (max-width: 1366px) { .collector-view { grid-template-columns: 56px minmax(0, 1fr); } .collector-sidebar { overflow: hidden; } .collector-sidebar-filter { padding: 0 7px; } .collector-sidebar-filter span:first-child { overflow: hidden; text-overflow: ellipsis; } .collector-action { padding: 0 9px; } .collector-table-header-row, .collector-package-row, .collector-file-row { grid-template-columns: 44px minmax(220px, 2.2fr) minmax(98px, .8fr) minmax(78px, .65fr) minmax(100px, .9fr) minmax(112px, 1fr) minmax(132px, 1fr); min-width: 820px; } }
-@media (max-width: 1120px) { .collector-toolbar { flex-wrap: wrap; } .collector-toolbar .ui-toolbar-search { flex: 1 0 100%; width: 100%; } .collector-table-header-row, .collector-package-row, .collector-file-row { grid-template-columns: 42px minmax(200px, 2fr) minmax(92px, .8fr) minmax(72px, .65fr) minmax(94px, .9fr) minmax(106px, 1fr) minmax(124px, 1fr); min-width: 760px; } }
+@media (max-width: 1120px) { .collector-toolbar { flex-wrap: wrap; } .collector-toolbar-tail { flex: 1 0 100%; } .collector-toolbar-tail .ui-toolbar-search { flex: 1 1 auto; width: auto; } .collector-table-header-row, .collector-package-row, .collector-file-row { grid-template-columns: 42px minmax(200px, 2fr) minmax(92px, .8fr) minmax(72px, .65fr) minmax(94px, .9fr) minmax(106px, 1fr) minmax(124px, 1fr); min-width: 760px; } }

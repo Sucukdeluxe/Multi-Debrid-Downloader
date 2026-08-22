@@ -237,6 +237,10 @@
   background: var(--ui-border);
 }
 
+.downloads-toolbar-toggle-all {
+  margin-left: auto;
+}
+
 .downloads-schedule-slot {
   display: grid;
   grid-template-columns: 0fr;

@@ -104,7 +104,6 @@ export function DownloadsSidebar({ actions, model }: { actions: DownloadsViewAct
       <label className="downloads-provider-filter"><span>Service</span><select aria-label="Service filtern" disabled={model.providerOptions.length <= 1} onChange={(event) => actions.onProviderFilterChange(event.target.value)} value={model.providerFilter}><option value="all">Alle Services</option>{model.providerOptions.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select></label>
       <label className="downloads-sidebar-search"><span>Downloads durchsuchen</span><input className="downloads-search-input" onChange={(event) => actions.onQueryChange(event.target.value)} placeholder="Paket, Datei oder Service" type="search" value={model.query} /></label>
       <div className="downloads-sidebar-actions">
-        <button onClick={actions.onToggleAllPackages} type="button">Alle ein-/ausklappen</button>
         <button disabled={model.empty} onClick={actions.onClearAll} type="button">Liste leeren</button>
       </div>
       <label className="downloads-clipboard-toggle"><input checked={model.clipboardWatcher} onChange={actions.onToggleClipboardWatcher} type="checkbox" />Zwischenablage überwachen</label>
@@ -153,6 +152,7 @@ export function DownloadsToolbar({ actions, model }: { actions: DownloadsViewAct
       <button disabled={!hasSelectedPackage} onClick={actions.onMoveSelectionDown} type="button">Nach unten</button>
       <button disabled={!onePackage} onClick={actions.onRenameSelection} type="button">Umbenennen</button>
       <button disabled={!hasSelection} onClick={actions.onRemoveSelection} type="button">Entfernen</button>
+      <button className="downloads-toolbar-toggle-all" onClick={actions.onToggleAllPackages} type="button">Alle ein-/ausklappen</button>
     </div>
   );
 }
