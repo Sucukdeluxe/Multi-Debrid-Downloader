@@ -6195,11 +6195,15 @@ export class DownloadManager extends EventEmitter {
     this.schedulerGeneration += 1;
 
     this.session.running = true;
+    const recoveryRunPackageIds = new Set(this.session.packageOrder.filter((packageId) => {
+      const pkg = this.session.packages[packageId];
+      return Boolean(pkg && !pkg.cancelled && pkg.enabled && !options?.excludePackageIds?.has(packageId));
+    }));
     for (const packageId of this.packagePostProcessTasks.keys()) {
       this.trackStandalonePackageResult(packageId);
     }
 
-    const recoveredItems = await this.recoverRetryableItems("start");
+    const recoveredItems = await this.recoverRetryableItems("start", recoveryRunPackageIds);
 
     await sleep(0);
 
@@ -11551,7 +11555,10 @@ export class DownloadManager extends EventEmitter {
     throw new Error(lastError || "Download fehlgeschlagen");
   }
 
-  private async recoverRetryableItems(trigger: "startup" | "start"): Promise<number> {
+  private async recoverRetryableItems(
+    trigger: "startup" | "start",
+    reactivationPackageIds?: ReadonlySet<string>
+  ): Promise<number> {
     let recovered = 0;
     let finalized = 0;
     const touchedPackages = new Set<string>();
@@ -11632,7 +11639,11 @@ export class DownloadManager extends EventEmitter {
         }
         this.beginPackageResultGeneration(packageId, false, true);
         if (!this.runPackageIds.has(packageId)) {
-          this.reactivateStandalonePackageResult(packageId);
+          if (trigger === "start" && reactivationPackageIds?.has(packageId)) {
+            this.reactivateStandalonePackageResult(packageId);
+          } else if (trigger === "startup") {
+            this.trackStandalonePackageResult(packageId);
+          }
         }
         this.refreshPackageStatus(pkg);
       }
@@ -11828,17 +11839,21 @@ export class DownloadManager extends EventEmitter {
   }
 
   private trackStandalonePackageResult(packageId: string): void {
-    const key = this.packageResultKey(packageId, this.getPackageResultGeneration(packageId));
-    if (this.suppressedPackageResults.has(key)) {
+    const generation = this.getPackageResultGeneration(packageId);
+    const key = this.packageResultKey(packageId, generation);
+    if (this.suppressedPackageResults.has(key) || this.isPackageResultTracked(packageId, generation)) {
       return;
     }
     this.standalonePackageResults.add(key);
   }
 
   private reactivateStandalonePackageResult(packageId: string): void {
-    const key = this.packageResultKey(packageId, this.getPackageResultGeneration(packageId));
+    const generation = this.getPackageResultGeneration(packageId);
+    const key = this.packageResultKey(packageId, generation);
     this.suppressedPackageResults.delete(key);
-    this.standalonePackageResults.add(key);
+    if (!this.isPackageResultTracked(packageId, generation)) {
+      this.standalonePackageResults.add(key);
+    }
   }
 
   private suppressStandalonePackageResults(): void {

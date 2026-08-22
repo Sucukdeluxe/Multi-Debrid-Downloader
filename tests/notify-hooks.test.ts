@@ -612,6 +612,79 @@ describe("authoritative run completion", () => {
     expect(history).toHaveLength(0);
   });
 
+  it("keeps an earlier run-owned postprocess result alive when a later run is stopped", async () => {
+    const { manager, session, events, history } = setup({ autoExtractWhenStopped: true });
+    const packageA = addPackage(session, ["queued"], "earlier-run-package");
+    const state = internal(manager);
+    vi.spyOn(state, "ensureScheduler").mockResolvedValue(undefined);
+
+    await manager.start();
+    const packageAItem = session.items[packageA.itemIds[0]];
+    packageAItem.status = "completed";
+    packageAItem.downloadedBytes = 1_000;
+    packageAItem.totalBytes = 1_000;
+    packageAItem.progressPercent = 100;
+    packageAItem.fullStatus = "Fertig";
+    packageA.status = "completed";
+    state.runOutcomes.set(packageAItem.id, "completed");
+    let releasePostProcess = (): void => {};
+    const postProcessGate = new Promise<void>((resolve) => {
+      releasePostProcess = resolve;
+    });
+    state.handlePackagePostProcessing = vi.fn(async () => postProcessGate);
+    const packageAPostProcess = state.runPackagePostProcessing(packageA.id);
+    await Promise.resolve();
+    state.finishRun();
+
+    const packageB = addPackage(session, ["queued"], "later-run-package");
+    await manager.start();
+    expect(state.runPackageIds).toEqual(new Set([packageB.id]));
+    manager.stop();
+
+    releasePostProcess();
+    await packageAPostProcess;
+    await flushNotifications();
+
+    expect(events.filter((event) => event.type === "package_completed")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "run_completed")).toHaveLength(1);
+    expect(history.map((entry) => entry.name)).toEqual([packageA.name]);
+  });
+
+  it("does not reactivate a suppressed foreign package when another start recovers it from disk", async () => {
+    const { manager, session, events, history } = setup({ autoExtractWhenStopped: true });
+    const packageA = addPackage(session, ["queued"], "suppressed-recovery-package");
+    const state = internal(manager);
+    vi.spyOn(state, "ensureScheduler").mockResolvedValue(undefined);
+
+    await manager.start();
+    manager.stop();
+
+    const recoveryDir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-nh-recovery-"));
+    tempDirs.push(recoveryDir);
+    const recoveredPath = path.join(recoveryDir, "recovered-package.rar");
+    fs.writeFileSync(recoveredPath, Buffer.alloc(1_000, 7));
+    const packageAItem = session.items[packageA.itemIds[0]];
+    packageA.enabled = false;
+    packageA.status = "failed";
+    packageAItem.status = "failed";
+    packageAItem.targetPath = recoveredPath;
+    packageAItem.downloadedBytes = 0;
+    packageAItem.totalBytes = 1_000;
+    packageAItem.progressPercent = 0;
+    packageAItem.fullStatus = "Resume-Link erneuern";
+    packageAItem.lastError = "download_underflow";
+
+    const packageB = addPackage(session, ["queued"], "recovery-run-package");
+    await manager.start();
+    await Promise.allSettled([...state.packagePostProcessTasks.values()]);
+    await flushNotifications();
+
+    expect(state.runPackageIds).toEqual(new Set([packageB.id]));
+    expect(events.filter((event) => event.type === "package_completed")).toHaveLength(0);
+    expect(history).toHaveLength(0);
+    manager.stop();
+  });
+
   it("suppresses a stopped postprocess-only generation and allows an explicit package retry", async () => {
     const { manager, session, events, history } = setup({ autoExtract: true, autoExtractWhenStopped: true });
     const pkg = addPackage(session, ["completed"], "postprocess-only-package");
