@@ -16,6 +16,27 @@ export interface NotificationSupportPayload {
   incidentAgeMs: number | null;
 }
 
+export function normalizeNotificationSupportPayload(
+  value?: Partial<NotificationSupportPayload> | null
+): NotificationSupportPayload {
+  const rawQueued = value?.queued;
+  const rawLastSuccessAt = value?.lastSuccessAt;
+  const rawIncidentAgeMs = value?.incidentAgeMs;
+  const queued = typeof rawQueued === "number" && Number.isFinite(rawQueued)
+    ? Math.max(0, Math.floor(rawQueued))
+    : 0;
+  const lastSuccessAt = typeof rawLastSuccessAt === "number" && Number.isFinite(rawLastSuccessAt) && rawLastSuccessAt > 0
+    ? Math.floor(rawLastSuccessAt)
+    : null;
+  const incidentType = value?.incidentType === "scheduler" || value?.incidentType === "no_data"
+    ? value.incidentType
+    : null;
+  const incidentAgeMs = incidentType && typeof rawIncidentAgeMs === "number" && Number.isFinite(rawIncidentAgeMs) && rawIncidentAgeMs >= 0
+    ? Math.floor(rawIncidentAgeMs)
+    : null;
+  return { queued, lastSuccessAt, incidentType, incidentAgeMs };
+}
+
 export function buildNotificationSupportPayload(
   outbox: Pick<NotificationOutboxStatus, "queued" | "lastSuccessAt">,
   health: Pick<DownloadHealthState, "incidentType" | "incidentStartedAt">,
@@ -34,7 +55,7 @@ export function buildNotificationSupportPayload(
   const incidentAgeMs = incidentType && incidentStartedAt > 0
     ? Math.max(0, Math.floor(Number.isFinite(now) ? now : Date.now()) - incidentStartedAt)
     : null;
-  return { queued, lastSuccessAt, incidentType, incidentAgeMs };
+  return normalizeNotificationSupportPayload({ queued, lastSuccessAt, incidentType, incidentAgeMs });
 }
 
 export function buildAccountSummary(settings: AppSettings): Record<string, unknown> {

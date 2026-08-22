@@ -13,7 +13,7 @@ import { getRenameLogPath } from "./rename-log";
 import { getDesktopRenameLogPath } from "./desktop-rename-log";
 import { getSessionLogPath } from "./session-log";
 import { createStoragePaths, loadHistory, loadSettings } from "./storage";
-import { buildAccountSummary, buildRedactedSettingsPayload, buildStatsPayload, summarizeHistoryEntry } from "./support-data";
+import { buildAccountSummary, buildRedactedSettingsPayload, buildStatsPayload, normalizeNotificationSupportPayload, summarizeHistoryEntry, type NotificationSupportPayload } from "./support-data";
 import { getTraceConfig, getTraceConfigPath, getTraceLogPath } from "./trace-log";
 import { getCachedWindowsHostDiagnostics, getWindowsHostDiagnostics } from "./windows-host-diagnostics";
 import type { DownloadManager } from "./download-manager";
@@ -101,6 +101,7 @@ type HostDiagnosticsMode = "full" | "cached" | "none";
 
 interface BuildSupportBundleOptions {
   hostDiagnosticsMode?: HostDiagnosticsMode;
+  notificationStatus?: NotificationSupportPayload;
 }
 
 function createDeferredHostDiagnostics(reason: string): unknown {
@@ -145,6 +146,7 @@ export async function buildSupportBundle(manager: DownloadManager, baseDir: stri
   const packageIds = Object.keys(snapshot.session.packages);
   const itemIds = Object.keys(snapshot.session.items);
   const debugSetup = getDebugSetupCheck(baseDir);
+  const notificationStatus = normalizeNotificationSupportPayload(options.notificationStatus);
 
   addJson(zip, "overview/meta.json", {
     appVersion: APP_VERSION,
@@ -164,6 +166,7 @@ export async function buildSupportBundle(manager: DownloadManager, baseDir: stri
       totalRuntimeAllTimeMs: settings.totalRuntimeAllTimeMs
     }
   });
+  addJson(zip, "overview/notifications.json", notificationStatus);
   addJson(zip, "overview/debug-setup.json", debugSetup);
   addJson(zip, "overview/self-check.json", debugSetup);
   addJson(zip, "overview/history.json", {

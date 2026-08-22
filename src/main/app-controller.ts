@@ -70,7 +70,7 @@ import { getDebugSetupCheck } from "./debug-setup";
 import { buildLinkExportSelection, serializeLinkExportText } from "./link-export";
 import { getRenameLogPath, initRenameLog, shutdownRenameLog } from "./rename-log";
 import { getDesktopRenameLogPath, initDesktopRenameLogAt, shutdownDesktopRenameLog } from "./desktop-rename-log";
-import { buildAccountSummary, diffAccountSummary } from "./support-data";
+import { buildAccountSummary, buildNotificationSupportPayload, diffAccountSummary, type NotificationSupportPayload } from "./support-data";
 import { buildSupportBundle, getSupportBundleDefaultFileName } from "./support-bundle";
 import { getTraceConfig, getTraceLogPath, initTraceLog, logTraceEvent, setTraceEnabled, shutdownTraceLog } from "./trace-log";
 import type { DebugSetupCheckResult, SupportTraceConfig } from "../shared/types";
@@ -239,7 +239,7 @@ export class AppController {
     } catch (err) {
       logger.warn(`Health-Check uebersprungen (Fehler): ${String((err as Error).message || err)}`);
     }
-    startDebugServer(this.manager, this.storagePaths.baseDir);
+    startDebugServer(this.manager, this.storagePaths.baseDir, () => this.getNotificationSupportPayload());
     this.runtimeStatsTimer = setInterval(() => {
       this.manager.persistRuntimeStats();
       this.settings = this.manager.getSettings();
@@ -1173,13 +1173,23 @@ export class AppController {
       itemCount: Object.keys(this.manager.getSnapshot().session.items).length
     });
     return {
-      buffer: await buildSupportBundle(this.manager, this.storagePaths.baseDir, { hostDiagnosticsMode: "cached" }),
+      buffer: await buildSupportBundle(this.manager, this.storagePaths.baseDir, {
+        hostDiagnosticsMode: "cached",
+        notificationStatus: this.getNotificationSupportPayload()
+      }),
       defaultFileName: getSupportBundleDefaultFileName()
     };
   }
 
   public getSupportBundleDefaultFileName(): string {
     return getSupportBundleDefaultFileName();
+  }
+
+  public getNotificationSupportPayload(): NotificationSupportPayload {
+    return buildNotificationSupportPayload(
+      this.notificationOutbox.getStatus(),
+      this.downloadHealthMonitor.getState()
+    );
   }
 
   public importBackup(data: Buffer, passphrase?: string): { restored: boolean; relaunch: boolean; message: string } {

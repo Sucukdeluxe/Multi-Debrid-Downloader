@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import AdmZip from "adm-zip";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { AppController } from "../src/main/app-controller";
 import { defaultSettings } from "../src/main/constants";
 import { buildAccountSummary, buildNotificationSupportPayload, buildStatsPayload } from "../src/main/support-data";
 import { buildSupportBundle } from "../src/main/support-bundle";
@@ -11,6 +12,40 @@ import { serializeRealDebridApiAccounts } from "../src/shared/real-debrid-accoun
 import { createVisualFixture } from "./visual/fixtures";
 
 describe("Real-Debrid support summary", () => {
+  it("projects the current private AppController notification state into the safe DTO", () => {
+    const controller = Object.create(AppController.prototype) as AppController;
+    const internals = controller as unknown as {
+      notificationOutbox: { getStatus: () => Record<string, unknown> };
+      downloadHealthMonitor: { getState: () => Record<string, unknown> };
+    };
+    internals.notificationOutbox = {
+      getStatus: () => ({
+        queued: 4,
+        lastSuccessAt: 1_700_000_000_000,
+        lastFailureAt: 1_700_000_010_000,
+        events: [{ payload: "PRIVATE_CONTROLLER_EVENT" }]
+      })
+    };
+    internals.downloadHealthMonitor = {
+      getState: () => ({
+        incidentType: "scheduler",
+        incidentStartedAt: 1_700_000_020_000,
+        runFingerprint: "PRIVATE_CONTROLLER_FINGERPRINT"
+      })
+    };
+    vi.spyOn(Date, "now").mockReturnValue(1_700_000_050_000);
+
+    const payload = controller.getNotificationSupportPayload();
+    expect(payload).toEqual({
+      queued: 4,
+      lastSuccessAt: 1_700_000_000_000,
+      incidentType: "scheduler",
+      incidentAgeMs: 30_000
+    });
+    expect(JSON.stringify(payload)).not.toMatch(/PRIVATE_|event|payload|fingerprint|lastFailure/i);
+    vi.restoreAllMocks();
+  });
+
   it("projects only safe notification delivery and incident aggregates", () => {
     const payload = buildNotificationSupportPayload(
       {
