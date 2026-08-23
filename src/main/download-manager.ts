@@ -65,7 +65,7 @@ function releaseTlsSkip(): void {
 }
 import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifactsFromScope, removeSampleArtifactsFromScope } from "./cleanup";
 import { planDownloadCompletion, reconcileFinalizedSize, validateDownloadedFileCompletion } from "./download-completion";
-import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkDdownloadOnline, checkOneFichierLinks, checkRapidgatorOnline, fetchAllDebridHostInfo, filenameFromDdownloadUrlPath, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, isDdownloadLink, isOneFichierLink, isProviderDisabledForSelection, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown, type DdownloadCheckResult, type OneFichierCheckResult } from "./debrid";
+import { BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkDdownloadOnline, checkOneFichierLinks, checkRapidgatorOnline, fetchAllDebridHostInfo, filenameFromDdownloadUrlPath, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, isDdownloadLink, isOneFichierLink, isProviderDisabledForSelection, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown, type DdownloadCheckResult, type OneFichierCheckResult } from "./debrid";
 import { classifyExtractionError, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo, type ExtractProgressUpdate } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { classifyDiskError } from "./fs-error";
@@ -217,8 +217,6 @@ const DEFAULT_LOW_THROUGHPUT_MIN_BYTES = 64 * 1024;
 const MINI_DOWNLOAD_RETRY_THRESHOLD_BYTES = 5 * 1024;
 
 const ALLDEBRID_HOST_INFO_TTL_MS = 60000;
-
-const ALLDEBRID_START_STAGGER_MS = 3000;
 
 const ARCHIVE_SETTLE_MIN_DELAY_MS = 1500;
 
@@ -546,7 +544,6 @@ type HistoryEntryCallback = (entry: HistoryEntry) => void;
 
 type DownloadManagerOptions = {
   megaWebUnrestrict?: MegaWebUnrestrictor;
-  allDebridWebUnrestrict?: AllDebridWebUnrestrictor;
   realDebridWebUnrestrict?: RealDebridWebUnrestrictor;
   bestDebridWebUnrestrict?: BestDebridWebUnrestrictor;
   invalidateMegaSession?: () => void;
@@ -812,6 +809,35 @@ function isPermanentLinkError(errorText: string): boolean {
     || text.includes("file is no longer available")
     || text.includes("file was removed")
     || text.includes("file was deleted");
+}
+
+function classifyAllDebridTerminalUnrestrictError(
+  errorText: string,
+  providerKey: string
+): { kind: "link_unavailable" | "auth"; detail: string } | null {
+  if (!String(providerKey || "").toLowerCase().startsWith("alldebrid")) {
+    return null;
+  }
+  const detail = String(errorText || "").trim();
+  const text = detail.toLowerCase();
+  const normalized = text.replace(/[\s-]+/g, "_");
+  const linkUnavailable = normalized.includes("link_down")
+    || /\b(?:BAD_LINK|LINK_HOST_NOT_SUPPORTED|LINK_NOT_SUPPORTED)\b/i.test(detail)
+    || /(?:this|the)?\s*link\s+is\s+not\s+available\s+on\s+the\s+file\s+hoster\s+website/i.test(detail)
+    || /(?:file|link)\s+(?:is\s+)?(?:dead|offline|deleted|removed|no\s+longer\s+available)/i.test(detail)
+    || /(?:file|link)[_\s-]*(?:is[_\s-]*)?(?:not[_\s-]*available|unavailable)/i.test(detail);
+  if (linkUnavailable) {
+    return { kind: "link_unavailable", detail };
+  }
+  const authFailure = /\b(?:AUTH_(?:MISSING_APIKEY|BAD_APIKEY|BLOCKED|USER_BANNED|IP_MISMATCH)|NO_SERVER)\b/i.test(detail)
+    || /\b(?:api[ _-]?key|access[ _-]?token|token)\b.{0,40}\b(?:invalid|expired|missing|revoked|blocked)\b/i.test(detail)
+    || /\b(?:invalid|expired|missing|revoked|blocked)\b.{0,40}\b(?:api[ _-]?key|access[ _-]?token|token)\b/i.test(detail)
+    || /\b(?:authentication|authorization)\s+(?:failed|required|missing)\b/i.test(detail)
+    || /\bnot authenticated\b|\bunauthorized\b|\baccount\s+(?:banned|blocked)\b/i.test(detail);
+  if (authFailure) {
+    return { kind: "auth", detail };
+  }
+  return null;
 }
 
 function isUnrestrictFailure(errorText: string): boolean {
@@ -2381,9 +2407,6 @@ export class DownloadManager extends EventEmitter {
 
   private allDebridHostInfoCache = new Map<string, { info: AllDebridHostInfo; cachedAt: number }>();
 
-  private providerStartReservations = new Map<string, number>();
-  private pacedStartReservationByItem = new Map<string, number>();
-
   private lastStaleResetAt = 0;
 
   private onHistoryEntryCallback?: HistoryEntryCallback;
@@ -2413,7 +2436,6 @@ export class DownloadManager extends EventEmitter {
     }
     this.debridService = new DebridService(settings, {
       megaWebUnrestrict: options.megaWebUnrestrict,
-      allDebridWebUnrestrict: options.allDebridWebUnrestrict,
       realDebridWebUnrestrict: options.realDebridWebUnrestrict,
       bestDebridWebUnrestrict: options.bestDebridWebUnrestrict
     });
@@ -3671,8 +3693,6 @@ export class DownloadManager extends EventEmitter {
       this.successDigestTimer = null;
     }
     this.retryAfterByItem.clear();
-    this.providerStartReservations.clear();
-    this.pacedStartReservationByItem.clear();
     this.retryStateByItem.clear();
     this.reservedTargetPaths.clear();
     this.claimedTargetPathByItem.clear();
@@ -7244,8 +7264,6 @@ export class DownloadManager extends EventEmitter {
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
-    this.providerStartReservations.clear();
-    this.pacedStartReservationByItem.clear();
     this.retryStateByItem.clear();
     this.itemContributedBytes.clear();
     this.reservedTargetPaths.clear();
@@ -7361,8 +7379,6 @@ export class DownloadManager extends EventEmitter {
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
-    this.providerStartReservations.clear();
-    this.pacedStartReservationByItem.clear();
     this.retryStateByItem.clear();
     this.itemContributedBytes.clear();
     this.reservedTargetPaths.clear();
@@ -7489,8 +7505,6 @@ export class DownloadManager extends EventEmitter {
       this.runOutcomes.clear();
       this.runCompletedPackages.clear();
       this.retryAfterByItem.clear();
-      this.providerStartReservations.clear();
-      this.pacedStartReservationByItem.clear();
       this.retryStateByItem.clear();
       this.reservedTargetPaths.clear();
       this.claimedTargetPathByItem.clear();
@@ -7522,8 +7536,6 @@ export class DownloadManager extends EventEmitter {
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
-    this.providerStartReservations.clear();
-    this.pacedStartReservationByItem.clear();
     this.retryStateByItem.clear();
     this.http416FreshRestartByItem.clear();
     this.itemContributedBytes.clear();
@@ -7606,24 +7618,12 @@ export class DownloadManager extends EventEmitter {
     this.session.reconnectUntil = 0;
     this.session.reconnectReason = "";
     if (hasScopedRun) {
-      const paceKeys = new Set<string>();
       for (const itemId of stoppedItemIds) {
-        const item = this.session.items[itemId];
-        const paceKey = item ? this.getPacedStartKeyForItem(item) : "";
-        if (paceKey) paceKeys.add(paceKey);
         this.retryAfterByItem.delete(itemId);
-        this.pacedStartReservationByItem.delete(itemId);
         this.retryStateByItem.delete(itemId);
-      }
-      for (const paceKey of paceKeys) {
-        if (this.countFuturePacedStarts(paceKey, nowMs()) <= 0) {
-          this.providerStartReservations.delete(paceKey);
-        }
       }
     } else {
       this.retryAfterByItem.clear();
-      this.providerStartReservations.clear();
-      this.pacedStartReservationByItem.clear();
       this.retryStateByItem.clear();
     }
     this.lastGlobalProgressBytes = this.session.totalDownloadedBytes;
@@ -7764,8 +7764,6 @@ export class DownloadManager extends EventEmitter {
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
-    this.providerStartReservations.clear();
-    this.pacedStartReservationByItem.clear();
     this.nonResumableActive = 0;
     this.session.summaryText = "";
     this.emitState(true);
@@ -10178,7 +10176,7 @@ export class DownloadManager extends EventEmitter {
       return Boolean(this.settings.bestDebridUseWebLogin || this.settings.bestToken.trim());
     }
     if (effectiveProvider === "alldebrid") {
-      return Boolean(this.settings.allDebridUseWebLogin || this.settings.allDebridToken.trim());
+      return Boolean(this.settings.allDebridToken.trim());
     }
     if (effectiveProvider === "ddownload") {
       return Boolean(this.settings.ddownloadLogin.trim() && this.settings.ddownloadPassword.trim());
@@ -10313,38 +10311,6 @@ export class DownloadManager extends EventEmitter {
     return count;
   }
 
-  private getPacedStartKeyForItem(item: DownloadItem): string | null {
-    const provider = this.getExpectedProviderForItem(item);
-    if (provider !== "alldebrid") {
-      return null;
-    }
-    return provider;
-  }
-
-  private countFuturePacedStarts(paceKey: string, now: number, excludeItemId?: string): number {
-    let count = 0;
-    for (const [itemId, reservedAt] of this.pacedStartReservationByItem.entries()) {
-      if (excludeItemId && itemId === excludeItemId) {
-        continue;
-      }
-      if (reservedAt <= now) {
-        continue;
-      }
-      const item = this.session.items[itemId];
-      if (!item) {
-        continue;
-      }
-      if (this.getPacedStartKeyForItem(item) !== paceKey) {
-        continue;
-      }
-      if (item.status !== "queued" && item.status !== "reconnect_wait") {
-        continue;
-      }
-      count += 1;
-    }
-    return count;
-  }
-
   private getProviderValidatingTaskCount(provider: DebridProvider, excludeItemId?: string): number {
     let count = 0;
     for (const active of this.activeTasks.values()) {
@@ -10389,76 +10355,6 @@ export class DownloadManager extends EventEmitter {
       return Math.max(1, usableAccounts);
     }
     return Number.MAX_SAFE_INTEGER;
-  }
-
-  private delayPacedStartForItem(item: DownloadItem, now: number): boolean {
-    const paceKey = this.getPacedStartKeyForItem(item);
-    if (!paceKey) {
-      return false;
-    }
-
-    const existingReadyAt = this.retryAfterByItem.get(item.id) || 0;
-    const existingPacedAt = this.pacedStartReservationByItem.get(item.id) || 0;
-    if (existingPacedAt > 0 && existingPacedAt <= now) {
-      this.pacedStartReservationByItem.delete(item.id);
-      return false;
-    }
-    if (existingPacedAt > now) {
-      const scheduledAt = Math.max(existingReadyAt, existingPacedAt);
-      this.retryAfterByItem.set(item.id, scheduledAt);
-      item.status = "queued";
-      item.speedBps = 0;
-      item.fullStatus = `AllDebrid Start in ${Math.max(1, Math.ceil((scheduledAt - now) / 1000))}s`;
-      item.updatedAt = now;
-      return true;
-    }
-
-    const failureKey = this.getProviderFailureKeyForItem(item, "alldebrid");
-    const startLimit = this.getAllDebridStartLimit(extractHosterKey(item.url));
-    const activeProviderTasks = this.activeTasks.size;
-    const activeHosterTasks = this.getActiveTaskCountForFailureKey(failureKey);
-    const futureReservations = this.countFuturePacedStarts(paceKey, now, item.id);
-    const remainingGlobalSlots = Math.max(0, Math.max(1, Number(this.settings.maxParallel) || 1) - activeProviderTasks - futureReservations);
-    const remainingHosterSlots = Number.isFinite(startLimit)
-      ? Math.max(0, startLimit - activeHosterTasks - futureReservations)
-      : Number.MAX_SAFE_INTEGER;
-    const availableReservationSlots = Math.min(remainingGlobalSlots, remainingHosterSlots);
-    if (availableReservationSlots <= 0) {
-      this.pacedStartReservationByItem.delete(item.id);
-      if ((item.fullStatus || "").startsWith("AllDebrid Start in ")) {
-        item.fullStatus = "Wartet";
-        item.updatedAt = now;
-      }
-      return true;
-    }
-
-    const scheduledAt = Math.max(existingReadyAt, now + ALLDEBRID_START_STAGGER_MS);
-    if (scheduledAt <= now) {
-      this.pacedStartReservationByItem.delete(item.id);
-      return false;
-    }
-    this.retryAfterByItem.set(item.id, scheduledAt);
-    this.pacedStartReservationByItem.set(item.id, scheduledAt);
-    item.status = "queued";
-    item.speedBps = 0;
-    item.fullStatus = `AllDebrid Start in ${Math.max(1, Math.ceil((scheduledAt - now) / 1000))}s`;
-    item.updatedAt = now;
-    return true;
-  }
-
-  private notePacedStartForItem(item: DownloadItem, now: number): void {
-    const paceKey = this.getPacedStartKeyForItem(item);
-    if (!paceKey) {
-      return;
-    }
-
-    const reservedAt = this.pacedStartReservationByItem.get(item.id) || 0;
-    if (reservedAt > 0) {
-      this.pacedStartReservationByItem.delete(item.id);
-    }
-    if (this.countFuturePacedStarts(paceKey, now) <= 0) {
-      this.providerStartReservations.delete(paceKey);
-    }
   }
 
   private getConfiguredAllDebridStartLimit(): number {
@@ -10508,7 +10404,7 @@ export class DownloadManager extends EventEmitter {
 
   private async getAllDebridHostInfoCached(hosterKey: string, signal?: AbortSignal, forceRefresh = false): Promise<AllDebridHostInfo | null> {
     const normalizedHost = String(hosterKey || "").trim().toLowerCase();
-    if (!normalizedHost || this.settings.allDebridUseWebLogin) {
+    if (!normalizedHost) {
       return null;
     }
     const token = this.settings.allDebridToken.trim();
@@ -10872,7 +10768,6 @@ export class DownloadManager extends EventEmitter {
         if (retryAfter > now) continue;
         if (item.status !== "queued" && item.status !== "reconnect_wait") continue;
         if (this.activeTasks.has(itemId)) continue;
-        if (this.delayPacedStartForItem(item, now)) continue;
         if (this.shouldDelayStartForItem(item)) continue;
 
         const candidate = { packageId, itemId };
@@ -11124,7 +11019,6 @@ export class DownloadManager extends EventEmitter {
       generation: this.lifecycleGeneration
     };
     this.activeTasks.set(itemId, active);
-    this.notePacedStartForItem(item, nowMs());
     this.emitState();
 
     void this.processItem(active).catch((err) => {
@@ -11284,7 +11178,8 @@ export class DownloadManager extends EventEmitter {
             throw new Error(`Unrestrict Timeout nach ${Math.ceil(unrestrictTimeoutMs / 1000)}s`);
           }
           const errText = compactErrorText(unrestrictError);
-          if (isUnrestrictFailure(errText) && !isHosterUnavailableError(errText)) {
+          const terminalAllDebridError = classifyAllDebridTerminalUnrestrictError(errText, cooldownProvider);
+          if (isUnrestrictFailure(errText) && !isHosterUnavailableError(errText) && !terminalAllDebridError) {
             this.recordProviderFailure(cooldownProvider);
             if (isProviderBusyUnrestrictError(errText) || isTemporaryUnrestrictError(errText)) {
               const busyCooldownMs = isTemporaryUnrestrictError(errText)
@@ -11809,6 +11704,27 @@ export class DownloadManager extends EventEmitter {
             item.downloadedBytes = 0;
             item.totalBytes = null;
             item.progressPercent = 0;
+            this.persistSoon();
+            this.emitState();
+            return;
+          }
+
+          const allDebridTerminalError = classifyAllDebridTerminalUnrestrictError(
+            errorText,
+            this.getProviderFailureKeyForItem(item)
+          );
+          if (allDebridTerminalError) {
+            item.status = "failed";
+            this.recordRunOutcome(item.id, "failed");
+            item.lastError = allDebridTerminalError.detail;
+            item.fullStatus = allDebridTerminalError.kind === "auth"
+              ? `AllDebrid-Anmeldung fehlgeschlagen: ${allDebridTerminalError.detail}`
+              : `Link ungültig: ${allDebridTerminalError.detail}`;
+            item.speedBps = 0;
+            item.updatedAt = nowMs();
+            this.retryStateByItem.delete(item.id);
+            const failPkgAllDebrid = this.session.packages[item.packageId];
+            if (failPkgAllDebrid) this.refreshPackageStatus(failPkgAllDebrid);
             this.persistSoon();
             this.emitState();
             return;
@@ -15501,7 +15417,6 @@ export class DownloadManager extends EventEmitter {
       delete this.session.items[itemId];
       this.itemCount = Math.max(0, this.itemCount - 1);
       this.retryAfterByItem.delete(itemId);
-      this.pacedStartReservationByItem.delete(itemId);
       this.retryStateByItem.delete(itemId);
       if (pkg.itemIds.length === 0) {
         this.removePackageFromSession(packageId, []);
@@ -15567,8 +15482,6 @@ export class DownloadManager extends EventEmitter {
     this.runScopeKind = null;
     this.runOutcomes.clear();
     this.retryAfterByItem.clear();
-    this.providerStartReservations.clear();
-    this.pacedStartReservationByItem.clear();
     this.retryStateByItem.clear();
     this.reservedTargetPaths.clear();
     this.claimedTargetPathByItem.clear();

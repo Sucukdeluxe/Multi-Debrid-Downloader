@@ -2,6 +2,29 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.66] - 2026-08-23
+
+### AllDebrid authentication
+
+- Replace the legacy website and cookie workflow with AllDebrid's official browser PIN authorization.
+- Store the issued API key securely and use the official API for account details, host availability, link inspection, and link unlocking.
+- Close the authorization window automatically after activation while keeping manual close, timeout, and repeated-open behavior deterministic.
+- Require existing legacy browser-login configurations to authorize again instead of treating an empty session as a usable account.
+
+### Account status
+
+- Validate AllDebrid API and browser-authorized accounts through the official user endpoint.
+- Display and persist username, email address, premium state, and expiration time in the account table.
+- Include AllDebrid in active-account checks, full-account checks, direct row checks, and activation checks.
+- Preserve the PIN-issued API key while editing a browser-authorized account.
+
+### Download scheduling and recovery
+
+- Remove the unconditional three-second delay before every AllDebrid download while continuing to honor live simultaneous-download limits reported by the provider.
+- Treat unavailable links and unsupported link or host responses as terminal item failures without retrying unrelated downloads.
+- Treat invalid, missing, blocked, banned, server-restricted, and IP-restricted credentials as terminal authentication failures without provider cooldowns.
+- Preserve official AllDebrid error codes alongside their messages so retry and cooldown decisions remain precise.
+
 ## [2.0.65] - 2026-08-23
 
 ### Extract now behavior

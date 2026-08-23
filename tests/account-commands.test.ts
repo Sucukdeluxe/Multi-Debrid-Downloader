@@ -141,10 +141,15 @@ describe("write-only account commands", () => {
     expect(() => api.validateAccountSecretRequest?.({ kind: "realdebrid-api", accountId: "svc-realdebrid", secret: "not-allowed" })).toThrow(/ungültig/i);
   });
 
-  it.each(["realdebrid-api", "realdebrid-web"] as const)("accepts %s credential checks at the IPC boundary", (kind) => {
-    expect(validateAccountCredentialCheckInput({ kind, accountId: "svc-realdebrid" })).toEqual({
+  it.each([
+    ["realdebrid-api", "svc-realdebrid"],
+    ["realdebrid-web", "svc-realdebrid"],
+    ["alldebrid-api", "svc-alldebrid"],
+    ["alldebrid-web", "svc-alldebrid"]
+  ] as const)("accepts %s credential checks at the IPC boundary", (kind, accountId) => {
+    expect(validateAccountCredentialCheckInput({ kind, accountId })).toEqual({
       kind,
-      accountId: "svc-realdebrid",
+      accountId,
       identity: undefined,
       secret: undefined
     });
@@ -263,6 +268,26 @@ describe("write-only account commands", () => {
 
     expect(retained(replaced.settings)).toBe(true);
     expect(JSON.stringify(replaced.response)).not.toContain(secret);
+  });
+
+  it("keeps the PIN-issued AllDebrid API key when editing the browser-authorized account", () => {
+    const apiKey = "fixture-all-pin-api-key";
+    const settings = {
+      ...defaultSettings(),
+      allDebridUseWebLogin: true,
+      allDebridToken: apiKey
+    };
+
+    const replaced = applyAccountCommand(settings, validateAccountCommand({
+      action: "replace",
+      kind: "alldebrid-web",
+      accountId: "svc-alldebrid",
+      secret: "",
+      dailyLimitBytes: 2 * GIB
+    }));
+
+    expect(replaced.settings.allDebridUseWebLogin).toBe(true);
+    expect(replaced.settings.allDebridToken).toBe(apiKey);
   });
 
   it("replaces a Mega-Debrid account while preserving sibling accounts and mode-specific state", () => {

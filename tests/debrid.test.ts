@@ -1074,6 +1074,30 @@ describe("debrid service", () => {
     expect(calls).toBe(1);
   });
 
+  it("preserves the official AllDebrid error code alongside its message", async () => {
+    const settings = {
+      ...defaultSettings(),
+      allDebridToken: "ad-token",
+      providerOrder: [] as const,
+      providerPrimary: "alldebrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false
+    };
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      status: "error",
+      error: {
+        code: "NO_SERVER",
+        message: "Servers are not allowed on this endpoint"
+      }
+    }), { status: 200, headers: { "Content-Type": "application/json" } })) as typeof fetch;
+
+    const service = new DebridService(settings);
+
+    await expect(service.unrestrictLink("https://rapidgator.net/file/no-server"))
+      .rejects.toThrow(/NO_SERVER: Servers are not allowed/);
+  });
+
   it("supports AllDebrid unlock", async () => {
     const settings = {
       ...defaultSettings(),
@@ -1321,7 +1345,7 @@ describe("debrid service", () => {
     expect(info[0].hostStateLabel).toBe("Offline");
   });
 
-  it("uses AllDebrid web path when enabled", async () => {
+  it("uses the official AllDebrid API after browser authorization", async () => {
     const settings = {
       ...defaultSettings(),
       allDebridToken: "ad-token",
@@ -1333,26 +1357,32 @@ describe("debrid service", () => {
       autoProviderFallback: false
     };
 
-    const fetchSpy = vi.fn(async () => new Response("not-found", { status: 404 }));
+    const fetchSpy = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("api.alldebrid.com/v4/link/unlock")) {
+        return new Response(JSON.stringify({
+          status: "success",
+          data: {
+            link: "https://df4ea4.debrid.it/dl/example/from-api.rar",
+            filename: "from-api.rar",
+            filesize: 1234
+          }
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response("not-found", { status: 404 });
+    });
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
 
-    const allDebridWeb = vi.fn(async () => ({
-      fileName: "from-web.rar",
-      directUrl: "https://df4ea4.debrid.it/dl/example/from-web.rar",
-      fileSize: 1234,
-      retriesUsed: 0
-    }));
-
-    const service = new DebridService(settings, { allDebridWebUnrestrict: allDebridWeb });
+    const service = new DebridService(settings);
     const result = await service.unrestrictLink("https://rapidgator.net/file/example.part4.rar.html");
     expect(result.provider).toBe("alldebrid");
     expect(result.directUrl).toContain("debrid.it/dl/");
     expect(result.fileSize).toBe(1234);
-    expect(allDebridWeb).toHaveBeenCalledTimes(1);
-    expect(fetchSpy).toHaveBeenCalledTimes(0);
+    expect(result.sourceLabel).toBe("API");
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("treats AllDebrid web mode as not configured when callback is unavailable", async () => {
+  it("treats AllDebrid browser authorization without an API key as not configured", async () => {
     const settings = {
       ...defaultSettings(),
       allDebridToken: "",

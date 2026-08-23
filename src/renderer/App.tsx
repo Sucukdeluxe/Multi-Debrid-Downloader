@@ -465,7 +465,7 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
     serviceLabel: "AllDebrid",
     title: "AllDebrid Web-Login",
     modeLabel: "Web-Login",
-    pickerDescription: "Login über Browserfenster für reCAPTCHA.",
+    pickerDescription: "Sichere Browser-Autorisierung über den offiziellen AllDebrid-PIN-Login.",
   },
   {
     kind: "ddownload-login",
@@ -565,7 +565,7 @@ function getAccountCredentialLabel(kind: AccountKind): string {
     case "bestdebrid-web":
     case "realdebrid-web":
     case "alldebrid-web":
-      return "Login gespeichert";
+      return "Geschützter API-Zugang";
     case "realdebrid-api":
     case "bestdebrid-api":
     case "alldebrid-api":
@@ -2576,7 +2576,7 @@ export function App(): ReactElement {
           });
         }
       } else {
-        const serviceAccountId = null;
+        const serviceAccountId = entry.service === "alldebrid" ? "svc-alldebrid" : null;
         rows.push({
           rowKey: `svc-${entry.service}`,
           entry,
@@ -2990,6 +2990,12 @@ export function App(): ReactElement {
         showToast("Real-Debrid Login-Fenster geöffnet", 2200);
         return;
       }
+      if (dialogSnapshot.kind === "alldebrid-web") {
+        await window.rd.openAllDebridLogin();
+        closeAccountDialog();
+        showToast("AllDebrid PIN-Login geöffnet", 2200);
+        return;
+      }
       const command = buildAccountCreateCommand(dialogSnapshot);
       if (!command) throw new Error("Account-Payload ist ungültig");
       const result = await window.rd.createAccount(command);
@@ -3153,7 +3159,15 @@ export function App(): ReactElement {
         ...settingsDraft,
         disabledProviders: nextDisabledProviders
       };
-      await persistAccountToggle(nextDraft);
+      await persistAccountToggle(
+        nextDraft,
+        !nextDisabledProviders.includes(provider) && entry.service === "alldebrid"
+          ? () => window.rd.checkAccountCredentials({
+            kind: entry.kind as "alldebrid-api" | "alldebrid-web",
+            accountId: "svc-alldebrid"
+          })
+          : undefined
+      );
       showToast(
         nextDisabledProviders.includes(provider)
           ? `${entry.serviceLabel} deaktiviert`
@@ -3246,7 +3260,8 @@ export function App(): ReactElement {
 
   const checkAccountTableRow = (row: AccountTableRow): void => {
     setAccountContextMenu(null);
-    if ((row.entry.kind === "realdebrid-api" || row.entry.kind === "realdebrid-web") && row.accountId) {
+    if ((row.entry.kind === "realdebrid-api" || row.entry.kind === "realdebrid-web"
+      || row.entry.kind === "alldebrid-api" || row.entry.kind === "alldebrid-web") && row.accountId) {
       const kind = row.entry.kind;
       const accountId = row.accountId;
       void performQuickAction(async () => {
@@ -5725,9 +5740,10 @@ export function App(): ReactElement {
     const editSnapshot = accountEditDialog;
     void performQuickAction(async () => {
       if (editSnapshot.target.type === "mega" || editSnapshot.target.type === "debridlink"
-        || editSnapshot.target.kind === "realdebrid-api" || editSnapshot.target.kind === "realdebrid-web") {
+        || editSnapshot.target.kind === "realdebrid-api" || editSnapshot.target.kind === "realdebrid-web"
+        || editSnapshot.target.kind === "alldebrid-api" || editSnapshot.target.kind === "alldebrid-web") {
         const secret = editSnapshot.target.type === "mega" ? editSnapshot.password : editSnapshot.token;
-        const kind = editSnapshot.target.kind as "realdebrid-api" | "realdebrid-web" | "megadebrid-api" | "megadebrid-web" | "debridlink-api";
+        const kind = editSnapshot.target.kind as "realdebrid-api" | "realdebrid-web" | "megadebrid-api" | "megadebrid-web" | "debridlink-api" | "alldebrid-api" | "alldebrid-web";
         const status = await window.rd.checkAccountCredentials({
           kind,
           accountId: editSnapshot.target.type === "mega"

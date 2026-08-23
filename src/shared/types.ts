@@ -431,7 +431,7 @@ export interface AccountCommandResult {
 }
 
 export interface AccountCredentialCheckInput {
-  kind: "realdebrid-api" | "realdebrid-web" | "megadebrid-api" | "megadebrid-web" | "debridlink-api";
+  kind: "realdebrid-api" | "realdebrid-web" | "megadebrid-api" | "megadebrid-web" | "alldebrid-api" | "alldebrid-web" | "debridlink-api";
   accountId?: string;
   identity?: string;
   secret?: string;

@@ -33,7 +33,8 @@ function singleAccount(
   provider: DebridProvider,
   identity: string,
   maskedIdentity: string,
-  hasSecret: boolean
+  hasSecret: boolean,
+  status: DebridAccountStatus | null = null
 ): RendererAccount {
   return {
     accountId: `svc-${provider}`,
@@ -46,7 +47,7 @@ function singleAccount(
     dailyLimitBytes: settings.providerDailyLimitBytes[provider] || 0,
     dailyUsageBytes: settings.providerDailyUsageBytes[provider] || 0,
     totalUsageBytes: settings.providerTotalUsageBytes[provider] || 0,
-    status: null
+    status
   };
 }
 
@@ -112,13 +113,15 @@ export function createRendererAccounts(settings: AppSettings): RendererAccount[]
     ));
   }
   if (settings.allDebridUseWebLogin || settings.allDebridToken.trim()) {
+    const status = safeStatus(settings.debridAccountStatuses["svc-alldebrid"], redactions);
     accounts.push(singleAccount(
       settings,
       settings.allDebridUseWebLogin ? "alldebrid-web" : "alldebrid-api",
       "alldebrid",
-      "",
+      status?.username || "",
       settings.allDebridUseWebLogin ? "Browser-Login" : maskValue(settings.allDebridToken),
-      true
+      true,
+      status
     ));
   }
   if (settings.ddownloadLogin.trim() && settings.ddownloadPassword) {

@@ -609,13 +609,11 @@ interface ProviderUnrestrictedLink extends UnrestrictedLink {
 }
 
 export type MegaWebUnrestrictor = (link: string, signal?: AbortSignal, account?: { login: string; password: string }) => Promise<UnrestrictedLink | null>;
-export type AllDebridWebUnrestrictor = (link: string, signal?: AbortSignal) => Promise<UnrestrictedLink | null>;
 export type RealDebridWebUnrestrictor = (accountId: string, link: string, signal?: AbortSignal) => Promise<UnrestrictedLink | null>;
 export type BestDebridWebUnrestrictor = (link: string, signal?: AbortSignal) => Promise<UnrestrictedLink | null>;
 
 interface DebridServiceOptions {
   megaWebUnrestrict?: MegaWebUnrestrictor;
-  allDebridWebUnrestrict?: AllDebridWebUnrestrictor;
   realDebridWebUnrestrict?: RealDebridWebUnrestrictor;
   bestDebridWebUnrestrict?: BestDebridWebUnrestrictor;
 }
@@ -1011,7 +1009,9 @@ function parseAllDebridError(payload: Record<string, unknown> | null): string {
     return errorValue.trim();
   }
   const errorObj = asRecord(errorValue);
-  return pickString(errorObj, ["message", "code"]) || "AllDebrid API error";
+  const code = pickString(errorObj, ["code"]);
+  const message = pickString(errorObj, ["message"]);
+  return code && message ? `${code}: ${message}` : code || message || "AllDebrid API error";
 }
 
 function normalizeAllDebridHostKey(value: string): string {
@@ -4431,10 +4431,6 @@ export class DebridService {
       && !getRealDebridAccountCooldown(account.id, now));
   }
 
-  private shouldUseAllDebridWeb(settings: AppSettings): boolean {
-    return Boolean(settings.allDebridUseWebLogin && this.options.allDebridWebUnrestrict);
-  }
-
   private shouldUseBestDebridWeb(settings: AppSettings): boolean {
     return Boolean(settings.bestDebridUseWebLogin && this.options.bestDebridWebUnrestrict);
   }
@@ -4664,7 +4660,7 @@ export class DebridService {
       return Boolean(hasMegaDebridCredentials(settings) && isMegaDebridModeEnabled(settings, "web") && this.options.megaWebUnrestrict);
     }
     if (effectiveProvider === "alldebrid") {
-      return Boolean(this.shouldUseAllDebridWeb(settings) || settings.allDebridToken.trim());
+      return Boolean(settings.allDebridToken.trim());
     }
     if (effectiveProvider === "ddownload") {
       return Boolean(settings.ddownloadLogin.trim() && settings.ddownloadPassword.trim());
@@ -4816,14 +4812,6 @@ export class DebridService {
       return MegaDebridClient.unrestrictWithAccounts(settings, "web", false, link, this.options.megaWebUnrestrict, signal);
     }
     if (effectiveProvider === "alldebrid") {
-      if (this.shouldUseAllDebridWeb(settings) && this.options.allDebridWebUnrestrict) {
-        const result = await this.options.allDebridWebUnrestrict(link, signal);
-        if (!result) {
-          throw new Error("AllDebrid-Web-Fallback nicht verfügbar");
-        }
-        result.sourceLabel = "Web";
-        return result;
-      }
       const adResult = await new AllDebridClient(settings.allDebridToken).unrestrictLink(link, signal);
       adResult.sourceLabel = "API";
       return adResult;

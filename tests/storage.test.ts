@@ -1007,14 +1007,21 @@ describe("settings storage", () => {
     expect(normalized.debridAccountStatuses[key.id].email).toBeUndefined();
   });
 
-  it("defaults AllDebrid web login to disabled and normalizes the flag", () => {
+  it("migrates legacy AllDebrid web login without a PIN-issued API key to reauthorization", () => {
     expect(defaultSettings().allDebridUseWebLogin).toBe(false);
 
-    const normalizedEnabled = normalizeSettings({
+    const legacyWebOnly = normalizeSettings({
       ...defaultSettings(),
       allDebridUseWebLogin: 1 as unknown as boolean
     });
-    expect(normalizedEnabled.allDebridUseWebLogin).toBe(true);
+    expect(legacyWebOnly.allDebridUseWebLogin).toBe(false);
+
+    const authorizedWeb = normalizeSettings({
+      ...defaultSettings(),
+      allDebridToken: "fixture-pin-issued-key",
+      allDebridUseWebLogin: 1 as unknown as boolean
+    });
+    expect(authorizedWeb.allDebridUseWebLogin).toBe(true);
 
     const normalizedDisabled = normalizeSettings({
       ...defaultSettings(),
@@ -1032,6 +1039,35 @@ describe("settings storage", () => {
     });
 
     expect(normalized.historyRetentionMode).toBe("permanent");
+  });
+
+  it("keeps the AllDebrid service status only while AllDebrid is configured", () => {
+    const status = {
+      accountId: "svc-alldebrid",
+      provider: "alldebrid" as const,
+      label: "AllDebrid",
+      maskedLogin: "Geschützter API-Key",
+      valid: true,
+      isPremium: true,
+      premiumUntilMs: Date.now() + 1000,
+      username: "all-user",
+      email: "all@example.test",
+      message: "Premium aktiv",
+      checkedAt: Date.now()
+    };
+
+    const configured = normalizeSettings({
+      ...defaultSettings(),
+      allDebridToken: "all-api-key",
+      debridAccountStatuses: { "svc-alldebrid": status }
+    });
+    const removed = normalizeSettings({
+      ...defaultSettings(),
+      debridAccountStatuses: { "svc-alldebrid": status }
+    });
+
+    expect(configured.debridAccountStatuses["svc-alldebrid"]).toEqual(status);
+    expect(removed.debridAccountStatuses["svc-alldebrid"]).toBeUndefined();
   });
 
   it("loads legacy history without inventing structured durations", () => {

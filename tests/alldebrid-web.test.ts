@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const {
   mockFromPartition,
   mockSession,
-  mockFetch,
   mockBrowserWindowCtor,
   mockLoadURL,
   mockShow,
@@ -12,7 +11,6 @@ const {
   mockSetWindowOpenHandler,
   mockSetPermissionRequestHandler
 } = vi.hoisted(() => {
-  const fetch = vi.fn();
   const clearStorageData = vi.fn();
   const clearCache = vi.fn();
   const fromPartition = vi.fn();
@@ -31,6 +29,9 @@ const {
     show,
     focus,
     close: vi.fn(() => {
+      if (destroyed) {
+        return;
+      }
       destroyed = true;
       windowEvents.closed?.();
     }),
@@ -57,11 +58,9 @@ const {
   return {
     mockFromPartition: fromPartition,
     mockSession: {
-      fetch,
       clearStorageData,
       clearCache
     },
-    mockFetch: fetch,
     mockBrowserWindowCtor: BrowserWindowCtor,
     mockLoadURL: loadURL,
     mockShow: show,
@@ -84,21 +83,59 @@ vi.mock("electron", () => ({
 
 import { AllDebridWebFallback } from "../src/main/all-debrid-web";
 
-describe("alldebrid-web", () => {
+function pinResponse(expiresIn = 600): Response {
+  return new Response(JSON.stringify({
+    status: "success",
+    data: {
+      pin: "ABCD",
+      check: "check-token",
+      expires_in: expiresIn,
+      user_url: "https://alldebrid.com/pin/?pin=ABCD",
+      base_url: "https://alldebrid.com/pin/"
+    }
+  }), { status: 200 });
+}
+
+function checkResponse(activated: boolean, expiresIn: number, apiKey?: string): Response {
+  return new Response(JSON.stringify({
+    status: "success",
+    data: {
+      activated,
+      expires_in: expiresIn,
+      ...(apiKey ? { apikey: apiKey } : {})
+    }
+  }), { status: 200 });
+}
+
+describe("alldebrid PIN auth", () => {
   beforeEach(() => {
     mockFromPartition.mockReturnValue(mockSession);
+    vi.stubGlobal("fetch", vi.fn());
   });
 
   afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
     vi.clearAllMocks();
     mockFromPartition.mockReturnValue(mockSession);
   });
 
-  it("opens the AllDebrid login window with the shared restrictive browser boundary", async () => {
-    const fallback = new AllDebridWebFallback(() => true);
+  it("opens the official PIN URL and reports the API key after activation", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockResolvedValueOnce(pinResponse())
+      .mockResolvedValueOnce(checkResponse(false, 595))
+      .mockResolvedValueOnce(checkResponse(true, 590, "all-debrid-api-key"));
+    const authenticated = vi.fn();
+    const fallback = new AllDebridWebFallback(() => true, authenticated);
 
     await fallback.openLoginWindow();
 
+    expect(fetchMock.mock.calls[0]).toEqual([
+      "https://api.alldebrid.com/v4.1/pin/get",
+      expect.objectContaining({ method: "GET" })
+    ]);
     expect(mockBrowserWindowCtor).toHaveBeenCalledTimes(1);
     expect(mockBrowserWindowCtor.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
       webPreferences: {
@@ -112,128 +149,111 @@ describe("alldebrid-web", () => {
     }));
     expect(mockSetWindowOpenHandler).toHaveBeenCalledTimes(1);
     expect(mockSetPermissionRequestHandler).toHaveBeenCalledTimes(1);
-    expect(mockLoadURL).toHaveBeenCalledWith("https://alldebrid.com/register/?from=de");
-    expect(mockShow).toHaveBeenCalled();
-    expect(mockFocus).toHaveBeenCalled();
-  });
+    expect(mockLoadURL).toHaveBeenCalledWith("https://alldebrid.com/pin/?pin=ABCD");
+    expect(mockShow).toHaveBeenCalledTimes(1);
+    expect(mockFocus).toHaveBeenCalledTimes(1);
+    expect(authenticated).not.toHaveBeenCalled();
 
-  it("uses an existing AllDebrid Web session to unrestrict without opening a login window", async () => {
-    mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({
-      link: "https://alldebrid.direct/session-file.bin",
-      filename: "session-file.bin",
-      filesize: 9876
-    }), { status: 200 }));
-    const fallback = new AllDebridWebFallback(() => true);
+    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.waitFor(() => expect(authenticated).toHaveBeenCalledWith({ apiKey: "all-debrid-api-key" }));
 
-    const result = await fallback.unrestrict("https://rapidgator.net/file/session");
-
-    expect(result).toEqual({
-      directUrl: "https://alldebrid.direct/session-file.bin",
-      fileName: "session-file.bin",
-      fileSize: 9876,
-      retriesUsed: 0
-    });
-    expect(mockBrowserWindowCtor).not.toHaveBeenCalled();
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    expect(mockFetch.mock.calls[0]?.[0]).toBe("https://alldebrid.com/service.php");
-    expect(mockFetch.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
-      method: "POST",
-      body: "link=https%3A%2F%2Frapidgator.net%2Ffile%2Fsession&nb=0&json=true&pw="
-    }));
-  });
-
-  it("releases an aborted caller while the active web request ignores its signal", async () => {
-    let rejectRequest!: (error: Error) => void;
-    mockFetch
-      .mockReturnValueOnce(new Promise<Response>((_resolve, reject) => {
-        rejectRequest = reject;
-      }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        link: "https://alldebrid.direct/second.bin",
-        filename: "second.bin",
-        filesize: 333
-      }), { status: 200 }));
-    const fallback = new AllDebridWebFallback(() => true);
-    const controller = new AbortController();
-    const running = fallback.unrestrict("https://rapidgator.net/file/abort-race", controller.signal)
-      .then(() => "resolved" as const, (error) => String(error));
-
-    await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
-    controller.abort("test-stop");
-    const outcome = await Promise.race([
-      running,
-      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 200))
+    expect(fetchMock.mock.calls[1]).toEqual([
+      "https://api.alldebrid.com/v4/pin/check",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+        body: "check=check-token&pin=ABCD"
+      })
     ]);
-
-    expect(outcome).toContain("aborted:alldebrid-web");
-    const secondOutcome = await Promise.race([
-      fallback.unrestrict("https://rapidgator.net/file/second"),
-      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 200))
-    ]);
-    expect(secondOutcome).toEqual({
-      directUrl: "https://alldebrid.direct/second.bin",
-      fileName: "second.bin",
-      fileSize: 333,
-      retriesUsed: 0
-    });
-    expect(mockFetch).toHaveBeenCalledTimes(2);
-    rejectRequest(new Error("late alldebrid rejection"));
-    await Promise.resolve();
-  });
-
-  it("observes the raw rejection when the signal is already aborted and keeps the queue usable", async () => {
-    mockFetch.mockResolvedValue(new Response(JSON.stringify({
-      link: "https://alldebrid.direct/next.bin",
-      filename: "next.bin",
-      filesize: 666
-    }), { status: 200 }));
-    const fallback = new AllDebridWebFallback(() => true);
-    const controller = new AbortController();
-    controller.abort("before-queue");
-    const unhandled: unknown[] = [];
-    const onUnhandled = (reason: unknown) => unhandled.push(reason);
-    process.on("unhandledRejection", onUnhandled);
-    try {
-      await expect(fallback.unrestrict("https://rapidgator.net/file/pre-aborted", controller.signal))
-        .rejects.toThrow("aborted:alldebrid-web");
-      await new Promise((resolve) => setImmediate(resolve));
-      await expect(fallback.unrestrict("https://rapidgator.net/file/next")).resolves.toMatchObject({
-        directUrl: "https://alldebrid.direct/next.bin",
-        fileName: "next.bin"
-      });
-      expect(unhandled).toEqual([]);
-      expect(mockFetch).toHaveBeenCalledTimes(1);
-    } finally {
-      process.off("unhandledRejection", onUnhandled);
-    }
-  });
-
-  it("opens the login window after login_required and retries generation with the same session partition", async () => {
-    mockFetch
-      .mockResolvedValueOnce(new Response("login", { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        link: "https://alldebrid.direct/retry-file.bin",
-        filename: "retry-file.bin",
-        filesize: 12345
-      }), { status: 200 }));
-    const fallback = new AllDebridWebFallback(() => true);
-
-    const result = await fallback.unrestrict("https://rapidgator.net/file/retry");
-
-    expect(result).toEqual({
-      directUrl: "https://alldebrid.direct/retry-file.bin",
-      fileName: "retry-file.bin",
-      fileSize: 12345,
-      retriesUsed: 0
-    });
-    expect(mockBrowserWindowCtor).toHaveBeenCalledTimes(1);
-    expect(mockLoadURL).toHaveBeenCalledWith("https://alldebrid.com/register/?from=de");
-    expect(mockShow).toHaveBeenCalled();
-    expect(mockFocus).toHaveBeenCalled();
-    expect(mockSetWindowOpenHandler).toHaveBeenCalledTimes(1);
-    expect(mockSetPermissionRequestHandler).toHaveBeenCalledTimes(1);
+    expect(authenticated).toHaveBeenCalledTimes(1);
     expect(mockClose).toHaveBeenCalledTimes(1);
-    expect(mockFromPartition).toHaveBeenCalledWith("persist:alldebrid-web");
-    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns after opening the window instead of waiting for PIN activation", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockResolvedValueOnce(pinResponse())
+      .mockReturnValueOnce(new Promise<Response>(() => {}));
+    const fallback = new AllDebridWebFallback(() => false, vi.fn());
+
+    await expect(fallback.openLoginWindow()).resolves.toBeUndefined();
+
+    expect(mockLoadURL).toHaveBeenCalledWith("https://alldebrid.com/pin/?pin=ABCD");
+    expect(mockShow).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses the active PIN window without creating another flow", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockResolvedValueOnce(pinResponse())
+      .mockReturnValueOnce(new Promise<Response>(() => {}));
+    const fallback = new AllDebridWebFallback(() => true, vi.fn());
+
+    await fallback.openLoginWindow();
+    await fallback.openLoginWindow();
+
+    expect(mockBrowserWindowCtor).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.filter(([url]) => url === "https://api.alldebrid.com/v4.1/pin/get")).toHaveLength(1);
+    expect(mockShow).toHaveBeenCalledTimes(2);
+    expect(mockFocus).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops polling after the user closes the window and never reopens it", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockResolvedValueOnce(pinResponse())
+      .mockResolvedValue(checkResponse(false, 595));
+    const authenticated = vi.fn();
+    const fallback = new AllDebridWebFallback(() => true, authenticated);
+
+    await fallback.openLoginWindow();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    mockClose();
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(mockBrowserWindowCtor).toHaveBeenCalledTimes(1);
+    expect(authenticated).not.toHaveBeenCalled();
+  });
+
+  it("closes the window and stops polling when the caller aborts", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockResolvedValueOnce(pinResponse())
+      .mockResolvedValue(checkResponse(false, 595));
+    const authenticated = vi.fn();
+    const fallback = new AllDebridWebFallback(() => true, authenticated);
+    const controller = new AbortController();
+
+    await fallback.openLoginWindow(controller.signal);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(mockClose).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(authenticated).not.toHaveBeenCalled();
+  });
+
+  it("times out from the server expiry without reopening the login window", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockResolvedValueOnce(pinResponse(1))
+      .mockResolvedValueOnce(checkResponse(false, 1));
+    const authenticated = vi.fn();
+    const failed = vi.fn();
+    const fallback = new AllDebridWebFallback(() => true, authenticated, failed);
+
+    await fallback.openLoginWindow();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.waitFor(() => expect(failed).toHaveBeenCalledTimes(1));
+
+    expect(failed.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ message: "AllDebrid PIN-Login Timeout" }));
+    expect(authenticated).not.toHaveBeenCalled();
+    expect(mockClose).toHaveBeenCalledTimes(1);
+    expect(mockBrowserWindowCtor).toHaveBeenCalledTimes(1);
   });
 });

@@ -140,8 +140,6 @@ describe("selected item run scope", () => {
     internal.retryAfterByItem.set(itemIds[1], 200);
     internal.retryStateByItem.set(itemIds[0], { freshRetryUsed: true, resumeHardResetUsed: false });
     internal.retryStateByItem.set(itemIds[1], { freshRetryUsed: false, resumeHardResetUsed: true });
-    internal.pacedStartReservationByItem.set(itemIds[0], 100);
-    internal.pacedStartReservationByItem.set(itemIds[1], 200);
     internal.standalonePackageResults.add("foreign-package:1");
 
     manager.stop();
@@ -152,8 +150,6 @@ describe("selected item run scope", () => {
     expect(internal.retryAfterByItem.get(itemIds[1])).toBe(200);
     expect(internal.retryStateByItem.has(itemIds[0])).toBe(false);
     expect(internal.retryStateByItem.has(itemIds[1])).toBe(true);
-    expect(internal.pacedStartReservationByItem.has(itemIds[0])).toBe(false);
-    expect(internal.pacedStartReservationByItem.get(itemIds[1])).toBe(200);
     expect(internal.standalonePackageResults.has("foreign-package:1")).toBe(true);
     expect(internal.suppressedPackageResults.has("foreign-package:1")).toBe(false);
   });
@@ -181,7 +177,7 @@ describe("selected item run scope", () => {
     expect(internal.retryAfterByItem.has(itemIds[1])).toBe(true);
   });
 
-  it("resuming preserves item, disk and provider cooldown state", async () => {
+  it("resuming preserves item and provider cooldown state", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-resume-cooldowns-"));
     tempDirs.push(root);
     const { manager, itemIds } = createSelectedItemManager(root);
@@ -192,15 +188,11 @@ describe("selected item run scope", () => {
     internal.session.paused = true;
     const now = Date.now();
     internal.retryAfterByItem.set(itemIds[0], now + 11_000);
-    internal.providerStartReservations.set("provider-key", now + 12_000);
-    internal.pacedStartReservationByItem.set(itemIds[0], now + 13_000);
     internal.providerFailures.set("provider-key", { count: 1, lastFailAt: now, cooldownUntil: now + 14_000 });
 
     manager.togglePause();
 
     expect(internal.retryAfterByItem.get(itemIds[0])).toBe(now + 11_000);
-    expect(internal.providerStartReservations.get("provider-key")).toBe(now + 12_000);
-    expect(internal.pacedStartReservationByItem.get(itemIds[0])).toBe(now + 13_000);
     expect(internal.providerFailures.get("provider-key")?.cooldownUntil).toBe(now + 14_000);
     expect(internal.findNextQueuedItem()).toBeNull();
   });
@@ -1587,6 +1579,31 @@ async function waitFor(predicate: () => boolean, timeoutMs = 15000): Promise<voi
     }
     await new Promise((resolve) => setTimeout(resolve, 60));
   }
+}
+
+function mockAllDebridApi(
+  resolveLink: (link: string) => { directUrl: string; fileName: string; fileSize: number },
+  limitSimuDl: number
+): void {
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (url.includes("/user/hosts")) {
+      return new Response(JSON.stringify({
+        status: "success",
+        data: { hosts: { rapidgator: { name: "Rapidgator", status: true, limitSimuDl } } }
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (url.includes("/link/unlock")) {
+      const bodyText = init?.body instanceof URLSearchParams ? init.body.toString() : String(init?.body || "");
+      const originalLink = new URLSearchParams(bodyText).get("link") || "";
+      const resolved = resolveLink(originalLink);
+      return new Response(JSON.stringify({
+        status: "success",
+        data: { link: resolved.directUrl, filename: resolved.fileName, filesize: resolved.fileSize }
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    return originalFetch(input, init);
+  };
 }
 
 async function removeDirWithRetries(dir: string): Promise<void> {
@@ -9298,7 +9315,118 @@ describe("download manager", () => {
     }
   });
 
-  it("limits AllDebrid rapidgator starts to one active task by default", async () => {
+  it("starts AllDebrid items immediately without paced-start reservations", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    let unrestrictCalls = 0;
+    globalThis.fetch = async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/user/hosts")) {
+        return new Response(JSON.stringify({
+          status: "success",
+          data: { hosts: { rapidgator: { name: "Rapidgator", status: true, limitSimuDl: 2 } } }
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/link/unlock")) {
+        unrestrictCalls += 1;
+        await new Promise(() => {});
+      }
+      return originalFetch(input);
+    };
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        allDebridToken: "ad-token",
+        providerOrder: [],
+        providerPrimary: "alldebrid",
+        providerSecondary: "none",
+        providerTertiary: "none",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false,
+        autoReconnect: false,
+        enableIntegrityCheck: false,
+        maxParallel: 2
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    manager.addPackages([{ name: "ad-immediate", links: ["https://rapidgator.net/file/ad-immediate/sample.rar.html"] }]);
+    await manager.start();
+
+    await waitFor(() => unrestrictCalls === 1, 1000);
+    const internal = manager as any;
+    expect(internal.pacedStartReservationByItem).toBeUndefined();
+    expect(internal.providerStartReservations).toBeUndefined();
+
+    manager.stop();
+    await waitFor(() => !manager.getSnapshot().session.running, 5000);
+  });
+
+  it.each([
+    ["LINK_DOWN", "This link is not available on the file hoster website", "Link ungültig"],
+    ["BAD_LINK", "The link format is invalid", "Link ungültig"],
+    ["LINK_HOST_NOT_SUPPORTED", "This host is not supported", "Link ungültig"],
+    ["LINK_NOT_SUPPORTED", "This link is not supported", "Link ungültig"],
+    ["AUTH_MISSING_APIKEY", "The auth apikey was not sent", "AllDebrid-Anmeldung fehlgeschlagen"],
+    ["AUTH_BAD_APIKEY", "The API key is invalid", "AllDebrid-Anmeldung fehlgeschlagen"],
+    ["NO_SERVER", "Servers are not allowed on this endpoint", "AllDebrid-Anmeldung fehlgeschlagen"]
+  ])("fails terminal AllDebrid errors without retry or host cooldown: %s", async (code, message, expectedStatus) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
+    tempDirs.push(root);
+    let unrestrictCalls = 0;
+    globalThis.fetch = async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/user/hosts")) {
+        return new Response(JSON.stringify({
+          status: "success",
+          data: { hosts: { rapidgator: { name: "Rapidgator", status: true, limitSimuDl: 1 } } }
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/link/unlock")) {
+        unrestrictCalls += 1;
+        return new Response(JSON.stringify({ status: "error", error: { code, message } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return originalFetch(input);
+    };
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        allDebridToken: "ad-token",
+        providerOrder: [],
+        providerPrimary: "alldebrid",
+        providerSecondary: "none",
+        providerTertiary: "none",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false,
+        autoReconnect: false,
+        enableIntegrityCheck: false,
+        retryLimit: 0,
+        maxParallel: 1
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    manager.addPackages([{ name: "ad-terminal", links: ["https://rapidgator.net/file/ad-terminal/sample.rar.html"] }]);
+    await manager.start();
+    await waitFor(() => Object.values(manager.getSnapshot().session.items)[0]?.status === "failed", 5000);
+
+    const item = Object.values(manager.getSnapshot().session.items)[0];
+    const internal = manager as any;
+    expect(unrestrictCalls).toBe(1);
+    expect(item.retries).toBe(0);
+    expect(item.fullStatus).toContain(expectedStatus);
+    expect(internal.retryAfterByItem.has(item.id)).toBe(false);
+    expect(internal.providerFailures.has("alldebrid:rapidgator")).toBe(false);
+  });
+
+  it("respects the one-slot AllDebrid Rapidgator limit returned by the API", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
     const binary = Buffer.alloc(2 * 1024 * 1024, 6);
@@ -9447,7 +9575,7 @@ describe("download manager", () => {
     }
   }, 35000);
 
-  it("allows concurrent AllDebrid Web Rapidgator starts up to configured parallelism", async () => {
+  it("allows concurrent AllDebrid Rapidgator starts up to the reported slot limit", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
     const chunk = Buffer.alloc(256 * 1024, 9);
@@ -9493,11 +9621,15 @@ describe("download manager", () => {
     const directUrl3 = `http://127.0.0.1:${address.port}/ad-web-3`;
 
     try {
+      mockAllDebridApi((link) => ({
+        directUrl: link === link2 ? directUrl2 : link === link3 ? directUrl3 : directUrl1,
+        fileName: link === link2 ? "ad-web-2.bin" : link === link3 ? "ad-web-3.bin" : "ad-web-1.bin",
+        fileSize: chunk.length * 10
+      }), 3);
       const manager = new DownloadManager(
         {
           ...defaultSettings(),
           allDebridToken: "ad-token",
-          allDebridUseWebLogin: true,
           providerOrder: [],
           providerPrimary: "alldebrid",
           providerSecondary: "none",
@@ -9510,15 +9642,7 @@ describe("download manager", () => {
           maxParallel: 3
         },
         emptySession(),
-        createStoragePaths(path.join(root, "state")),
-        {
-          allDebridWebUnrestrict: async (link) => ({
-            fileName: link === link2 ? "ad-web-2.bin" : link === link3 ? "ad-web-3.bin" : "ad-web-1.bin",
-            directUrl: link === link2 ? directUrl2 : link === link3 ? directUrl3 : directUrl1,
-            fileSize: chunk.length * 10,
-            retriesUsed: 0
-          })
-        }
+        createStoragePaths(path.join(root, "state"))
       );
 
       manager.addPackages([{ name: "ad-web-parallel", links: [link1, link2, link3] }]);
@@ -10285,7 +10409,7 @@ describe("download manager", () => {
     await new Promise((resolve) => setTimeout(resolve, 150));
   });
 
-  it("shows the same AllDebrid countdown for all immediately free slots", async () => {
+  it("starts all immediately free AllDebrid slots without a countdown", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
     const chunk = Buffer.alloc(256 * 1024, 9);
@@ -10327,11 +10451,19 @@ describe("download manager", () => {
     const links = Array.from({ length: totalLinks }, (_, index) => `https://rapidgator.net/file/web-${index + 1}/sample.part${index + 1}.rar.html`);
 
     try {
+      mockAllDebridApi((link) => {
+        const match = link.match(/web-(\d+)/);
+        const slot = Number(match?.[1] || 1);
+        return {
+          fileName: `ad-web-${slot}.bin`,
+          directUrl: `http://127.0.0.1:${address.port}/ad-web-${slot}`,
+          fileSize: chunk.length * 10
+        };
+      }, 5);
       const manager = new DownloadManager(
         {
           ...defaultSettings(),
           allDebridToken: "ad-token",
-          allDebridUseWebLogin: true,
           providerOrder: [],
           providerPrimary: "alldebrid",
           providerSecondary: "none",
@@ -10344,19 +10476,7 @@ describe("download manager", () => {
           maxParallel: 5
         },
         emptySession(),
-        createStoragePaths(path.join(root, "state")),
-        {
-          allDebridWebUnrestrict: async (link) => {
-            const match = link.match(/web-(\d+)/);
-            const slot = Number(match?.[1] || 1);
-            return {
-              fileName: `ad-web-${slot}.bin`,
-              directUrl: `http://127.0.0.1:${address.port}/ad-web-${slot}`,
-              fileSize: chunk.length * 10,
-              retriesUsed: 0
-            };
-          }
-        }
+        createStoragePaths(path.join(root, "state"))
       );
 
       manager.addPackages([{ name: "ad-web-visibility", links }]);
@@ -10364,18 +10484,15 @@ describe("download manager", () => {
 
       await waitFor(() => {
         const items = Object.values(manager.getSnapshot().session.items);
-        const countdownItems = items.filter((item) => /^AllDebrid Start in \d+s$/.test(item.fullStatus || ""));
-        return countdownItems.length === 5;
+        return items.filter((item) => item.status === "downloading" || item.status === "validating").length === 5;
       }, 10000);
 
       const items = Object.values(manager.getSnapshot().session.items);
       const activeCount = items.filter((item) => item.status === "downloading" || item.status === "validating").length;
       const countdownItems = items.filter((item) => /^AllDebrid Start in \d+s$/.test(item.fullStatus || ""));
-      const uniqueCountdowns = new Set(countdownItems.map((item) => item.fullStatus || ""));
 
-      expect(activeCount).toBe(0);
-      expect(countdownItems.length).toBe(5);
-      expect(uniqueCountdowns.size).toBe(1);
+      expect(activeCount).toBe(5);
+      expect(countdownItems).toHaveLength(0);
 
       manager.stop();
       await waitFor(() => !manager.getSnapshot().session.running, 15000);
@@ -10385,7 +10502,7 @@ describe("download manager", () => {
     }
   }, 20000);
 
-  it("starts immediately free AllDebrid slots after the same 3 second delay", async () => {
+  it("starts immediately free AllDebrid API slots without a fixed delay", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
     const binary = Buffer.alloc(512 * 1024, 5);
@@ -10469,19 +10586,11 @@ describe("download manager", () => {
       manager.addPackages([{ name: "ad-paced", links: [link1, link2, link3] }]);
       await manager.start();
 
-      const managerInternals = manager as unknown as {
-        retryAfterByItem: Map<string, number>;
-      };
-      await waitFor(() => managerInternals.retryAfterByItem.size >= 3, 5000);
-
-      const now = Date.now();
-      const readyTimes = [...managerInternals.retryAfterByItem.values()].sort((a, b) => a - b);
-      expect(readyTimes.length).toBe(3);
-      const firstDelay = readyTimes[0] - now;
-      const lastDelay = readyTimes[readyTimes.length - 1] - now;
-      expect(firstDelay).toBeGreaterThan(2000);
-      expect(firstDelay).toBeLessThan(4500);
-      expect(lastDelay - firstDelay).toBeLessThan(500);
+      await waitFor(() => {
+        const items = Object.values(manager.getSnapshot().session.items);
+        return items.filter((item) => item.status === "downloading" || item.status === "validating").length === 3;
+      }, 1000);
+      expect(Object.values(manager.getSnapshot().session.items).some((item) => /^AllDebrid Start in \d+s$/.test(item.fullStatus || ""))).toBe(false);
 
       manager.stop();
       await waitFor(() => !manager.getSnapshot().session.running, 15000);
@@ -10491,7 +10600,7 @@ describe("download manager", () => {
     }
   }, 20000);
 
-  it("tops up newly freed AllDebrid slots with a fresh 3 second countdown", async () => {
+  it("tops up newly freed AllDebrid slots immediately", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
     const shortBinary = Buffer.alloc(64 * 1024, 7);
@@ -10537,11 +10646,18 @@ describe("download manager", () => {
     ];
 
     try {
+      mockAllDebridApi((link) => {
+        const slot = links.indexOf(link) + 1;
+        return {
+          fileName: `ad-topup-${slot}.bin`,
+          directUrl: `http://127.0.0.1:${address.port}/ad-${slot}`,
+          fileSize: slot === 1 ? shortBinary.length : longBinary.length
+        };
+      }, 3);
       const manager = new DownloadManager(
         {
           ...defaultSettings(),
           allDebridToken: "ad-token",
-          allDebridUseWebLogin: true,
           providerOrder: [],
           providerPrimary: "alldebrid",
           providerSecondary: "none",
@@ -10554,18 +10670,7 @@ describe("download manager", () => {
           maxParallel: 3
         },
         emptySession(),
-        createStoragePaths(path.join(root, "state")),
-        {
-          allDebridWebUnrestrict: async (link) => {
-            const slot = links.indexOf(link) + 1;
-            return {
-              fileName: `ad-topup-${slot}.bin`,
-              directUrl: `http://127.0.0.1:${address.port}/ad-${slot}`,
-              fileSize: slot === 1 ? shortBinary.length : longBinary.length,
-              retriesUsed: 0
-            };
-          }
-        }
+        createStoragePaths(path.join(root, "state"))
       );
 
       manager.addPackages([{ name: "ad-topup", links }]);
@@ -10579,9 +10684,10 @@ describe("download manager", () => {
       await waitFor(() => {
         const items = Object.values(manager.getSnapshot().session.items);
         const completedCount = items.filter((item) => item.status === "completed").length;
-        const countdownItems = items.filter((item) => /^AllDebrid Start in [123]s$/.test(item.fullStatus || ""));
-        return completedCount >= 1 && countdownItems.length === 1;
+        const downloadingCount = items.filter((item) => item.status === "downloading").length;
+        return completedCount >= 1 && downloadingCount === 3;
       }, 12000);
+      expect(Object.values(manager.getSnapshot().session.items).some((item) => /^AllDebrid Start in \d+s$/.test(item.fullStatus || ""))).toBe(false);
 
       manager.stop();
       await waitFor(() => !manager.getSnapshot().session.running, 15000);

@@ -127,6 +127,8 @@ export function validateAccountCredentialCheckInput(value: unknown): AccountCred
     && raw.kind !== "realdebrid-web"
     && raw.kind !== "megadebrid-api"
     && raw.kind !== "megadebrid-web"
+    && raw.kind !== "alldebrid-api"
+    && raw.kind !== "alldebrid-web"
     && raw.kind !== "debridlink-api") invalid();
   return {
     kind: raw.kind,
@@ -547,7 +549,7 @@ function setSingle(settings: AppSettings, kind: RendererAccountKind, identity: s
   if (kind === "bestdebrid-api") return { ...settings, bestToken: validateSecret(secret || ""), bestDebridUseWebLogin: false };
   if (kind === "bestdebrid-web") return { ...settings, bestToken: "", bestDebridUseWebLogin: true };
   if (kind === "alldebrid-api") return { ...settings, allDebridToken: validateSecret(secret || ""), allDebridUseWebLogin: false };
-  if (kind === "alldebrid-web") return { ...settings, allDebridToken: "", allDebridUseWebLogin: true };
+  if (kind === "alldebrid-web") return { ...settings, allDebridToken: secret ? validateSecret(secret) : settings.allDebridToken, allDebridUseWebLogin: true };
   if (kind === "ddownload-login") return { ...settings, ddownloadLogin: validateIdentity(identity || ""), ddownloadPassword: validateSecret(secret || "") };
   if (kind === "onefichier-api") return { ...settings, oneFichierApiKey: validateSecret(secret || "") };
   if (kind === "linksnappy-login") return { ...settings, linkSnappyLogin: validateIdentity(identity || ""), linkSnappyPassword: validateSecret(secret || "") };

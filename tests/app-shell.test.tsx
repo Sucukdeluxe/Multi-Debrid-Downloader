@@ -75,6 +75,19 @@ describe("desktop shell", () => {
     expect(menu).toContain("openCollectorInput()");
   });
 
+  it("uses the AllDebrid PIN flow before creating an account and exposes direct account checks", () => {
+    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
+    const createFlow = source.slice(source.indexOf("const onSaveAccountDialog"), source.indexOf("const onResetAccountDailyUsage"));
+    const rowFlow = source.slice(source.indexOf("const accountRows"), source.indexOf("const [accountStatusSort"));
+    const checkFlow = source.slice(source.indexOf("const checkAccountTableRow"), source.indexOf("const onCheckUpdates"));
+
+    expect(createFlow).toContain('dialogSnapshot.kind === "alldebrid-web"');
+    expect(createFlow.indexOf("openAllDebridLogin")).toBeLessThan(createFlow.indexOf("buildAccountCreateCommand"));
+    expect(rowFlow).toContain('entry.service === "alldebrid" ? "svc-alldebrid" : null');
+    expect(checkFlow).toContain('row.entry.kind === "alldebrid-api"');
+    expect(checkFlow).toContain('row.entry.kind === "alldebrid-web"');
+  });
+
   it("places the delete confirmation opt-out below the right-aligned actions", () => {
     const source = readFileSync(new URL("../src/renderer/views/downloads/DeleteConfirmationDialog.tsx", import.meta.url), "utf8");
     const css = readFileSync(new URL("../src/renderer/styles.css", import.meta.url), "utf8");

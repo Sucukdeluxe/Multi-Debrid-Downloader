@@ -291,9 +291,13 @@ function normalizeDebridAccountStatuses(
   megaIds: string[],
   debridLinkIds: string[],
   realDebridIds: string[],
-  legacyRealDebridTargetId: string | null
+  legacyRealDebridTargetId: string | null,
+  allDebridConfigured: boolean
 ): Record<string, DebridAccountStatus> {
   const allowed = new Set([...megaIds, ...debridLinkIds, ...realDebridIds]);
+  if (allDebridConfigured) {
+    allowed.add("svc-alldebrid");
+  }
   const result: Record<string, DebridAccountStatus> = {};
   if (value && typeof value === "object" && !Array.isArray(value)) {
     for (const [storedKey, raw] of Object.entries(value as Record<string, unknown>)) {
@@ -308,11 +312,16 @@ function normalizeDebridAccountStatuses(
       if (typeof entry.accountId !== "string" || typeof entry.checkedAt !== "number") {
         continue;
       }
+      if (key === "svc-alldebrid" && entry.provider !== "alldebrid") {
+        continue;
+      }
       const provider = entry.provider === "debridlink"
         ? "debridlink"
         : entry.provider === "realdebrid"
           ? "realdebrid"
-          : "megadebrid";
+          : entry.provider === "alldebrid"
+            ? "alldebrid"
+            : "megadebrid";
       let username = typeof entry.username === "string" ? entry.username : undefined;
       let email = typeof entry.email === "string" ? entry.email : undefined;
       if (provider === "debridlink" && !username && email && !email.includes("@")) {
@@ -543,7 +552,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     bestToken: asText(settings.bestToken),
     bestDebridUseWebLogin: Boolean(settings.bestDebridUseWebLogin),
     allDebridToken: asText(settings.allDebridToken),
-    allDebridUseWebLogin: Boolean(settings.allDebridUseWebLogin),
+    allDebridUseWebLogin: Boolean(settings.allDebridUseWebLogin && asText(settings.allDebridToken)),
     ddownloadLogin: asText(settings.ddownloadLogin),
     ddownloadPassword: asText(settings.ddownloadPassword),
     oneFichierApiKey: asText(settings.oneFichierApiKey),
@@ -657,7 +666,8 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
       megaDebridAccountIds,
       debridLinkApiKeyIds,
       realDebridAccountIds,
-      legacyRealDebridTargetId
+      legacyRealDebridTargetId,
+      Boolean(asText(settings.allDebridToken))
     ),
     providerDailyUsageDay: providerDailyUsageDay === currentUsageDay ? providerDailyUsageDay : currentUsageDay,
     dailyStartEnabled: settings.dailyStartEnabled !== undefined ? Boolean(settings.dailyStartEnabled) : defaults.dailyStartEnabled,

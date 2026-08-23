@@ -8,11 +8,13 @@ import { compactErrorText } from "./utils";
 const MEGA_DEBRID_API = "https://www.mega-debrid.eu/api.php";
 const DEBRID_LINK_API = "https://debrid-link.com/api/v2";
 const REAL_DEBRID_USER_API = "https://api.real-debrid.com/rest/1.0/user";
+const ALL_DEBRID_USER_API = "https://api.alldebrid.com/v4/user";
 const CHECK_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 const CHECK_TIMEOUT_MS = 20000;
 
 export const REAL_DEBRID_STATUS_ID = "svc-realdebrid";
+export const ALL_DEBRID_STATUS_ID = "svc-alldebrid";
 
 export interface RealDebridSessionProbeResult {
   valid: boolean;
@@ -167,6 +169,80 @@ export async function checkRealDebridAccount(
       premiumUntilMs,
       username: String(payload.username || "").trim() || undefined,
       email: String(payload.email || "").trim() || undefined,
+      message: isPremium ? formatRemaining(premiumUntilMs, now) : "Kein Premium (Free)"
+    };
+  } catch (error) {
+    const errText = compactErrorText(error);
+    const aborted = signal?.aborted || /aborted/i.test(errText);
+    return { ...base, message: aborted ? "Prüfung abgebrochen" : `Prüfung fehlgeschlagen: ${errText}` };
+  }
+}
+
+export async function checkAllDebridAccount(
+  token: string,
+  signal?: AbortSignal,
+  now = Date.now()
+): Promise<DebridAccountStatus> {
+  const base: DebridAccountStatus = {
+    accountId: ALL_DEBRID_STATUS_ID,
+    provider: "alldebrid",
+    label: "AllDebrid",
+    maskedLogin: "Geschützter API-Key",
+    valid: false,
+    isPremium: false,
+    premiumUntilMs: null,
+    message: "",
+    checkedAt: now
+  };
+  const apiKey = token.trim();
+  if (!apiKey) {
+    return { ...base, message: "Kein API-Key hinterlegt" };
+  }
+  try {
+    const response = await fetch(ALL_DEBRID_USER_API, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "User-Agent": CHECK_USER_AGENT
+      },
+      signal: timeoutSignal(signal, CHECK_TIMEOUT_MS)
+    });
+    const text = await response.text();
+    const payload = parseJsonSafe(text);
+    const error = payload?.error && typeof payload.error === "object"
+      ? payload.error as Record<string, unknown>
+      : null;
+    const errorCode = String(error?.code || "").trim();
+    if (!response.ok || payload?.status !== "success") {
+      if (response.status === 401 || response.status === 403 || errorCode === "AUTH_MISSING_APIKEY" || errorCode === "AUTH_BAD_APIKEY") {
+        return { ...base, message: "Ungültiger API-Key" };
+      }
+      if (errorCode === "AUTH_BLOCKED") {
+        return { ...base, message: "API-Key für diese IP blockiert" };
+      }
+      if (errorCode === "AUTH_USER_BANNED") {
+        return { ...base, message: "AllDebrid-Account gesperrt" };
+      }
+      return { ...base, message: `Prüfung fehlgeschlagen (HTTP ${response.status})` };
+    }
+    const data = payload.data && typeof payload.data === "object"
+      ? payload.data as Record<string, unknown>
+      : null;
+    const user = data?.user && typeof data.user === "object"
+      ? data.user as Record<string, unknown>
+      : null;
+    if (!user) {
+      return { ...base, message: "Prüfung fehlgeschlagen: Ungültige API-Antwort" };
+    }
+    const premiumUntilSec = Number(user.premiumUntil || 0);
+    const premiumUntilMs = Number.isFinite(premiumUntilSec) && premiumUntilSec > 0 ? premiumUntilSec * 1000 : 0;
+    const isPremium = Boolean(user.isPremium) && premiumUntilMs > now;
+    return {
+      ...base,
+      valid: true,
+      isPremium,
+      premiumUntilMs,
+      username: String(user.username || "").trim() || undefined,
+      email: String(user.email || "").trim() || undefined,
       message: isPremium ? formatRemaining(premiumUntilMs, now) : "Kein Premium (Free)"
     };
   } catch (error) {
@@ -337,6 +413,8 @@ export async function checkAllDebridAccounts(
   const realDebridAccounts = scope === "all"
     ? allRealDebridAccounts
     : providerEnabled("realdebrid") ? allRealDebridAccounts.filter((account) => account.enabled) : [];
+  const allDebridToken = String(settings.allDebridToken || "").trim();
+  const checkAllDebrid = Boolean(allDebridToken) && (scope === "all" || providerEnabled("alldebrid"));
 
   const taskFns: Array<() => Promise<DebridAccountStatus>> = [
     ...realDebridAccounts.map((account) => () => checkRealDebridAccount(
@@ -347,6 +425,7 @@ export async function checkAllDebridAccounts(
         ? (probeSignal) => probeRealDebridWebSession(account.id, probeSignal)
         : undefined
     )),
+    ...(checkAllDebrid ? [() => checkAllDebridAccount(allDebridToken, signal, now)] : []),
     ...megaAccounts.map((account) => () => checkMegaDebridAccount(account, signal, now)),
     ...debridLinkKeys.map((key) => () => checkDebridLinkKey(key, signal, now))
   ];

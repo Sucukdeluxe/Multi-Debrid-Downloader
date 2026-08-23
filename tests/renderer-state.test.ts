@@ -7,6 +7,8 @@ import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import { serializeRealDebridApiAccounts } from "../src/shared/real-debrid-accounts";
 import type { AppSettings, RendererAccountKind } from "../src/shared/types";
 
+const NOW = 1_700_000_000_000;
+
 const SECRETS = {
   token: "fixture-rd-token-7vQ2",
   megaPassword: "fixture-mega-password-8kM3",
@@ -80,6 +82,36 @@ describe("renderer state serialization", () => {
     expect(JSON.stringify(state)).not.toContain(firstToken);
     expect(JSON.stringify(state)).not.toContain(secondToken);
     expect(realDebridRows[0].accountId).not.toBe(`rda_${crypto.createHash("sha256").update(firstToken).digest("hex").slice(0, 32)}`);
+  });
+  it("projects the persisted AllDebrid service status", () => {
+    const settings = {
+      ...defaultSettings(),
+      allDebridToken: "fixture-all-status-secret",
+      debridAccountStatuses: {
+        "svc-alldebrid": {
+          accountId: "svc-alldebrid",
+          provider: "alldebrid" as const,
+          label: "AllDebrid",
+          maskedLogin: "Geschützter API-Key",
+          valid: true,
+          isPremium: true,
+          premiumUntilMs: NOW,
+          username: "all-user",
+          email: "all@example.test",
+          message: "Premium aktiv",
+          checkedAt: 1
+        }
+      }
+    };
+
+    const account = createRendererState(settings).accounts.find((entry) => entry.accountId === "svc-alldebrid");
+
+    expect(account).toMatchObject({
+      kind: "alldebrid-api",
+      provider: "alldebrid",
+      identity: "all-user",
+      status: expect.objectContaining({ valid: true, username: "all-user", email: "all@example.test" })
+    });
   });
   it.each(ACCOUNT_FIXTURES)("serializes $kind without its representative secret", ({ kind, secret, settings }) => {
     const state = createRendererState({ ...defaultSettings(), ...settings });

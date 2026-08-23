@@ -36,7 +36,7 @@ import { importDlcContainers } from "./container";
 import { APP_VERSION, ONLINE_BACKUP_API_URL } from "./constants";
 import { DownloadManager } from "./download-manager";
 import { fetchAllDebridHostInfo, fetchDebridLinkHostLimits } from "./debrid";
-import { checkAllDebridAccounts, checkDebridLinkKey, checkMegaDebridAccount, checkRealDebridAccount, retainConfiguredRealDebridStatuses } from "./account-check";
+import { checkAllDebridAccount, checkAllDebridAccounts, checkDebridLinkKey, checkMegaDebridAccount, checkRealDebridAccount, retainConfiguredRealDebridStatuses } from "./account-check";
 import { parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
 import { getMegaDebridAccountsForMode } from "../shared/mega-debrid-accounts";
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
@@ -192,11 +192,14 @@ export class AppController {
       login: this.settings.megaLogin,
       password: this.settings.megaPassword
     }));
-    this.allDebridWebFallback = new AllDebridWebFallback(() => this.settings.rememberToken);
+    this.allDebridWebFallback = new AllDebridWebFallback(
+      () => this.settings.rememberToken,
+      ({ apiKey }) => this.completeAllDebridLogin(apiKey),
+      (error) => logger.warn(`AllDebrid PIN-Login fehlgeschlagen: ${String(error.message || error)}`)
+    );
     this.bestDebridWebFallback = new BestDebridWebFallback(() => this.settings.rememberToken);
     this.manager = new DownloadManager(this.settings, session, this.storagePaths, {
       megaWebUnrestrict: (link: string, signal?: AbortSignal, account?: { login: string; password: string }) => this.megaWebFallback.unrestrict(link, signal, account),
-      allDebridWebUnrestrict: (link: string, signal?: AbortSignal) => this.allDebridWebFallback.unrestrict(link, signal),
       realDebridWebUnrestrict: (accountId: string, link: string, signal?: AbortSignal) => this.unrestrictRealDebridWebAccount(accountId, link, signal),
       bestDebridWebUnrestrict: (link: string, signal?: AbortSignal) => this.bestDebridWebFallback.unrestrict(link, signal),
       invalidateMegaSession: () => this.megaWebFallback.invalidateSession(),
@@ -575,6 +578,9 @@ export class AppController {
   }
 
   public async executeAccountCommand(command: AccountCommand): Promise<AccountCommandResult> {
+    if (command.action === "delete" && (command.kind === "alldebrid-api" || command.kind === "alldebrid-web")) {
+      this.allDebridWebFallback.dispose();
+    }
     const applied = applyAccountCommand(this.settings, command);
     let checkedStatus: DebridAccountStatus | null = null;
     const redactions = collectAccountStatusRedactionValues(applied.settings, command);
@@ -593,6 +599,9 @@ export class AppController {
       const account = getRealDebridAccounts(applied.settings).find((entry) => entry.id === applied.response.accountId && entry.kind === "api");
       if (!account) throw new Error("Account-Payload ist ungültig");
       checkedStatus = await checkRealDebridAccount(account);
+    }
+    if (command.action !== "delete" && applied.response.accountId && command.kind === "alldebrid-api") {
+      checkedStatus = await checkAllDebridAccount(applied.settings.allDebridToken);
     }
     if (checkedStatus) {
       checkedStatus = sanitizeDebridAccountStatus(checkedStatus, redactions);
@@ -658,6 +667,17 @@ export class AppController {
       if (!account) throw new Error("Account-Payload ist ungültig");
       const status = sanitizeDebridAccountStatus(await checkMegaDebridAccount(account), redactions);
       if (!input.secret && getMegaDebridAccountsForMode(this.settings, mode).some((entry) => entry.id === status.accountId)) {
+        this.manager.applyDebridAccountStatuses([status]);
+      }
+      return status;
+    }
+    if (input.kind === "alldebrid-api" || input.kind === "alldebrid-web") {
+      const token = input.secret?.trim() || this.settings.allDebridToken.trim();
+      if (!token || (input.accountId && input.accountId !== "svc-alldebrid")) {
+        throw new Error("Account-Payload ist ungültig");
+      }
+      const status = sanitizeDebridAccountStatus(await checkAllDebridAccount(token), redactions);
+      if (!input.secret && this.settings.allDebridToken.trim()) {
         this.manager.applyDebridAccountStatuses([status]);
       }
       return status;
@@ -888,6 +908,23 @@ export class AppController {
     await this.allDebridWebFallback.openLoginWindow();
   }
 
+  private async completeAllDebridLogin(apiKey: string): Promise<void> {
+    const next = this.updateSettings({
+      allDebridToken: apiKey,
+      allDebridUseWebLogin: true,
+      disabledProviders: this.settings.disabledProviders.filter((provider) => provider !== "alldebrid")
+    });
+    const status = sanitizeDebridAccountStatus(
+      await checkAllDebridAccount(next.allDebridToken),
+      collectAccountStatusRedactionValues(next)
+    );
+    this.manager.applyDebridAccountStatuses([status]);
+    this.audit("INFO", "AllDebrid PIN-Login abgeschlossen", {
+      valid: status.valid,
+      premium: status.isPremium
+    });
+  }
+
   public async importBestDebridCookies(filePath: string): Promise<number> {
     const imported = await this.bestDebridWebFallback.importCookiesFromFile(filePath);
     this.audit("INFO", "BestDebrid Cookies importiert", {
@@ -898,9 +935,6 @@ export class AppController {
   }
 
   public async getAllDebridHostInfo(host = "rapidgator"): Promise<AllDebridHostInfo> {
-    if (this.settings.allDebridUseWebLogin) {
-      return this.allDebridWebFallback.getHostInfo(host);
-    }
     const token = this.settings.allDebridToken.trim();
     if (!token) {
       throw new Error("AllDebrid ist nicht konfiguriert");

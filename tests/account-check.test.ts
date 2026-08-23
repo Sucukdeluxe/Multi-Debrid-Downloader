@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { checkMegaDebridAccount, checkDebridLinkKey, checkAllDebridAccounts, checkRealDebridAccount, REAL_DEBRID_STATUS_ID, retainConfiguredRealDebridStatuses } from "../src/main/account-check";
+import { ALL_DEBRID_STATUS_ID, checkAllDebridAccount, checkMegaDebridAccount, checkDebridLinkKey, checkAllDebridAccounts, checkRealDebridAccount, REAL_DEBRID_STATUS_ID, retainConfiguredRealDebridStatuses } from "../src/main/account-check";
 import type { MegaDebridAccountEntry } from "../src/shared/mega-debrid-accounts";
 import { getDebridLinkApiKeyId, type DebridLinkApiKeyEntry } from "../src/shared/debrid-link-keys";
 import type { AppSettings } from "../src/shared/types";
@@ -180,7 +180,77 @@ describe("checkRealDebridAccount", () => {
   });
 });
 
+describe("checkAllDebridAccount", () => {
+  it("reads identity and premium expiry from the official user endpoint", async () => {
+    const premiumUntilSec = Math.floor(NOW / 1000) + 30 * 24 * 60 * 60;
+    mockFetchOnce(200, {
+      status: "success",
+      data: {
+        user: {
+          username: "all-user",
+          email: "all-user@example.test",
+          isPremium: true,
+          premiumUntil: premiumUntilSec
+        }
+      }
+    });
+
+    const status = await checkAllDebridAccount("all-api-key", undefined, NOW);
+
+    expect(status).toMatchObject({
+      accountId: ALL_DEBRID_STATUS_ID,
+      provider: "alldebrid",
+      valid: true,
+      isPremium: true,
+      premiumUntilMs: premiumUntilSec * 1000,
+      username: "all-user",
+      email: "all-user@example.test"
+    });
+    expect(fetch).toHaveBeenCalledWith("https://api.alldebrid.com/v4/user", expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: "Bearer all-api-key" })
+    }));
+  });
+
+  it("reports authentication errors without accepting the API key", async () => {
+    mockFetchOnce(401, {
+      status: "error",
+      error: { code: "AUTH_BAD_APIKEY", message: "The auth apikey is invalid" }
+    });
+
+    const status = await checkAllDebridAccount("bad-key", undefined, NOW);
+
+    expect(status).toMatchObject({
+      accountId: ALL_DEBRID_STATUS_ID,
+      provider: "alldebrid",
+      valid: false,
+      isPremium: false,
+      message: "Ungültiger API-Key"
+    });
+  });
+});
+
 describe("checkAllDebridAccounts", () => {
+  it("checks configured AllDebrid in all scope and only when enabled in active scope", async () => {
+    const settings = {
+      ...defaultSettings(),
+      allDebridToken: "all-api-key",
+      disabledProviders: ["alldebrid" as const]
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        status: "success",
+        data: { user: { username: "all-user", email: "all@example.test", isPremium: true, premiumUntil: 4_102_444_800 } }
+      })
+    })) as unknown as typeof fetch);
+
+    const active = await checkAllDebridAccounts(settings, undefined, undefined, "active");
+    const all = await checkAllDebridAccounts(settings, undefined, undefined, "all");
+
+    expect(active).toEqual([]);
+    expect(all).toEqual([expect.objectContaining({ accountId: ALL_DEBRID_STATUS_ID, provider: "alldebrid", valid: true })]);
+  });
   it("discards a late Real-Debrid result after its account was removed", () => {
     const removedId = "rda_removedAfterCheck";
     const lateStatus = { accountId: removedId, provider: "realdebrid" as const, label: "API-Token 1", maskedLogin: "Geschützt", valid: true, isPremium: true, premiumUntilMs: null, message: "Premium aktiv", checkedAt: NOW };

@@ -29,7 +29,7 @@ function createController(settings: AppSettings): AppController {
   const controller = Object.create(AppController.prototype) as any;
   controller.settings = settings;
   controller.storagePaths = createStoragePaths(dir);
-  controller.manager = { setSettings: vi.fn() };
+  controller.manager = { setSettings: vi.fn(), applyDebridAccountStatuses: vi.fn() };
   controller.audit = vi.fn();
   controller.overlayLiveUsageCounters = vi.fn();
   controller.pruneRealDebridWebFallbacks = vi.fn();
@@ -91,5 +91,83 @@ describe("AppController daily start settings", () => {
     });
 
     expect(controller.getSettings().scheduledStartEpochMs).toBe(scheduledStartEpochMs);
+  });
+});
+
+describe("AppController AllDebrid account checks", () => {
+  it("routes a stored AllDebrid API account through the AllDebrid user endpoint and persists its status", async () => {
+    const controller = createController({
+      ...defaultSettings(),
+      allDebridToken: "fixture-all-api-key"
+    }) as any;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      status: "success",
+      data: {
+        user: {
+          username: "all-user",
+          email: "all@example.test",
+          isPremium: true,
+          premiumUntil: "1800000000"
+        }
+      }
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+
+    const status = await controller.checkAccountCredentials({
+      kind: "alldebrid-api",
+      accountId: "svc-alldebrid"
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toBe("https://api.alldebrid.com/v4/user");
+    expect(status).toMatchObject({
+      accountId: "svc-alldebrid",
+      provider: "alldebrid",
+      valid: true,
+      isPremium: true,
+      username: "all-user",
+      email: "all@example.test"
+    });
+    expect(controller.manager.applyDebridAccountStatuses).toHaveBeenCalledWith([status]);
+  });
+
+  it("stores a PIN-issued API key, enables AllDebrid and applies the checked account status", async () => {
+    configureCredentialProtector({
+      isEncryptionAvailable: () => false,
+      encryptString: (value) => Buffer.from(value, "utf8"),
+      decryptString: (value) => Buffer.from(value).toString("utf8")
+    });
+    const controller = createController({
+      ...defaultSettings(),
+      allDebridToken: "",
+      allDebridUseWebLogin: false,
+      disabledProviders: ["alldebrid"]
+    }) as any;
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      status: "success",
+      data: {
+        user: {
+          username: "pin-user",
+          email: "pin@example.test",
+          isPremium: true,
+          premiumUntil: "1800000000"
+        }
+      }
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+
+    await controller.completeAllDebridLogin("fixture-pin-api-key");
+
+    expect(controller.getSettings()).toMatchObject({
+      allDebridToken: "fixture-pin-api-key",
+      allDebridUseWebLogin: true
+    });
+    expect(controller.getSettings().disabledProviders).not.toContain("alldebrid");
+    expect(controller.manager.applyDebridAccountStatuses).toHaveBeenCalledWith([
+      expect.objectContaining({
+        accountId: "svc-alldebrid",
+        provider: "alldebrid",
+        valid: true,
+        username: "pin-user"
+      })
+    ]);
   });
 });
