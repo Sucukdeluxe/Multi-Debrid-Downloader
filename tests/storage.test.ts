@@ -1499,6 +1499,8 @@ describe("settings storage", () => {
       itemIds: ["item1", "item2", "item3", "item4"],
       cancelled: false,
       enabled: true,
+      manualExtractionPending: true,
+      manualExtractionRepairItemIds: ["item1", "missing-item", "item1"],
       downloadStartedAt: 0,
       downloadCompletedAt: 0,
       createdAt: Date.now(),
@@ -1596,6 +1598,8 @@ describe("settings storage", () => {
     expect(loaded.items["item4"].status).toBe("queued");
     expect(loaded.items["item1"].downloadedBytes).toBe(5000);
     expect(loaded.packages["pkg1"].name).toBe("Test Package");
+    expect(loaded.packages["pkg1"].manualExtractionPending).toBe(true);
+    expect(loaded.packages["pkg1"].manualExtractionRepairItemIds).toEqual(["item1"]);
   });
 
   it("preserves cleaned package progress aggregates while normalizing a session", () => {

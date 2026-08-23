@@ -198,6 +198,12 @@ type ManualExtractionPlan = {
   itemFiles: Map<string, ArchiveCleanupTarget>;
 };
 
+type ManualExtractionRepairPlan = {
+  packageId: string;
+  generation: number;
+  itemStates: Map<string, { status: DownloadStatus; targetPath: string; fullStatus: string; updatedAt: number }>;
+};
+
 const DEFAULT_DOWNLOAD_STALL_TIMEOUT_MS = 10000;
 
 const DEFAULT_DOWNLOAD_CONNECT_TIMEOUT_MS = 25000;
@@ -3002,7 +3008,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   private buildPackageHash(pkg: PackageEntry): string {
-    return `${pkg.updatedAt}|${pkg.status}|${pkg.name}|${pkg.enabled ? 1 : 0}|${pkg.cancelled ? 1 : 0}|${pkg.priority || ""}|${pkg.itemIds.length}|${pkg.postProcessLabel || ""}|${pkg.audioStripSummary?.at || 0}`;
+    return `${pkg.updatedAt}|${pkg.status}|${pkg.name}|${pkg.enabled ? 1 : 0}|${pkg.cancelled ? 1 : 0}|${pkg.priority || ""}|${pkg.itemIds.length}|${pkg.postProcessLabel || ""}|${pkg.manualExtractionPending ? 1 : 0}|${(pkg.manualExtractionRepairItemIds || []).join(",")}|${pkg.audioStripSummary?.at || 0}`;
   }
 
   public getSnapshotForEmit(forceFull = false): UiSnapshot {
@@ -3461,6 +3467,10 @@ export class DownloadManager extends EventEmitter {
     let removedByPackageCleanup = false;
     if (pkg) {
       pkg.itemIds = pkg.itemIds.filter((id) => id !== itemId);
+      pkg.manualExtractionRepairItemIds = (pkg.manualExtractionRepairItemIds || []).filter((id) => id !== itemId);
+      if (pkg.manualExtractionRepairItemIds.length === 0) {
+        pkg.manualExtractionPending = false;
+      }
       if (pkg.itemIds.length === 0) {
         this.removePackageFromSession(item.packageId, [itemId]);
         removedByPackageCleanup = true;
@@ -6909,6 +6919,8 @@ export class DownloadManager extends EventEmitter {
     pkg.cancelled = false;
     pkg.enabled = true;
     pkg.postProcessLabel = undefined;
+    pkg.manualExtractionPending = false;
+    pkg.manualExtractionRepairItemIds = [];
     pkg.audioStripSummary = undefined;
     pkg.cleanedCompletedItemCount = 0;
     pkg.cleanedExtractedItemCount = 0;
@@ -6999,6 +7011,8 @@ export class DownloadManager extends EventEmitter {
       if (pkg) {
         pkg.cancelled = false;
         pkg.postProcessLabel = undefined;
+        pkg.manualExtractionPending = false;
+        pkg.manualExtractionRepairItemIds = [];
         pkg.audioStripSummary = undefined;
         pkg.downloadCompletedAt = 0;
         this.beginPackageResultGeneration(pkgId, false, true);
@@ -9531,6 +9545,35 @@ export class DownloadManager extends EventEmitter {
         );
       }
 
+      if (pkg.manualExtractionPending === true) {
+        const repairItems = (pkg.manualExtractionRepairItemIds || [])
+          .filter((itemId) => pkg.itemIds.includes(itemId) && Boolean(this.session.items[itemId]))
+          .map((itemId) => this.session.items[itemId]);
+        const repairReady = repairItems.length > 0
+          && repairItems.every((item) => item.status === "completed" && inspectPackageItemDiskState(pkg, item).reason === "ok");
+        if (repairReady) {
+          pkg.status = "queued";
+          pkg.updatedAt = nowMs();
+          for (const item of items) {
+            if (item.status === "completed" && !isExtractedLabel(item.fullStatus)) {
+              item.fullStatus = "Entpacken - Ausstehend";
+              item.updatedAt = nowMs();
+            }
+          }
+          changed = true;
+          void this.runPackagePostProcessing(packageId).catch((err) => logger.warn(`runPackagePostProcessing Fehler (recoverManualExtraction): ${compactErrorText(err)}`));
+        } else {
+          const hasRepairFailure = repairItems.some((item) => item.status === "failed" || item.status === "cancelled");
+          const nextStatus = hasRepairFailure ? "failed" : "queued";
+          if (pkg.status !== nextStatus) {
+            pkg.status = nextStatus;
+            pkg.updatedAt = nowMs();
+            changed = true;
+          }
+        }
+        continue;
+      }
+
       if (!allDone && this.settings.autoExtract && this.settings.hybridExtract && success > 0 && failed === 0) {
         const needsExtraction = items.some((item) => item.status === "completed" && shouldAutoRetryExtraction(item.fullStatus));
         if (needsExtraction) {
@@ -9606,7 +9649,8 @@ export class DownloadManager extends EventEmitter {
   }
 
   private triggerPendingExtractions(packageFilter?: ReadonlySet<string>): void {
-    if (!this.settings.autoExtract) {
+    if (!this.settings.autoExtract
+      && !Object.values(this.session.packages).some((pkg) => pkg.manualExtractionPending === true)) {
       return;
     }
     for (const packageId of this.session.packageOrder) {
@@ -9620,6 +9664,9 @@ export class DownloadManager extends EventEmitter {
       if (!pkg || pkg.cancelled || !pkg.enabled) {
         continue;
       }
+      if (!this.settings.autoExtract && pkg.manualExtractionPending !== true) {
+        continue;
+      }
       if (this.packagePostProcessTasks.has(packageId)) {
         continue;
       }
@@ -9631,6 +9678,16 @@ export class DownloadManager extends EventEmitter {
       const failed = items.filter((item) => item.status === "failed").length;
       const cancelled = items.filter((item) => item.status === "cancelled").length;
       const allDone = this.areAllPackageItemRefsFinished(pkg);
+      if (pkg.manualExtractionPending === true && !this.manualExtractPackages.has(packageId)) {
+        const repairItems = (pkg.manualExtractionRepairItemIds || [])
+          .filter((itemId) => pkg.itemIds.includes(itemId) && Boolean(this.session.items[itemId]))
+          .map((itemId) => this.session.items[itemId]);
+        const repairReady = repairItems.length > 0
+          && repairItems.every((item) => item.status === "completed" && inspectPackageItemDiskState(pkg, item).reason === "ok");
+        if (!repairReady) {
+          continue;
+        }
+      }
       if (!allDone && success + failed + cancelled >= items.length) {
         logger.warn(
           `Post-Processing wartet trotz gefiltert fertiger Items: ` +
@@ -9756,6 +9813,147 @@ export class DownloadManager extends EventEmitter {
     };
   }
 
+  private resolveManualExtractionRepairPlan(
+    packageId: string,
+    selectedItemIds?: ReadonlySet<string>
+  ): ManualExtractionRepairPlan | null {
+    const pkg = this.session.packages[packageId];
+    if (!pkg || pkg.cancelled) {
+      return null;
+    }
+    const unextractedItems = pkg.itemIds
+      .map((itemId) => this.session.items[itemId])
+      .filter((item): item is DownloadItem => Boolean(
+        item
+        && !isExtractedLabel(item.fullStatus)
+      ));
+    const initiallySelectedItems = selectedItemIds
+      ? unextractedItems.filter((item) => selectedItemIds.has(item.id) && (
+        item.status === "completed"
+        || pkg.manualExtractionPending === true && (pkg.manualExtractionRepairItemIds || []).includes(item.id)
+      ))
+      : unextractedItems;
+    const targetItems = selectedItemIds
+      ? [...new Map(initiallySelectedItems.flatMap((item) =>
+        resolveArchiveItemsFromList(path.basename(item.targetPath || item.fileName || ""), unextractedItems)
+      ).map((item) => [item.id, item])).values()]
+      : unextractedItems;
+    if (targetItems.length === 0
+      || (pkg.manualExtractionPending !== true && !unextractedItems.some((item) => isExtractErrorLabel(item.fullStatus)))) {
+      return null;
+    }
+    const itemStates = new Map<string, { status: DownloadStatus; targetPath: string; fullStatus: string; updatedAt: number }>();
+    for (const item of targetItems) {
+      if (!isArchiveLikePath(item.fileName || item.targetPath || "")) {
+        continue;
+      }
+      const diskState = inspectPackageItemDiskState(pkg, item);
+      if (item.status === "completed" && diskState.reason === "ok") {
+        continue;
+      }
+      if (item.status === "downloading" || item.status === "validating" || item.status === "integrity_check") {
+        return null;
+      }
+      if ((diskState.reason !== "missing_file" && diskState.reason !== "missing_path")
+        || !["completed", "queued", "reconnect_wait", "failed", "cancelled"].includes(item.status)) {
+        return null;
+      }
+      itemStates.set(item.id, {
+        status: item.status,
+        targetPath: String(item.targetPath || ""),
+        fullStatus: item.fullStatus,
+        updatedAt: item.updatedAt
+      });
+    }
+    if (itemStates.size === 0) {
+      return null;
+    }
+    return {
+      packageId,
+      generation: this.getPackageResultGeneration(packageId),
+      itemStates
+    };
+  }
+
+  private isManualExtractionRepairPlanCurrent(plan: ManualExtractionRepairPlan): boolean {
+    const pkg = this.session.packages[plan.packageId];
+    if (!pkg || pkg.cancelled || this.getPackageResultGeneration(plan.packageId) !== plan.generation) {
+      return false;
+    }
+    return [...plan.itemStates].every(([itemId, expected]) => {
+      const item = this.session.items[itemId];
+      if (!item
+        || item.packageId !== plan.packageId
+        || item.status !== expected.status
+        || item.updatedAt !== expected.updatedAt
+        || String(item.targetPath || "") !== expected.targetPath
+        || item.fullStatus !== expected.fullStatus) {
+        return false;
+      }
+      const reason = inspectPackageItemDiskState(pkg, item).reason;
+      return reason === "missing_file" || reason === "missing_path";
+    });
+  }
+
+  private async prepareManualExtractionRepairPlan(plan: ManualExtractionRepairPlan): Promise<boolean> {
+    if (!this.isManualExtractionRepairPlanCurrent(plan)) {
+      return false;
+    }
+    if (this.packagePostProcessTasks.has(plan.packageId) || this.hasDeferredPostProcessPending(plan.packageId)) {
+      await Promise.allSettled(this.abortPackagePostProcessing(plan.packageId, "manual_extract_repair"));
+    }
+    return this.isManualExtractionRepairPlanCurrent(plan);
+  }
+
+  private commitManualExtractionRepairPlan(plan: ManualExtractionRepairPlan): string[] {
+    const pkg = this.session.packages[plan.packageId] as PackageEntry;
+    const repairItemIds = [...plan.itemStates.keys()];
+    this.clearPackageDiskRetry(plan.packageId);
+    this.clearHybridArchiveState(plan.packageId);
+    pkg.manualExtractionPending = true;
+    pkg.manualExtractionRepairItemIds = repairItemIds;
+    pkg.enabled = true;
+    pkg.cancelled = false;
+    pkg.status = "queued";
+    pkg.postProcessLabel = undefined;
+    pkg.updatedAt = nowMs();
+    for (const itemId of pkg.itemIds) {
+      const item = this.session.items[itemId];
+      if (!item || isExtractedLabel(item.fullStatus)) {
+        continue;
+      }
+      if (!plan.itemStates.has(itemId)) {
+        if (isArchiveLikePath(item.fileName || item.targetPath || "")) {
+          item.fullStatus = "Entpacken - Ausstehend";
+          item.updatedAt = nowMs();
+        }
+        continue;
+      }
+      this.releaseTargetPath(itemId);
+      this.dropItemContribution(itemId);
+      this.runOutcomes.delete(itemId);
+      this.retryAfterByItem.delete(itemId);
+      this.retryStateByItem.delete(itemId);
+      item.status = "queued";
+      item.downloadedBytes = 0;
+      item.progressPercent = 0;
+      item.speedBps = 0;
+      item.attempts = 0;
+      item.retries = 0;
+      item.lastError = "";
+      item.resumable = true;
+      item.targetPath = "";
+      item.provider = null;
+      item.fullStatus = "Wartet auf erneuten Download";
+      item.updatedAt = nowMs();
+    }
+    this.runCompletedPackages.delete(plan.packageId);
+    this.historyRecordedPackages.delete(plan.packageId);
+    this.beginPackageResultGeneration(plan.packageId, false, true);
+    this.reactivateStandalonePackageResult(plan.packageId);
+    return repairItemIds;
+  }
+
   private isManualExtractionPlanCurrent(plan: ManualExtractionPlan): boolean {
     const pkg = this.session.packages[plan.packageId];
     if (!pkg || pkg.cancelled || this.getPackageResultGeneration(plan.packageId) !== plan.generation) {
@@ -9818,20 +10016,45 @@ export class DownloadManager extends EventEmitter {
     this.reactivateStandalonePackageResult(plan.packageId);
   }
 
-  private async executeManualExtractionPlans(plans: ManualExtractionPlan[]): Promise<void> {
+  private async executeManualExtractionPlans(
+    plans: ManualExtractionPlan[],
+    repairPlans: ManualExtractionRepairPlan[]
+  ): Promise<void> {
+    if (repairPlans.length > 0) {
+      if (this.lifecyclePhase === "starting" || this.lifecyclePhase === "stopping") {
+        throw new Error("Downloadsteuerung ist beschäftigt, Entpacken bitte erneut starten");
+      }
+      this.ensureUsableDownloadAccount();
+    }
     for (const plan of plans) {
       if (!await this.prepareManualExtractionPlan(plan)) {
         throw new Error("Entpackauswahl hat sich während der Vorbereitung geändert");
       }
     }
-    if (!plans.every((plan) => this.isManualExtractionPlanCurrent(plan))) {
+    for (const plan of repairPlans) {
+      if (!await this.prepareManualExtractionRepairPlan(plan)) {
+        throw new Error("Entpackauswahl hat sich während der Vorbereitung geändert");
+      }
+    }
+    if (!plans.every((plan) => this.isManualExtractionPlanCurrent(plan))
+      || !repairPlans.every((plan) => this.isManualExtractionRepairPlanCurrent(plan))) {
       throw new Error("Entpackauswahl hat sich während der Vorbereitung geändert");
     }
+    if (repairPlans.length > 0) {
+      if (this.lifecyclePhase === "starting" || this.lifecyclePhase === "stopping") {
+        throw new Error("Downloadsteuerung ist beschäftigt, Entpacken bitte erneut starten");
+      }
+      this.ensureUsableDownloadAccount();
+    }
+    const repairItemIds = repairPlans.flatMap((plan) => this.commitManualExtractionRepairPlan(plan));
     for (const plan of plans) {
       this.commitManualExtractionPlan(plan);
     }
     this.persistSoon();
     this.emitState(true);
+    if (repairItemIds.length > 0) {
+      await this.startItems(repairItemIds);
+    }
     for (const plan of plans) {
       const pkg = this.session.packages[plan.packageId];
       logger.info(`Jetzt entpacken: pkg=${pkg?.name || plan.packageId}, targeted=${plan.targetItemIds.size}`);
@@ -9839,6 +10062,15 @@ export class DownloadManager extends EventEmitter {
         this.logPackageForPackage(pkg, "INFO", "Jetzt entpacken ausgelöst", { targetedItems: plan.targetItemIds.size });
       }
       void this.runPackagePostProcessing(plan.packageId).catch((err) => logger.warn(`runPackagePostProcessing Fehler (extractNow): ${compactErrorText(err)}`));
+    }
+    for (const plan of repairPlans) {
+      const pkg = this.session.packages[plan.packageId];
+      logger.info(`Jetzt entpacken repariert fehlende Archive: pkg=${pkg?.name || plan.packageId}, redownload=${plan.itemStates.size}`);
+      if (pkg) {
+        this.logPackageForPackage(pkg, "INFO", "Fehlende Archive werden erneut geladen", {
+          redownloadItems: plan.itemStates.size
+        });
+      }
     }
   }
 
@@ -9863,23 +10095,28 @@ export class DownloadManager extends EventEmitter {
       }
     }
     const plans: ManualExtractionPlan[] = [];
+    const repairPlans: ManualExtractionRepairPlan[] = [];
     for (const packageId of packageIds) {
       const plan = await this.resolveManualExtractionPlan(packageId);
+      const repairPlan = this.resolveManualExtractionRepairPlan(packageId);
       if (plan) plans.push(plan);
-      else rejected += 1;
+      if (repairPlan) repairPlans.push(repairPlan);
+      if (!plan && !repairPlan) rejected += 1;
     }
     for (const [packageId, itemIds] of itemIdsByPackage) {
       const plan = await this.resolveManualExtractionPlan(packageId, itemIds);
+      const repairPlan = this.resolveManualExtractionRepairPlan(packageId, itemIds);
       if (plan) plans.push(plan);
-      else rejected += 1;
+      if (repairPlan) repairPlans.push(repairPlan);
+      if (!plan && !repairPlan) rejected += 1;
     }
-    if (plans.length === 0) {
+    if (plans.length === 0 && repairPlans.length === 0) {
       throw new Error("Kein entpackbarer Archivsatz ausgewählt");
     }
     if (rejected > 0) {
-      throw new Error(`${plans.length} Entpackvorgang bereit, ${rejected} nicht gestartet`);
+      throw new Error(`${plans.length + repairPlans.length} Entpackvorgang bereit, ${rejected} nicht gestartet`);
     }
-    await this.executeManualExtractionPlans(plans);
+    await this.executeManualExtractionPlans(plans, repairPlans);
   }
 
   private notePackageDownloadStarted(pkg: PackageEntry, startedAt = nowMs()): void {
@@ -13657,7 +13894,18 @@ export class DownloadManager extends EventEmitter {
     if ([...this.activeTasks.values()].some((task) => task.packageId === packageId)) {
       return true;
     }
+    const pkg = this.session.packages[packageId];
+    const repairItems = pkg?.manualExtractionPending === true
+      ? (pkg.manualExtractionRepairItemIds || [])
+        .filter((itemId) => pkg.itemIds.includes(itemId) && Boolean(this.session.items[itemId]))
+        .map((itemId) => this.session.items[itemId])
+      : [];
+    const repairReachedTerminalFailure = repairItems.length > 0
+      && repairItems.every((item) => isFinishedStatus(item.status))
+      && repairItems.some((item) => item.status === "failed" || item.status === "cancelled");
+    const repairLifecycleActive = repairItems.length > 0 && !repairReachedTerminalFailure;
     return this.packagePostProcessTasks.has(packageId)
+      || repairLifecycleActive
       || this.packageDiskRetryPlans.has(packageId)
       || this.hasDeferredPostProcessPending(packageId)
       || (this.packageHybridPostProcessTasks.get(packageId)?.size || 0) > 0
@@ -14722,6 +14970,24 @@ export class DownloadManager extends EventEmitter {
     });
 
     const allDone = this.areAllPackageItemRefsFinished(pkg);
+    const repairItemIds = (pkg.manualExtractionRepairItemIds || [])
+      .filter((itemId) => pkg.itemIds.includes(itemId) && Boolean(this.session.items[itemId]));
+    const manualRepairPending = pkg.manualExtractionPending === true && repairItemIds.length > 0;
+    const repairItems = repairItemIds.map((itemId) => this.session.items[itemId]);
+    const repairDownloadsComplete = manualRepairPending
+      && repairItems.every((item) => item.status === "completed" && inspectPackageItemDiskState(pkg, item).reason === "ok");
+    if (manualRepairPending && !repairDownloadsComplete && !this.manualExtractPackages.has(packageId)) {
+      pkg.postProcessLabel = undefined;
+      pkg.status = repairItems.some((item) => item.status === "failed" || item.status === "cancelled")
+        ? "failed"
+        : (pkg.enabled && this.session.running && !this.session.paused) ? "downloading" : "queued";
+      pkg.updatedAt = nowMs();
+      return;
+    }
+    if (repairDownloadsComplete) {
+      this.manualExtractPackages.add(packageId);
+      pkg.updatedAt = nowMs();
+    }
     const manualExtraction = this.manualExtractPackages.has(packageId);
     const manualArchiveFilter = this.manualExtractArchiveFilters.get(packageId);
     const shouldExtract = this.settings.autoExtract || manualExtraction;
@@ -14771,8 +15037,10 @@ export class DownloadManager extends EventEmitter {
     const completedItems = items.filter((item) => item.status === "completed");
     const alreadyMarkedExtracted = completedItems.length > 0 && completedItems.every((item) => isExtractedLabel(item.fullStatus));
     let extractedCount = 0;
+    let manualRepairExtractionAttempted = false;
 
     if (shouldExtract && failed === 0 && success > 0 && !alreadyMarkedExtracted) {
+      manualRepairExtractionAttempted = manualRepairPending && repairDownloadsComplete;
       pkg.postProcessLabel = "Entpacken vorbereiten...";
       pkg.status = "extracting";
       this.emitState();
@@ -15155,6 +15423,11 @@ export class DownloadManager extends EventEmitter {
       pkg.status = success > 0 ? "completed" : "cancelled";
     } else {
       pkg.status = "completed";
+    }
+
+    if (manualRepairExtractionAttempted) {
+      pkg.manualExtractionPending = false;
+      pkg.manualExtractionRepairItemIds = [];
     }
 
     pkg.postProcessLabel = undefined;

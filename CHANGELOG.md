@@ -2,6 +2,27 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.64] - 2026-08-23
+
+### Manual extraction repair
+
+- Turn `Extract now` into a recovery action when archive files from an earlier failed extraction are no longer available locally.
+- Re-download only missing archive parts while preserving complete sibling parts and unrelated finished files.
+- Extract already complete archive sets immediately while missing sets from the same package download in parallel.
+- Include queued, failed, cancelled, and reconnecting multipart siblings in the same selected repair run.
+- Keep manual extraction recovery pending across download failures, Stop, application restarts, and disabled automatic extraction.
+- Resume extraction automatically after every required repair item finishes successfully.
+- Allow direct retries from failed child archive rows as well as selected parent packages.
+
+### Lifecycle integrity
+
+- Persist manual repair intent and validated item IDs in session state and local full backups.
+- Validate persisted repair IDs against their owning package during session loading.
+- Keep failed repair runs and later successful retries in separate package generations and run contexts.
+- Prevent pending repairs from producing premature successful package or run results.
+- Clear repair intent only after a terminal extraction attempt, while preserving it across aborts and disk-capacity retries.
+- Revalidate accounts and lifecycle state immediately before committing a repair batch.
+
 ## [2.0.63] - 2026-08-23
 
 ### Archive recovery and password handling
