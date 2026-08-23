@@ -9,12 +9,14 @@ import { getSnapshotRenderDelay } from "../src/renderer/App";
 
 describe("desktop shell", () => {
   it("uses keyboard-focusable controls for every copy target", () => {
-    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
+    const appSource = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
+    const dialogSource = readFileSync(new URL("../src/renderer/ui/LinkAddressesDialog.tsx", import.meta.url), "utf8");
+    const source = `${appSource}\n${dialogSource}`;
 
     expect(source).not.toMatch(/<span[^>]*className="[^"]*link-popup-click/);
-    expect(source.match(/<button[^>]*className="[^"]*link-popup-click[^>]*type="button"/g)).toHaveLength(3);
+    expect(dialogSource.match(/className="link-popup-(?:name|url) link-popup-click"/g)).toHaveLength(2);
     expect(source).not.toContain("navigator.clipboard.writeText(key.token)");
-    expect(source).toContain("navigator.clipboard.writeText(key.masked)");
+    expect(source).toContain("window.rd.writeClipboardText(key.masked)");
     expect(source).toContain("Maskierte Kennung kopiert");
   });
 
