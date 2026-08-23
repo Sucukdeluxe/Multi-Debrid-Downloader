@@ -4,6 +4,25 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.67] - 2026-08-24
+
+### Extraction stability
+
+- Return archive extraction and package-status behavior to the verified v2.0.54 baseline after regressions in later releases.
+- Keep the existing download, account, update, history, statistics, and backup capabilities from that stable baseline.
+
+### 1Fichier and DDownload metadata
+
+- Resolve public filenames, exact sizes, availability, and supported domain aliases before downloads start.
+- Keep resolved filenames when a debrid provider later returns a generic `download.bin` name.
+- Preserve partial-download resume paths while applying late metadata and safely rename completed files afterward.
+- Recover interrupted metadata renames through an item-bound journal without adopting unrelated same-name files.
+- Restrict DDownload redirects to HTTPS targets carrying the same file identity and keep challenge pages in an unknown state instead of marking them offline.
+
+### Windows appearance
+
+- Force the native Windows title bar to remain dark across local desktop, server, and Remote Desktop profiles.
+
 ## [2.0.54] - 2026-08-21
 
 ### Update validation
