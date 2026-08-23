@@ -751,6 +751,35 @@ function findButton(node: ReactNode, label: string): ReactElement {
   return findElement(node, (element) => element.type === "button" && element.props.children === label);
 }
 
+function dispatchColumnSortPointerGesture(header: ReactElement, label: string, clientXs: readonly number[], deliverPointerClick: boolean): void {
+  const startX = clientXs[0];
+  const endX = clientXs[clientXs.length - 1];
+  if (startX === undefined || endX === undefined) throw new Error("Pointer gesture requires coordinates");
+  const columnHeader = findElement(header, (element) => element.props["data-download-column"] === "name");
+  const sortButton = findElement(columnHeader, (element) => element.type === "button" && String(element.props.children).startsWith(label));
+  const capturedPointers = new Set<number>();
+  const currentTarget = {
+    closest: () => null,
+    hasPointerCapture: (pointerId: number) => capturedPointers.has(pointerId),
+    releasePointerCapture: (pointerId: number) => capturedPointers.delete(pointerId),
+    setPointerCapture: (pointerId: number) => capturedPointers.add(pointerId)
+  };
+  const target = { closest: (selector: string) => selector === ".downloads-column-sort" ? {} : null };
+  const event = (clientX: number) => ({
+    button: 0,
+    clientX,
+    currentTarget,
+    isPrimary: true,
+    pointerId: 7,
+    preventDefault: () => {},
+    target
+  });
+  columnHeader.props.onPointerDown(event(startX));
+  clientXs.slice(1, -1).forEach((clientX) => columnHeader.props.onPointerMove(event(clientX)));
+  columnHeader.props.onPointerUp(event(endX));
+  if (deliverPointerClick) sortButton.props.onClick({ detail: 1 });
+}
+
 function withRuntime(input: DownloadsModelInput, overrides: Record<string, unknown> = {}) {
   return {
     ...buildDownloadsViewModel(input),
@@ -1326,6 +1355,23 @@ describe("download table row contracts", () => {
     expect(getAvailabilitySummary([
       item("unknown-a", "package-a", "queued", { onlineStatus: undefined })
     ])).toEqual({ online: 0, total: 1, state: "checking" });
+    expect(getAvailabilitySummary([
+      item("active-a", "package-a", "downloading", { onlineStatus: undefined })
+    ])).toEqual({ online: 1, total: 1, state: "online" });
+  });
+
+  it("shows an actively downloading item as online even without a stored availability result", () => {
+    const html = renderToStaticMarkup(ItemRowContent({
+      actions: createActions(),
+      columnOrder: ["name", "availability"],
+      gridTemplate: "200px 150px",
+      item: item("active-availability", "package-a", "downloading", { onlineStatus: undefined }),
+      selected: false
+    }));
+
+    expect(html).toContain(">Online</span>");
+    expect(html).not.toContain(">Ungeprüft</span>");
+    expect(html).toContain('class="downloads-link-state online"');
   });
 
   it("shows reset package availability as one compact unchecked label", () => {
@@ -1582,13 +1628,88 @@ describe("download table row contracts", () => {
 
     expect(html).toMatch(/aria-sort="descending"[^>]*data-download-column="name"/);
     expect(html).toMatch(/aria-sort="none"[^>]*data-download-column="size"/);
-    expect(html).not.toMatch(/aria-sort="[^"]+"[^>]*data-download-column="account"/);
+    expect(html).toMatch(/aria-sort="none"[^>]*data-download-column="account"/);
     expect(moveLeft.props.type).toBe("button");
     expect(calls).toEqual([
       ["down", "size", 250],
       ["move", "size", 149],
       ["up", "size", 149]
     ]);
+  });
+
+  it.each([
+    { clientXs: [100, 100], deliverPointerClick: false },
+    { clientXs: [100, 104, 104], deliverPointerClick: true }
+  ])("sorts exactly once when a captured pointer gesture stays below the drag threshold", ({ clientXs, deliverPointerClick }) => {
+    const sorted: string[] = [];
+    const header = DownloadsTableHeader({
+      actions: createActions({ onSortColumn: (column) => sorted.push(column) }),
+      columnOrder: ["name", "size"],
+      gridTemplate: "200px 100px",
+      selectedCount: 0,
+      sortColumn: "name",
+      sortDirection: "asc",
+      visibleIds: []
+    });
+
+    dispatchColumnSortPointerGesture(header, "Name", clientXs, deliverPointerClick);
+
+    expect(sorted).toEqual(["name"]);
+  });
+
+  it("never sorts when a pointer gesture reaches the drag threshold", () => {
+    const sorted: string[] = [];
+    const header = DownloadsTableHeader({
+      actions: createActions({ onSortColumn: (column) => sorted.push(column) }),
+      columnOrder: ["name", "size"],
+      gridTemplate: "200px 100px",
+      selectedCount: 0,
+      sortColumn: "name",
+      sortDirection: "asc",
+      visibleIds: []
+    });
+
+    dispatchColumnSortPointerGesture(header, "Name", [100, 105, 101], true);
+
+    expect(sorted).toEqual([]);
+  });
+
+  it("keeps sortable headers keyboard operable", () => {
+    const sorted: string[] = [];
+    const header = DownloadsTableHeader({
+      actions: createActions({ onSortColumn: (column) => sorted.push(column) }),
+      columnOrder: ["name", "size"],
+      gridTemplate: "200px 100px",
+      selectedCount: 0,
+      sortColumn: "name",
+      sortDirection: "asc",
+      visibleIds: []
+    });
+    const sortButton = findElement(header, (element) => element.type === "button" && String(element.props.children).startsWith("Name"));
+
+    sortButton.props.onClick({ detail: 0 });
+
+    expect(sorted).toEqual(["name"]);
+  });
+
+  it("exposes Service as a sortable column header", () => {
+    const sorted: string[] = [];
+    const header = DownloadsTableHeader({
+      actions: createActions({ onSortColumn: (column) => sorted.push(column) }),
+      columnOrder: ["account"],
+      gridTemplate: "100px",
+      selectedCount: 0,
+      sortColumn: "service" as any,
+      sortDirection: "desc",
+      visibleIds: []
+    });
+    const serviceHeader = findElement(header, (element) => element.props["data-download-column"] === "account");
+    const sortButton = findElement(serviceHeader, (element) => element.type === "button");
+
+    sortButton.props.onClick({ detail: 0 });
+
+    expect(serviceHeader.props["aria-sort"]).toBe("descending");
+    expect(sorted).toEqual(["service"]);
   });
 
   it("opens the column menu without letting the same context event close it again", () => {

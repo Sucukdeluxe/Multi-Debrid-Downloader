@@ -5710,7 +5710,6 @@ export class DownloadManager extends EventEmitter {
       item.targetPath = "";
       item.provider = null;
       item.fullStatus = "Wartet";
-      item.onlineStatus = undefined;
       item.updatedAt = nowMs();
     }
 
@@ -5794,7 +5793,6 @@ export class DownloadManager extends EventEmitter {
       item.targetPath = "";
       item.provider = null;
       item.fullStatus = "Wartet";
-      item.onlineStatus = undefined;
       item.updatedAt = nowMs();
 
       if (this.session.running) {

@@ -1415,6 +1415,25 @@ function sortPackageOrderByProgress(order: string[], packages: Record<string, Pa
   return sorted;
 }
 
+export function sortPackageOrderByService(
+  order: string[],
+  packages: Record<string, PackageEntry>,
+  items: Record<string, DownloadItem>,
+  descending: boolean,
+  visibleItemsByPackage: Record<string, readonly DownloadItem[]> = {}
+): string[] {
+  const sorted = [...order];
+  const itemsFor = (packageId: string): readonly DownloadItem[] => visibleItemsByPackage[packageId]
+    ?? (packages[packageId]?.itemIds ?? []).map((id) => items[id]).filter((item): item is DownloadItem => Boolean(item));
+  sorted.sort((a, b) => {
+    const serviceA = [...new Set(itemsFor(a).map((item) => item.providerLabel || (item.provider ? providerLabels[item.provider] : "")).filter(Boolean))].join(",").toLocaleLowerCase("de-DE");
+    const serviceB = [...new Set(itemsFor(b).map((item) => item.providerLabel || (item.provider ? providerLabels[item.provider] : "")).filter(Boolean))].join(",").toLocaleLowerCase("de-DE");
+    const comparison = serviceA.localeCompare(serviceB, "de");
+    return descending ? -comparison : comparison;
+  });
+  return sorted;
+}
+
 function computePackageProgress(pkg: PackageEntry | undefined, items: Record<string, DownloadItem>): number {
   if (!pkg) return 0;
   const ids = pkg.itemIds ?? [];
@@ -4733,6 +4752,14 @@ export function App(): ReactElement {
         ? sortPackageOrderBySize(baseOrder, snapshot.session.packages, snapshot.session.items, nextDescending)
         : column === "hoster"
           ? sortPackageOrderByHoster(baseOrder, snapshot.session.packages, snapshot.session.items, nextDescending)
+          : column === "service"
+            ? sortPackageOrderByService(
+              baseOrder,
+              snapshot.session.packages,
+              snapshot.session.items,
+              nextDescending,
+              Object.fromEntries(downloadsViewCore.packageRows.map((row) => [row.package.id, row.items]))
+            )
           : sortPackageOrderByName(baseOrder, snapshot.session.packages, nextDescending);
     pendingPackageOrderRef.current = [...sorted];
     pendingPackageOrderAtRef.current = Date.now();
@@ -4745,7 +4772,7 @@ export function App(): ReactElement {
       setSnapshot((current) => ({ ...current, session: { ...current.session, packageOrder: serverPackageOrderRef.current } }));
       showToast(`Sortierung fehlgeschlagen: ${String(error)}`, 2400);
     });
-  }, [downloadsSortColumn, downloadsSortDescending, showToast, snapshot.session.items, snapshot.session.packageOrder, snapshot.session.packages]);
+  }, [downloadsSortColumn, downloadsSortDescending, downloadsViewCore.packageRows, showToast, snapshot.session.items, snapshot.session.packageOrder, snapshot.session.packages]);
 
   const clearDownloadQueue = useCallback((): void => {
     void performQuickAction(async () => {

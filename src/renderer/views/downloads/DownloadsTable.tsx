@@ -14,11 +14,21 @@ import {
 } from "../../download-format";
 import type { DownloadPackageRow } from "./downloads-model";
 
-export type DownloadSortColumn = "name" | "size" | "hoster" | "progress";
+export type DownloadSortColumn = "name" | "size" | "hoster" | "progress" | "service";
 
 const DOWNLOAD_SELECTION_COLUMN_WIDTH = "36px";
 const DOWNLOAD_ACTION_COLUMN_WIDTH = "60px";
+const DOWNLOAD_COLUMN_DRAG_THRESHOLD_PX = 5;
 const PACKAGE_ROW_DISCLOSURE_EXCLUSION_SELECTOR = "button, input, select, textarea, a, [contenteditable='true'], .downloads-copyable, .downloads-meter";
+
+interface DownloadColumnPointerGesture {
+  dragged: boolean;
+  pointerId: number;
+  sortColumn?: DownloadSortColumn;
+  startX: number;
+}
+
+const downloadColumnPointerGestures = new WeakMap<HTMLDivElement, DownloadColumnPointerGesture>();
 
 type HosterLabel = ReturnType<typeof formatHosterLabel>;
 
@@ -54,7 +64,7 @@ export const downloadColumnDefinitions: Record<string, { label: string; width: s
   size: { label: "Geladen / Größe", width: "minmax(var(--downloads-size-min, 140px), 1.1fr)", sortable: "size" },
   progress: { label: "Fortschritt", width: "minmax(var(--downloads-progress-min, 105px), 0.85fr)", sortable: "progress" },
   hoster: { label: "Hoster", width: "minmax(var(--downloads-hoster-min, 90px), 0.85fr)", sortable: "hoster" },
-  account: { label: "Service", width: "minmax(var(--downloads-service-min, 90px), 0.85fr)" },
+  account: { label: "Service", width: "minmax(var(--downloads-service-min, 90px), 0.85fr)", sortable: "service" },
   prio: { label: "Priorität", width: "minmax(var(--downloads-priority-min, 85px), 0.8fr)" },
   status: { label: "Status", width: "minmax(var(--downloads-status-min, 210px), 1.2fr)" },
   speed: { label: "Geschwindigkeit", width: "minmax(var(--downloads-speed-min, 120px), 1fr)" },
@@ -64,10 +74,16 @@ export const downloadColumnDefinitions: Record<string, { label: string; width: s
 
 export type AvailabilityState = "online" | "partial" | "offline" | "checking";
 
+function effectiveItemOnlineStatus(item: DownloadItem): DownloadItem["onlineStatus"] {
+  return item.onlineStatus
+    ?? (item.status === "downloading" || item.status === "integrity_check" || item.status === "completed" ? "online" : undefined);
+}
+
 export function getAvailabilitySummary(items: DownloadItem[]): { online: number; total: number; state: AvailabilityState } {
   const total = items.length;
-  const online = items.filter((item) => item.onlineStatus === "online").length;
-  const offline = items.filter((item) => item.onlineStatus === "offline").length;
+  const availability = items.map(effectiveItemOnlineStatus);
+  const online = availability.filter((status) => status === "online").length;
+  const offline = availability.filter((status) => status === "offline").length;
   if (total > 0 && online === total) return { online, total, state: "online" };
   if (total > 0 && offline === total) return { online, total, state: "offline" };
   if (total > 0 && online + offline === total) return { online, total, state: "partial" };
@@ -216,7 +232,7 @@ function itemCell(item: DownloadItem, column: string, sessionRunning: boolean): 
     ? error && error !== displayStatus && !displayStatus.includes(error) ? `${displayStatus}${retrySuffix}\n${error}` : `${displayStatus}${retrySuffix}`
     : error;
   if (column === "name") {
-    return <span className="downloads-cell downloads-name-cell downloads-copyable" title={item.fileName}><span className={`downloads-link-state ${item.onlineStatus ?? "unknown"}`} />{item.fileName}</span>;
+    return <span className="downloads-cell downloads-name-cell downloads-copyable" title={item.fileName}><span className={`downloads-link-state ${effectiveItemOnlineStatus(item) ?? "unknown"}`} />{item.fileName}</span>;
   }
   if (column === "size") {
     const total = item.totalBytes || item.downloadedBytes || 0;
@@ -241,7 +257,8 @@ function itemCell(item: DownloadItem, column: string, sessionRunning: boolean): 
   if (column === "status") return <DownloadStatusCell status={displayStatus} title={statusTitle} />;
   if (column === "speed") return <span className="downloads-cell">{item.speedBps > 0 ? formatSpeedMbps(item.speedBps) : ""}</span>;
   if (column === "availability") {
-    const state = item.onlineStatus === "online" ? "online" : item.onlineStatus === "offline" ? "offline" : "checking";
+    const effectiveStatus = effectiveItemOnlineStatus(item);
+    const state = effectiveStatus === "online" ? "online" : effectiveStatus === "offline" ? "offline" : "checking";
     const text = state === "online" ? "Online" : state === "offline" ? "Offline" : item.onlineStatus === "checking" ? "Prüfung" : "Ungeprüft";
     return <Availability online={state === "online" ? 1 : 0} total={1} state={state} text={text} />;
   }
@@ -533,6 +550,11 @@ function moveColumnWithPointerActions(column: string, direction: -1 | 1, element
   actions.onColumnPointerUp(column, pointerEvent(clientX));
 }
 
+function isColumnSortPointerTarget(target: EventTarget | null): boolean {
+  const closest = (target as { closest?: (selector: string) => Element | null } | null)?.closest;
+  return typeof closest === "function" && closest.call(target, ".downloads-column-sort") !== null;
+}
+
 export function DownloadsTableHeader({ actions, columnOrder, gridTemplate, sortColumn, sortDirection, selectedCount, visibleIds }: DownloadsTableHeaderProps): ReactElement {
   const allSelected = visibleIds.length > 0 && selectedCount === visibleIds.length;
   const mixedSelection = selectedCount > 0 && selectedCount < visibleIds.length;
@@ -550,22 +572,41 @@ export function DownloadsTableHeader({ actions, columnOrder, gridTemplate, sortC
             data-download-column={column}
             key={column}
             onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); actions.onColumnContextMenu(column, event.clientX, event.clientY); }}
-            onPointerCancel={(event) => actions.onColumnPointerCancel(column, event)}
+            onPointerCancel={(event) => {
+              downloadColumnPointerGestures.delete(event.currentTarget);
+              actions.onColumnPointerCancel(column, event);
+            }}
             onPointerDown={(event) => {
               if (event.button !== 0 || !event.isPrimary) return;
               if (event.currentTarget.closest<HTMLElement>(".downloads-table")?.classList.contains("is-column-drag-settling")) return;
+              downloadColumnPointerGestures.set(event.currentTarget, {
+                dragged: false,
+                pointerId: event.pointerId,
+                sortColumn: definition.sortable && isColumnSortPointerTarget(event.target) ? definition.sortable : undefined,
+                startX: event.clientX
+              });
               event.currentTarget.setPointerCapture(event.pointerId);
               actions.onColumnPointerDown(column, event);
             }}
-            onPointerMove={(event) => actions.onColumnPointerMove(column, event)}
+            onPointerMove={(event) => {
+              const gesture = downloadColumnPointerGestures.get(event.currentTarget);
+              if (gesture?.pointerId === event.pointerId && Math.abs(event.clientX - gesture.startX) >= DOWNLOAD_COLUMN_DRAG_THRESHOLD_PX) gesture.dragged = true;
+              actions.onColumnPointerMove(column, event);
+            }}
             onPointerUp={(event) => {
+              const gesture = downloadColumnPointerGestures.get(event.currentTarget);
+              if (gesture?.pointerId === event.pointerId) {
+                if (Math.abs(event.clientX - gesture.startX) >= DOWNLOAD_COLUMN_DRAG_THRESHOLD_PX) gesture.dragged = true;
+                downloadColumnPointerGestures.delete(event.currentTarget);
+              }
               if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
               actions.onColumnPointerUp(column, event);
+              if (gesture?.pointerId === event.pointerId && gesture.sortColumn && !gesture.dragged) actions.onSortColumn(gesture.sortColumn);
             }}
             role="columnheader"
           >
             {definition.sortable
-              ? <button className="downloads-column-sort" onClick={() => actions.onSortColumn(definition.sortable!)} type="button">{definition.label}{sortColumn === definition.sortable ? sortDirection === "asc" ? " ↑" : " ↓" : ""}</button>
+              ? <button className="downloads-column-sort" onClick={(event) => { if (event.detail === 0) actions.onSortColumn(definition.sortable!); }} type="button">{definition.label}{sortColumn === definition.sortable ? sortDirection === "asc" ? " ↑" : " ↓" : ""}</button>
               : <span className="downloads-column-label">{definition.label}</span>}
             <span aria-label={`${definition.label} verschieben`} className="downloads-column-move-controls" onPointerDown={(event) => event.stopPropagation()} role="group">
               {index > 0 ? <button aria-label={`${definition.label} nach links verschieben`} onClick={(event) => { event.stopPropagation(); const element = event.currentTarget.closest<HTMLDivElement>(".downloads-column-header"); if (element) moveColumnWithPointerActions(column, -1, element, actions); }} type="button">←</button> : null}

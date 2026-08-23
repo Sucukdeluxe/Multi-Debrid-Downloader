@@ -8414,7 +8414,7 @@ describe("download manager", () => {
     expect(snap.settings.providerDailyUsageBytes || {}).toEqual({});
   });
 
-  it("resets extraction state atomically for selected package items", () => {
+  it("resets extraction state without discarding definitive link availability", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
     const session = emptySession();
@@ -8470,7 +8470,7 @@ describe("download manager", () => {
       createStoragePaths(path.join(root, "state"))
     );
 
-    manager.resetItems(itemIds);
+    await manager.resetItems(itemIds);
 
     const snapshot = manager.getSnapshot().session;
     expect(snapshot.packages[packageId]).toEqual(expect.objectContaining({
@@ -8486,8 +8486,14 @@ describe("download manager", () => {
         progressPercent: 0,
         lastError: "",
         fullStatus: "Wartet",
-        onlineStatus: undefined
+        onlineStatus: "online"
       }));
+    }
+
+    await manager.resetPackage(packageId);
+    const packageSnapshot = manager.getSnapshot().session;
+    for (const itemId of itemIds) {
+      expect(packageSnapshot.items[itemId].onlineStatus).toBe("online");
     }
   });
 
