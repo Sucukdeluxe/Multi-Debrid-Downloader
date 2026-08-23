@@ -1,6 +1,6 @@
 {
   "name": "multi-debrid-downloader",
-  "version": "2.0.62",
+  "version": "2.0.63",
   "description": "Desktop downloader",
   "main": "build/main/main/main.js",
   "author": "Sucukdeluxe",
@@ -12,7 +12,8 @@
     "dev:main:watch": "tsup src/main/main.ts src/preload/preload.ts --out-dir build/main --format cjs --target node20 --external electron --sourcemap --watch",
     "dev:electron": "wait-on tcp:5180 file:build/main/main/main.js && cross-env NODE_ENV=development DEV_SERVER_PORT=5180 tsx scripts/run-dev-electron.ts",
     "build": "npm run build:main && npm run build:renderer",
-    "build:main": "tsup src/main/main.ts src/preload/preload.ts --out-dir build/main --format cjs --target node20 --external electron --sourcemap",
+    "build:extractor-jvm": "node scripts/build-extractor-jvm.mjs",
+    "build:main": "npm run build:extractor-jvm && tsup src/main/main.ts src/preload/preload.ts --out-dir build/main --format cjs --target node20 --external electron --sourcemap",
     "build:renderer": "vite build",
     "start": "cross-env NODE_ENV=production electron .",
     "test": "npm run test:client && npm run test:backup-api",

@@ -94,6 +94,104 @@ describe("download package presentation", () => {
     expect(presentation.status).toBe("Finalisieren - 99% (0/1) · release.part01.rar");
   });
 
+  it("shows the active CRC check instead of a completed fraction", () => {
+    const presentation = buildPackagePresentation(row([
+      item("archive", "CRC-Check läuft", { status: "integrity_check" })
+    ], { status: "downloading" }));
+
+    expect(presentation.status).toBe("CRC-Check läuft");
+  });
+
+  it("keeps an active CRC check ahead of historical sibling extraction errors", () => {
+    const presentation = buildPackagePresentation(row([
+      item("failed", "Entpack-Fehler [old.part01.rar]: Checksum/CRC-Fehler im Archiv"),
+      item("active", "CRC-Check läuft", { status: "integrity_check" })
+    ], { status: "downloading" }));
+
+    expect(presentation.status).toBe("CRC-Check läuft");
+    expect(presentation.details).toContain("1 Entpackfehler");
+  });
+
+  it.each([
+    ["extracting", "Archive stabilisieren..."],
+    ["extracting", "Entpacken vorbereiten..."],
+    ["queued", "Entpacken wird neu gestartet..."],
+    ["completed", "Nested Entpacken..."],
+    ["completed", "Renaming..."],
+    ["completed", "Tonspur..."],
+    ["completed", "Aufräumen..."],
+    ["completed", "Verschiebe Videos..."]
+  ] as const)("keeps the active package phase %s / %s ahead of historical sibling errors", (packageStatus, postProcessLabel) => {
+    const presentation = buildPackagePresentation(row([
+      item("failed", "Entpack-Fehler [old.part01.rar]: Checksum/CRC-Fehler im Archiv"),
+      item("active", "Fertig")
+    ], { status: packageStatus, postProcessLabel }));
+
+    expect(presentation.status).toBe(postProcessLabel);
+    expect(presentation.details).toContain("1 Entpackfehler");
+    expect(presentation.extractFailure?.id).toBe("failed");
+  });
+
+  it("keeps a running download ahead of historical sibling extraction errors", () => {
+    const presentation = buildPackagePresentation(row([
+      item("failed", "Entpack-Fehler [old.part01.rar]: Checksum/CRC-Fehler im Archiv"),
+      item("active", "Download läuft", { status: "downloading", downloadedBytes: 50, progressPercent: 50 })
+    ], { status: "downloading" }));
+
+    expect(presentation.status).toBe("Download läuft");
+    expect(presentation.details).toContain("1 Entpackfehler");
+  });
+
+  it.each([
+    "Entpacken - Ausstehend",
+    "Entpacken - Warten auf Parts"
+  ])("keeps a running download ahead of the sibling state %s", (fullStatus) => {
+    const presentation = buildPackagePresentation(row([
+      item("pending", fullStatus),
+      item("active", "Download läuft", { status: "downloading", downloadedBytes: 50, progressPercent: 50 })
+    ], { status: "downloading" }));
+
+    expect(presentation.status).toBe("Download läuft");
+  });
+
+  it.each([
+    ["queued", "Entpacken - Ausstehend", "Entpacken - Ausstehend"],
+    ["extracting", "Entpacken - Ausstehend", "Entpacken - Ausstehend"],
+    ["queued", "Entpacken - Warten auf Parts", "Entpacken - Warten auf Parts"],
+    ["extracting", "Entpacken - Warten auf Parts", "Entpacken - Warten auf Parts"]
+  ] as const)("keeps the pending extraction state %s / %s visible on the package", (packageStatus, fullStatus, expectedStatus) => {
+    const presentation = buildPackagePresentation(row([
+      item("archive", fullStatus)
+    ], { status: packageStatus }));
+
+    expect(presentation.status).toBe(expectedStatus);
+  });
+
+  it.each([
+    "Entpacken 42% (1/1) · release.part01.rar",
+    "Passwort knacken: 50% (2/4)",
+    "Finalisieren - 99% (0/1) · release.part01.rar"
+  ])("keeps the active extraction phase %s ahead of historical sibling errors", (postProcessLabel) => {
+    const presentation = buildPackagePresentation(row([
+      item("failed", "Entpack-Fehler [old.part01.rar]: Checksum/CRC-Fehler im Archiv"),
+      item("active", postProcessLabel)
+    ], { status: "extracting", postProcessLabel }));
+
+    expect(presentation.status).toBe(postProcessLabel);
+    expect(presentation.details).toContain("1 Entpackfehler");
+    expect(presentation.extractFailure?.id).toBe("failed");
+  });
+
+  it("keeps the active disk wait ahead of historical sibling errors", () => {
+    const presentation = buildPackagePresentation(row([
+      item("failed", "Entpack-Fehler [old.part01.rar]: Checksum/CRC-Fehler im Archiv"),
+      item("active", "Warte auf Festplatte")
+    ], { status: "queued" }));
+
+    expect(presentation.status).toBe("Warte auf Festplatte");
+    expect(presentation.details).toContain("1 Entpackfehler");
+  });
+
   it("summarizes mixed extraction errors and a live retry instead of showing a fraction", () => {
     const items = [
       ...Array.from({ length: 7 }, (_, index) => item(`failed-${index}`, "Entpack-Fehler: Keine entpackten Dateien erkannt")),

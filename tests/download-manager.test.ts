@@ -6,7 +6,7 @@ import crypto from "node:crypto";
 import { EventEmitter, once } from "node:events";
 import AdmZip from "adm-zip";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DownloadManager, buildAutoRenameBaseNameFromFoldersWithOptions, extractArchiveNameFromExtractorLogMessage, getAuthoritativeRealDebridTotal, getDiskWriteWaitReason, resolveArchiveItemsFromList, resolveUnrestrictTimeoutBudgetMs, runWithLimitedConcurrency } from "../src/main/download-manager";
+import { DownloadManager, buildAutoRenameBaseNameFromFoldersWithOptions, extractArchiveNameFromExtractorLogMessage, findCrcImplicatedArchiveItems, getAuthoritativeRealDebridTotal, getDiskWriteWaitReason, resolveArchiveItemsFromList, resolveSelectedArchiveSetsFromCandidates, resolveUnrestrictTimeoutBudgetMs, runWithLimitedConcurrency } from "../src/main/download-manager";
 import { planDownloadCompletion, validateDownloadedFileCompletion } from "../src/main/download-completion";
 import { DiskReservationCoordinator } from "../src/main/disk-space";
 import { ExtractionCoordinator } from "../src/main/extraction-coordinator";
@@ -113,6 +113,13 @@ describe("selected item run scope", () => {
 
     expect(internal.findNextQueuedItem()).toBeNull();
     expect(internal.getQueuePresence()).toEqual({ hasImmediate: false, hasDelayed: false });
+
+    internal.session.items[itemIds[1]].status = "reconnect_wait";
+    internal.session.items[itemIds[1]].fullStatus = "FREMDER_BACKOFF";
+    internal.retryAfterByItem.set(itemIds[1], 99_000);
+    manager.stop();
+    expect(internal.session.items[itemIds[1]]).toEqual(expect.objectContaining({ status: "reconnect_wait", fullStatus: "FREMDER_BACKOFF" }));
+    expect(internal.retryAfterByItem.get(itemIds[1])).toBe(99_000);
   });
 
   it("stops only selected run items without erasing sibling wait state", async () => {
@@ -149,6 +156,114 @@ describe("selected item run scope", () => {
     expect(internal.pacedStartReservationByItem.get(itemIds[1])).toBe(200);
     expect(internal.standalonePackageResults.has("foreign-package:1")).toBe(true);
     expect(internal.suppressedPackageResults.has("foreign-package:1")).toBe(false);
+  });
+
+  it("does not widen an exhausted selected scope to an unselected sibling", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-selected-exhausted-"));
+    tempDirs.push(root);
+    const { manager, itemIds } = createSelectedItemManager(root);
+    const internal = manager as any;
+    internal.ensureScheduler = async () => {};
+    internal.triggerPendingExtractions = () => {};
+
+    await internal.startItemsNow([itemIds[0]]);
+    internal.runItemIds.delete(itemIds[0]);
+    internal.runPackageIds.clear();
+
+    expect(internal.findNextQueuedItem()).toBeNull();
+    expect(internal.getQueuePresence()).toEqual({ hasImmediate: false, hasDelayed: false });
+
+    internal.session.items[itemIds[1]].status = "reconnect_wait";
+    internal.session.items[itemIds[1]].fullStatus = "FREMDER_BACKOFF";
+    internal.retryAfterByItem.set(itemIds[1], Date.now() + 60_000);
+    manager.stop();
+    expect(internal.session.items[itemIds[1]]).toEqual(expect.objectContaining({ status: "reconnect_wait", fullStatus: "FREMDER_BACKOFF" }));
+    expect(internal.retryAfterByItem.has(itemIds[1])).toBe(true);
+  });
+
+  it("resuming preserves item, disk and provider cooldown state", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-resume-cooldowns-"));
+    tempDirs.push(root);
+    const { manager, itemIds } = createSelectedItemManager(root);
+    const internal = manager as any;
+    internal.ensureScheduler = async () => {};
+    internal.triggerPendingExtractions = () => {};
+    await internal.startItemsNow([itemIds[0]]);
+    internal.session.paused = true;
+    const now = Date.now();
+    internal.retryAfterByItem.set(itemIds[0], now + 11_000);
+    internal.providerStartReservations.set("provider-key", now + 12_000);
+    internal.pacedStartReservationByItem.set(itemIds[0], now + 13_000);
+    internal.providerFailures.set("provider-key", { count: 1, lastFailAt: now, cooldownUntil: now + 14_000 });
+
+    manager.togglePause();
+
+    expect(internal.retryAfterByItem.get(itemIds[0])).toBe(now + 11_000);
+    expect(internal.providerStartReservations.get("provider-key")).toBe(now + 12_000);
+    expect(internal.pacedStartReservationByItem.get(itemIds[0])).toBe(now + 13_000);
+    expect(internal.providerFailures.get("provider-key")?.cooldownUntil).toBe(now + 14_000);
+    expect(internal.findNextQueuedItem()).toBeNull();
+  });
+
+  it("keeps a newly added package outside a selected running scope", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-selected-add-package-"));
+    tempDirs.push(root);
+    const { manager, itemIds } = createSelectedItemManager(root);
+    const internal = manager as any;
+    internal.ensureScheduler = async () => {};
+    internal.triggerPendingExtractions = () => {};
+    await internal.startItemsNow([itemIds[0]]);
+
+    manager.addPackages([{ name: "added-later", links: ["https://dummy/added-later"] }]);
+    const addedPackageId = internal.session.packageOrder.at(-1);
+    const addedItemId = internal.session.packages[addedPackageId].itemIds[0];
+
+    expect(internal.runPackageIds.has(addedPackageId)).toBe(false);
+    expect(internal.runItemIds.has(addedItemId)).toBe(false);
+    expect(internal.findNextQueuedItem()?.itemId).not.toBe(addedItemId);
+  });
+
+  it("computes provider retry only from selected run items", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-selected-provider-retry-"));
+    tempDirs.push(root);
+    const { manager, itemIds } = createSelectedItemManager(root);
+    const internal = manager as any;
+    internal.ensureScheduler = async () => {};
+    internal.triggerPendingExtractions = () => {};
+    await internal.startItemsNow([itemIds[0]]);
+    const deadline = Date.now() + 30_000;
+    internal.debridService.getBlockingProviderRetryAt = (url: string) => url.endsWith("/first") ? deadline : null;
+
+    expect(internal.getEarliestProviderRetryAt(Date.now())).toBe(deadline);
+  });
+
+  it.each(["items", "packages"] as const)("does not trigger foreign post-processing from a selected %s start", async (mode) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `rd-selected-postprocess-${mode}-`));
+    tempDirs.push(root);
+    const { manager, packageId, itemIds } = createSelectedItemManager(root);
+    manager.addPackages([{ name: "foreign-completed", links: ["https://dummy/foreign.rar"] }]);
+    const internal = manager as any;
+    const foreignPackageId = internal.session.packageOrder.find((id: string) => id !== packageId);
+    const foreignItemId = internal.session.packages[foreignPackageId].itemIds[0];
+    internal.session.items[foreignItemId].status = "completed";
+    internal.session.items[foreignItemId].downloadedBytes = 100;
+    internal.session.items[foreignItemId].totalBytes = 100;
+    internal.session.items[foreignItemId].progressPercent = 100;
+    internal.session.items[foreignItemId].fullStatus = "Entpacken - Ausstehend";
+    internal.session.packages[foreignPackageId].status = "completed";
+    internal.ensureScheduler = async () => {};
+    const postProcess = vi.fn(async () => {});
+    internal.runPackagePostProcessing = postProcess;
+
+    if (mode === "items") {
+      await internal.startItemsNow([itemIds[0]]);
+    } else {
+      await internal.startPackagesNow([packageId]);
+    }
+
+    expect(postProcess).not.toHaveBeenCalledWith(foreignPackageId);
+    expect(internal.runPackageIds.has(foreignPackageId)).toBe(false);
+    expect(internal.runItemIds.has(foreignItemId)).toBe(false);
   });
 });
 
@@ -7228,7 +7343,7 @@ describe("download manager", () => {
         errorText: "Checksum error in the encrypted file",
         category: "crc_error",
         suggestRedownload: true,
-        jvmFailureReason: "Can not open the file as archive"
+        jvmFailureReason: "7z-Fehler: CRCERROR"
       },
       "hybrid"
     );
@@ -7326,7 +7441,7 @@ describe("download manager", () => {
         errorText: "Checksum error in the encrypted file",
         category: "crc_error",
         suggestRedownload: true,
-        jvmFailureReason: "Can not open the file as archive"
+        jvmFailureReason: "7z-Fehler: CRCERROR"
       },
       "hybrid"
     );
@@ -7420,7 +7535,7 @@ describe("download manager", () => {
         errorText: "Checksum error in the encrypted file",
         category: "crc_error",
         suggestRedownload: true,
-        jvmFailureReason: "Can not open the file as archive"
+        jvmFailureReason: "7z-Fehler: CRCERROR"
       },
       "hybrid"
     );
@@ -7432,6 +7547,26 @@ describe("download manager", () => {
       expect(item.targetPath).toContain(".rar");
       expect(item.downloadedBytes).toBe(archiveSize);
     }
+
+    for (const archiveName of archiveNames) {
+      fs.writeFileSync(path.join(outputDir, archiveName), Buffer.alloc(archiveSize, 0x7f));
+    }
+    const wrongPasswordChanged = (manager as any).autoRecoverArchiveCrcFailure(
+      session.packages[packageId],
+      itemIds.map((itemId) => session.items[itemId]!),
+      {
+        archiveName: "show.s01e01.part1.rar",
+        archivePath: path.join(outputDir, "show.s01e01.part1.rar"),
+        errorText: "Wrong password",
+        category: "wrong_password",
+        suggestRedownload: true,
+        jvmFailureReason: "WRONG_PASSWORD"
+      },
+      "hybrid"
+    );
+    expect(wrongPasswordChanged).toBe(0);
+    expect(itemIds.map((itemId) => session.items[itemId]!.status)).toEqual(["completed", "completed"]);
+    expect(archiveNames.map((archiveName) => fs.existsSync(path.join(outputDir, archiveName)))).toEqual([true, true]);
   });
 
   it("does not treat rev files as ready archive parts during disk fallback", async () => {
@@ -7515,8 +7650,9 @@ describe("download manager", () => {
       createStoragePaths(path.join(root, "state"))
     );
 
+    expect((manager as any).looksLikeArchivePart("show.s01e01.part2.rar", "show.s01e01.part1.rar")).toBe(true);
     const ready = await (manager as any).findReadyArchiveSets(session.packages[packageId]);
-    expect(Array.from(ready)).toHaveLength(0);
+    expect(Array.from(ready)).toEqual([]);
   });
 
   it("allows disk fallback when queued archive parts are fully present on disk", async () => {
@@ -9802,6 +9938,140 @@ describe("download manager", () => {
     for (const itemId of itemIds) {
       expect(packageSnapshot.items[itemId].onlineStatus).toBe("online");
     }
+  });
+
+  it("requeues confirmed corrupt volumes independently when one part is locked", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-crc-specific-volume-"));
+    tempDirs.push(root);
+    const session = emptySession();
+    const packageId = "crc-specific-volume-pkg";
+    const outputDir = path.join(root, "downloads", "crc-specific-volume");
+    const extractDir = path.join(root, "extract", "crc-specific-volume");
+    fs.mkdirSync(outputDir, { recursive: true });
+    const archiveNames = ["show.part1.rar", "show.part2.rar", "show.part3.rar"];
+    const itemIds = archiveNames.map((_, index) => `crc-specific-${index + 1}`);
+    const createdAt = Date.now() - 1000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "crc-specific-volume",
+      outputDir,
+      extractDir,
+      status: "extracting",
+      itemIds,
+      cancelled: false,
+      enabled: true,
+      resultGeneration: 4,
+      createdAt,
+      updatedAt: createdAt
+    };
+    for (const [index, archiveName] of archiveNames.entries()) {
+      const targetPath = path.join(outputDir, archiveName);
+      const bytes = Buffer.alloc(64 * 1024, index + 1);
+      Buffer.from("526172211a070100", "hex").copy(bytes, 0);
+      fs.writeFileSync(targetPath, bytes);
+      session.items[itemIds[index]] = {
+        id: itemIds[index],
+        packageId,
+        url: `https://dummy/${archiveName}`,
+        provider: "realdebrid",
+        status: "completed",
+        retries: 0,
+        speedBps: 0,
+        downloadedBytes: bytes.length,
+        totalBytes: bytes.length,
+        progressPercent: 100,
+        fileName: archiveName,
+        targetPath,
+        resumable: true,
+        attempts: 1,
+        lastError: "",
+        fullStatus: "Entpacken - Ausstehend",
+        createdAt,
+        updatedAt: createdAt
+      };
+    }
+    const manager = new DownloadManager(
+      { ...defaultSettings(), token: "rd-token", outputDir, extractDir, autoExtract: true },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+    const failure = {
+      archiveName: "show.part1.rar",
+      archivePath: path.join(outputDir, "show.part1.rar"),
+      errorText: `Prüfsummenfehler der gepackten Daten in Volume ${path.join(outputDir, "show.part3.rar")} Corrupt file or wrong password`,
+      category: "crc_error",
+      suggestRedownload: true,
+      jvmFailureReason: "7z-Fehler: CRCERROR"
+    } as const;
+
+    session.items[itemIds[0]].downloadedBytes = 0;
+    const lockedPath = path.join(outputDir, "show.part1.rar");
+    const implicatedPath = path.join(outputDir, "show.part3.rar");
+    const originalRmSync = fs.rmSync.bind(fs);
+    const rmSpy = vi.spyOn(fs, "rmSync").mockImplementation(((targetPath: fs.PathLike, options?: fs.RmDirOptions) => {
+      if (path.resolve(String(targetPath)) === path.resolve(lockedPath)) {
+        throw Object.assign(new Error("locked"), { code: "EPERM" });
+      }
+      return originalRmSync(targetPath, options as never);
+    }) as typeof fs.rmSync);
+    const blockedChanged = (manager as any).autoRecoverArchiveCrcFailure(
+      session.packages[packageId],
+      itemIds.map((itemId) => session.items[itemId]),
+      failure,
+      "full"
+    );
+    rmSpy.mockRestore();
+    expect(blockedChanged).toBe(1);
+    expect(session.items[itemIds[0]]).toEqual(expect.objectContaining({ status: "completed", targetPath: lockedPath }));
+    expect(session.items[itemIds[2]]).toEqual(expect.objectContaining({ status: "queued", targetPath: "" }));
+    expect(fs.existsSync(lockedPath)).toBe(true);
+    expect(fs.existsSync(implicatedPath)).toBe(false);
+
+    fs.writeFileSync(implicatedPath, Buffer.alloc(64 * 1024, 3));
+    Object.assign(session.items[itemIds[2]], {
+      status: "completed",
+      targetPath: implicatedPath,
+      downloadedBytes: 64 * 1024,
+      totalBytes: 64 * 1024,
+      progressPercent: 100,
+      fullStatus: "Entpacken - Ausstehend",
+      updatedAt: Date.now()
+    });
+    const secondChanged = (manager as any).autoRecoverArchiveCrcFailure(
+      session.packages[packageId],
+      itemIds.map((itemId) => session.items[itemId]),
+      failure,
+      "full"
+    );
+
+    expect(secondChanged).toBe(1);
+    expect(session.items[itemIds[0]]).toEqual(expect.objectContaining({ status: "queued", targetPath: "" }));
+    expect(session.items[itemIds[1]].status).toBe("completed");
+    expect(session.items[itemIds[2]]).toEqual(expect.objectContaining({ status: "completed", targetPath: implicatedPath }));
+    expect(fs.existsSync(path.join(outputDir, archiveNames[0]))).toBe(false);
+    expect(fs.existsSync(path.join(outputDir, archiveNames[1]))).toBe(true);
+    expect(fs.existsSync(path.join(outputDir, archiveNames[2]))).toBe(true);
+
+    fs.writeFileSync(lockedPath, Buffer.alloc(64 * 1024, 1));
+    Object.assign(session.items[itemIds[0]], {
+      status: "completed",
+      targetPath: lockedPath,
+      downloadedBytes: 64 * 1024,
+      totalBytes: 64 * 1024,
+      progressPercent: 100,
+      fullStatus: "Entpacken - Ausstehend",
+      updatedAt: Date.now()
+    });
+    const repeatedChanged = (manager as any).autoRecoverArchiveCrcFailure(
+      session.packages[packageId],
+      itemIds.map((itemId) => session.items[itemId]),
+      failure,
+      "full"
+    );
+    expect(repeatedChanged).toBe(0);
+    expect(fs.existsSync(lockedPath)).toBe(true);
+    expect(fs.existsSync(implicatedPath)).toBe(true);
   });
 
   it("does not freeze the scheduler when a reset item's old task is parked in a non-abort-observing await", async () => {
@@ -16711,5 +16981,578 @@ describe("download health snapshot", () => {
     expect(active.abortController.signal.aborted).toBe(true);
     expect(active.abortReason).toBe("stall");
     expect(manager.getDownloadHealthSnapshot(90_000).technicalRecoveryCount).toBe(1);
+  });
+});
+
+describe("post-processing lifecycle audit", () => {
+  function createCompletedFileManager(
+    root: string,
+    entries: Array<{ packageId: string; itemId: string; fileName: string; url?: string; content?: Buffer }>,
+    settings: Partial<AppSettings> = {}
+  ): { manager: DownloadManager; session: ReturnType<typeof emptySession> } {
+    const session = emptySession();
+    const createdAt = Date.now() - 10_000;
+    for (const entry of entries) {
+      const outputDir = path.join(root, "downloads", entry.packageId);
+      const extractDir = path.join(root, "extract", entry.packageId);
+      fs.mkdirSync(outputDir, { recursive: true });
+      const targetPath = path.join(outputDir, entry.fileName);
+      fs.writeFileSync(targetPath, entry.content ?? Buffer.alloc(256, 1));
+      if (!session.packages[entry.packageId]) {
+        session.packageOrder.push(entry.packageId);
+        session.packages[entry.packageId] = {
+          id: entry.packageId,
+          name: entry.packageId,
+          outputDir,
+          extractDir,
+          status: "completed",
+          itemIds: [],
+          cancelled: false,
+          enabled: true,
+          createdAt,
+          updatedAt: createdAt
+        };
+      }
+      session.packages[entry.packageId].itemIds.push(entry.itemId);
+      const bytes = fs.statSync(targetPath).size;
+      session.items[entry.itemId] = {
+        id: entry.itemId,
+        packageId: entry.packageId,
+        url: entry.url ?? `https://example.test/${entry.itemId}`,
+        provider: "realdebrid",
+        status: "completed",
+        retries: 0,
+        speedBps: 0,
+        downloadedBytes: bytes,
+        totalBytes: bytes,
+        progressPercent: 100,
+        fileName: entry.fileName,
+        targetPath,
+        resumable: true,
+        attempts: 1,
+        lastError: "",
+        fullStatus: "Entpacken - Ausstehend",
+        createdAt,
+        updatedAt: createdAt
+      };
+    }
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        token: "rd-token",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        autoExtract: false,
+        autoRename4sf4sj: false,
+        collectMkvToLibrary: false,
+        enableIntegrityCheck: false,
+        cleanupMode: "none",
+        ...settings
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+    return { manager, session };
+  }
+
+  it("requeues an interrupted integrity check and clears transient package progress on restart", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-restart-integrity-"));
+    tempDirs.push(root);
+    const { manager, session } = createCompletedFileManager(root, [{ packageId: "integrity-package", itemId: "integrity-item", fileName: "episode.mkv" }]);
+    const internal = manager as any;
+    session.items["integrity-item"].status = "integrity_check";
+    session.items["integrity-item"].fullStatus = "CRC-Check läuft";
+    session.packages["integrity-package"].status = "integrity_check";
+    session.packages["integrity-package"].postProcessLabel = "Finalisieren (1/1)";
+
+    internal.normalizeSessionStatuses();
+
+    expect(session.items["integrity-item"]).toEqual(expect.objectContaining({ status: "queued", fullStatus: "Wartet" }));
+    expect(session.packages["integrity-package"].status).toBe("queued");
+    expect(session.packages["integrity-package"].postProcessLabel).toBeUndefined();
+  });
+
+  it("keeps duplicate-suffixed items with independently existing files separate on startup", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-startup-distinct-urls-"));
+    tempDirs.push(root);
+    const { manager, session } = createCompletedFileManager(root, [
+      { packageId: "distinct-package", itemId: "first-url", fileName: "episode.rar", url: "https://same.test/file" },
+      { packageId: "distinct-package", itemId: "second-url", fileName: "episode (1).rar", url: "https://same.test/file" }
+    ]);
+
+    const snapshot = manager.getSnapshot().session;
+    expect(snapshot.packages["distinct-package"].itemIds).toEqual(["first-url", "second-url"]);
+    expect(snapshot.items["first-url"]).toBeDefined();
+    expect(snapshot.items["second-url"]).toBeDefined();
+    expect(fs.existsSync(session.items["second-url"].targetPath)).toBe(true);
+  });
+
+  it("moves startup cleanup archives to the recoverable trash in trash mode", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-startup-trash-"));
+    tempDirs.push(root);
+    const { manager, session } = createCompletedFileManager(root, [{ packageId: "trash-package", itemId: "trash-item", fileName: "episode.part1.rar" }]);
+    const internal = manager as any;
+    session.items["trash-item"].fullStatus = "Entpackt - Fertig";
+    internal.settings.cleanupMode = "trash";
+    const archivePath = session.items["trash-item"].targetPath;
+
+    await internal.cleanupExistingExtractedArchives();
+
+    expect(fs.existsSync(archivePath)).toBe(false);
+    expect(fs.readdirSync(path.join(path.dirname(archivePath), ".rd-trash"))).toHaveLength(1);
+  });
+
+  it("does not let queued startup cleanup remove a newly replaced archive", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-startup-cleanup-race-"));
+    tempDirs.push(root);
+    const { manager, session } = createCompletedFileManager(root, [{ packageId: "cleanup-race-package", itemId: "cleanup-race-item", fileName: "episode.rar" }]);
+    const internal = manager as any;
+    const archivePath = session.items["cleanup-race-item"].targetPath;
+    session.items["cleanup-race-item"].fullStatus = "Entpackt - Fertig";
+    internal.settings.cleanupMode = "delete";
+    let releaseQueue = (): void => {};
+    const queueGate = new Promise<void>((resolve) => { releaseQueue = resolve; });
+    internal.cleanupQueue = queueGate;
+
+    const cleanup = internal.cleanupExistingExtractedArchives();
+    await waitFor(() => internal.cleanupQueue !== queueGate, 2_000);
+    fs.writeFileSync(archivePath, Buffer.from("replacement"));
+    releaseQueue();
+    await cleanup;
+
+    expect(fs.readFileSync(archivePath, "utf8")).toBe("replacement");
+  });
+
+  it("never cleans an archive part claimed by another package in a shared output directory", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-cleanup-shared-claim-"));
+    tempDirs.push(root);
+    const { manager, session } = createCompletedFileManager(root, [
+      { packageId: "cleanup-owner-a", itemId: "cleanup-owner-a-item", fileName: "show.part1.rar" },
+      { packageId: "cleanup-owner-b", itemId: "cleanup-owner-b-item", fileName: "show.part2.rar" },
+      { packageId: "cleanup-owner-b", itemId: "cleanup-owner-b-nfo", fileName: "show.nfo" }
+    ], { cleanupMode: "delete" });
+    const internal = manager as any;
+    const sharedDir = session.packages["cleanup-owner-a"].outputDir;
+    const foreignOldPath = session.items["cleanup-owner-b-item"].targetPath;
+    const foreignNfoOldPath = session.items["cleanup-owner-b-nfo"].targetPath;
+    const foreignSharedPath = path.join(sharedDir, "show.part2.rar");
+    const foreignNfoSharedPath = path.join(sharedDir, "show.nfo");
+    fs.renameSync(foreignOldPath, foreignSharedPath);
+    fs.renameSync(foreignNfoOldPath, foreignNfoSharedPath);
+    session.packages["cleanup-owner-b"].outputDir = sharedDir;
+    session.items["cleanup-owner-b-item"].targetPath = foreignSharedPath;
+    session.items["cleanup-owner-b-nfo"].targetPath = foreignNfoSharedPath;
+
+    const removed = await internal.cleanupRemainingArchiveArtifacts(session.packages["cleanup-owner-a"]);
+
+    expect(removed).toBe(1);
+    expect(fs.existsSync(session.items["cleanup-owner-a-item"].targetPath)).toBe(false);
+    expect(fs.existsSync(foreignSharedPath)).toBe(true);
+    expect(fs.existsSync(foreignNfoSharedPath)).toBe(true);
+  });
+
+  it("rejects an ambiguous pathless selection shared by multiple archive directories", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-ambiguous-pathless-"));
+    tempDirs.push(root);
+    const item = {
+      id: "pathless-item", packageId: "pathless-package", url: "https://example.test/pathless", provider: "realdebrid",
+      status: "completed", retries: 0, speedBps: 0, downloadedBytes: 1, totalBytes: 1, progressPercent: 100,
+      fileName: "episode.part1.rar", targetPath: "", resumable: true, attempts: 1, lastError: "",
+      fullStatus: "Entpacken - Ausstehend", createdAt: Date.now(), updatedAt: Date.now()
+    } satisfies DownloadItem;
+
+    const selection = resolveSelectedArchiveSetsFromCandidates(
+      [path.join(root, "set-a", "episode.part1.rar"), path.join(root, "set-b", "episode.part1.rar")],
+      [item],
+      new Set([item.id])
+    );
+
+    expect(selection.archivePaths.size).toBe(0);
+    expect(selection.itemIds.size).toBe(0);
+  });
+
+  it("accepts an explicitly named first multipart volume as the CRC target", () => {
+    const items = [
+      { id: "crc-first", fileName: "show.part1.rar", targetPath: "C:\\Downloads\\show.part1.rar" },
+      { id: "crc-second", fileName: "show.part2.rar", targetPath: "C:\\Downloads\\show.part2.rar" }
+    ] as DownloadItem[];
+
+    expect(findCrcImplicatedArchiveItems("C:\\Downloads\\show.part1.rar - checksum error", items).map((item) => item.id)).toEqual(["crc-first"]);
+  });
+
+  it("marks an unexpected package post-process exception as failure but not an abort", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-postprocess-exception-"));
+    tempDirs.push(root);
+    const { manager, session } = createCompletedFileManager(root, [{ packageId: "exception-package", itemId: "exception-item", fileName: "episode.rar" }]);
+    const internal = manager as any;
+    internal.handlePackagePostProcessing = vi.fn(async () => { throw new Error("unexpected-postprocess-failure"); });
+
+    await internal.runPackagePostProcessing("exception-package");
+
+    expect(session.packages["exception-package"].status).toBe("failed");
+    expect(session.items["exception-item"].fullStatus).toMatch(/^Entpack-Fehler/);
+
+    session.packages["exception-package"].status = "queued";
+    session.items["exception-item"].fullStatus = "Entpacken - Ausstehend";
+    internal.handlePackagePostProcessing = vi.fn(async (_packageId: string, signal: AbortSignal) => {
+      await new Promise<void>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new Error("aborted:extract")), { once: true });
+        queueMicrotask(() => internal.abortPackagePostProcessing("exception-package", "stop"));
+      });
+    });
+    await internal.runPackagePostProcessing("exception-package");
+    expect(session.packages["exception-package"].status).not.toBe("failed");
+    expect(session.items["exception-item"].fullStatus).toBe("Entpacken - Ausstehend");
+
+    session.packages["exception-package"].status = "queued";
+    internal.handlePackagePostProcessing = vi.fn(async () => { throw new Error("aborted:extract"); });
+    await internal.runPackagePostProcessing("exception-package");
+    expect(session.packages["exception-package"].status).toBe("failed");
+  });
+
+  it("preserves a manual extraction plan across an automatic disk-capacity retry", async () => {
+    vi.useFakeTimers();
+    try {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-manual-disk-retry-"));
+      tempDirs.push(root);
+      const { manager, session } = createCompletedFileManager(root, [{ packageId: "manual-disk-package", itemId: "manual-disk-item", fileName: "episode.zip" }]);
+      const internal = manager as any;
+      const archivePath = session.items["manual-disk-item"].targetPath;
+      const archiveKey = path.resolve(archivePath).toLowerCase();
+      internal.manualExtractPackages.add("manual-disk-package");
+      internal.manualExtractArchiveFilters.set("manual-disk-package", new Set([archiveKey]));
+      internal.findFullExtractArchiveSet = vi.fn(async () => new Set([archivePath]));
+      internal.diskReservations = new DiskReservationCoordinator({
+        safetyBytes: 0,
+        retryDelayMs: 1_000,
+        statVolume: async (targetPath) => ({ path: targetPath, volumeKey: "manual-volume", freeBytes: 0, totalBytes: 1_024 })
+      });
+      const rerun = vi.fn(async () => {});
+      internal.runPackagePostProcessing = rerun;
+
+      await internal.handlePackagePostProcessing("manual-disk-package");
+      expect(manager.getSnapshot().canStop).toBe(true);
+      manager.togglePackage("manual-disk-package");
+      expect(internal.packageDiskRetryPlans.has("manual-disk-package")).toBe(true);
+      manager.togglePackage("manual-disk-package");
+      internal.manualExtractPackages.clear();
+      internal.manualExtractArchiveFilters.clear();
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(rerun).toHaveBeenCalledWith("manual-disk-package");
+      expect(internal.manualExtractPackages.has("manual-disk-package")).toBe(true);
+      expect(internal.manualExtractArchiveFilters.get("manual-disk-package")).toEqual(new Set([archiveKey]));
+      expect(internal.packageDiskRetryAfterByPackage.has("manual-disk-package")).toBe(false);
+      expect(manager.getSnapshot().diskWaitEvents?.some((entry) => entry.packageId === "manual-disk-package")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps disk retry generations and stale timer callbacks isolated", async () => {
+    vi.useFakeTimers();
+    try {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-disk-retry-identity-"));
+      tempDirs.push(root);
+      const { manager } = createCompletedFileManager(root, [{ packageId: "disk-identity-package", itemId: "disk-identity-item", fileName: "episode.zip" }]);
+      const internal = manager as any;
+      const rerun = vi.fn(async () => {});
+      internal.runPackagePostProcessing = rerun;
+      const request = { retryAt: Date.now() + 60_000, manualRequested: true, postProcessVersion: 0, runOwnerId: null };
+
+      internal.schedulePackageDiskRetry("disk-identity-package", request);
+      const firstId = internal.packageDiskRetryPlans.get("disk-identity-package").id;
+      internal.schedulePackageDiskRetry("disk-identity-package", request);
+      const secondId = internal.packageDiskRetryPlans.get("disk-identity-package").id;
+      internal.packagePostProcessVersions.set("disk-identity-package", 1);
+      expect(internal.schedulePackageDiskRetry("disk-identity-package", request)).toBe(false);
+      expect(internal.packageDiskRetryPlans.get("disk-identity-package").id).toBe(secondId);
+      internal.packagePostProcessVersions.set("disk-identity-package", 0);
+      internal.executePackageDiskRetry("disk-identity-package", firstId);
+      expect(internal.packageDiskRetryPlans.get("disk-identity-package").id).toBe(secondId);
+      expect(rerun).not.toHaveBeenCalled();
+
+      const getRunOwner = internal.getPackageResultRunOwner.bind(internal);
+      internal.getPackageResultRunOwner = () => "new-owner";
+      internal.executePackageDiskRetry("disk-identity-package", secondId);
+      expect(internal.packageDiskRetryPlans.has("disk-identity-package")).toBe(false);
+      expect(rerun).not.toHaveBeenCalled();
+      internal.getPackageResultRunOwner = getRunOwner;
+
+      internal.schedulePackageDiskRetry("disk-identity-package", request);
+      const thirdId = internal.packageDiskRetryPlans.get("disk-identity-package").id;
+      internal.session.packages["disk-identity-package"].resultGeneration += 1;
+      internal.executePackageDiskRetry("disk-identity-package", thirdId);
+      expect(internal.packageDiskRetryPlans.has("disk-identity-package")).toBe(false);
+      expect(rerun).not.toHaveBeenCalled();
+
+      manager.stop();
+      internal.schedulePackageDiskRetry("disk-identity-package", request);
+      expect(internal.packageDiskRetryPlans.has("disk-identity-package")).toBe(false);
+      internal.healthManualStop = false;
+      manager.prepareForShutdown();
+      internal.schedulePackageDiskRetry("disk-identity-package", request);
+      expect(internal.packageDiskRetryPlans.has("disk-identity-package")).toBe(false);
+      await vi.runAllTimersAsync();
+      expect(rerun).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears a paused run-owned disk retry when re-enable has no matching owner", async () => {
+    vi.useFakeTimers();
+    try {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-disk-retry-owner-rebind-"));
+      tempDirs.push(root);
+      const { manager } = createCompletedFileManager(root, [{ packageId: "disk-owner-package", itemId: "disk-owner-item", fileName: "episode.zip" }]);
+      const internal = manager as any;
+      const rerun = vi.fn(async () => {});
+      internal.runPackagePostProcessing = rerun;
+      internal.session.running = true;
+      internal.runScopeKind = "selected";
+      internal.runPackageIds.add("disk-owner-package");
+      const context = internal.beginActiveRunContext(new Set(["disk-owner-package"]), Date.now());
+      expect(internal.schedulePackageDiskRetry("disk-owner-package", {
+        retryAt: Date.now() + 1_000,
+        manualRequested: true,
+        postProcessVersion: 0,
+        runOwnerId: context.id
+      })).toBe(true);
+
+      manager.togglePackage("disk-owner-package");
+      expect(internal.packageDiskRetryPlans.has("disk-owner-package")).toBe(true);
+      expect(internal.packageDiskRetryTimers.has("disk-owner-package")).toBe(false);
+      manager.togglePackage("disk-owner-package");
+
+      expect(internal.packageDiskRetryPlans.has("disk-owner-package")).toBe(false);
+      expect(internal.packageDiskRetryTimers.has("disk-owner-package")).toBe(false);
+      expect(internal.packageDiskRetryAfterByPackage.has("disk-owner-package")).toBe(false);
+      expect(internal.getActivePostProcessingCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(rerun).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels a due disk retry when stop wins the race", async () => {
+    vi.useFakeTimers();
+    try {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-disk-retry-stop-race-"));
+      tempDirs.push(root);
+      const { manager, session } = createCompletedFileManager(root, [{ packageId: "disk-stop-package", itemId: "disk-stop-item", fileName: "episode.zip" }]);
+      const internal = manager as any;
+      const rerun = vi.fn(async () => {});
+      internal.runPackagePostProcessing = rerun;
+      internal.session.running = true;
+      internal.runScopeKind = "selected";
+      internal.runPackageIds.add("disk-stop-package");
+      internal.runItemIds.add("disk-stop-item");
+      expect(internal.schedulePackageDiskRetry("disk-stop-package", { retryAt: Date.now() + 1_000, manualRequested: true, postProcessVersion: 0, runOwnerId: null })).toBe(true);
+
+      manager.stop();
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(rerun).not.toHaveBeenCalled();
+      expect(internal.packageDiskRetryPlans.size).toBe(0);
+      expect(internal.packageDiskRetryTimers.size).toBe(0);
+      expect(manager.getSnapshot().lifecycle?.phase).toBe("idle");
+      expect(session.running).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("passes separate manual and partial flags to deferred extraction", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-manual-cleanup-scope-"));
+    tempDirs.push(root);
+    const { manager, session } = createCompletedFileManager(root, [{ packageId: "manual-cleanup-package", itemId: "manual-cleanup-item", fileName: "episode.rar" }]);
+    const internal = manager as any;
+    const archivePath = session.items["manual-cleanup-item"].targetPath;
+    internal.findFullExtractArchiveSet = vi.fn(async () => new Set([archivePath]));
+    internal.runCoordinatedExtraction = vi.fn(async () => ({ extracted: 1, failed: 0, lastError: "" }));
+    const deferred = vi.fn(async () => {});
+    internal.runDeferredPostExtraction = deferred;
+    internal.manualExtractPackages.add("manual-cleanup-package");
+
+    await internal.handlePackagePostProcessing("manual-cleanup-package");
+    expect(deferred.mock.calls.at(-1)?.slice(6)).toEqual([true, false]);
+
+    session.packages["manual-cleanup-package"].status = "queued";
+    session.items["manual-cleanup-item"].fullStatus = "Entpacken - Ausstehend";
+    internal.manualExtractArchiveFilters.set("manual-cleanup-package", new Set([path.resolve(archivePath).toLowerCase()]));
+    await internal.handlePackagePostProcessing("manual-cleanup-package");
+    expect(deferred.mock.calls.at(-1)?.slice(6)).toEqual([true, true]);
+  });
+
+  it("cleans full manual package archives but preserves partial manual state", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-manual-cleanup-behavior-"));
+    tempDirs.push(root);
+    const { manager, session } = createCompletedFileManager(root, [
+      { packageId: "manual-cleanup-behavior", itemId: "cleanup-a", fileName: "episode-a.rar" },
+      { packageId: "manual-cleanup-behavior", itemId: "cleanup-b", fileName: "episode-b.rar" }
+    ], { cleanupMode: "delete" });
+    const internal = manager as any;
+    const firstPath = session.items["cleanup-a"].targetPath;
+    const secondPath = session.items["cleanup-b"].targetPath;
+
+    await internal.runDeferredPostExtraction("manual-cleanup-behavior", session.packages["manual-cleanup-behavior"], 2, 0, true, 2, true, true);
+    expect(fs.existsSync(firstPath)).toBe(true);
+    expect(fs.existsSync(secondPath)).toBe(true);
+
+    await internal.runDeferredPostExtraction("manual-cleanup-behavior", session.packages["manual-cleanup-behavior"], 2, 0, true, 2, true, false);
+    expect(fs.existsSync(firstPath)).toBe(false);
+    expect(fs.existsSync(secondPath)).toBe(false);
+  });
+
+  it("rejects package extraction when no archive candidate exists", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-no-archive-"));
+    tempDirs.push(root);
+    const { manager } = createCompletedFileManager(root, [{ packageId: "no-archive-package", itemId: "no-archive-item", fileName: "episode.mkv" }]);
+    const internal = manager as any;
+    const postProcess = vi.fn(async () => {});
+    internal.runPackagePostProcessing = postProcess;
+
+    await expect(manager.extractNow("no-archive-package")).rejects.toThrow("Kein entpackbarer Archivsatz ausgewählt");
+    expect(manager.getSnapshot().session.items["no-archive-item"].fullStatus).toBe("Entpacken - Ausstehend");
+    expect(manager.getSnapshot().session.packages["no-archive-package"].status).toBe("completed");
+    expect(internal.manualExtractPackages.has("no-archive-package")).toBe(false);
+    expect(postProcess).not.toHaveBeenCalled();
+  });
+
+  it("rejects retryExtraction when the failed package has no complete archive", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-retry-no-archive-"));
+    tempDirs.push(root);
+    const { manager, session } = createCompletedFileManager(root, [{ packageId: "retry-no-archive", itemId: "retry-no-archive-item", fileName: "episode.mkv" }]);
+    const internal = manager as any;
+    session.items["retry-no-archive-item"].fullStatus = "Entpack-Fehler: vorheriger Fehler";
+    internal.runPackagePostProcessing = vi.fn(async () => {});
+
+    await expect(manager.retryExtraction("retry-no-archive")).rejects.toThrow(/Kein .*entpackbarer Archivsatz ausgewählt/);
+    expect(internal.runPackagePostProcessing).not.toHaveBeenCalled();
+    expect(session.items["retry-no-archive-item"].fullStatus).toBe("Entpack-Fehler: vorheriger Fehler");
+  });
+
+  it("recognizes and arms an opaque archive file by signature", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-opaque-rar-"));
+    tempDirs.push(root);
+    const zip = new AdmZip();
+    zip.addFile("episode.mkv", crypto.randomBytes(64 * 1024));
+    const content = zip.toBuffer();
+    const { manager } = createCompletedFileManager(root, [{ packageId: "opaque-package", itemId: "opaque-item", fileName: "download.bin", content }]);
+    const internal = manager as any;
+
+    await manager.extractNow("opaque-package");
+    const task = internal.packagePostProcessTasks.get("opaque-package");
+    expect(task).toBeDefined();
+    await task;
+
+    expect(manager.getSnapshot().session.items["opaque-item"].fileName).toMatch(/\.zip$/i);
+  });
+
+  it("extracts a uniquely resolvable pathless legacy item through the public API", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-pathless-public-"));
+    tempDirs.push(root);
+    const zip = new AdmZip();
+    zip.addFile("episode.mkv", crypto.randomBytes(64 * 1024));
+    const { manager, session } = createCompletedFileManager(root, [{ packageId: "pathless-public", itemId: "pathless-public-item", fileName: "episode.zip", content: zip.toBuffer() }]);
+    const internal = manager as any;
+    const archivePath = session.items["pathless-public-item"].targetPath;
+    internal.releaseTargetPath("pathless-public-item");
+    session.items["pathless-public-item"].targetPath = "";
+    const postProcess = vi.fn(async () => {});
+    internal.runPackagePostProcessing = postProcess;
+
+    await manager.extractNow("pathless-public");
+
+    expect(session.items["pathless-public-item"].targetPath).toBe(archivePath);
+    expect(session.items["pathless-public-item"].fullStatus).toBe("Entpacken - Ausstehend");
+    expect(postProcess).toHaveBeenCalledWith("pathless-public");
+  });
+
+  it("rejects an incomplete multipart package before starting extraction", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-incomplete-multipart-"));
+    tempDirs.push(root);
+    const { manager, session } = createCompletedFileManager(root, [{ packageId: "incomplete-package", itemId: "incomplete-part1", fileName: "show.part1.rar" }]);
+    const internal = manager as any;
+    const part2Id = "incomplete-part2";
+    session.packages["incomplete-package"].itemIds.push(part2Id);
+    session.items[part2Id] = {
+      ...session.items["incomplete-part1"],
+      id: part2Id,
+      status: "queued",
+      fileName: "show.part2.rar",
+      targetPath: "",
+      downloadedBytes: 0,
+      totalBytes: null,
+      progressPercent: 0,
+      fullStatus: "Wartet"
+    };
+    internal.runPackagePostProcessing = vi.fn(async () => {});
+
+    await expect(manager.extractNow("incomplete-package")).rejects.toThrow("Kein entpackbarer Archivsatz ausgewählt");
+    expect(internal.runPackagePostProcessing).not.toHaveBeenCalled();
+  });
+
+  it("rejects a mixed extraction batch before starting any package", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-mixed-batch-"));
+    tempDirs.push(root);
+    const zip = new AdmZip();
+    zip.addFile("episode.mkv", Buffer.from("video"));
+    const { manager } = createCompletedFileManager(root, [
+      { packageId: "valid-package", itemId: "valid-item", fileName: "episode.zip", content: zip.toBuffer() },
+      { packageId: "invalid-package", itemId: "invalid-item", fileName: "episode.mkv" }
+    ]);
+    const internal = manager as any;
+    internal.runPackagePostProcessing = vi.fn(async () => {});
+
+    await expect(manager.extractNow({ packageIds: ["valid-package", "invalid-package"], itemIds: [] })).rejects.toThrow(/1.*nicht gestartet/i);
+    expect(internal.runPackagePostProcessing).not.toHaveBeenCalledWith("valid-package");
+    expect(internal.runPackagePostProcessing).not.toHaveBeenCalledWith("invalid-package");
+  });
+
+  it("keeps opaque archive files untouched when batch preflight rejects another target", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-atomic-opaque-"));
+    tempDirs.push(root);
+    const zip = new AdmZip();
+    zip.addFile("episode.mkv", crypto.randomBytes(64 * 1024));
+    const { manager, session } = createCompletedFileManager(root, [
+      { packageId: "atomic-opaque", itemId: "atomic-opaque-item", fileName: "download.bin", content: zip.toBuffer() },
+      { packageId: "atomic-invalid", itemId: "atomic-invalid-item", fileName: "episode.mkv" }
+    ]);
+    const internal = manager as any;
+    internal.runPackagePostProcessing = vi.fn(async () => {});
+    const opaquePath = session.items["atomic-opaque-item"].targetPath;
+
+    await expect(manager.extractNow({ packageIds: ["atomic-opaque", "atomic-invalid"], itemIds: [] })).rejects.toThrow(/nicht gestartet/i);
+
+    expect(session.items["atomic-opaque-item"].fileName).toBe("download.bin");
+    expect(session.items["atomic-opaque-item"].targetPath).toBe(opaquePath);
+    expect(fs.existsSync(opaquePath)).toBe(true);
+    expect(fs.existsSync(path.join(path.dirname(opaquePath), "download.zip"))).toBe(false);
+    expect(internal.runPackagePostProcessing).not.toHaveBeenCalled();
+  });
+
+  it("exposes and drains stop for standalone manual extraction without starting a download run", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-standalone-stop-"));
+    tempDirs.push(root);
+    const zip = new AdmZip();
+    zip.addFile("episode.mkv", Buffer.from("video"));
+    const { manager } = createCompletedFileManager(root, [{ packageId: "standalone-package", itemId: "standalone-item", fileName: "episode.zip", content: zip.toBuffer() }]);
+    const internal = manager as any;
+    internal.handlePackagePostProcessing = vi.fn(async (_packageId: string, signal: AbortSignal) => {
+      await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+    });
+
+    await manager.extractNow("standalone-package");
+    await waitFor(() => internal.packagePostProcessTasks.size === 1, 2_000);
+    expect(manager.getSnapshot().canStop).toBe(true);
+    expect(manager.getSnapshot().session.running).toBe(false);
+
+    manager.stop();
+    await waitFor(() => internal.packagePostProcessTasks.size === 0, 2_000);
+    expect(manager.getSnapshot().lifecycle?.phase).toBe("idle");
+    expect(manager.getSnapshot().session.running).toBe(false);
   });
 });

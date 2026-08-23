@@ -26,8 +26,8 @@ import { migrateProductUserDataDirectory } from "./storage";
 import { validateCollectorContainerInspectionRequest, validateCollectorInspectionRequest } from "../shared/collector";
 import { DailyStartScheduler, hasDailyStartRulePatch, prepareDailyStartSettingsPatch } from "./daily-start-scheduler";
 import { forceDarkNativeTheme } from "./native-theme";
-import { normalizeExtractNowRequest } from "../shared/extract-now";
 import { validateClipboardWriteText } from "./clipboard-write";
+import { registerExtractionIpcHandlers } from "./extraction-ipc";
 
 forceDarkNativeTheme(nativeTheme);
 
@@ -642,13 +642,7 @@ function registerIpcHandlers(): void {
     await fs.promises.writeFile(result.filePath, exported.text, "utf8");
     return { saved: true, packageCount: exported.packageCount, linkCount: exported.linkCount, filePath: result.filePath };
   });
-  handleTrusted(IPC_CHANNELS.RETRY_EXTRACTION, (_event: IpcMainInvokeEvent, packageId: string) => {
-    validateString(packageId, "packageId");
-    return controller.retryExtraction(packageId);
-  });
-  handleTrusted(IPC_CHANNELS.EXTRACT_NOW, (_event: IpcMainInvokeEvent, request: unknown) => {
-    return controller.extractNow(normalizeExtractNowRequest(request));
-  });
+  registerExtractionIpcHandlers((channel, listener) => handleTrusted(channel, listener), controller);
   handleTrusted(IPC_CHANNELS.RESET_PACKAGE, (_event: IpcMainInvokeEvent, packageId: string) => {
     validateString(packageId, "packageId");
     return controller.resetPackage(packageId);

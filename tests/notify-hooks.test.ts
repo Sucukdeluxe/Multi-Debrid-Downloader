@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import AdmZip from "adm-zip";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DownloadManager } from "../src/main/download-manager";
 import { defaultSettings } from "../src/main/constants";
@@ -13,6 +14,7 @@ import { shutdownRenameLog } from "../src/main/rename-log";
 import type { AppSettings, HistoryEntry, PackageEntry } from "../src/shared/types";
 
 const tempDirs: string[] = [];
+const sessionRoots = new WeakMap<object, string>();
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -36,6 +38,7 @@ function setup(settings: Partial<AppSettings> = {}): {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-nh-"));
   tempDirs.push(root);
   const session = emptySession();
+  sessionRoots.set(session, root);
   const events: NotificationEvent[] = [];
   const history: HistoryEntry[] = [];
   const manager = new DownloadManager(
@@ -70,11 +73,15 @@ function addPackage(
   packageId = "pkg-1"
 ): PackageEntry {
   const startedAt = Date.now() - 30_000;
+  const root = sessionRoots.get(session) || os.tmpdir();
+  const outputDir = path.join(root, "out", packageId);
+  const extractDir = path.join(root, "extract", packageId);
+  fs.mkdirSync(outputDir, { recursive: true });
   const pkg: PackageEntry = {
     id: packageId,
     name: `Test ${packageId}`,
-    outputDir: `C:/out/${packageId}`,
-    extractDir: `C:/extract/${packageId}`,
+    outputDir,
+    extractDir,
     status: "queued",
     itemIds: statuses.map((_status, index) => `${packageId}-item-${index}`),
     cancelled: false,
@@ -90,6 +97,14 @@ function addPackage(
   session.packageOrder.push(packageId);
   statuses.forEach((status, index) => {
     const itemId = `${packageId}-item-${index}`;
+    const fileName = `${packageId}-${index}.zip`;
+    const targetPath = path.join(outputDir, fileName);
+    if (status === "completed") {
+      const zip = new AdmZip();
+      zip.addFile("episode.mkv", Buffer.from(`video-${packageId}-${index}`));
+      zip.writeZip(targetPath);
+    }
+    const downloadedBytes = status === "completed" ? fs.statSync(targetPath).size : 0;
     session.items[itemId] = {
       id: itemId,
       packageId,
@@ -98,11 +113,11 @@ function addPackage(
       status,
       retries: 0,
       speedBps: 0,
-      downloadedBytes: status === "completed" ? 1_000 : 0,
-      totalBytes: 1_000,
+      downloadedBytes,
+      totalBytes: status === "completed" ? downloadedBytes : 1_000,
       progressPercent: status === "completed" ? 100 : 0,
-      fileName: `${packageId}-${index}.rar`,
-      targetPath: `C:/out/${packageId}/${packageId}-${index}.rar`,
+      fileName,
+      targetPath,
       resumable: true,
       attempts: 1,
       lastError: status === "failed" ? "offline" : "",
@@ -249,7 +264,7 @@ describe("authoritative package completion", () => {
 
     const postProcess = vi.spyOn(state, "runPackagePostProcessing").mockResolvedValue(undefined);
     session.items[pkg.itemIds[0]].fullStatus = "Entpacken - Error";
-    manager.retryExtraction(pkg.id);
+    await manager.retryExtraction(pkg.id);
     expect(postProcess).toHaveBeenCalledWith(pkg.id);
     pkg.archiveOperations = [{
       id: "archive-2",
@@ -293,7 +308,7 @@ describe("authoritative package completion", () => {
     session.items[pkg.itemIds[0]].fullStatus = "Entpacken - Error";
     vi.spyOn(state, "runPackagePostProcessing").mockResolvedValue(undefined);
 
-    manager.retryExtraction(pkg.id);
+    await manager.retryExtraction(pkg.id);
     expect(pkg.resultGeneration).toBe(8);
 
     pkg.archiveOperations = [{
@@ -897,7 +912,7 @@ describe("authoritative run completion", () => {
     postProcessGate = new Promise<void>((resolve) => {
       releasePostProcess = resolve;
     });
-    manager.retryExtraction(pkg.id);
+    await manager.retryExtraction(pkg.id);
     const retriedPostProcess = state.packagePostProcessTasks.get(pkg.id);
     expect(retriedPostProcess).toBeDefined();
     releasePostProcess();

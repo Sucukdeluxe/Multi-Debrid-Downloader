@@ -49,6 +49,35 @@ describe("renderer localization", () => {
     expect(translateUiText(english, "de")).toBe(german);
   });
 
+  it.each([
+    ["CRC-Check läuft", "CRC check running"],
+    ["Entpacken - Ausstehend", "Extracting - Pending"],
+    ["Entpacken - Warten auf Parts", "Extracting - Waiting for parts"],
+    ["Archive stabilisieren...", "Stabilizing archives..."],
+    ["Entpacken vorbereiten...", "Preparing extraction..."],
+    ["Entpacken wird neu gestartet...", "Restarting extraction..."],
+    ["Nested Entpacken...", "Nested extraction..."],
+    ["Umbenennen...", "Renaming..."],
+    ["Tonspur...", "Audio track..."],
+    ["Aufräumen...", "Cleaning up..."],
+    ["Verschiebe Videos...", "Moving videos..."]
+  ])("translates package runtime state %s in both directions", (german, english) => {
+    expect(translateUiText(german, "en")).toBe(english);
+    expect(translateUiText(english, "de")).toBe(german);
+  });
+
+  it.each([
+    ["Entpacken - 42%", "Extracting - 42%"],
+    ["Passwort gefunden", "Password found"],
+    ["Passwort knacken: 50% (2/4)", "Cracking password: 50% (2/4)"],
+    ["Entpacken (1/3) - Nächstes Archiv...", "Extracting (1/3) - Next archive..."]
+  ])("translates compact runtime text %s for visible and attribute surfaces", (german, english) => {
+    expect(translateUiText(german, "en")).toBe(english);
+    expect(translateUiText(english, "de")).toBe(german);
+    expect(translateUiText(`Bereit · ${german}`, "en")).toBe(`Ready · ${english}`);
+    expect(translateUiText(`Ready · ${english}`, "de")).toBe(`Bereit · ${german}`);
+  });
+
   it("translates the complete history surface including status values", () => {
     const translations = new Map([
       ["Alle Einträge", "All entries"],

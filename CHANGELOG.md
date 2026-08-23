@@ -2,6 +2,50 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.63] - 2026-08-23
+
+### Archive recovery and password handling
+
+- Detect English, German, and misdecoded CRC and checksum failures from native and JVM extractors.
+- Corroborate archive corruption across independent extraction backends and re-download only the named damaged multipart volume once per package generation.
+- Keep encrypted archives and genuine wrong-password results out of destructive re-download recovery.
+- Try every real RAR5 password candidate even when archive metadata does not reliably report encryption.
+- Distinguish corrupted encrypted RAR and ZIP data, missing volumes, locked files, and open failures from incorrect passwords.
+- Remove redundant full password passes and bound package recovery to one deduplicated retry set.
+- Report password-attempt progress without exposing candidate values and isolate failing progress observers from the extraction process.
+- Parse JVM daemon requests safely for passwords containing JSON metacharacters and Unicode.
+- Remove successful-password payloads from the JVM protocol and redact diagnostic buffers before any error can reach logs.
+
+### Extraction lifecycle and data safety
+
+- Resume extraction automatically after temporary disk-capacity waits, including manual archive selections, with generation-, owner-, and timer-safe retry plans.
+- Keep Stop, shutdown, disabled packages, stale callbacks, and changed run owners from restarting old extraction work.
+- Preserve retry, pacing, disk, and provider cooldowns across Pause and Resume.
+- Make standalone manual extraction stoppable through the normal toolbar lifecycle.
+- Reject missing, incomplete, ambiguous, or non-archive manual targets before starting any selected batch.
+- Resolve opaque archive files by signature without mutating files during preflight and commit valid batch plans atomically.
+- Keep full-package cleanup enabled for complete manual extraction while protecting partial selections and packages with open downloads.
+- Convert unexpected post-processing exceptions into deterministic extraction failures instead of successful package results.
+- Requeue interrupted integrity checks after restart and clear stale transient post-processing labels.
+
+### Cleanup and queue isolation
+
+- Preserve independent downloads that happen to share the same package filename during startup recovery.
+- Honor recycle-bin cleanup for previously extracted archives instead of deleting them permanently.
+- Protect files owned by other packages in shared output folders, including archive companions, and verify file identity immediately before cleanup.
+- Reset a corrupted download only after its old file was successfully removed or quarantined.
+- Keep selected download runs scoped when packages are disabled, added later, or waiting for unrelated extraction work.
+- Prevent selective starts from launching or stopping post-processing for other packages.
+
+### Status, IPC, and release integrity
+
+- Prioritize active downloads, integrity checks, extraction, password search, finalization, cleanup, and disk waits over historical sibling errors while retaining full details in tooltips.
+- Keep pending, waiting-for-parts, active extraction, and historical failure states visually distinct after restart.
+- Translate the complete dynamic extraction status set in German and English.
+- Validate manual extraction IPC requests in a side-effect-free trusted handler and propagate stale or invalid selections as actionable errors.
+- Compile the bundled JVM extractor before every main and Windows release build and reject stale source/class combinations.
+- Verify every shipped JVM class, source digest, and library byte-for-byte in unpacked, Setup, and Portable release artifacts.
+
 ## [2.0.62] - 2026-08-23
 
 ### Manual extraction

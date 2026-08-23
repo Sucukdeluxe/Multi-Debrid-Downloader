@@ -66,7 +66,7 @@ function releaseTlsSkip(): void {
 import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifactsFromScope, removeSampleArtifactsFromScope } from "./cleanup";
 import { planDownloadCompletion, reconcileFinalizedSize, validateDownloadedFileCompletion } from "./download-completion";
 import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkDdownloadOnline, checkOneFichierLinks, checkRapidgatorOnline, fetchAllDebridHostInfo, filenameFromDdownloadUrlPath, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, isDdownloadLink, isOneFichierLink, isProviderDisabledForSelection, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown, type DdownloadCheckResult, type OneFichierCheckResult } from "./debrid";
-import { clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo, type ExtractProgressUpdate } from "./extractor";
+import { classifyExtractionError, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo, type ExtractProgressUpdate } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { classifyDiskError } from "./fs-error";
 import { processVideoFile, resolveVideoTooling, stripDualLangMarker, hasDualLangMarker, isRemuxableVideoFile, type GermanAudioMode, type VideoProcessResult } from "./video-processor";
@@ -161,6 +161,41 @@ type HybridFailedArchiveState = {
   marker: string;
   lastError: string;
   updatedAt: number;
+};
+
+type PackageDiskRetryRequest = {
+  retryAt: number;
+  manualRequested: boolean;
+  postProcessVersion: number;
+  runOwnerId: string | null;
+  archiveFilter?: Set<string>;
+  selectedItemIds?: Set<string>;
+};
+
+type PackageDiskRetryPlan = PackageDiskRetryRequest & {
+  id: string;
+  generation: number;
+};
+
+type FileFingerprint = {
+  dev: number;
+  ino: number;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+};
+
+type ArchiveCleanupTarget = {
+  filePath: string;
+  fingerprint: FileFingerprint;
+};
+
+type ManualExtractionPlan = {
+  packageId: string;
+  generation: number;
+  targetItemIds: Set<string>;
+  archiveFilter?: Set<string>;
+  itemFiles: Map<string, ArchiveCleanupTarget>;
 };
 
 const DEFAULT_DOWNLOAD_STALL_TIMEOUT_MS = 10000;
@@ -1680,7 +1715,7 @@ export function resolveArchiveItemsFromList(archiveName: string, items: Download
     ? items.filter((item) => {
       const targetPath = String(item.targetPath || "").trim();
       if (!targetPath) {
-        return true;
+        return false;
       }
       return pathKey(path.dirname(path.resolve(targetPath))) === pathKey(path.dirname(path.resolve(normalizedArchivePath)));
     })
@@ -1747,11 +1782,8 @@ export function resolveArchiveItemsFromList(archiveName: string, items: Download
     if (stemMatch.length > 0) return stemMatch;
   }
 
-  if (candidateItems.length === 1) {
-    const singleName = itemBaseName(candidateItems[0]).toLowerCase();
-    if (/\.(rar|zip|7z|\d{3})$/i.test(singleName)) {
-      return candidateItems;
-    }
+  if (normalizedArchivePath) {
+    return [];
   }
 
   return [];
@@ -1764,13 +1796,33 @@ export function resolveSelectedArchiveSetsFromCandidates(
 ): { archivePaths: Set<string>; itemIds: Set<string> } {
   const archivePaths = new Set<string>();
   const itemIds = new Set<string>();
-  for (const candidatePath of candidatePaths) {
-    const archiveItems = resolveArchiveItemsFromList(path.basename(candidatePath), items, candidatePath);
-    if (!archiveItems.some((item) => selectedItemIds.has(item.id))) {
+  const pathlessItems = items.filter((item) => !String(item.targetPath || "").trim());
+  const candidates = candidatePaths.map((candidatePath) => {
+    const qualifiedItems = resolveArchiveItemsFromList(path.basename(candidatePath), items, candidatePath);
+    const legacyItems = resolveArchiveItemsFromList(path.basename(candidatePath), pathlessItems);
+    return {
+      candidatePath,
+      archiveItems: [...new Map([...qualifiedItems, ...legacyItems].map((item) => [item.id, item])).values()]
+    };
+  });
+  const pathlessMatchCount = new Map<string, number>();
+  for (const candidate of candidates) {
+    for (const item of candidate.archiveItems) {
+      if (!String(item.targetPath || "").trim()) {
+        pathlessMatchCount.set(item.id, (pathlessMatchCount.get(item.id) || 0) + 1);
+      }
+    }
+  }
+  const ambiguousPathlessIds = new Set([...pathlessMatchCount]
+    .filter(([, count]) => count > 1)
+    .map(([itemId]) => itemId));
+  for (const { candidatePath, archiveItems } of candidates) {
+    const unambiguousItems = archiveItems.filter((item) => !ambiguousPathlessIds.has(item.id));
+    if (!unambiguousItems.some((item) => selectedItemIds.has(item.id))) {
       continue;
     }
     archivePaths.add(candidatePath);
-    for (const item of archiveItems) {
+    for (const item of unambiguousItems) {
       itemIds.add(item.id);
     }
   }
@@ -1796,6 +1848,57 @@ export function markPlannedHybridArchiveItemsPending(
     changed = true;
   }
   return changed;
+}
+
+export function findCrcImplicatedArchiveItems(errorText: string, archiveItems: DownloadItem[]): DownloadItem[] {
+  const normalized = String(errorText || "").toLocaleLowerCase("en-US");
+  const markers = ["checksum error", "crc error", "crcerror", "dataerror", "prüfsummenfehler", "pr�fsummenfehler"];
+  const markerIndex = markers.reduce((latest, marker) => Math.max(latest, normalized.lastIndexOf(marker)), -1);
+  if (markerIndex < 0) {
+    return [];
+  }
+  let selected: DownloadItem | null = null;
+  let selectedDistance = Number.POSITIVE_INFINITY;
+  let selectedIndex = -1;
+  for (const item of archiveItems) {
+    const fileName = path.basename(item.targetPath || item.fileName || "").toLocaleLowerCase("en-US");
+    if (!fileName) {
+      continue;
+    }
+    const isBoundary = (index: number): boolean => index < 0 || index >= normalized.length || !/[a-z0-9]/i.test(normalized[index]);
+    const findBoundedBefore = (): number => {
+      let index = normalized.lastIndexOf(fileName, markerIndex);
+      while (index >= 0 && (!isBoundary(index - 1) || !isBoundary(index + fileName.length))) {
+        index = normalized.lastIndexOf(fileName, index - 1);
+      }
+      return index;
+    };
+    const findBoundedAfter = (): number => {
+      let index = normalized.indexOf(fileName, markerIndex);
+      while (index >= 0 && (!isBoundary(index - 1) || !isBoundary(index + fileName.length))) {
+        index = normalized.indexOf(fileName, index + 1);
+      }
+      return index;
+    };
+    const beforeIndex = findBoundedBefore();
+    const afterIndex = findBoundedAfter();
+    const beforeDistance = beforeIndex >= 0 && markerIndex - beforeIndex <= 4096
+      ? markerIndex - (beforeIndex + fileName.length)
+      : Number.POSITIVE_INFINITY;
+    const afterDistance = afterIndex >= 0 && afterIndex - markerIndex <= 4096
+      ? afterIndex - markerIndex
+      : Number.POSITIVE_INFINITY;
+    const distance = Math.min(Math.max(0, beforeDistance), afterDistance);
+    if (distance < selectedDistance) {
+      selected = item;
+      selectedDistance = distance;
+      selectedIndex = beforeDistance <= afterDistance ? beforeIndex : afterIndex;
+    }
+  }
+  if (!selected || selectedIndex < 0) {
+    return [];
+  }
+  return [selected];
 }
 
 function stripDuplicateSuffixBeforeExtension(fileName: string): string {
@@ -2067,6 +2170,8 @@ export class DownloadManager extends EventEmitter {
 
   private runPackageIds = new Set<string>();
 
+  private runScopeKind: "all" | "selected" | "postprocessing" | null = null;
+
   private runOutcomes = new Map<string, "completed" | "failed" | "cancelled">();
 
   private runCompletedPackages = new Set<string>();
@@ -2123,7 +2228,140 @@ export class DownloadManager extends EventEmitter {
 
   private packageDiskRetryAfterByPackage = new Map<string, number>();
 
+  private packageDiskRetryPlans = new Map<string, PackageDiskRetryPlan>();
+
+  private packageDiskRetryTimers = new Map<string, { planId: string; timer: ReturnType<typeof setTimeout> }>();
+
   private diskWaitEvents: NonNullable<UiSnapshot["diskWaitEvents"]> = [];
+
+  private clearPackageDiskRetry(packageId: string, clearEvent = true): void {
+    const timerState = this.packageDiskRetryTimers.get(packageId);
+    if (timerState) {
+      clearTimeout(timerState.timer);
+      this.packageDiskRetryTimers.delete(packageId);
+    }
+    this.packageDiskRetryAfterByPackage.delete(packageId);
+    this.packageDiskRetryPlans.delete(packageId);
+    if (clearEvent) {
+      this.diskWaitEvents = this.diskWaitEvents.filter((event) => event.packageId !== packageId || event.phase !== "extract");
+    }
+  }
+
+  private pausePackageDiskRetry(packageId: string): void {
+    const timerState = this.packageDiskRetryTimers.get(packageId);
+    if (timerState) {
+      clearTimeout(timerState.timer);
+      this.packageDiskRetryTimers.delete(packageId);
+    }
+  }
+
+  private clearAllPackageDiskRetries(): void {
+    for (const timerState of this.packageDiskRetryTimers.values()) {
+      clearTimeout(timerState.timer);
+    }
+    this.packageDiskRetryTimers.clear();
+    this.packageDiskRetryAfterByPackage.clear();
+    this.packageDiskRetryPlans.clear();
+    this.diskWaitEvents = this.diskWaitEvents.filter((event) => event.phase !== "extract");
+  }
+
+  private schedulePackageDiskRetry(packageId: string, plan: PackageDiskRetryRequest): boolean {
+    const pkg = this.session.packages[packageId];
+    if (!pkg
+      || pkg.cancelled
+      || !pkg.enabled
+      || plan.postProcessVersion !== this.getPackagePostProcessVersion(packageId)
+      || plan.runOwnerId !== this.getPackageResultRunOwner(packageId)
+      || this.lifecyclePhase === "stopping"
+      || this.healthManualStop
+      || this.healthShuttingDown) {
+      return false;
+    }
+    this.clearPackageDiskRetry(packageId, false);
+    const storedPlan: PackageDiskRetryPlan = {
+      id: uuidv4(),
+      generation: this.getPackageResultGeneration(packageId),
+      retryAt: plan.retryAt,
+      manualRequested: plan.manualRequested,
+      postProcessVersion: plan.postProcessVersion,
+      runOwnerId: plan.runOwnerId,
+      archiveFilter: plan.archiveFilter ? new Set(plan.archiveFilter) : undefined,
+      selectedItemIds: plan.selectedItemIds ? new Set(plan.selectedItemIds) : undefined
+    };
+    this.packageDiskRetryAfterByPackage.set(packageId, storedPlan.retryAt);
+    this.packageDiskRetryPlans.set(packageId, storedPlan);
+    const timer = setTimeout(() => {
+      const timerState = this.packageDiskRetryTimers.get(packageId);
+      if (timerState?.planId === storedPlan.id) {
+        this.packageDiskRetryTimers.delete(packageId);
+      }
+      this.executePackageDiskRetry(packageId, storedPlan.id);
+    }, Math.max(0, storedPlan.retryAt - nowMs()));
+    timer.unref?.();
+    this.packageDiskRetryTimers.set(packageId, { planId: storedPlan.id, timer });
+    return true;
+  }
+
+  private executePackageDiskRetry(packageId: string, planId: string): void {
+    const currentPlan = this.packageDiskRetryPlans.get(packageId);
+    if (!currentPlan || currentPlan.id !== planId) {
+      this.completeStopIfDrained();
+      return;
+    }
+    const pkg = this.session.packages[packageId];
+    if (!pkg
+      || pkg.cancelled
+      || currentPlan.generation !== this.getPackageResultGeneration(packageId)
+      || currentPlan.postProcessVersion !== this.getPackagePostProcessVersion(packageId)
+      || currentPlan.runOwnerId !== this.getPackageResultRunOwner(packageId)) {
+      this.clearPackageDiskRetry(packageId);
+      this.completeStopIfDrained();
+      return;
+    }
+    if (!pkg.enabled) {
+      this.pausePackageDiskRetry(packageId);
+      this.completeStopIfDrained();
+      return;
+    }
+    if (this.lifecyclePhase === "stopping"
+      || (this.healthManualStop && currentPlan.runOwnerId !== null)
+      || this.healthShuttingDown) {
+      this.clearPackageDiskRetry(packageId);
+      this.completeStopIfDrained();
+      return;
+    }
+    this.packageDiskRetryAfterByPackage.delete(packageId);
+    this.packageDiskRetryPlans.delete(packageId);
+    this.diskWaitEvents = this.diskWaitEvents.filter((event) => event.packageId !== packageId || event.phase !== "extract");
+    const selectedIds = currentPlan.selectedItemIds;
+    for (const itemId of pkg.itemIds) {
+      const item = this.session.items[itemId];
+      if (!item || item.status !== "completed" || (selectedIds && !selectedIds.has(itemId))) {
+        continue;
+      }
+      if (item.fullStatus === "Warte auf Festplatte") {
+        item.fullStatus = "Entpacken - Ausstehend";
+      }
+      if (item.lastError === "Zu wenig Speicherplatz") {
+        item.lastError = "";
+      }
+      item.updatedAt = nowMs();
+    }
+    if (currentPlan.manualRequested) {
+      this.manualExtractPackages.add(packageId);
+      if (currentPlan.archiveFilter) {
+        this.manualExtractArchiveFilters.set(packageId, new Set(currentPlan.archiveFilter));
+      }
+      pkg.status = "queued";
+      pkg.updatedAt = nowMs();
+      void this.runPackagePostProcessing(packageId).catch((error) => logger.warn(`runPackagePostProcessing Fehler (diskRetry): ${compactErrorText(error)}`));
+    } else if (this.settings.autoExtract && (this.session.running || this.settings.autoExtractWhenStopped)) {
+      this.triggerPendingExtractions(new Set([packageId]));
+    }
+    this.persistSoon();
+    this.emitState(true);
+    this.completeStopIfDrained();
+  }
 
   private diskReservations = new DiskReservationCoordinator();
 
@@ -2745,6 +2983,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   public abortAllPostProcessing(): void {
+    this.clearAllPackageDiskRetries();
     this.abortPostProcessing("external");
   }
 
@@ -2858,7 +3097,7 @@ export class DownloadManager extends EventEmitter {
 
     let totalItems = 0;
     let doneItems = 0;
-    if (this.session.running && this.runItemIds.size > 0) {
+    if (this.session.running) {
       totalItems = this.runItemIds.size;
       for (const itemId of this.runItemIds) {
         if (this.runOutcomes.has(itemId)) {
@@ -2913,7 +3152,7 @@ export class DownloadManager extends EventEmitter {
       canStart: hasUsableAccount && (paused || (!this.session.running
         && lifecycle.phase !== "waiting_provider"
         && (lifecycle.phase !== "stopping" || !lifecycle.pendingStart))),
-      canStop: this.session.running,
+      canStop: this.session.running || lifecycle.activePostProcessing > 0,
       canPause: this.session.running,
       clipboardActive: this.settings.clipboardWatch,
       reconnectSeconds: Math.ceil(reconnectMs / 1000),
@@ -3253,6 +3492,7 @@ export class DownloadManager extends EventEmitter {
     pkg.enabled = nextEnabled;
 
     if (!nextEnabled) {
+      this.pausePackageDiskRetry(packageId);
       if (pkg.status === "downloading" || pkg.status === "extracting") {
         pkg.status = "paused";
       }
@@ -3282,6 +3522,24 @@ export class DownloadManager extends EventEmitter {
       this.untrackActiveRunPackage(packageId);
       this.runCompletedPackages.delete(packageId);
     } else {
+      const diskRetryPlan = this.packageDiskRetryPlans.get(packageId);
+      if (diskRetryPlan) {
+        if (diskRetryPlan.generation === this.getPackageResultGeneration(packageId)) {
+          const resumed = this.schedulePackageDiskRetry(packageId, {
+            retryAt: Math.max(nowMs(), diskRetryPlan.retryAt),
+            manualRequested: diskRetryPlan.manualRequested,
+            postProcessVersion: this.getPackagePostProcessVersion(packageId),
+            runOwnerId: diskRetryPlan.runOwnerId,
+            archiveFilter: diskRetryPlan.archiveFilter,
+            selectedItemIds: diskRetryPlan.selectedItemIds
+          });
+          if (!resumed) {
+            this.clearPackageDiskRetry(packageId);
+          }
+        } else {
+          this.clearPackageDiskRetry(packageId);
+        }
+      }
       if (pkg.status === "paused") {
         pkg.status = "queued";
       }
@@ -3398,6 +3656,7 @@ export class DownloadManager extends EventEmitter {
     this.session.summaryText = "";
     this.runItemIds.clear();
     this.runPackageIds.clear();
+    this.runScopeKind = null;
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
     this.historyRecordedPackages.clear();
@@ -3433,7 +3692,9 @@ export class DownloadManager extends EventEmitter {
     this.hybridExtractRequeue.clear();
     this.hybridExtractedPaths.clear();
     this.hybridFailedArchives.clear();
+    this.autoRecoveredForRedownload.clear();
     this.providerFailures.clear();
+    this.clearAllPackageDiskRetries();
     this.summary = null;
     this.nonResumableActive = 0;
     this.resetSessionTotalsIfQueueEmpty(true);
@@ -3516,7 +3777,7 @@ export class DownloadManager extends EventEmitter {
         packageEntry.itemIds.push(itemId);
         this.session.items[itemId] = item;
         this.itemCount += 1;
-        if (this.session.running) {
+        if (this.session.running && this.runScopeKind === "all") {
           this.runItemIds.add(itemId);
           this.runPackageIds.add(packageId);
           this.beginPackageResultGeneration(packageId);
@@ -4051,7 +4312,10 @@ export class DownloadManager extends EventEmitter {
         tasks.add(task);
       }
     }
-    return tasks.size;
+    const pendingDiskRetries = this.lifecyclePhase === "stopping"
+      ? 0
+      : [...this.packageDiskRetryPlans.keys()].filter((packageId) => this.session.packages[packageId]?.enabled !== false).length;
+    return tasks.size + pendingDiskRetries;
   }
 
   private getEarliestProviderRetryAt(now: number): number | null {
@@ -4061,10 +4325,13 @@ export class DownloadManager extends EventEmitter {
       if (!pkg || pkg.cancelled || !pkg.enabled) {
         continue;
       }
-      if (this.runPackageIds.size > 0 && !this.runPackageIds.has(packageId)) {
+      if (this.session.running && !this.runPackageIds.has(packageId)) {
         continue;
       }
       for (const itemId of pkg.itemIds) {
+        if (this.session.running && !this.runItemIds.has(itemId)) {
+          continue;
+        }
         const item = this.session.items[itemId];
         if (item && (item.status === "queued" || item.status === "reconnect_wait")) {
           queuedItems.push(item);
@@ -4325,8 +4592,7 @@ export class DownloadManager extends EventEmitter {
       extractDirUsage.set(key, (extractDirUsage.get(key) || 0) + 1);
     }
 
-    const cleanupTargetsByPackage = new Map<string, Set<string>>();
-    const dirFilesCache = new Map<string, string[]>();
+    const cleanupPlans: Array<{ packageId: string; packageUpdatedAt: number; itemState: string; targets: Map<string, ArchiveCleanupTarget> }> = [];
     for (const packageId of this.session.packageOrder) {
       const pkg = this.session.packages[packageId];
       if (!pkg || pkg.cancelled || pkg.status !== "completed") {
@@ -4357,64 +4623,52 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
 
-      const packageTargets = cleanupTargetsByPackage.get(packageId) ?? new Set<string>();
-      for (const item of items) {
-        const rawTargetPath = String(item.targetPath || "").trim();
-        const fallbackTargetPath = item.fileName ? path.join(pkg.outputDir, sanitizeFilename(item.fileName)) : "";
-        const targetPath = rawTargetPath || fallbackTargetPath;
-        if (!targetPath || !isArchiveLikePath(targetPath)) {
-          continue;
-        }
-        const dir = path.dirname(targetPath);
-        let filesInDir = dirFilesCache.get(dir);
-        if (!filesInDir) {
-          try {
-            filesInDir = (await fs.promises.readdir(dir, { withFileTypes: true }))
-              .filter((entry) => entry.isFile())
-              .map((entry) => entry.name);
-          } catch {
-            filesInDir = [];
-          }
-          dirFilesCache.set(dir, filesInDir);
-        }
-
-        for (const cleanupTarget of collectArchiveCleanupTargets(targetPath, filesInDir)) {
-          packageTargets.add(cleanupTarget);
-        }
+      const targets = await this.collectPackageArchiveCleanupTargets(pkg);
+      if (targets.size === 0) {
+        continue;
       }
-      if (packageTargets.size > 0) {
-        cleanupTargetsByPackage.set(packageId, packageTargets);
-      }
+      cleanupPlans.push({
+        packageId,
+        packageUpdatedAt: pkg.updatedAt,
+        itemState: items.map((item) => `${item.id}:${item.updatedAt}:${item.status}:${item.targetPath}`).join("|"),
+        targets
+      });
     }
 
-    if (cleanupTargetsByPackage.size === 0) {
+    if (cleanupPlans.length === 0) {
       return;
     }
 
     this.cleanupQueue = this.cleanupQueue
       .then(async () => {
-        for (const [packageId, targets] of cleanupTargetsByPackage.entries()) {
+        for (const plan of cleanupPlans) {
+          const packageId = plan.packageId;
           const pkg = this.session.packages[packageId];
-          if (!pkg) {
+          if (!pkg || pkg.cancelled || pkg.status !== "completed" || pkg.updatedAt !== plan.packageUpdatedAt || this.packagePostProcessTasks.has(packageId)) {
             continue;
           }
-
-          logger.info(`Nachträgliches Cleanup geprüft: pkg=${pkg.name}, targets=${targets.size}, marker=${pkg.itemIds.some((id) => isExtractedLabel(this.session.items[id]?.fullStatus || ""))}`);
-
-          let removed = 0;
-          for (const targetPath of targets) {
-            if (!await this.existsAsync(targetPath)) {
-              continue;
-            }
-            try {
-              await fs.promises.rm(targetPath, { force: true });
-              removed += 1;
-            } catch {
-            }
+          const items = pkg.itemIds.map((itemId) => this.session.items[itemId]).filter(Boolean) as DownloadItem[];
+          const currentItemState = items.map((item) => `${item.id}:${item.updatedAt}:${item.status}:${item.targetPath}`).join("|");
+          if (items.length === 0
+            || currentItemState !== plan.itemState
+            || !items.every((item) => item.status === "completed")
+            || items.some((item) => isExtractErrorLabel(item.fullStatus || ""))) {
+            continue;
           }
-
+          const sharedExtractDir = this.session.packageOrder.some((otherId) => {
+            if (otherId === packageId) return false;
+            const other = this.session.packages[otherId];
+            return Boolean(other && !other.cancelled && pathKey(other.extractDir) === pathKey(pkg.extractDir));
+          });
+          const hasExtractMarker = items.some((item) => isExtractedLabel(item.fullStatus));
+          const hasExtractedOutput = !sharedExtractDir
+            && this.getPackageOutputScope(pkg).completeFiles().some((filePath) => isPathInsideDir(filePath, pkg.extractDir));
+          if (!hasExtractMarker && !hasExtractedOutput) {
+            continue;
+          }
+          const removed = await this.cleanupRemainingArchiveArtifacts(pkg, undefined, plan.targets);
           if (removed > 0) {
-            logger.info(`Nachträgliches Archive-Cleanup für ${pkg.name}: ${removed} Datei(en) gelöscht`);
+            logger.info(`Nachträgliches Archive-Cleanup für ${pkg.name}: ${removed} Datei(en) bereinigt`);
             const removedDirs = await this.removeEmptyDirectoryTree(pkg.outputDir);
             if (removedDirs > 0) {
               logger.info(`Nachträgliches Cleanup entfernte leere Download-Ordner für ${pkg.name}: ${removedDirs}`);
@@ -4427,6 +4681,7 @@ export class DownloadManager extends EventEmitter {
       .catch((error) => {
         logger.warn(`Nachträgliches Archive-Cleanup fehlgeschlagen: ${compactErrorText(error)}`);
       });
+    await this.cleanupQueue;
   }
 
   private async directoryHasAnyFiles(rootDir: string): Promise<boolean> {
@@ -5963,56 +6218,126 @@ export class DownloadManager extends EventEmitter {
     return removed;
   }
 
-  private async cleanupRemainingArchiveArtifacts(pkg: PackageEntry, shouldAbort?: () => boolean): Promise<number> {
+  private async readFileFingerprint(filePath: string): Promise<FileFingerprint | null> {
+    try {
+      const stat = await fs.promises.stat(filePath);
+      return {
+        dev: Number(stat.dev),
+        ino: Number(stat.ino),
+        size: stat.size,
+        mtimeMs: stat.mtimeMs,
+        ctimeMs: stat.ctimeMs
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private readFileFingerprintSync(filePath: string): FileFingerprint | null {
+    try {
+      const stat = fs.statSync(filePath);
+      return {
+        dev: Number(stat.dev),
+        ino: Number(stat.ino),
+        size: stat.size,
+        mtimeMs: stat.mtimeMs,
+        ctimeMs: stat.ctimeMs
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private fingerprintsEqual(left: FileFingerprint, right: FileFingerprint): boolean {
+    return left.dev === right.dev
+      && left.ino === right.ino
+      && left.size === right.size
+      && left.mtimeMs === right.mtimeMs
+      && left.ctimeMs === right.ctimeMs;
+  }
+
+  private async collectPackageArchiveCleanupTargets(pkg: PackageEntry): Promise<Map<string, ArchiveCleanupTarget>> {
+    const claims = new Map<string, Set<string>>();
+    for (const otherPkg of Object.values(this.session.packages)) {
+      if (!otherPkg || otherPkg.cancelled) {
+        continue;
+      }
+      for (const itemId of otherPkg.itemIds) {
+        const item = this.session.items[itemId];
+        const itemPath = String(item?.targetPath || (item?.fileName ? path.join(otherPkg.outputDir, item.fileName) : "")).trim();
+        if (!itemPath) {
+          continue;
+        }
+        const key = pathKey(path.resolve(itemPath));
+        const owners = claims.get(key) || new Set<string>();
+        owners.add(otherPkg.id);
+        claims.set(key, owners);
+      }
+    }
+    const ownedPaths = new Set<string>();
+    for (const itemId of pkg.itemIds) {
+      const item = this.session.items[itemId];
+      const itemPath = String(item?.targetPath || (item?.fileName ? path.join(pkg.outputDir, item.fileName) : "")).trim();
+      if (!itemPath || !isArchiveLikePath(itemPath) || !isPathInsideDir(itemPath, pkg.outputDir)) {
+        continue;
+      }
+      ownedPaths.add(path.resolve(itemPath));
+    }
+    const dirFiles = new Map<string, string[]>();
+    const targets = new Map<string, ArchiveCleanupTarget>();
+    for (const sourcePath of ownedPaths) {
+      const directory = path.dirname(sourcePath);
+      const directoryKey = pathKey(directory);
+      if (!dirFiles.has(directoryKey)) {
+        try {
+          dirFiles.set(directoryKey, (await fs.promises.readdir(directory, { withFileTypes: true }))
+            .filter((entry) => entry.isFile())
+            .map((entry) => entry.name));
+        } catch {
+          dirFiles.set(directoryKey, []);
+        }
+      }
+      for (const candidate of collectArchiveCleanupTargets(sourcePath, dirFiles.get(directoryKey) || [])) {
+        const resolved = path.resolve(candidate);
+        if (!isPathInsideDir(resolved, pkg.outputDir)) {
+          continue;
+        }
+        const owners = claims.get(pathKey(resolved));
+        if (owners && [...owners].some((ownerId) => ownerId !== pkg.id)) {
+          continue;
+        }
+        const fingerprint = await this.readFileFingerprint(resolved);
+        if (fingerprint) {
+          targets.set(pathKey(resolved), { filePath: resolved, fingerprint });
+        }
+      }
+    }
+    return targets;
+  }
+
+  private async cleanupRemainingArchiveArtifacts(
+    pkg: PackageEntry,
+    shouldAbort?: () => boolean,
+    expectedTargets?: ReadonlyMap<string, ArchiveCleanupTarget>
+  ): Promise<number> {
     if (this.settings.cleanupMode === "none") {
       return 0;
     }
     if (shouldAbort?.()) {
       return 0;
     }
-    const ownedPaths = new Map<string, string>();
-    for (const itemId of pkg.itemIds) {
-      const item = this.session.items[itemId];
-      const rawPath = String(item?.targetPath || (item?.fileName ? path.join(pkg.outputDir, item.fileName) : "")).trim();
-      if (!rawPath || !isArchiveLikePath(rawPath) || !isPathInsideDir(rawPath, pkg.outputDir)) {
-        continue;
-      }
-      const resolved = path.resolve(rawPath);
-      ownedPaths.set(pathKey(resolved), resolved);
-    }
-    if (ownedPaths.size === 0) {
-      return 0;
-    }
-
     let removed = 0;
-    const dirFiles = new Map<string, string[]>();
-    for (const ownedPath of ownedPaths.values()) {
-      const directory = path.dirname(ownedPath);
-      const directoryKey = pathKey(directory);
-      const files = dirFiles.get(directoryKey) || [];
-      files.push(path.basename(ownedPath));
-      dirFiles.set(directoryKey, files);
-    }
-    const targets = new Set<string>();
-    for (const sourceFile of ownedPaths.values()) {
+    const targets = expectedTargets
+      ? new Map(expectedTargets)
+      : await this.collectPackageArchiveCleanupTargets(pkg);
+    for (const target of targets.values()) {
       if (shouldAbort?.()) {
         return removed;
       }
-      const dir = path.dirname(sourceFile);
-      for (const target of collectArchiveCleanupTargets(sourceFile, dirFiles.get(pathKey(dir)) || [])) {
-        const resolved = path.resolve(target);
-        if (ownedPaths.has(pathKey(resolved))) {
-          targets.add(resolved);
-        }
-      }
-    }
-
-    for (const targetPath of targets) {
-      if (shouldAbort?.()) {
-        return removed;
-      }
+      const targetPath = target.filePath;
       try {
-        if (!await this.existsAsync(targetPath)) {
+        const currentFingerprint = await this.readFileFingerprint(targetPath);
+        if (!currentFingerprint || !this.fingerprintsEqual(currentFingerprint, target.fingerprint)) {
           continue;
         }
         if (this.settings.cleanupMode === "trash") {
@@ -6026,8 +6351,12 @@ export class DownloadManager extends EventEmitter {
             if (await this.existsAsync(candidate)) {
               continue;
             }
+            const moveFingerprint = await this.readFileFingerprint(targetPath);
+            if (!moveFingerprint || !this.fingerprintsEqual(moveFingerprint, target.fingerprint)) {
+              break;
+            }
             await this.renamePathWithExdevFallback(targetPath, candidate, { label: "mkv-move (Konflikt-Aufloesung)" });
-            moved = true;
+            moved = !await this.existsAsync(targetPath) && await this.existsAsync(candidate);
             break;
           }
           if (moved) {
@@ -6035,8 +6364,14 @@ export class DownloadManager extends EventEmitter {
           }
           continue;
         }
+        const deleteFingerprint = await this.readFileFingerprint(targetPath);
+        if (!deleteFingerprint || !this.fingerprintsEqual(deleteFingerprint, target.fingerprint)) {
+          continue;
+        }
         await fs.promises.rm(toWindowsLongPathIfNeeded(targetPath), { force: true });
-        removed += 1;
+        if (!await this.existsAsync(targetPath)) {
+          removed += 1;
+        }
       } catch {
       }
     }
@@ -6525,6 +6860,9 @@ export class DownloadManager extends EventEmitter {
     const pkg = this.session.packages[packageId];
     if (!pkg) return;
 
+    this.clearPackageDiskRetry(packageId);
+    this.clearArchiveRedownloadRecovery(packageId);
+
     const itemIds = [...pkg.itemIds];
 
     for (const itemId of itemIds) {
@@ -6893,7 +7231,7 @@ export class DownloadManager extends EventEmitter {
         return Boolean(pkg && !pkg.cancelled && pkg.enabled);
       });
     if (runItems.length === 0) {
-      this.triggerPendingExtractions();
+      this.triggerPendingExtractions(targetSet);
       this.lifecyclePhase = "idle";
       this.lifecycleReason = "Bereit";
       this.persistSoon();
@@ -6902,6 +7240,7 @@ export class DownloadManager extends EventEmitter {
     }
     this.runItemIds = new Set(runItems.map((item) => item.id));
     this.runPackageIds = new Set(runItems.map((item) => item.packageId));
+    this.runScopeKind = "selected";
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
@@ -6917,7 +7256,7 @@ export class DownloadManager extends EventEmitter {
     this.lifecycleReason = "Downloads laufen";
     this.session.runStartedAt = nowMs();
     this.beginActiveRunContext(this.runPackageIds, this.session.runStartedAt);
-    this.triggerPendingExtractions();
+    this.triggerPendingExtractions(targetSet);
     this.session.totalDownloadedBytes = 0;
     this.sessionCompletedFiles = 0;
     this.session.summaryText = "";
@@ -7009,7 +7348,7 @@ export class DownloadManager extends EventEmitter {
         return Boolean(pkg && !pkg.cancelled && pkg.enabled);
       });
     if (runItems.length === 0) {
-      this.triggerPendingExtractions();
+      this.triggerPendingExtractions(affectedPackageIds);
       this.lifecyclePhase = "idle";
       this.lifecycleReason = "Bereit";
       this.persistSoon();
@@ -7018,6 +7357,7 @@ export class DownloadManager extends EventEmitter {
     }
     this.runItemIds = new Set(runItems.map((item) => item.id));
     this.runPackageIds = new Set(runItems.map((item) => item.packageId));
+    this.runScopeKind = "selected";
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
@@ -7033,7 +7373,7 @@ export class DownloadManager extends EventEmitter {
     this.lifecycleReason = "Downloads laufen";
     this.session.runStartedAt = nowMs();
     this.beginActiveRunContext(this.runPackageIds, this.session.runStartedAt);
-    this.triggerPendingExtractions();
+    this.triggerPendingExtractions(affectedPackageIds);
     this.session.totalDownloadedBytes = 0;
     this.sessionCompletedFiles = 0;
     this.session.summaryText = "";
@@ -7065,6 +7405,7 @@ export class DownloadManager extends EventEmitter {
   private async startAllNow(excludePackageIds: ReadonlySet<string> | undefined, generation: number): Promise<void> {
       this.session.running = true;
       this.session.paused = false;
+      this.runScopeKind = "all";
     const recoveryRunPackageIds = new Set(this.session.packageOrder.filter((packageId) => {
       const pkg = this.session.packages[packageId];
       return Boolean(pkg && !pkg.cancelled && pkg.enabled && !excludePackageIds?.has(packageId));
@@ -7105,7 +7446,7 @@ export class DownloadManager extends EventEmitter {
       this.emitState(true);
     }
 
-    this.triggerPendingExtractions();
+    this.triggerPendingExtractions(recoveryRunPackageIds);
 
     const runItems = Object.values(this.session.items)
       .filter((item) => {
@@ -7119,9 +7460,10 @@ export class DownloadManager extends EventEmitter {
         return Boolean(pkg && !pkg.cancelled && pkg.enabled);
       });
     if (runItems.length === 0) {
-      if (this.packagePostProcessTasks.size > 0) {
+      if (this.getActivePostProcessingCount() > 0) {
         this.runItemIds.clear();
         this.runPackageIds.clear();
+        this.runScopeKind = "postprocessing";
         this.runOutcomes.clear();
         this.runCompletedPackages.clear();
         this.schedulerGeneration += 1;
@@ -7143,6 +7485,7 @@ export class DownloadManager extends EventEmitter {
       }
       this.runItemIds.clear();
       this.runPackageIds.clear();
+      this.runScopeKind = null;
       this.runOutcomes.clear();
       this.runCompletedPackages.clear();
       this.retryAfterByItem.clear();
@@ -7175,6 +7518,7 @@ export class DownloadManager extends EventEmitter {
     }
     this.runItemIds = new Set(runItems.map((item) => item.id));
     this.runPackageIds = new Set(runItems.map((item) => item.packageId));
+    this.runScopeKind = "all";
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
@@ -7241,8 +7585,15 @@ export class DownloadManager extends EventEmitter {
     const wasRunning = this.session.running;
     const stoppedItemIds = new Set(this.runItemIds);
     const stoppedPackageIds = new Set(this.runPackageIds);
-    const hasScopedRun = wasRunning && stoppedItemIds.size > 0;
-    const stopsStandalonePostProcessing = wasRunning && !hasScopedRun && previousLifecyclePhase === "postprocessing";
+    const hasScopedRun = wasRunning && this.runScopeKind === "selected";
+    const stopsStandalonePostProcessing = wasRunning && this.runScopeKind === "postprocessing";
+    if (hasScopedRun) {
+      for (const packageId of stoppedPackageIds) {
+        this.clearPackageDiskRetry(packageId);
+      }
+    } else {
+      this.clearAllPackageDiskRetries();
+    }
     const stoppedRunContext = wasRunning
       ? this.stopActiveRunContext(this.runPackageIds, this.session.runStartedAt)
       : null;
@@ -7330,6 +7681,7 @@ export class DownloadManager extends EventEmitter {
     }
     this.runItemIds.clear();
     this.runPackageIds.clear();
+    this.runScopeKind = null;
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
     this.persistSoon();
@@ -7343,6 +7695,7 @@ export class DownloadManager extends EventEmitter {
     this.updateStatisticsActivity(nowMs());
     this.rotationListenerActive = false;
     this.clearPersistTimer();
+    this.clearAllPackageDiskRetries();
     if (this.stateEmitTimer) {
       clearTimeout(this.stateEmitTimer);
       this.stateEmitTimer = null;
@@ -7407,6 +7760,7 @@ export class DownloadManager extends EventEmitter {
     this.speedEventsHead = 0;
     this.runItemIds.clear();
     this.runPackageIds.clear();
+    this.runScopeKind = null;
     this.runOutcomes.clear();
     this.runCompletedPackages.clear();
     this.retryAfterByItem.clear();
@@ -7456,11 +7810,6 @@ export class DownloadManager extends EventEmitter {
     }
 
     if (wasPaused && !this.session.paused) {
-      this.retryAfterByItem.clear();
-      this.providerStartReservations.clear();
-      this.pacedStartReservationByItem.clear();
-      this.providerFailures.clear();
-
       const now = nowMs();
       for (const active of this.activeTasks.values()) {
         if (active.abortController.signal.aborted) {
@@ -7490,6 +7839,7 @@ export class DownloadManager extends EventEmitter {
   private normalizeSessionStatuses(): void {
     this.session.running = false;
     this.session.paused = false;
+    this.runScopeKind = null;
     this.session.reconnectUntil = 0;
     this.session.reconnectReason = "";
 
@@ -7515,7 +7865,12 @@ export class DownloadManager extends EventEmitter {
         item.updatedAt = nowMs();
         continue;
       }
-      if (item.status === "extracting" || item.status === "integrity_check") {
+      if (item.status === "integrity_check") {
+        item.status = "queued";
+        item.fullStatus = "Wartet";
+        item.speedBps = 0;
+        item.updatedAt = nowMs();
+      } else if (item.status === "extracting") {
         item.status = "completed";
         item.fullStatus = `Fertig (${humanSize(item.downloadedBytes)})`;
         item.speedBps = 0;
@@ -7558,6 +7913,7 @@ export class DownloadManager extends EventEmitter {
       }
     }
     for (const pkg of Object.values(this.session.packages)) {
+      pkg.postProcessLabel = undefined;
       if (pkg.enabled === undefined) {
         pkg.enabled = true;
       }
@@ -8015,9 +8371,13 @@ export class DownloadManager extends EventEmitter {
         const canonicalBaseName = stripDuplicateSuffixBeforeExtension(duplicateBaseName);
         const canonicalPath = path.join(path.dirname(duplicateTargetPath), canonicalBaseName);
         const canonicalKey = pathKey(canonicalPath);
+        const duplicateUrl = String(duplicateItem.url || "").trim();
         let primaryItem = Object.values(this.session.items).find((candidate) =>
           candidate.packageId === packageId
           && candidate.id !== duplicateItem.id
+          && duplicateUrl.length > 0
+          && String(candidate.url || "").trim() === duplicateUrl
+          && candidate.provider === duplicateItem.provider
           && (
             pathKey(String(candidate.targetPath || "")) === canonicalKey
             || (
@@ -8032,6 +8392,9 @@ export class DownloadManager extends EventEmitter {
 
         const duplicateExists = fs.existsSync(duplicateTargetPath);
         let canonicalExists = fs.existsSync(canonicalPath);
+        if (duplicateExists && canonicalExists) {
+          continue;
+        }
         const primaryWins = startupDuplicateStateRank(primaryItem, canonicalExists) >= startupDuplicateStateRank(duplicateItem, duplicateExists);
 
         if (duplicateExists && !canonicalExists) {
@@ -8353,9 +8716,6 @@ export class DownloadManager extends EventEmitter {
     if (!archiveKey) {
       this.hybridExtractedPaths.delete(packageId);
       this.hybridFailedArchives.delete(packageId);
-      for (const key of this.autoRecoveredForRedownload) {
-        if (key.startsWith(`${packageId}::`)) this.autoRecoveredForRedownload.delete(key);
-      }
       return;
     }
 
@@ -8373,6 +8733,15 @@ export class DownloadManager extends EventEmitter {
       failed.delete(normalizedKey);
       if (failed.size === 0) {
         this.hybridFailedArchives.delete(packageId);
+      }
+    }
+  }
+
+  private clearArchiveRedownloadRecovery(packageId: string): void {
+    const prefix = packageId + "::";
+    for (const key of this.autoRecoveredForRedownload) {
+      if (key.startsWith(prefix)) {
+        this.autoRecoveredForRedownload.delete(key);
       }
     }
   }
@@ -8412,7 +8781,7 @@ export class DownloadManager extends EventEmitter {
     failure: ExtractArchiveFailureInfo,
     scope: "hybrid" | "full"
   ): number {
-    if (!failure.suggestRedownload || (failure.category !== "crc_error" && failure.category !== "wrong_password")) {
+    if (!failure.suggestRedownload || failure.category !== "crc_error") {
       return 0;
     }
 
@@ -8427,6 +8796,21 @@ export class DownloadManager extends EventEmitter {
       .map((item) => ({ item, state: inspectPackageItemDiskState(pkg, item) }));
     const corruptArchiveItems = inspectedArchiveItems
       .filter(({ state }) => state.reason !== "ok");
+    const failureText = `${failure.errorText || ""} ${failure.jvmFailureReason || ""}`;
+    const standardUnrarCrcText = /corrupt file or wrong password/i.test(failureText);
+    const passwordAmbiguousFailure = /encrypted file|falsches? archiv-passwort/i.test(failureText)
+      || (!standardUnrarCrcText && /wrong password/i.test(failureText));
+    const corroboratedCrc = failure.category === "crc_error"
+      && !passwordAmbiguousFailure
+      && classifyExtractionError(failure.jvmFailureReason || "") === "crc_error";
+    if (corroboratedCrc) {
+      const implicatedIds = new Set(findCrcImplicatedArchiveItems(failure.errorText, archiveItems).map((item) => item.id));
+      for (const inspected of inspectedArchiveItems) {
+        if (implicatedIds.has(inspected.item.id) && !corruptArchiveItems.some(({ item }) => item.id === inspected.item.id)) {
+          corruptArchiveItems.push(inspected);
+        }
+      }
+    }
 
     if (corruptArchiveItems.length === 0) {
       const firstPart = inspectedArchiveItems.find(({ state }) => state.diskPath);
@@ -8463,16 +8847,33 @@ export class DownloadManager extends EventEmitter {
       corruptArchiveItems.push(...inspectedArchiveItems);
     }
 
+    const generation = this.getPackageResultGeneration(pkg.id);
+    const recoveryKeyForItem = (item: DownloadItem): string =>
+      `${pkg.id}::${generation}::${pathKey(item.targetPath || item.fileName || item.id)}`;
+    const pendingRecoveryItems = corruptArchiveItems
+      .filter(({ item }) => !this.autoRecoveredForRedownload.has(recoveryKeyForItem(item)));
+    if (pendingRecoveryItems.length === 0) {
+      return 0;
+    }
+
     const queuedAt = nowMs();
     const reason = "Wartet (Auto-Recovery: Archiv beschädigt/unvollständig)";
-    let changed = 0;
-    for (const { item } of corruptArchiveItems) {
+    const requeuedItems: typeof pendingRecoveryItems = [];
+    for (const inspected of pendingRecoveryItems) {
+      const { item } = inspected;
+      const itemRecoveryKey = recoveryKeyForItem(item);
       const claimedTargetPath = String(item.targetPath || "").trim();
+      let removalConfirmed = claimedTargetPath.length === 0;
       if (claimedTargetPath) {
         try {
           fs.rmSync(claimedTargetPath, { force: true });
-        } catch {
+          removalConfirmed = !fs.existsSync(claimedTargetPath);
+        } catch (error) {
+          logger.warn(`Auto-Recovery (${scope}): Defektes Archiv konnte nicht entfernt werden (${item.fileName}): ${compactErrorText(error)}`);
         }
+      }
+      if (!removalConfirmed) {
+        continue;
       }
       this.releaseTargetPath(item.id);
       this.dropItemContribution(item.id);
@@ -8485,12 +8886,14 @@ export class DownloadManager extends EventEmitter {
       item.lastError = failure.errorText;
       item.fullStatus = reason;
       item.updatedAt = queuedAt;
-      changed += 1;
+      this.autoRecoveredForRedownload.add(itemRecoveryKey);
+      requeuedItems.push(inspected);
     }
 
+    const changed = requeuedItems.length;
     if (changed > 0) {
       if (this.session.running) {
-        for (const { item } of corruptArchiveItems) {
+        for (const { item } of requeuedItems) {
           this.runItemIds.add(item.id);
           this.runOutcomes.delete(item.id);
         }
@@ -8500,11 +8903,11 @@ export class DownloadManager extends EventEmitter {
       this.clearHybridArchiveState(pkg.id);
       pkg.status = (pkg.enabled && this.session.running && !this.session.paused) ? "downloading" : "queued";
       pkg.updatedAt = queuedAt;
-      const evidence = corruptArchiveItems
+      const evidence = requeuedItems
         .slice(0, 3)
         .map(({ item, state }) => `${item.fileName}:${state.reason}`)
         .join(", ");
-      const suffix = corruptArchiveItems.length > 3 ? ` (+${corruptArchiveItems.length - 3} weitere)` : "";
+      const suffix = requeuedItems.length > 3 ? ` (+${requeuedItems.length - 3} weitere)` : "";
       logger.warn(
         `Auto-Recovery (${scope}): ${failure.archiveName} auf queued gesetzt (${changed} Items), ` +
         `evidence=${evidence}${suffix}, cause=${compactErrorText(failure.jvmFailureReason || failure.errorText)}`
@@ -8524,6 +8927,7 @@ export class DownloadManager extends EventEmitter {
     appliedAt = nowMs()
   ): void {
     const affectedItemIds = new Set<string>();
+    const soleFailure = failedArchiveErrors.size === 1 ? [...failedArchiveErrors.values()][0] : undefined;
 
     for (const failure of failedArchiveErrors.values()) {
       const reason = compactErrorText(failure.errorText || fallbackReason || "Entpacken fehlgeschlagen");
@@ -8548,7 +8952,7 @@ export class DownloadManager extends EventEmitter {
 
       const currentStatus = String(entry.fullStatus || "").trim();
       if (currentStatus === "Entpacken - Error") {
-        entry.fullStatus = formatExtractFailureLabel(fallbackReason);
+        entry.fullStatus = formatExtractFailureLabel(fallbackReason, soleFailure?.archiveName);
         entry.updatedAt = appliedAt;
         appliedSpecificFailure = true;
         continue;
@@ -8947,6 +9351,39 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
+  private isExpectedPostProcessAbort(error: unknown, signal: AbortSignal): boolean {
+    void error;
+    return signal.aborted;
+  }
+
+  private markUnexpectedPostProcessFailure(packageId: string, error: unknown): void {
+    const pkg = this.session.packages[packageId];
+    if (!pkg) {
+      return;
+    }
+    const reason = compactErrorText(error).replace(/^Error:\s*/i, "") || "Unbekannter Nachbearbeitungsfehler";
+    const failedAt = nowMs();
+    for (const itemId of pkg.itemIds) {
+      const item = this.session.items[itemId];
+      if (!item || item.status !== "completed" || isExtractedLabel(item.fullStatus || "")) {
+        continue;
+      }
+      item.fullStatus = formatExtractFailureLabel(reason);
+      item.lastError = reason;
+      item.updatedAt = failedAt;
+    }
+    pkg.status = "failed";
+    pkg.postProcessLabel = undefined;
+    pkg.updatedAt = failedAt;
+    if (this.runPackageIds.has(packageId)) {
+      this.runCompletedPackages.add(packageId);
+    }
+    this.hybridExtractRequeue.delete(packageId);
+    this.logPackageForPackage(pkg, "ERROR", "Post-Processing unerwartet fehlgeschlagen", { reason });
+    this.persistSoon();
+    this.emitState(true);
+  }
+
   private runPackagePostProcessing(packageId: string): Promise<void> {
     this.trackPackagePostProcessResult(packageId);
     const existing = this.packagePostProcessTasks.get(packageId);
@@ -8983,7 +9420,12 @@ export class DownloadManager extends EventEmitter {
           try {
             await this.handlePackagePostProcessing(packageId, abortController.signal);
           } catch (error) {
-            logger.warn(`Post-Processing für Paket fehlgeschlagen: ${compactErrorText(error)}`);
+            if (this.isExpectedPostProcessAbort(error, abortController.signal)) {
+              logger.info(`Post-Processing für Paket abgebrochen: ${compactErrorText(error)}`);
+            } else {
+              logger.warn(`Post-Processing für Paket fehlgeschlagen: ${compactErrorText(error)}`);
+              this.markUnexpectedPostProcessFailure(packageId, error);
+            }
           }
           const roundMs = nowMs() - roundStart;
           logger.info(`Post-Process Runde ${round} fertig in ${(roundMs / 1000).toFixed(1)}s (requeue=${hadRequeue}, nextRequeue=${this.hybridExtractRequeue.has(packageId)}): pkg=${packageId.slice(0, 8)}`);
@@ -9163,11 +9605,17 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
-  private triggerPendingExtractions(): void {
+  private triggerPendingExtractions(packageFilter?: ReadonlySet<string>): void {
     if (!this.settings.autoExtract) {
       return;
     }
     for (const packageId of this.session.packageOrder) {
+      if (packageFilter && !packageFilter.has(packageId)) {
+        continue;
+      }
+      if (!packageFilter && this.session.running && !this.runPackageIds.has(packageId)) {
+        continue;
+      }
       const pkg = this.session.packages[packageId];
       if (!pkg || pkg.cancelled || !pkg.enabled) {
         continue;
@@ -9201,6 +9649,9 @@ export class DownloadManager extends EventEmitter {
           for (const item of items) {
             if (item.status === "completed" && shouldAutoRetryExtraction(item.fullStatus)) {
               item.fullStatus = "Entpacken - Ausstehend";
+              if (item.lastError === "Zu wenig Speicherplatz") {
+                item.lastError = "";
+              }
               item.updatedAt = nowMs();
             }
           }
@@ -9221,6 +9672,9 @@ export class DownloadManager extends EventEmitter {
           for (const item of items) {
             if (item.status === "completed" && shouldAutoRetryExtraction(item.fullStatus)) {
               item.fullStatus = "Entpacken - Ausstehend";
+              if (item.lastError === "Zu wenig Speicherplatz") {
+                item.lastError = "";
+              }
               item.updatedAt = nowMs();
             }
           }
@@ -9233,129 +9687,199 @@ export class DownloadManager extends EventEmitter {
   }
 
   public async retryExtraction(packageId: string): Promise<void> {
-    if (!(await this.armExtractNowPackage(packageId))) {
-      throw new Error("Kein entpackbarer Archivsatz ausgewählt");
-    }
+    await this.extractNow(packageId);
   }
 
-  private async armExtractNowPackage(
+  private async resolveManualExtractionPlan(
     packageId: string,
-    selectedItemIds?: ReadonlySet<string>,
-    archiveFilter?: ReadonlySet<string>
-  ): Promise<boolean> {
-    let pkg = this.session.packages[packageId];
-    if (!pkg || pkg.cancelled) return false;
-    let items = pkg.itemIds.map((id) => this.session.items[id]).filter(Boolean) as DownloadItem[];
-    let completedItems = items.filter((item) => item.status === "completed");
-    let targetItems = completedItems.filter((item) => !isExtractedLabel(item.fullStatus) && (!selectedItemIds || selectedItemIds.has(item.id)));
+    selectedItemIds?: ReadonlySet<string>
+  ): Promise<ManualExtractionPlan | null> {
+    const pkg = this.session.packages[packageId];
+    if (!pkg || pkg.cancelled) return null;
+    const completedItems = pkg.itemIds
+      .map((id) => this.session.items[id])
+      .filter((item): item is DownloadItem => Boolean(item && item.status === "completed"));
+    const targetItems = completedItems.filter((item) => !isExtractedLabel(item.fullStatus)
+      && (!selectedItemIds || selectedItemIds.has(item.id)));
     if (targetItems.length === 0) {
-      this.manualExtractArchiveFilters.delete(packageId);
-      this.manualExtractPackages.delete(packageId);
-      return false;
+      return null;
     }
-    const initialTargetIds = new Set(targetItems.map((item) => item.id));
-    if (this.packagePostProcessTasks.has(packageId) || this.hasDeferredPostProcessPending(packageId)) {
-      pkg.postProcessLabel = "Entpacken wird neu gestartet...";
-      pkg.updatedAt = nowMs();
-      this.emitState(true);
-      await Promise.allSettled(this.abortPackagePostProcessing(packageId, "manual_extract_restart"));
-      pkg = this.session.packages[packageId];
-      if (!pkg || pkg.cancelled) return false;
-      items = pkg.itemIds.map((id) => this.session.items[id]).filter(Boolean) as DownloadItem[];
-      completedItems = items.filter((item) => item.status === "completed");
-      targetItems = completedItems.filter((item) => !isExtractedLabel(item.fullStatus) && (!selectedItemIds || selectedItemIds.has(item.id)));
-      if (targetItems.length === 0) {
-        pkg.postProcessLabel = undefined;
-        pkg.updatedAt = nowMs();
-        this.emitState(true);
-        return [...initialTargetIds].every((itemId) => {
-          const item = this.session.items[itemId];
-          return Boolean(item && item.status === "completed" && isExtractedLabel(item.fullStatus));
-        });
+    const candidates = [...await this.findReadyArchiveSets(pkg)];
+    const requestedItemIds = new Set(targetItems.map((item) => item.id));
+    const selection = resolveSelectedArchiveSetsFromCandidates(candidates, completedItems, requestedItemIds);
+    const plannedItemIds = new Set(selection.itemIds);
+    const opaqueItemIds = new Set<string>();
+    for (const item of targetItems) {
+      if (plannedItemIds.has(item.id) || !item.targetPath || isArchiveLikePath(item.targetPath || item.fileName || "")) {
+        continue;
+      }
+      if (inspectPackageItemDiskState(pkg, item).reason !== "ok") {
+        continue;
+      }
+      if (await detectArchiveSignature(item.targetPath)) {
+        opaqueItemIds.add(item.id);
+        plannedItemIds.add(item.id);
       }
     }
-    this.clearHybridArchiveState(packageId);
+    if (plannedItemIds.size === 0) {
+      return null;
+    }
+    if (selectedItemIds && opaqueItemIds.size > 0 && (
+      candidates.length > 0
+      || plannedItemIds.size !== opaqueItemIds.size
+      || completedItems.some((item) => !selectedItemIds.has(item.id) && !isExtractedLabel(item.fullStatus))
+    )) {
+      return null;
+    }
+    const itemFiles = new Map<string, ArchiveCleanupTarget>();
+    for (const itemId of plannedItemIds) {
+      const item = this.session.items[itemId];
+      const itemPath = String(item?.targetPath || (item?.fileName ? path.join(pkg.outputDir, item.fileName) : "")).trim();
+      const fingerprint = itemPath ? await this.readFileFingerprint(itemPath) : null;
+      if (!fingerprint) {
+        return null;
+      }
+      const existingOwner = this.reservedTargetPaths.get(pathKey(itemPath));
+      if (existingOwner && existingOwner !== itemId) {
+        return null;
+      }
+      itemFiles.set(itemId, { filePath: path.resolve(itemPath), fingerprint });
+    }
+    return {
+      packageId,
+      generation: this.getPackageResultGeneration(packageId),
+      targetItemIds: plannedItemIds,
+      archiveFilter: selectedItemIds && opaqueItemIds.size === 0
+        ? new Set([...selection.archivePaths].map((archivePath) => pathKey(archivePath)))
+        : undefined,
+      itemFiles
+    };
+  }
+
+  private isManualExtractionPlanCurrent(plan: ManualExtractionPlan): boolean {
+    const pkg = this.session.packages[plan.packageId];
+    if (!pkg || pkg.cancelled || this.getPackageResultGeneration(plan.packageId) !== plan.generation) {
+      return false;
+    }
+    return [...plan.targetItemIds].every((itemId) => {
+      const item = this.session.items[itemId];
+      const expectedFile = plan.itemFiles.get(itemId);
+      const currentFingerprint = expectedFile ? this.readFileFingerprintSync(expectedFile.filePath) : null;
+      return Boolean(item
+        && item.packageId === plan.packageId
+        && item.status === "completed"
+        && !isExtractedLabel(item.fullStatus)
+        && expectedFile
+        && currentFingerprint
+        && this.fingerprintsEqual(currentFingerprint, expectedFile.fingerprint));
+    });
+  }
+
+  private async prepareManualExtractionPlan(plan: ManualExtractionPlan): Promise<boolean> {
+    if (!this.isManualExtractionPlanCurrent(plan)) {
+      return false;
+    }
+    if (this.packagePostProcessTasks.has(plan.packageId) || this.hasDeferredPostProcessPending(plan.packageId)) {
+      await Promise.allSettled(this.abortPackagePostProcessing(plan.packageId, "manual_extract_restart"));
+    }
+    return this.isManualExtractionPlanCurrent(plan);
+  }
+
+  private commitManualExtractionPlan(plan: ManualExtractionPlan): void {
+    const pkg = this.session.packages[plan.packageId] as PackageEntry;
+    this.beginHealthRun();
+    this.clearPackageDiskRetry(plan.packageId);
+    this.clearHybridArchiveState(plan.packageId);
     if (!pkg.enabled) {
       pkg.enabled = true;
     }
-    if (archiveFilter) this.manualExtractArchiveFilters.set(packageId, new Set(archiveFilter));
-    else this.manualExtractArchiveFilters.delete(packageId);
-    this.manualExtractPackages.add(packageId);
+    if (plan.archiveFilter) this.manualExtractArchiveFilters.set(plan.packageId, new Set(plan.archiveFilter));
+    else this.manualExtractArchiveFilters.delete(plan.packageId);
+    this.manualExtractPackages.add(plan.packageId);
     pkg.status = "queued";
     pkg.updatedAt = nowMs();
-    for (const item of targetItems) {
+    for (const itemId of plan.targetItemIds) {
+      const item = this.session.items[itemId];
+      if (!item) continue;
+      const plannedFile = plan.itemFiles.get(itemId);
+      if (!item.targetPath && plannedFile) {
+        item.fileName = path.basename(plannedFile.filePath);
+        item.targetPath = plannedFile.filePath;
+        this.reservedTargetPaths.set(pathKey(plannedFile.filePath), item.id);
+        this.claimedTargetPathByItem.set(item.id, plannedFile.filePath);
+      }
       item.fullStatus = "Entpacken - Ausstehend";
+      if (item.lastError === "Zu wenig Speicherplatz") {
+        item.lastError = "";
+      }
       item.updatedAt = nowMs();
     }
-    logger.info(`Jetzt entpacken: pkg=${pkg.name}, completed=${completedItems.length}, targeted=${targetItems.length}`);
-    this.logPackageForPackage(pkg, "INFO", "Jetzt entpacken ausgelöst", {
-      completedItems: completedItems.length,
-      targetedItems: targetItems.length
-    });
-    this.beginPackageResultGeneration(packageId, false, true);
-    this.reactivateStandalonePackageResult(packageId);
-    this.persistSoon();
-    this.emitState(true);
-    void this.runPackagePostProcessing(packageId).catch((err) => logger.warn(`runPackagePostProcessing Fehler (extractNow): ${compactErrorText(err)}`));
-    return true;
+    this.beginPackageResultGeneration(plan.packageId, false, true);
+    this.reactivateStandalonePackageResult(plan.packageId);
   }
 
-  private async extractNowItems(itemIds: readonly string[], excludedPackageIds: ReadonlySet<string>): Promise<number> {
-    const selectedByPackage = new Map<string, Set<string>>();
-    let armed = 0;
-    for (const itemId of itemIds) {
-      const item = this.session.items[itemId];
-      if (!item || excludedPackageIds.has(item.packageId)) {
-        continue;
-      }
-      const selected = selectedByPackage.get(item.packageId) || new Set<string>();
-      selected.add(itemId);
-      selectedByPackage.set(item.packageId, selected);
-    }
-    for (const [packageId, selectedItemIds] of selectedByPackage) {
-      const pkg = this.session.packages[packageId];
-      if (!pkg || pkg.cancelled) {
-        continue;
-      }
-      const completedItems = pkg.itemIds
-        .map((itemId) => this.session.items[itemId])
-        .filter((item): item is DownloadItem => Boolean(item && item.status === "completed"));
-      const candidates = await findArchiveCandidates(pkg.outputDir);
-      const selection = resolveSelectedArchiveSetsFromCandidates(candidates, completedItems, selectedItemIds);
-      if (selection.archivePaths.size === 0 || selection.itemIds.size === 0) {
-        logger.warn(`Jetzt entpacken: Kein vollständiger Archivsatz für ${selectedItemIds.size} ausgewählte Datei(en) in pkg=${pkg.name}`);
-        continue;
-      }
-      if (await this.armExtractNowPackage(
-        packageId,
-        selection.itemIds,
-        new Set([...selection.archivePaths].map((archivePath) => pathKey(archivePath)))
-      )) {
-        armed += 1;
+  private async executeManualExtractionPlans(plans: ManualExtractionPlan[]): Promise<void> {
+    for (const plan of plans) {
+      if (!await this.prepareManualExtractionPlan(plan)) {
+        throw new Error("Entpackauswahl hat sich während der Vorbereitung geändert");
       }
     }
-    return armed;
+    if (!plans.every((plan) => this.isManualExtractionPlanCurrent(plan))) {
+      throw new Error("Entpackauswahl hat sich während der Vorbereitung geändert");
+    }
+    for (const plan of plans) {
+      this.commitManualExtractionPlan(plan);
+    }
+    this.persistSoon();
+    this.emitState(true);
+    for (const plan of plans) {
+      const pkg = this.session.packages[plan.packageId];
+      logger.info(`Jetzt entpacken: pkg=${pkg?.name || plan.packageId}, targeted=${plan.targetItemIds.size}`);
+      if (pkg) {
+        this.logPackageForPackage(pkg, "INFO", "Jetzt entpacken ausgelöst", { targetedItems: plan.targetItemIds.size });
+      }
+      void this.runPackagePostProcessing(plan.packageId).catch((err) => logger.warn(`runPackagePostProcessing Fehler (extractNow): ${compactErrorText(err)}`));
+    }
   }
 
   public async extractNow(target: string | ExtractNowRequest): Promise<void> {
-    if (typeof target === "string") {
-      if (!(await this.armExtractNowPackage(target))) {
-        throw new Error("Kein entpackbarer Archivsatz ausgewählt");
-      }
-      return;
-    }
-    const packageIds = [...new Set(target.packageIds)];
+    const packageIds = typeof target === "string" ? [target] : [...new Set(target.packageIds)];
     const packageSet = new Set(packageIds);
-    let armed = 0;
-    for (const packageId of packageIds) {
-      if (await this.armExtractNowPackage(packageId)) {
-        armed += 1;
+    const itemIdsByPackage = new Map<string, Set<string>>();
+    let rejected = 0;
+    if (typeof target !== "string") {
+      for (const itemId of target.itemIds) {
+        const item = this.session.items[itemId];
+        if (!item) {
+          rejected += 1;
+          continue;
+        }
+        if (packageSet.has(item.packageId)) {
+          continue;
+        }
+        const selected = itemIdsByPackage.get(item.packageId) || new Set<string>();
+        selected.add(itemId);
+        itemIdsByPackage.set(item.packageId, selected);
       }
     }
-    armed += await this.extractNowItems(target.itemIds, packageSet);
-    if (armed === 0) {
-      throw new Error("Kein vollständiger entpackbarer Archivsatz ausgewählt");
+    const plans: ManualExtractionPlan[] = [];
+    for (const packageId of packageIds) {
+      const plan = await this.resolveManualExtractionPlan(packageId);
+      if (plan) plans.push(plan);
+      else rejected += 1;
     }
+    for (const [packageId, itemIds] of itemIdsByPackage) {
+      const plan = await this.resolveManualExtractionPlan(packageId, itemIds);
+      if (plan) plans.push(plan);
+      else rejected += 1;
+    }
+    if (plans.length === 0) {
+      throw new Error("Kein entpackbarer Archivsatz ausgewählt");
+    }
+    if (rejected > 0) {
+      throw new Error(`${plans.length} Entpackvorgang bereit, ${rejected} nicht gestartet`);
+    }
+    await this.executeManualExtractionPlans(plans);
   }
 
   private notePackageDownloadStarted(pkg: PackageEntry, startedAt = nowMs()): void {
@@ -9458,6 +9982,8 @@ export class DownloadManager extends EventEmitter {
       }
     }
     this.historyRecordedPackages.delete(packageId);
+    this.clearPackageDiskRetry(packageId);
+    this.clearArchiveRedownloadRecovery(packageId);
     this.abortPackagePostProcessing(packageId, "package_removed");
     this.packagePostProcessVersions.delete(packageId);
     this.packageFileOpChain.delete(packageId);
@@ -10154,7 +10680,7 @@ export class DownloadManager extends EventEmitter {
 
         const queuePresence = this.activeTasks.size === 0 ? this.getQueuePresence(now) : { hasImmediate: true, hasDelayed: false };
         const downloadsComplete = this.activeTasks.size === 0 && !queuePresence.hasImmediate && !queuePresence.hasDelayed;
-        const postProcessComplete = this.packagePostProcessTasks.size === 0 && !this.hasAnyDeferredPostProcessPending();
+        const postProcessComplete = this.getActivePostProcessingCount() === 0;
         if (downloadsComplete && (postProcessComplete || this.settings.autoExtractWhenStopped)) {
           this.finishRun();
           break;
@@ -10314,7 +10840,7 @@ export class DownloadManager extends EventEmitter {
         changed = true;
       }
     };
-    if (this.runItemIds.size > 0) {
+    if (this.session.running) {
       for (const itemId of this.runItemIds) updateItem(itemId);
     } else {
       for (const itemId in this.session.items) updateItem(itemId);
@@ -10333,13 +10859,13 @@ export class DownloadManager extends EventEmitter {
     for (const packageId of this.session.packageOrder) {
       const pkg = this.session.packages[packageId];
       if (!pkg || pkg.cancelled || !pkg.enabled) continue;
-      if (this.runPackageIds.size > 0 && !this.runPackageIds.has(packageId)) continue;
+      if (this.session.running && !this.runPackageIds.has(packageId)) continue;
       const pkgPrio = pkg.priority || "normal";
       if (normalCandidate && pkgPrio === "low") continue;
       if (normalCandidate && pkgPrio === "normal") continue;
 
       for (const itemId of pkg.itemIds) {
-        if (this.runItemIds.size > 0 && !this.runItemIds.has(itemId)) continue;
+        if (this.session.running && !this.runItemIds.has(itemId)) continue;
         const item = this.session.items[itemId];
         if (!item) continue;
         const retryAfter = this.retryAfterByItem.get(itemId) || 0;
@@ -10377,9 +10903,9 @@ export class DownloadManager extends EventEmitter {
     for (const packageId of this.session.packageOrder) {
       const pkg = this.session.packages[packageId];
       if (!pkg || pkg.cancelled || !pkg.enabled) continue;
-      if (this.runPackageIds.size > 0 && !this.runPackageIds.has(packageId)) continue;
+      if (this.session.running && !this.runPackageIds.has(packageId)) continue;
       for (const itemId of pkg.itemIds) {
-        if (this.runItemIds.size > 0 && !this.runItemIds.has(itemId)) {
+        if (this.session.running && !this.runItemIds.has(itemId)) {
           continue;
         }
         const item = this.session.items[itemId];
@@ -10412,11 +10938,11 @@ export class DownloadManager extends EventEmitter {
       if (!pkg || pkg.cancelled || !pkg.enabled) {
         continue;
       }
-      if (this.runPackageIds.size > 0 && !this.runPackageIds.has(packageId)) {
+      if (this.session.running && !this.runPackageIds.has(packageId)) {
         continue;
       }
       for (const itemId of pkg.itemIds) {
-        if (this.runItemIds.size > 0 && !this.runItemIds.has(itemId)) {
+        if (this.session.running && !this.runItemIds.has(itemId)) {
           continue;
         }
         const item = this.session.items[itemId];
@@ -12777,6 +13303,9 @@ export class DownloadManager extends EventEmitter {
     if (pkg) {
       pkg.resultGeneration = next;
     }
+    if (next !== current) {
+      this.clearArchiveRedownloadRecovery(packageId);
+    }
     if (pkg && (wasFinalized || resetDownloadTelemetry || forceReset)) {
       if (resetDownloadTelemetry) {
         pkg.downloadStartedAt = 0;
@@ -13129,6 +13658,7 @@ export class DownloadManager extends EventEmitter {
       return true;
     }
     return this.packagePostProcessTasks.has(packageId)
+      || this.packageDiskRetryPlans.has(packageId)
       || this.hasDeferredPostProcessPending(packageId)
       || (this.packageHybridPostProcessTasks.get(packageId)?.size || 0) > 0
       || this.packageFileOpChain.has(packageId);
@@ -13495,21 +14025,28 @@ export class DownloadManager extends EventEmitter {
     }
 
     const completedPaths = new Set<string>();
-    const pendingPaths = new Set<string>();
+    const effectivePaths = new Map<string, { filePath: string; itemIds: string[] }>();
     for (const itemId of pkg.itemIds) {
       const item = this.session.items[itemId];
       if (!item) {
         continue;
       }
-      if (item.status === "completed" && item.targetPath) {
-        completedPaths.add(pathKey(item.targetPath));
-      } else {
-        if (item.targetPath) {
-          pendingPaths.add(pathKey(item.targetPath));
-        }
-        if (item.fileName && pkg.outputDir) {
-          pendingPaths.add(pathKey(path.join(pkg.outputDir, item.fileName)));
-        }
+      const itemPath = String(item.targetPath || (item.fileName ? path.join(pkg.outputDir, item.fileName) : "")).trim();
+      if (!itemPath) {
+        continue;
+      }
+      const key = pathKey(itemPath);
+      const claim = effectivePaths.get(key) || { filePath: itemPath, itemIds: [] };
+      claim.itemIds.push(item.id);
+      effectivePaths.set(key, claim);
+    }
+    for (const claim of effectivePaths.values()) {
+      if (claim.itemIds.length !== 1) {
+        continue;
+      }
+      const item = this.session.items[claim.itemIds[0]];
+      if (item?.status === "completed" && await this.existsAsync(claim.filePath)) {
+        completedPaths.add(pathKey(claim.filePath));
       }
     }
     if (completedPaths.size === 0) {
@@ -13535,17 +14072,19 @@ export class DownloadManager extends EventEmitter {
       .filter(Boolean) as DownloadItem[];
 
     for (const candidate of candidates) {
+      if (/\.rev$/i.test(candidate)) {
+        continue;
+      }
       const partsOnDisk = collectArchiveCleanupTargets(candidate, dirFiles);
       const allPartsCompleted = partsOnDisk.every((part) => completedPaths.has(pathKey(part)));
+      const candidateStem = path.basename(candidate).toLowerCase();
+      const hasUnreadyPendingPart = packageItems.some((item) => item.status !== "completed"
+        && this.looksLikeArchivePart(path.basename(item.targetPath || item.fileName || "").toLowerCase(), candidateStem)
+        && inspectPackageItemDiskState(pkg, item).reason !== "ok");
+      if (hasUnreadyPendingPart) {
+        continue;
+      }
       if (allPartsCompleted) {
-        const hasUnstartedParts = [...pendingPaths].some((pendingPath) => {
-          const pendingName = path.basename(pendingPath).toLowerCase();
-          const candidateStem = path.basename(candidate).toLowerCase();
-          return this.looksLikeArchivePart(pendingName, candidateStem);
-        });
-        if (hasUnstartedParts) {
-          continue;
-        }
         ready.add(pathKey(candidate));
         continue;
       }
@@ -14056,6 +14595,7 @@ export class DownloadManager extends EventEmitter {
 
   private async handlePackagePostProcessing(packageId: string, signal?: AbortSignal): Promise<void> {
     const handleStart = nowMs();
+    const postProcessVersion = this.getPackagePostProcessVersion(packageId);
     const pkg = this.session.packages[packageId];
     if (!pkg || pkg.cancelled) {
       return;
@@ -14183,6 +14723,7 @@ export class DownloadManager extends EventEmitter {
 
     const allDone = this.areAllPackageItemRefsFinished(pkg);
     const manualExtraction = this.manualExtractPackages.has(packageId);
+    const manualArchiveFilter = this.manualExtractArchiveFilters.get(packageId);
     const shouldExtract = this.settings.autoExtract || manualExtraction;
       if (!allDone && success + failed + cancelled >= items.length) {
         logger.warn(
@@ -14302,7 +14843,6 @@ export class DownloadManager extends EventEmitter {
         }
 
         const fullArchiveSet = await this.findFullExtractArchiveSet(pkg, completedItems);
-        const manualArchiveFilter = this.manualExtractArchiveFilters.get(packageId);
         if (manualArchiveFilter) {
           for (const archivePath of [...fullArchiveSet]) {
             if (!manualArchiveFilter.has(pathKey(archivePath))) {
@@ -14450,9 +14990,26 @@ export class DownloadManager extends EventEmitter {
           }));
         } catch (error) {
           if (error instanceof DiskCapacityError) {
-            this.diskWaitEvents = [{ ...error.event, packageId }];
+            if (signal?.aborted || this.lifecyclePhase === "stopping" || this.healthManualStop || this.healthShuttingDown || !pkg.enabled) {
+              this.clearPackageDiskRetry(packageId);
+              pkg.postProcessLabel = undefined;
+              pkg.status = pkg.enabled ? "queued" : "paused";
+              pkg.updatedAt = nowMs();
+              return;
+            }
             const retryAt = error.event.retryAt;
-            this.packageDiskRetryAfterByPackage.set(packageId, retryAt);
+            const scheduled = this.schedulePackageDiskRetry(packageId, {
+              retryAt,
+              manualRequested: manualExtraction,
+              postProcessVersion,
+              runOwnerId: this.getPackageResultRunOwner(packageId),
+              archiveFilter: manualArchiveFilter ? new Set(manualArchiveFilter) : undefined,
+              selectedItemIds: new Set(fullExtractionItems.map((entry) => entry.id))
+            });
+            if (!scheduled) {
+              return;
+            }
+            this.diskWaitEvents = [{ ...error.event, packageId }];
             for (const entry of fullExtractionItems) {
               entry.fullStatus = "Warte auf Festplatte";
               entry.lastError = "Zu wenig Speicherplatz";
@@ -14627,7 +15184,8 @@ export class DownloadManager extends EventEmitter {
       failed,
       alreadyMarkedExtracted,
       extractedCount,
-      manualExtraction
+      manualExtraction,
+      Boolean(manualArchiveFilter) || !allDone
     );
   }
 
@@ -14638,10 +15196,11 @@ export class DownloadManager extends EventEmitter {
     failed: number,
     alreadyMarkedExtracted: boolean,
     extractedCount: number,
-    manualSelection = false
+    manualRequested = false,
+    preservePartialArchiveState = manualRequested
   ): Promise<void> {
     this.trackPackagePostProcessResult(packageId);
-    const task = this.executeDeferredPostExtraction(packageId, pkg, success, failed, alreadyMarkedExtracted, extractedCount, manualSelection)
+    const task = this.executeDeferredPostExtraction(packageId, pkg, success, failed, alreadyMarkedExtracted, extractedCount, manualRequested, preservePartialArchiveState)
       .finally(() => {
         const tasks = this.packageDeferredPostProcessTasks.get(packageId);
         tasks?.delete(task);
@@ -14665,7 +15224,8 @@ export class DownloadManager extends EventEmitter {
     failed: number,
     alreadyMarkedExtracted: boolean,
     extractedCount: number,
-    manualSelection: boolean
+    manualRequested: boolean,
+    preservePartialArchiveState: boolean
   ): Promise<void> {
     const replacedController = this.packageDeferredPostProcessAbortControllers.get(packageId);
     if (replacedController && !replacedController.signal.aborted) {
@@ -14686,7 +15246,7 @@ export class DownloadManager extends EventEmitter {
 
     try {
       throwIfAborted();
-      if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0 && (this.settings.autoExtract || manualSelection)) {
+      if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0 && (this.settings.autoExtract || manualRequested)) {
         const nestedBlacklist = /\.(iso|img|bin|dmg|vhd|vhdx|vmdk|wim)$/i;
         const nestedCandidates = outputScope.archiveFiles()
           .filter((candidate) => isPathInsideDir(candidate, pkg.extractDir) && !nestedBlacklist.test(candidate));
@@ -14753,7 +15313,7 @@ export class DownloadManager extends EventEmitter {
         }
       }
 
-      if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0 && this.settings.cleanupMode !== "none" && !manualSelection) {
+      if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0 && this.settings.cleanupMode !== "none" && !preservePartialArchiveState) {
         pkg.postProcessLabel = "Aufräumen...";
         this.emitState();
         throwIfAborted();
@@ -14788,7 +15348,7 @@ export class DownloadManager extends EventEmitter {
         }
       }
 
-      if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0 && !manualSelection) {
+      if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0 && !preservePartialArchiveState) {
         throwIfAborted();
         await clearExtractResumeState(pkg.outputDir, packageId);
         await clearExtractResumeState(pkg.outputDir);
@@ -15004,6 +15564,7 @@ export class DownloadManager extends EventEmitter {
     const runContext = total > 0 ? this.finishActiveRunContext(this.runPackageIds, runStartedAt) : null;
     this.runItemIds.clear();
     this.runPackageIds.clear();
+    this.runScopeKind = null;
     this.runOutcomes.clear();
     this.retryAfterByItem.clear();
     this.providerStartReservations.clear();

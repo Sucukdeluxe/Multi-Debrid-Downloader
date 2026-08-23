@@ -128,6 +128,13 @@ class ExtractionOutputCallbackError extends Error {
   }
 }
 
+class ExtractionPasswordAttemptCallbackError extends Error {
+  public constructor() {
+    super("extract_password_attempt_callback_failed");
+    this.name = "ExtractionPasswordAttemptCallbackError";
+  }
+}
+
 type ExtractionErrorWithHints = Error & {
   suggestRedownload?: boolean;
   jvmFailureReason?: string;
@@ -152,13 +159,21 @@ type JvmExtractResult = {
   errorText: string;
   usedPassword: string;
   backend: string;
+  passwordAttempts: number;
+  passwordAttemptTotal: number;
+  passwordCandidatesExhausted: boolean;
 };
+
+type JvmExtractBaseResult = Omit<JvmExtractResult, "passwordAttempts" | "passwordAttemptTotal" | "passwordCandidatesExhausted">;
 
 type JvmParseState = {
   bestPercent: number;
   usedPassword: string;
   backend: string;
   reportedError: string;
+  passwordAttempts: number;
+  passwordAttemptTotal: number;
+  passwordCandidates: string[];
   outputError?: Error;
   openedOutputs?: Map<string, ExtractOutputEvent>;
 };
@@ -208,6 +223,7 @@ interface SubstMapping { drive: string; original: string; }
 interface DaemonRequest {
   resolve: (result: JvmExtractResult) => void;
   onArchiveProgress?: (percent: number) => void;
+  onPasswordAttempt?: (attempt: number, total: number) => void;
   signal?: AbortSignal;
   timeoutMs?: number;
   parseState: JvmParseState;
@@ -978,8 +994,17 @@ export function classifyExtractionError(errorText: unknown): ExtractErrorCategor
   const text = String(errorText || "").toLowerCase();
   if (text.includes("aborted:extract") || text.includes("extract_aborted")) return "aborted";
   if (text.includes("timeout")) return "timeout";
-  if (text.includes("crc failed") || text.includes("checksum error") || text.includes("crc error")) return "crc_error";
-  if (text.includes("wrong password") || text.includes("falsches passwort") || text.includes("incorrect password")) return "wrong_password";
+  if (text.includes("crc failed")
+    || text.includes("checksum error")
+    || text.includes("crc error")
+    || text.includes("crc-fehler")
+    || text.includes("crc fehler")
+    || text.includes("crcerror")
+    || text.includes("dataerror")
+    || text.includes("fsummenfehler")) return "crc_error";
+  if (text.includes("wrong password")
+    || text.includes("incorrect password")
+    || /falsches(?:[\s-]+archiv)?[\s-]+passwort/.test(text)) return "wrong_password";
   if (text.includes("missing volume") || text.includes("next volume") || text.includes("unexpected end of archive") || text.includes("missing parts")) return "missing_parts";
   if (text.includes("nicht gefunden") || text.includes("not found") || text.includes("no extractor")) return "no_extractor";
   if (isUnsupportedArchiveFormatError(text)) return "unsupported_format";
@@ -987,21 +1012,24 @@ export function classifyExtractionError(errorText: unknown): ExtractErrorCategor
   return "unknown";
 }
 
+export function shouldSuggestRedownloadAfterCrossBackendFailure(
+  legacyCategory: ExtractErrorCategory,
+  jvmCategory: ExtractErrorCategory,
+  passwordCandidatesExhausted: boolean
+): boolean {
+  return passwordCandidatesExhausted
+    && legacyCategory === "crc_error"
+    && jvmCategory === "crc_error";
+}
+
 export function shouldSerialRetryParallelFailures(
-  extractedCount: number,
+  _extractedCount: number,
   failedCategories: ExtractErrorCategory[]
 ): boolean {
   if (failedCategories.length === 0) {
     return false;
   }
-  if (extractedCount > 0) {
-    return true;
-  }
-  return failedCategories.every((category) =>
-    category === "crc_error"
-    || category === "wrong_password"
-    || category === "unknown"
-  );
+  return failedCategories.every((category) => category === "unknown");
 }
 
 export function shouldFallbackLegacyRarToJvm(
@@ -1139,6 +1167,43 @@ function extractorCommandKind(command: string): ExtractorCommandKind {
   return "other";
 }
 
+export function extractorCommandsShareIdentity(
+  leftCommand: string,
+  rightCommand: string,
+  platform = process.platform
+): boolean {
+  const leftKind = extractorCommandKind(leftCommand);
+  const rightKind = extractorCommandKind(rightCommand);
+  if (leftKind !== "other" && leftKind === rightKind) {
+    return true;
+  }
+  const normalize = (command: string): string => {
+    let value = String(command || "").trim();
+    if (isAbsoluteCommand(value)) {
+      try {
+        value = fs.realpathSync.native(value);
+      } catch {
+        value = path.resolve(value);
+      }
+    }
+    return String(platform).toLowerCase() === "win32" ? value.toLowerCase() : value;
+  };
+  return normalize(leftCommand) === normalize(rightCommand);
+}
+
+export function shouldRunAlternativeNativeExtractor(
+  currentCommand: string,
+  archivePath: string,
+  configuredMode: ExtractBackendMode,
+  _backendMode: ExtractBackendMode,
+  platform = process.platform
+): boolean {
+  return !(String(platform).toLowerCase() === "win32"
+    && configuredMode !== "legacy"
+    && isRarArchivePath(archivePath)
+    && extractorCommandKind(currentCommand) === "rar_native");
+}
+
 function isAbsoluteCommand(command: string): boolean {
   return path.isAbsolute(command)
     || command.includes("\\")
@@ -1252,7 +1317,7 @@ function extractorProbeArgs(command: string): string[] {
 }
 
 async function resolveExtractorCommandInternal(archivePath = ""): Promise<string> {
-  if (resolvedExtractorCommand) {
+  if (resolvedExtractorCommand && cachedExtractorFitsArchive(resolvedExtractorCommand, archivePath)) {
     return resolvedExtractorCommand;
   }
   if (resolveFailureReason) {
@@ -1314,7 +1379,7 @@ async function findAlternativeExtractor(currentCommand: string, archivePath = ""
       : ["seven_zip", "rar_native"];
   for (const kind of preferredKinds) {
     for (const candidate of candidates) {
-      if (candidate === currentCommand) continue;
+      if (extractorCommandsShareIdentity(candidate, currentCommand)) continue;
       if (extractorCommandKind(candidate) !== kind) continue;
       if (isAbsoluteCommand(candidate) && !fs.existsSync(candidate)) continue;
       const probe = await runExtractCommand(candidate, extractorProbeArgs(candidate), undefined, undefined, EXTRACTOR_PROBE_TIMEOUT_MS);
@@ -1671,11 +1736,65 @@ function resolveJvmExtractorLayout(): JvmExtractorLayout | null {
   return null;
 }
 
+export function parseJvmPasswordAttemptLine(line: string): { attempt: number; total: number } | null {
+  const match = String(line || "").trim().match(/^RD_PASSWORD_ATTEMPT ([1-9]\d*) ([1-9]\d*)$/);
+  if (!match) {
+    return null;
+  }
+  const attempt = Number(match[1]);
+  const total = Number(match[2]);
+  if (!Number.isSafeInteger(attempt) || !Number.isSafeInteger(total) || attempt > total || total > 1_000_000) {
+    return null;
+  }
+  return { attempt, total };
+}
+
+export function summarizeJvmPasswordAttempts(
+  attempts: number,
+  total: number,
+  extractionSucceeded: boolean
+): { attempts: number; total: number; exhausted: boolean } {
+  if (!Number.isSafeInteger(attempts)
+    || !Number.isSafeInteger(total)
+    || attempts < 1
+    || total < 1
+    || attempts > total
+    || total > 1_000_000) {
+    return { attempts: 0, total: 0, exhausted: false };
+  }
+  return {
+    attempts,
+    total,
+    exhausted: !extractionSucceeded && attempts === total
+  };
+}
+
+export function redactJvmDiagnosticLine(line: string): string {
+  const value = String(line || "");
+  return value.trimStart().startsWith("RD_PASSWORD ")
+    ? `${value.slice(0, value.length - value.trimStart().length)}RD_PASSWORD <redacted>`
+    : value;
+}
+
+function jvmPasswordAttemptResult(state: JvmParseState, extractionSucceeded: boolean): Pick<JvmExtractResult, "passwordAttempts" | "passwordAttemptTotal" | "passwordCandidatesExhausted"> {
+  const summary = summarizeJvmPasswordAttempts(state.passwordAttempts, state.passwordAttemptTotal, extractionSucceeded);
+  return {
+    passwordAttempts: summary.attempts,
+    passwordAttemptTotal: summary.total,
+    passwordCandidatesExhausted: summary.exhausted
+  };
+}
+
+function normalizeJvmPasswordCandidates(passwordCandidates: string[]): string[] {
+  return Array.from(new Set(["", ...passwordCandidates.map((candidate) => String(candidate || ""))]));
+}
+
 function parseJvmLine(
   line: string,
   onArchiveProgress: ((percent: number) => void) | undefined,
   state: JvmParseState,
-  onOutput?: (event: ExtractOutputEvent) => void
+  onOutput?: (event: ExtractOutputEvent) => void,
+  onPasswordAttempt?: (attempt: number, total: number) => void
 ): void {
   const trimmed = String(line || "").trim();
   if (!trimmed) {
@@ -1706,6 +1825,28 @@ function parseJvmLine(
 
   if (trimmed.startsWith("RD_BACKEND ")) {
     state.backend = trimmed.slice("RD_BACKEND ".length).trim();
+    return;
+  }
+
+  if (trimmed === "RD_DONE") {
+    const successfulIndex = state.passwordAttempts - 1;
+    state.usedPassword = successfulIndex >= 0 && successfulIndex < state.passwordCandidates.length
+      ? state.passwordCandidates[successfulIndex]
+      : "";
+    return;
+  }
+
+  const passwordAttempt = parseJvmPasswordAttemptLine(trimmed);
+  if (passwordAttempt) {
+    state.passwordAttempts = passwordAttempt.attempt;
+    state.passwordAttemptTotal = passwordAttempt.total;
+    if (onPasswordAttempt) {
+      try {
+        onPasswordAttempt(passwordAttempt.attempt, passwordAttempt.total);
+      } catch {
+        state.outputError ||= new ExtractionPasswordAttemptCallbackError();
+      }
+    }
     return;
   }
 
@@ -1754,6 +1895,10 @@ let daemonTimeoutId: NodeJS.Timeout | null = null;
 let daemonAbortHandler: (() => void) | null = null;
 let daemonLayout: JvmExtractorLayout | null = null;
 
+function appendDaemonDiagnosticLine(line: string): void {
+  daemonOutput = appendLimited(daemonOutput, `${redactJvmDiagnosticLine(line)}\n`);
+}
+
 export function shutdownDaemon(): void {
   if (daemonProcess) {
     try { daemonProcess.stdin?.end(); } catch {  }
@@ -1771,7 +1916,7 @@ export function shutdownDaemon(): void {
   daemonLayout = null;
 }
 
-function finishDaemonRequest(result: JvmExtractResult): void {
+function finishDaemonRequest(result: JvmExtractBaseResult): void {
   const req = daemonCurrentRequest;
   if (!req) return;
   const openedCount = reconcileJvmOpenedOutputs(req.parseState, req.onOutput, req.targetDir);
@@ -1801,7 +1946,10 @@ function finishDaemonRequest(result: JvmExtractResult): void {
     req.signal.removeEventListener("abort", daemonAbortHandler);
     daemonAbortHandler = null;
   }
-  req.resolve(finalResult);
+  req.resolve({
+    ...finalResult,
+    ...jvmPasswordAttemptResult(req.parseState, finalResult.ok)
+  });
 }
 
 function flushDaemonParseBuffers(req: DaemonRequest | null): void {
@@ -1809,11 +1957,13 @@ function flushDaemonParseBuffers(req: DaemonRequest | null): void {
     return;
   }
   if (daemonStdoutBuffer.trim()) {
-    parseJvmLine(daemonStdoutBuffer, req.onArchiveProgress, req.parseState, req.onOutput);
+    appendDaemonDiagnosticLine(daemonStdoutBuffer);
+    parseJvmLine(daemonStdoutBuffer, req.onArchiveProgress, req.parseState, req.onOutput, req.onPasswordAttempt);
     daemonStdoutBuffer = "";
   }
   if (daemonStderrBuffer.trim()) {
-    parseJvmLine(daemonStderrBuffer, req.onArchiveProgress, req.parseState, req.onOutput);
+    appendDaemonDiagnosticLine(daemonStderrBuffer);
+    parseJvmLine(daemonStderrBuffer, req.onArchiveProgress, req.parseState, req.onOutput, req.onPasswordAttempt);
     daemonStderrBuffer = "";
   }
 }
@@ -1879,7 +2029,7 @@ function handleDaemonLine(line: string): void {
     if (req.terminationStarted) {
       return;
     }
-    parseJvmLine(trimmed, req.onArchiveProgress, req.parseState, req.onOutput);
+    parseJvmLine(trimmed, req.onArchiveProgress, req.parseState, req.onOutput, req.onPasswordAttempt);
     failDaemonOutputCallback(req);
   }
 }
@@ -1916,28 +2066,28 @@ function startDaemon(layout: JvmExtractorLayout): boolean {
 
     child.stdout!.on("data", (chunk) => {
       const raw = String(chunk || "");
-      daemonOutput = appendLimited(daemonOutput, raw);
       daemonStdoutBuffer += raw;
       const lines = daemonStdoutBuffer.split(/\r?\n/);
       daemonStdoutBuffer = lines.pop() || "";
       for (const line of lines) {
+        appendDaemonDiagnosticLine(line);
         handleDaemonLine(line);
       }
     });
 
     child.stderr!.on("data", (chunk) => {
       const raw = String(chunk || "");
-      daemonOutput = appendLimited(daemonOutput, raw);
       daemonStderrBuffer += raw;
       const lines = daemonStderrBuffer.split(/\r?\n/);
       daemonStderrBuffer = lines.pop() || "";
       for (const line of lines) {
+        appendDaemonDiagnosticLine(line);
         if (daemonCurrentRequest) {
           const req = daemonCurrentRequest;
           if (req.terminationStarted) {
             continue;
           }
-          parseJvmLine(line, req.onArchiveProgress, req.parseState, req.onOutput);
+          parseJvmLine(line, req.onArchiveProgress, req.parseState, req.onOutput, req.onPasswordAttempt);
           failDaemonOutputCallback(req);
         }
       }
@@ -1960,6 +2110,7 @@ function startDaemon(layout: JvmExtractorLayout): boolean {
     child.on("close", () => {
       if (daemonCurrentRequest) {
         const req = daemonCurrentRequest;
+        flushDaemonParseBuffers(req);
         if (req.aborted) {
           finishDaemonRequest({
             ok: false, missingCommand: false, missingRuntime: false,
@@ -2013,7 +2164,10 @@ function abortedJvmExtractResult(): JvmExtractResult {
     timedOut: false,
     errorText: "aborted:extract",
     usedPassword: "",
-    backend: ""
+    backend: "",
+    passwordAttempts: 0,
+    passwordAttemptTotal: 0,
+    passwordCandidatesExhausted: false
   };
 }
 
@@ -2059,14 +2213,23 @@ function sendDaemonRequest(
   onArchiveProgress?: (percent: number) => void,
   signal?: AbortSignal,
   timeoutMs?: number,
-  onOutput?: (event: ExtractOutputEvent) => void
+  onOutput?: (event: ExtractOutputEvent) => void,
+  onPasswordAttempt?: (attempt: number, total: number) => void
 ): Promise<JvmExtractResult> {
   if (signal?.aborted) {
     return Promise.resolve(abortedJvmExtractResult());
   }
   return new Promise((resolve) => {
     const mode = effectiveConflictMode(conflictMode);
-    const parseState = { bestPercent: 0, usedPassword: "", backend: "", reportedError: "" };
+    const parseState: JvmParseState = {
+      bestPercent: 0,
+      usedPassword: "",
+      backend: "",
+      reportedError: "",
+      passwordAttempts: 0,
+      passwordAttemptTotal: 0,
+      passwordCandidates: normalizeJvmPasswordCandidates(passwordCandidates)
+    };
     const archiveName = path.basename(archivePath);
 
     daemonBusy = true;
@@ -2074,6 +2237,7 @@ function sendDaemonRequest(
     daemonCurrentRequest = {
       resolve,
       onArchiveProgress,
+      onPasswordAttempt,
       signal,
       timeoutMs,
       parseState,
@@ -2148,7 +2312,8 @@ async function runJvmExtractCommand(
   onArchiveProgress?: (percent: number) => void,
   signal?: AbortSignal,
   timeoutMs?: number,
-  onOutput?: (event: ExtractOutputEvent) => void
+  onOutput?: (event: ExtractOutputEvent) => void,
+  onPasswordAttempt?: (attempt: number, total: number) => void
 ): Promise<JvmExtractResult> {
   if (signal?.aborted) {
     return Promise.resolve(abortedJvmExtractResult());
@@ -2157,7 +2322,7 @@ async function runJvmExtractCommand(
   if (isDaemonAvailable(layout)) {
     lowerExtractProcessPriority(daemonProcess?.pid, currentExtractCpuPriority);
     logger.info(`JVM Daemon: Sofort verfügbar, sende Request für ${path.basename(archivePath)} (pwCandidates=${passwordCandidates.length})`);
-    return sendDaemonRequest(archivePath, targetDir, conflictMode, passwordCandidates, onArchiveProgress, signal, timeoutMs, onOutput);
+    return sendDaemonRequest(archivePath, targetDir, conflictMode, passwordCandidates, onArchiveProgress, signal, timeoutMs, onOutput, onPasswordAttempt);
   }
 
   if (daemonProcess) {
@@ -2172,7 +2337,7 @@ async function runJvmExtractCommand(
     if (ready) {
       lowerExtractProcessPriority(daemonProcess?.pid, currentExtractCpuPriority);
       logger.info(`JVM Daemon: Bereit nach ${waitedMs}ms — sende Request für ${path.basename(archivePath)}`);
-      return sendDaemonRequest(archivePath, targetDir, conflictMode, passwordCandidates, onArchiveProgress, signal, timeoutMs, onOutput);
+      return sendDaemonRequest(archivePath, targetDir, conflictMode, passwordCandidates, onArchiveProgress, signal, timeoutMs, onOutput, onPasswordAttempt);
     }
     logger.warn(`JVM Daemon: Timeout nach ${waitedMs}ms beim Warten — Fallback auf neuen Prozess für ${path.basename(archivePath)}`);
   }
@@ -2221,7 +2386,15 @@ async function runJvmExtractCommand(
     let timedOutByWatchdog = false;
     let abortedBySignal = false;
     let onAbort: (() => void) | null = null;
-    const parseState: JvmParseState = { bestPercent: 0, usedPassword: "", backend: "", reportedError: "" };
+    const parseState: JvmParseState = {
+      bestPercent: 0,
+      usedPassword: "",
+      backend: "",
+      reportedError: "",
+      passwordAttempts: 0,
+      passwordAttemptTotal: 0,
+      passwordCandidates: normalizeJvmPasswordCandidates(passwordCandidates)
+    };
     let stdoutBuffer = "";
     let stderrBuffer = "";
     let outputCallbackKillStarted = false;
@@ -2233,12 +2406,12 @@ async function runJvmExtractCommand(
       if (!rawChunk) {
         return;
       }
-      output = appendLimited(output, rawChunk);
       const nextBuffer = `${fromStdErr ? stderrBuffer : stdoutBuffer}${rawChunk}`;
       const lines = nextBuffer.split(/\r?\n/);
       const keep = lines.pop() || "";
       for (const line of lines) {
-        parseJvmLine(line, onArchiveProgress, parseState, onOutput);
+        output = appendLimited(output, `${redactJvmDiagnosticLine(line)}\n`);
+        parseJvmLine(line, onArchiveProgress, parseState, onOutput, onPasswordAttempt);
       }
       if (parseState.outputError && !outputCallbackKillStarted) {
         outputCallbackKillStarted = true;
@@ -2255,7 +2428,7 @@ async function runJvmExtractCommand(
       fs.rm(jvmTmpDir, { recursive: true, force: true }, () => {});
     };
 
-    const finish = (result: JvmExtractResult): void => {
+    const finish = (result: JvmExtractBaseResult): void => {
       if (settled) {
         return;
       }
@@ -2285,7 +2458,10 @@ async function runJvmExtractCommand(
         signal.removeEventListener("abort", onAbort);
       }
       cleanupTmpDir();
-      resolve(finalResult);
+      resolve({
+        ...finalResult,
+        ...jvmPasswordAttemptResult(parseState, finalResult.ok)
+      });
     };
 
     if (timeoutMs && timeoutMs > 0) {
@@ -2326,8 +2502,16 @@ async function runJvmExtractCommand(
     });
 
     child.on("close", (code) => {
-      parseJvmLine(stdoutBuffer, onArchiveProgress, parseState, onOutput);
-      parseJvmLine(stderrBuffer, onArchiveProgress, parseState, onOutput);
+      if (stdoutBuffer) {
+        output = appendLimited(output, redactJvmDiagnosticLine(stdoutBuffer));
+        parseJvmLine(stdoutBuffer, onArchiveProgress, parseState, onOutput, onPasswordAttempt);
+        stdoutBuffer = "";
+      }
+      if (stderrBuffer) {
+        output = appendLimited(output, redactJvmDiagnosticLine(stderrBuffer));
+        parseJvmLine(stderrBuffer, onArchiveProgress, parseState, onOutput, onPasswordAttempt);
+        stderrBuffer = "";
+      }
 
       if (abortedBySignal) {
         finish({
@@ -2857,8 +3041,6 @@ function createNativeOutputCollector(
   };
 }
 
-const extractRetryDelay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
 async function runExternalExtractInner(
   command: string,
   archivePath: string,
@@ -2877,6 +3059,8 @@ async function runExternalExtractInner(
 ): Promise<string> {
   const passwords = passwordCandidates;
   let lastError = "";
+  let integrityError = "";
+  let terminalError = false;
   const extractorName = path.basename(command).replace(/\.exe$/i, "") || command;
 
   const emptyPasswordCount = passwords.filter((candidate) => candidate === "").length;
@@ -2960,7 +3144,11 @@ async function runExternalExtractInner(
     onLog?.("INFO", `Legacy-Passwort-Versuch ${passwordAttempt}/${passwords.length}: archive=${path.basename(archivePath)}, password=<redacted>`);
     logger.info(`Legacy-Passwort-Versuch ${passwordAttempt}/${passwords.length} für ${path.basename(archivePath)} (password=<redacted>)`);
     if (passwords.length > 1) {
-      onPasswordAttempt?.(passwordAttempt, passwords.length);
+      try {
+        onPasswordAttempt?.(passwordAttempt, passwords.length);
+      } catch {
+        logger.warn("Legacy-Passwortfortschritt-Callback fehlgeschlagen");
+      }
     }
     let args = buildExternalExtractArgs(command, archivePath, targetDir, conflictMode, password, usePerformanceFlags, hybridMode);
     let result = await runNativeAttempt(args, password);
@@ -2985,6 +3173,9 @@ async function runExternalExtractInner(
           logger.info(`Legacy-Passwort-Versuch Fehlertext: archive=${path.basename(archivePath)}, attempt=${passwordAttempt}/${passwords.length}, extractor=${extractorName}, error=${errorSummary}`);
           onLog?.("INFO", `Legacy-Passwort-Versuch Fehlertext: archive=${path.basename(archivePath)}, attempt=${passwordAttempt}/${passwords.length}, extractor=${extractorName}, error=${errorSummary}`);
         }
+        if (bestPercent > 0 && classifyExtractionError(result.errorText) === "crc_error") {
+          integrityError = result.errorText;
+        }
       }
 
     if (result.ok) {
@@ -3005,6 +3196,7 @@ async function runExternalExtractInner(
 
     if (result.timedOut) {
       lastError = result.errorText;
+      terminalError = true;
       break;
     }
 
@@ -3044,7 +3236,8 @@ async function runExternalExtractInner(
     }
   }
 
-  throw withExtractionErrorHints(new Error(lastError || "Entpacken fehlgeschlagen"), { legacyBestPercent: bestPercent, legacyExtractor: extractorName });
+  const finalError = terminalError ? lastError : integrityError || lastError;
+  throw withExtractionErrorHints(new Error(finalError || "Entpacken fehlgeschlagen"), { legacyBestPercent: bestPercent, legacyExtractor: extractorName });
 }
 
 async function runExternalExtract(
@@ -3067,7 +3260,8 @@ async function runExternalExtract(
   const archiveName = path.basename(archivePath);
   const totalStartedAt = Date.now();
   let jvmFailureReason = "";
-  let jvmCodecError = false;
+  let initialJvmFailureCategory: ExtractErrorCategory | null = null;
+  let initialJvmPasswordCandidatesExhausted = false;
   let fallbackFromJvm = false;
   logger.info(`Extract-Backend Start: archive=${archiveName}, mode=${backendMode}, configuredMode=${configuredBackendMode}, pwCandidates=${passwordCandidates.length}, timeoutMs=${timeoutMs}, hybrid=${hybridMode}`);
   onLog?.("INFO", `Extract-Backend Start: archive=${archiveName}, mode=${backendMode}, configuredMode=${configuredBackendMode}, pwCandidates=${passwordCandidates.length}, timeoutMs=${timeoutMs}, hybrid=${hybridMode}`);
@@ -3092,7 +3286,7 @@ async function runExternalExtract(
         onLog?.("INFO", `JVM-Extractor vorbereitet: archive=${archiveName}, passwordCandidates=${passwordCandidates.length}, layout=${layout.rootDir}`);
         const jvmResult = await runJvmExtractCommand(
           layout, archivePath, targetDir, conflictMode, passwordCandidates,
-          onArchiveProgress, signal, timeoutMs, onOutput
+          onArchiveProgress, signal, timeoutMs, onOutput, onPasswordAttempt
         );
         const jvmMs = Date.now() - jvmStartedAt;
         onLog?.("INFO", `JVM-Extractor Ergebnis: archive=${archiveName}, ok=${jvmResult.ok}, ms=${jvmMs}, timedOut=${jvmResult.timedOut}, aborted=${jvmResult.aborted}, backend=${jvmResult.backend || "unknown"}, usedPassword=${jvmResult.usedPassword ? "yes" : "no"}`);
@@ -3111,15 +3305,15 @@ async function runExternalExtract(
         }
 
         jvmFailureReason = jvmResult.errorText || "JVM-Extractor fehlgeschlagen";
+        initialJvmFailureCategory = classifyExtractionError(jvmFailureReason);
+        initialJvmPasswordCandidatesExhausted = jvmResult.passwordCandidatesExhausted;
         fallbackFromJvm = true;
         const jvmFailureLower = jvmFailureReason.toLowerCase();
         const isUnsupportedMethod = jvmFailureReason.includes("UNSUPPORTEDMETHOD");
         const isCodecError = jvmFailureLower.includes("registered codecs")
           || jvmFailureLower.includes("can not open")
           || jvmFailureLower.includes("cannot open archive");
-        jvmCodecError = isCodecError;
-        const isWrongPassword = jvmFailureReason.includes("WRONG_PASSWORD")
-          || jvmFailureLower.includes("wrong password");
+        const isWrongPassword = initialJvmFailureCategory === "wrong_password";
         const shouldFallbackToLegacy = isUnsupportedMethod || isCodecError || isWrongPassword;
         onLog?.("WARN", `JVM-Extractor Fallback-Analyse: archive=${archiveName}, unsupportedMethod=${isUnsupportedMethod}, codecError=${isCodecError}, wrongPassword=${isWrongPassword}, backendMode=${backendMode}`);
         if (backendMode === "jvm" && !shouldFallbackToLegacy) {
@@ -3163,7 +3357,10 @@ async function runExternalExtract(
         const isRar = /\.rar$/i.test(archiveName) || /\.r\d{2,3}$/i.test(archiveName);
         const errText = String((primaryError as Error)?.message || primaryError || "");
         const isPasswordOrCorrupt = /wrong.password|checksum error|corrupt/i.test(errText);
-        if (isRar && isPasswordOrCorrupt && !signal?.aborted) {
+        if (isRar
+          && isPasswordOrCorrupt
+          && shouldRunAlternativeNativeExtractor(command, archivePath, configuredBackendMode, backendMode)
+          && !signal?.aborted) {
           const alt = await findAlternativeExtractor(command, archivePath);
           if (alt) {
             const altName = path.basename(alt).replace(/\.exe$/i, "");
@@ -3189,72 +3386,14 @@ async function runExternalExtract(
       const initialLegacyBestPercent = Number.isFinite(initialLegacyHints.legacyBestPercent)
         ? Number(initialLegacyHints.legacyBestPercent || 0)
         : 0;
-      const isCrcOrWrongPw = initialLegacyCategory === "crc_error" || initialLegacyCategory === "wrong_password";
-      let finalLegacyError: Error;
-
-      if (isCrcOrWrongPw && !signal?.aborted) {
-        const retryDelayMs = 2500;
-        logger.warn(
-          `Legacy-Extraktion fehlgeschlagen (${initialLegacyCategory}), Retry nach ${retryDelayMs}ms Delay: ${archiveName}`
-        );
-        onLog?.("WARN", `Legacy-Extraktion fehlgeschlagen (${initialLegacyCategory}), Retry nach ${retryDelayMs}ms Delay: ${archiveName}`);
-        await extractRetryDelay(retryDelayMs);
-        if (!signal?.aborted) {
-          try {
-            const retryCmd = usedCommand;
-            const retryPassword = await runExternalExtractInner(
-              retryCmd,
-              archivePath,
-              effectiveTargetDir,
-              conflictMode,
-              passwordCandidates,
-              onArchiveProgress,
-              signal,
-              timeoutMs,
-              hybridMode,
-              onPasswordAttempt,
-              forceFlatMode,
-              flatModeResult,
-              onLog,
-              legacyOnOutput
-            );
-            logger.info(`Legacy-Retry erfolgreich: ${archiveName}`);
-            onLog?.("INFO", `Legacy-Retry erfolgreich: ${archiveName}`);
-            password = retryPassword;
-            usedCommand = retryCmd;
-            const retryExtractorName = path.basename(retryCmd).replace(/\.exe$/i, "");
-            const retryLegacyMs = Date.now() - legacyStartedAt;
-            if (jvmFailureReason) {
-              logger.info(`Entpackt via legacy/${retryExtractorName} (nach JVM-Fehler): ${archiveName}`);
-            } else {
-              logger.info(`Entpackt via legacy/${retryExtractorName} (nach Legacy-Retry): ${archiveName}`);
-            }
-            logger.info(`Extract-Backend Ende: archive=${archiveName}, backend=legacy/${retryExtractorName}, mode=${backendMode}, ms=${Date.now() - totalStartedAt}, legacyMs=${retryLegacyMs}, fallbackFromJvm=${fallbackFromJvm}, usedPassword=${password ? "yes" : "no"}`);
-            onLog?.("INFO", `Extract-Backend Ende: archive=${archiveName}, backend=legacy/${retryExtractorName}, mode=${backendMode}, ms=${Date.now() - totalStartedAt}, legacyMs=${retryLegacyMs}, fallbackFromJvm=${fallbackFromJvm}, usedPassword=${password ? "yes" : "no"}`);
-            return password;
-          } catch (retryError) {
-            const retryText = String((retryError as Error)?.message || retryError || "");
-            const retryCategory = classifyExtractionError(retryText);
-            logger.warn(`Legacy-Retry ebenfalls fehlgeschlagen (${retryCategory}): ${archiveName}`);
-            onLog?.("WARN", `Legacy-Retry ebenfalls fehlgeschlagen (${retryCategory}): ${archiveName}`);
-            const suggestRedownload = jvmCodecError && (retryCategory === "crc_error" || retryCategory === "wrong_password");
-            finalLegacyError = withExtractionErrorHints(retryError, {
-              suggestRedownload,
-              jvmFailureReason: jvmFailureReason || undefined
-            });
-          }
-        } else {
-          finalLegacyError = withExtractionErrorHints(legacyError, {
-            jvmFailureReason: jvmFailureReason || undefined
-          });
-        }
-      } else {
-        const suggestRedownload = jvmCodecError && isCrcOrWrongPw;
-        finalLegacyError = withExtractionErrorHints(legacyError, {
-          suggestRedownload,
-          jvmFailureReason: jvmFailureReason || undefined
-        });
-      }
+      let finalLegacyError = withExtractionErrorHints(legacyError, {
+        suggestRedownload: initialJvmFailureCategory !== null && shouldSuggestRedownloadAfterCrossBackendFailure(
+          initialLegacyCategory,
+          initialJvmFailureCategory,
+          initialJvmPasswordCandidatesExhausted
+        ),
+        jvmFailureReason: jvmFailureReason || undefined
+      });
 
       const finalLegacyHints = finalLegacyError as ExtractionErrorWithHints;
       const finalLegacyText = String(finalLegacyError?.message || finalLegacyError || "");
@@ -3277,7 +3416,8 @@ async function runExternalExtract(
             onArchiveProgress,
             signal,
             timeoutMs,
-            onOutput
+            onOutput,
+            onPasswordAttempt
           );
           const jvmMs = Date.now() - jvmStartedAt;
           logger.info(`JVM-Extractor Ergebnis (nach Legacy-Fallback): archive=${archiveName}, ok=${jvmResult.ok}, ms=${jvmMs}, timedOut=${jvmResult.timedOut}, aborted=${jvmResult.aborted}, backend=${jvmResult.backend || "unknown"}, usedPassword=${jvmResult.usedPassword ? "yes" : "no"}`);
@@ -3291,8 +3431,14 @@ async function runExternalExtract(
           if (jvmResult.aborted) {
             throw new Error("aborted:extract");
           }
+          const fallbackJvmFailureReason = jvmResult.errorText || "JVM-Extractor fehlgeschlagen";
           finalLegacyError = withExtractionErrorHints(finalLegacyError, {
-            jvmFailureReason: jvmResult.errorText || "JVM-Extractor fehlgeschlagen"
+            suggestRedownload: shouldSuggestRedownloadAfterCrossBackendFailure(
+              classifyExtractionError(finalLegacyText),
+              classifyExtractionError(fallbackJvmFailureReason),
+              jvmResult.passwordCandidatesExhausted
+            ),
+            jvmFailureReason: fallbackJvmFailureReason
           });
           logger.warn(`Legacy->JVM-Fallback ebenfalls fehlgeschlagen: ${archiveName} (${cleanErrorText(jvmResult.errorText || "JVM-Extractor fehlgeschlagen")})`);
           onLog?.("WARN", `Legacy->JVM-Fallback ebenfalls fehlgeschlagen: archive=${archiveName}, error=${cleanErrorText(jvmResult.errorText || "JVM-Extractor fehlgeschlagen")}`);
@@ -3851,6 +3997,15 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
   if (options.signal?.aborted) {
     throw new Error("aborted:extract");
   }
+  const safeOnLog: ExtractOptions["onLog"] = options.onLog
+    ? (level, message) => {
+      try {
+        options.onLog?.(level, message);
+      } catch {
+        logger.warn("Extract-Log-Callback fehlgeschlagen");
+      }
+    }
+    : undefined;
   const outputScope = new PackageOutputScope([options.targetDir]);
   const emitOutput = (event: ExtractOutputEvent): void => {
     outputScope.add(event);
@@ -3889,7 +4044,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
     candidates.push(...await findArchiveCandidates(options.packageDir));
   }
   logger.info(`Entpacken gestartet: packageDir=${options.packageDir}, targetDir=${options.targetDir}, archives=${candidates.length}${options.onlyArchives ? " (explizite Liste)" : ""}, cleanupMode=${options.cleanupMode}, conflictMode=${options.conflictMode}`);
-  options.onLog?.("INFO", `Entpacken gestartet: packageDir=${options.packageDir}, targetDir=${options.targetDir}, archives=${candidates.length}${options.onlyArchives ? " (explizite Liste)" : ""}, cleanupMode=${options.cleanupMode}, conflictMode=${options.conflictMode}`);
+  safeOnLog?.("INFO", `Entpacken gestartet: packageDir=${options.packageDir}, targetDir=${options.targetDir}, archives=${candidates.length}${options.onlyArchives ? " (explizite Liste)" : ""}, cleanupMode=${options.cleanupMode}, conflictMode=${options.conflictMode}`);
 
   if (candidates.length > 0) {
     options.onProgress?.({ current: 0, total: candidates.length, percent: 0, archiveName: "Speicherplatz prüfen...", phase: "preparing" });
@@ -3949,7 +4104,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
   if (cachedPackagePassword) {
     passwordCandidates = prioritizePassword(passwordCandidates, cachedPackagePassword);
     logger.info(`Passwort-Cache Treffer: ${passwordCacheLabel}, bekanntes Passwort wird zuerst getestet`);
-    options.onLog?.("INFO", `Passwort-Cache Treffer: ${passwordCacheLabel}, bekanntes Passwort wird zuerst getestet`);
+    safeOnLog?.("INFO", `Passwort-Cache Treffer: ${passwordCacheLabel}, bekanntes Passwort wird zuerst getestet`);
   }
   const resumeCompleted = await readExtractResumeState(options.packageDir, options.targetDir, options.packageId);
   const resumeCompletedAtStart = resumeCompleted.size;
@@ -4017,7 +4172,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
     writeCachedPackagePassword(passwordCacheKey, normalized);
     if (changed) {
       logger.info(`Passwort-Cache Update: ${passwordCacheLabel}, neues Passwort gelernt`);
-      options.onLog?.("INFO", `Passwort-Cache Update: ${passwordCacheLabel}, neues Passwort gelernt`);
+      safeOnLog?.("INFO", `Passwort-Cache Update: ${passwordCacheLabel}, neues Passwort gelernt`);
     }
   };
 
@@ -4144,9 +4299,9 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
     }
 
     logger.info(`Entpacke Archiv: ${path.basename(archivePath)} -> ${options.targetDir}${hybrid ? " (hybrid, reduced threads, low I/O)" : ""}`);
-    options.onLog?.("INFO", `Entpacke Archiv: ${path.basename(archivePath)} -> ${options.targetDir}${hybrid ? " (hybrid, reduced threads, low I/O)" : ""}`);
+    safeOnLog?.("INFO", `Entpacke Archiv: ${path.basename(archivePath)} -> ${options.targetDir}${hybrid ? " (hybrid, reduced threads, low I/O)" : ""}`);
     const emptyArchivePasswordCount = archivePasswordCandidates.filter((candidate) => candidate === "").length;
-    options.onLog?.("INFO", `Archiv-Passwortliste: archive=${archiveName}, passwordCount=${archivePasswordCandidates.length}, redacted=true, emptyCandidates=${emptyArchivePasswordCount}`);
+    safeOnLog?.("INFO", `Archiv-Passwortliste: archive=${archiveName}, passwordCount=${archivePasswordCandidates.length}, redacted=true, emptyCandidates=${emptyArchivePasswordCount}`);
     const hasManyPasswords = archivePasswordCandidates.length > 1;
     if (hasManyPasswords) {
       emitProgress(extracted + failed, archiveName, "extracting", 0, 0, { passwordAttempt: 0, passwordTotal: archivePasswordCandidates.length }, undefined, archivePath);
@@ -4155,7 +4310,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
       ? (attempt: number, total: number) => {
         activePasswordProgress = mergeExtractPasswordProgress(activePasswordProgress, { passwordAttempt: attempt, passwordTotal: total });
         emitProgress(extracted + failed, archiveName, "extracting", archivePercent, Date.now() - archiveStartedAt, activePasswordProgress, undefined, archivePath);
-        options.onLog?.("INFO", `Passwort-Versuch ${attempt}/${total}: archive=${archiveName}, password=<redacted>`);
+        safeOnLog?.("INFO", `Passwort-Versuch ${attempt}/${total}: archive=${archiveName}, password=<redacted>`);
       }
       : undefined;
     try {
@@ -4167,7 +4322,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
           try {
             const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, archivePasswordCandidates, (value) => {
               reportArchiveProgress(value);
-            }, signal, hybrid, onPwAttempt, false, undefined, options.onLog, emitOutput);
+            }, signal, hybrid, onPwAttempt, false, undefined, safeOnLog, emitOutput);
             rememberLearnedPassword(usedPassword);
           } catch (error) {
             if (isNoExtractorError(String(error))) {
@@ -4187,7 +4342,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
             try {
               const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, archivePasswordCandidates, (value) => {
                 reportArchiveProgress(value);
-              }, signal, hybrid, onPwAttempt, false, undefined, options.onLog, emitOutput);
+              }, signal, hybrid, onPwAttempt, false, undefined, safeOnLog, emitOutput);
               rememberLearnedPassword(usedPassword);
             } catch (externalError) {
               throw selectZipFallbackError(error, externalError);
@@ -4198,7 +4353,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
         const flatResult = { needed: false };
         const usedPassword = await runExternalExtract(archivePath, options.targetDir, options.conflictMode, archivePasswordCandidates, (value) => {
           reportArchiveProgress(value);
-        }, signal, hybrid, onPwAttempt, packageNeedsFlatMode, flatResult, options.onLog, emitOutput);
+        }, signal, hybrid, onPwAttempt, packageNeedsFlatMode, flatResult, safeOnLog, emitOutput);
         rememberLearnedPassword(usedPassword);
         if (flatResult.needed) packageNeedsFlatMode = true;
       }
@@ -4211,7 +4366,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
         await writeExtractResumeState(options.packageDir, resumeCompleted, options.packageId);
       }
       logger.info(`Entpacken erfolgreich: ${path.basename(archivePath)}`);
-      options.onLog?.("INFO", `Entpacken erfolgreich: ${path.basename(archivePath)}`);
+      safeOnLog?.("INFO", `Entpacken erfolgreich: ${path.basename(archivePath)}`);
       archiveOutcome = "success";
       const successAt = Date.now();
       const tailAfter99Ms = reached99At ? (successAt - reached99At) : -1;
@@ -4242,12 +4397,12 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
         jvmFailureReason: hintedError?.jvmFailureReason
       });
       logger.error(`Entpack-Fehler ${path.basename(archivePath)} [${errorCategory}]: ${errorText}`);
-      options.onLog?.("ERROR", `Entpack-Fehler ${path.basename(archivePath)} [${errorCategory}]: ${errorText}`);
+      safeOnLog?.("ERROR", `Entpack-Fehler ${path.basename(archivePath)} [${errorCategory}]: ${errorText}`);
       if (errorCategory === "wrong_password" && learnedPassword) {
         learnedPassword = "";
         clearCachedPackagePassword(passwordCacheKey);
         logger.warn(`Passwort-Cache verworfen: ${passwordCacheLabel} (wrong_password)`);
-        options.onLog?.("WARN", `Passwort-Cache verworfen: ${passwordCacheLabel} (wrong_password)`);
+        safeOnLog?.("WARN", `Passwort-Cache verworfen: ${passwordCacheLabel} (wrong_password)`);
       }
       const failedAt = Date.now();
       const tailAfter99Ms = reached99At ? (failedAt - reached99At) : -1;
@@ -4282,7 +4437,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
     let parallelQueue = pendingCandidates;
     if (passwordCandidates.length > 1 && pendingCandidates.length > 1) {
       logger.info(`Passwort-Discovery: Extrahiere erstes Archiv seriell (${passwordCandidates.length} Passwort-Kandidaten)...`);
-      options.onLog?.("INFO", `Passwort-Discovery: Extrahiere erstes Archiv seriell (${passwordCandidates.length} Passwort-Kandidaten)...`);
+      safeOnLog?.("INFO", `Passwort-Discovery: Extrahiere erstes Archiv seriell (${passwordCandidates.length} Passwort-Kandidaten)...`);
       const first = pendingCandidates[0];
       try {
         await scheduleArchive(first, (signal) => extractSingleArchive(first, signal));
@@ -4329,52 +4484,39 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
 
       if (abortError) throw new Error("aborted:extract");
 
-      if (failed > 0 && extracted === 0) {
-        const failedArchives = parallelQueue.filter((ap) => !extractedArchives.has(ap) && !resumedArchivePaths.has(pathSetKey(ap)));
-        const failedCategories = failedArchives.map((archivePath) => failedArchiveCategories.get(archivePath) || "unknown");
-        if (failedArchives.length > 0 && shouldSerialRetryParallelFailures(extracted, failedCategories)) {
-          const categorySummary = [...new Set(failedCategories)].join(",");
-          logger.info(
-            `Serielle Wiederholung nach Parallel-Fehlstart: ${failedArchives.length} Archive werden einzeln wiederholt ` +
-            `(categories=${categorySummary || "unknown"})`
-          );
-          let retryRecovered = 0;
-          for (const archivePath of failedArchives) {
-            if (options.signal?.aborted || noExtractorEncountered) break;
-            try {
-              failed -= 1;
-              await scheduleArchive(archivePath, (signal) => extractSingleArchive(archivePath, signal));
+      const serialRecoveryByPath = new Map<string, string>();
+      for (const archivePath of parallelQueue) {
+        const archiveKey = pathSetKey(path.resolve(archivePath));
+        if (extractedArchives.has(archivePath)
+          || resumedArchivePaths.has(archiveKey)
+          || failedArchiveCategories.get(archivePath) !== "unknown") {
+          continue;
+        }
+        serialRecoveryByPath.set(archiveKey, archivePath);
+      }
+      const serialRecoveryArchives = [...serialRecoveryByPath.values()];
+      if (serialRecoveryArchives.length > 0) {
+        logger.info(`Serielle Wiederholung: ${serialRecoveryArchives.length} unbekannte Parallelfehler werden einmal einzeln wiederholt`);
+        let retryRecovered = 0;
+        for (const archivePath of serialRecoveryArchives) {
+          if (options.signal?.aborted || noExtractorEncountered) break;
+          const failedBeforeRetry = failed;
+          try {
+            failed -= 1;
+            await scheduleArchive(archivePath, (signal) => extractSingleArchive(archivePath, signal));
+            if (extractedArchives.has(archivePath)) {
               retryRecovered += 1;
-            } catch (retryError) {
-              const errText = String(retryError);
-              if (isExtractAbortError(errText)) throw retryError;
             }
-          }
-          if (retryRecovered > 0) {
-            logger.info(`Serielle Wiederholung nach Parallel-Fehlstart: ${retryRecovered}/${failedArchives.length} Archive erfolgreich entpackt`);
+          } catch (retryError) {
+            if (!extractedArchives.has(archivePath)) {
+              failed = failedBeforeRetry;
+            }
+            const errText = String(retryError);
+            if (isExtractAbortError(errText)) throw retryError;
           }
         }
-      }
-
-      if (failed > 0 && extracted > 0) {
-        const failedArchives = parallelQueue.filter((ap) => !extractedArchives.has(ap) && !resumedArchivePaths.has(pathSetKey(ap)));
-        if (failedArchives.length > 0) {
-          logger.info(`Serielle Wiederholung: ${failedArchives.length} fehlgeschlagene Archive werden einzeln wiederholt (mögliche Parallelitäts-Kollision)`);
-          let retryRecovered = 0;
-          for (const archivePath of failedArchives) {
-            if (options.signal?.aborted || noExtractorEncountered) break;
-            try {
-              failed -= 1;
-              await scheduleArchive(archivePath, (signal) => extractSingleArchive(archivePath, signal));
-              retryRecovered += 1;
-            } catch (retryError) {
-              const errText = String(retryError);
-              if (isExtractAbortError(errText)) throw retryError;
-            }
-          }
-          if (retryRecovered > 0) {
-            logger.info(`Serielle Wiederholung: ${retryRecovered}/${failedArchives.length} Archive erfolgreich entpackt`);
-          }
+        if (retryRecovered > 0) {
+          logger.info(`Serielle Wiederholung: ${retryRecovered}/${serialRecoveryArchives.length} Archive erfolgreich entpackt`);
         }
       }
     }
@@ -4445,11 +4587,11 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<E
                   nestedPercent = 100;
                 } catch (zipErr) {
                   if (!shouldFallbackToExternalZip(zipErr)) throw zipErr;
-                  const usedPw = await runExternalExtract(nestedArchive, options.targetDir, options.conflictMode, passwordCandidates, (v) => { nestedPercent = Math.max(nestedPercent, v); }, signal, hybrid, undefined, false, undefined, options.onLog, emitOutput);
+                  const usedPw = await runExternalExtract(nestedArchive, options.targetDir, options.conflictMode, passwordCandidates, (v) => { nestedPercent = Math.max(nestedPercent, v); }, signal, hybrid, undefined, false, undefined, safeOnLog, emitOutput);
                   rememberLearnedPassword(usedPw);
                 }
               } else {
-                const usedPw = await runExternalExtract(nestedArchive, options.targetDir, options.conflictMode, passwordCandidates, (v) => { nestedPercent = Math.max(nestedPercent, v); }, signal, hybrid, undefined, false, undefined, options.onLog, emitOutput);
+                const usedPw = await runExternalExtract(nestedArchive, options.targetDir, options.conflictMode, passwordCandidates, (v) => { nestedPercent = Math.max(nestedPercent, v); }, signal, hybrid, undefined, false, undefined, safeOnLog, emitOutput);
                 rememberLearnedPassword(usedPw);
               }
             });

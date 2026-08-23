@@ -16,6 +16,7 @@ const EXPECTED_PRODUCT_NAME = "Multi-Debrid-Downloader";
 const EXPECTED_NSIS_ARTIFACT_NAME = "${productName}-Setup-${version}.${ext}";
 const EXPECTED_PORTABLE_ARTIFACT_NAME = "${productName}-${version}-portable.${ext}";
 const EXPECTED_NSIS_INCLUDE = "resources/installer.nsh";
+const EXPECTED_JVM_ASAR_UNPACK = "resources/extractor-jvm/**/*";
 const REQUIRED_BUILD_FILES = Object.freeze([
   "resources/extractor-jvm/**/*",
   "LICENSE",
@@ -156,6 +157,97 @@ function readPackagedMainVersion(asarPath) {
 
 function sha256File(filePath) {
   return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+}
+
+function isJvmRuntimeArtifact(relativePath) {
+  const normalized = relativePath.split(path.sep).join("/");
+  return /^classes\/.+\.class$/i.test(normalized)
+    || /(?:^|\/)\.source\.sha256$/i.test(normalized)
+    || /^lib\/[^/]+\.jar$/i.test(normalized);
+}
+
+function readJvmRuntimeInventory(runtimeRoot, label) {
+  let rootStat;
+  try {
+    rootStat = fs.lstatSync(runtimeRoot);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw new Error(`Missing ${label} JVM runtime: ${runtimeRoot}`);
+    }
+    throw error;
+  }
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+    throw new Error(`${label} JVM runtime must be a regular directory: ${runtimeRoot}`);
+  }
+  const inventory = new Map();
+  for (const filePath of listFiles(runtimeRoot)) {
+    const relativePath = normalizeRelativePath(runtimeRoot, filePath);
+    if (!isJvmRuntimeArtifact(relativePath)) {
+      continue;
+    }
+    const stat = fs.lstatSync(filePath);
+    if (stat.isSymbolicLink() || !stat.isFile() || stat.size === 0) {
+      throw new Error(`${label} JVM runtime artifact must be a non-empty regular file: ${relativePath}`);
+    }
+    inventory.set(relativePath, sha256File(filePath));
+  }
+  const paths = [...inventory.keys()];
+  if (!paths.some((relativePath) => /^classes\/.+\.class$/i.test(relativePath))) {
+    throw new Error(`${label} JVM runtime contains no class files`);
+  }
+  if (!paths.some((relativePath) => /(?:^|\/)\.source\.sha256$/i.test(relativePath))) {
+    throw new Error(`${label} JVM runtime omits .source.sha256`);
+  }
+  if (!paths.some((relativePath) => /^lib\/[^/]+\.jar$/i.test(relativePath))) {
+    throw new Error(`${label} JVM runtime contains no library JAR files`);
+  }
+  return inventory;
+}
+
+function verifyJvmRuntimeEquality(sourceRoot, packagedRoot, label) {
+  const sourceInventory = readJvmRuntimeInventory(sourceRoot, "source");
+  const packagedInventory = readJvmRuntimeInventory(packagedRoot, label);
+  for (const [relativePath, sourceDigest] of sourceInventory) {
+    if (!packagedInventory.has(relativePath)) {
+      throw new Error(`${label} JVM runtime is missing ${relativePath}`);
+    }
+    if (packagedInventory.get(relativePath) !== sourceDigest) {
+      throw new Error(`${label} JVM runtime SHA256 mismatch for ${relativePath}`);
+    }
+  }
+  for (const relativePath of packagedInventory.keys()) {
+    if (!sourceInventory.has(relativePath)) {
+      throw new Error(`${label} JVM runtime contains unexpected artifact ${relativePath}`);
+    }
+  }
+}
+
+function findArchiveJvmRuntimeRoots(extractionRoot) {
+  const roots = new Map();
+  const marker = ["resources", "app.asar.unpacked", "resources", "extractor-jvm"];
+  for (const filePath of listFiles(extractionRoot)) {
+    const parts = normalizeRelativePath(extractionRoot, filePath).split("/");
+    for (let index = 0; index <= parts.length - marker.length; index += 1) {
+      const candidate = parts.slice(index, index + marker.length);
+      if (candidate.every((part, markerIndex) => part.toLowerCase() === marker[markerIndex])) {
+        const relativeRoot = parts.slice(0, index + marker.length).join("/");
+        roots.set(relativeRoot.toLowerCase(), path.join(extractionRoot, ...relativeRoot.split("/")));
+        break;
+      }
+    }
+  }
+  return [...roots.values()];
+}
+
+function verifyArchiveJvmRuntime(extractionRoot, archiveName, sourceRoot) {
+  const runtimeRoots = findArchiveJvmRuntimeRoots(extractionRoot);
+  if (runtimeRoots.length === 0) {
+    throw new Error(`Missing JVM runtime in archive ${archiveName}`);
+  }
+  const sourceRuntimeRoot = path.join(sourceRoot, "resources", "extractor-jvm");
+  for (const runtimeRoot of runtimeRoots) {
+    verifyJvmRuntimeEquality(sourceRuntimeRoot, runtimeRoot, `${archiveName}`);
+  }
 }
 
 function verifyPackagedIcon(sourceRoot, packagedRoot, label) {
@@ -313,6 +405,10 @@ export function verifyPublicRelease(rootDir = process.cwd()) {
   if (missingBuildFiles.length > 0) {
     throw new Error(`package.json build.files omits redistribution content: ${missingBuildFiles.join(", ")}`);
   }
+  const asarUnpack = Array.isArray(build.asarUnpack) ? build.asarUnpack : [build.asarUnpack];
+  if (!asarUnpack.includes(EXPECTED_JVM_ASAR_UNPACK)) {
+    throw new Error(`package.json build.asarUnpack must include ${EXPECTED_JVM_ASAR_UNPACK}`);
+  }
   if (!hasExtraResource(build.extraResources, EXPECTED_EXTRA_RESOURCE)) {
     throw new Error("package.json build.extraResources must copy LICENSE to LICENSE");
   }
@@ -370,6 +466,11 @@ export function verifyPublicRelease(rootDir = process.cwd()) {
   verifyRedistributionFiles(absoluteRoot, "sourcePath", "source");
   verifyRedistributionFiles(path.join(releaseDir, "win-unpacked"), "packagedPath", "win-unpacked");
   verifyPackagedIcon(absoluteRoot, path.join(releaseDir, "win-unpacked"), "win-unpacked");
+  verifyJvmRuntimeEquality(
+    path.join(absoluteRoot, "resources", "extractor-jvm"),
+    path.join(releaseDir, "win-unpacked", "resources", "app.asar.unpacked", "resources", "extractor-jvm"),
+    "win-unpacked"
+  );
 
   return {
     publish: {
@@ -401,6 +502,7 @@ export function verifyReleaseArchives(rootDir = process.cwd(), options = {}) {
     try {
       extractArchiveTree(archivePath, extractionRoot, sevenZipPath, commandRunner);
       verifyArchiveRedistributionFiles(extractionRoot, archiveName, absoluteRoot);
+      verifyArchiveJvmRuntime(extractionRoot, archiveName, absoluteRoot);
       verifiedArchives.push(archiveName);
     } finally {
       fs.rmSync(extractionRoot, { recursive: true, force: true });

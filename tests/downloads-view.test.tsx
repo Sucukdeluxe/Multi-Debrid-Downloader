@@ -2187,6 +2187,7 @@ describe("download table row contracts", () => {
   it("keeps the complete package status and audio details in the tooltip", () => {
     const audioPackage = {
       ...pkg("audio-package", "Audio package", ["audio-item"]),
+      status: "extracting" as const,
       postProcessLabel: "Entpacken 1%",
       audioStripSummary: {
         at: now,
@@ -2229,6 +2230,62 @@ describe("download table row contracts", () => {
     expect(html.match(/>Entpack-Fehler<\/span>/g)).toHaveLength(2);
     expect(html).toContain('title="Entpack-Fehler [release.part1.rar]: Unerwartetes Dateiende');
     expect(html).toContain('Mega-Debrid API: Kein Server verfügbar');
+  });
+
+  it("shows active extraction progress while retaining sibling extraction errors in the tooltip", () => {
+    const activePackage = {
+      ...pkg("active-extraction-package", "Active extraction", ["failed-archive", "active-archive"]),
+      status: "extracting" as const,
+      postProcessLabel: "Entpacken 42% (1/1) · active.part01.rar"
+    };
+    const failedArchive = item("failed-archive", activePackage.id, "completed", {
+      fullStatus: "Entpack-Fehler [old.part01.rar]: Checksum/CRC-Fehler im Archiv"
+    });
+    const activeArchive = item("active-archive", activePackage.id, "completed", {
+      fullStatus: "Entpacken 42% · active.part01.rar"
+    });
+    const html = renderToStaticMarkup(PackageCardContent({
+      actions: createActions(),
+      columnOrder: ["status"],
+      editing: false,
+      editingName: "",
+      gridTemplate: "220px",
+      packageSpeedBps: 0,
+      row: { package: activePackage, items: [failedArchive, activeArchive], allItems: [failedArchive, activeArchive], collapsed: true },
+      selectedIds: new Set<string>(),
+      selectedVersion: 0
+    }));
+
+    expect(html.match(/>Entpacken - 42%<\/span>/g)).toHaveLength(2);
+    expect(html).toContain("1 Entpackfehler");
+    expect(html).toContain("Entpack-Fehler [old.part01.rar]: Checksum/CRC-Fehler im Archiv");
+  });
+
+  it("does not present a persisted extraction label as active progress after restart", () => {
+    const restoredItem = item("restored-archive", "restored-package", "completed", {
+      fullStatus: "Entpacken - Ausstehend"
+    });
+    const restoredPackage = {
+      ...pkg("restored-package", "Restored extraction", [restoredItem.id]),
+      status: "queued" as const,
+      postProcessLabel: "Entpacken 100% (1/1) · release.part01.rar"
+    };
+    const html = renderToStaticMarkup(PackageCardContent({
+      actions: createActions(),
+      columnOrder: ["status"],
+      editing: false,
+      editingName: "",
+      gridTemplate: "220px",
+      packageSpeedBps: 0,
+      row: { package: restoredPackage, items: [restoredItem], allItems: [restoredItem], collapsed: true },
+      selectedIds: new Set<string>(),
+      selectedVersion: 0
+    }));
+
+    expect(html.match(/>Entpacken - Ausstehend<\/span>/g)).toHaveLength(2);
+    expect(html).not.toContain(">Entpacken - 100%</span>");
+    expect(html).not.toContain("Entpacken 100%");
+    expect(html).not.toContain("release.part01.rar");
   });
 
   it("removes redundant service suffixes from runtime statuses", () => {

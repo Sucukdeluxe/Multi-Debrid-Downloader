@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -19,6 +21,10 @@ import {
   shouldSerialRetryParallelFailures,
   findArchiveCandidates,
   orderExtractorCandidatesForArchive,
+  extractorCommandsShareIdentity,
+  parseJvmPasswordAttemptLine,
+  redactJvmDiagnosticLine,
+  summarizeJvmPasswordAttempts,
   parseNativeExtractOutput,
   parseNativeArchiveEntryList,
   remapNativeSubstOutput,
@@ -26,14 +32,44 @@ import {
   resolveExtractorBackendModeForArchive,
   resolveExtractorBackendMode,
   shouldFallbackLegacyRarToJvm,
+  shouldRunAlternativeNativeExtractor,
+  shouldSuggestRedownloadAfterCrossBackendFailure,
   validateNativeArchiveEntryCandidates,
   validateNativeFlatArchiveEntryCandidates,
 } from "../src/main/extractor";
 
 const tempDirs: string[] = [];
 const originalExtractBackend = process.env.RD_EXTRACT_BACKEND;
+const originalArchivePasswords = process.env.RD_ARCHIVE_PASSWORDS;
 const originalStatfs = fs.promises.statfs;
 const require = createRequire(import.meta.url);
+const rarCliPath = [
+  "C:\\Program Files\\WinRAR\\Rar.exe",
+  "C:\\Program Files (x86)\\WinRAR\\Rar.exe"
+].find((candidate) => fs.existsSync(candidate)) || "";
+const javaAvailable = spawnSync("java", ["-version"], { stdio: "ignore" }).status === 0;
+const sevenZipAvailable = spawnSync("7z", ["i"], { stdio: "ignore" }).status === 0;
+
+function createEncryptedCorruptRarFixture(root: string, password: string, stem: string): string {
+  const packageDir = path.join(root, "pkg");
+  const payloadPath = path.join(root, "payload.bin");
+  fs.mkdirSync(packageDir, { recursive: true });
+  fs.writeFileSync(payloadPath, randomBytes(256 * 1024));
+  const archivePath = path.join(packageDir, `${stem}.rar`);
+  const created = spawnSync(rarCliPath, ["a", "-ma5", `-hp${password}`, "-v64k", "-idq", archivePath, payloadPath], { encoding: "utf8" });
+  if (created.status !== 0) {
+    throw new Error(String(created.stderr || created.stdout || `Rar Exit ${created.status}`));
+  }
+  const parts = fs.readdirSync(packageDir).filter((name) => new RegExp(`^${stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.part\\d+\\.rar$`, "i").test(name)).sort();
+  if (parts.length < 3) {
+    throw new Error("RAR fixture has fewer than three volumes");
+  }
+  const corruptPath = path.join(packageDir, parts[2]);
+  const bytes = fs.readFileSync(corruptPath);
+  bytes[Math.floor(bytes.length / 2)] ^= 0xff;
+  fs.writeFileSync(corruptPath, bytes);
+  return packageDir;
+}
 
 type ZipFixtureEntry = { name: string; directory?: boolean; content?: string };
 
@@ -115,6 +151,11 @@ afterEach(() => {
   } else {
     process.env.RD_EXTRACT_BACKEND = originalExtractBackend;
   }
+  if (originalArchivePasswords === undefined) {
+    delete process.env.RD_ARCHIVE_PASSWORDS;
+  } else {
+    process.env.RD_ARCHIVE_PASSWORDS = originalArchivePasswords;
+  }
   (fs.promises as any).statfs = originalStatfs;
 });
 
@@ -150,6 +191,67 @@ describe("extractor", () => {
     expect(rarCliArgs[rarCliArgs.length - 2]).toBe("archive.rar");
     expect(rarCliArgs[rarCliArgs.length - 1]).toBe("C:\\target\\");
   });
+
+  it.skipIf(process.platform !== "win32" || !rarCliPath || !sevenZipAvailable)("runs one five-candidate legacy pass for a deterministic multipart CRC failure", async () => {
+    process.env.RD_EXTRACT_BACKEND = "auto";
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-legacy-crc-pass-"));
+    tempDirs.push(root);
+    const packageDir = path.join(root, "pkg");
+    const targetDir = path.join(root, "out");
+    const payloadPath = path.join(root, "payload.bin");
+    fs.mkdirSync(packageDir, { recursive: true });
+    fs.writeFileSync(payloadPath, randomBytes(256 * 1024));
+    const archivePath = path.join(packageDir, "release.test.rar");
+    const created = spawnSync(rarCliPath, ["a", "-ma5", "-hpnot-in-candidate-list", "-v64k", "-idq", archivePath, payloadPath], { encoding: "utf8" });
+    expect(created.status).toBe(0);
+    const parts = fs.readdirSync(packageDir).filter((name) => /^release\.test\.part\d+\.rar$/i.test(name)).sort();
+    expect(parts.length).toBeGreaterThanOrEqual(3);
+    const logs: string[] = [];
+
+    const result = await extractPackageArchives({
+      packageDir,
+      targetDir,
+      cleanupMode: "none",
+      conflictMode: "overwrite",
+      removeLinks: false,
+      removeSamples: false,
+      onLog: (_level, message) => logs.push(message)
+    });
+
+    expect(result.failed).toBe(1);
+    expect(logs.filter((message) => message.startsWith("Legacy-Extractor Start:"))).toHaveLength(1);
+    expect(logs.filter((message) => /^Legacy-Passwort-Versuch \d\/5:/.test(message))).toHaveLength(5);
+    expect(logs.some((message) => message.startsWith("Legacy-Fallback:"))).toBe(false);
+  }, 30_000);
+
+  it.skipIf(process.platform !== "win32" || !rarCliPath)("does not serially retry a deterministic CRC archive after another package archive succeeded", async () => {
+    process.env.RD_EXTRACT_BACKEND = "legacy";
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-parallel-crc-pass-"));
+    tempDirs.push(root);
+    const packageDir = path.join(root, "pkg");
+    const targetDir = path.join(root, "out");
+    const validPayload = path.join(root, "valid.bin");
+    const failedPayload = path.join(root, "failed.bin");
+    fs.mkdirSync(packageDir, { recursive: true });
+    fs.writeFileSync(validPayload, randomBytes(96 * 1024));
+    fs.writeFileSync(failedPayload, randomBytes(96 * 1024));
+    expect(spawnSync(rarCliPath, ["a", "-ma5", "-idq", path.join(packageDir, "a.valid.rar"), validPayload]).status).toBe(0);
+    expect(spawnSync(rarCliPath, ["a", "-ma5", "-hpnot-in-candidate-list", "-idq", path.join(packageDir, "b.failed.rar"), failedPayload]).status).toBe(0);
+    const logs: string[] = [];
+
+    const result = await extractPackageArchives({
+      packageDir,
+      targetDir,
+      cleanupMode: "none",
+      conflictMode: "overwrite",
+      removeLinks: false,
+      removeSamples: false,
+      onLog: (_level, message) => logs.push(message)
+    });
+
+    expect(result).toEqual(expect.objectContaining({ extracted: 1, failed: 1 }));
+    expect(logs.filter((message) => message.startsWith("Legacy-Extractor Start: archive=b.failed.rar"))).toHaveLength(1);
+  }, 30_000);
 
   it("deletes only successfully extracted archives", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-"));
@@ -1096,11 +1198,20 @@ describe("extractor", () => {
     it("classifies CRC errors", () => {
       expect(classifyExtractionError("CRC failed for file.txt")).toBe("crc_error");
       expect(classifyExtractionError("Checksum error in data")).toBe("crc_error");
+      expect(classifyExtractionError("7z-Fehler: CRCERROR")).toBe("crc_error");
+      expect(classifyExtractionError("7z-Fehler: DATAERROR")).toBe("crc_error");
+      expect(classifyExtractionError("CRC-Fehler in release.part3.rar")).toBe("crc_error");
+      expect(classifyExtractionError("Prüfsummenfehler der gepackten Daten in Volume C:\\release.part3.rar")).toBe("crc_error");
+      expect(classifyExtractionError("Pr�fsummenfehler der gepackten Daten in Volume C:\\release.part3.rar")).toBe("crc_error");
+      expect(classifyExtractionError("PrÃ¼fsummenfehler der gepackten Daten in Volume C:\\release.part3.rar")).toBe("crc_error");
     });
 
     it("classifies wrong password", () => {
       expect(classifyExtractionError("Wrong password")).toBe("wrong_password");
       expect(classifyExtractionError("Falsches Passwort")).toBe("wrong_password");
+      expect(classifyExtractionError("Falsches Archiv-Passwort")).toBe("wrong_password");
+      expect(classifyExtractionError("Falsches Archiv Passwort")).toBe("wrong_password");
+      expect(classifyExtractionError("Falsches-Archiv-Passwort")).toBe("wrong_password");
     });
 
     it("classifies missing parts", () => {
@@ -1153,13 +1264,15 @@ describe("extractor", () => {
   });
 
   describe("shouldSerialRetryParallelFailures", () => {
-    it("keeps serial recovery enabled after mixed parallel results", () => {
-      expect(shouldSerialRetryParallelFailures(1, ["wrong_password"])).toBe(true);
-      expect(shouldSerialRetryParallelFailures(2, ["missing_parts"])).toBe(true);
+    it("retries unknown failures that can result from parallel contention", () => {
+      expect(shouldSerialRetryParallelFailures(1, ["unknown"])).toBe(true);
+      expect(shouldSerialRetryParallelFailures(0, ["unknown", "unknown"])).toBe(true);
     });
 
-    it("only retries a total parallel wipe-out for contention-like failures", () => {
-      expect(shouldSerialRetryParallelFailures(0, ["crc_error", "wrong_password", "unknown"])).toBe(true);
+    it("does not retry deterministic archive failures after another archive succeeded", () => {
+      expect(shouldSerialRetryParallelFailures(1, ["crc_error"])).toBe(false);
+      expect(shouldSerialRetryParallelFailures(1, ["wrong_password"])).toBe(false);
+      expect(shouldSerialRetryParallelFailures(1, ["unsupported_format"])).toBe(false);
       expect(shouldSerialRetryParallelFailures(0, ["missing_parts"])).toBe(false);
       expect(shouldSerialRetryParallelFailures(0, ["unsupported_format", "crc_error"])).toBe(false);
     });
@@ -1357,6 +1470,191 @@ describe("extractor", () => {
       expect(ordered[1]).toBe("UnRAR.exe");
     });
   });
+
+  describe("extractorCommandsShareIdentity", () => {
+    it("deduplicates aliases of the same native extraction engine", () => {
+      expect(extractorCommandsShareIdentity("Rar.exe", "UnRAR.exe", "win32")).toBe(true);
+      expect(extractorCommandsShareIdentity("C:\\Program Files\\WinRAR\\Rar.exe", "rar", "win32")).toBe(true);
+      expect(extractorCommandsShareIdentity("7z.exe", "7za", "win32")).toBe(true);
+      expect(extractorCommandsShareIdentity("Rar.exe", "7z.exe", "win32")).toBe(false);
+    });
+
+    it("budgets automatic RAR recovery to one native engine before JVM", () => {
+      expect(shouldRunAlternativeNativeExtractor("Rar.exe", "C:\\release.part1.rar", "auto", "legacy", "win32")).toBe(false);
+      expect(shouldRunAlternativeNativeExtractor("Rar.exe", "C:\\release.part1.rar", "jvm", "jvm", "win32")).toBe(false);
+      expect(shouldRunAlternativeNativeExtractor("Rar.exe", "C:\\release.part1.rar", "legacy", "legacy", "win32")).toBe(true);
+      expect(shouldRunAlternativeNativeExtractor("7z.exe", "C:\\release.zip", "auto", "auto", "win32")).toBe(true);
+    });
+
+    it("runs one deduplicated serial recovery pass after parallel unknown failures", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-serial-recovery-once-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(packageDir, { recursive: true });
+      for (const name of ["a.zip", "b.zip", "c.zip"]) {
+        writeZipFixture(path.join(packageDir, name), [{ name: `${name}.txt`, content: name }]);
+      }
+      const attempts = new Map<string, number>();
+
+      const result = await extractPackageArchives({
+        packageDir,
+        targetDir,
+        cleanupMode: "none",
+        conflictMode: "overwrite",
+        removeLinks: false,
+        removeSamples: false,
+        scheduleArchive: async (archivePath, execute) => {
+          const archiveName = path.basename(archivePath);
+          attempts.set(archiveName, (attempts.get(archiveName) || 0) + 1);
+          return execute(new AbortController().signal);
+        },
+        onOutput: (event) => {
+          const archiveName = path.basename(event.archivePath);
+          if (event.state === "opened" && (archiveName !== "b.zip" || attempts.get(archiveName) === 1)) {
+            throw new Error(`transient-${archiveName}`);
+          }
+        }
+      });
+
+      expect(result).toEqual(expect.objectContaining({ extracted: 1, failed: 2 }));
+      expect(Object.fromEntries(attempts)).toEqual({ "a.zip": 1, "b.zip": 2, "c.zip": 2 });
+    });
+
+    it.skipIf(process.platform !== "win32" || !rarCliPath)("isolates throwing Legacy password-log callbacks without retrying archives", async () => {
+      process.env.RD_EXTRACT_BACKEND = "legacy";
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-legacy-callback-isolation-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(packageDir, { recursive: true });
+      for (const name of ["a", "b"]) {
+        const inputPath = path.join(root, `${name}.txt`);
+        fs.writeFileSync(inputPath, `${name} payload`, "utf8");
+        expect(spawnSync(rarCliPath, ["a", "-ma5", "-idq", path.join(packageDir, `${name}.rar`), inputPath]).status).toBe(0);
+      }
+      const attempts = new Map<string, number>();
+      const failures: ExtractArchiveFailureInfo[] = [];
+
+      const result = await extractPackageArchives({
+        packageDir,
+        targetDir,
+        cleanupMode: "none",
+        conflictMode: "overwrite",
+        removeLinks: false,
+        removeSamples: false,
+        scheduleArchive: async (archivePath, execute) => {
+          const archiveName = path.basename(archivePath);
+          attempts.set(archiveName, (attempts.get(archiveName) || 0) + 1);
+          return execute(new AbortController().signal);
+        },
+        onArchiveFailure: (failure) => failures.push(failure),
+        onLog: (_level, message) => {
+          if (message.startsWith("Passwort-Versuch ")) {
+            throw new Error("observer failed");
+          }
+        }
+      });
+
+      expect(result).toEqual(expect.objectContaining({ extracted: 2, failed: 0 }));
+      expect(Object.fromEntries(attempts)).toEqual({ "a.rar": 1, "b.rar": 1 });
+      expect(failures).toHaveLength(0);
+    }, 30_000);
+  });
+
+  describe("shouldSuggestRedownloadAfterCrossBackendFailure", () => {
+    it.skipIf(process.platform !== "win32" || !rarCliPath || !javaAvailable)("reports redownload only after real Legacy and JVM CRC failures exhaust candidates", async () => {
+      process.env.RD_EXTRACT_BACKEND = "auto";
+      process.env.RD_ARCHIVE_PASSWORDS = "";
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-cross-backend-crc-exhausted-"));
+      tempDirs.push(root);
+      const packageDir = createEncryptedCorruptRarFixture(root, "serienjunkies.org", "cross-backend-exhausted");
+      const failures: ExtractArchiveFailureInfo[] = [];
+
+      const result = await extractPackageArchives({
+        packageDir,
+        targetDir: path.join(root, "out"),
+        cleanupMode: "none",
+        conflictMode: "overwrite",
+        removeLinks: false,
+        removeSamples: false,
+        passwordList: "",
+        onArchiveFailure: (failure) => failures.push(failure)
+      });
+
+      expect(result).toEqual(expect.objectContaining({ extracted: 0, failed: 1 }));
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toEqual(expect.objectContaining({
+        category: "crc_error",
+        suggestRedownload: true
+      }));
+      expect(failures[0]?.jvmFailureReason).toMatch(/CRCERROR|DATAERROR/);
+    }, 30_000);
+
+    it.skipIf(process.platform !== "win32" || !rarCliPath || !javaAvailable)("keeps real Cross-Backend CRC recovery disabled when JVM stops before the final candidate", async () => {
+      process.env.RD_EXTRACT_BACKEND = "auto";
+      process.env.RD_ARCHIVE_PASSWORDS = "";
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-cross-backend-crc-not-exhausted-"));
+      tempDirs.push(root);
+      const actualPassword = "cross-backend-early-secret";
+      const packageDir = createEncryptedCorruptRarFixture(root, actualPassword, "cross-backend-not-exhausted");
+      const failures: ExtractArchiveFailureInfo[] = [];
+
+      const result = await extractPackageArchives({
+        packageDir,
+        targetDir: path.join(root, "out"),
+        cleanupMode: "none",
+        conflictMode: "overwrite",
+        removeLinks: false,
+        removeSamples: false,
+        passwordList: actualPassword,
+        onArchiveFailure: (failure) => failures.push(failure)
+      });
+
+      expect(result).toEqual(expect.objectContaining({ extracted: 0, failed: 1 }));
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toEqual(expect.objectContaining({
+        category: "crc_error",
+        suggestRedownload: false
+      }));
+      expect(failures[0]?.jvmFailureReason).toMatch(/CRCERROR|DATAERROR/);
+    }, 30_000);
+
+    it("suggests recovery when both backends report CRC failure after every password candidate", () => {
+      expect(shouldSuggestRedownloadAfterCrossBackendFailure("crc_error", "crc_error", true)).toBe(true);
+    });
+
+    it.each([
+      ["wrong_password", "crc_error", true],
+      ["crc_error", "wrong_password", true],
+      ["crc_error", "unsupported_format", true],
+      ["crc_error", "crc_error", false]
+    ] as const)("does not suggest recovery for legacy=%s jvm=%s exhausted=%s", (legacyCategory, jvmCategory, exhausted) => {
+      expect(shouldSuggestRedownloadAfterCrossBackendFailure(legacyCategory, jvmCategory, exhausted)).toBe(false);
+    });
+  });
+
+  describe("parseJvmPasswordAttemptLine", () => {
+    it("accepts only bounded attempt metadata without a password field", () => {
+      expect(parseJvmPasswordAttemptLine("RD_PASSWORD_ATTEMPT 2 5")).toEqual({ attempt: 2, total: 5 });
+      expect(parseJvmPasswordAttemptLine("RD_PASSWORD_ATTEMPT 0 5")).toBeNull();
+      expect(parseJvmPasswordAttemptLine("RD_PASSWORD_ATTEMPT 2 5 secret")).toBeNull();
+    });
+
+    it("derives exhaustion only from a valid final JVM attempt", () => {
+      expect(summarizeJvmPasswordAttempts(1, 3, false)).toEqual({ attempts: 1, total: 3, exhausted: false });
+      expect(summarizeJvmPasswordAttempts(3, 3, false)).toEqual({ attempts: 3, total: 3, exhausted: true });
+      expect(summarizeJvmPasswordAttempts(3, 3, true)).toEqual({ attempts: 3, total: 3, exhausted: false });
+      expect(summarizeJvmPasswordAttempts(4, 3, false)).toEqual({ attempts: 0, total: 0, exhausted: false });
+    });
+
+    it("redacts successful password payloads from JVM diagnostics", () => {
+      expect(redactJvmDiagnosticLine("RD_PASSWORD c2VjcmV0")).toBe("RD_PASSWORD <redacted>");
+      expect(redactJvmDiagnosticLine("RD_PASSWORD_ATTEMPT 2 5")).toBe("RD_PASSWORD_ATTEMPT 2 5");
+      expect(redactJvmDiagnosticLine("RD_ERROR CRCERROR")).toBe("RD_ERROR CRCERROR");
+    });
+  });
+
 
   describe("direct output scope", () => {
     it.each([

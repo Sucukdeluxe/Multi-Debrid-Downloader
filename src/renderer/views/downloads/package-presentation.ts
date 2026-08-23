@@ -13,6 +13,7 @@ export interface PackagePresentation {
   progress: PackageProgressPresentation;
   status: string;
   details: string;
+  activeOperationLabel: string;
   extractFailure?: DownloadItem;
   extractFailureCount: number;
   retryCount: number;
@@ -46,6 +47,16 @@ function isLinkConversionRetry(item: DownloadItem): boolean {
   return /(?:Link-Umwandlung erneut|Retrying link conversion)/i.test(item.fullStatus || "");
 }
 
+function activePackageOperationLabel(packageStatus: DownloadPackageRow["package"]["status"], label: string): string {
+  if (!label) return "";
+  if (/^(?:Entpacken\s+\d+%|Entpacken\s*\(\d+\/\d+\)\s*-\s*Nächstes Archiv|Passwort\b|Password\b|Finalisieren\b|Finalizing\b)/i.test(label)) {
+    return packageStatus === "extracting" ? label : "";
+  }
+  return /^(?:Archive stabilisieren|Entpacken vorbereiten|Entpacken wird neu gestartet|Nested Entpacken|Renaming|Tonspur|Aufräumen|Verschiebe Videos)\b/i.test(label)
+    ? label
+    : "";
+}
+
 function downloadFraction(item: DownloadItem): number {
   if (item.status === "completed") {
     return 1;
@@ -71,6 +82,9 @@ export function buildPackagePresentation(row: DownloadPackageRow): PackagePresen
   let retrying = 0;
   let linkConversionRetrying = 0;
   let waitsForDisk = 0;
+  let integrityChecking = 0;
+  let extractionPending = 0;
+  let waitingForParts = 0;
   const extractFailures: DownloadItem[] = [];
 
   for (const item of row.allItems) {
@@ -79,12 +93,15 @@ export function buildPackagePresentation(row: DownloadPackageRow): PackagePresen
     else if (item.status === "cancelled") cancelled += 1;
     downloadUnits += downloadFraction(item);
     const fullStatus = item.fullStatus || "";
+    if (item.status === "integrity_check") integrityChecking += 1;
+    if (/^Entpacken\s*-\s*Ausstehend\b/i.test(fullStatus)) extractionPending += 1;
+    if (/^Entpacken\s*-\s*Warten auf Parts\b/i.test(fullStatus)) waitingForParts += 1;
     if (/^Entpackt\b/i.test(fullStatus)) {
       extractionUnits += 1;
       extractionLifecycle = true;
     } else {
       const progress = extractionPercent(fullStatus);
-      if (progress > 0 || /^(?:Entpacken|Finalisieren)\b/i.test(fullStatus)) {
+      if (progress > 0 || /^Entpacken\s+\d+%/i.test(fullStatus) || /^Finalisieren\b/i.test(fullStatus)) {
         extracting += 1;
         extractionUnits += progress;
       }
@@ -119,29 +136,41 @@ export function buildPackagePresentation(row: DownloadPackageRow): PackagePresen
   const details = parts.length > 0 ? parts.join(" · ") : done >= total ? "Fertig" : `${done}/${total} fertig`;
   const downloadsComplete = row.allItems.every((item) => downloadFraction(item) >= 1);
   const packageExtractLabel = (row.package.postProcessLabel || "").trim();
+  const activeOperationLabel = activePackageOperationLabel(row.package.status, packageExtractLabel);
   const downloading = row.package.status === "downloading"
     || row.package.status === "validating"
     || row.allItems.some((item) => item.status === "downloading" || item.status === "validating");
 
   let status = allExtracted ? "Entpackt" : details;
-  if (extractFailures.length > 0 && retrying > 0) {
-    status = `${extractFailures.length} Entpackfehler · ${retryLabel}`;
-  } else if (extractFailures.length > 0) {
-    status = downloadsComplete ? `Download fertig · ${extractFailures.length} Entpackfehler` : `${extractFailures.length} Entpackfehler`;
+  if (activeOperationLabel) {
+    status = activeOperationLabel;
   } else if (waitsForDisk > 0) {
     status = "Warte auf Festplatte";
-  } else if (extracting > 0 || row.package.status === "extracting") {
-    status = packageExtractLabel || "Entpacken";
+  } else if (integrityChecking > 0) {
+    status = "CRC-Check läuft";
+  } else if (extractFailures.length > 0 && retrying > 0) {
+    status = `${extractFailures.length} Entpackfehler · ${retryLabel}`;
   } else if (retrying > 0) {
     status = retryLabel;
   } else if (downloading) {
     status = "Download läuft";
+  } else if (extractFailures.length > 0) {
+    status = downloadsComplete ? `Download fertig · ${extractFailures.length} Entpackfehler` : `${extractFailures.length} Entpackfehler`;
+  } else if (extracting > 0) {
+    status = "Entpacken";
+  } else if (extractionPending > 0) {
+    status = "Entpacken - Ausstehend";
+  } else if (waitingForParts > 0) {
+    status = "Entpacken - Warten auf Parts";
+  } else if (row.package.status === "extracting") {
+    status = "Entpacken";
   }
 
   return {
     progress: { done, failed, cancelled, total, value },
     status,
     details,
+    activeOperationLabel,
     extractFailure: extractFailures[0],
     extractFailureCount: extractFailures.length,
     retryCount: retrying,

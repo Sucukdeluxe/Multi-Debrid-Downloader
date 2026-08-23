@@ -392,14 +392,9 @@ function packageCell(row: DownloadPackageRow, column: string, packageSpeedBps: n
     const postProcessLabel = entry.status === "extracting" && compactPostProcessLabel === rawPostProcessLabel && /(?:^|[\\/])[^\\/]+\.(?:rar|zip|7z|tar|gz|bz2|xz)(?:\.\d+)?$/i.test(rawPostProcessLabel)
       ? "Entpacken - Ausstehend"
       : compactPostProcessLabel;
-    const detailPostProcessLabel = rawPostProcessLabel || postProcessLabel;
+    const detailPostProcessLabel = presentation.activeOperationLabel ? rawPostProcessLabel || postProcessLabel : "";
     const details = `${presentation.details}${detailPostProcessLabel ? ` · ${detailPostProcessLabel}` : ""}${audio ? ` · ${audio.text}` : ""}`;
-    const status = presentation.extractFailureCount === 0
-      && presentation.retryCount === 0
-      && postProcessLabel
-      && (/Entpacken\s+\d+%/i.test(postProcessLabel) || entry.status === "extracting")
-      ? postProcessLabel
-      : presentation.status;
+    const status = presentation.status;
     const statusDetails = presentation.extractFailure ? `${details}\n${presentation.extractFailure.fullStatus}` : details;
     const title = audio?.tooltip ? `${statusDetails}\n${audio.tooltip}` : statusDetails;
     return <DownloadStatusCell status={status} title={title} />;

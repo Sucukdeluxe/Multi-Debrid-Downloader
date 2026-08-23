@@ -122,10 +122,10 @@ describe("resolveArchiveItemsFromList", () => {
     expect(result).toHaveLength(1);
   });
 
-  it("returns single archive item when no pattern matches", () => {
+  it("does not guess a different single archive when no pattern matches", () => {
     const items = makeItems(["totally-different-name.rar"]);
     const result = resolveArchiveItemsFromList("Original.rar", items as any);
-    expect(result).toHaveLength(1);
+    expect(result).toHaveLength(0);
   });
 
   it("returns empty when items have no archive extensions", () => {
@@ -216,6 +216,17 @@ describe("resolveSelectedArchiveSetsFromCandidates", () => {
 
     expect([...selected.archivePaths]).toEqual(["C:\\Downloads\\Episode.E01.part1.rar"]);
     expect([...selected.itemIds].sort()).toEqual(["e01-1", "e01-2"]);
+  });
+
+  it("resolves a uniquely matching pathless legacy item", () => {
+    const selected = resolveSelectedArchiveSetsFromCandidates(
+      ["C:\\Downloads\\Episode.E01.rar"],
+      [{ id: "legacy", fileName: "Episode.E01.rar", targetPath: "", status: "completed" }] as any,
+      new Set(["legacy"])
+    );
+
+    expect([...selected.archivePaths]).toEqual(["C:\\Downloads\\Episode.E01.rar"]);
+    expect([...selected.itemIds]).toEqual(["legacy"]);
   });
 });
 

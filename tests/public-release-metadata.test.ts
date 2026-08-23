@@ -66,6 +66,14 @@ const redistributionFiles = [
   "resources/extractor-jvm/licenses/Apache-2.0.txt",
   "resources/extractor-jvm/THIRD_PARTY_NOTICES.txt"
 ] as const;
+const jvmRuntimeFiles = Object.freeze({
+  "resources/extractor-jvm/classes/.source.sha256": "source-digest\n",
+  "resources/extractor-jvm/classes/com/sucukdeluxe/extractor/JBindExtractorMain.class": Buffer.from([0xca, 0xfe, 0xba, 0xbe, 0x01]),
+  "resources/extractor-jvm/classes/com/sucukdeluxe/extractor/JBindExtractorMain$Backend.class": Buffer.from([0xca, 0xfe, 0xba, 0xbe, 0x02]),
+  "resources/extractor-jvm/lib/sevenzipjbinding.jar": Buffer.from("sevenzip-binding"),
+  "resources/extractor-jvm/lib/sevenzipjbinding-all-platforms.jar": Buffer.from("sevenzip-platforms"),
+  "resources/extractor-jvm/lib/zip4j.jar": Buffer.from("zip4j")
+});
 
 function writeFile(rootDir: string, relativePath: string, content: string | Buffer): void {
   const filePath = path.join(rootDir, ...relativePath.split("/"));
@@ -104,9 +112,24 @@ function writeArchivePayload(outputDir: string, omittedName = ""): void {
   if (omittedName !== "app_icon.ico") {
     writeFile(outputDir, "resources/assets/app_icon.ico", "application-icon");
   }
+  for (const [relativePath, content] of Object.entries(jvmRuntimeFiles)) {
+    if (path.basename(relativePath) !== omittedName) {
+      writeFile(outputDir, `resources/app.asar.unpacked/${relativePath}`, content);
+    }
+  }
 }
 
-function createArchiveCommandRunner(omittedName = "") {
+function writeJvmRuntimeFiles(rootDir: string, packaged = false): void {
+  for (const [relativePath, content] of Object.entries(jvmRuntimeFiles)) {
+    const targetPath = packaged
+      ? `win-unpacked/resources/app.asar.unpacked/${relativePath}`
+      : relativePath;
+    writeFile(rootDir, targetPath, content);
+  }
+}
+
+function createArchiveCommandRunner(omittedName = "", corruptArchiveName = "") {
+  let currentArchiveName = "";
   return (command: string, args: string[]): CommandResult => {
     const archivePath = args[1] || "";
     const outputArg = args.find((arg) => arg.startsWith("-o"));
@@ -115,9 +138,17 @@ function createArchiveCommandRunner(omittedName = "") {
     }
     const outputDir = outputArg.slice(2);
     if (archivePath.toLowerCase().endsWith(".exe")) {
+      currentArchiveName = path.basename(archivePath);
       writeFile(outputDir, "payload/app-64.7z", "nested archive");
     } else if (archivePath.toLowerCase().endsWith(".7z")) {
       writeArchivePayload(outputDir, omittedName);
+      if (currentArchiveName === corruptArchiveName) {
+        writeFile(
+          outputDir,
+          "resources/app.asar.unpacked/resources/extractor-jvm/lib/zip4j.jar",
+          "corrupt-zip4j"
+        );
+      }
     }
     return { status: command ? 0 : 2, stdout: "ok", stderr: "" };
   };
@@ -146,6 +177,9 @@ function createReleaseFixture(): string {
         "LICENSE",
         "THIRD_PARTY_NOTICES.md",
         "package.json"
+      ],
+      asarUnpack: [
+        "resources/extractor-jvm/**/*"
       ],
       extraResources: [
         {
@@ -189,6 +223,8 @@ function createReleaseFixture(): string {
   writeFile(rootDir, "Multi-Debrid-Downloader-1.7.233-portable.exe", "portable");
   writeRedistributionFiles(rootDir);
   writeRedistributionFiles(rootDir, true);
+  writeJvmRuntimeFiles(rootDir);
+  writeJvmRuntimeFiles(rootDir, true);
   writeFile(rootDir, "assets/app_icon.ico", "application-icon");
   writeFile(rootDir, "win-unpacked/resources/assets/app_icon.ico", "application-icon");
   writeFile(rootDir, "win-unpacked/resources/app.asar", validAppAsar);
@@ -357,6 +393,65 @@ describe("public release metadata", () => {
     expect(() => verifyPublicRelease(rootDir)).toThrow(/LICENSE/);
   });
 
+  it("rejects build metadata that does not unpack the JVM runtime", () => {
+    const rootDir = createReleaseFixture();
+    const packagePath = path.join(rootDir, "package.json");
+    const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+    delete packageJson.build.asarUnpack;
+    fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+
+    expect(() => verifyPublicRelease(rootDir)).toThrow(/asarUnpack|JVM runtime/i);
+  });
+
+  it("rejects a missing JVM class in the unpacked application", () => {
+    const rootDir = createReleaseFixture();
+    fs.rmSync(path.join(
+      rootDir,
+      "win-unpacked",
+      "resources",
+      "app.asar.unpacked",
+      "resources",
+      "extractor-jvm",
+      "classes",
+      "com",
+      "sucukdeluxe",
+      "extractor",
+      "JBindExtractorMain$Backend.class"
+    ));
+
+    expect(() => verifyPublicRelease(rootDir)).toThrow(/JVM runtime|Backend\.class|missing/i);
+  });
+
+  it("rejects changed JVM bytecode in the unpacked application", () => {
+    const rootDir = createReleaseFixture();
+    fs.writeFileSync(path.join(
+      rootDir,
+      "win-unpacked",
+      "resources",
+      "app.asar.unpacked",
+      "resources",
+      "extractor-jvm",
+      "classes",
+      "com",
+      "sucukdeluxe",
+      "extractor",
+      "JBindExtractorMain.class"
+    ), "stale-bytecode");
+
+    expect(() => verifyPublicRelease(rootDir)).toThrow(/JVM runtime|JBindExtractorMain\.class|SHA-?256|content/i);
+  });
+
+  it("rejects stale extra JVM bytecode in the unpacked application", () => {
+    const rootDir = createReleaseFixture();
+    writeFile(
+      rootDir,
+      "win-unpacked/resources/app.asar.unpacked/resources/extractor-jvm/classes/com/sucukdeluxe/extractor/Stale.class",
+      "stale-bytecode"
+    );
+
+    expect(() => verifyPublicRelease(rootDir)).toThrow(/JVM runtime|Stale\.class|unexpected/i);
+  });
+
   it("rejects build metadata that does not copy the project license into resources", () => {
     const rootDir = createReleaseFixture();
     const packagePath = path.join(rootDir, "package.json");
@@ -436,6 +531,18 @@ describe("public release metadata", () => {
       sevenZipPath: "C:\\Tools\\7-Zip\\7z.exe",
       runCommand: createArchiveCommandRunner("Apache-2.0.txt")
     })).toThrow(/Apache-2\.0\.txt|missing redistribution file/i);
+  });
+
+  it("rejects a portable archive whose JVM runtime differs from the repository", () => {
+    const rootDir = createReleaseFixture();
+
+    expect(() => verifyReleaseArchives(rootDir, {
+      sevenZipPath: "C:\\Tools\\7-Zip\\7z.exe",
+      runCommand: createArchiveCommandRunner(
+        "",
+        "Multi-Debrid-Downloader-1.7.233-portable.exe"
+      )
+    })).toThrow(/portable|JVM runtime|zip4j\.jar|SHA-?256|content/i);
   });
 
   it("exposes archive verification as a nonzero CLI gate", () => {

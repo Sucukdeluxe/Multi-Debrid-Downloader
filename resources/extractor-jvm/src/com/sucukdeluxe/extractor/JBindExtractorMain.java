@@ -3,6 +3,7 @@ package com.sucukdeluxe.extractor;
 import net.lingala.zip4j.ZipFile;
 import net.lingala.zip4j.exception.ZipException;
 import net.lingala.zip4j.model.FileHeader;
+import net.lingala.zip4j.model.enums.EncryptionMethod;
 import net.sf.sevenzipjbinding.ExtractAskMode;
 import net.sf.sevenzipjbinding.ExtractOperationResult;
 import net.sf.sevenzipjbinding.IArchiveExtractCallback;
@@ -107,34 +108,28 @@ public final class JBindExtractorMain {
     }
 
     private static ExtractionRequest parseDaemonRequest(String jsonLine) {
-
+        Map<String, Object> values = new DaemonJsonParser(jsonLine).parseObject();
         ExtractionRequest request = new ExtractionRequest();
-        request.archiveFile = new File(extractJsonString(jsonLine, "archive"));
-        request.targetDir = new File(extractJsonString(jsonLine, "target"));
-        String conflict = extractJsonString(jsonLine, "conflict");
+        request.archiveFile = new File(requireJsonString(values, "archive"));
+        request.targetDir = new File(requireJsonString(values, "target"));
+        String conflict = optionalJsonString(values, "conflict");
         if (conflict.length() > 0) {
             request.conflictMode = ConflictMode.fromValue(conflict);
         }
-        String backend = extractJsonString(jsonLine, "backend");
+        String backend = optionalJsonString(values, "backend");
         if (backend.length() > 0) {
             request.backend = Backend.fromValue(backend);
         }
-
-        int pwStart = jsonLine.indexOf("\"passwords\"");
-        if (pwStart >= 0) {
-            int arrStart = jsonLine.indexOf('[', pwStart);
-            int arrEnd = jsonLine.indexOf(']', arrStart);
-            if (arrStart >= 0 && arrEnd > arrStart) {
-                String arrContent = jsonLine.substring(arrStart + 1, arrEnd);
-                int idx = 0;
-                while (idx < arrContent.length()) {
-                    int qStart = arrContent.indexOf('"', idx);
-                    if (qStart < 0) break;
-                    int qEnd = findClosingQuote(arrContent, qStart + 1);
-                    if (qEnd < 0) break;
-                    request.passwords.add(unescapeJsonString(arrContent.substring(qStart + 1, qEnd)));
-                    idx = qEnd + 1;
+        Object rawPasswords = values.get("passwords");
+        if (rawPasswords != null) {
+            if (!(rawPasswords instanceof List<?>)) {
+                throw new IllegalArgumentException("Daemon-Feld passwords muss ein String-Array sein");
+            }
+            for (Object value : (List<?>) rawPasswords) {
+                if (!(value instanceof String)) {
+                    throw new IllegalArgumentException("Daemon-Feld passwords muss nur Strings enthalten");
                 }
+                request.passwords.add((String) value);
             }
         }
         if (request.archiveFile == null || !request.archiveFile.exists() || !request.archiveFile.isFile()) {
@@ -147,73 +142,198 @@ public final class JBindExtractorMain {
         return request;
     }
 
-    private static String extractJsonString(String json, String key) {
-        String search = "\"" + key + "\"";
-        int keyIdx = json.indexOf(search);
-        if (keyIdx < 0) return "";
-        int colonIdx = json.indexOf(':', keyIdx + search.length());
-        if (colonIdx < 0) return "";
-        int qStart = json.indexOf('"', colonIdx + 1);
-        if (qStart < 0) return "";
-        int qEnd = findClosingQuote(json, qStart + 1);
-        if (qEnd < 0) return "";
-        return unescapeJsonString(json.substring(qStart + 1, qEnd));
-    }
-
-    private static int findClosingQuote(String s, int from) {
-        for (int i = from; i < s.length(); i++) {
-            char c = s.charAt(i);
-            if (c == '\\') {
-                i++;
-                continue;
-            }
-            if (c == '"') return i;
+    private static String requireJsonString(Map<String, Object> values, String key) {
+        String value = optionalJsonString(values, key);
+        if (value.length() == 0) {
+            throw new IllegalArgumentException("Daemon-Feld fehlt: " + key);
         }
-        return -1;
+        return value;
     }
 
-    private static String unescapeJsonString(String s) {
-        if (s.indexOf('\\') < 0) return s;
-        StringBuilder sb = new StringBuilder(s.length());
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            if (c == '\\' && i + 1 < s.length()) {
-                char next = s.charAt(i + 1);
-                switch (next) {
-                    case '"': sb.append('"'); i++; break;
-                    case '\\': sb.append('\\'); i++; break;
-                    case '/': sb.append('/'); i++; break;
-                    case 'n': sb.append('\n'); i++; break;
-                    case 'r': sb.append('\r'); i++; break;
-                    case 't': sb.append('\t'); i++; break;
-                    default: sb.append(c); break;
+    private static String optionalJsonString(Map<String, Object> values, String key) {
+        Object value = values.get(key);
+        if (value == null) {
+            return "";
+        }
+        if (!(value instanceof String)) {
+            throw new IllegalArgumentException("Daemon-Feld muss ein String sein: " + key);
+        }
+        return (String) value;
+    }
+
+    private static final class DaemonJsonParser {
+        private final String input;
+        private int index;
+
+        DaemonJsonParser(String input) {
+            this.input = input == null ? "" : input;
+        }
+
+        Map<String, Object> parseObject() {
+            skipWhitespace();
+            expect('{');
+            Map<String, Object> values = new HashMap<String, Object>();
+            skipWhitespace();
+            if (consume('}')) {
+                requireEnd();
+                return values;
+            }
+            while (true) {
+                String key = parseString();
+                skipWhitespace();
+                expect(':');
+                skipWhitespace();
+                Object value = peek('"') ? parseString() : parseStringArray();
+                if (values.containsKey(key)) {
+                    throw malformed();
                 }
-            } else {
-                sb.append(c);
+                values.put(key, value);
+                skipWhitespace();
+                if (consume('}')) {
+                    requireEnd();
+                    return values;
+                }
+                expect(',');
+                skipWhitespace();
             }
         }
-        return sb.toString();
+
+        private List<String> parseStringArray() {
+            expect('[');
+            List<String> values = new ArrayList<String>();
+            skipWhitespace();
+            if (consume(']')) {
+                return values;
+            }
+            while (true) {
+                values.add(parseString());
+                skipWhitespace();
+                if (consume(']')) {
+                    return values;
+                }
+                expect(',');
+                skipWhitespace();
+            }
+        }
+
+        private String parseString() {
+            expect('"');
+            StringBuilder value = new StringBuilder();
+            while (index < input.length()) {
+                char current = input.charAt(index++);
+                if (current == '"') {
+                    return value.toString();
+                }
+                if (current < 0x20) {
+                    throw malformed();
+                }
+                if (current != '\\') {
+                    value.append(current);
+                    continue;
+                }
+                if (index >= input.length()) {
+                    throw malformed();
+                }
+                char escaped = input.charAt(index++);
+                switch (escaped) {
+                    case '"': value.append('"'); break;
+                    case '\\': value.append('\\'); break;
+                    case '/': value.append('/'); break;
+                    case 'b': value.append('\b'); break;
+                    case 'f': value.append('\f'); break;
+                    case 'n': value.append('\n'); break;
+                    case 'r': value.append('\r'); break;
+                    case 't': value.append('\t'); break;
+                    case 'u': value.append(parseUnicodeEscape()); break;
+                    default: throw malformed();
+                }
+            }
+            throw malformed();
+        }
+
+        private char parseUnicodeEscape() {
+            if (index + 4 > input.length()) {
+                throw malformed();
+            }
+            int value = 0;
+            for (int offset = 0; offset < 4; offset += 1) {
+                int digit = Character.digit(input.charAt(index++), 16);
+                if (digit < 0) {
+                    throw malformed();
+                }
+                value = (value << 4) | digit;
+            }
+            return (char) value;
+        }
+
+        private void requireEnd() {
+            skipWhitespace();
+            if (index != input.length()) {
+                throw malformed();
+            }
+        }
+
+        private void skipWhitespace() {
+            while (index < input.length()) {
+                char current = input.charAt(index);
+                if (current != ' ' && current != '\t' && current != '\r' && current != '\n') {
+                    return;
+                }
+                index += 1;
+            }
+        }
+
+        private boolean peek(char expected) {
+            return index < input.length() && input.charAt(index) == expected;
+        }
+
+        private boolean consume(char expected) {
+            if (!peek(expected)) {
+                return false;
+            }
+            index += 1;
+            return true;
+        }
+
+        private void expect(char expected) {
+            if (!consume(expected)) {
+                throw malformed();
+            }
+        }
+
+        private IllegalArgumentException malformed() {
+            return new IllegalArgumentException("Ungueltige Daemon-JSON-Anfrage");
+        }
     }
 
     private static int runExtraction(ExtractionRequest request) throws Exception {
         List<String> passwords = normalizePasswords(request.passwords);
         Exception lastError = null;
+        Exception integrityError = null;
         boolean hadWrongPassword = false;
-        for (String password : passwords) {
+        for (int passwordIndex = 0; passwordIndex < passwords.size(); passwordIndex++) {
+            String password = passwords.get(passwordIndex);
+            emitPasswordAttempt(passwordIndex + 1, passwords.size());
             try {
                 extractSingle(request, password);
-                emitPassword(password);
                 emitDone();
                 return 0;
+            } catch (AmbiguousPasswordOrIntegrityException ambiguous) {
+                integrityError = ambiguous;
+                lastError = ambiguous;
             } catch (WrongPasswordException wrongPassword) {
                 hadWrongPassword = true;
                 lastError = wrongPassword;
             } catch (Exception error) {
+                integrityError = null;
                 lastError = error;
                 break;
             }
         }
 
+        if (integrityError != null) {
+            throw integrityError;
+        }
         if (hadWrongPassword && (lastError instanceof WrongPasswordException)) {
             emitError("Falsches Archiv-Passwort");
             return 1;
@@ -274,6 +394,29 @@ public final class JBindExtractorMain {
                 encrypted = encrypted || header.isEncrypted();
                 totalUnits += safeSize(header.getUncompressedSize());
             }
+            if (encrypted) {
+                for (FileHeader header : fileHeaders) {
+                    if (header == null || header.isDirectory() || !header.isEncrypted()) {
+                        continue;
+                    }
+                    InputStream passwordProbe = null;
+                    try {
+                        passwordProbe = zipFile.getInputStream(header);
+                    } catch (ZipException error) {
+                        if (isWrongPassword(error, true, false)) {
+                            throw new WrongPasswordException(error);
+                        }
+                        throw error;
+                    } finally {
+                        if (passwordProbe != null) {
+                            try {
+                                passwordProbe.close();
+                            } catch (Throwable ignored) {
+                            }
+                        }
+                    }
+                }
+            }
             Set<String> reserved = new HashSet<String>();
             TargetPlanInvariant targetPlan = new TargetPlanInvariant();
             Map<FileHeader, String> plannedEntryNames = new IdentityHashMap<FileHeader, String>();
@@ -328,6 +471,7 @@ public final class JBindExtractorMain {
                 rejectLinkedPath(request.targetDir, output);
                 long[] remaining = new long[] { itemUnits };
                 boolean extractionSuccess = false;
+                boolean outputProduced = false;
                 try {
                     InputStream in = zipFile.getInputStream(header);
                     try {
@@ -343,6 +487,7 @@ public final class JBindExtractorMain {
                                     continue;
                                 }
                                 out.write(buffer, 0, read);
+                                outputProduced = true;
                                 long accounted = Math.min(remaining[0], (long) read);
                                 remaining[0] -= accounted;
                                 progress.advance(accounted);
@@ -369,8 +514,16 @@ public final class JBindExtractorMain {
                     extractionSuccess = true;
                     emitOutput(request.archiveFile, entryName, output, "complete", outputTarget.disposition);
                 } catch (ZipException error) {
-                    if (isWrongPassword(error, encrypted)) {
+                    if (isWrongPassword(error, encrypted, outputProduced)) {
                         throw new WrongPasswordException(error);
+                    }
+                    if (isZipIntegrityFailure(error, encrypted, outputProduced)) {
+                        throw zipIntegrityFailure(header, error);
+                    }
+                    throw error;
+                } catch (IOException error) {
+                    if (isZipIntegrityFailure(error, encrypted, outputProduced)) {
+                        throw zipIntegrityFailure(header, error);
                     }
                     throw error;
                 } finally {
@@ -407,6 +560,11 @@ public final class JBindExtractorMain {
         try {
             context = openSevenZipArchive(request.archiveFile, password);
             IInArchive archive = context.archive;
+            Object rawArchiveError = archive.getArchiveProperty(PropID.ERROR);
+            String archiveError = rawArchiveError == null ? "" : String.valueOf(rawArchiveError).trim();
+            if (archiveError.length() > 0) {
+                throw new IOException(archiveError);
+            }
             int itemCount = archive.getNumberOfItems();
             if (itemCount <= 0) {
                 throw new IOException("Archiv enthalt keine Eintrage oder konnte nicht gelesen werden: " + request.archiveFile.getAbsolutePath());
@@ -515,16 +673,18 @@ public final class JBindExtractorMain {
             final long[] currentRemaining = new long[1];
             final Throwable[] firstError = new Throwable[1];
             final int[] currentPos = new int[] { -1 };
+            final boolean[] passwordRequested = new boolean[1];
+            final boolean[] outputProduced = new boolean[1];
 
             BulkExtractCallback extractCallback = new BulkExtractCallback(
                     archive, request.archiveFile, request.targetDir, indexToPos, fileIndices, outputFiles, fileSizes, entryNames, dispositions,
                     progress, encryptedFinal, effectivePassword, currentOutput,
-                    currentStream, currentSuccess, currentRemaining, currentPos, firstError
+                    currentStream, currentSuccess, currentRemaining, currentPos, firstError, passwordRequested, outputProduced
                 );
             try {
                 archive.extract(indices, false, extractCallback);
             } catch (SevenZipException error) {
-                if (looksLikeWrongPassword(error, encryptedFinal)) {
+                if (!outputProduced[0] && looksLikeWrongPassword(error, encryptedFinal || passwordRequested[0])) {
                     throw new WrongPasswordException(error);
                 }
                 throw error;
@@ -558,7 +718,14 @@ public final class JBindExtractorMain {
                 IInArchive archive = SevenZip.openInArchive(null, volumed, callback);
                 return new SevenZipArchiveContext(archive, null, volumed, callback);
             } catch (Exception error) {
+                SevenZipException volumeAccessError = callback.getVolumeAccessError();
                 callback.close();
+                if (volumeAccessError != null) {
+                    throw volumeAccessError;
+                }
+                if (callback.wasPasswordRequested()) {
+                    throw new WrongPasswordException(error);
+                }
                 throw error;
             }
         }
@@ -569,6 +736,7 @@ public final class JBindExtractorMain {
             IInArchive archive = SevenZip.openInArchive(null, stream, callback);
             return new SevenZipArchiveContext(archive, stream, null, callback);
         } catch (Exception error) {
+            SevenZipException volumeAccessError = callback.getVolumeAccessError();
             try {
                 stream.close();
             } catch (Throwable ignored) {
@@ -577,12 +745,22 @@ public final class JBindExtractorMain {
                 raf.close();
             } catch (Throwable ignored) {
             }
+            callback.close();
+            if (volumeAccessError != null) {
+                throw volumeAccessError;
+            }
+            if (callback.wasPasswordRequested()) {
+                throw new WrongPasswordException(error);
+            }
             throw error;
         }
     }
 
-    private static boolean isWrongPassword(ZipException error, boolean encrypted) {
+    private static boolean isWrongPassword(ZipException error, boolean encrypted, boolean outputProduced) {
         if (error == null) {
+            return false;
+        }
+        if (outputProduced) {
             return false;
         }
         if (error.getType() == ZipException.Type.WRONG_PASSWORD) {
@@ -592,11 +770,29 @@ public final class JBindExtractorMain {
         if (text.contains("wrong password") || text.contains("falsches passwort")) {
             return true;
         }
-        return encrypted && (text.contains("checksum") || text.contains("crc") || text.contains("password"));
+        return encrypted && text.contains("password");
     }
 
-    private static boolean isPasswordFailure(ExtractOperationResult result, boolean encrypted) {
-        if (!encrypted || result == null) {
+    private static boolean isZipIntegrityFailure(Throwable error, boolean encrypted, boolean outputProduced) {
+        if (!encrypted || error == null) {
+            return false;
+        }
+        String text = safeMessage(error).toLowerCase(Locale.ROOT);
+        return outputProduced || text.contains("aes verification failed") || text.contains("checksum") || text.contains("crc");
+    }
+
+    private static Exception zipIntegrityFailure(FileHeader header, Throwable error) {
+        if (header != null && header.getEncryptionMethod() == EncryptionMethod.ZIP_STANDARD) {
+            return new AmbiguousPasswordOrIntegrityException(error);
+        }
+        return new IOException("zip4j-Fehler: CRCERROR", error);
+    }
+
+    private static boolean isPasswordFailure(ExtractOperationResult result, boolean encrypted, boolean outputProduced) {
+        if (result == ExtractOperationResult.WRONG_PASSWORD) {
+            return true;
+        }
+        if (!encrypted || outputProduced || result == null) {
             return false;
         }
         return result == ExtractOperationResult.CRCERROR || result == ExtractOperationResult.DATAERROR;
@@ -1031,9 +1227,8 @@ public final class JBindExtractorMain {
         System.out.println("RD_BACKEND " + backend.value);
     }
 
-    private static void emitPassword(String password) {
-        String encoded = Base64.getEncoder().encodeToString((password == null ? "" : password).getBytes(StandardCharsets.UTF_8));
-        System.out.println("RD_PASSWORD " + encoded);
+    private static void emitPasswordAttempt(int attempt, int total) {
+        System.out.println("RD_PASSWORD_ATTEMPT " + attempt + " " + total);
     }
 
     private static void emitDone() {
@@ -1143,6 +1338,8 @@ public final class JBindExtractorMain {
         private final long[] currentRemaining;
         private final int[] currentPos;
         private final Throwable[] firstError;
+        private final boolean[] passwordRequested;
+        private final boolean[] outputProduced;
 
         BulkExtractCallback(IInArchive archive, File archiveFile, File targetDir, Map<Integer, Integer> indexToPos,
                 List<Integer> fileIndices, List<File> outputFiles, List<Long> fileSizes,
@@ -1150,7 +1347,7 @@ public final class JBindExtractorMain {
                 ProgressTracker progress, boolean encrypted, String password,
                 File[] currentOutput, FileOutputStream[] currentStream,
                 boolean[] currentSuccess, long[] currentRemaining, int[] currentPos,
-                Throwable[] firstError) {
+                Throwable[] firstError, boolean[] passwordRequested, boolean[] outputProduced) {
             this.archive = archive;
             this.archiveFile = archiveFile;
             this.targetDir = targetDir;
@@ -1169,10 +1366,13 @@ public final class JBindExtractorMain {
             this.currentRemaining = currentRemaining;
             this.currentPos = currentPos;
             this.firstError = firstError;
+            this.passwordRequested = passwordRequested;
+            this.outputProduced = outputProduced;
         }
 
         @Override
         public String cryptoGetTextPassword() {
+            passwordRequested[0] = true;
             return password;
         }
 
@@ -1227,6 +1427,7 @@ public final class JBindExtractorMain {
                     }
                     try {
                         currentStream[0].write(data);
+                        outputProduced[0] = true;
                     } catch (IOException error) {
                         throw new SevenZipException("Fehler beim Schreiben: " + error.getMessage(), error);
                     }
@@ -1268,7 +1469,7 @@ public final class JBindExtractorMain {
             } else {
                 discardCurrentOutput();
                 if (firstError[0] == null) {
-                    if (isPasswordFailure(result, encrypted)) {
+                    if (isPasswordFailure(result, encrypted || passwordRequested[0], outputProduced[0])) {
                         firstError[0] = new WrongPasswordException(new IOException("Falsches Passwort"));
                     } else {
                         firstError[0] = new IOException("7z-Fehler: " + result.name());
@@ -1315,6 +1516,14 @@ public final class JBindExtractorMain {
 
         WrongPasswordException(Throwable cause) {
             super(cause);
+        }
+    }
+
+    private static final class AmbiguousPasswordOrIntegrityException extends Exception {
+        private static final long serialVersionUID = 1L;
+
+        AmbiguousPasswordOrIntegrityException(Throwable cause) {
+            super("zip4j-Fehler: CRCERROR", cause);
         }
     }
 
@@ -1402,6 +1611,8 @@ public final class JBindExtractorMain {
         private final File archiveDir;
         private final String firstFileName;
         private final String password;
+        private boolean passwordRequested;
+        private SevenZipException volumeAccessError;
         private final Map<String, RandomAccessFile> openRafs = new HashMap<String, RandomAccessFile>();
 
         SevenZipVolumeCallback(File archiveFile, String password) {
@@ -1434,7 +1645,8 @@ public final class JBindExtractorMain {
                 raf.seek(0L);
                 return new RandomAccessFileInStream(raf);
             } catch (IOException error) {
-                throw new SevenZipException("Volume konnte nicht geoffnet werden: " + filename, error);
+                volumeAccessError = new SevenZipException("Volume konnte nicht geoffnet werden: " + filename, error);
+                throw volumeAccessError;
             }
         }
 
@@ -1450,7 +1662,16 @@ public final class JBindExtractorMain {
 
         @Override
         public String cryptoGetTextPassword() {
+            passwordRequested = true;
             return password;
+        }
+
+        boolean wasPasswordRequested() {
+            return passwordRequested;
+        }
+
+        SevenZipException getVolumeAccessError() {
+            return volumeAccessError;
         }
 
         private File resolveVolumeFile(String filename) {

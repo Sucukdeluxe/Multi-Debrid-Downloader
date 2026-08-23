@@ -30,7 +30,10 @@ const pairs = [
   ["Umbenennen", "Rename"], ["Entfernen", "Remove"], ["Name", "Name"], ["Geladen / Größe", "Downloaded / size"], ["Fortschritt", "Progress"], ["Hoster", "Hoster"], ["Service", "Service"],
   ["Priorität", "Priority"], ["Status", "Status"], ["Aktion", "Action"], ["Alle Services", "All services"], ["Paket, Datei oder Service", "Package, file or service"], ["Alle ein-/ausklappen", "Expand/collapse all"],
   ["Hoch", "High"], ["Normal", "Normal"], ["Niedrig", "Low"], ["In Warteschlange", "Queued"], ["Abgeschlossen", "Completed"], ["Entpackt", "Extracted"], ["Automatisch entpacken", "Extract automatically"],
-  ["Liste leeren", "Clear list"], ["Sitzung", "Session"], ["Gesamt", "Total"], ["Verbleibend", "Remaining"], ["Bereit", "Ready"], ["Download läuft", "Download running"], ["Wartet", "Waiting"], ["Offline", "Offline"],
+  ["Liste leeren", "Clear list"], ["Sitzung", "Session"], ["Gesamt", "Total"], ["Verbleibend", "Remaining"], ["Bereit", "Ready"], ["Download läuft", "Download running"], ["CRC-Check läuft", "CRC check running"], ["Wartet", "Waiting"], ["Offline", "Offline"],
+  ["Entpacken - Ausstehend", "Extracting - Pending"], ["Entpacken - Warten auf Parts", "Extracting - Waiting for parts"],
+  ["Archive stabilisieren...", "Stabilizing archives..."], ["Entpacken vorbereiten...", "Preparing extraction..."], ["Entpacken wird neu gestartet...", "Restarting extraction..."], ["Nested Entpacken...", "Nested extraction..."], ["Umbenennen...", "Renaming..."],
+  ["Tonspur...", "Audio track..."], ["Aufräumen...", "Cleaning up..."], ["Verschiebe Videos...", "Moving videos..."],
   ["Übersicht", "Overview"], ["Verwendungsregeln", "Usage rules"], ["Laufzeit", "Runtime"], ["Accountverwaltung", "Account management"], ["Accounts hinzufügen, prüfen und verwalten.", "Add, check and manage accounts."],
   ["Provider-Laufzeit", "Provider runtime"], ["Account-Laufzeit", "Account runtime"], ["Aktive Downloads", "Active downloads"], ["Erfolgsquote · Diese Sitzung", "Success rate · This session"], ["Zuletzt verwendet", "Last used"], ["Cooldown / Grund", "Cooldown / reason"],
   ["Noch keine Accounts konfiguriert.", "No accounts configured yet."], ["Noch keine Laufzeitdaten verfügbar.", "No runtime data available yet."], ["Noch nicht in dieser Sitzung", "Not yet in this session"], ["Gerade eben", "Just now"], ["gerade eben", "just now"], ["Prüfung", "Checking"], ["Tageslimit", "Daily limit"], ["Cooldown", "Cooldown"],
@@ -224,35 +227,58 @@ export function normalizeLanguage(value: unknown): AppLanguage {
 }
 
 function translatePackageStatusParts(value: string, language: AppLanguage): string | null {
-  const parts = value.split(" · ");
+  const parts = value.split(/( · |\n)/);
   if (parts.length < 2) return null;
-  const translated = parts.map((part): string | null => {
-    if (language === "en") {
-      const exact = deToEn.get(part);
-      if (exact) return exact;
-      const extractionError = part.match(/^(\d+) Entpackfehler$/);
-      if (extractionError) return `${extractionError[1]} extraction error${extractionError[1] === "1" ? "" : "s"}`;
-      const retry = part.match(/^(\d+) Wiederholung(?:en)?$/);
-      if (retry) return `${retry[1]} retr${retry[1] === "1" ? "y" : "ies"}`;
-      const error = part.match(/^(\d+) Fehler$/);
-      if (error) return `${error[1]} error${error[1] === "1" ? "" : "s"}`;
-      const cancelled = part.match(/^(\d+) abgebrochen$/);
-      if (cancelled) return `${cancelled[1]} cancelled`;
-      return null;
+  let changed = false;
+  const translated = parts.map((part): string => {
+    if (part === " · " || part === "\n") return part;
+    const runtime = translateRuntimeStatusPart(part, language);
+    if (runtime !== null) {
+      if (runtime !== part) changed = true;
+      return runtime;
     }
-    const exact = enToDe.get(part);
-    if (exact) return exact;
-    const extractionError = part.match(/^(\d+) extraction errors?$/);
-    if (extractionError) return `${extractionError[1]} Entpackfehler`;
-    const retry = part.match(/^(\d+) retr(?:y|ies)$/);
-    if (retry) return `${retry[1]} Wiederholung${retry[1] === "1" ? "" : "en"}`;
-    const error = part.match(/^(\d+) errors?$/);
-    if (error) return `${error[1]} Fehler`;
-    const cancelled = part.match(/^(\d+) cancelled$/);
-    if (cancelled) return `${cancelled[1]} abgebrochen`;
-    return null;
+    return part;
   });
-  return translated.every((part): part is string => part !== null) ? translated.join(" · ") : null;
+  return changed ? translated.join("") : null;
+}
+
+function translateRuntimeStatusPart(value: string, language: AppLanguage): string | null {
+  const exact = (language === "en" ? deToEn : enToDe).get(value);
+  if (exact) return exact;
+  if (language === "en") {
+    const extracting = value.match(/^Entpacken(\s*-\s*|\s+)(\d+%)(.*)$/);
+    if (extracting) return `Extracting${extracting[1].includes("-") ? " - " : " "}${extracting[2]}${extracting[3]}`;
+    if (value === "Passwort gefunden") return "Password found";
+    const password = value.match(/^Passwort knacken:\s*(\d+%)\s*(\(\d+\/\d+\))?(.*)$/);
+    if (password) return `Cracking password: ${password[1]}${password[2] ? ` ${password[2]}` : ""}${password[3]}`;
+    const nextArchive = value.match(/^Entpacken\s*(\(\d+\/\d+\))\s*-\s*Nächstes Archiv\.\.\.(.*)$/);
+    if (nextArchive) return `Extracting ${nextArchive[1]} - Next archive...${nextArchive[2]}`;
+    const extractionError = value.match(/^(\d+) Entpackfehler$/);
+    if (extractionError) return `${extractionError[1]} extraction error${extractionError[1] === "1" ? "" : "s"}`;
+    const retry = value.match(/^(\d+) Wiederholung(?:en)?$/);
+    if (retry) return `${retry[1]} retr${retry[1] === "1" ? "y" : "ies"}`;
+    const error = value.match(/^(\d+) Fehler$/);
+    if (error) return `${error[1]} error${error[1] === "1" ? "" : "s"}`;
+    const cancelled = value.match(/^(\d+) abgebrochen$/);
+    if (cancelled) return `${cancelled[1]} cancelled`;
+  } else {
+    const extracting = value.match(/^Extracting(\s*-\s*|\s+)(\d+%)(.*)$/);
+    if (extracting) return `Entpacken${extracting[1].includes("-") ? " - " : " "}${extracting[2]}${extracting[3]}`;
+    if (value === "Password found") return "Passwort gefunden";
+    const password = value.match(/^Cracking password:\s*(\d+%)\s*(\(\d+\/\d+\))?(.*)$/);
+    if (password) return `Passwort knacken: ${password[1]}${password[2] ? ` ${password[2]}` : ""}${password[3]}`;
+    const nextArchive = value.match(/^Extracting\s*(\(\d+\/\d+\))\s*-\s*Next archive\.\.\.(.*)$/);
+    if (nextArchive) return `Entpacken ${nextArchive[1]} - Nächstes Archiv...${nextArchive[2]}`;
+    const extractionError = value.match(/^(\d+) extraction errors?$/);
+    if (extractionError) return `${extractionError[1]} Entpackfehler`;
+    const retry = value.match(/^(\d+) retr(?:y|ies)$/);
+    if (retry) return `${retry[1]} Wiederholung${retry[1] === "1" ? "" : "en"}`;
+    const error = value.match(/^(\d+) errors?$/);
+    if (error) return `${error[1]} Fehler`;
+    const cancelled = value.match(/^(\d+) cancelled$/);
+    if (cancelled) return `${cancelled[1]} abgebrochen`;
+  }
+  return null;
 }
 
 function translateDynamic(value: string, language: AppLanguage): string {
@@ -260,8 +286,8 @@ function translateDynamic(value: string, language: AppLanguage): string {
     const source = language === "en" ? german : english;
     if (value.startsWith(source)) return `${language === "en" ? english : german}${value.slice(source.length)}`;
   }
-  const packageStatus = translatePackageStatusParts(value, language);
-  if (packageStatus) return packageStatus;
+  const runtimeStatus = translateRuntimeStatusPart(value, language);
+  if (runtimeStatus) return runtimeStatus;
   if (language === "en") {
     const update = value.match(/^(.+) ist verfügbar\. Installierte Version: (.+)\.$/);
     if (update) return `${update[1]} is available. Installed version: ${update[2]}.`;
@@ -445,6 +471,8 @@ function translateDynamic(value: string, language: AppLanguage): string {
       [/^(.+) aktivieren$/, "Enable $1"], [/^(.+) deaktivieren$/, "Disable $1"], [/^(.+) Aktionen$/, "$1 actions"], [/^(.+) entfernen$/, "Remove $1"], [/^(.+) kopieren$/, "Copy $1"]
     ];
     for (const [pattern, replacement] of suffixes) if (pattern.test(value)) return value.replace(pattern, replacement);
+    const packageStatus = translatePackageStatusParts(value, language);
+    if (packageStatus) return packageStatus;
     return value
       .replace(/Automatisch entpacken/g, "Extract automatically")
       .replace(/Wartet auf Wiederholung/g, "Waiting to retry")
@@ -631,6 +659,8 @@ function translateDynamic(value: string, language: AppLanguage): string {
       [/^Enable (.+)$/, "$1 aktivieren"], [/^Disable (.+)$/, "$1 deaktivieren"], [/^(.+) actions$/, "$1 Aktionen"], [/^Remove (.+)$/, "$1 entfernen"], [/^Copy (.+)$/, "$1 kopieren"]
     ];
     for (const [pattern, replacement] of suffixes) if (pattern.test(value)) return value.replace(pattern, replacement);
+    const packageStatus = translatePackageStatusParts(value, language);
+    if (packageStatus) return packageStatus;
     return value
       .replace(/Extract automatically/g, "Automatisch entpacken")
       .replace(/Waiting to retry/g, "Wartet auf Wiederholung")
