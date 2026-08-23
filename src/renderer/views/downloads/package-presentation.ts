@@ -166,6 +166,29 @@ export function buildPackagePresentation(row: DownloadPackageRow): PackagePresen
     status = "Entpacken";
   }
 
+  const hasLifecycleTimestamp = [
+    row.package.downloadStartedAt,
+    row.package.downloadCompletedAt,
+    row.package.downloadEndedAt,
+    row.package.postProcessQueuedAt,
+    row.package.postProcessStartedAt,
+    row.package.postProcessCompletedAt,
+    row.package.terminalAt
+  ].some((value) => Number(value || 0) > 0);
+  const hasItemActivity = row.allItems.some((item) =>
+    item.status !== "queued"
+    || Number(item.attempts || 0) > 0
+    || Number(item.retries || 0) > 0
+    || Number(item.downloadedBytes || 0) > 0
+    || Number(item.progressPercent || 0) > 0
+  );
+  const neverStarted = (row.package.status === "queued" || row.package.status === "paused")
+    && !hasLifecycleTimestamp
+    && !hasItemActivity;
+  if (neverStarted) {
+    status = "";
+  }
+
   return {
     progress: { done, failed, cancelled, total, value },
     status,

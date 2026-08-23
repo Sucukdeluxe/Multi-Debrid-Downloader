@@ -2689,6 +2689,91 @@ describe("download manager", () => {
     expect([...filter].map((filePath) => path.basename(filePath).toLowerCase())).toEqual(["episode.e01.part1.rar"]);
   });
 
+  it("extractNow accepts every selected child of one complete multipart archive", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-selected-multipart-"));
+    tempDirs.push(root);
+    const session = emptySession();
+    const packageId = "extract-selected-multipart";
+    const outputDir = path.join(root, "downloads", "Switched at Birth");
+    const extractDir = path.join(root, "extract", "Switched at Birth");
+    fs.mkdirSync(outputDir, { recursive: true });
+    const createdAt = Date.now();
+    const specs = [
+      ["part-1", "tvs-sab-dd51-dl-7p-azhd-avc-405.part1.rar", 128],
+      ["part-2", "tvs-sab-dd51-dl-7p-azhd-avc-405.part2.rar", 128]
+    ] as const;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "Switched.at.Birth.S04.German.DD+51.DL.720p.AmazonHD.AVC-TVS",
+      outputDir,
+      extractDir,
+      status: "failed",
+      itemIds: specs.map(([id]) => id),
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    for (const [id, fileName, totalBytes] of specs) {
+      const targetPath = path.join(outputDir, fileName);
+      fs.writeFileSync(targetPath, Buffer.alloc(128, 3));
+      session.items[id] = {
+        id,
+        packageId,
+        url: `https://example.invalid/${fileName}`,
+        provider: "alldebrid",
+        status: "completed",
+        retries: 0,
+        speedBps: 0,
+        downloadedBytes: totalBytes,
+        totalBytes,
+        progressPercent: 100,
+        fileName,
+        targetPath,
+        resumable: true,
+        attempts: 1,
+        lastError: "",
+        fullStatus: "Fertig",
+        createdAt,
+        updatedAt: createdAt
+      };
+    }
+    const manager = new DownloadManager(
+      { ...defaultSettings(), token: "rd-token", outputDir, extractDir, autoExtract: false, hybridExtract: true },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+    const postProcess = vi.fn(async () => {});
+    const internal = manager as any;
+    internal.runPackagePostProcessing = postProcess;
+    internal.ensureScheduler = vi.fn(async () => {});
+    session.running = true;
+    session.paused = false;
+
+    const candidates = [...await internal.findReadyArchiveSets(session.packages[packageId])];
+    expect(candidates.map((filePath) => path.basename(filePath))).toEqual([
+      "tvs-sab-dd51-dl-7p-azhd-avc-405.part1.rar"
+    ]);
+    const resolved = resolveSelectedArchiveSetsFromCandidates(
+      candidates,
+      specs.map(([id]) => session.items[id]),
+      new Set(["part-1", "part-2"])
+    );
+    expect([...resolved.itemIds].sort()).toEqual(["part-1", "part-2"]);
+
+    await manager.extractNow({ packageIds: [], itemIds: ["part-1", "part-2"] });
+
+    expect(postProcess).toHaveBeenCalledWith(packageId);
+    expect(internal.ensureScheduler).not.toHaveBeenCalled();
+    expect(session.items["part-1"].fullStatus).toBe("Entpacken - Ausstehend");
+    expect(session.items["part-2"].fullStatus).toBe("Entpacken - Ausstehend");
+    const filter = internal.manualExtractArchiveFilters.get(packageId) as Set<string>;
+    expect([...filter].map((filePath) => path.basename(filePath).toLowerCase())).toEqual([
+      "tvs-sab-dd51-dl-7p-azhd-avc-405.part1.rar"
+    ]);
+  });
+
   it("extractNow item selection runs only the selected archive through real post-processing", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-selected-real-"));
     tempDirs.push(root);
@@ -17160,6 +17245,151 @@ describe("post-processing lifecycle audit", () => {
     );
     return { manager, session };
   }
+
+  it("extractNow reports the missing file behind a stale completed multipart selection", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-stale-multipart-"));
+    tempDirs.push(root);
+    const { manager, session } = createCompletedFileManager(root, [
+      { packageId: "stale-multipart", itemId: "stale-part-1", fileName: "show.part1.rar" },
+      { packageId: "stale-multipart", itemId: "stale-part-2", fileName: "show.part2.rar" }
+    ]);
+    fs.rmSync(session.items["stale-part-2"].targetPath);
+
+    await expect(manager.extractNow({
+      packageIds: [],
+      itemIds: ["stale-part-1", "stale-part-2"]
+    })).rejects.toThrow("Archivdatei fehlt: show.part2.rar");
+  });
+
+  it("extractNow reports a pathless missing sibling behind one selected multipart child", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-stale-pathless-multipart-"));
+    tempDirs.push(root);
+    const { manager, session } = createCompletedFileManager(root, [
+      { packageId: "stale-pathless", itemId: "pathless-part-1", fileName: "show.part1.rar" },
+      { packageId: "stale-pathless", itemId: "pathless-part-2", fileName: "show.part2.rar" }
+    ]);
+    fs.rmSync(session.items["pathless-part-2"].targetPath);
+    session.items["pathless-part-2"].targetPath = "";
+
+    await expect(manager.extractNow({
+      packageIds: [],
+      itemIds: ["pathless-part-1"]
+    })).rejects.toThrow("Archivdatei fehlt: show.part2.rar");
+  });
+
+  it("stops before extraction when a completed archive file never stabilizes on disk", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-settle-missing-"));
+    tempDirs.push(root);
+    const { manager, session } = createCompletedFileManager(root, [
+      { packageId: "settle-missing", itemId: "settle-part-1", fileName: "show.part1.rar" },
+      { packageId: "settle-missing", itemId: "settle-part-2", fileName: "show.part2.rar" }
+    ]);
+    fs.rmSync(session.items["settle-part-2"].targetPath);
+
+    await expect((manager as any).waitForCompletedArchiveFilesToSettle(
+      session.packages["settle-missing"],
+      [session.items["settle-part-1"], session.items["settle-part-2"]],
+      undefined,
+      "full"
+    )).rejects.toThrow("Archivdateien nicht bereit: show.part2.rar:missing_file");
+  }, 8_000);
+
+  it("does not invoke the extractor after a multipart source disappears during post-processing", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-postprocess-missing-"));
+    tempDirs.push(root);
+    const { manager, session } = createCompletedFileManager(root, [
+      { packageId: "postprocess-missing", itemId: "postprocess-part-1", fileName: "show.part1.rar" },
+      { packageId: "postprocess-missing", itemId: "postprocess-part-2", fileName: "show.part2.rar" }
+    ]);
+    fs.rmSync(session.items["postprocess-part-2"].targetPath);
+    const internal = manager as any;
+    const runCoordinatedExtraction = vi.fn(async () => ({ extracted: 1, failed: 0, lastError: "" }));
+    internal.runCoordinatedExtraction = runCoordinatedExtraction;
+    internal.manualExtractPackages.add("postprocess-missing");
+
+    await internal.handlePackagePostProcessing("postprocess-missing");
+
+    expect(runCoordinatedExtraction).not.toHaveBeenCalled();
+    expect(session.packages["postprocess-missing"].status).toBe("failed");
+    expect(session.items["postprocess-part-1"].fullStatus).toBe("Entpack-Fehler: Teilarchiv fehlt oder ist nicht lesbar");
+    expect(session.items["postprocess-part-2"].fullStatus).toBe("Entpack-Fehler: Teilarchiv fehlt oder ist nicht lesbar");
+  }, 8_000);
+
+  it("does not treat a fully vanished manual multipart source as a successful extraction", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-postprocess-all-missing-"));
+    tempDirs.push(root);
+    const { manager, session } = createCompletedFileManager(root, [
+      { packageId: "postprocess-all-missing", itemId: "all-missing-part-1", fileName: "show.part1.rar" },
+      { packageId: "postprocess-all-missing", itemId: "all-missing-part-2", fileName: "show.part2.rar" }
+    ]);
+    fs.rmSync(session.items["all-missing-part-1"].targetPath);
+    fs.rmSync(session.items["all-missing-part-2"].targetPath);
+    const internal = manager as any;
+    const runCoordinatedExtraction = vi.fn(async () => ({ extracted: 1, failed: 0, lastError: "" }));
+    internal.runCoordinatedExtraction = runCoordinatedExtraction;
+    internal.manualExtractPackages.add("postprocess-all-missing");
+
+    await internal.handlePackagePostProcessing("postprocess-all-missing");
+
+    expect(runCoordinatedExtraction).not.toHaveBeenCalled();
+    expect(session.packages["postprocess-all-missing"].status).toBe("failed");
+    expect(session.items["all-missing-part-1"].fullStatus).toBe("Entpack-Fehler: Teilarchiv fehlt oder ist nicht lesbar");
+    expect(session.items["all-missing-part-2"].fullStatus).toBe("Entpack-Fehler: Teilarchiv fehlt oder ist nicht lesbar");
+  }, 8_000);
+
+  it("does not treat a fully vanished automatic runtime source as startup recovery", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-runtime-all-missing-"));
+    tempDirs.push(root);
+    const { manager, session } = createCompletedFileManager(root, [
+      { packageId: "runtime-all-missing", itemId: "runtime-missing-part-1", fileName: "show.part1.rar" },
+      { packageId: "runtime-all-missing", itemId: "runtime-missing-part-2", fileName: "show.part2.rar" }
+    ]);
+    fs.rmSync(session.items["runtime-missing-part-1"].targetPath);
+    fs.rmSync(session.items["runtime-missing-part-2"].targetPath);
+    fs.rmSync(session.packages["runtime-all-missing"].outputDir, { recursive: true });
+    const internal = manager as any;
+    const runCoordinatedExtraction = vi.fn(async () => ({ extracted: 1, failed: 0, lastError: "" }));
+    internal.runCoordinatedExtraction = runCoordinatedExtraction;
+    internal.settings.autoExtract = true;
+
+    await internal.handlePackagePostProcessing("runtime-all-missing");
+
+    expect(runCoordinatedExtraction).not.toHaveBeenCalled();
+    expect(session.packages["runtime-all-missing"].status).toBe("failed");
+    expect(session.items["runtime-missing-part-1"].fullStatus).toBe("Entpack-Fehler: Teilarchiv fehlt oder ist nicht lesbar");
+    expect(session.items["runtime-missing-part-2"].fullStatus).toBe("Entpack-Fehler: Teilarchiv fehlt oder ist nicht lesbar");
+  }, 8_000);
+
+  it("allows startup recovery after every source archive was intentionally cleaned", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-settle-cleaned-"));
+    tempDirs.push(root);
+    const { manager, session } = createCompletedFileManager(root, [
+      { packageId: "settle-cleaned", itemId: "cleaned-part-1", fileName: "show.part1.rar" },
+      { packageId: "settle-cleaned", itemId: "cleaned-part-2", fileName: "show.part2.rar" }
+    ]);
+    fs.rmSync(session.items["cleaned-part-1"].targetPath);
+    fs.rmSync(session.items["cleaned-part-2"].targetPath);
+    fs.writeFileSync(path.join(session.packages["settle-cleaned"].outputDir, "release.nfo"), "release");
+    const extractedPath = path.join(session.packages["settle-cleaned"].extractDir, "episode.mkv");
+    fs.mkdirSync(path.dirname(extractedPath), { recursive: true });
+    fs.writeFileSync(extractedPath, "video");
+    (manager as any).getPackageOutputScope(session.packages["settle-cleaned"]).add({
+      version: 1,
+      archivePath: session.items["cleaned-part-1"].targetPath,
+      entryPath: "episode.mkv",
+      outputPath: extractedPath,
+      state: "complete",
+      disposition: "written"
+    });
+
+    await expect((manager as any).waitForCompletedArchiveFilesToSettle(
+      session.packages["settle-cleaned"],
+      [session.items["cleaned-part-1"], session.items["cleaned-part-2"]],
+      undefined,
+      "full",
+      true
+    )).resolves.toBeUndefined();
+  }, 8_000);
 
   it("requeues an interrupted integrity check and clears transient package progress on restart", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-restart-integrity-"));

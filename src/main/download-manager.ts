@@ -9102,7 +9102,8 @@ export class DownloadManager extends EventEmitter {
     pkg: PackageEntry,
     items: DownloadItem[],
     signal: AbortSignal | undefined,
-    scope: "hybrid" | "full"
+    scope: "hybrid" | "full",
+    allowMissingSourceRecovery = false
   ): Promise<void> {
     const archiveItems = items.filter((item) =>
       item.status === "completed" && isArchiveLikePath(item.targetPath || item.fileName || "")
@@ -9215,6 +9216,17 @@ export class DownloadManager extends EventEmitter {
       waitMs: settleMs,
       pending: lastPending || "none"
     });
+    const hasAnySourceArchive = archiveItems.some((item) => inspectPackageItemDiskState(pkg, item).exists);
+    if (!hasAnySourceArchive && allowMissingSourceRecovery) {
+      const sourceDirectoryExists = await fs.promises.stat(pkg.outputDir)
+        .then((stat) => stat.isDirectory(), () => false);
+      const hasExtractedOutput = this.getPackageOutputScope(pkg).completeFiles()
+        .some((filePath) => isPathInsideDir(filePath, pkg.extractDir) && fs.existsSync(filePath));
+      if (!sourceDirectoryExists || hasExtractedOutput) {
+        return;
+      }
+    }
+    throw new Error(`Archivdateien nicht bereit: ${lastPending || "unbekannt"}`);
   }
 
   private fixDuplicateSuffixFiles(): void {
@@ -9382,7 +9394,10 @@ export class DownloadManager extends EventEmitter {
     this.emitState(true);
   }
 
-  private runPackagePostProcessing(packageId: string): Promise<void> {
+  private runPackagePostProcessing(
+    packageId: string,
+    options: { allowMissingSourceRecovery?: boolean } = {}
+  ): Promise<void> {
     this.trackPackagePostProcessResult(packageId);
     const existing = this.packagePostProcessTasks.get(packageId);
     if (existing) {
@@ -9416,7 +9431,11 @@ export class DownloadManager extends EventEmitter {
           this.hybridExtractRequeue.delete(packageId);
           const roundStart = nowMs();
           try {
-            await this.handlePackagePostProcessing(packageId, abortController.signal);
+            await this.handlePackagePostProcessing(
+              packageId,
+              abortController.signal,
+              options.allowMissingSourceRecovery === true
+            );
           } catch (error) {
             if (this.isExpectedPostProcessAbort(error, abortController.signal)) {
               logger.info(`Post-Processing für Paket abgebrochen: ${compactErrorText(error)}`);
@@ -9564,7 +9583,7 @@ export class DownloadManager extends EventEmitter {
             }
           }
           changed = true;
-          void this.runPackagePostProcessing(packageId).catch((err) => logger.warn(`runPackagePostProcessing Fehler (recoverPostProcessing): ${compactErrorText(err)}`));
+          void this.runPackagePostProcessing(packageId, { allowMissingSourceRecovery: true }).catch((err) => logger.warn(`runPackagePostProcessing Fehler (recoverPostProcessing): ${compactErrorText(err)}`));
         } else if (pkg.status !== "completed") {
           pkg.status = "completed";
           pkg.updatedAt = nowMs();
@@ -9754,6 +9773,62 @@ export class DownloadManager extends EventEmitter {
     };
   }
 
+  private describeManualExtractionDiskFailure(
+    packageId: string,
+    selectedItemIds?: ReadonlySet<string>
+  ): string | null {
+    const pkg = this.session.packages[packageId];
+    if (!pkg) {
+      return null;
+    }
+    const packageItems = pkg.itemIds
+      .map((itemId) => this.session.items[itemId])
+      .filter((item): item is DownloadItem => Boolean(item));
+    const seeds = selectedItemIds
+      ? packageItems.filter((item) => selectedItemIds.has(item.id))
+      : packageItems;
+    const pathlessItems = packageItems.filter((item) => !String(item.targetPath || "").trim());
+    const pathlessNameCounts = new Map<string, number>();
+    for (const item of pathlessItems) {
+      const key = path.basename(item.fileName || "").toLocaleLowerCase("en-US");
+      pathlessNameCounts.set(key, (pathlessNameCounts.get(key) || 0) + 1);
+    }
+    const relatedItems = new Map<string, DownloadItem>();
+    for (const seed of seeds) {
+      const filePath = String(seed.targetPath || seed.fileName || "").trim();
+      if (!isArchiveLikePath(filePath)) {
+        continue;
+      }
+      const qualified = resolveArchiveItemsFromList(path.basename(filePath), packageItems, seed.targetPath || "");
+      const legacy = resolveArchiveItemsFromList(path.basename(filePath), pathlessItems)
+        .filter((item) => (pathlessNameCounts.get(path.basename(item.fileName || "").toLocaleLowerCase("en-US")) || 0) === 1);
+      const resolved = [...new Map([...qualified, ...legacy].map((item) => [item.id, item])).values()];
+      for (const item of resolved.length > 0 ? resolved : [seed]) {
+        relatedItems.set(item.id, item);
+      }
+    }
+    for (const item of relatedItems.values()) {
+      if (item.status !== "completed") {
+        continue;
+      }
+      const state = inspectPackageItemDiskState(pkg, item);
+      if (state.reason === "ok") {
+        continue;
+      }
+      const fileName = path.basename(item.targetPath || item.fileName || item.id);
+      if (state.reason === "missing_file" || state.reason === "missing_path") {
+        return `Archivdatei fehlt: ${fileName}`;
+      }
+      if (state.reason === "too_small") {
+        return `Archivdatei unvollständig: ${fileName} (${humanSize(state.size)} von mindestens ${humanSize(state.minBytes)})`;
+      }
+      if (state.reason === "persisted_shortfall") {
+        return `Archivstatus unvollständig: ${fileName}`;
+      }
+    }
+    return null;
+  }
+
   private isManualExtractionPlanCurrent(plan: ManualExtractionPlan): boolean {
     const pkg = this.session.packages[plan.packageId];
     if (!pkg || pkg.cancelled || this.getPackageResultGeneration(plan.packageId) !== plan.generation) {
@@ -9861,18 +9936,27 @@ export class DownloadManager extends EventEmitter {
       }
     }
     const plans: ManualExtractionPlan[] = [];
+    const rejectionDetails: string[] = [];
     for (const packageId of packageIds) {
       const plan = await this.resolveManualExtractionPlan(packageId);
       if (plan) plans.push(plan);
-      else rejected += 1;
+      else {
+        rejected += 1;
+        const detail = this.describeManualExtractionDiskFailure(packageId);
+        if (detail) rejectionDetails.push(detail);
+      }
     }
     for (const [packageId, itemIds] of itemIdsByPackage) {
       const plan = await this.resolveManualExtractionPlan(packageId, itemIds);
       if (plan) plans.push(plan);
-      else rejected += 1;
+      else {
+        rejected += 1;
+        const detail = this.describeManualExtractionDiskFailure(packageId, itemIds);
+        if (detail) rejectionDetails.push(detail);
+      }
     }
     if (plans.length === 0) {
-      throw new Error("Kein entpackbarer Archivsatz ausgewählt");
+      throw new Error(rejectionDetails[0] || "Kein entpackbarer Archivsatz ausgewählt");
     }
     if (rejected > 0) {
       logger.info(`Jetzt entpacken: ${plans.length} Entpackvorgang/Vorgänge bereit, ${rejected} Auswahl(en) ohne vollständigen Archivsatz übersprungen`);
@@ -13994,8 +14078,8 @@ export class DownloadManager extends EventEmitter {
       const partsOnDisk = collectArchiveCleanupTargets(candidate, dirFiles);
       const allPartsCompleted = partsOnDisk.every((part) => completedPaths.has(pathKey(part)));
       const candidateStem = path.basename(candidate).toLowerCase();
-      const hasUnreadyPendingPart = packageItems.some((item) => item.status !== "completed"
-        && this.looksLikeArchivePart(path.basename(item.targetPath || item.fileName || "").toLowerCase(), candidateStem)
+      const hasUnreadyPendingPart = packageItems.some((item) =>
+        this.looksLikeArchivePart(path.basename(item.targetPath || item.fileName || "").toLowerCase(), candidateStem)
         && inspectPackageItemDiskState(pkg, item).reason !== "ok");
       if (hasUnreadyPendingPart) {
         continue;
@@ -14509,7 +14593,11 @@ export class DownloadManager extends EventEmitter {
     return 0;
   }
 
-  private async handlePackagePostProcessing(packageId: string, signal?: AbortSignal): Promise<void> {
+  private async handlePackagePostProcessing(
+    packageId: string,
+    signal?: AbortSignal,
+    allowMissingSourceRecovery = false
+  ): Promise<void> {
     const handleStart = nowMs();
     const postProcessVersion = this.getPackagePostProcessVersion(packageId);
     const pkg = this.session.packages[packageId];
@@ -14752,7 +14840,8 @@ export class DownloadManager extends EventEmitter {
           pkg,
           completedItems,
           extractAbortController.signal,
-          "full"
+          "full",
+          allowMissingSourceRecovery && !manualExtraction
         );
         if (extractAbortController.signal.aborted) {
           throw new Error(String(extractAbortController.signal.reason || "aborted:extract"));

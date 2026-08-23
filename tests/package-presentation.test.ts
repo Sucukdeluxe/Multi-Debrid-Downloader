@@ -46,6 +46,70 @@ function row(items: DownloadItem[], overrides: Partial<PackageEntry> = {}): Down
 }
 
 describe("download package presentation", () => {
+  it("keeps the status empty for an over-package that has never started", () => {
+    const presentation = buildPackagePresentation(row([
+      item("queued", "Wartet", {
+        status: "queued",
+        attempts: 0,
+        retries: 0,
+        downloadedBytes: 0,
+        progressPercent: 0
+      })
+    ], {
+      status: "queued",
+      downloadStartedAt: 0,
+      downloadCompletedAt: 0,
+      downloadEndedAt: 0,
+      postProcessQueuedAt: 0,
+      postProcessStartedAt: 0,
+      postProcessCompletedAt: 0,
+      terminalAt: 0
+    }));
+
+    expect(presentation.status).toBe("");
+  });
+
+  it("keeps the status empty for a disabled never-started over-package", () => {
+    const presentation = buildPackagePresentation(row([
+      item("queued", "Paket gestoppt", {
+        status: "queued",
+        attempts: 0,
+        retries: 0,
+        downloadedBytes: 0,
+        progressPercent: 0
+      })
+    ], { status: "paused", enabled: false }));
+
+    expect(presentation.status).toBe("");
+  });
+
+  it("keeps retry activity visible when an older queued package lacks lifecycle timestamps", () => {
+    const presentation = buildPackagePresentation(row([
+      item("queued", "Link-Umwandlung erneut, Versuch 1/...", {
+        status: "queued",
+        attempts: 1,
+        retries: 1,
+        downloadedBytes: 0,
+        progressPercent: 0
+      })
+    ], { status: "queued", downloadStartedAt: 0 }));
+
+    expect(presentation.status).toBe("Link-Umwandlung erneut");
+  });
+
+  it("keeps a queued status visible after the over-package has started once", () => {
+    const presentation = buildPackagePresentation(row([
+      item("queued", "Link-Umwandlung erneut, Versuch 1/...", {
+        status: "queued",
+        retries: 1,
+        downloadedBytes: 0,
+        progressPercent: 0
+      })
+    ], { status: "queued", downloadStartedAt: 1 }));
+
+    expect(presentation.status).toBe("Link-Umwandlung erneut");
+  });
+
   it("reserves 90 percent for completed downloads and 10 percent for extraction", () => {
     expect(buildPackagePresentation(row([
       item("a", "Entpack-Fehler: Passwort"),

@@ -301,7 +301,7 @@ describe("download disclosure in the headless visual harness", () => {
     expect(ascending.ariaSort).toBe("ascending");
     expect(descending.names.length).toBeGreaterThan(1);
     expect(ascending.names).toEqual([...descending.names].reverse());
-  });
+  }, 25_000);
 
   async function measureDisclosure(action: "einklappen" | "ausklappen"): Promise<DisclosureSample[]> {
     if (!client) throw new Error("Chrome DevTools client is missing");

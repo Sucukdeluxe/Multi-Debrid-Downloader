@@ -25,6 +25,17 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 - Treat invalid, missing, blocked, banned, server-restricted, and IP-restricted credentials as terminal authentication failures without provider cooldowns.
 - Preserve official AllDebrid error codes alongside their messages so retry and cooldown decisions remain precise.
 
+### Archive extraction reliability
+
+- Resolve multiple selected child rows from the same complete multipart archive as one extraction set.
+- Stop before launching an extractor when a completed archive part is missing, incomplete, or no longer matches the persisted download state.
+- Report the affected archive file instead of returning a generic no-extractable-set error for stale completed selections.
+- Preserve startup recovery for packages whose source archives were intentionally cleaned after a completed extraction.
+
+### Download list clarity
+
+- Keep the status column empty for parent packages that have never started while retaining meaningful queued, active, and terminal statuses after the first run.
+
 ## [2.0.65] - 2026-08-23
 
 ### Extract now behavior
