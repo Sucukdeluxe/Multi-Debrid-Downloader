@@ -26,7 +26,10 @@ const ALL_DEBRID_API_BASE_V41 = "https://api.alldebrid.com/v4.1";
 const MEGA_DEBRID_API_BASE = "https://www.mega-debrid.eu/api.php";
 
 const ONEFICHIER_API_BASE = "https://api.1fichier.com/v1";
-const ONEFICHIER_URL_RE = /^https?:\/\/(?:www\.)?(?:1fichier\.com|alterupload\.com|cjoint\.net|desfichiers\.com|dfichiers\.com|megadl\.fr|mesfichiers\.org|piecejointe\.net|pjointe\.com|tenvoi\.com|dl4free\.com)\/\?([a-z0-9]{5,20})$/i;
+const ONEFICHIER_CHECK_URL = "https://1fichier.com/check_links.pl";
+const ONEFICHIER_CHECK_BATCH_SIZE = 100;
+const ONEFICHIER_CHECK_BATCH_DELAY_MS = 1000;
+const ONEFICHIER_URL_RE = /^https?:\/\/(?:www\.)?(?:1fichier\.com|alterupload\.com|cjoint\.net|desfichiers\.(?:com|net)|dfichiers\.com|megadl\.fr|mesfichiers\.org|piecejointe\.net|pjointe\.com|tenvoi\.com|dl4free\.com)\/\?([a-z0-9]{5,20})$/i;
 
 const DEBRID_LINK_API_BASE = "https://debrid-link.com/api/v2";
 const DEBRID_LINK_KEY_QUOTA_ERRORS = new Set(["maxLink", "maxData"]);
@@ -1689,6 +1692,18 @@ export function normalizeResolvedFilename(value: string): string {
   return candidate;
 }
 
+function normalizePublicHosterFilename(value: string): string {
+  const candidate = decodeHtmlEntities(String(value || ""))
+    .replace(/<[^>]*>/g, " ")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/^['"]+|['"]+$/g, "")
+    .trim();
+  const fileName = candidate.split(/[\\/]/).pop()?.trim() || "";
+  if (!fileName || fileName === "." || fileName === ".." || fileName.length > 260 || looksLikeOpaqueFilename(fileName)) return "";
+  return fileName;
+}
+
 export function filenameFromRapidgatorUrlPath(link: string): string {
   try {
     const parsed = new URL(link);
@@ -1976,6 +1991,102 @@ export async function checkRapidgatorOnline(
   }
 
   return null;
+}
+
+export interface OneFichierCheckResult {
+  online: boolean;
+  fileName: string;
+  fileSizeBytes: number | null;
+  accessRestricted: boolean;
+}
+
+export function isOneFichierLink(link: string): boolean {
+  return ONEFICHIER_URL_RE.test(String(link || "").trim());
+}
+
+function getOneFichierLinkId(link: string): string {
+  return String(link || "").trim().match(ONEFICHIER_URL_RE)?.[1]?.toLowerCase() || "";
+}
+
+function parseOneFichierCheckResponse(responseText: string, linksById: Map<string, string[]>): Map<string, OneFichierCheckResult> {
+  const results = new Map<string, OneFichierCheckResult>();
+  for (const rawLine of String(responseText || "").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const id = line.match(/\?([a-z0-9]{5,20})(?:;|$)/i)?.[1]?.toLowerCase() || "";
+    const requestedLinks = linksById.get(id);
+    if (!requestedLinks?.length) continue;
+
+    let result: OneFichierCheckResult | null = null;
+    if (/;;;(?:NOT FOUND|BAD LINK)\s*$/i.test(line)) {
+      result = { online: false, fileName: "", fileSizeBytes: null, accessRestricted: false };
+    } else if (/;;;PRIVATE\s*$/i.test(line)) {
+      result = { online: true, fileName: "", fileSizeBytes: null, accessRestricted: true };
+    } else {
+      const firstSeparator = line.indexOf(";");
+      const lastSeparator = line.lastIndexOf(";");
+      const fileName = decodeHtmlEntities(firstSeparator >= 0 && lastSeparator > firstSeparator ? line.slice(firstSeparator + 1, lastSeparator) : "").trim();
+      const fileSizeBytes = Number(lastSeparator >= 0 ? line.slice(lastSeparator + 1).trim() : NaN);
+      if (fileName && Number.isSafeInteger(fileSizeBytes) && fileSizeBytes >= 0) {
+        result = { online: true, fileName, fileSizeBytes, accessRestricted: false };
+      }
+    }
+
+    if (result) {
+      for (const link of requestedLinks) results.set(link, result);
+    }
+  }
+  return results;
+}
+
+export async function checkOneFichierLinks(links: string[], signal?: AbortSignal): Promise<Map<string, OneFichierCheckResult>> {
+  const supportedLinks = Array.from(new Set(links.map((link) => String(link || "").trim()).filter(isOneFichierLink)));
+  const results = new Map<string, OneFichierCheckResult>();
+
+  for (let offset = 0; offset < supportedLinks.length; offset += ONEFICHIER_CHECK_BATCH_SIZE) {
+    if (offset > 0) await sleepWithSignal(ONEFICHIER_CHECK_BATCH_DELAY_MS, signal);
+    const batch = supportedLinks.slice(offset, offset + ONEFICHIER_CHECK_BATCH_SIZE);
+    const linksById = new Map<string, string[]>();
+    const body = new URLSearchParams();
+    for (const link of batch) {
+      body.append("links[]", link);
+      const id = getOneFichierLinkId(link);
+      const existing = linksById.get(id) ?? [];
+      existing.push(link);
+      linksById.set(id, existing);
+    }
+
+    for (let attempt = 1; attempt <= REQUEST_RETRIES + 1; attempt += 1) {
+      try {
+        if (signal?.aborted) throw new Error("aborted:debrid");
+        const response = await fetch(ONEFICHIER_CHECK_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body,
+          signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
+        });
+        if (!response.ok) {
+          try { await response.body?.cancel(); } catch { }
+          if (response.status === 429) break;
+          if (shouldRetryStatus(response.status) && attempt <= REQUEST_RETRIES) {
+            await sleepWithSignal(retryDelayForResponse(response, attempt), signal);
+            continue;
+          }
+          break;
+        }
+        const parsed = parseOneFichierCheckResponse(await readResponseTextLimited(response, RAPIDGATOR_SCAN_MAX_BYTES, signal), linksById);
+        for (const [link, result] of parsed) results.set(link, result);
+        break;
+      } catch (error) {
+        const errorText = compactErrorText(error);
+        if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) throw error;
+        if (attempt > REQUEST_RETRIES || !isRetryableErrorText(errorText)) break;
+        await sleepWithSignal(retryDelay(attempt), signal);
+      }
+    }
+  }
+
+  return results;
 }
 
 function buildBestDebridRequests(link: string, token: string): BestDebridRequest[] {
@@ -3672,9 +3783,130 @@ class OneFichierClient {
   }
 }
 
-const DDOWNLOAD_URL_RE = /^https?:\/\/(?:www\.)?(?:ddownload\.com|ddl\.to)\/([a-z0-9]+)/i;
+const DDOWNLOAD_URL_RE = /^https?:\/\/(?:www\.)?(?:ddownload\.com|ddl\.to)\/([a-z0-9]{8,20})(?:\/|$)/i;
 const DDOWNLOAD_WEB_BASE = "https://ddownload.com";
 const DDOWNLOAD_WEB_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
+const DDOWNLOAD_SCAN_MAX_BYTES = 512 * 1024;
+const DDOWNLOAD_FILE_NOT_FOUND_RE = /(?:File Not Found|No such file|file was removed|file was banned|Unavailable for legal reasons)/i;
+
+export interface DdownloadCheckResult {
+  online: boolean;
+  fileName: string;
+  fileSizeBytes: number | null;
+}
+
+export function isDdownloadLink(link: string): boolean {
+  return DDOWNLOAD_URL_RE.test(String(link || "").trim());
+}
+
+function getDdownloadFileCode(link: string): string {
+  return String(link || "").trim().match(DDOWNLOAD_URL_RE)?.[1]?.toLowerCase() || "";
+}
+
+export function filenameFromDdownloadUrlPath(link: string): string {
+  if (!isDdownloadLink(link)) return "";
+  try {
+    const parts = new URL(link).pathname.split("/").filter(Boolean);
+    for (let index = parts.length - 1; index >= 1; index -= 1) {
+      const normalized = normalizePublicHosterFilename(safeDecode(parts[index]).replace(/\.html?$/i, ""));
+      if (normalized) return normalized;
+    }
+  } catch {
+  }
+  return "";
+}
+
+export function extractDdownloadFilenameFromHtml(html: string): string {
+  const patterns = [
+    /class=["'][^"']*dk-dl-icon[^"']*["'][^>]*data-fn=["']([^"']+)["']/i,
+    /data-fn=["']([^"']+)["'][^>]*class=["'][^"']*dk-dl-icon[^"']*["']/i,
+    /<h2[^>]*class=["'][^"']*dk-dl-name[^"']*["'][^>]*>([^<]+)<\/h2>/i,
+    /class=["'][^"']*file-info-name[^"']*["'][^>]*>([^<]+)</i
+  ];
+  for (const pattern of patterns) {
+    const normalized = normalizePublicHosterFilename(html.match(pattern)?.[1] || "");
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
+export function parseDdownloadFileSize(value: string | null | undefined): number | null {
+  return parseRapidgatorFileSize(value);
+}
+
+export async function checkDdownloadOnline(link: string, signal?: AbortSignal): Promise<DdownloadCheckResult | null> {
+  if (!isDdownloadLink(link)) return null;
+  const originalFileCode = getDdownloadFileCode(link);
+  const originalProtocol = new URL(link).protocol.toLowerCase();
+  const headers = {
+    "User-Agent": DDOWNLOAD_WEB_UA,
+    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9,de;q=0.8"
+  };
+
+  let requestUrl = link;
+  let redirectCount = 0;
+  for (let attempt = 1; attempt <= REQUEST_RETRIES + 1; attempt += 1) {
+    try {
+      if (signal?.aborted) throw new Error("aborted:debrid");
+      const response = await fetch(requestUrl, { method: "GET", redirect: "manual", headers, signal: withTimeoutSignal(signal, API_TIMEOUT_MS) });
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get("location");
+        try { await response.body?.cancel(); } catch { }
+        if (!location || redirectCount >= 3) return null;
+        let nextUrl = "";
+        try {
+          nextUrl = new URL(location, requestUrl).toString();
+        } catch {
+          return null;
+        }
+        if (!isDdownloadLink(nextUrl) || getDdownloadFileCode(nextUrl) !== originalFileCode) return null;
+        if (originalProtocol === "https:" && new URL(nextUrl).protocol.toLowerCase() !== "https:") return null;
+        requestUrl = nextUrl;
+        redirectCount += 1;
+        attempt -= 1;
+        continue;
+      }
+      if (response.status === 404) {
+        try { await response.body?.cancel(); } catch { }
+        return { online: false, fileName: "", fileSizeBytes: null };
+      }
+      if (!response.ok) {
+        try { await response.body?.cancel(); } catch { }
+        if (response.status === 429) return null;
+        if (shouldRetryStatus(response.status) && attempt <= REQUEST_RETRIES) {
+          await sleepWithSignal(retryDelayForResponse(response, attempt), signal);
+          continue;
+        }
+        return null;
+      }
+      const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+      const contentLength = Number(response.headers.get("content-length") || NaN);
+      if (contentType && !contentType.includes("text/html") && !contentType.includes("application/xhtml") && !contentType.includes("text/plain")) {
+        try { await response.body?.cancel(); } catch { }
+        return null;
+      }
+      if (!contentType && Number.isFinite(contentLength) && contentLength > DDOWNLOAD_SCAN_MAX_BYTES) {
+        try { await response.body?.cancel(); } catch { }
+        return null;
+      }
+      const html = await readResponseTextLimited(response, DDOWNLOAD_SCAN_MAX_BYTES, signal);
+      const pageName = extractDdownloadFilenameFromHtml(html);
+      const hasFilePage = Boolean(pageName) || /\bdk-dl-(?:icon|name|size)\b/i.test(html) || /Your file is ready to download|Regular Download via DDownload/i.test(html);
+      if (!hasFilePage && DDOWNLOAD_FILE_NOT_FOUND_RE.test(html)) return { online: false, fileName: "", fileSizeBytes: null };
+      if (!hasFilePage) return null;
+      const sizeMatch = html.match(/class=["'][^"']*dk-dl-size[^"']*["'][^>]*>([^<]+)</i)
+        || html.match(/(?:File\s*size|Dateigröße)\s*[:\-]?\s*<[^>]*>([^<]+)</i);
+      return { online: true, fileName: pageName || filenameFromDdownloadUrlPath(link), fileSizeBytes: parseDdownloadFileSize(sizeMatch?.[1]) };
+    } catch (error) {
+      const errorText = compactErrorText(error);
+      if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) throw error;
+      if (attempt > REQUEST_RETRIES || !isRetryableErrorText(errorText)) return null;
+    }
+    if (attempt <= REQUEST_RETRIES) await sleepWithSignal(retryDelay(attempt), signal);
+  }
+  return null;
+}
 
 class DdownloadClient {
   private login: string;
@@ -3774,8 +4006,7 @@ class DdownloadClient {
 
         const idVal = html.match(/name="id" value="([^"]+)"/)?.[1] || fileCode;
         const randVal = html.match(/name="rand" value="([^"]+)"/)?.[1] || "";
-        const fileNameMatch = html.match(/class="file-info-name"[^>]*>([^<]+)</);
-        const fileName = fileNameMatch?.[1]?.trim() || filenameFromUrl(link);
+        const fileName = extractDdownloadFilenameFromHtml(html) || filenameFromDdownloadUrlPath(link) || filenameFromUrl(link);
 
         const dlBody = new URLSearchParams({
           op: "download2",

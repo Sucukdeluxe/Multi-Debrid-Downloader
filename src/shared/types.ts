@@ -438,6 +438,7 @@ export interface DownloadItem {
   progressPercent: number;
   fileName: string;
   targetPath: string;
+  metadataRenameTargetPath?: string;
   resumable: boolean;
   attempts: number;
   lastError: string;

@@ -58,7 +58,7 @@ function releaseTlsSkip(): void {
 }
 import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 import { planDownloadCompletion, reconcileFinalizedSize, validateDownloadedFileCompletion } from "./download-completion";
-import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkRapidgatorOnline, fetchAllDebridHostInfo, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown } from "./debrid";
+import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkDdownloadOnline, checkOneFichierLinks, checkRapidgatorOnline, fetchAllDebridHostInfo, filenameFromDdownloadUrlPath, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, isDdownloadLink, isOneFichierLink, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown, type DdownloadCheckResult, type OneFichierCheckResult } from "./debrid";
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
 import { classifyDiskError } from "./fs-error";
@@ -2004,11 +2004,14 @@ export class DownloadManager extends EventEmitter {
     this.applyOnStartCleanupPolicy();
     this.normalizeSessionStatuses();
     this.restoreTargetPathReservations();
+    this.finalizeExistingResolvedMetadataTargets();
     this.resolveExistingQueuedOpaqueFilenames();
     this.revalidateCompletedItems();
     void this.recoverRetryableItems("startup").catch((err) => logger.warn(`recoverRetryableItems Fehler (startup): ${compactErrorText(err)}`));
     this.recoverPostProcessingOnStartup();
     this.checkExistingRapidgatorLinks();
+    this.checkExistingDdownloadLinks();
+    this.checkExistingOneFichierLinks();
     void this.cleanupExistingExtractedArchives().catch((err) => logger.warn(`cleanupExistingExtractedArchives Fehler (constructor): ${compactErrorText(err)}`));
     setRotationEventListener(() => {
       if (this.rotationListenerActive === false) {
@@ -2022,6 +2025,8 @@ export class DownloadManager extends EventEmitter {
   }
 
   private rotationListenerActive = true;
+
+  private metadataChecksActive = true;
 
   public getPackageLogPath(packageId: string): string | null {
     const pkg = this.session.packages[packageId];
@@ -3233,6 +3238,8 @@ export class DownloadManager extends EventEmitter {
     }
     if (newItemIds.length > 0) {
       void this.checkRapidgatorLinks(newItemIds).catch((err) => logger.warn(`checkRapidgatorLinks Fehler: ${compactErrorText(err)}`));
+      void this.checkDdownloadItems(newItemIds).catch((err) => logger.warn(`checkDdownloadItems Fehler: ${compactErrorText(err)}`));
+      void this.checkOneFichierItems(newItemIds).catch((err) => logger.warn(`checkOneFichierItems Fehler: ${compactErrorText(err)}`));
     }
     return { addedPackages, addedLinks };
   }
@@ -3592,6 +3599,223 @@ export class DownloadManager extends EventEmitter {
       }
       item.onlineStatus = "online";
       item.updatedAt = nowMs();
+    }
+  }
+
+  private async checkDdownloadItems(itemIds: string[]): Promise<void> {
+    const itemsToCheck: Array<{ itemId: string; url: string }> = [];
+    for (const itemId of itemIds) {
+      const item = this.session.items[itemId];
+      if (!item || !isDdownloadLink(item.url)) continue;
+      if (item.status !== "queued" && item.status !== "reconnect_wait" && item.status !== "completed") continue;
+      item.onlineStatus = "checking";
+      itemsToCheck.push({ itemId, url: item.url });
+    }
+    if (itemsToCheck.length === 0) return;
+    this.emitState();
+    const checkedUrls = new Map<string, Promise<DdownloadCheckResult | null>>();
+    await runWithLimitedConcurrency(itemsToCheck, 4, async ({ itemId, url }) => {
+      let pending = checkedUrls.get(url);
+      if (!pending) {
+        pending = checkDdownloadOnline(url);
+        checkedUrls.set(url, pending);
+      }
+      let result: DdownloadCheckResult | null = null;
+      try {
+        result = await pending;
+      } catch (error) {
+        logger.warn(`DDownload-Linkprüfung fehlgeschlagen: ${compactErrorText(error)}`);
+      }
+      if (!this.metadataChecksActive) return;
+      const item = this.session.items[itemId];
+      if (item) this.applyDdownloadCheckResult(item, result);
+      this.persistSoon();
+      this.emitState();
+    });
+    this.persistSoon();
+  }
+
+  private applyDdownloadCheckResult(item: DownloadItem, result: DdownloadCheckResult | null): void {
+    if (!result) {
+      if (item.onlineStatus === "checking") item.onlineStatus = undefined;
+      return;
+    }
+    if (!result.online) {
+      item.onlineStatus = "offline";
+      item.updatedAt = nowMs();
+      if (item.status === "queued" || item.status === "reconnect_wait") {
+        item.status = "failed";
+        item.fullStatus = "Offline";
+        item.lastError = "Datei nicht gefunden auf DDownload";
+        if (this.runItemIds.has(item.id)) this.recordRunOutcome(item.id, "failed");
+        const pkg = this.session.packages[item.packageId];
+        if (pkg) this.refreshPackageStatus(pkg);
+      }
+      return;
+    }
+    const unresolvedFileName = looksLikeOpaqueFilename(item.fileName)
+      || (!filenameFromDdownloadUrlPath(item.url) && item.fileName === filenameFromUrl(item.url));
+    if (result.fileName && unresolvedFileName) this.applyResolvedMetadataName(item, result.fileName);
+    if (result.fileSizeBytes !== null && result.fileSizeBytes > 0 && (!item.totalBytes || item.totalBytes <= 0)) item.totalBytes = result.fileSizeBytes;
+    item.onlineStatus = "online";
+    item.updatedAt = nowMs();
+    if (item.status === "completed") this.finalizeResolvedMetadataTargetPath(item);
+  }
+
+  private async checkOneFichierItems(itemIds: string[]): Promise<void> {
+    const itemIdsByUrl = new Map<string, string[]>();
+    for (const itemId of itemIds) {
+      const item = this.session.items[itemId];
+      if (!item || !isOneFichierLink(item.url)) continue;
+      if (item.status !== "queued" && item.status !== "reconnect_wait" && item.status !== "completed") continue;
+      item.onlineStatus = "checking";
+      const existing = itemIdsByUrl.get(item.url) ?? [];
+      existing.push(itemId);
+      itemIdsByUrl.set(item.url, existing);
+    }
+    if (itemIdsByUrl.size === 0) return;
+
+    this.emitState();
+    let results: Map<string, OneFichierCheckResult>;
+    try {
+      results = await checkOneFichierLinks(Array.from(itemIdsByUrl.keys()));
+    } catch (error) {
+      logger.warn(`1Fichier-Linkprüfung fehlgeschlagen: ${compactErrorText(error)}`);
+      results = new Map();
+    }
+    if (!this.metadataChecksActive) return;
+
+    for (const [url, ids] of itemIdsByUrl) {
+      const result = results.get(url) ?? null;
+      for (const itemId of ids) {
+        const item = this.session.items[itemId];
+        if (item) this.applyOneFichierCheckResult(item, result);
+      }
+    }
+    this.persistSoon();
+    this.emitState();
+  }
+
+  private applyOneFichierCheckResult(item: DownloadItem, result: OneFichierCheckResult | null): void {
+    if (!result) {
+      if (item.onlineStatus === "checking") item.onlineStatus = undefined;
+      return;
+    }
+    if (!result.online) {
+      item.onlineStatus = "offline";
+      item.updatedAt = nowMs();
+      if (item.status === "queued" || item.status === "reconnect_wait") {
+        item.status = "failed";
+        item.fullStatus = "Offline";
+        item.lastError = "Datei nicht gefunden auf 1Fichier";
+        if (this.runItemIds.has(item.id)) this.recordRunOutcome(item.id, "failed");
+        const pkg = this.session.packages[item.packageId];
+        if (pkg) this.refreshPackageStatus(pkg);
+      }
+      return;
+    }
+    if (result.fileName && looksLikeOpaqueFilename(item.fileName)) this.applyResolvedMetadataName(item, result.fileName);
+    if (result.fileSizeBytes !== null && result.fileSizeBytes > 0 && (!item.totalBytes || item.totalBytes <= 0)) item.totalBytes = result.fileSizeBytes;
+    item.onlineStatus = "online";
+    item.updatedAt = nowMs();
+    if (item.status === "completed") this.finalizeResolvedMetadataTargetPath(item);
+  }
+
+  private applyResolvedMetadataName(item: DownloadItem, resolvedFileName: string): void {
+    const normalized = sanitizeFilename(resolvedFileName);
+    if (!normalized || looksLikeOpaqueFilename(normalized)) return;
+    item.fileName = normalized;
+    const targetPath = String(item.targetPath || "").trim();
+    const hasExistingData = item.downloadedBytes > 0 || Boolean(targetPath && fs.existsSync(targetPath));
+    const active = this.activeTasks.has(item.id)
+      || item.status === "validating"
+      || item.status === "downloading"
+      || item.status === "integrity_check";
+    if (!hasExistingData && !active) {
+      this.assignItemTargetPath(item, path.join(this.session.packages[item.packageId]?.outputDir || this.settings.outputDir, normalized));
+    }
+  }
+
+  private finalizeResolvedMetadataTargetPath(item: DownloadItem): void {
+    const pkg = this.session.packages[item.packageId];
+    if (pkg && this.recoverPendingMetadataRename(item, pkg)) return;
+    const currentPath = String(item.targetPath || "").trim();
+    const fileName = sanitizeFilename(item.fileName || "");
+    if (!pkg || !currentPath || !fileName || looksLikeOpaqueFilename(fileName)) return;
+    const preferredPath = path.join(pkg.outputDir, fileName);
+    if (pathKey(currentPath) === pathKey(preferredPath)) return;
+    if (!fs.existsSync(currentPath)) return;
+    const nextPath = this.claimTargetPath(item.id, preferredPath);
+    item.metadataRenameTargetPath = nextPath;
+    try {
+      saveSession(this.storagePaths, this.session);
+    } catch (error) {
+      delete item.metadataRenameTargetPath;
+      this.releaseTargetPath(item.id);
+      item.targetPath = this.claimTargetPath(item.id, currentPath, true);
+      logger.warn(`Metadaten-Umbenennung nicht vorgemerkt ${currentPath}: ${compactErrorText(error)}`);
+      return;
+    }
+    try {
+      fs.renameSync(currentPath, nextPath);
+    } catch (error) {
+      this.releaseTargetPath(item.id);
+      item.targetPath = this.claimTargetPath(item.id, currentPath, true);
+      delete item.metadataRenameTargetPath;
+      try { saveSession(this.storagePaths, this.session); } catch { }
+      logger.warn(`Metadaten-Umbenennung fehlgeschlagen ${currentPath}: ${compactErrorText(error)}`);
+      return;
+    }
+    item.targetPath = nextPath;
+    delete item.metadataRenameTargetPath;
+    try {
+      saveSession(this.storagePaths, this.session);
+    } catch (error) {
+      item.metadataRenameTargetPath = nextPath;
+      logger.warn(`Metadaten-Umbenennung gespeichert, Session-Abschluss fehlgeschlagen ${nextPath}: ${compactErrorText(error)}`);
+    }
+  }
+
+  private recoverPendingMetadataRename(item: DownloadItem, pkg: PackageEntry): boolean {
+    const pendingPath = String(item.metadataRenameTargetPath || "").trim();
+    if (!pendingPath || !isPathInsideDir(pendingPath, pkg.outputDir)) return false;
+    const currentPath = String(item.targetPath || "").trim();
+    const pendingOwner = this.reservedTargetPaths.get(pathKey(pendingPath));
+    if (pendingOwner && pendingOwner !== item.id) return false;
+    try {
+      const currentExists = Boolean(currentPath && fs.existsSync(currentPath));
+      const pendingExists = fs.existsSync(pendingPath);
+      if (currentExists && pendingExists && pathKey(currentPath) !== pathKey(pendingPath)) {
+        delete item.metadataRenameTargetPath;
+        saveSession(this.storagePaths, this.session);
+        return false;
+      }
+      if (!pendingExists) {
+        if (!currentExists) return false;
+        this.releaseTargetPath(item.id);
+        const claimedPath = this.claimTargetPath(item.id, pendingPath);
+        if (pathKey(claimedPath) !== pathKey(pendingPath)) return false;
+        fs.renameSync(currentPath, pendingPath);
+      } else {
+        this.releaseTargetPath(item.id);
+        const claimedPath = this.claimTargetPath(item.id, pendingPath, true);
+        if (pathKey(claimedPath) !== pathKey(pendingPath)) return false;
+      }
+      item.targetPath = pendingPath;
+      delete item.metadataRenameTargetPath;
+      saveSession(this.storagePaths, this.session);
+      return true;
+    } catch (error) {
+      logger.warn(`Metadaten-Umbenennung konnte nicht rekonstruiert werden ${pendingPath}: ${compactErrorText(error)}`);
+      return false;
+    }
+  }
+
+  private finalizeExistingResolvedMetadataTargets(): void {
+    for (const item of Object.values(this.session.items)) {
+      if (item.status !== "completed") continue;
+      if (!isOneFichierLink(item.url) && !isDdownloadLink(item.url)) continue;
+      this.finalizeResolvedMetadataTargetPath(item);
     }
   }
 
@@ -6110,6 +6334,7 @@ export class DownloadManager extends EventEmitter {
     logger.info(`Shutdown-Vorbereitung gestartet: active=${this.activeTasks.size}, running=${this.session.running}, paused=${this.session.paused}`);
     this.updateStatisticsActivity(nowMs());
     this.rotationListenerActive = false;
+    this.metadataChecksActive = false;
     this.clearPersistTimer();
     if (this.stateEmitTimer) {
       clearTimeout(this.stateEmitTimer);
@@ -6122,6 +6347,10 @@ export class DownloadManager extends EventEmitter {
     this.lastGlobalProgressBytes = this.session.totalDownloadedBytes;
     this.lastGlobalProgressAt = nowMs();
     this.abortPostProcessing("shutdown");
+
+    for (const item of Object.values(this.session.items)) {
+      if (item.onlineStatus === "checking") item.onlineStatus = undefined;
+    }
 
     let requeuedItems = 0;
     for (const active of this.activeTasks.values()) {
@@ -8352,6 +8581,34 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
+  private checkExistingDdownloadLinks(): void {
+    const uncheckedIds: string[] = [];
+    for (const item of Object.values(this.session.items)) {
+      if (item.status !== "queued" && item.status !== "reconnect_wait" && item.status !== "completed") continue;
+      if (!isDdownloadLink(item.url) || item.onlineStatus === "offline") continue;
+      const unresolvedFileName = looksLikeOpaqueFilename(item.fileName)
+        || (!filenameFromDdownloadUrlPath(item.url) && item.fileName === filenameFromUrl(item.url));
+      if (item.onlineStatus === "online" && item.totalBytes !== null && item.totalBytes > 0 && !unresolvedFileName) continue;
+      uncheckedIds.push(item.id);
+    }
+    if (uncheckedIds.length > 0) {
+      void this.checkDdownloadItems(uncheckedIds).catch((err) => logger.warn(`checkDdownloadItems Fehler (startup): ${compactErrorText(err)}`));
+    }
+  }
+
+  private checkExistingOneFichierLinks(): void {
+    const uncheckedIds: string[] = [];
+    for (const item of Object.values(this.session.items)) {
+      if (item.status !== "queued" && item.status !== "reconnect_wait" && item.status !== "completed") continue;
+      if (!isOneFichierLink(item.url) || item.onlineStatus === "offline") continue;
+      if (item.onlineStatus === "online" && !looksLikeOpaqueFilename(item.fileName) && item.totalBytes !== null && item.totalBytes > 0) continue;
+      uncheckedIds.push(item.id);
+    }
+    if (uncheckedIds.length > 0) {
+      void this.checkOneFichierItems(uncheckedIds).catch((err) => logger.warn(`checkOneFichierItems Fehler (startup): ${compactErrorText(err)}`));
+    }
+  }
+
   private getProviderOrder(): DebridProvider[] {
     if (this.settings.providerOrder && this.settings.providerOrder.length > 0) {
       return [...this.settings.providerOrder];
@@ -9412,7 +9669,10 @@ export class DownloadManager extends EventEmitter {
         item.providerAccountId = unrestricted.sourceAccountId;
         item.providerAccountLabel = unrestricted.sourceAccountLabel;
         item.retries += unrestricted.retriesUsed;
-        item.fileName = sanitizeFilename(unrestricted.fileName || filenameFromUrl(item.url));
+        const unrestrictedFileName = sanitizeFilename(unrestricted.fileName || filenameFromUrl(item.url));
+        if (!looksLikeOpaqueFilename(unrestrictedFileName) || looksLikeOpaqueFilename(item.fileName)) {
+          item.fileName = unrestrictedFileName;
+        }
         let directHost = "";
         try {
           directHost = new URL(unrestricted.directUrl).host;
@@ -9588,8 +9848,13 @@ export class DownloadManager extends EventEmitter {
           throw new Error(`aborted:${active.abortReason}`);
         }
 
+        if (isOneFichierLink(item.url) || isDdownloadLink(item.url)) {
+          this.finalizeResolvedMetadataTargetPath(item);
+        }
+
         const completedAt = nowMs();
         item.status = "completed";
+        if (isOneFichierLink(item.url) || isDdownloadLink(item.url)) item.onlineStatus = "online";
         item.fullStatus = this.settings.autoExtract
           ? "Entpacken - Ausstehend"
           : `Fertig (${humanSize(item.downloadedBytes)})`;
