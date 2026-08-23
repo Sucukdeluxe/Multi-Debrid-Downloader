@@ -581,8 +581,6 @@ export interface PackageEntry {
   enabled: boolean;
   priority?: PackagePriority;
   postProcessLabel?: string;
-  manualExtractionPending?: boolean;
-  manualExtractionRepairItemIds?: string[];
   audioStripSummary?: AudioStripSummary;
   cleanedCompletedItemCount?: number;
   cleanedExtractedItemCount?: number;

@@ -2,6 +2,20 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
+## [2.0.65] - 2026-08-23
+
+### Extract now behavior
+
+- Extract only archive sets that are already complete on disk without starting or re-queueing downloads.
+- Skip incomplete multipart sets while leaving every queued, failed, or missing part unchanged.
+- Start every currently extractable package in a multi-selection even when other selected packages are not ready.
+- Extract complete sets from a package immediately while its unrelated incomplete sets continue waiting for a later download.
+- Keep the existing error response when none of the selected packages contains a complete extractable archive set.
+
+### Compatibility correction
+
+- Remove the automatic missing-archive download repair introduced in 2.0.64 so `Extract now` remains a strictly local post-processing action.
+
 ## [2.0.64] - 2026-08-23
 
 ### Manual extraction repair

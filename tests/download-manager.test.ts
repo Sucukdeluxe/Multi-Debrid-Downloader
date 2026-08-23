@@ -17434,263 +17434,6 @@ describe("post-processing lifecycle audit", () => {
     expect(session.items["retry-no-archive-item"].fullStatus).toBe("Entpack-Fehler: vorheriger Fehler");
   });
 
-  it("repairs selected failed packages by downloading missing archive files before extraction", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-repair-missing-batch-"));
-    tempDirs.push(root);
-    const zipA = new AdmZip();
-    zipA.addFile("Episode.A.mkv", Buffer.from("episode-a"));
-    const zipB = new AdmZip();
-    zipB.addFile("Episode.B.mkv", Buffer.from("episode-b"));
-    const { manager, session } = createCompletedFileManager(root, [
-      { packageId: "repair-a", itemId: "repair-a-item", fileName: "Episode.A.zip", content: zipA.toBuffer() },
-      { packageId: "repair-b", itemId: "repair-b-item", fileName: "Episode.B.zip", content: zipB.toBuffer() }
-    ]);
-    const internal = manager as any;
-    internal.ensureScheduler = vi.fn(async () => {});
-    for (const item of Object.values(session.items)) {
-      fs.rmSync(item.targetPath, { force: true });
-      item.fullStatus = "Entpack-Fehler: Quelldatei fehlt";
-      item.lastError = "Quelldatei fehlt";
-    }
-
-    await manager.extractNow({ packageIds: ["repair-a", "repair-b"], itemIds: [] });
-
-    expect(session.running).toBe(true);
-    expect((internal.runScopeKind as string)).toBe("selected");
-    expect([...internal.runItemIds].sort()).toEqual(["repair-a-item", "repair-b-item"]);
-    expect((session.packages["repair-a"] as any).manualExtractionPending).toBe(true);
-    expect((session.packages["repair-b"] as any).manualExtractionPending).toBe(true);
-    expect((session.packages["repair-a"] as any).manualExtractionRepairItemIds).toEqual(["repair-a-item"]);
-    expect((session.packages["repair-b"] as any).manualExtractionRepairItemIds).toEqual(["repair-b-item"]);
-    for (const item of Object.values(session.items)) {
-      expect(item).toEqual(expect.objectContaining({
-        status: "queued",
-        downloadedBytes: 0,
-        progressPercent: 0,
-        targetPath: "",
-        fullStatus: "Wartet auf erneuten Download"
-      }));
-    }
-
-    for (const [itemId, content] of [["repair-a-item", zipA.toBuffer()], ["repair-b-item", zipB.toBuffer()]] as const) {
-      const item = session.items[itemId];
-      const pkg = session.packages[item.packageId];
-      const targetPath = path.join(pkg.outputDir, item.fileName);
-      fs.writeFileSync(targetPath, content);
-      item.status = "completed";
-      item.targetPath = targetPath;
-      item.downloadedBytes = content.length;
-      item.totalBytes = content.length;
-      item.progressPercent = 100;
-      item.fullStatus = "Entpacken - Ausstehend";
-      item.updatedAt = Date.now();
-    }
-    await Promise.all([
-      internal.runPackagePostProcessing("repair-a"),
-      internal.runPackagePostProcessing("repair-b")
-    ]);
-    await waitFor(() => fs.existsSync(path.join(session.packages["repair-a"].extractDir, "Episode.A.mkv")), 10_000);
-    await waitFor(() => fs.existsSync(path.join(session.packages["repair-b"].extractDir, "Episode.B.mkv")), 10_000);
-    expect((session.packages["repair-a"] as any).manualExtractionPending).toBe(false);
-    expect((session.packages["repair-b"] as any).manualExtractionPending).toBe(false);
-    expect(session.items["repair-a-item"].fullStatus).toMatch(/^Entpackt/);
-    expect(session.items["repair-b-item"].fullStatus).toMatch(/^Entpackt/);
-  });
-
-  it("keeps present archive files while repairing only missing siblings", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-repair-partial-"));
-    tempDirs.push(root);
-    const { manager, session } = createCompletedFileManager(root, [
-      { packageId: "repair-partial", itemId: "repair-present", fileName: "show.part1.rar" },
-      { packageId: "repair-partial", itemId: "repair-missing", fileName: "show.part2.rar" },
-      { packageId: "repair-partial", itemId: "repair-video", fileName: "bonus.mkv" }
-    ]);
-    const internal = manager as any;
-    internal.ensureScheduler = vi.fn(async () => {});
-    const presentPath = session.items["repair-present"].targetPath;
-    fs.rmSync(session.items["repair-missing"].targetPath, { force: true });
-    for (const item of Object.values(session.items)) {
-      item.fullStatus = "Entpack-Fehler: Quelldatei fehlt";
-      item.lastError = "Quelldatei fehlt";
-    }
-    session.items["repair-video"].fullStatus = "Fertig (256 B)";
-    session.items["repair-video"].lastError = "";
-
-    await manager.extractNow({ packageIds: [], itemIds: ["repair-present"] });
-
-    expect(fs.existsSync(presentPath)).toBe(true);
-    expect(session.items["repair-present"]).toEqual(expect.objectContaining({
-      status: "completed",
-      targetPath: presentPath,
-      fullStatus: "Entpacken - Ausstehend"
-    }));
-    expect(session.items["repair-missing"]).toEqual(expect.objectContaining({
-      status: "queued",
-      targetPath: "",
-      fullStatus: "Wartet auf erneuten Download"
-    }));
-    expect(session.items["repair-video"].fullStatus).toBe("Fertig (256 B)");
-    expect([...internal.runItemIds]).toEqual(["repair-missing"]);
-    expect((session.packages["repair-partial"] as any).manualExtractionRepairItemIds).toEqual(["repair-missing"]);
-  });
-
-  it("repairs missing archive sets even when another set in the same package is already ready", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-ready-and-repair-"));
-    tempDirs.push(root);
-    const readyZip = new AdmZip();
-    readyZip.addFile("Ready.mkv", Buffer.from("ready"));
-    const missingZip = new AdmZip();
-    missingZip.addFile("Missing.mkv", Buffer.from("missing"));
-    const { manager, session } = createCompletedFileManager(root, [
-      { packageId: "ready-repair", itemId: "ready-item", fileName: "Ready.zip", content: readyZip.toBuffer() },
-      { packageId: "ready-repair", itemId: "missing-item", fileName: "Missing.zip" }
-    ]);
-    const internal = manager as any;
-    internal.ensureScheduler = vi.fn(async () => {});
-    fs.rmSync(session.items["missing-item"].targetPath, { force: true });
-    for (const item of Object.values(session.items)) {
-      item.fullStatus = "Entpack-Fehler: vorheriger Fehler";
-      item.lastError = "vorheriger Fehler";
-    }
-
-    await manager.extractNow("ready-repair");
-
-    await waitFor(() => fs.existsSync(path.join(session.packages["ready-repair"].extractDir, "Ready.mkv")), 10_000);
-    expect(session.items["ready-item"].fullStatus).toMatch(/^Entpackt/);
-    expect(session.items["missing-item"].status).toBe("queued");
-    expect((session.packages["ready-repair"] as any).manualExtractionPending).toBe(true);
-    expect((session.packages["ready-repair"] as any).manualExtractionRepairItemIds).toEqual(["missing-item"]);
-    const missingItem = session.items["missing-item"];
-    const missingPath = path.join(session.packages["ready-repair"].outputDir, missingItem.fileName);
-    const missingContent = missingZip.toBuffer();
-    fs.writeFileSync(missingPath, missingContent);
-    missingItem.status = "completed";
-    missingItem.targetPath = missingPath;
-    missingItem.downloadedBytes = missingContent.length;
-    missingItem.totalBytes = missingContent.length;
-    missingItem.progressPercent = 100;
-    missingItem.fullStatus = "Entpacken - Ausstehend";
-    missingItem.updatedAt = Date.now();
-    await internal.runPackagePostProcessing("ready-repair");
-
-    await waitFor(() => fs.existsSync(path.join(session.packages["ready-repair"].extractDir, "Missing.mkv")), 10_000);
-    expect(session.items["missing-item"].fullStatus).toMatch(/^Entpackt/);
-    expect(session.packages["ready-repair"].manualExtractionPending).toBe(false);
-    expect(session.packages["ready-repair"].manualExtractionRepairItemIds).toEqual([]);
-  }, 15_000);
-
-  it("includes queued and failed missing parts in the same repair run", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-repair-noncompleted-"));
-    tempDirs.push(root);
-    const { manager, session } = createCompletedFileManager(root, [
-      { packageId: "repair-noncompleted", itemId: "selected-part", fileName: "show.part1.rar" },
-      { packageId: "repair-noncompleted", itemId: "queued-part", fileName: "show.part2.rar" },
-      { packageId: "repair-noncompleted", itemId: "failed-part", fileName: "show.part3.rar" }
-    ]);
-    const internal = manager as any;
-    internal.ensureScheduler = vi.fn(async () => {});
-    for (const item of Object.values(session.items)) {
-      fs.rmSync(item.targetPath, { force: true });
-      item.fullStatus = "Entpack-Fehler: Quelldatei fehlt";
-      item.lastError = "Quelldatei fehlt";
-    }
-    session.items["queued-part"].status = "queued";
-    session.items["failed-part"].status = "failed";
-
-    await manager.extractNow({ packageIds: [], itemIds: ["selected-part"] });
-
-    expect([...internal.runItemIds].sort()).toEqual(["failed-part", "queued-part", "selected-part"]);
-    expect((session.packages["repair-noncompleted"] as any).manualExtractionRepairItemIds.sort()).toEqual(["failed-part", "queued-part", "selected-part"]);
-    expect(session.items["failed-part"].status).toBe("queued");
-  });
-
-  it("keeps the persisted extraction request when a repaired download fails", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-repair-failed-download-"));
-    tempDirs.push(root);
-    const { manager, session } = createCompletedFileManager(root, [
-      { packageId: "repair-failure", itemId: "repair-failure-item", fileName: "Episode.zip" }
-    ]);
-    const internal = manager as any;
-    internal.ensureScheduler = vi.fn(async () => {});
-    fs.rmSync(session.items["repair-failure-item"].targetPath, { force: true });
-    session.items["repair-failure-item"].fullStatus = "Entpack-Fehler: Quelldatei fehlt";
-
-    await manager.extractNow({ packageIds: [], itemIds: ["repair-failure-item"] });
-    session.items["repair-failure-item"].status = "failed";
-    session.items["repair-failure-item"].fullStatus = "Download fehlgeschlagen";
-    session.items["repair-failure-item"].lastError = "Download fehlgeschlagen";
-    session.items["repair-failure-item"].updatedAt = Date.now();
-    await internal.runPackagePostProcessing("repair-failure");
-
-    expect(session.packages["repair-failure"].status).toBe("failed");
-    expect(session.packages["repair-failure"].manualExtractionPending).toBe(true);
-    expect(session.packages["repair-failure"].manualExtractionRepairItemIds).toEqual(["repair-failure-item"]);
-    expect((internal.finalizedPackageResults as Map<string, unknown>).size).toBe(1);
-    const failedGeneration = session.packages["repair-failure"].resultGeneration || 0;
-    internal.finishRun();
-    expect((internal.runContexts as Map<string, unknown>).size).toBe(0);
-
-    await manager.extractNow({ packageIds: [], itemIds: ["repair-failure-item"] });
-
-    expect(session.items["repair-failure-item"].status).toBe("queued");
-    expect(session.packages["repair-failure"].manualExtractionPending).toBe(true);
-    expect(session.packages["repair-failure"].resultGeneration).toBeGreaterThan(failedGeneration);
-  });
-
-  it("resumes a persisted manual extraction after restart when repaired downloads are complete", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-repair-restart-"));
-    tempDirs.push(root);
-    const zip = new AdmZip();
-    zip.addFile("Restarted.mkv", Buffer.from("restarted"));
-    const { session } = createCompletedFileManager(root, [
-      { packageId: "repair-restart", itemId: "repair-restart-item", fileName: "Restarted.zip", content: zip.toBuffer() }
-    ]);
-    session.packages["repair-restart"].manualExtractionPending = true;
-    session.packages["repair-restart"].manualExtractionRepairItemIds = ["repair-restart-item"];
-    session.packages["repair-restart"].status = "queued";
-    session.items["repair-restart-item"].fullStatus = "Wartet auf erneuten Download";
-    const restarted = new DownloadManager(
-      {
-        ...defaultSettings(),
-        token: "rd-token",
-        outputDir: path.join(root, "downloads"),
-        extractDir: path.join(root, "extract"),
-        autoExtract: false,
-        cleanupMode: "none",
-        autoRename4sf4sj: false,
-        collectMkvToLibrary: false,
-        enableIntegrityCheck: false
-      },
-      session,
-      createStoragePaths(path.join(root, "restart-state"))
-    );
-
-    await waitFor(() => fs.existsSync(path.join(session.packages["repair-restart"].extractDir, "Restarted.mkv")), 10_000);
-    await waitFor(() => !(restarted as any).packagePostProcessTasks.has("repair-restart"), 10_000);
-    expect(session.items["repair-restart-item"].fullStatus).toMatch(/^Entpackt/);
-    expect(session.packages["repair-restart"].manualExtractionPending).toBe(false);
-    expect(session.packages["repair-restart"].manualExtractionRepairItemIds).toEqual([]);
-  }, 15_000);
-
-  it("emits a package delta when only the persisted manual extraction request changes", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-repair-delta-"));
-    tempDirs.push(root);
-    const { manager, session } = createCompletedFileManager(root, [
-      { packageId: "repair-delta", itemId: "repair-delta-item", fileName: "Episode.zip" }
-    ]);
-    manager.getSnapshotForEmit(true);
-    session.packages["repair-delta"].manualExtractionPending = true;
-    session.packages["repair-delta"].manualExtractionRepairItemIds = ["repair-delta-item"];
-
-    const snapshot = manager.getSnapshotForEmit();
-
-    expect(snapshot.payloadKind).toBe("delta");
-    expect(snapshot.session.packages["repair-delta"]).toEqual(expect.objectContaining({
-      manualExtractionPending: true,
-      manualExtractionRepairItemIds: ["repair-delta-item"]
-    }));
-  });
-
   it("recognizes and arms an opaque archive file by signature", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-opaque-rar-"));
     tempDirs.push(root);
@@ -17752,7 +17495,7 @@ describe("post-processing lifecycle audit", () => {
     expect(internal.runPackagePostProcessing).not.toHaveBeenCalled();
   });
 
-  it("rejects a mixed extraction batch before starting any package", async () => {
+  it("starts every extractable package in a mixed batch and skips the rest", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-mixed-batch-"));
     tempDirs.push(root);
     const zip = new AdmZip();
@@ -17764,12 +17507,12 @@ describe("post-processing lifecycle audit", () => {
     const internal = manager as any;
     internal.runPackagePostProcessing = vi.fn(async () => {});
 
-    await expect(manager.extractNow({ packageIds: ["valid-package", "invalid-package"], itemIds: [] })).rejects.toThrow(/1.*nicht gestartet/i);
-    expect(internal.runPackagePostProcessing).not.toHaveBeenCalledWith("valid-package");
+    await manager.extractNow({ packageIds: ["valid-package", "invalid-package"], itemIds: [] });
+    expect(internal.runPackagePostProcessing).toHaveBeenCalledWith("valid-package");
     expect(internal.runPackagePostProcessing).not.toHaveBeenCalledWith("invalid-package");
   });
 
-  it("keeps opaque archive files untouched when batch preflight rejects another target", async () => {
+  it("starts an opaque archive when another target in the batch is not extractable", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-atomic-opaque-"));
     tempDirs.push(root);
     const zip = new AdmZip();
@@ -17782,13 +17525,52 @@ describe("post-processing lifecycle audit", () => {
     internal.runPackagePostProcessing = vi.fn(async () => {});
     const opaquePath = session.items["atomic-opaque-item"].targetPath;
 
-    await expect(manager.extractNow({ packageIds: ["atomic-opaque", "atomic-invalid"], itemIds: [] })).rejects.toThrow(/nicht gestartet/i);
+    await manager.extractNow({ packageIds: ["atomic-opaque", "atomic-invalid"], itemIds: [] });
 
     expect(session.items["atomic-opaque-item"].fileName).toBe("download.bin");
     expect(session.items["atomic-opaque-item"].targetPath).toBe(opaquePath);
     expect(fs.existsSync(opaquePath)).toBe(true);
     expect(fs.existsSync(path.join(path.dirname(opaquePath), "download.zip"))).toBe(false);
-    expect(internal.runPackagePostProcessing).not.toHaveBeenCalled();
+    expect(internal.runPackagePostProcessing).toHaveBeenCalledWith("atomic-opaque");
+    expect(internal.runPackagePostProcessing).not.toHaveBeenCalledWith("atomic-invalid");
+  });
+
+  it("extracts only complete sets from one package without starting its incomplete downloads", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-complete-only-"));
+    tempDirs.push(root);
+    const zip = new AdmZip();
+    zip.addFile("complete.mkv", Buffer.from("complete"));
+    const { manager, session } = createCompletedFileManager(root, [
+      { packageId: "complete-only", itemId: "complete-item", fileName: "complete.zip", content: zip.toBuffer() }
+    ]);
+    const internal = manager as any;
+    const incompleteId = "incomplete-part";
+    session.packages["complete-only"].itemIds.push(incompleteId);
+    session.items[incompleteId] = {
+      ...session.items["complete-item"],
+      id: incompleteId,
+      status: "queued",
+      fileName: "later.part1.rar",
+      targetPath: "",
+      downloadedBytes: 0,
+      totalBytes: null,
+      progressPercent: 0,
+      fullStatus: "Wartet"
+    };
+    internal.runPackagePostProcessing = vi.fn(async () => {});
+    internal.ensureScheduler = vi.fn(async () => {});
+
+    await manager.extractNow("complete-only");
+
+    expect(internal.runPackagePostProcessing).toHaveBeenCalledWith("complete-only");
+    expect(session.items["complete-item"].fullStatus).toBe("Entpacken - Ausstehend");
+    expect(session.items[incompleteId]).toEqual(expect.objectContaining({
+      status: "queued",
+      targetPath: "",
+      fullStatus: "Wartet"
+    }));
+    expect(session.running).toBe(false);
+    expect(internal.ensureScheduler).not.toHaveBeenCalled();
   });
 
   it("exposes and drains stop for standalone manual extraction without starting a download run", async () => {

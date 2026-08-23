@@ -15,19 +15,14 @@ export interface ExtractNowContextInput {
   items: Record<string, DownloadItem>;
 }
 
-function canExtractItem(item: DownloadItem | undefined, pkg: PackageEntry | undefined): item is DownloadItem {
-  return Boolean(item && (
-    item.status === "completed" && !/^Entpackt\b/i.test(item.fullStatus || "")
-    || pkg?.manualExtractionPending === true
-      && (pkg.manualExtractionRepairItemIds || []).includes(item.id)
-      && ["queued", "reconnect_wait", "failed", "cancelled"].includes(item.status)
-  ));
+function canExtractItem(item: DownloadItem | undefined): item is DownloadItem {
+  return Boolean(item && item.status === "completed" && !/^Entpackt\b/i.test(item.fullStatus || ""));
 }
 
 export function buildExtractNowContextAction(input: ExtractNowContextInput): ExtractNowContextAction | null {
   const packageIds = [...new Set(input.selectedPackageIds)].filter((packageId) => {
     const entry = input.packages[packageId];
-    return Boolean(entry && !entry.cancelled && entry.itemIds.some((itemId) => canExtractItem(input.items[itemId], entry)));
+    return Boolean(entry && !entry.cancelled && entry.itemIds.some((itemId) => canExtractItem(input.items[itemId])));
   });
   const packageSet = new Set(packageIds);
   const selectedItemIds = input.selectedItemIds.length > 0
@@ -37,7 +32,7 @@ export function buildExtractNowContextAction(input: ExtractNowContextInput): Ext
       : [];
   const itemIds = [...new Set(selectedItemIds)].filter((itemId) => {
     const item = input.items[itemId];
-    return canExtractItem(item, item ? input.packages[item.packageId] : undefined) && !packageSet.has(item.packageId);
+    return canExtractItem(item) && !packageSet.has(item.packageId);
   });
   const targetCount = packageIds.length + itemIds.length;
   if (targetCount === 0) {

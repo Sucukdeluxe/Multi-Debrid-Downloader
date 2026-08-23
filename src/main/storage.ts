@@ -1036,10 +1036,6 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
       cancelled: Boolean(pkg.cancelled),
       enabled: pkg.enabled === undefined ? true : Boolean(pkg.enabled),
       priority: VALID_PACKAGE_PRIORITIES.has(asText(pkg.priority)) ? asText(pkg.priority) as PackagePriority : "normal",
-      manualExtractionPending: pkg.manualExtractionPending === true,
-      manualExtractionRepairItemIds: Array.isArray(pkg.manualExtractionRepairItemIds)
-        ? [...new Set(pkg.manualExtractionRepairItemIds.map((value) => normalizeSessionId(value)).filter((value) => value.length > 0))].slice(0, 1_000_000)
-        : [],
       audioStripSummary: normalizeAudioStripSummary(pkg.audioStripSummary),
       cleanedCompletedItemCount: clampNumber(pkg.cleanedCompletedItemCount, 0, 0, 1_000_000),
       cleanedExtractedItemCount: clampNumber(pkg.cleanedExtractedItemCount, 0, 0, 1_000_000),
@@ -1108,11 +1104,6 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
       const item = itemsById[itemId];
       return Boolean(item) && item.packageId === pkg.id;
     });
-    const itemIdSet = new Set(pkg.itemIds);
-    pkg.manualExtractionRepairItemIds = (pkg.manualExtractionRepairItemIds || [])
-      .filter((itemId) => itemIdSet.has(itemId));
-    pkg.manualExtractionPending = pkg.manualExtractionPending === true
-      && pkg.manualExtractionRepairItemIds.length > 0;
   }
 
   const rawOrder = Array.isArray(parsed.packageOrder) ? parsed.packageOrder : [];

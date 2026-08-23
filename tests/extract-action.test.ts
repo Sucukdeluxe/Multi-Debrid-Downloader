@@ -98,25 +98,4 @@ describe("extract now context action", () => {
       items
     })).toBeNull();
   });
-
-  it("keeps retrying a failed child that belongs to a persisted manual extraction repair", () => {
-    const failed = item("failed", "pkg-1", "failed", "Download fehlgeschlagen");
-    const packageEntry = {
-      ...pkg("pkg-1", ["failed"]),
-      manualExtractionPending: true,
-      manualExtractionRepairItemIds: ["failed"]
-    };
-
-    expect(buildExtractNowContextAction({
-      contextItemId: "failed",
-      selectedPackageIds: [],
-      selectedItemIds: ["failed"],
-      packages: { "pkg-1": packageEntry },
-      items: { failed }
-    })).toEqual({
-      label: "Jetzt entpacken",
-      request: { packageIds: [], itemIds: ["failed"] },
-      targetCount: 1
-    });
-  });
 });
