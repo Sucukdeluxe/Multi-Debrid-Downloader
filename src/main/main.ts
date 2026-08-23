@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, safeStorage, shell, Tray, type IpcMainEvent, type IpcMainInvokeEvent } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, safeStorage, shell, Tray, type IpcMainEvent, type IpcMainInvokeEvent } from "electron";
 import { AddLinksPayload, AppSettings, DebridProvider, EnableRemoteDiagnosticsInput, RendererSettingsUpdate, UpdateInstallProgress } from "../shared/types";
 import { AppController } from "./app-controller";
 import { IPC_CHANNELS } from "../shared/ipc";
@@ -23,6 +23,9 @@ import { applyMainWindowSecurity, createMainWindowWebPreferences, MAIN_WINDOW_EX
 import { assertTrustedIpcSender, type TrustedIpcOptions } from "./ipc-security";
 import { validateRealDebridLoginRequest } from "../shared/preload-api";
 import { migrateProductUserDataDirectory } from "./storage";
+import { forceDarkNativeTheme } from "./native-theme";
+
+forceDarkNativeTheme(nativeTheme);
 
 function validateString(value: unknown, name: string): string {
   if (typeof value !== "string") {
