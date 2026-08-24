@@ -4,6 +4,27 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.72] - 2026-08-24
+
+### Package history telemetry
+
+- Store separate download, extraction, remux, post-processing, and total durations for completed package generations.
+- Preserve accurate download file and byte totals while reporting archive groups, validated multipart counts, generated outputs, failure categories, and additive phase counters independently.
+- Track parallel and interrupted archive work across restarts, distinguish partial, failed, and cancelled package results, and add dedicated history filters for partial and cancelled entries.
+- Show detailed lifecycle timestamps, operation durations, result counts, failure phases, and sanitized error categories in expandable history rows and Discord notifications.
+
+### Download controls
+
+- Move the global package disclosure action into a responsive right-aligned toolbar group and disable it when the queue is empty.
+- Replace the decorative package heading with a compact neutral filter group and keep all-package actions independent from active filters and search results.
+- Coordinate package height and opacity transitions while continuing to honor the global animation setting and large-queue motion guard.
+- Open contextual help on pointer hover, keyboard focus, or click and close it only after both pointer and focus leave the shared region.
+
+### Deepbrid resume reliability
+
+- Resume Deepbrid downloads that return open-ended `Content-Range` responses instead of repeatedly renewing an otherwise valid direct link.
+- Prefer byte-exact HTTP totals over rounded provider metadata and preserve already complete archive files when a standard HTTP 416 response confirms their real size.
+
 ## [2.0.71] - 2026-08-24
 
 ### Deepbrid accounts
