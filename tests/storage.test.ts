@@ -1235,6 +1235,13 @@ describe("settings storage", () => {
       partCount: 16,
       outputCount: 15,
       failurePhase: "extract",
+      errorCategory: "checksum",
+      downloadFailures: 2,
+      offlineFailures: 1,
+      extractionFailures: 3,
+      remuxFailures: 4,
+      cleanupFailures: 5,
+      postProcessFailures: 6,
       archiveOperations: [{
         id: "archive-1",
         name: "Paket.part01.rar",
@@ -1274,6 +1281,13 @@ describe("settings storage", () => {
       partCount: 16,
       outputCount: 15,
       failurePhase: "extract",
+      errorCategory: "Entpacken",
+      downloadFailures: 2,
+      offlineFailures: 1,
+      extractionFailures: 3,
+      remuxFailures: 4,
+      cleanupFailures: 5,
+      postProcessFailures: 6,
       archiveOperations: [{
         id: "archive-1",
         name: "Paket.part01.rar",
@@ -1332,7 +1346,13 @@ describe("settings storage", () => {
           }],
           remuxOperations: [],
           outputCount: 1,
+          outputBaselineSignatures: [
+            "a".repeat(64),
+            "invalid",
+            "b".repeat(64)
+          ],
           cleanupErrorCategory: "",
+          postProcessErrorCategory: "rename failed",
           createdAt: 1_000,
           updatedAt: 21_000
         }
@@ -1358,7 +1378,9 @@ describe("settings storage", () => {
       archiveOperations: [expect.objectContaining({ id: "archive-1", durationMs: 4_000 })],
       remuxOperations: [],
       outputCount: 1,
-      cleanupErrorCategory: ""
+      outputBaselineSignatures: ["a".repeat(64), "b".repeat(64)],
+      cleanupErrorCategory: "",
+      postProcessErrorCategory: "Nachbearbeitung"
     }));
   });
 

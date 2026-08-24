@@ -586,6 +586,7 @@ describe("NotificationOutbox", () => {
       extractionFailures: 0,
       remuxFailures: 0,
       cleanupFailures: 0,
+      postProcessFailures: 0,
       archiveCount: 0,
       partCount: 0,
       outputCount: 0,
@@ -621,6 +622,77 @@ describe("NotificationOutbox", () => {
       expect(requestText).not.toContain(sensitiveValue);
       expect(persistedText).not.toContain(sensitiveValue);
     }
+  });
+
+  it("keeps the fixed post-processing phase while sanitizing a persisted package failure", async () => {
+    const filePath = createOutboxFile();
+    fs.writeFileSync(filePath, JSON.stringify({
+      version: 1,
+      events: [event("postprocess-private", {
+        payload: {
+          title: "Paket teilweise fertig",
+          fields: [{ name: "Fehler", value: `Nachbearbeitung · ${privateFailureDetails}`, inline: false }]
+        }
+      })],
+      lastSuccessAt: 0,
+      lastFailureAt: 0
+    }), "utf8");
+    const outbox = new NotificationOutbox({ filePath, send: async () => true, now: () => 1000 });
+
+    await outbox.enqueue(event("safe"));
+
+    expect(persisted(filePath).events[0].payload.fields[0]?.value).toBe("Nachbearbeitung · Nachbearbeitung");
+    expect(fs.readFileSync(filePath, "utf8")).not.toContain(privateFailureDetails);
+  });
+
+  it("includes post-processing duration in package notifications", () => {
+    const result = finalizePackageResult({
+      ...privateFailureTelemetry("cleanup"),
+      cleanupErrorCategory: "",
+      postProcessErrorCategory: "rename failed",
+      package: {
+        ...privateFailureTelemetry("cleanup").package,
+        postProcessStartedAt: 3_000,
+        postProcessCompletedAt: 10_000,
+        terminalAt: 10_000
+      }
+    });
+
+    const notificationEvent = buildPackageNotificationEvent({ generation: 1, result }, 10_000);
+
+    expect(notificationEvent.payload.fields.find((field) => field.name === "Zeiten")?.value).toContain("Nachbearbeitung 0:07");
+  });
+
+  it("persists cancelled package events without coercing them to failures", async () => {
+    const filePath = createOutboxFile();
+    const result = finalizePackageResult({
+      ...privateFailureTelemetry("fullStatus"),
+      package: { ...privateFailureTelemetry("fullStatus").package, cancelled: true },
+      items: [{ ...privateFailureTelemetry("fullStatus").items[0], status: "cancelled", lastError: "", fullStatus: "Abgebrochen" }]
+    });
+    const cancelledEvent = buildPackageNotificationEvent({ generation: 1, result }, 3_000);
+    const outbox = new NotificationOutbox({ filePath, send: async () => true, now: () => 1_000 });
+
+    await outbox.enqueue(cancelledEvent);
+
+    expect(cancelledEvent.type).toBe("package_cancelled");
+    expect(persisted(filePath).events[0].type).toBe("package_cancelled");
+  });
+
+  it("sanitizes unexpected failure details on persisted cancelled package events", async () => {
+    const filePath = createOutboxFile();
+    const outbox = new NotificationOutbox({ filePath, send: async () => true, now: () => 1_000 });
+
+    await outbox.enqueue(event("cancelled-private", {
+      type: "package_cancelled",
+      payload: {
+        title: "Paket abgebrochen",
+        fields: [{ name: "Fehler", value: `Nachbearbeitung · ${privateFailureDetails}`, inline: false }]
+      }
+    }));
+
+    expect(persisted(filePath).events[0].payload.fields[0]?.value).toBe("Nachbearbeitung · Nachbearbeitung");
+    expect(fs.readFileSync(filePath, "utf8")).not.toContain(privateFailureDetails);
   });
 
   it.each([

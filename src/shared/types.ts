@@ -503,7 +503,7 @@ export interface AudioStripSummary {
 }
 
 export type PackageResultStatus = "completed" | "partial" | "failed" | "cancelled";
-export type FailurePhase = "download" | "extract" | "remux" | "cleanup" | null;
+export type FailurePhase = "download" | "extract" | "remux" | "cleanup" | "postprocess" | null;
 
 export interface ArchiveOperationMetric {
   id: string;
@@ -534,6 +534,7 @@ export interface PackageTelemetry {
   remuxOperations?: RemuxOperationMetric[];
   outputCount?: number;
   cleanupErrorCategory?: string;
+  postProcessErrorCategory?: string;
 }
 
 export interface PackageResult {
@@ -560,6 +561,7 @@ export interface PackageResult {
   extractionFailures: number;
   remuxFailures: number;
   cleanupFailures: number;
+  postProcessFailures: number;
   archiveCount: number;
   partCount: number;
   outputCount: number;
@@ -597,7 +599,9 @@ export interface PackageEntry {
   archiveOperations?: ArchiveOperationMetric[];
   remuxOperations?: RemuxOperationMetric[];
   outputCount?: number;
+  outputBaselineSignatures?: string[];
   cleanupErrorCategory?: string;
+  postProcessErrorCategory?: string;
   resultGeneration?: number;
   createdAt: number;
   updatedAt: number;
@@ -945,6 +949,13 @@ export interface HistoryEntry {
   partCount?: number;
   outputCount?: number;
   failurePhase?: FailurePhase;
+  errorCategory?: string;
+  downloadFailures?: number;
+  offlineFailures?: number;
+  extractionFailures?: number;
+  remuxFailures?: number;
+  cleanupFailures?: number;
+  postProcessFailures?: number;
   archiveOperations?: ArchiveOperationMetric[];
   remuxOperations?: RemuxOperationMetric[];
 }

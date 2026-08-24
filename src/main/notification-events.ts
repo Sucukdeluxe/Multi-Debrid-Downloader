@@ -43,6 +43,7 @@ export interface RunResult {
   downloadFailures: number;
   offlineFailures: number;
   cleanupFailures: number;
+  postProcessFailures: number;
 }
 
 export interface RunResultInput {
@@ -149,6 +150,7 @@ function failurePhaseLabel(result: PackageResult): string {
   if (result.failurePhase === "extract") return "Entpacken";
   if (result.failurePhase === "remux") return "Remux";
   if (result.failurePhase === "cleanup") return "Aufräumen";
+  if (result.failurePhase === "postprocess") return "Nachbearbeitung";
   return "—";
 }
 
@@ -177,6 +179,7 @@ function event(
 function packageEventType(status: PackageResultStatus): NotificationEventType {
   if (status === "completed") return "package_completed";
   if (status === "partial") return "package_partial";
+  if (status === "cancelled") return "package_cancelled";
   return "package_failed";
 }
 
@@ -199,7 +202,7 @@ export function buildPackageNotificationEvent(
     { name: "Ergebnis", value: statusLabel(result.status), inline: true },
     { name: "Dateien", value: `${result.successfulFiles} erfolgreich · ${result.failedFiles} fehlgeschlagen · ${result.cancelledFiles} abgebrochen`, inline: false },
     { name: "Downloadgröße", value: `${formatBytes(result.downloadedBytes)} / ${formatBytes(result.totalBytes)}`, inline: true },
-    { name: "Zeiten", value: `Download ${formatDuration(result.downloadDurationSeconds)} · Entpacken ${formatDuration(result.extractionDurationSeconds)} · Remux ${formatDuration(result.remuxDurationSeconds)} · Gesamt ${formatDuration(result.totalDurationSeconds)}`, inline: false },
+    { name: "Zeiten", value: `Download ${formatDuration(result.downloadDurationSeconds)} · Entpacken ${formatDuration(result.extractionDurationSeconds)} · Remux ${formatDuration(result.remuxDurationSeconds)} · Nachbearbeitung ${formatDuration(result.postProcessDurationSeconds)} · Gesamt ${formatDuration(result.totalDurationSeconds)}`, inline: false },
     { name: "Aktive Downloadgeschwindigkeit", value: result.averageDownloadSpeedBps > 0 ? `${formatBytes(result.averageDownloadSpeedBps)}/s` : "—", inline: true },
     { name: "Archive", value: `${result.archiveCount} Gruppen · ${result.partCount} Parts · ${result.outputCount} Ausgaben`, inline: true }
   ];
@@ -294,7 +297,8 @@ export function buildRunResult(input: RunResultInput): RunResult {
     remuxFailures: sum((result) => result.remuxFailures),
     downloadFailures: sum((result) => result.downloadFailures),
     offlineFailures: sum((result) => result.offlineFailures),
-    cleanupFailures: sum((result) => result.cleanupFailures)
+    cleanupFailures: sum((result) => result.cleanupFailures),
+    postProcessFailures: sum((result) => result.postProcessFailures)
   };
 }
 
@@ -326,7 +330,8 @@ export function buildRunNotificationEvent(result: RunResult): NotificationEvent 
       { name: "Remuxfehler", value: String(result.remuxFailures), inline: true },
       { name: "Downloadfehler", value: String(result.downloadFailures), inline: true },
       { name: "Offline", value: String(result.offlineFailures), inline: true },
-      { name: "Cleanupfehler", value: String(result.cleanupFailures), inline: true }
+      { name: "Cleanupfehler", value: String(result.cleanupFailures), inline: true },
+      { name: "Nachbearbeitungsfehler", value: String(result.postProcessFailures), inline: true }
     ]
   );
 }
@@ -387,6 +392,13 @@ export function buildHistoryEntry(
     partCount: result.partCount,
     outputCount: result.outputCount,
     failurePhase: result.failurePhase,
+    errorCategory: result.errorCategory,
+    downloadFailures: result.downloadFailures,
+    offlineFailures: result.offlineFailures,
+    extractionFailures: result.extractionFailures,
+    remuxFailures: result.remuxFailures,
+    cleanupFailures: result.cleanupFailures,
+    postProcessFailures: result.postProcessFailures,
     archiveOperations: result.archiveOperations.map((operation) => ({ ...operation, itemIds: [...operation.itemIds] })),
     remuxOperations: result.remuxOperations.map((operation) => ({ ...operation }))
   };

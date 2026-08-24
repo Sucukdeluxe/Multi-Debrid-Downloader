@@ -17,6 +17,7 @@ export type PackageFailureCategory =
   | "Entpacken"
   | "Remux"
   | "Cleanup"
+  | "Nachbearbeitung"
   | "Unbekannt";
 
 const packageFailureCategories = new Map<string, PackageFailureCategory>([
@@ -29,6 +30,7 @@ const packageFailureCategories = new Map<string, PackageFailureCategory>([
   ["entpacken", "Entpacken"],
   ["remux", "Remux"],
   ["cleanup", "Cleanup"],
+  ["nachbearbeitung", "Nachbearbeitung"],
   ["unbekannt", "Unbekannt"]
 ]);
 
@@ -49,6 +51,34 @@ export function durationSecondsBetween(startedAt: number | undefined, completedA
 
 export function sumOperationDurationSeconds(operations: readonly { durationMs: number }[]): number {
   return durationMsToSeconds(operations.reduce((total, operation) => total + finiteNonNegative(operation.durationMs), 0));
+}
+
+export function unionOperationDurationSeconds(operations: readonly { startedAt: number; completedAt: number; durationMs: number }[]): number {
+  const intervals = operations
+    .map((operation) => ({ start: finiteNonNegative(operation.startedAt), end: finiteNonNegative(operation.completedAt) }))
+    .filter((interval) => interval.start > 0 && interval.end > interval.start)
+    .sort((left, right) => left.start - right.start || left.end - right.end);
+  let durationMs = operations
+    .filter((operation) => finiteNonNegative(operation.completedAt) <= finiteNonNegative(operation.startedAt))
+    .reduce((total, operation) => total + finiteNonNegative(operation.durationMs), 0);
+  let currentStart = 0;
+  let currentEnd = 0;
+  for (const interval of intervals) {
+    if (currentEnd === 0) {
+      currentStart = interval.start;
+      currentEnd = interval.end;
+    } else if (interval.start <= currentEnd) {
+      currentEnd = Math.max(currentEnd, interval.end);
+    } else {
+      durationMs += currentEnd - currentStart;
+      currentStart = interval.start;
+      currentEnd = interval.end;
+    }
+  }
+  if (currentEnd > currentStart) {
+    durationMs += currentEnd - currentStart;
+  }
+  return durationMsToSeconds(durationMs);
 }
 
 export function projectPackageFailureCategory(failurePhase: FailurePhase, detail: unknown): PackageFailureCategory {
@@ -76,17 +106,25 @@ export function projectPackageFailureCategory(failurePhase: FailurePhase, detail
   if (failurePhase === "extract") return "Entpacken";
   if (failurePhase === "remux") return "Remux";
   if (failurePhase === "cleanup") return "Cleanup";
+  if (failurePhase === "postprocess") return "Nachbearbeitung";
   return "Unbekannt";
 }
 
-function classifyStatus(successfulFiles: number, failedFiles: number, cancelledFiles: number, packageCancelled: boolean): PackageResultStatus {
-  if (successfulFiles > 0 && (failedFiles > 0 || cancelledFiles > 0 || packageCancelled)) {
+function classifyStatus(
+  successfulFiles: number,
+  failedFiles: number,
+  cancelledFiles: number,
+  postProcessFailures: number,
+  postProcessCancellations: number,
+  packageCancelled: boolean
+): PackageResultStatus {
+  if (successfulFiles > 0 && (failedFiles > 0 || cancelledFiles > 0 || postProcessFailures > 0 || postProcessCancellations > 0 || packageCancelled)) {
     return "partial";
   }
-  if (failedFiles > 0) {
+  if (failedFiles > 0 || postProcessFailures > 0) {
     return "failed";
   }
-  if (cancelledFiles > 0 || packageCancelled) {
+  if (cancelledFiles > 0 || postProcessCancellations > 0 || packageCancelled) {
     return "cancelled";
   }
   return "completed";
@@ -94,6 +132,7 @@ function classifyStatus(successfulFiles: number, failedFiles: number, cancelledF
 
 function getFailure(
   cleanupErrorCategory: string,
+  postProcessErrorCategory: string,
   remuxOperations: readonly RemuxOperationMetric[],
   remuxFallbackFailures: number,
   archiveOperations: readonly ArchiveOperationMetric[],
@@ -101,6 +140,9 @@ function getFailure(
 ): { failurePhase: FailurePhase; errorCategory: string } {
   if (cleanupErrorCategory) {
     return { failurePhase: "cleanup", errorCategory: projectPackageFailureCategory("cleanup", cleanupErrorCategory) };
+  }
+  if (postProcessErrorCategory) {
+    return { failurePhase: "postprocess", errorCategory: projectPackageFailureCategory("postprocess", postProcessErrorCategory) };
   }
   const failedRemux = remuxOperations.find((operation) => operation.status === "failed");
   if (failedRemux || remuxFallbackFailures > 0) {
@@ -134,16 +176,18 @@ export function finalizePackageResult(telemetry: PackageTelemetry): PackageResul
   const audioStripFailures = Math.max(0, Math.floor(finiteNonNegative(packageEntry.audioStripSummary?.failed)));
   const remuxFailures = Math.max(failedRemuxOperations, audioStripFailures);
   const cleanupErrorCategory = String(telemetry.cleanupErrorCategory ?? packageEntry.cleanupErrorCategory ?? "").trim();
+  const postProcessErrorCategory = String(telemetry.postProcessErrorCategory ?? packageEntry.postProcessErrorCategory ?? "").trim();
   const downloadFailureCategories = failedDownloads.map((item) =>
     projectPackageFailureCategory("download", item.lastError || item.fullStatus)
   );
   const offlineFailures = downloadFailureCategories.filter((category) => category === "Offline").length;
   const cleanupFailures = cleanupErrorCategory ? 1 : 0;
-  const postProcessFailures = failedArchives + remuxFailures + cleanupFailures;
+  const postProcessFailures = postProcessErrorCategory ? 1 : 0;
+  const operationFailures = failedArchives + remuxFailures + cleanupFailures + postProcessFailures;
   const postProcessCancellations = cancelledArchives + cancelledRemuxOperations;
-  const failedFiles = failedDownloads.length + postProcessFailures;
-  const cancelledFiles = cancelledDownloads + postProcessCancellations;
-  const successfulFiles = Math.max(0, completedDownloads - postProcessFailures - postProcessCancellations);
+  const failedFiles = failedDownloads.length;
+  const cancelledFiles = cancelledDownloads;
+  const successfulFiles = completedDownloads;
   const startedAt = finiteNonNegative(packageEntry.downloadStartedAt);
   const downloadEndedAt = finiteNonNegative(packageEntry.downloadEndedAt) || finiteNonNegative(packageEntry.downloadCompletedAt);
   const postProcessStartedAt = finiteNonNegative(packageEntry.postProcessStartedAt);
@@ -154,12 +198,13 @@ export function finalizePackageResult(telemetry: PackageTelemetry): PackageResul
   const totalBytes = finiteNonNegative(packageEntry.cleanedTotalBytes)
     + telemetry.items.reduce((total, item) => total + finiteNonNegative(item.totalBytes ?? item.downloadedBytes), 0);
   const downloadDurationSeconds = durationSecondsBetween(startedAt, downloadEndedAt);
-  const extractionDurationSeconds = sumOperationDurationSeconds(archiveOperations);
+  const extractionDurationSeconds = unionOperationDurationSeconds(archiveOperations);
   const remuxDurationSeconds = sumOperationDurationSeconds(remuxOperations);
   const postProcessDurationSeconds = durationSecondsBetween(postProcessStartedAt, postProcessCompletedAt);
   const totalDurationSeconds = durationSecondsBetween(startedAt, completedAt);
   const failure = getFailure(
     cleanupErrorCategory,
+    postProcessErrorCategory,
     remuxOperations,
     audioStripFailures,
     archiveOperations,
@@ -169,7 +214,7 @@ export function finalizePackageResult(telemetry: PackageTelemetry): PackageResul
   return {
     packageId: packageEntry.id,
     name: packageEntry.name,
-    status: classifyStatus(successfulFiles, failedFiles, cancelledFiles, packageEntry.cancelled),
+    status: classifyStatus(successfulFiles, failedFiles, cancelledFiles, operationFailures, postProcessCancellations, packageEntry.cancelled),
     startedAt,
     downloadEndedAt,
     postProcessStartedAt,
@@ -190,6 +235,7 @@ export function finalizePackageResult(telemetry: PackageTelemetry): PackageResul
     extractionFailures: failedArchives,
     remuxFailures,
     cleanupFailures,
+    postProcessFailures,
     archiveCount: archiveOperations.length,
     partCount: archiveOperations.reduce((total, operation) => total + Math.max(0, Math.floor(finiteNonNegative(operation.partCount))), 0),
     outputCount: Math.max(0, Math.floor(finiteNonNegative(telemetry.outputCount ?? packageEntry.outputCount))),

@@ -14,7 +14,7 @@ import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
 import { getItemLogPath, initItemLogs, shutdownItemLogs } from "../src/main/item-log";
 import { initPackageLogs, shutdownPackageLogs } from "../src/main/package-log";
-import { createStoragePaths, emptySession } from "../src/main/storage";
+import { createStoragePaths, emptySession, loadSession, saveSession } from "../src/main/storage";
 import { loadStatisticsLedger } from "../src/main/statistics-ledger";
 import { getProviderRuntimeSnapshot, primeDebridLinkRuntimeCooldownForTests, resetDebridLinkRuntimeStateForTests, primeMegaDebridRuntimeCooldownForTests, resetMegaDebridRuntimeStateForTests, primeMegaDebridInFlightForTests, primeRealDebridRuntimeCooldownForTests, resetRealDebridRuntimeStateForTests } from "../src/main/debrid";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
@@ -23,6 +23,7 @@ import { getRenameLogPath, initRenameLog, shutdownRenameLog } from "../src/main/
 import { UnrestrictedLink } from "../src/main/realdebrid";
 import { resetVideoToolingCache } from "../src/main/video-processor";
 import { createDownloadHealthState, evaluateDownloadHealth } from "../src/main/download-health-monitor";
+import { finalizePackageResult } from "../src/main/package-telemetry";
 import type { AppSettings, DownloadItem, HistoryEntry, PackageEntry } from "../src/shared/types";
 
 const tempDirs: string[] = [];
@@ -12026,6 +12027,71 @@ describe("download manager", () => {
     expect(fs.existsSync(originalExtractedPath)).toBe(false);
   }, 20000);
 
+  it("records a real library move failure as post-processing telemetry", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-library-move-failure-"));
+    tempDirs.push(root);
+    const outputDir = path.join(root, "downloads", "package");
+    const libraryDir = path.join(root, "library");
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.writeFileSync(path.join(outputDir, "episode.mkv"), "video", "utf8");
+    const session = emptySession();
+    const packageId = "library-move-failure";
+    const itemId = "library-move-failure-item";
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "Library move failure",
+      outputDir,
+      extractDir: path.join(root, "extract"),
+      status: "completed",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      downloadStartedAt: 1_000,
+      downloadEndedAt: 2_000,
+      postProcessStartedAt: 2_000,
+      postProcessCompletedAt: 3_000,
+      terminalAt: 3_000,
+      createdAt: 1_000,
+      updatedAt: 3_000
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://example.test/episode.mkv",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 5,
+      totalBytes: 5,
+      progressPercent: 100,
+      fileName: "episode.mkv",
+      targetPath: path.join(outputDir, "episode.mkv"),
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Fertig",
+      createdAt: 1_000,
+      updatedAt: 2_000
+    };
+    const manager = new DownloadManager({
+      ...defaultSettings(),
+      autoExtract: false,
+      collectMkvToLibrary: true,
+      mkvLibraryDir: libraryDir
+    }, session, createStoragePaths(path.join(root, "state")));
+    const state = manager as any;
+    vi.spyOn(state, "moveFileWithExdevFallback").mockRejectedValue(new Error("move denied"));
+    const pkg = state.session.packages[packageId] as PackageEntry;
+
+    await state.collectMkvFilesToLibrary(packageId, pkg);
+    const result = finalizePackageResult({ package: pkg, items: [state.session.items[itemId]] });
+
+    expect(pkg.postProcessErrorCategory).toBe("Nachbearbeitung");
+    expect(result).toMatchObject({ status: "partial", failurePhase: "postprocess", postProcessFailures: 1 });
+  });
+
   it("moves extracted AVI files into a flat library folder per completed package", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
@@ -14590,6 +14656,344 @@ describe("package lifecycle telemetry boundaries", () => {
     expect(operations).toHaveLength(3);
     expect(new Set(operations.map((operation) => operation.id))).toHaveLength(3);
     expect(operations.map((operation) => operation.partCount)).toEqual([1, 1, 0]);
+  });
+
+  it("terminalizes a started archive as cancelled with the validated part count", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-archive-cancelled-metric-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(root, "state")));
+    const pkg: PackageEntry = {
+      id: "archive-cancelled-package",
+      name: "Archive cancelled",
+      outputDir: path.join(root, "downloads"),
+      extractDir: path.join(root, "extract"),
+      status: "extracting",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      createdAt: 1_000,
+      updatedAt: 1_000
+    };
+    const state = manager as unknown as {
+      recordArchiveOperation: (entry: PackageEntry, update: Record<string, unknown>, items: DownloadItem[], errorCategory: string, partCount: number) => void;
+      finalizeActiveArchiveOperations: (entry: PackageEntry) => void;
+    };
+
+    state.recordArchiveOperation(pkg, {
+      current: 0,
+      total: 1,
+      percent: 0,
+      archiveName: "show.part01.rar",
+      archivePercent: 0,
+      elapsedMs: 0,
+      archiveDone: false
+    }, [], "", 16);
+    state.finalizeActiveArchiveOperations(pkg);
+
+    expect(pkg.archiveOperations).toEqual([
+      expect.objectContaining({
+        name: "show.part01.rar",
+        partCount: 16,
+        status: "cancelled"
+      })
+    ]);
+  });
+
+  it("replaces an unresolved archive start with its terminal completion", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-archive-terminal-metric-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(root, "state")));
+    const pkg: PackageEntry = {
+      id: "archive-terminal-package",
+      name: "Archive terminal",
+      outputDir: path.join(root, "downloads"),
+      extractDir: path.join(root, "extract"),
+      status: "extracting",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      createdAt: 1_000,
+      updatedAt: 1_000
+    };
+    const state = manager as unknown as {
+      recordArchiveOperation: (entry: PackageEntry, update: Record<string, unknown>, items: DownloadItem[], errorCategory: string, partCount: number) => void;
+      finalizeActiveArchiveOperations: (entry: PackageEntry) => void;
+    };
+    const start = {
+      current: 0,
+      total: 1,
+      percent: 0,
+      archiveName: "nested.rar",
+      archivePercent: 0,
+      elapsedMs: 0,
+      archiveDone: false
+    };
+
+    state.recordArchiveOperation(pkg, start, [], "", 1);
+    state.recordArchiveOperation(pkg, { ...start, current: 1, percent: 100, archivePercent: 100, elapsedMs: 1_000, archiveDone: true, archiveSuccess: true }, [], "", 1);
+    state.finalizeActiveArchiveOperations(pkg);
+
+    expect(pkg.archiveOperations).toEqual([
+      expect.objectContaining({ name: "nested.rar", partCount: 1, status: "completed" })
+    ]);
+  });
+
+  it("keeps parallel unresolved archives stable by archive path when completions arrive in reverse order", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-archive-parallel-metric-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(root, "state")));
+    const pkg: PackageEntry = {
+      id: "archive-parallel-package",
+      name: "Archive parallel",
+      outputDir: path.join(root, "downloads"),
+      extractDir: path.join(root, "extract"),
+      status: "extracting",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      createdAt: 1_000,
+      updatedAt: 1_000
+    };
+    const state = manager as unknown as {
+      recordArchiveOperation: (entry: PackageEntry, update: Record<string, unknown>, items: DownloadItem[], errorCategory: string, partCount: number) => void;
+      finalizeActiveArchiveOperations: (entry: PackageEntry) => void;
+    };
+    const progress = (archivePath: string, current: number, archiveDone: boolean) => ({
+      current,
+      total: 2,
+      percent: archiveDone ? 100 : 0,
+      archiveName: "same.rar",
+      archivePath,
+      archivePercent: archiveDone ? 100 : 0,
+      elapsedMs: archiveDone ? 1_000 : 0,
+      archiveDone,
+      archiveSuccess: archiveDone
+    });
+
+    state.recordArchiveOperation(pkg, progress(path.join(root, "a", "same.rar"), 0, false), [], "", 2);
+    state.recordArchiveOperation(pkg, progress(path.join(root, "b", "same.rar"), 0, false), [], "", 3);
+    expect(pkg.archiveOperations).toHaveLength(2);
+    expect(new Set(pkg.archiveOperations?.map((operation) => operation.id))).toHaveLength(2);
+
+    state.recordArchiveOperation(pkg, progress(path.join(root, "b", "same.rar"), 1, true), [], "", 3);
+    state.recordArchiveOperation(pkg, progress(path.join(root, "a", "same.rar"), 2, true), [], "", 2);
+    state.finalizeActiveArchiveOperations(pkg);
+
+    expect(pkg.archiveOperations).toHaveLength(2);
+    expect(pkg.archiveOperations?.map((operation) => operation.status)).toEqual(["completed", "completed"]);
+    expect(pkg.archiveOperations?.map((operation) => operation.partCount).sort((a, b) => a - b)).toEqual([2, 3]);
+  });
+
+  it("persists an archive start as a cancelled fallback before completion", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-archive-restart-metric-"));
+    tempDirs.push(root);
+    const paths = createStoragePaths(path.join(root, "state"));
+    const session = emptySession();
+    const manager = new DownloadManager(defaultSettings(), session, paths);
+    const pkg: PackageEntry = {
+      id: "archive-restart-package",
+      name: "Archive restart",
+      outputDir: path.join(root, "downloads"),
+      extractDir: path.join(root, "extract"),
+      status: "extracting",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      createdAt: 1_000,
+      updatedAt: 1_000
+    };
+    session.packageOrder = [pkg.id];
+    session.packages[pkg.id] = pkg;
+    const state = manager as unknown as {
+      recordArchiveOperation: (entry: PackageEntry, update: Record<string, unknown>, items: DownloadItem[], errorCategory: string, partCount: number) => void;
+    };
+
+    state.recordArchiveOperation(pkg, {
+      current: 0,
+      total: 1,
+      percent: 0,
+      archiveName: "restart.rar",
+      archivePath: path.join(root, "restart.rar"),
+      archivePercent: 0,
+      elapsedMs: 0,
+      archiveDone: false
+    }, [], "", 4);
+    saveSession(paths, session);
+
+    expect(loadSession(paths).packages[pkg.id].archiveOperations).toEqual([
+      expect.objectContaining({ name: "restart.rar", partCount: 4, status: "cancelled" })
+    ]);
+  });
+
+  it("restarts a persisted cancelled archive fallback with fresh timing before a second abort", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-archive-second-abort-"));
+    tempDirs.push(root);
+    const paths = createStoragePaths(path.join(root, "state"));
+    const session = emptySession();
+    const packageId = "archive-second-abort";
+    const archivePath = path.join(root, "restart.rar");
+    session.packageOrder = [packageId];
+    session.packages[packageId] = { id: packageId, name: "Second abort", outputDir: root, extractDir: root, status: "extracting", itemIds: [], cancelled: false, enabled: true, createdAt: 1, updatedAt: 1 };
+    const firstManager = new DownloadManager(defaultSettings(), session, paths);
+    const firstState = firstManager as any;
+    const firstPackage = firstState.session.packages[packageId] as PackageEntry;
+    const progress = { current: 0, total: 1, percent: 0, archiveName: "restart.rar", archivePath, archivePercent: 0, elapsedMs: 0, archiveDone: false };
+
+    firstState.recordArchiveOperation(firstPackage, progress, [], "", 2);
+    saveSession(paths, firstState.session);
+    const firstStartedAt = loadSession(paths).packages[packageId].archiveOperations?.[0].startedAt || 0;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    const secondManager = new DownloadManager(defaultSettings(), loadSession(paths), paths);
+    const secondState = secondManager as any;
+    const secondPackage = secondState.session.packages[packageId] as PackageEntry;
+    secondState.recordArchiveOperation(secondPackage, progress, [], "", 2);
+    const secondStartedAt = secondPackage.archiveOperations?.[0].startedAt || 0;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    secondState.finalizeActiveArchiveOperations(secondPackage);
+
+    expect(secondStartedAt).toBeGreaterThan(firstStartedAt);
+    expect(secondPackage.archiveOperations).toEqual([
+      expect.objectContaining({ status: "cancelled", startedAt: secondStartedAt })
+    ]);
+    expect(secondPackage.archiveOperations?.[0].completedAt).toBeGreaterThan(secondStartedAt);
+    expect(secondPackage.archiveOperations?.[0].durationMs).toBeGreaterThan(0);
+  });
+
+  it("removes a cancelled archive fallback when the extractor skips a non-archive generic split", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-archive-skipped-metric-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(root, "state")));
+    const pkg: PackageEntry = { id: "skipped", name: "Skipped", outputDir: root, extractDir: root, status: "extracting", itemIds: [], cancelled: false, enabled: true, createdAt: 1, updatedAt: 1 };
+    const state = manager as any;
+    const archivePath = path.join(root, "data.001");
+    const start = { current: 0, total: 1, percent: 0, archiveName: "data.001", archivePath, archivePercent: 0, elapsedMs: 0, archiveDone: false };
+
+    state.recordArchiveOperation(pkg, start, [], "", 3);
+    state.recordArchiveOperation(pkg, { ...start, current: 1, percent: 100, archiveDone: true, archiveSkipped: true }, [], "", 3);
+    state.finalizeActiveArchiveOperations(pkg);
+    const result = finalizePackageResult({ package: { ...pkg, terminalAt: 2, downloadStartedAt: 1, downloadEndedAt: 2 }, items: [] });
+
+    expect(pkg.archiveOperations).toEqual([]);
+    expect(result).toMatchObject({ status: "completed", archiveCount: 0, partCount: 0, extractionFailures: 0 });
+  });
+
+  it("counts only outputs created after the package generation baseline", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-output-generation-"));
+    tempDirs.push(root);
+    const extractDir = path.join(root, "extract");
+    fs.mkdirSync(extractDir, { recursive: true });
+    fs.writeFileSync(path.join(extractDir, "old-output.mkv"), "old", "utf8");
+    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(root, "state")));
+    const pkg: PackageEntry = {
+      id: "output-generation-package",
+      name: "Output generation",
+      outputDir: path.join(root, "downloads"),
+      extractDir,
+      status: "extracting",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      createdAt: 1_000,
+      updatedAt: 1_000
+    };
+    const state = manager as unknown as {
+      capturePackageOutputBaseline: (entry: PackageEntry) => Promise<void>;
+      refreshPackageOutputCount: (entry: PackageEntry) => Promise<void>;
+    };
+
+    await state.capturePackageOutputBaseline(pkg);
+    fs.writeFileSync(path.join(extractDir, "new-output.mkv"), "new", "utf8");
+    await state.refreshPackageOutputCount(pkg);
+
+    expect(pkg.outputBaselineSignatures).toHaveLength(1);
+    expect(pkg.outputBaselineSignatures?.[0]).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(pkg.outputBaselineSignatures)).not.toContain("old-output.mkv");
+    expect(pkg.outputCount).toBe(1);
+  });
+
+  it("counts an overwritten baseline path as a generation output", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-output-overwrite-"));
+    tempDirs.push(root);
+    const extractDir = path.join(root, "extract");
+    const outputPath = path.join(extractDir, "episode.mkv");
+    fs.mkdirSync(extractDir, { recursive: true });
+    fs.writeFileSync(outputPath, "old", "utf8");
+    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(root, "state")));
+    const pkg: PackageEntry = { id: "overwrite", name: "Overwrite", outputDir: root, extractDir, status: "extracting", itemIds: [], cancelled: false, enabled: true, createdAt: 1, updatedAt: 1 };
+    const state = manager as any;
+
+    await state.capturePackageOutputBaseline(pkg);
+    fs.writeFileSync(outputPath, "new-content", "utf8");
+    await state.refreshPackageOutputCount(pkg);
+
+    expect(pkg.outputCount).toBe(1);
+  });
+
+  it("counts a new output when a baseline file is deleted in parallel", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-output-replaced-"));
+    tempDirs.push(root);
+    const extractDir = path.join(root, "extract");
+    const oldPath = path.join(extractDir, "old.mkv");
+    fs.mkdirSync(extractDir, { recursive: true });
+    fs.writeFileSync(oldPath, "old", "utf8");
+    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(root, "state")));
+    const pkg: PackageEntry = { id: "replaced", name: "Replaced", outputDir: root, extractDir, status: "extracting", itemIds: [], cancelled: false, enabled: true, createdAt: 1, updatedAt: 1 };
+    const state = manager as any;
+
+    await state.capturePackageOutputBaseline(pkg);
+    fs.rmSync(oldPath);
+    fs.writeFileSync(path.join(extractDir, "new.mkv"), "new", "utf8");
+    await state.refreshPackageOutputCount(pkg);
+
+    expect(pkg.outputCount).toBe(1);
+  });
+
+  it("counts nested multipart files from the candidate directory only", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-nested-parts-"));
+    tempDirs.push(root);
+    const nestedDir = path.join(root, "season");
+    fs.mkdirSync(nestedDir, { recursive: true });
+    fs.writeFileSync(path.join(root, "show.001"), "root", "utf8");
+    fs.writeFileSync(path.join(root, "show.002"), "root", "utf8");
+    fs.writeFileSync(path.join(nestedDir, "show.001"), "nested", "utf8");
+    fs.writeFileSync(path.join(nestedDir, "show.002"), "nested", "utf8");
+    fs.writeFileSync(path.join(nestedDir, "show.003"), "nested", "utf8");
+    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(root, "state")));
+    const state = manager as unknown as { resolveArchivePartCount: (archivePath: string) => Promise<number> };
+
+    expect(await state.resolveArchivePartCount(path.join(nestedDir, "show.001"))).toBe(3);
+  });
+
+  it("keeps cleanup and generic post-processing failures in separate phases", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-postprocess-phase-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(root, "state")));
+    const makePackage = (id: string): PackageEntry => ({
+      id,
+      name: id,
+      outputDir: path.join(root, "downloads", id),
+      extractDir: path.join(root, "extract", id),
+      status: "failed",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      createdAt: 1_000,
+      updatedAt: 1_000
+    });
+    const cleanupPackage = makePackage("cleanup-package");
+    const postProcessPackage = makePackage("postprocess-package");
+    const state = manager as unknown as {
+      recordPostProcessFailure: (entry: PackageEntry, phase: "cleanup" | "postprocess", error: unknown) => void;
+    };
+
+    state.recordPostProcessFailure(cleanupPackage, "cleanup", new Error("ENOSPC C:\\Private\\archive.rar"));
+    state.recordPostProcessFailure(postProcessPackage, "postprocess", new Error("rename C:\\Private\\episode.mkv"));
+
+    expect(cleanupPackage.cleanupErrorCategory).toBe("Speicherplatz");
+    expect(cleanupPackage.postProcessErrorCategory).toBeUndefined();
+    expect(postProcessPackage.cleanupErrorCategory).toBeUndefined();
+    expect(postProcessPackage.postProcessErrorCategory).toBe("Nachbearbeitung");
   });
 
   it("projects archive failure details before storing operation telemetry", () => {

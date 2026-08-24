@@ -131,7 +131,35 @@ describe("package lifecycle telemetry", () => {
     }));
   });
 
-  it("counts a failed 16-part archive as one failed file and produces a partial result", () => {
+  it("uses the union of parallel extraction intervals", () => {
+    const items = [downloadItem("item-1"), downloadItem("item-2")];
+    const result = finalizePackageResult(telemetry({
+      package: packageEntry({ itemIds: items.map((item) => item.id) }),
+      items,
+      archiveOperations: [
+        archiveOperation({ id: "archive-a", startedAt: 130_000, completedAt: 160_000, durationMs: 30_000 }),
+        archiveOperation({ id: "archive-b", startedAt: 130_000, completedAt: 160_000, durationMs: 30_000 })
+      ]
+    }));
+
+    expect(result.extractionDurationSeconds).toBe(30);
+  });
+
+  it("adds non-overlapping extraction intervals", () => {
+    const items = [downloadItem("item-1"), downloadItem("item-2")];
+    const result = finalizePackageResult(telemetry({
+      package: packageEntry({ itemIds: items.map((item) => item.id) }),
+      items,
+      archiveOperations: [
+        archiveOperation({ id: "archive-a", startedAt: 100_000, completedAt: 130_000, durationMs: 30_000 }),
+        archiveOperation({ id: "archive-b", startedAt: 130_000, completedAt: 160_000, durationMs: 30_000 })
+      ]
+    }));
+
+    expect(result.extractionDurationSeconds).toBe(60);
+  });
+
+  it("keeps download file counts independent from a failed multipart archive", () => {
     const items = Array.from({ length: 16 }, (_, index) => downloadItem(`item-${index + 1}`));
     const result = finalizePackageResult(telemetry({
       package: packageEntry({ itemIds: items.map((item) => item.id) }),
@@ -149,12 +177,29 @@ describe("package lifecycle telemetry", () => {
       downloadDurationSeconds: 120,
       extractionDurationSeconds: 30,
       totalDurationSeconds: 165,
-      successfulFiles: 15,
-      failedFiles: 1,
+      successfulFiles: 16,
+      failedFiles: 0,
       partCount: 16,
       archiveCount: 1,
+      extractionFailures: 1,
       failurePhase: "extract",
       errorCategory: "Entpacken"
+    }));
+  });
+
+  it("classifies a generic post-processing failure separately from cleanup", () => {
+    const result = finalizePackageResult(telemetry({
+      postProcessErrorCategory: "rename failed"
+    }));
+
+    expect(result).toEqual(expect.objectContaining({
+      status: "partial",
+      successfulFiles: 1,
+      failedFiles: 0,
+      cleanupFailures: 0,
+      postProcessFailures: 1,
+      failurePhase: "postprocess",
+      errorCategory: "Nachbearbeitung"
     }));
   });
 
@@ -396,8 +441,8 @@ describe("package lifecycle telemetry", () => {
 
     expect(result).toEqual(expect.objectContaining({
       status: "partial",
-      successfulFiles: 1,
-      failedFiles: 1,
+      successfulFiles: 2,
+      failedFiles: 0,
       failurePhase: "remux"
     }));
   });

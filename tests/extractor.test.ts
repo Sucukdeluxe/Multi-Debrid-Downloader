@@ -197,6 +197,36 @@ describe("extractor", () => {
     ]);
   });
 
+  it("includes the normalized archive path in archive progress updates", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-progress-path-"));
+    tempDirs.push(root);
+    const packageDir = path.join(root, "pkg");
+    const targetDir = path.join(root, "out");
+    fs.mkdirSync(packageDir, { recursive: true });
+    const archivePath = path.join(packageDir, "episode.zip");
+    const zip = new AdmZip();
+    zip.addFile("episode.txt", Buffer.from("episode"));
+    zip.writeZip(archivePath);
+    const progressPaths: string[] = [];
+
+    await extractPackageArchives({
+      packageDir,
+      targetDir,
+      cleanupMode: "none",
+      conflictMode: "overwrite",
+      removeLinks: false,
+      removeSamples: false,
+      onProgress: (update) => {
+        if (update.archiveName === "episode.zip") {
+          progressPaths.push(String(update.archivePath || ""));
+        }
+      }
+    });
+
+    expect(progressPaths.length).toBeGreaterThan(0);
+    expect(new Set(progressPaths)).toEqual(new Set([path.resolve(archivePath)]));
+  });
+
   it("deletes split zip companion parts when cleanup is enabled", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-extract-"));
     tempDirs.push(root);
@@ -881,6 +911,38 @@ describe("extractor", () => {
       expect(fs.existsSync(d001)).toBe(true);
       expect(fs.existsSync(d002)).toBe(true);
       expect(fs.existsSync(d003)).toBe(true);
+    });
+
+    it("emits terminal skipped progress for a generic split without an archive signature", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-split-skip-progress-"));
+      tempDirs.push(root);
+      const packageDir = path.join(root, "pkg");
+      const targetDir = path.join(root, "out");
+      fs.mkdirSync(packageDir, { recursive: true });
+      const archivePath = path.join(packageDir, "data.001");
+      fs.writeFileSync(archivePath, "plain data without archive signature", "utf8");
+      const progress: Array<{ archiveDone?: boolean; archiveSkipped?: boolean; archivePath?: string }> = [];
+
+      await extractPackageArchives({
+        packageDir,
+        targetDir,
+        cleanupMode: "none",
+        conflictMode: "overwrite",
+        removeLinks: false,
+        removeSamples: false,
+        onlyArchives: new Set([process.platform === "win32" ? path.resolve(archivePath).toLowerCase() : path.resolve(archivePath)]),
+        onProgress: (update) => {
+          if (update.archiveName === "data.001") {
+            progress.push(update);
+          }
+        }
+      });
+
+      expect(progress.at(-1)).toMatchObject({
+        archiveDone: true,
+        archiveSkipped: true,
+        archivePath: path.resolve(archivePath)
+      });
     });
   });
 

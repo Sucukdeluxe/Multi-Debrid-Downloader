@@ -127,6 +127,8 @@ describe("history model", () => {
       week: ["week-edge", "week"],
       older: ["older"],
       completed: ["today", "week-edge"],
+      partial: [],
+      cancelled: [],
       deleted: ["week"],
       failed: ["older"]
     };
@@ -143,6 +145,28 @@ describe("history model", () => {
     ], "all", "", now);
 
     expect(rows.map((row) => row.statusLabel)).toEqual(["Teilweise", "Abgebrochen"]);
+  });
+
+  it("does not invent zero failure counts for legacy history", () => {
+    const legacy = entry({
+      id: "legacy-structured",
+      name: "Legacy structured",
+      startedAt: todayStart,
+      totalDurationSeconds: 60
+    });
+
+    expect(filterHistoryRows([legacy], "all", "", now)[0].failureCountsLabel).toBe("—");
+  });
+
+  it("filters partial and cancelled package results independently", () => {
+    const values = [
+      entry({ id: "partial", name: "Teilweise", status: "partial" }),
+      entry({ id: "cancelled", name: "Abgebrochen", status: "cancelled" }),
+      entry({ id: "failed", name: "Fehlgeschlagen", status: "failed" })
+    ];
+
+    expect(filterHistoryRows(values, "partial", "", now).map((row) => row.id)).toEqual(["partial"]);
+    expect(filterHistoryRows(values, "cancelled", "", now).map((row) => row.id)).toEqual(["cancelled"]);
   });
 
   it("uses local calendar midnights for the six previous days across both daylight-saving transitions", () => {
@@ -378,7 +402,7 @@ describe("HistoryView", () => {
     const html = renderToStaticMarkup(<HistorySidebar actions={createActions()} model={model} />);
 
     expect(html).toContain("ui-sliding-selection ui-sliding-selection-vertical");
-    expect(html.match(/data-sliding-selection-item="true"/g)).toHaveLength(7);
+    expect(html.match(/data-sliding-selection-item="true"/g)).toHaveLength(9);
     expect(html.match(/data-sliding-selection-active="true"/g)).toHaveLength(1);
   });
 
@@ -632,6 +656,13 @@ describe("HistoryView", () => {
       partCount: 16,
       outputCount: 10,
       failurePhase: "remux",
+      errorCategory: "Berechtigung",
+      downloadFailures: 1,
+      offlineFailures: 1,
+      extractionFailures: 2,
+      remuxFailures: 3,
+      cleanupFailures: 4,
+      postProcessFailures: 5,
       archiveOperations: [{
         id: "archive-1",
         name: "show.part01.rar",
@@ -673,6 +704,8 @@ describe("HistoryView", () => {
       "Erfolgreich / Fehlgeschlagen / Abgebrochen",
       "Archive / Parts / Ausgaben",
       "Fehlerphase",
+      "Fehlerkategorie",
+      "Download / Offline / Entpacken / Remux / Cleanup / Nachbearbeitung",
       "Archivvorgänge",
       "Remuxvorgänge"
     ]) {
@@ -682,6 +715,8 @@ describe("HistoryView", () => {
     expect(html).toContain("16 Parts");
     expect(html).toContain("episode.mkv");
     expect(html).toContain("ffmpeg");
+    expect(html).toContain("Berechtigung");
+    expect(html).toContain("1 / 1 / 2 / 3 / 4 / 5");
     expect(html).not.toContain("Downloaddauer (Altbestand)");
   });
 

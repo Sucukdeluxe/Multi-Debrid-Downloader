@@ -1,6 +1,6 @@
 import type { DebridProvider, HistoryEntry } from "../../../shared/types";
 
-export type HistoryFilter = "all" | "today" | "week" | "older" | "completed" | "deleted" | "failed";
+export type HistoryFilter = "all" | "today" | "week" | "older" | "completed" | "partial" | "failed" | "cancelled" | "deleted";
 export type HistoryViewStatus = HistoryEntry["status"] | "failed";
 export type HistoryViewEntry = Omit<HistoryEntry, "status"> & { status: HistoryViewStatus };
 
@@ -23,6 +23,7 @@ export interface HistoryRow extends HistoryViewEntry {
   postProcessDurationLabel: string;
   totalDurationLabel: string;
   failurePhaseLabel: string;
+  failureCountsLabel: string;
 }
 
 export interface HistoryFilterCounts {
@@ -31,6 +32,8 @@ export interface HistoryFilterCounts {
   week: number;
   older: number;
   completed: number;
+  partial: number;
+  cancelled: number;
   deleted: number;
   failed: number;
 }
@@ -178,7 +181,22 @@ function failurePhaseLabel(entry: HistoryViewEntry): string {
   if (entry.failurePhase === "extract") return "Entpacken";
   if (entry.failurePhase === "remux") return "Remux";
   if (entry.failurePhase === "cleanup") return "Aufräumen";
+  if (entry.failurePhase === "postprocess") return "Nachbearbeitung";
   return "—";
+}
+
+function failureCountsLabel(entry: HistoryViewEntry): string {
+  const values = [
+    entry.downloadFailures,
+    entry.offlineFailures,
+    entry.extractionFailures,
+    entry.remuxFailures,
+    entry.cleanupFailures,
+    entry.postProcessFailures
+  ];
+  return values.every((value) => value === undefined)
+    ? "—"
+    : values.map((value) => Math.max(0, Number(value) || 0)).join(" / ");
 }
 
 export function paginateHistoryRows(rows: HistoryRow[], requestedPage: number): HistoryPage {
@@ -209,7 +227,7 @@ function localDayStart(timestamp: number): number {
 }
 
 function matchesTemporalFilter(entry: HistoryViewEntry, filter: HistoryFilter, now: number): boolean {
-  if (filter === "completed" || filter === "deleted" || filter === "failed") {
+  if (filter === "completed" || filter === "partial" || filter === "failed" || filter === "cancelled" || filter === "deleted") {
     return entry.status === filter;
   }
   if (filter === "all") {
@@ -296,7 +314,8 @@ function toHistoryRow(entry: HistoryViewEntry): HistoryRow {
     remuxDurationLabel: formatHistoryDuration(entry.remuxDurationSeconds ?? 0),
     postProcessDurationLabel: formatHistoryDuration(entry.postProcessDurationSeconds ?? 0),
     totalDurationLabel: formatHistoryDuration(entry.totalDurationSeconds ?? 0),
-    failurePhaseLabel: failurePhaseLabel(entry)
+    failurePhaseLabel: failurePhaseLabel(entry),
+    failureCountsLabel: failureCountsLabel(entry)
   };
 }
 
@@ -332,6 +351,8 @@ function countHistoryFilters(entries: HistoryViewEntry[], now: number): HistoryF
     week: entries.filter((entry) => matchesTemporalFilter(entry, "week", now)).length,
     older: entries.filter((entry) => matchesTemporalFilter(entry, "older", now)).length,
     completed: entries.filter((entry) => entry.status === "completed").length,
+    partial: entries.filter((entry) => entry.status === "partial").length,
+    cancelled: entries.filter((entry) => entry.status === "cancelled").length,
     deleted: entries.filter((entry) => entry.status === "deleted").length,
     failed: entries.filter((entry) => entry.status === "failed").length
   };

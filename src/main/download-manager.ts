@@ -1977,6 +1977,8 @@ export class DownloadManager extends EventEmitter {
 
   private finalizedPackageResults = new Map<string, PackageResult>();
 
+  private activeArchiveOperations = new Map<string, { packageId: string; operation: ArchiveOperationMetric }>();
+
   private runContexts = new Map<string, RunLifecycleContext>();
 
   private activeRunContextId: string | null = null;
@@ -4208,12 +4210,12 @@ export class DownloadManager extends EventEmitter {
     return false;
   }
 
-  private async countPackageOutputFiles(rootDir: string): Promise<number> {
+  private async collectPackageOutputSignatures(rootDir: string): Promise<Set<string>> {
     if (!rootDir) {
-      return 0;
+      return new Set();
     }
     const stack = [rootDir];
-    let count = 0;
+    const signatures = new Set<string>();
     while (stack.length > 0) {
       const current = stack.pop() as string;
       let entries: fs.Dirent[] = [];
@@ -4230,11 +4232,31 @@ export class DownloadManager extends EventEmitter {
         if (entry.isDirectory()) {
           stack.push(fullPath);
         } else if (entry.isFile() && !isArchiveLikePath(fullPath) && !isIgnorableEmptyDirFileName(entry.name)) {
-          count += 1;
+          try {
+            const stat = await fs.promises.stat(fullPath);
+            const relativeIdentity = path.relative(rootDir, fullPath).replace(/\\/g, "/").normalize("NFC").toLocaleLowerCase("de-DE");
+            signatures.add(createHash("sha256").update(`${relativeIdentity}\0${stat.size}\0${Math.floor(stat.mtimeMs)}`).digest("hex"));
+          } catch {
+          }
         }
       }
     }
-    return count;
+    return signatures;
+  }
+
+  private async capturePackageOutputBaseline(pkg: PackageEntry): Promise<void> {
+    if (pkg.outputBaselineSignatures !== undefined) {
+      return;
+    }
+    pkg.outputBaselineSignatures = [...await this.collectPackageOutputSignatures(pkg.extractDir)].sort();
+  }
+
+  private async refreshPackageOutputCount(pkg: PackageEntry): Promise<void> {
+    await this.capturePackageOutputBaseline(pkg);
+    const baseline = new Set(pkg.outputBaselineSignatures || []);
+    const current = await this.collectPackageOutputSignatures(pkg.extractDir);
+    const generationCount = [...current].filter((signature) => !baseline.has(signature)).length;
+    pkg.outputCount = Math.max(pkg.outputCount || 0, generationCount);
   }
 
   private async removeEmptyDirectoryTree(rootDir: string): Promise<number> {
@@ -5836,6 +5858,7 @@ export class DownloadManager extends EventEmitter {
         await this.moveCompanionFiles(sourcePath, targetPath, pkg);
       } catch (error) {
         failed += 1;
+        this.recordPostProcessFailure(pkg, "postprocess", error);
         logger.warn(`MKV verschieben fehlgeschlagen: ${sourcePath} -> ${targetPath} (${compactErrorText(error)})`);
         this.logPackageForPackage(pkg, "WARN", "MKV verschieben fehlgeschlagen", {
           sourcePath,
@@ -8242,6 +8265,7 @@ export class DownloadManager extends EventEmitter {
       await this.acquirePostProcessSlot(packageId);
       const startedPackage = this.session.packages[packageId];
       if (startedPackage) {
+        await this.capturePackageOutputBaseline(startedPackage);
         startedPackage.postProcessStartedAt = startedPackage.postProcessStartedAt || nowMs();
         startedPackage.updatedAt = nowMs();
       }
@@ -8265,6 +8289,11 @@ export class DownloadManager extends EventEmitter {
           try {
             await this.handlePackagePostProcessing(packageId, abortController.signal);
           } catch (error) {
+            const failedPackage = this.session.packages[packageId];
+            const reason = compactErrorText(error);
+            if (failedPackage && !reason.includes("aborted:") && reason !== "reset" && reason !== "cancel" && reason !== "package_toggle") {
+              this.recordPostProcessFailure(failedPackage, "postprocess", error);
+            }
             logger.warn(`Post-Processing für Paket fehlgeschlagen: ${compactErrorText(error)}`);
           }
           const roundMs = nowMs() - roundStart;
@@ -8287,6 +8316,10 @@ export class DownloadManager extends EventEmitter {
           }
         } while (this.hybridExtractRequeue.has(packageId));
       } finally {
+        const finalizingPackage = this.session.packages[packageId];
+        if (finalizingPackage) {
+          this.finalizeActiveArchiveOperations(finalizingPackage);
+        }
         this.releasePostProcessSlot();
         // Identity guard: only clear the map entries if they still point to THIS
         // task/controller. After an abort deletes our handle a new run can install
@@ -8680,6 +8713,11 @@ export class DownloadManager extends EventEmitter {
       this.itemCount = Math.max(0, this.itemCount - 1);
     }
     delete this.session.packages[packageId];
+    for (const [id, active] of this.activeArchiveOperations) {
+      if (active.packageId === packageId) {
+        this.activeArchiveOperations.delete(id);
+      }
+    }
     this.session.packageOrder = this.session.packageOrder.filter((id) => id !== packageId);
     this.runCompletedPackages.delete(packageId);
     this.resetSessionTotalsIfQueueEmpty();
@@ -12011,7 +12049,14 @@ export class DownloadManager extends EventEmitter {
       pkg.archiveOperations = [];
       pkg.remuxOperations = [];
       pkg.outputCount = 0;
+      pkg.outputBaselineSignatures = undefined;
       pkg.cleanupErrorCategory = "";
+      pkg.postProcessErrorCategory = "";
+      for (const [id, active] of this.activeArchiveOperations) {
+        if (active.packageId === packageId) {
+          this.activeArchiveOperations.delete(id);
+        }
+      }
     }
     this.pruneFinalizedPackageResults();
     return next;
@@ -12346,7 +12391,8 @@ export class DownloadManager extends EventEmitter {
       archiveOperations: pkg.archiveOperations,
       remuxOperations: pkg.remuxOperations,
       outputCount: pkg.outputCount,
-      cleanupErrorCategory: pkg.cleanupErrorCategory
+      cleanupErrorCategory: pkg.cleanupErrorCategory,
+      postProcessErrorCategory: pkg.postProcessErrorCategory
     });
     this.finalizedPackageResults.set(key, result);
     pkg.status = result.status === "partial" ? "failed" : result.status;
@@ -12792,35 +12838,85 @@ export class DownloadManager extends EventEmitter {
     return false;
   }
 
+  private async resolveArchivePartCount(archivePath: string): Promise<number> {
+    const directory = path.dirname(archivePath);
+    const directoryFiles = await fs.promises.readdir(directory).catch(() => [] as string[]);
+    const entryPointName = path.basename(archivePath);
+    return Math.max(1, directoryFiles.filter((fileName) => this.looksLikeArchivePart(fileName, entryPointName)).length);
+  }
+
   private recordArchiveOperation(
     pkg: PackageEntry,
     progress: ExtractProgressUpdate,
     items: DownloadItem[],
-    errorCategory = ""
+    errorCategory = "",
+    validatedPartCount?: number
   ): void {
-    if (!progress.archiveName || progress.archiveDone !== true) {
+    if (!progress.archiveName) {
       return;
     }
-    const completedAt = nowMs();
+    const observedAt = nowMs();
     const durationMs = Math.max(0, Math.floor(Number(progress.elapsedMs) || 0));
     const itemIds = [...new Set(items.map((item) => item.id))];
     const itemProvenance = items
       .map((item) => String(item.targetPath || item.id).replace(/\\/g, "/").toLocaleLowerCase("de-DE"))
       .sort();
-    const archiveIdentity = itemProvenance.length > 0
-      ? itemProvenance.join("|")
-      : `${progress.archiveName.toLocaleLowerCase("de-DE")}:${Math.max(0, Math.floor(progress.current))}`;
+    const archivePath = String((progress as ExtractProgressUpdate & { archivePath?: string }).archivePath || "").trim();
+    const archiveIdentity = archivePath
+      ? path.resolve(archivePath).replace(/\\/g, "/").normalize("NFC").toLocaleLowerCase("de-DE")
+      : itemProvenance.length > 0
+        ? itemProvenance.join("|")
+        : progress.archiveName.normalize("NFC").toLocaleLowerCase("de-DE");
+    const id = `${pkg.id}.${createHash("sha256").update(archiveIdentity).digest("hex").slice(0, 24)}`;
+    if (progress.archiveDone === true && progress.archiveSkipped === true) {
+      this.activeArchiveOperations.delete(id);
+      pkg.archiveOperations = (pkg.archiveOperations || []).filter((operation) => operation.id !== id);
+      this.persistSoon();
+      return;
+    }
+    const liveActive = this.activeArchiveOperations.get(id)?.operation;
+    const active = liveActive || pkg.archiveOperations?.find((operation) => operation.id === id);
+    const partCount = Math.max(0, Math.floor(Number(validatedPartCount ?? itemIds.length) || 0));
+    if (progress.archiveDone !== true) {
+      if (!liveActive) {
+        const operation: ArchiveOperationMetric = {
+          id,
+          name: progress.archiveName,
+          itemIds,
+          partCount,
+          startedAt: Math.max(0, observedAt - durationMs),
+          completedAt: observedAt,
+          durationMs,
+          status: "cancelled",
+          errorCategory: ""
+        };
+        this.activeArchiveOperations.set(id, {
+          packageId: pkg.id,
+          operation
+        });
+        this.upsertArchiveOperation(pkg, operation);
+        this.persistSoon();
+      }
+      return;
+    }
+    const completedAt = observedAt;
+    const startedAt = active?.startedAt || Math.max(0, completedAt - durationMs);
     const operation: ArchiveOperationMetric = {
-      id: `${pkg.id}:${createHash("sha256").update(archiveIdentity).digest("hex").slice(0, 24)}`,
+      id,
       name: progress.archiveName,
       itemIds,
-      partCount: itemIds.length,
-      startedAt: Math.max(0, completedAt - durationMs),
+      partCount,
+      startedAt,
       completedAt,
-      durationMs,
+      durationMs: durationMs > 0 ? durationMs : Math.max(0, completedAt - startedAt),
       status: progress.archiveSuccess === false ? "failed" : "completed",
       errorCategory: progress.archiveSuccess === false ? projectPackageFailureCategory("extract", errorCategory) : ""
     };
+    this.activeArchiveOperations.delete(id);
+    this.upsertArchiveOperation(pkg, operation);
+  }
+
+  private upsertArchiveOperation(pkg: PackageEntry, operation: ArchiveOperationMetric): void {
     const operations = [...(pkg.archiveOperations || [])];
     const existingIndex = operations.findIndex((entry) => entry.id === operation.id);
     if (existingIndex >= 0) {
@@ -12829,6 +12925,23 @@ export class DownloadManager extends EventEmitter {
       operations.push(operation);
     }
     pkg.archiveOperations = operations;
+  }
+
+  private finalizeActiveArchiveOperations(pkg: PackageEntry): void {
+    const completedAt = nowMs();
+    for (const [id, active] of this.activeArchiveOperations) {
+      if (active.packageId !== pkg.id) {
+        continue;
+      }
+      this.activeArchiveOperations.delete(id);
+      this.upsertArchiveOperation(pkg, {
+        ...active.operation,
+        completedAt,
+        durationMs: Math.max(active.operation.durationMs, completedAt - active.operation.startedAt),
+        status: "cancelled",
+        errorCategory: ""
+      });
+    }
   }
 
   private async runHybridExtraction(packageId: string, pkg: PackageEntry, items: DownloadItem[], signal?: AbortSignal): Promise<number> {
@@ -12895,8 +13008,12 @@ export class DownloadManager extends EventEmitter {
         .map((entry) => entry.name);
     } catch {  }
     const archiveStems = new Set<string>();
+    const validatedArchivePartCounts = new Map<string, number>();
     for (const archiveKey of readyArchives) {
       const parts = collectArchiveCleanupTargets(archiveKey, dirFiles);
+      const validatedPartCount = await this.resolveArchivePartCount(archiveKey);
+      validatedArchivePartCounts.set(pathKey(archiveKey), validatedPartCount);
+      validatedArchivePartCounts.set(path.basename(archiveKey).toLowerCase(), validatedPartCount);
       for (const part of parts) {
         const partName = path.basename(part).toLowerCase();
         hybridFileNames.add(partName);
@@ -13076,6 +13193,15 @@ export class DownloadManager extends EventEmitter {
               }
             }
             const archItems = hybridResolvedItems.get(progress.archiveName) || [];
+            this.recordArchiveOperation(
+              pkg,
+              progress,
+              archItems,
+              failedArchiveCategories.get(progress.archiveName.toLowerCase()) || "",
+              validatedArchivePartCounts.get(pathKey(progress.archivePath || ""))
+                || validatedArchivePartCounts.get(progress.archiveName.toLowerCase())
+                || Math.max(1, archItems.length)
+            );
 
             if (archiveFinished) {
               const doneAt = nowMs();
@@ -13087,12 +13213,6 @@ export class DownloadManager extends EventEmitter {
               if (archiveKey && progress.archiveSuccess !== false) {
                 this.clearHybridArchiveState(packageId, archiveKey);
               }
-              this.recordArchiveOperation(
-                pkg,
-                progress,
-                archItems,
-                failedArchiveCategories.get(progress.archiveName.toLowerCase()) || ""
-              );
               for (const entry of archItems) {
                 if (entry.status !== "completed" || isExtractedLabel(entry.fullStatus)) continue;
                 entry.fullStatus = doneLabel;
@@ -13162,7 +13282,7 @@ export class DownloadManager extends EventEmitter {
           }
         }
       });
-      pkg.outputCount = Math.max(pkg.outputCount || 0, await this.countPackageOutputFiles(pkg.extractDir));
+      await this.refreshPackageOutputCount(pkg);
 
       logger.info(`Hybrid-Extract Ende: pkg=${pkg.name}, extracted=${result.extracted}, failed=${result.failed}`);
       this.logPackageForPackage(pkg, "INFO", "Hybrid-Extract abgeschlossen", {
@@ -13526,9 +13646,13 @@ export class DownloadManager extends EventEmitter {
         }
 
         const fullArchiveSet = await this.findFullExtractArchiveSet(pkg, completedItems);
+        const fullArchivePartCounts = new Map<string, number>();
         const fullExtractItemIds = new Set<string>();
         for (const archivePath of fullArchiveSet) {
           const archiveItems = resolveArchiveItems(path.basename(archivePath));
+          const validatedPartCount = await this.resolveArchivePartCount(archivePath);
+          fullArchivePartCounts.set(pathKey(archivePath), validatedPartCount);
+          fullArchivePartCounts.set(path.basename(archivePath).toLowerCase(), validatedPartCount);
           for (const entry of archiveItems) {
             fullExtractItemIds.add(entry.id);
           }
@@ -13648,6 +13772,15 @@ export class DownloadManager extends EventEmitter {
                 }
               }
               const archiveItems = fullResolvedItems.get(progress.archiveName) || [];
+              this.recordArchiveOperation(
+                pkg,
+                progress,
+                archiveItems,
+                fullFailedArchiveCategories.get(progress.archiveName.toLowerCase()) || "",
+                fullArchivePartCounts.get(pathKey(progress.archivePath || ""))
+                  || fullArchivePartCounts.get(progress.archiveName.toLowerCase())
+                  || Math.max(1, archiveItems.length)
+              );
 
               if (archiveFinished) {
                 const doneAt = nowMs();
@@ -13655,12 +13788,6 @@ export class DownloadManager extends EventEmitter {
                 const doneLabel = progress.archiveSuccess === false
                   ? "Entpacken - Error"
                   : formatExtractDone(doneAt - startedAt);
-                this.recordArchiveOperation(
-                  pkg,
-                  progress,
-                  archiveItems,
-                  fullFailedArchiveCategories.get(progress.archiveName.toLowerCase()) || ""
-                );
                 for (const entry of archiveItems) {
                   if (entry.status !== "completed" || isExtractedLabel(entry.fullStatus)) continue;
                   entry.fullStatus = doneLabel;
@@ -13719,7 +13846,7 @@ export class DownloadManager extends EventEmitter {
             emitExtractStatus(overallLabel);
           }
         });
-        pkg.outputCount = Math.max(pkg.outputCount || 0, await this.countPackageOutputFiles(pkg.extractDir));
+        await this.refreshPackageOutputCount(pkg);
         logger.info(`Post-Processing Entpacken Ende: pkg=${pkg.name}, extracted=${result.extracted}, failed=${result.failed}, lastError=${result.lastError || ""}`);
         this.logPackageForPackage(pkg, "INFO", "Post-Processing Entpacken Ende", {
           extracted: result.extracted,
@@ -13872,6 +13999,7 @@ export class DownloadManager extends EventEmitter {
     this.trackPackagePostProcessResult(packageId);
     const task = this.executeDeferredPostExtraction(packageId, pkg, success, failed, alreadyMarkedExtracted, extractedCount)
       .finally(() => {
+        this.finalizeActiveArchiveOperations(pkg);
         const tasks = this.packageDeferredPostProcessTasks.get(packageId);
         tasks?.delete(task);
         if (tasks?.size === 0) {
@@ -13884,6 +14012,15 @@ export class DownloadManager extends EventEmitter {
     tasks.add(task);
     this.packageDeferredPostProcessTasks.set(packageId, tasks);
     return task;
+  }
+
+  private recordPostProcessFailure(pkg: PackageEntry, phase: "cleanup" | "postprocess", error: unknown): void {
+    const category = projectPackageFailureCategory(phase, compactErrorText(error));
+    if (phase === "cleanup") {
+      pkg.cleanupErrorCategory = category;
+    } else {
+      pkg.postProcessErrorCategory = category;
+    }
   }
 
   private async executeDeferredPostExtraction(
@@ -13907,6 +14044,29 @@ export class DownloadManager extends EventEmitter {
       const item = this.session.items[itemId];
       return Boolean(item && item.status === "completed" && isExtractErrorLabel(item.fullStatus || ""));
     });
+    const isExpectedAbort = (error: unknown): boolean => {
+      const reason = compactErrorText(error);
+      return reason.includes("aborted:deferred")
+        || reason.includes("deferred_replaced")
+        || reason.includes("package_removed")
+        || reason === "reset"
+        || reason === "cancel"
+        || reason === "overwrite"
+        || reason === "skip"
+        || reason === "package_toggle";
+    };
+    let cleanupFailureRecorded = false;
+    const runCleanup = async <T>(operation: () => Promise<T>): Promise<T> => {
+      try {
+        return await operation();
+      } catch (error) {
+        if (!isExpectedAbort(error)) {
+          cleanupFailureRecorded = true;
+          this.recordPostProcessFailure(pkg, "cleanup", error);
+        }
+        throw error;
+      }
+    };
 
     try {
       throwIfAborted();
@@ -13924,6 +14084,12 @@ export class DownloadManager extends EventEmitter {
           });
           const nestedFailureCategories = new Map<string, string>();
           const nestedItems = pkg.itemIds.map((itemId) => this.session.items[itemId]).filter(Boolean) as DownloadItem[];
+          const nestedArchivePartCounts = new Map<string, number>();
+          for (const candidate of nestedCandidates) {
+            const validatedPartCount = await this.resolveArchivePartCount(candidate);
+            nestedArchivePartCounts.set(pathKey(candidate), validatedPartCount);
+            nestedArchivePartCounts.set(path.basename(candidate).toLowerCase(), validatedPartCount);
+          }
           const nestedResult = await extractPackageArchives({
             packageDir: pkg.extractDir,
             targetDir: pkg.extractDir,
@@ -13946,12 +14112,15 @@ export class DownloadManager extends EventEmitter {
                 pkg,
                 progress,
                 resolveArchiveItemsFromList(progress.archiveName, nestedItems),
-                nestedFailureCategories.get(progress.archiveName.toLowerCase()) || ""
+                nestedFailureCategories.get(progress.archiveName.toLowerCase()) || "",
+                nestedArchivePartCounts.get(pathKey(progress.archivePath || ""))
+                  || nestedArchivePartCounts.get(progress.archiveName.toLowerCase())
+                  || 1
               );
             }
           });
           throwIfAborted();
-          pkg.outputCount = Math.max(pkg.outputCount || 0, await this.countPackageOutputFiles(pkg.extractDir));
+          await this.refreshPackageOutputCount(pkg);
           extractedCount += nestedResult.extracted;
           logger.info(`Deferred Nested-Extraction Ende: extracted=${nestedResult.extracted}, failed=${nestedResult.failed}`);
           this.logPackageForPackage(pkg, "INFO", "Deferred Nested-Extraction Ende", {
@@ -13986,9 +14155,9 @@ export class DownloadManager extends EventEmitter {
         } else {
           const sourceAndTargetEqual = path.resolve(pkg.outputDir).toLowerCase() === path.resolve(pkg.extractDir).toLowerCase();
           if (!sourceAndTargetEqual) {
-            const candidates = await findArchiveCandidates(pkg.outputDir);
-            if (candidates.length > 0) {
-              const removed = await cleanupArchives(candidates, this.settings.cleanupMode, { shouldAbort });
+              const candidates = await runCleanup(() => findArchiveCandidates(pkg.outputDir));
+              if (candidates.length > 0) {
+                const removed = await runCleanup(() => cleanupArchives(candidates, this.settings.cleanupMode, { shouldAbort }));
               if (removed > 0) {
                 logger.info(`Deferred Archive-Cleanup: pkg=${pkg.name}, entfernt=${removed}`);
               }
@@ -13999,7 +14168,7 @@ export class DownloadManager extends EventEmitter {
 
       if (this.settings.autoExtract && alreadyMarkedExtracted && failed === 0 && success > 0 && this.settings.cleanupMode !== "none" && !hasBlockingExtractError) {
         throwIfAborted();
-        const removedArchives = await this.cleanupRemainingArchiveArtifacts(pkg.outputDir, shouldAbort);
+        const removedArchives = await runCleanup(() => this.cleanupRemainingArchiveArtifacts(pkg.outputDir, shouldAbort));
         if (removedArchives > 0) {
           logger.info(`Hybrid-Post-Cleanup entfernte Archive: pkg=${pkg.name}, entfernt=${removedArchives}`);
         }
@@ -14008,13 +14177,13 @@ export class DownloadManager extends EventEmitter {
       if (extractedCount > 0 || alreadyMarkedExtracted) {
         throwIfAborted();
         if (this.settings.removeLinkFilesAfterExtract) {
-          const removedLinks = await removeDownloadLinkArtifacts(pkg.extractDir, { shouldAbort });
+          const removedLinks = await runCleanup(() => removeDownloadLinkArtifacts(pkg.extractDir, { shouldAbort }));
           if (removedLinks > 0) {
             logger.info(`Deferred Link-Cleanup: pkg=${pkg.name}, entfernt=${removedLinks}`);
           }
         }
         if (this.settings.removeSamplesAfterExtract) {
-          const removedSamples = await removeSampleArtifacts(pkg.extractDir, { shouldAbort });
+          const removedSamples = await runCleanup(() => removeSampleArtifacts(pkg.extractDir, { shouldAbort }));
           if (removedSamples.files > 0 || removedSamples.dirs > 0) {
             logger.info(`Deferred Sample-Cleanup: pkg=${pkg.name}, files=${removedSamples.files}, dirs=${removedSamples.dirs}`);
           }
@@ -14023,14 +14192,14 @@ export class DownloadManager extends EventEmitter {
 
       if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0) {
         throwIfAborted();
-        await clearExtractResumeState(pkg.outputDir, packageId);
-        await clearExtractResumeState(pkg.outputDir);
+        await runCleanup(() => clearExtractResumeState(pkg.outputDir, packageId));
+        await runCleanup(() => clearExtractResumeState(pkg.outputDir));
       }
 
       if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0 && this.settings.cleanupMode === "delete") {
         throwIfAborted();
-        if (!(await hasAnyFilesRecursive(pkg.outputDir))) {
-          const removedDirs = await removeEmptyDirectoryTree(pkg.outputDir);
+        if (!(await runCleanup(() => hasAnyFilesRecursive(pkg.outputDir)))) {
+          const removedDirs = await runCleanup(() => removeEmptyDirectoryTree(pkg.outputDir));
           if (removedDirs > 0) {
             logger.info(`Deferred leere Download-Ordner entfernt: pkg=${pkg.name}, dirs=${removedDirs}`);
           }
@@ -14052,17 +14221,12 @@ export class DownloadManager extends EventEmitter {
 
     } catch (error) {
       const reason = compactErrorText(error);
-      if (reason.includes("aborted:deferred")
-        || reason.includes("deferred_replaced")
-        || reason.includes("package_removed")
-        || reason === "reset"
-        || reason === "cancel"
-        || reason === "overwrite"
-        || reason === "skip"
-        || reason === "package_toggle") {
+      if (isExpectedAbort(error)) {
         logger.info(`Deferred Post-Extraction abgebrochen: pkg=${pkg.name}, reason=${reason}`);
       } else {
-        pkg.cleanupErrorCategory = projectPackageFailureCategory("cleanup", reason);
+        if (!cleanupFailureRecorded) {
+          this.recordPostProcessFailure(pkg, "postprocess", error);
+        }
         logger.warn(`Deferred Post-Extraction Fehler: pkg=${pkg.name}, reason=${reason}`);
       }
     } finally {

@@ -208,9 +208,17 @@ describe("authoritative package completion", () => {
     state.tryFinalizePackageResult?.(pkg.id);
     await flushNotifications();
 
-    expect(events.map((event) => event.type)).toEqual(["package_failed"]);
+    expect(events.map((event) => event.type)).toEqual(["package_partial"]);
     expect(events[0].priority).toBe("error");
-    expect(history[0]).toMatchObject({ status: "failed", failurePhase: "remux", failedFiles: 1 });
+    expect(history[0]).toMatchObject({
+      status: "partial",
+      failurePhase: "remux",
+      errorCategory: "Remux",
+      successfulFiles: 1,
+      failedFiles: 0,
+      remuxFailures: 1,
+      postProcessFailures: 0
+    });
   });
 
   it("emits a partial package result when the terminal downloads are mixed", async () => {
@@ -224,7 +232,67 @@ describe("authoritative package completion", () => {
 
     expect(pkg.status).toBe("failed");
     expect(events.map((event) => event.type)).toEqual(["package_partial"]);
-    expect(history[0]).toMatchObject({ status: "partial", successfulFiles: 1, failedFiles: 1 });
+    expect(history[0]).toMatchObject({
+      status: "partial",
+      successfulFiles: 1,
+      failedFiles: 1,
+      downloadFailures: 1,
+      extractionFailures: 0,
+      remuxFailures: 0,
+      cleanupFailures: 0,
+      postProcessFailures: 0
+    });
+  });
+
+  it("turns a hybrid post-processing exception into a partial package result", async () => {
+    const { manager, session, events, history } = setup({ autoExtract: true });
+    const pkg = addPackage(session);
+    const state = internal(manager);
+    state.runPackageIds.add(pkg.id);
+    state.handlePackagePostProcessing = async () => {
+      throw new Error("hybrid failed");
+    };
+
+    await state.runPackagePostProcessing(pkg.id);
+    await flushNotifications();
+
+    expect(pkg.postProcessErrorCategory).toBe("Nachbearbeitung");
+    expect(events.map((event) => event.type)).toEqual(["package_partial"]);
+    expect(history[0]).toMatchObject({ status: "partial", failurePhase: "postprocess", postProcessFailures: 1 });
+  });
+
+  it("turns a rename failure into a post-processing package result", async () => {
+    const { manager, session, history } = setup({ autoExtract: true });
+    const pkg = addPackage(session);
+    pkg.status = "completed";
+    const state = internal(manager);
+    state.runPackageIds.add(pkg.id);
+    state.autoRenameExtractedVideoFiles = async () => {
+      throw new Error("rename failed");
+    };
+
+    await state.runDeferredPostExtraction(pkg.id, pkg, 1, 0, false, 1);
+    await flushNotifications();
+
+    expect(pkg.postProcessErrorCategory).toBe("Nachbearbeitung");
+    expect(history[0]).toMatchObject({ status: "partial", failurePhase: "postprocess", postProcessFailures: 1 });
+  });
+
+  it("turns a library move failure into a post-processing package result", async () => {
+    const { manager, session, history } = setup();
+    const pkg = addPackage(session);
+    pkg.status = "completed";
+    const state = internal(manager);
+    state.runPackageIds.add(pkg.id);
+    state.collectMkvFilesToLibrary = async () => {
+      throw new Error("library move failed");
+    };
+
+    await state.runDeferredPostExtraction(pkg.id, pkg, 1, 0, false, 0);
+    await flushNotifications();
+
+    expect(pkg.postProcessErrorCategory).toBe("Nachbearbeitung");
+    expect(history[0]).toMatchObject({ status: "partial", failurePhase: "postprocess", postProcessFailures: 1 });
   });
 
   it("creates a new result generation when extraction is retried", async () => {
@@ -463,10 +531,10 @@ describe("authoritative run completion", () => {
     state.tryFinalizePackageResult?.(pkg.id);
     await flushNotifications();
 
-    expect(events.map((event) => event.type)).toEqual(["package_failed", "run_completed"]);
+    expect(events.map((event) => event.type)).toEqual(["package_partial", "run_completed"]);
     const runEvent = events[1];
     expect(runEvent.payload.fields.some((field) => field.name === "Entpackfehler" && field.value === "1")).toBe(true);
-    expect(runEvent.payload.fields.some((field) => field.name === "Dateien" && field.value === "0 erfolgreich · 1 fehlgeschlagen · 0 abgebrochen")).toBe(true);
+    expect(runEvent.payload.fields.some((field) => field.name === "Dateien" && field.value === "1 erfolgreich · 0 fehlgeschlagen · 0 abgebrochen")).toBe(true);
   });
 
   it("flushes successful package digests before run_completed", async () => {

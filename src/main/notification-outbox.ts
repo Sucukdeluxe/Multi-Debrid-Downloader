@@ -9,6 +9,7 @@ export type NotificationEventType =
   | "package_completed"
   | "package_partial"
   | "package_failed"
+  | "package_cancelled"
   | "run_completed"
   | "run_stopped"
   | "remaining_threshold_crossed"
@@ -60,6 +61,7 @@ const EVENT_TYPES = new Set<NotificationEventType>([
   "package_completed",
   "package_partial",
   "package_failed",
+  "package_cancelled",
   "run_completed",
   "run_stopped",
   "remaining_threshold_crossed",
@@ -71,13 +73,15 @@ const MAX_RETRY_DELAY_MS = 10 * 60 * 1000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 3000;
 const PACKAGE_FAILURE_EVENT_TYPES = new Set<NotificationEventType>([
   "package_partial",
-  "package_failed"
+  "package_failed",
+  "package_cancelled"
 ]);
 const PACKAGE_FAILURE_PHASES = new Map<string, FailurePhase>([
   ["Download", "download"],
   ["Entpacken", "extract"],
   ["Remux", "remux"],
-  ["Aufräumen", "cleanup"]
+  ["Aufräumen", "cleanup"],
+  ["Nachbearbeitung", "postprocess"]
 ]);
 
 function finiteInteger(value: unknown, fallback = 0): number {
@@ -86,7 +90,7 @@ function finiteInteger(value: unknown, fallback = 0): number {
 }
 
 function sanitizePackageFailureFieldValue(value: string): string {
-  const match = /^(Download|Entpacken|Remux|Aufräumen)(?:\s*·\s*(.*))?$/s.exec(value.trim());
+  const match = /^(Download|Entpacken|Remux|Aufräumen|Nachbearbeitung)(?:\s*·\s*(.*))?$/s.exec(value.trim());
   if (!match) {
     return "Unbekannt";
   }

@@ -60,6 +60,8 @@ const filterItems: Array<{ id: HistoryFilter; label: string }> = [
   { id: "week", label: "Letzte 7 Tage" },
   { id: "older", label: "Älter" },
   { id: "completed", label: "Fertig" },
+  { id: "partial", label: "Teilweise" },
+  { id: "cancelled", label: "Abgebrochen" },
   { id: "deleted", label: "Gelöscht" },
   { id: "failed", label: "Fehlgeschlagen" }
 ];
@@ -205,6 +207,8 @@ function HistoryRowDetails({
                   <div><dt>Erfolgreich / Fehlgeschlagen / Abgebrochen</dt><dd>{row.successfulFiles ?? 0} / {row.failedFiles ?? 0} / {row.cancelledFiles ?? 0}</dd></div>
                   <div><dt>Archive / Parts / Ausgaben</dt><dd>{row.archiveCount ?? 0} / {row.partCount ?? 0} / {row.outputCount ?? 0}</dd></div>
                   <div><dt>Fehlerphase</dt><dd>{row.failurePhaseLabel}</dd></div>
+                  <div><dt>Fehlerkategorie</dt><dd>{row.errorCategory || "—"}</dd></div>
+                  <div><dt>Download / Offline / Entpacken / Remux / Cleanup / Nachbearbeitung</dt><dd>{row.failureCountsLabel}</dd></div>
                 </>
               ) : (
                 <div><dt>Downloaddauer (Altbestand)</dt><dd>{row.durationLabel}</dd></div>

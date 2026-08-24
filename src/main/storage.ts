@@ -46,8 +46,9 @@ const VALID_ITEM_PROVIDERS = new Set<DebridProvider>(["realdebrid", "megadebrid"
 const VALID_ONLINE_STATUSES = new Set(["online", "offline", "checking"]);
 const VALID_OPERATION_STATUSES = new Set(["completed", "failed", "cancelled"]);
 const VALID_HISTORY_STATUSES = new Set(["completed", "partial", "failed", "cancelled", "deleted"]);
-const VALID_FAILURE_PHASES = new Set(["download", "extract", "remux", "cleanup"]);
+const VALID_FAILURE_PHASES = new Set(["download", "extract", "remux", "cleanup", "postprocess"]);
 const SAFE_SESSION_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
+const SAFE_OUTPUT_SIGNATURE_RE = /^[a-f0-9]{64}$/;
 
 function asText(value: unknown): string {
   return String(value ?? "").trim();
@@ -1019,7 +1020,11 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
       archiveOperations: normalizeArchiveOperations(pkg.archiveOperations),
       remuxOperations: normalizeRemuxOperations(pkg.remuxOperations),
       outputCount: clampNumber(pkg.outputCount, 0, 0, 1_000_000),
+      outputBaselineSignatures: Array.isArray(pkg.outputBaselineSignatures)
+        ? [...new Set(pkg.outputBaselineSignatures.map((value) => asText(value).toLowerCase()).filter((value) => SAFE_OUTPUT_SIGNATURE_RE.test(value)))].slice(0, 1_000_000)
+        : undefined,
       cleanupErrorCategory: normalizeFailureCategory("cleanup", pkg.cleanupErrorCategory),
+      postProcessErrorCategory: normalizeFailureCategory("postprocess", pkg.postProcessErrorCategory),
       resultGeneration: clampNumber(pkg.resultGeneration, 1, 1, Number.MAX_SAFE_INTEGER),
       createdAt: clampNumber(pkg.createdAt, now, 0, Number.MAX_SAFE_INTEGER),
       updatedAt: clampNumber(pkg.updatedAt, now, 0, Number.MAX_SAFE_INTEGER)
@@ -1607,7 +1612,13 @@ export function normalizeHistoryEntry(raw: unknown, index: number): HistoryEntry
     cancelledFiles: optionalClampedNumber(entry, "cancelledFiles", 1_000_000),
     archiveCount: optionalClampedNumber(entry, "archiveCount", 100_000),
     partCount: optionalClampedNumber(entry, "partCount", 1_000_000),
-    outputCount: optionalClampedNumber(entry, "outputCount", 1_000_000)
+    outputCount: optionalClampedNumber(entry, "outputCount", 1_000_000),
+    downloadFailures: optionalClampedNumber(entry, "downloadFailures", 1_000_000),
+    offlineFailures: optionalClampedNumber(entry, "offlineFailures", 1_000_000),
+    extractionFailures: optionalClampedNumber(entry, "extractionFailures", 1_000_000),
+    remuxFailures: optionalClampedNumber(entry, "remuxFailures", 1_000_000),
+    cleanupFailures: optionalClampedNumber(entry, "cleanupFailures", 1_000_000),
+    postProcessFailures: optionalClampedNumber(entry, "postProcessFailures", 1_000_000)
   };
 
   return {
@@ -1625,6 +1636,9 @@ export function normalizeHistoryEntry(raw: unknown, index: number): HistoryEntry
     ...Object.fromEntries(Object.entries(optionalFields).filter(([, value]) => value !== undefined)),
     ...(failurePhaseRaw === null || VALID_FAILURE_PHASES.has(failurePhaseRaw)
       ? { failurePhase: failurePhaseRaw as FailurePhase }
+      : {}),
+    ...(asText(entry.errorCategory)
+      ? { errorCategory: normalizeFailureCategory(failurePhaseRaw !== null && VALID_FAILURE_PHASES.has(failurePhaseRaw) ? failurePhaseRaw as FailurePhase : null, entry.errorCategory) }
       : {}),
     ...(Array.isArray(entry.archiveOperations) ? { archiveOperations: normalizeArchiveOperations(entry.archiveOperations) } : {}),
     ...(Array.isArray(entry.remuxOperations) ? { remuxOperations: normalizeRemuxOperations(entry.remuxOperations) } : {})
