@@ -207,6 +207,148 @@ describe("Deepbrid download lifecycle", () => {
       bytes: 256
     }));
   });
+
+  it("resumes Deepbrid downloads with an open-ended Content-Range and trusts the HTTP total", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-deepbrid-open-range-"));
+    tempDirs.push(root);
+    const actual = Buffer.alloc(256 * 1024 + 8, 73);
+    const reportedTotal = actual.length - 8;
+    const partialSize = 64 * 1024;
+    const outputDir = path.join(root, "downloads", "deepbrid-open-range");
+    const targetPath = path.join(outputDir, "deepbrid-open-range.rar");
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.writeFileSync(targetPath, actual.subarray(0, partialSize));
+    const starts: number[] = [];
+
+    const server = http.createServer((req, res) => {
+      const range = String(req.headers.range || "");
+      const match = range.match(/bytes=(\d+)-/i);
+      const start = match ? Number(match[1]) : 0;
+      starts.push(start);
+      if (start <= 0) {
+        res.statusCode = 500;
+        res.end("expected resume");
+        return;
+      }
+      const remaining = actual.subarray(start);
+      const bytesThroughReportedTotal = reportedTotal - start;
+      res.statusCode = 206;
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Range", `bytes ${start}-/${actual.length}`);
+      res.setHeader("Content-Length", String(remaining.length));
+      res.write(remaining.subarray(0, bytesThroughReportedTotal));
+      setTimeout(() => {
+        res.end(remaining.subarray(bytesThroughReportedTotal));
+      }, 800);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("server address unavailable");
+    }
+    const directUrl = `http://127.0.0.1:${address.port}/deepbrid-open-range`;
+    let unrestrictCalls = 0;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/api/v1/generate/link")) {
+        unrestrictCalls += 1;
+        return new Response(JSON.stringify({
+          error: 0,
+          message: "OK",
+          original_link: "https://1fichier.example/open-range",
+          hoster: "1fichier",
+          filename: "deepbrid-open-range.rar",
+          link: directUrl,
+          size: reportedTotal
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return originalFetch(input, init);
+    };
+
+    try {
+      const session = emptySession();
+      const packageId = "deepbrid-open-range-package";
+      const itemId = "deepbrid-open-range-item";
+      const createdAt = Date.now() - 10_000;
+      session.packageOrder = [packageId];
+      session.packages[packageId] = {
+        id: packageId,
+        name: "deepbrid-open-range",
+        outputDir,
+        extractDir: path.join(root, "extract", "deepbrid-open-range"),
+        status: "queued",
+        itemIds: [itemId],
+        cancelled: false,
+        enabled: true,
+        createdAt,
+        updatedAt: createdAt
+      };
+      session.items[itemId] = {
+        id: itemId,
+        packageId,
+        url: "https://1fichier.example/open-range",
+        provider: "deepbrid",
+        status: "queued",
+        retries: 0,
+        speedBps: 0,
+        downloadedBytes: partialSize,
+        totalBytes: reportedTotal,
+        progressPercent: Math.floor((partialSize / reportedTotal) * 100),
+        fileName: "deepbrid-open-range.rar",
+        targetPath,
+        resumable: true,
+        attempts: 1,
+        lastError: "",
+        fullStatus: "Wartet",
+        createdAt,
+        updatedAt: createdAt
+      };
+
+      const manager = new DownloadManager({
+        ...defaultSettings(),
+        deepbridApiKey: "synthetic-deepbrid-open-range-key",
+        providerOrder: ["deepbrid"],
+        providerPrimary: "deepbrid",
+        providerSecondary: "none",
+        providerTertiary: "none",
+        outputDir: path.join(root, "downloads"),
+        extractDir: path.join(root, "extract"),
+        retryLimit: 1,
+        maxParallel: 1,
+        autoExtract: false,
+        autoReconnect: false
+      }, session, createStoragePaths(path.join(root, "state")));
+      const inProgressTotals: Array<number | null> = [];
+      manager.on("state", (snapshot) => {
+        const current = snapshot.session.items[itemId];
+        if (current?.status === "downloading" && current.downloadedBytes > partialSize) {
+          inProgressTotals.push(current.totalBytes);
+        }
+      });
+
+      await manager.start();
+      await waitFor(() => !manager.getSnapshot().session.running, 25000);
+
+      const item = manager.getSnapshot().session.items[itemId];
+      expect(item?.status).toBe("completed");
+      expect(item?.retries).toBe(0);
+      expect(item?.downloadedBytes).toBe(actual.length);
+      expect(item?.totalBytes).toBe(actual.length);
+      expect(unrestrictCalls).toBe(1);
+      expect(starts).toEqual([partialSize]);
+      expect(inProgressTotals).toContain(actual.length);
+      expect(fs.readFileSync(targetPath).equals(actual)).toBe(true);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
 });
 
 describe("disk write recovery", () => {
@@ -5004,15 +5146,17 @@ describe("download manager", () => {
     }
   });
 
-  it("treats HTTP 416 on full range as completed resume", async () => {
+  it("trusts the HTTP 416 total over slightly smaller provider metadata", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
-    const binary = Buffer.alloc(128 * 1024, 2);
+    const binary = Buffer.alloc(128 * 1024 + 8, 2);
+    const reportedTotal = binary.length - 8;
     const pkgDir = path.join(root, "downloads", "range-complete");
     fs.mkdirSync(pkgDir, { recursive: true });
-    const existingTargetPath = path.join(pkgDir, "complete.mkv");
+    const existingTargetPath = path.join(pkgDir, "complete.rar");
     fs.writeFileSync(existingTargetPath, binary);
     let saw416 = false;
+    const starts: number[] = [];
 
     const server = http.createServer((req, res) => {
       if ((req.url || "") !== "/complete") {
@@ -5023,6 +5167,7 @@ describe("download manager", () => {
       const range = String(req.headers.range || "");
       const match = range.match(/bytes=(\d+)-/i);
       const start = match ? Number(match[1]) : 0;
+      starts.push(start);
       if (start >= binary.length) {
         saw416 = true;
         res.statusCode = 416;
@@ -5058,8 +5203,8 @@ describe("download manager", () => {
         return new Response(
           JSON.stringify({
             download: directUrl,
-            filename: "complete.mkv",
-            filesize: binary.length
+            filename: "complete.rar",
+            filesize: reportedTotal
           }),
           {
             status: 200,
@@ -5098,7 +5243,7 @@ describe("download manager", () => {
         retries: 0,
         speedBps: 0,
         downloadedBytes: binary.length,
-        totalBytes: binary.length,
+        totalBytes: reportedTotal,
         progressPercent: 100,
         fileName: "complete.mkv",
         targetPath: existingTargetPath,
@@ -5131,6 +5276,8 @@ describe("download manager", () => {
       expect(item?.status).toBe("completed");
       expect(item?.targetPath).toBe(existingTargetPath);
       expect(item?.downloadedBytes).toBe(binary.length);
+      expect(item?.totalBytes).toBe(binary.length);
+      expect(starts).toEqual([binary.length]);
       expect(fs.statSync(existingTargetPath).size).toBe(binary.length);
     } finally {
       server.close();

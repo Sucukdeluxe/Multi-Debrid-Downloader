@@ -510,13 +510,13 @@ function parseContentRange(contentRange: string | null): ParsedContentRange | nu
   if (!contentRange) {
     return null;
   }
-  const match = contentRange.match(/^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i);
+  const match = contentRange.match(/^bytes\s+(\d+)-(\d*)\/(\d+|\*)$/i);
   if (!match) {
     return null;
   }
   const start = Number(match[1]);
-  const end = Number(match[2]);
   const total = match[3] === "*" ? null : Number(match[3]);
+  const end = match[2] ? Number(match[2]) : total === null ? NaN : total - 1;
   if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start) {
     return null;
   }
@@ -527,7 +527,16 @@ function parseContentRange(contentRange: string | null): ParsedContentRange | nu
 }
 
 function parseContentRangeTotal(contentRange: string | null): number | null {
-  return parseContentRange(contentRange)?.total ?? null;
+  const parsed = parseContentRange(contentRange)?.total;
+  if (parsed !== null && parsed !== undefined) {
+    return parsed;
+  }
+  const match = contentRange?.match(/^bytes\s+\*\/(\d+)$/i);
+  if (!match) {
+    return null;
+  }
+  const total = Number(match[1]);
+  return Number.isSafeInteger(total) && total > 0 ? total : null;
 }
 
 function parseContentDispositionFilename(contentDisposition: string | null): string {
@@ -11132,10 +11141,10 @@ export class DownloadManager extends EventEmitter {
             contentLength,
             totalFromRange
           });
-        } else if (knownTotal && knownTotal > 0) {
-          item.totalBytes = knownTotal;
         } else if (totalFromRange) {
           item.totalBytes = totalFromRange;
+        } else if (knownTotal && knownTotal > 0) {
+          item.totalBytes = knownTotal;
         } else if (contentLength > 0) {
           item.totalBytes = response.status === 206 ? existingBytes + contentLength : contentLength;
         }
