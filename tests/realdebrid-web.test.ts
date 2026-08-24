@@ -5,7 +5,7 @@ const {
   mockClearStorageData,
   mockClearCache,
   mockFromPartition,
-  mockBrowserWindow,
+  mockBrowserWindows,
   mockBrowserWindowCtor,
   mockExecuteJavaScript,
   mockLoadURL,
@@ -18,48 +18,55 @@ const {
   const clearStorageData = vi.fn();
   const clearCache = vi.fn();
   const fromPartition = vi.fn();
-  const executeJavaScript = vi.fn();
-  const loadURL = vi.fn(async () => {});
+  const executeJavaScript = vi.fn(async (..._args: unknown[]): Promise<unknown> => undefined);
+  const loadURL = vi.fn(async (_url: string) => {});
   const show = vi.fn();
   const focus = vi.fn();
-  const setWindowOpenHandler = vi.fn();
-  const setPermissionRequestHandler = vi.fn();
-  const webContentsEvents: Record<string, (...args: unknown[]) => void> = {};
-  const windowEvents: Record<string, (...args: unknown[]) => void> = {};
-  let destroyed = false;
-
-  const browserWindow = {
-    isDestroyed: vi.fn(() => destroyed),
-    isMinimized: vi.fn(() => false),
-    restore: vi.fn(),
-    show,
-    focus,
-    close: vi.fn(() => {
-      windowEvents.close?.();
-      destroyed = true;
-      windowEvents.closed?.();
-    }),
-    setMenuBarVisibility: vi.fn(),
-    loadURL,
-    on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
-      windowEvents[event] = handler;
-      return browserWindow;
-    }),
-    webContents: {
-      setUserAgent: vi.fn(),
-      setWindowOpenHandler,
-      on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
-        webContentsEvents[event] = handler;
-      }),
-      executeJavaScript,
-      session: {
-        setPermissionRequestHandler
-      }
-    }
-  };
+  const setWindowOpenHandler = vi.fn((_handler: unknown) => undefined);
+  const setPermissionRequestHandler = vi.fn((_handler: unknown) => undefined);
+  const browserWindows: any[] = [];
 
   const BrowserWindowCtor = vi.fn((_options: unknown) => {
-    destroyed = false;
+    const webContentsEvents: Record<string, (...args: unknown[]) => void> = {};
+    const windowEvents: Record<string, (...args: unknown[]) => void> = {};
+    let destroyed = false;
+    const browserWindow: any = {
+      isDestroyed: vi.fn(() => destroyed),
+      isMinimized: vi.fn(() => false),
+      restore: vi.fn(),
+      show: vi.fn(() => show()),
+      focus: vi.fn(() => focus()),
+      close: vi.fn(() => {
+        windowEvents.close?.();
+        destroyed = true;
+        windowEvents.closed?.();
+      }),
+      destroy: vi.fn(() => {
+        destroyed = true;
+        windowEvents.closed?.();
+      }),
+      setMenuBarVisibility: vi.fn(),
+      loadURL: vi.fn((url: string) => loadURL(url)),
+      on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
+        windowEvents[event] = handler;
+        return browserWindow;
+      }),
+      webContents: {
+        setUserAgent: vi.fn(),
+        setWindowOpenHandler: vi.fn((handler: unknown) => setWindowOpenHandler(handler)),
+        on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
+          webContentsEvents[event] = handler;
+        }),
+        emit: vi.fn((event: string, ...args: unknown[]) => {
+          webContentsEvents[event]?.(...args);
+        }),
+        executeJavaScript: vi.fn((...args: unknown[]) => executeJavaScript(...args)),
+        session: {
+          setPermissionRequestHandler: vi.fn((handler: unknown) => setPermissionRequestHandler(handler))
+        }
+      }
+    };
+    browserWindows.push(browserWindow);
     return browserWindow;
   });
 
@@ -68,7 +75,7 @@ const {
     mockClearStorageData: clearStorageData,
     mockClearCache: clearCache,
     mockFromPartition: fromPartition,
-    mockBrowserWindow: browserWindow,
+    mockBrowserWindows: browserWindows,
     mockBrowserWindowCtor: BrowserWindowCtor,
     mockExecuteJavaScript: executeJavaScript,
     mockLoadURL: loadURL,
@@ -101,6 +108,7 @@ describe("realdebrid-web", () => {
   };
 
   beforeEach(() => {
+    mockBrowserWindows.length = 0;
     mockFromPartition.mockReturnValue(mockSession);
     mockExecuteJavaScript.mockReset();
     mockLoadURL.mockClear();
@@ -123,86 +131,275 @@ describe("realdebrid-web", () => {
       .toBe("ghi789");
   });
 
-  it("uses the already logged-in browser window to warm the token cache before unrestricting", async () => {
+  it("uses an invisible authenticated website worker when the normal API host rejects the same link", async () => {
     const apiFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      download: "https://cdn.real-debrid.example/file.bin",
-      filename: "file.bin",
-      filesize: 12345
-    }), { status: 200 }));
+      error: "hoster_unavailable",
+      error_code: 19
+    }), { status: 503 }));
     vi.stubGlobal("fetch", apiFetch);
-
-    mockExecuteJavaScript.mockResolvedValue("token-from-window");
+    mockExecuteJavaScript.mockResolvedValue({
+      kind: "generated",
+      download: "https://20-4.download.real-debrid.com/d/example/file.bin",
+      text: "DOWNLOAD: file.bin (12345B)"
+    });
 
     const fallback = new RealDebridWebFallback("persist:realdebrid-web", () => true);
-    await fallback.openLoginWindow();
-
     const result = await fallback.unrestrict("https://rapidgator.net/file/abc");
 
     expect(result).toEqual({
-      directUrl: "https://cdn.real-debrid.example/file.bin",
+      directUrl: "https://20-4.download.real-debrid.com/d/example/file.bin",
       fileName: "file.bin",
       fileSize: 12345,
       retriesUsed: 0
     });
     expect(mockBrowserWindowCtor).toHaveBeenCalledTimes(1);
     expect(mockBrowserWindowCtor.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+      show: false,
+      skipTaskbar: true,
       webPreferences: {
         partition: "persist:realdebrid-web",
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
         webSecurity: true,
-        allowRunningInsecureContent: false
+        allowRunningInsecureContent: false,
+        backgroundThrottling: false
       }
     }));
     expect(mockSetWindowOpenHandler).toHaveBeenCalledTimes(1);
     expect(mockSetPermissionRequestHandler).toHaveBeenCalledTimes(1);
-    expect(mockLoadURL).toHaveBeenCalledWith("https://real-debrid.com");
-    expect(mockShow).toHaveBeenCalled();
-    expect(mockFocus).toHaveBeenCalled();
+    expect(mockLoadURL).toHaveBeenCalledWith("https://real-debrid.com/downloader");
+    expect(mockShow).not.toHaveBeenCalled();
+    expect(mockFocus).not.toHaveBeenCalled();
     expect(mockSessionFetch).not.toHaveBeenCalled();
-    expect(apiFetch).toHaveBeenCalledTimes(1);
-    expect(apiFetch.mock.calls[0]?.[0]).toBe("https://api.real-debrid.com/rest/1.0/unrestrict/link");
-    expect(mockBrowserWindow.webContents.executeJavaScript).toHaveBeenCalled();
+    expect(apiFetch).not.toHaveBeenCalled();
+    expect(mockExecuteJavaScript).toHaveBeenCalled();
+  });
+
+  it("keeps the visible login window and hidden generator as separate account-isolated windows", async () => {
+    mockExecuteJavaScript
+      .mockResolvedValueOnce("window-token")
+      .mockResolvedValueOnce({
+        kind: "generated",
+        download: "https://20-4.download.real-debrid.com/d/example/separate.bin",
+        text: "DOWNLOAD: separate.bin (7B)"
+      });
+    const fallback = new RealDebridWebFallback("persist:realdebrid-web-rdw_separate", () => true);
+
+    await fallback.openLoginWindow();
+    const result = await fallback.unrestrict("https://rapidgator.net/file/separate");
+
+    expect(result?.fileName).toBe("separate.bin");
+    expect(mockBrowserWindows).toHaveLength(2);
+    expect(mockBrowserWindows[0]).not.toBe(mockBrowserWindows[1]);
+    expect(mockBrowserWindowCtor.mock.calls.map((call) => (call[0] as any).webPreferences.partition))
+      .toEqual(["persist:realdebrid-web-rdw_separate", "persist:realdebrid-web-rdw_separate"]);
+    expect(mockBrowserWindows[0]?.show).toHaveBeenCalledTimes(1);
+    expect(mockBrowserWindows[1]?.show).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a website hoster error without opening a visible login window", async () => {
+    mockExecuteJavaScript.mockResolvedValue({
+      kind: "page_error",
+      error: "https://rapidgator.net/file/limited: hoster_unavailable"
+    });
+    const fallback = new RealDebridWebFallback("persist:realdebrid-web-rdw_hoster_error", () => true);
+
+    const error = await fallback.unrestrict("https://rapidgator.net/file/limited").then(() => null, (value) => value);
+
+    expect(error).toMatchObject({
+      name: "RealDebridApiError",
+      status: 503,
+      apiError: "hoster_unavailable",
+      apiErrorCode: 19
+    });
+    expect(mockShow).not.toHaveBeenCalled();
+    expect(mockFocus).not.toHaveBeenCalled();
+  });
+
+  it("reports an expired website session without opening the login window from a download", async () => {
+    mockExecuteJavaScript.mockResolvedValue({ kind: "login_required" });
+    const fallback = new RealDebridWebFallback("persist:realdebrid-web-rdw_logged_out", () => true);
+
+    await expect(fallback.unrestrict("https://rapidgator.net/file/logged-out"))
+      .rejects.toThrow("Login erforderlich");
+
+    expect(mockBrowserWindowCtor).toHaveBeenCalledTimes(1);
+    expect(mockBrowserWindowCtor.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ show: false }));
+    expect(mockShow).not.toHaveBeenCalled();
+    expect(mockFocus).not.toHaveBeenCalled();
+  });
+
+  it("destroys a timed-out website worker before retrying the same link", async () => {
+    mockExecuteJavaScript
+      .mockResolvedValueOnce({ kind: "request_error", error: "generation_timeout" })
+      .mockResolvedValueOnce({
+        kind: "generated",
+        download: "https://20-4.download.real-debrid.com/d/example/retry.bin",
+        text: "DOWNLOAD: retry.bin (64B)"
+      });
+    const fallback = new RealDebridWebFallback("persist:realdebrid-web-rdw_timeout_retry", () => true);
+
+    const result = await fallback.unrestrict("https://rapidgator.net/file/timeout-retry");
+
+    expect(result?.fileName).toBe("retry.bin");
+    expect(mockBrowserWindows).toHaveLength(2);
+    expect(mockBrowserWindows[0]?.destroy).toHaveBeenCalledTimes(1);
+    expect(mockBrowserWindows[1]?.destroy).not.toHaveBeenCalled();
+  });
+
+  it("replaces a hidden worker after its renderer process crashes", async () => {
+    mockExecuteJavaScript
+      .mockResolvedValueOnce({
+        kind: "generated",
+        download: "https://20-4.download.real-debrid.com/d/example/before-crash.bin",
+        text: "DOWNLOAD: before-crash.bin (32B)"
+      })
+      .mockResolvedValueOnce({
+        kind: "generated",
+        download: "https://20-4.download.real-debrid.com/d/example/after-crash.bin",
+        text: "DOWNLOAD: after-crash.bin (48B)"
+      });
+    const fallback = new RealDebridWebFallback("persist:realdebrid-web-rdw_renderer_crash", () => true);
+    await fallback.unrestrict("https://rapidgator.net/file/before-crash");
+
+    mockBrowserWindows[0]?.webContents.emit("render-process-gone", {}, { reason: "crashed" });
+    const recovered = await fallback.unrestrict("https://rapidgator.net/file/after-crash");
+
+    expect(mockBrowserWindows[0]?.destroy).toHaveBeenCalledTimes(1);
+    expect(mockBrowserWindows).toHaveLength(2);
+    expect(recovered?.fileName).toBe("after-crash.bin");
+  });
+
+  it("aborts a running website generation promptly and rebuilds its hidden worker for the next job", async () => {
+    let finishFirst: (value: unknown) => void = () => {};
+    const firstPageResult = new Promise<unknown>((resolve) => {
+      finishFirst = resolve;
+    });
+    mockExecuteJavaScript
+      .mockReturnValueOnce(firstPageResult)
+      .mockResolvedValueOnce({
+        kind: "generated",
+        download: "https://20-4.download.real-debrid.com/d/example/next.bin",
+        text: "DOWNLOAD: next.bin (42B)"
+      });
+    const fallback = new RealDebridWebFallback("persist:realdebrid-web-rdw_abort", () => true);
+    const controller = new AbortController();
+    const running = fallback.unrestrict("https://rapidgator.net/file/first", controller.signal);
+    await vi.waitFor(() => expect(mockExecuteJavaScript).toHaveBeenCalledTimes(1));
+
+    controller.abort("test-stop");
+    const promptResult = await Promise.race([
+      running.then(() => "resolved", (error) => String(error)),
+      new Promise<string>((resolve) => setTimeout(() => resolve("timeout"), 120))
+    ]);
+
+    expect(promptResult).toMatch(/aborted:realdebrid-web/i);
+    expect(mockBrowserWindows[0]?.destroy).toHaveBeenCalled();
+
+    finishFirst({ kind: "login_required" });
+    await running.catch(() => undefined);
+    const next = await fallback.unrestrict("https://rapidgator.net/file/next");
+
+    expect(next).toEqual({
+      directUrl: "https://20-4.download.real-debrid.com/d/example/next.bin",
+      fileName: "next.bin",
+      fileSize: 42,
+      retriesUsed: 0
+    });
+    expect(mockBrowserWindowCtor.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("destroys the hidden worker when a download is stopped during downloader page load", async () => {
+    let finishLoad: () => void = () => {};
+    const pageLoad = new Promise<void>((resolve) => {
+      finishLoad = resolve;
+    });
+    mockLoadURL.mockReturnValueOnce(pageLoad);
+    const fallback = new RealDebridWebFallback("persist:realdebrid-web-rdw_load_abort", () => true);
+    const controller = new AbortController();
+    const running = fallback.unrestrict("https://rapidgator.net/file/load-abort", controller.signal);
+    await vi.waitFor(() => expect(mockLoadURL).toHaveBeenCalledWith("https://real-debrid.com/downloader"));
+
+    controller.abort("test-stop-during-load");
+    const promptResult = await Promise.race([
+      running.then(() => "resolved", (error) => String(error)),
+      new Promise<string>((resolve) => setTimeout(() => resolve("timeout"), 120))
+    ]);
+
+    expect(promptResult).toMatch(/aborted:realdebrid-web/i);
+    expect(mockBrowserWindows[0]?.destroy).toHaveBeenCalledTimes(1);
+    finishLoad();
+  });
+
+  it("never recreates a hidden worker after the account fallback was disposed", async () => {
+    let failGeneration: (error: Error) => void = () => {};
+    const pageResult = new Promise<unknown>((_resolve, reject) => {
+      failGeneration = reject;
+    });
+    mockExecuteJavaScript.mockReturnValue(pageResult);
+    const fallback = new RealDebridWebFallback("persist:realdebrid-web-rdw_disposed", () => true);
+    const running = fallback.unrestrict("https://rapidgator.net/file/disposed");
+    await vi.waitFor(() => expect(mockExecuteJavaScript).toHaveBeenCalledTimes(1));
+
+    fallback.dispose();
+    failGeneration(new Error("execution context destroyed"));
+
+    await expect(running).rejects.toThrow("Sitzung wurde geschlossen");
+    expect(mockBrowserWindowCtor).toHaveBeenCalledTimes(1);
+  });
+
+  it("interrupts a running website retry wait when the account fallback is disposed", async () => {
+    mockExecuteJavaScript.mockResolvedValue({
+      kind: "page_error",
+      error: "https://rapidgator.net/file/retry-dispose: too_many_requests"
+    });
+    const fallback = new RealDebridWebFallback("persist:realdebrid-web-rdw_retry_dispose", () => true);
+    const running = fallback.unrestrict("https://rapidgator.net/file/retry-dispose");
+    await vi.waitFor(() => expect(mockExecuteJavaScript).toHaveBeenCalledTimes(1));
+
+    fallback.dispose();
+    const promptResult = await Promise.race([
+      running.then(() => "resolved", (error) => String(error)),
+      new Promise<string>((resolve) => setTimeout(() => resolve("timeout"), 120))
+    ]);
+
+    expect(promptResult).toMatch(/Sitzung wurde geschlossen/i);
+    expect(mockExecuteJavaScript).toHaveBeenCalledTimes(1);
   });
 
   it("never opens a login window from a background unrestrict request", async () => {
-    mockSessionFetch.mockImplementation(async () => new Response("<html>login</html>", { status: 200 }));
+    mockExecuteJavaScript.mockResolvedValue({ kind: "login_required" });
     const first = new RealDebridWebFallback("persist:realdebrid-web-rdw_background_first", () => true);
     const second = new RealDebridWebFallback("persist:realdebrid-web-rdw_background_second", () => true);
 
-    const firstController = new AbortController();
-    const secondController = new AbortController();
-    const abortTimer = setTimeout(() => {
-      firstController.abort();
-      secondController.abort();
-    }, 50);
-    try {
-      await Promise.all([
-        expect(first.unrestrict("https://rapidgator.net/file/background-first", firstController.signal))
-          .rejects.toThrow("Login erforderlich"),
-        expect(second.unrestrict("https://rapidgator.net/file/background-second", secondController.signal))
-          .rejects.toThrow("Login erforderlich")
-      ]);
-    } finally {
-      clearTimeout(abortTimer);
-    }
+    await Promise.all([
+      expect(first.unrestrict("https://rapidgator.net/file/background-first"))
+        .rejects.toThrow("Login erforderlich"),
+      expect(second.unrestrict("https://rapidgator.net/file/background-second"))
+        .rejects.toThrow("Login erforderlich")
+    ]);
 
-    expect(mockBrowserWindowCtor).not.toHaveBeenCalled();
+    expect(mockBrowserWindowCtor.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(mockBrowserWindowCtor.mock.calls.every((call) => (call[0] as any).show === false)).toBe(true);
+    expect(mockShow).not.toHaveBeenCalled();
+    expect(mockFocus).not.toHaveBeenCalled();
   });
 
   it("does not open a login window for an authenticated account with a fair-use error", async () => {
-    mockSessionFetch.mockResolvedValue(new Response("<input name=\"private_token\" value=\"session-token\">", { status: 200 }));
-    vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => new Response(JSON.stringify({
-      error: "fair_usage_limit",
-      error_code: 36
-    }), { status: 440 })));
+    mockExecuteJavaScript.mockResolvedValue({
+      kind: "page_error",
+      error: "https://rapidgator.net/file/limited: fair_usage_limit"
+    });
     const fallback = new RealDebridWebFallback("persist:realdebrid-web-rdw_limited", () => true);
 
     await expect(fallback.unrestrict("https://rapidgator.net/file/limited"))
-      .rejects.toThrow("Real-Debrid Web HTTP 440");
+      .rejects.toThrow("Real-Debrid Web HTTP 429");
 
-    expect(mockBrowserWindowCtor).not.toHaveBeenCalled();
+    expect(mockBrowserWindowCtor).toHaveBeenCalledTimes(1);
+    expect(mockBrowserWindowCtor.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ show: false }));
+    expect(mockShow).not.toHaveBeenCalled();
+    expect(mockFocus).not.toHaveBeenCalled();
   });
 
   it("checks the logged-in browser account without exposing its token", async () => {
@@ -237,16 +434,17 @@ describe("realdebrid-web", () => {
   });
 
   it("does not reopen a login window from downloads after the user closed it", async () => {
-    mockExecuteJavaScript.mockResolvedValue("");
-    mockSessionFetch.mockImplementation(async () => new Response("<html>login</html>", { status: 200 }));
+    mockExecuteJavaScript.mockResolvedValueOnce("").mockResolvedValue({ kind: "login_required" });
     const fallback = new RealDebridWebFallback("persist:realdebrid-web-rdw_dismissed", () => true);
 
     await fallback.openLoginWindow();
-    mockBrowserWindow.close();
+    mockBrowserWindows[0]?.close();
 
     await expect(fallback.unrestrict("https://rapidgator.net/file/first")).rejects.toThrow("Login erforderlich");
     await expect(fallback.unrestrict("https://rapidgator.net/file/second")).rejects.toThrow("Login erforderlich");
-    expect(mockBrowserWindowCtor).toHaveBeenCalledTimes(1);
+    expect(mockBrowserWindowCtor).toHaveBeenCalledTimes(3);
+    expect(mockShow).toHaveBeenCalledTimes(1);
+    expect(mockFocus).toHaveBeenCalledTimes(1);
   });
 
   it("allows an explicitly requested login after the user closed the previous window", async () => {
@@ -254,7 +452,7 @@ describe("realdebrid-web", () => {
     const fallback = new RealDebridWebFallback("persist:realdebrid-web-rdw_reopen", () => true);
 
     await fallback.openLoginWindow();
-    mockBrowserWindow.close();
+    mockBrowserWindows[0]?.close();
     await fallback.openLoginWindow();
 
     expect(mockBrowserWindowCtor).toHaveBeenCalledTimes(2);
@@ -315,6 +513,7 @@ describe("realdebrid-web", () => {
         premiumUntilMs: Date.parse("2030-01-02T03:04:05.000Z"),
         message: "Premium aktiv"
       }),
+      closeLoginWindow: vi.fn(),
       dispose: vi.fn()
     };
     controller.settings = defaultSettings();
@@ -339,6 +538,9 @@ describe("realdebrid-web", () => {
     expect(applyStatuses).toHaveBeenCalledWith([
       expect.objectContaining({ accountId: "rdw_reserved", valid: true, username: "fixture-user" })
     ]);
+    expect(controller.realDebridWebFallbacks.get("rdw_reserved")).toBe(fallback);
+    expect(fallback.closeLoginWindow).toHaveBeenCalledTimes(1);
+    expect(fallback.dispose).not.toHaveBeenCalled();
   });
 
   it("ignores a successful probe that completes after its account was deleted", async () => {
@@ -373,6 +575,24 @@ describe("realdebrid-web", () => {
     expect(controller.settings.realDebridWebAccountIds).toEqual([]);
   });
 
+  it("disposes the hidden worker when a configured web account is disabled without clearing its partition", () => {
+    const controller = Object.create(AppController.prototype) as any;
+    const fallback = { dispose: vi.fn(), clearSessions: vi.fn() };
+    const previous = defaultSettings();
+    previous.realDebridWebAccountIds = ["rdw_disabled"];
+    const current = {
+      ...previous,
+      realDebridDisabledAccountIds: ["rdw_disabled"]
+    };
+    controller.realDebridWebFallbacks = new Map([["rdw_disabled", fallback]]);
+
+    controller.pruneRealDebridWebFallbacks(previous, current);
+
+    expect(fallback.dispose).toHaveBeenCalledTimes(1);
+    expect(fallback.clearSessions).not.toHaveBeenCalled();
+    expect(controller.realDebridWebFallbacks.has("rdw_disabled")).toBe(false);
+  });
+
   it("clears cold account partitions without retaining a fallback instance", async () => {
     const controller = Object.create(AppController.prototype) as any;
     controller.settings = defaultSettings();
@@ -402,7 +622,7 @@ describe("realdebrid-web", () => {
 
     expect(controller.pendingRealDebridWebAccountIds.size).toBe(0);
     expect(controller.realDebridWebFallbacks.size).toBe(0);
-    expect(mockBrowserWindow.close).toHaveBeenCalled();
+    expect(mockBrowserWindows[0]?.close).toHaveBeenCalled();
     expect(mockFromPartition).toHaveBeenCalledWith("persist:realdebrid-web-rdw_failed");
     expect(mockFromPartition).toHaveBeenCalledWith("realdebrid-web-rdw_failed");
   });
@@ -418,7 +638,7 @@ describe("realdebrid-web", () => {
     controller.audit = vi.fn();
 
     await controller.openRealDebridLoginWindow({ accountId: "rdw_closed", create: true, dailyLimitBytes: 123_456 });
-    mockBrowserWindow.close();
+    mockBrowserWindows[0]?.close();
     await vi.waitFor(() => expect(controller.realDebridWebFallbacks.size).toBe(0));
 
     expect(controller.pendingRealDebridWebAccountIds.size).toBe(0);
@@ -471,7 +691,7 @@ describe("realdebrid-web", () => {
 
     await controller.openRealDebridLoginWindow({ accountId: "rdw_close_auth", create: true, dailyLimitBytes: 123_456 });
     await vi.waitFor(() => expect(mockExecuteJavaScript).toHaveBeenCalledTimes(1));
-    mockBrowserWindow.close();
+    mockBrowserWindows[0]?.close();
     resolveClosingToken("close-time-token");
     await vi.waitFor(() => expect(controller.settings.realDebridWebAccountIds).toEqual(["rdw_close_auth"]));
 

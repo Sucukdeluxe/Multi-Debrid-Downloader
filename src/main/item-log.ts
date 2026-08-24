@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import { logTimestamp } from "./log-timestamp";
 import path from "node:path";
 import crypto from "node:crypto";
 
@@ -21,6 +20,16 @@ const knownLogPaths = new Map<string, string>();
 const pendingLinesByItem = new Map<string, string[]>();
 const initializedThisProcess = new Set<string>();
 let flushTimer: NodeJS.Timeout | null = null;
+
+function itemLogTimestamp(date = new Date()): string {
+  const day = String(date.getDate()).padStart(2, "0");
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const year = String(date.getFullYear());
+  const hour = String(date.getHours()).padStart(2, "0");
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  const second = String(date.getSeconds()).padStart(2, "0");
+  return `${day}.${month}.${year} - ${hour}:${minute}:${second}`;
+}
 
 function normalizeItemId(itemId: string): string {
   const trimmed = String(itemId || "").trim();
@@ -164,7 +173,7 @@ export function ensureItemLog(meta: ItemLogMeta): string | null {
     }
     if (!initializedThisProcess.has(normalizedItemId)) {
       initializedThisProcess.add(normalizedItemId);
-      const startedAt = logTimestamp();
+      const startedAt = itemLogTimestamp();
       fs.appendFileSync(
         logPath,
         `=== Item-Log Start: ${startedAt} | itemId=${sanitizeFieldValue(String(meta.itemId || ""))} | logKey=${normalizedItemId} | fileName=${sanitizeFieldValue(meta.fileName)} ===\n`,
@@ -172,7 +181,7 @@ export function ensureItemLog(meta: ItemLogMeta): string | null {
       );
       fs.appendFileSync(
         logPath,
-        `${logTimestamp()} [INFO] Item-Kontext initialisiert${formatFields({
+        `${itemLogTimestamp()} [INFO] Item-Kontext initialisiert${formatFields({
           packageId: meta.packageId,
           packageName: meta.packageName,
           fileName: meta.fileName,
@@ -197,7 +206,7 @@ export function logItemEvent(
   if (!logPath) {
     return;
   }
-  const line = `${logTimestamp()} [${level}] ${message}${formatFields(fields)}\n`;
+  const line = `${itemLogTimestamp()} [${level}] ${message}${formatFields(fields)}\n`;
   appendLine(itemId, line);
 }
 
@@ -221,7 +230,7 @@ export function shutdownItemLogs(): void {
       continue;
     }
     try {
-      fs.appendFileSync(logPath, `=== Item-Log Ende: ${logTimestamp()} ===\n`, "utf8");
+      fs.appendFileSync(logPath, `=== Item-Log Ende: ${itemLogTimestamp()} ===\n`, "utf8");
     } catch {
     }
   }

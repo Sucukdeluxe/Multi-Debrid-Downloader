@@ -732,8 +732,17 @@ export class AppController {
 
   private pruneRealDebridWebFallbacks(previous: AppSettings, current: AppSettings): void {
     const currentIds = new Set(current.realDebridWebAccountIds);
+    const previouslyDisabled = new Set(previous.realDebridDisabledAccountIds || []);
+    const currentlyDisabled = new Set(current.realDebridDisabledAccountIds || []);
     for (const accountId of previous.realDebridWebAccountIds) {
       if (currentIds.has(accountId)) {
+        if (!previouslyDisabled.has(accountId) && currentlyDisabled.has(accountId)) {
+          const existing = this.realDebridWebFallbacks.get(accountId);
+          if (existing) {
+            this.realDebridWebFallbacks.delete(accountId);
+            existing.dispose();
+          }
+        }
         continue;
       }
       void this.cleanupRealDebridWebAccount(accountId, true).catch((error) => {
@@ -834,8 +843,7 @@ export class AppController {
     this.manager.applyDebridAccountStatuses([status]);
     const fallback = this.realDebridWebFallbacks.get(accountId);
     if (fallback) {
-      this.realDebridWebFallbacks.delete(accountId);
-      fallback.dispose();
+      fallback.closeLoginWindow();
     }
   }
 

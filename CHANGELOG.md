@@ -4,6 +4,30 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.70] - 2026-08-24
+
+### Real-Debrid browser accounts
+
+- Generate unrestricted links through the authenticated Real-Debrid downloader form inside an isolated background browser session instead of routing browser accounts through the API-token path.
+- Keep browser sessions separated per account, avoid background login popups, and recover safely from cancellation, page-load stalls, timeouts, renderer crashes, account disablement, deletion, and shutdown.
+- Validate generated download URLs against Real-Debrid download hosts and preserve exact filenames and file sizes without accepting foreign or insecure targets.
+- Report website login and provider errors clearly, reject multi-file folder links instead of silently returning an incomplete result, and keep API-token accounts unchanged.
+
+### Download table
+
+- Restore header sorting without interfering with column dragging and add sorting for the Service column.
+- Sort packages from their currently visible rows and preserve definitive link availability across reset operations.
+- Keep active, integrity-checked, and completed downloads visibly online when no separate availability result has been stored yet.
+
+### Clipboard reliability
+
+- Route link names, URLs, package batches, backup keys, diagnostics, error details, and masked account identifiers through the validated Electron clipboard writer.
+- Support complete link-package copies up to one MiB and report failed clipboard writes instead of displaying false success messages.
+
+### Item diagnostics
+
+- Format new item-log start, event, and end timestamps as local `DD.MM.YYYY - HH:mm:ss` values while leaving machine-readable application, audit, package, and session logs unchanged.
+
 ## [2.0.67] - 2026-08-24
 
 ### Extraction stability

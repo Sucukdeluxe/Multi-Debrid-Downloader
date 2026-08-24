@@ -33,6 +33,9 @@ describe("item-log", () => {
     const content = fs.readFileSync(logPath!, "utf8");
     expect(content).toContain("Item-Log Start");
     expect(content).toContain("episode.part2.rar");
+    expect(content).toMatch(/^=== Item-Log Start: \d{2}\.\d{2}\.\d{4} - \d{2}:\d{2}:\d{2} \|/m);
+    expect(content).toMatch(/^\d{2}\.\d{2}\.\d{4} - \d{2}:\d{2}:\d{2} \[INFO\] Item-Kontext initialisiert/m);
+    expect(content).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
   });
 
   it("writes detail events into the item log", async () => {
@@ -62,6 +65,26 @@ describe("item-log", () => {
     expect(content).toContain("Entpack-Fehler");
     expect(content).toContain("archive=episode.part2.rar");
     expect(content).toContain("code=missing_parts");
+    expect(content).toMatch(/^\d{2}\.\d{2}\.\d{4} - \d{2}:\d{2}:\d{2} \[ERROR\] Entpack-Fehler/m);
+  });
+
+  it("writes the localized timestamp in the item log end marker", () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-ilog-"));
+    tempDirs.push(baseDir);
+
+    initItemLogs(baseDir);
+    const logPath = ensureItemLog({
+      itemId: "item-end",
+      packageId: "pkg-end",
+      packageName: "Ende Paket",
+      fileName: "episode.rar",
+      targetPath: "C:\\downloads\\Ende Paket\\episode.rar"
+    });
+
+    shutdownItemLogs();
+
+    const content = fs.readFileSync(logPath!, "utf8");
+    expect(content).toMatch(/^=== Item-Log Ende: \d{2}\.\d{2}\.\d{4} - \d{2}:\d{2}:\d{2} ===$/m);
   });
 
   it("keeps traversal-like item ids inside the item log directory", () => {

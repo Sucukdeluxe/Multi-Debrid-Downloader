@@ -1,20 +1,17 @@
 import { BrowserWindow, session } from "electron";
-import { UnrestrictedLink } from "./realdebrid";
-import { filenameFromUrl, sleep } from "./utils";
+import { RealDebridApiError, UnrestrictedLink } from "./realdebrid";
+import { sleep } from "./utils";
 import { API_BASE_URL, REQUEST_RETRIES } from "./constants";
 import { applyRemoteLoginSecurity, createRemoteLoginWebPreferences, REALDEBRID_LOGIN_HOSTS } from "./browser-security";
+import { buildRealDebridWebGenerationScript, normalizeRealDebridWebGenerationResult } from "./realdebrid-web-page";
 
 const RD_BASE_URL = "https://real-debrid.com";
 const RD_LOGIN_URL = RD_BASE_URL;
+const RD_DOWNLOADER_URL = `${RD_BASE_URL}/downloader`;
 const RD_APITOKEN_URL = `${RD_BASE_URL}/apitoken`;
-const RD_UNRESTRICT_API = `${API_BASE_URL}/unrestrict/link`;
 const RD_USER_API = `${API_BASE_URL}/user`;
 const RD_PARTITION_PATTERN = /^persist:realdebrid-web(?:-rdw_[A-Za-z0-9_-]{1,96})?$/;
 const RD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
-
-type GenerateOutcome =
-  | { kind: "success"; value: UnrestrictedLink }
-  | { kind: "login_required" };
 
 export interface RealDebridLoginState {
   valid: boolean;
@@ -76,6 +73,42 @@ async function sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void> 
   });
 }
 
+async function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) {
+    return promise;
+  }
+  if (signal.aborted) {
+    throw abortError();
+  }
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const onAbort = (): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      reject(abortError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then((value) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      resolve(value);
+    }, (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      reject(error);
+    });
+  });
+}
+
 function parseJson(text: string): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(text) as unknown;
@@ -86,11 +119,6 @@ function parseJson(text: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
-}
-
-function looksLikeHtmlResponse(text: string): boolean {
-  const trimmed = text.trim();
-  return trimmed.startsWith("<!") || trimmed.startsWith("<html") || trimmed.startsWith("<HTML");
 }
 
 export function extractPrivateTokenFromHtml(html: string): string | null {
@@ -124,6 +152,14 @@ export class RealDebridWebFallback {
   private loginWindow: BrowserWindow | null = null;
 
   private loginWindowPartition = "";
+
+  private generatorWindow: BrowserWindow | null = null;
+
+  private generatorWindowPartition = "";
+
+  private generatorGeneration = 0;
+
+  private lifecycleAbortController = new AbortController();
 
   private cachedToken = "";
 
@@ -159,19 +195,27 @@ export class RealDebridWebFallback {
 
   public async unrestrict(link: string, signal?: AbortSignal): Promise<UnrestrictedLink | null> {
     this.throwIfDisposed();
-    const overallSignal = withTimeoutSignal(signal, 10 * 60 * 1000);
-    return this.runExclusive(async () => {
-      throwIfAborted(overallSignal);
-      if (!String(link || "").trim()) {
-        return null;
-      }
+    const overallSignal = AbortSignal.any([
+      withTimeoutSignal(signal, 10 * 60 * 1000),
+      this.lifecycleAbortController.signal
+    ]);
+    try {
+      return await this.runExclusive(async () => {
+        throwIfAborted(overallSignal);
+        if (!String(link || "").trim()) {
+          return null;
+        }
 
-      const initial = await this.generate(link, overallSignal);
-      if (initial.kind === "success") {
-        return initial.value;
-      }
-      throw new Error("Real-Debrid Web-Login erforderlich");
-    }, overallSignal);
+        const initial = await this.generate(link, overallSignal);
+        if (initial.kind === "success") {
+          return initial.value;
+        }
+        throw new Error("Real-Debrid Web-Login erforderlich");
+      }, overallSignal);
+    } catch (error) {
+      this.throwIfDisposed();
+      throw error;
+    }
   }
 
   public async openLoginWindow(): Promise<void> {
@@ -183,6 +227,10 @@ export class RealDebridWebFallback {
     window.show();
     window.focus();
     void this.primeTokenFromWindow(window);
+  }
+
+  public closeLoginWindow(): void {
+    this.disposeLoginWindow();
   }
 
   public async probeLoginState(signal?: AbortSignal): Promise<RealDebridLoginState> {
@@ -242,7 +290,9 @@ export class RealDebridWebFallback {
 
   public async clearSessions(): Promise<void> {
     this.disposed = true;
+    this.lifecycleAbortController.abort("clear-sessions");
     this.disposeLoginWindow();
+    this.disposeGeneratorWindow();
     this.cachedToken = "";
     this.cachedTokenAt = 0;
     for (const partition of [this.persistentPartition, this.transientPartition]) {
@@ -262,7 +312,9 @@ export class RealDebridWebFallback {
 
   public dispose(): void {
     this.disposed = true;
+    this.lifecycleAbortController.abort("dispose");
     this.disposeLoginWindow();
+    this.disposeGeneratorWindow();
     this.cachedToken = "";
     this.cachedTokenAt = 0;
   }
@@ -288,6 +340,16 @@ export class RealDebridWebFallback {
     }
   }
 
+  private disposeGeneratorWindow(): void {
+    this.generatorGeneration += 1;
+    const current = this.generatorWindow;
+    this.generatorWindow = null;
+    this.generatorWindowPartition = "";
+    if (current && !current.isDestroyed()) {
+      current.destroy();
+    }
+  }
+
   private async runExclusive<T>(job: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     const queuedAt = Date.now();
     const queueWaitTimeoutMs = 10 * 60 * 1000 + 30_000;
@@ -301,7 +363,7 @@ export class RealDebridWebFallback {
     };
     const run = this.queue.then(guardedJob, guardedJob);
     this.queue = run.then(() => undefined, () => undefined);
-    return run;
+    return raceWithAbort(run, signal);
   }
 
   private async ensureLoginWindow(): Promise<BrowserWindow> {
@@ -361,6 +423,71 @@ export class RealDebridWebFallback {
         this.disposeLoginWindow();
       }
       throw error;
+    }
+    return window;
+  }
+
+  private async ensureGeneratorWindow(signal?: AbortSignal): Promise<BrowserWindow> {
+    this.throwIfDisposed();
+    throwIfAborted(signal);
+    const partition = this.getPartition();
+    const existing = this.generatorWindow;
+    if (existing && !existing.isDestroyed() && this.generatorWindowPartition === partition) {
+      return existing;
+    }
+    if (existing && !existing.isDestroyed()) {
+      existing.destroy();
+    }
+
+    const window = new BrowserWindow({
+      width: 900,
+      height: 700,
+      show: false,
+      skipTaskbar: true,
+      autoHideMenuBar: true,
+      title: "Real-Debrid Web-Generator",
+      webPreferences: {
+        ...createRemoteLoginWebPreferences(partition),
+        backgroundThrottling: false
+      }
+    });
+    applyRemoteLoginSecurity(window, {
+      providerHosts: REALDEBRID_LOGIN_HOSTS,
+      externalHosts: []
+    });
+    window.setMenuBarVisibility(false);
+    window.webContents.setUserAgent(RD_USER_AGENT);
+    window.webContents.on("render-process-gone", () => {
+      if (this.generatorWindow === window) {
+        this.disposeGeneratorWindow();
+      }
+    });
+    window.on("closed", () => {
+      if (this.generatorWindow === window) {
+        this.generatorWindow = null;
+        this.generatorWindowPartition = "";
+      }
+    });
+    this.generatorWindow = window;
+    this.generatorWindowPartition = partition;
+    const generation = this.generatorGeneration;
+    const onAbort = (): void => {
+      if (this.generatorWindow === window && generation === this.generatorGeneration) {
+        this.disposeGeneratorWindow();
+      }
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      await raceWithAbort(window.loadURL(RD_DOWNLOADER_URL), signal);
+      this.throwIfDisposed();
+      throwIfAborted(signal);
+    } catch (error) {
+      if (this.generatorWindow === window) {
+        this.disposeGeneratorWindow();
+      }
+      throw error;
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
     }
     return window;
   }
@@ -503,75 +630,67 @@ export class RealDebridWebFallback {
     return null;
   }
 
-  private async generate(link: string, signal?: AbortSignal): Promise<GenerateOutcome> {
-    throwIfAborted(signal);
-
-    const token = await this.extractApiToken(signal);
-    if (!token) {
-      return { kind: "login_required" };
-    }
-
+  private async generate(link: string, signal?: AbortSignal): Promise<{ kind: "success"; value: UnrestrictedLink } | { kind: "login_required" }> {
     for (let attempt = 1; attempt <= REQUEST_RETRIES; attempt += 1) {
+      this.throwIfDisposed();
       throwIfAborted(signal);
       try {
-        const body = new URLSearchParams({ link });
-        const response = await fetch(RD_UNRESTRICT_API, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": RD_USER_AGENT
-          },
-          body,
-          signal: withTimeoutSignal(signal, 30_000)
-        });
-
-        const text = await response.text();
-
-        if (response.status === 401 || response.status === 403) {
-          this.cachedToken = "";
-          this.cachedTokenAt = 0;
-          return { kind: "login_required" };
-        }
-
-        if (!response.ok) {
-          if ((response.status === 429 || response.status >= 500) && attempt < REQUEST_RETRIES) {
-            await sleepWithSignal(Math.min(5000, 400 * 2 ** attempt), signal);
-            continue;
-          }
-          throw new Error(`Real-Debrid Web HTTP ${response.status}: ${text.slice(0, 200)}`);
-        }
-
-        if (looksLikeHtmlResponse(text)) {
-          throw new Error("Real-Debrid Web lieferte HTML statt JSON");
-        }
-
-        const payload = parseJson(text.trim());
-        if (!payload) {
-          throw new Error("Ungültige JSON-Antwort von Real-Debrid Web");
-        }
-
-        const directUrl = String(payload.download || payload.link || "").trim();
-        if (!directUrl) {
-          throw new Error("Real-Debrid Web: Antwort ohne Download-URL");
-        }
-
-        const fileName = String(payload.filename || "").trim() || filenameFromUrl(directUrl) || filenameFromUrl(link);
-        const fileSizeRaw = Number(payload.filesize ?? NaN);
-        return {
-          kind: "success",
-          value: {
-            directUrl,
-            fileName,
-            fileSize: Number.isFinite(fileSizeRaw) && fileSizeRaw > 0 ? Math.floor(fileSizeRaw) : null,
-            retriesUsed: attempt - 1
+        const window = await this.ensureGeneratorWindow(signal);
+        const generation = this.generatorGeneration;
+        const onAbort = (): void => {
+          if (this.generatorWindow === window && generation === this.generatorGeneration) {
+            this.disposeGeneratorWindow();
           }
         };
+        signal?.addEventListener("abort", onAbort, { once: true });
+        let rawResult: unknown;
+        try {
+          rawResult = await window.webContents.executeJavaScript(buildRealDebridWebGenerationScript(link), true);
+        } finally {
+          signal?.removeEventListener("abort", onAbort);
+        }
+        this.throwIfDisposed();
+        if (generation !== this.generatorGeneration || this.generatorWindow !== window) {
+          throw new Error("Real-Debrid Web-Generator wurde neu gestartet");
+        }
+        const outcome = normalizeRealDebridWebGenerationResult(rawResult, link);
+        if (outcome.kind === "success") {
+          return {
+            kind: "success",
+            value: {
+              ...outcome.value,
+              retriesUsed: attempt - 1
+            }
+          };
+        }
+        if (outcome.kind === "login_required") {
+          this.cachedToken = "";
+          this.cachedTokenAt = 0;
+          this.disposeGeneratorWindow();
+          return outcome;
+        }
+        if (outcome.status === 0) {
+          this.disposeGeneratorWindow();
+        }
+        if ((outcome.status === 429 || outcome.status >= 500 || outcome.status === 0) && attempt < REQUEST_RETRIES) {
+          const delayMs = outcome.status === 429 && outcome.retryAfterMs > 0
+            ? outcome.retryAfterMs
+            : Math.min(5000, 400 * 2 ** attempt);
+          await sleepWithSignal(delayMs, signal);
+          continue;
+        }
+        throw new RealDebridApiError(
+          outcome.status,
+          outcome.error,
+          outcome.errorCode,
+          `Real-Debrid Web HTTP ${outcome.status || 0}: ${outcome.error}${outcome.errorCode == null ? "" : ` (${outcome.errorCode})`}`
+        );
       } catch (error) {
+        this.throwIfDisposed();
         if (signal?.aborted) {
           throw abortError();
         }
-        if (attempt >= REQUEST_RETRIES) {
+        if (error instanceof RealDebridApiError || attempt >= REQUEST_RETRIES) {
           throw error;
         }
         await sleepWithSignal(Math.min(5000, 400 * 2 ** attempt), signal);

@@ -43,7 +43,7 @@ Windows 10 or Windows 11 is required. Release executables are currently unsigned
 
 | Service | Access modes |
 | --- | --- |
-| Real-Debrid | API token |
+| Real-Debrid | API token, browser login |
 | AllDebrid | API token, browser login |
 | BestDebrid | API token, cookie import |
 | Debrid-Link | Multiple API keys |
