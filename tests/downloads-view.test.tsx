@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import fs from "node:fs";
 import path from "node:path";
-import { isValidElement, type ReactElement, type ReactNode } from "react";
+import { Children, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { DownloadItem, DownloadStatus, PackageEntry } from "../src/shared/types";
@@ -70,6 +70,7 @@ import {
   normalizeDownloadServiceLabel
 } from "../src/renderer/download-format";
 import { getRollingMetricDirection } from "../src/renderer/ui/RollingMetricValue";
+import { SlidingSelection } from "../src/renderer/ui/SlidingSelection";
 
 const now = new Date(2026, 7, 10, 12, 0, 0, 0).getTime();
 
@@ -371,7 +372,7 @@ describe("virtualisierte Paketanimation", () => {
     expect(prepared.animated).toBe(true);
     expect(prepared.rows.map((row) => [row.id, row.height, row.disclosurePhase, row.disclosureOpacity])).toEqual([
       ["package-a", 40, "stable", 1],
-      ["package-a:items", 0, "entering", 1],
+      ["package-a:items", 0, "entering", 0],
       ["package-b", 40, "stable", 1],
       ["b-1", 38, "stable", 1]
     ]);
@@ -411,7 +412,7 @@ describe("virtualisierte Paketanimation", () => {
     expect(preparedGroup?.type === "item-group" ? preparedGroup.items.map((row) => row.height) : []).toEqual([38, 38]);
     expect(activateDownloadDisclosureTransition(prepared.rows).map((row) => [row.id, row.height, row.disclosureOpacity])).toEqual([
       ["package-a", 40, 1],
-      ["package-a:items", 0, 1],
+      ["package-a:items", 0, 0],
       ["package-b", 40, 1],
       ["b-1", 38, 1]
     ]);
@@ -1041,14 +1042,52 @@ describe("downloads view", () => {
     expect(multiple).not.toMatch(/<select[^>]*aria-label="Service filtern"[^>]*disabled=""/);
   });
 
-  it("shows only the package mode while the file mode remains hidden", () => {
-    const html = renderToStaticMarkup(<DownloadsSidebar actions={createActions()} model={withRuntime(createInput())} />);
+  it("starts with the six download filters in a compact neutral group without a package title", () => {
+    const sidebar = DownloadsSidebar({ actions: createActions(), model: withRuntime(createInput()) });
+    const children = Children.toArray(sidebar.props.children).filter(isValidElement);
+    const filterGroup = children[0] as ReactElement<{ className?: string }>;
+    const html = renderToStaticMarkup(sidebar);
     const css = fs.readFileSync(path.join(process.cwd(), "src/renderer/views/downloads/downloads.css"), "utf8");
 
-    expect(html).toContain("Pakete");
+    expect(filterGroup.type).toBe(SlidingSelection);
+    expect(filterGroup.props.className).toBe("downloads-filter-group");
+    expect(html).not.toContain("downloads-mode-title");
+    expect(html).not.toContain(">Pakete<");
     expect(html).not.toContain(">Dateien<");
     expect(html).not.toContain("downloads-mode-switch");
-    expect(css).toMatch(/\.downloads-mode-title\s*\{[^}]*justify-content:\s*center;[^}]*color:\s*#0a0f1a;[^}]*background:\s*#90cdf4;[^}]*text-align:\s*center;/s);
+    expect(css).toMatch(/\.downloads-filter-group\s*\{[^}]*padding:\s*4px;[^}]*border:\s*1px solid var\(--ui-border\);[^}]*border-radius:\s*6px;[^}]*background:\s*var\(--ui-input\);/s);
+    expect(css).not.toContain(".downloads-mode-title");
+  });
+
+  it("places the global package disclosure action in a responsive right toolbar group", () => {
+    let toggles = 0;
+    const model = withRuntime(createInput({ filter: "paused" }));
+    const actions = createActions({ onToggleAllPackages: () => { toggles += 1; } });
+    const sidebar = renderToStaticMarkup(<DownloadsSidebar actions={actions} model={model} />);
+    const toolbar = DownloadsToolbar({ actions, model });
+    const toolbarButtons: ReactElement[] = [];
+    visitElements(toolbar, (element) => {
+      if (element.type === "button") toolbarButtons.push(element);
+    });
+    const tail = findElement(toolbar, (element) => String(element.props.className || "").includes("downloads-toolbar-tail"));
+    const css = fs.readFileSync(path.join(process.cwd(), "src/renderer/views/downloads/downloads.css"), "utf8");
+
+    expect(sidebar).not.toContain("Alle ein-/ausklappen");
+    expect(tail.props.role).toBe("group");
+    expect(tail.props["aria-label"]).toBe("Paketdarstellung");
+    expect(toolbarButtons.at(-1)?.props.children).toBe("Alle ein-/ausklappen");
+    expect(css).toMatch(/\.downloads-toolbar\s*\{[^}]*flex-wrap:\s*wrap;[^}]*overflow-x:\s*hidden;/s);
+    expect(css).toMatch(/\.downloads-toolbar-tail\s*\{[^}]*flex:\s*1 0 auto;[^}]*justify-content:\s*flex-end;[^}]*margin-left:\s*auto;/s);
+    findButton(toolbar, "Alle ein-/ausklappen").props.onClick();
+    expect(toggles).toBe(1);
+  });
+
+  it("disables the global package disclosure action for a truly empty queue", () => {
+    const model = withRuntime(createInput({ packageOrder: [], packages: {}, items: {} }), { running: false });
+    const toolbar = DownloadsToolbar({ actions: createActions(), model });
+
+    expect(model.empty).toBe(true);
+    expect(findButton(toolbar, "Alle ein-/ausklappen").props.disabled).toBe(true);
   });
 
   it("renders the five dense markers exactly once and the empty marker only for a true empty queue", () => {

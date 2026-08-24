@@ -62,7 +62,7 @@ function itemGroup(
     packageId,
     items: items.map((row) => ({ ...row, height: DOWNLOAD_FILE_ROW_HEIGHT })),
     height,
-    disclosureOpacity: 1,
+    disclosureOpacity: phase === "entering" ? 0 : 1,
     disclosurePhase: phase
   };
 }
@@ -197,8 +197,8 @@ export function activateDownloadDisclosureTransition(rows: readonly DownloadDisc
   return rows.map((row) => {
     if (row.type !== "item-group") return row;
     return row.disclosurePhase === "entering"
-      ? { ...row, height: row.items.length * DOWNLOAD_FILE_ROW_HEIGHT }
-      : { ...row, height: 0 };
+      ? { ...row, height: row.items.length * DOWNLOAD_FILE_ROW_HEIGHT, disclosureOpacity: 1 }
+      : { ...row, height: 0, disclosureOpacity: 0 };
   });
 }
 

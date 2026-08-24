@@ -39,18 +39,11 @@
   padding: 14px 12px 6px;
 }
 
-.downloads-mode-title {
-  display: flex;
-  min-height: 36px;
-  align-items: center;
-  justify-content: center;
-  padding: 0 10px;
+.downloads-filter-group {
+  padding: 4px;
   border: 1px solid var(--ui-border);
   border-radius: 6px;
-  color: #0a0f1a;
-  background: #90cdf4;
-  text-align: center;
-  font-weight: 700;
+  background: var(--ui-input);
 }
 
 .downloads-sidebar nav button,
@@ -204,8 +197,10 @@
 .downloads-toolbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   min-height: 52px;
+  overflow-x: hidden;
   padding: 8px 10px;
   border-bottom: 1px solid var(--ui-border);
   background: var(--ui-surface);
@@ -235,6 +230,13 @@
   align-self: stretch;
   margin: 1px 2px;
   background: var(--ui-border);
+}
+
+.downloads-toolbar-tail {
+  display: flex;
+  flex: 1 0 auto;
+  justify-content: flex-end;
+  margin-left: auto;
 }
 
 .downloads-schedule-slot {
@@ -941,7 +943,6 @@
 }
 
 @media (max-width: 1120px) {
-  .downloads-toolbar,
   .downloads-footer {
     overflow-x: auto;
   }

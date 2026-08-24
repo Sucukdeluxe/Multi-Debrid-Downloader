@@ -1,5 +1,6 @@
+import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ContextInfoButton } from "../src/renderer/ui/ContextInfoButton";
 import {
   DataTable,
@@ -11,6 +12,11 @@ import {
 import { Icon } from "../src/renderer/ui/Icon";
 import { Toolbar, ToolbarGroup, ToolbarSearch } from "../src/renderer/ui/Toolbar";
 import { getThemeVariables, UI_FOCUS_RING_VARIABLE } from "../src/renderer/ui/theme";
+
+vi.mock("react", async () => {
+  const actual = await vi.importActual<typeof import("react")>("react");
+  return { ...actual, useId: () => "context-info-test", useRef: <T,>(value: T) => ({ current: value }) };
+});
 
 const expectedThemes = {
   dark: {
@@ -180,5 +186,37 @@ describe("new UI primitives", () => {
     expect(html).toContain("role=\"region\"");
     expect(html).toContain("aria-label=\"Informationen zu Downloads\"");
     expect(html).toContain("Vorhandene <strong>Download-Hilfe</strong>");
+  });
+
+  it("keeps context help open until both pointer and focus leave the shared region", () => {
+    const changes: boolean[] = [];
+    const component = ContextInfoButton({
+      contextName: "Downloads",
+      content: "Download-Hilfe",
+      open: false,
+      onOpenChange: (open) => changes.push(open)
+    }) as ReactElement<Record<string, unknown>>;
+    const props = component.props as unknown as {
+      onPointerEnter: () => void;
+      onPointerLeave: () => void;
+      onFocus: () => void;
+      onBlur: (event: { currentTarget: { contains: (target: unknown) => boolean }; relatedTarget: unknown }) => void;
+      children: ReactElement<Record<string, unknown>>[];
+    };
+    const inside = {};
+    const outside = {};
+    const button = props.children[0] as ReactElement<{ onClick: () => void }>;
+
+    props.onPointerEnter();
+    props.onFocus();
+    props.onPointerLeave();
+    props.onBlur({ currentTarget: { contains: (target) => target === inside }, relatedTarget: inside });
+    props.onBlur({ currentTarget: { contains: (target) => target === inside }, relatedTarget: outside });
+    props.onPointerEnter();
+    props.onBlur({ currentTarget: { contains: (target) => target === inside }, relatedTarget: outside });
+    props.onPointerLeave();
+    button.props.onClick();
+
+    expect(changes).toEqual([true, true, false, true, false, true]);
   });
 });
