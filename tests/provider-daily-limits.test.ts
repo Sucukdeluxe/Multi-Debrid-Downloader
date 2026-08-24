@@ -8,6 +8,7 @@ import {
   getRealDebridAccountDailyUsageBytes,
   getRealDebridAccountTotalUsageBytes,
   isRealDebridAccountDailyLimitReached,
+  resetProviderDailyUsage,
   resetRealDebridAccountDailyUsage
 } from "../src/shared/provider-daily-limits";
 
@@ -65,5 +66,19 @@ describe("Real-Debrid account usage", () => {
     const next = resetRealDebridAccountDailyUsage(settings, "rda_one");
 
     expect(next.realDebridAccountDailyUsageBytes).toEqual({ rda_two: 200 });
+  });
+});
+
+describe("Deepbrid provider usage", () => {
+  it("resets only Deepbrid daily usage while preserving other providers", () => {
+    const settings = {
+      ...defaultSettings(),
+      providerDailyUsageDay: getProviderUsageDayKey(),
+      providerDailyUsageBytes: { deepbrid: 300, alldebrid: 900 }
+    };
+
+    const next = resetProviderDailyUsage(settings, "deepbrid");
+
+    expect(next.providerDailyUsageBytes).toEqual({ alldebrid: 900 });
   });
 });

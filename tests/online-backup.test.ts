@@ -20,6 +20,7 @@ afterEach(async () => {
 function settings(): AppSettings {
   return {
     token: "rd-secret-token",
+    deepbridApiKey: "fixture-deepbrid-online-key-6jK8",
     megaLogin: "backup-user",
     megaPassword: "backup-password",
     outputDir: "D:\\Downloads",
@@ -45,6 +46,7 @@ describe("online backup key", () => {
     const parsed = parseOnlineBackupKey(created.key);
 
     expect(serialized).not.toContain("rd-secret-token");
+    expect(serialized).not.toContain("fixture-deepbrid-online-key-6jK8");
     expect(serialized).not.toContain("backup-password");
     expect(serialized).not.toContain(parsed.masterKey.toString("base64url"));
     expect(Object.keys(created.record).sort()).toEqual(["blob", "deleteVerifier", "id"]);

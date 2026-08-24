@@ -27,6 +27,7 @@ const ACCOUNT_KINDS = new Set<RendererAccountKind>([
   "bestdebrid-web",
   "alldebrid-api",
   "alldebrid-web",
+  "deepbrid-api",
   "ddownload-login",
   "onefichier-api",
   "debridlink-api",
@@ -127,10 +128,13 @@ export function validateAccountCredentialCheckInput(value: unknown): AccountCred
     && raw.kind !== "realdebrid-web"
     && raw.kind !== "megadebrid-api"
     && raw.kind !== "megadebrid-web"
-    && raw.kind !== "debridlink-api") invalid();
+    && raw.kind !== "debridlink-api"
+    && raw.kind !== "deepbrid-api") invalid();
+  const accountId = optionalString(raw.accountId, 256);
+  if (raw.kind === "deepbrid-api" && accountId !== undefined && accountId !== "svc-deepbrid") invalid();
   return {
     kind: raw.kind,
-    accountId: optionalString(raw.accountId, 256),
+    accountId,
     identity: optionalString(raw.identity, 512),
     secret: optionalString(raw.secret, 100_000)
   };
@@ -174,6 +178,7 @@ export function resolveStoredAccountSecret(settings: AppSettings, request: Accou
   if (request.accountId !== `svc-${provider}` || !singleConfigured(settings, request.kind)) storedSecretMissing();
   if (request.kind === "bestdebrid-api" && settings.bestToken) return settings.bestToken;
   if (request.kind === "alldebrid-api" && settings.allDebridToken) return settings.allDebridToken;
+  if (request.kind === "deepbrid-api" && settings.deepbridApiKey) return settings.deepbridApiKey;
   if (request.kind === "ddownload-login" && settings.ddownloadPassword) return settings.ddownloadPassword;
   if (request.kind === "onefichier-api" && settings.oneFichierApiKey) return settings.oneFichierApiKey;
   if (request.kind === "linksnappy-login" && settings.linkSnappyPassword) return settings.linkSnappyPassword;
@@ -522,6 +527,7 @@ function singleProvider(kind: RendererAccountKind): DebridProvider {
   if (kind.startsWith("realdebrid")) return "realdebrid";
   if (kind.startsWith("bestdebrid")) return "bestdebrid";
   if (kind.startsWith("alldebrid")) return "alldebrid";
+  if (kind === "deepbrid-api") return "deepbrid";
   if (kind === "ddownload-login") return "ddownload";
   if (kind === "onefichier-api") return "onefichier";
   if (kind === "linksnappy-login") return "linksnappy";
@@ -535,6 +541,7 @@ function singleConfigured(settings: AppSettings, kind: RendererAccountKind): boo
   if (kind === "bestdebrid-web") return settings.bestDebridUseWebLogin;
   if (kind === "alldebrid-api") return Boolean(settings.allDebridToken.trim());
   if (kind === "alldebrid-web") return settings.allDebridUseWebLogin;
+  if (kind === "deepbrid-api") return Boolean(settings.deepbridApiKey.trim());
   if (kind === "ddownload-login") return Boolean(settings.ddownloadLogin.trim() && settings.ddownloadPassword);
   if (kind === "onefichier-api") return Boolean(settings.oneFichierApiKey.trim());
   if (kind === "linksnappy-login") return Boolean(settings.linkSnappyLogin.trim() && settings.linkSnappyPassword);
@@ -548,6 +555,7 @@ function setSingle(settings: AppSettings, kind: RendererAccountKind, identity: s
   if (kind === "bestdebrid-web") return { ...settings, bestToken: "", bestDebridUseWebLogin: true };
   if (kind === "alldebrid-api") return { ...settings, allDebridToken: validateSecret(secret || ""), allDebridUseWebLogin: false };
   if (kind === "alldebrid-web") return { ...settings, allDebridToken: "", allDebridUseWebLogin: true };
+  if (kind === "deepbrid-api") return { ...settings, deepbridApiKey: validateSecret(secret || "") };
   if (kind === "ddownload-login") return { ...settings, ddownloadLogin: validateIdentity(identity || ""), ddownloadPassword: validateSecret(secret || "") };
   if (kind === "onefichier-api") return { ...settings, oneFichierApiKey: validateSecret(secret || "") };
   if (kind === "linksnappy-login") return { ...settings, linkSnappyLogin: validateIdentity(identity || ""), linkSnappyPassword: validateSecret(secret || "") };
@@ -563,6 +571,7 @@ function replaceSingle(settings: AppSettings, command: Extract<AccountCommand, {
   if (command.kind === "realdebrid-api") secret ||= settings.token;
   if (command.kind === "bestdebrid-api") secret ||= settings.bestToken;
   if (command.kind === "alldebrid-api") secret ||= settings.allDebridToken;
+  if (command.kind === "deepbrid-api") secret ||= settings.deepbridApiKey;
   if (command.kind === "ddownload-login") {
     identity = identity?.trim() ? identity : settings.ddownloadLogin;
     secret ||= settings.ddownloadPassword;
@@ -587,12 +596,14 @@ function deleteSingle(settings: AppSettings, command: Extract<AccountCommand, { 
   if (provider === "realdebrid") next = { ...next, token: "", realDebridUseWebLogin: false };
   if (provider === "bestdebrid") next = { ...next, bestToken: "", bestDebridUseWebLogin: false };
   if (provider === "alldebrid") next = { ...next, allDebridToken: "", allDebridUseWebLogin: false };
+  if (provider === "deepbrid") next = { ...next, deepbridApiKey: "" };
   if (provider === "ddownload") next = { ...next, ddownloadLogin: "", ddownloadPassword: "" };
   if (provider === "onefichier") next = { ...next, oneFichierApiKey: "" };
   if (provider === "linksnappy") next = { ...next, linkSnappyLogin: "", linkSnappyPassword: "" };
   next.providerDailyLimitBytes = withoutKeys(settings.providerDailyLimitBytes as Record<string, number>, provider);
   next.providerDailyUsageBytes = withoutKeys(settings.providerDailyUsageBytes as Record<string, number>, provider);
   next.providerTotalUsageBytes = withoutKeys(settings.providerTotalUsageBytes as Record<string, number>, provider);
+  next.debridAccountStatuses = withoutKeys(settings.debridAccountStatuses, command.accountId);
   return { settings: next, response: { accountId: null } };
 }
 

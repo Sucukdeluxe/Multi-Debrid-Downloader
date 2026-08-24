@@ -3109,6 +3109,211 @@ describe("Real-Debrid account rotation", () => {
   });
 });
 
+describe("Deepbrid provider chain", () => {
+  const sourceLink = "https://hoster.example/files/synthetic-source";
+
+  function deepbridSuccessResponse(): Response {
+    return new Response(JSON.stringify({
+      error: 0,
+      filename: "deepbrid-file.bin",
+      link: "https://download.example/deepbrid-file.bin?signature=synthetic",
+      size: "2 KB"
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  }
+
+  function allDebridSuccessResponse(): Response {
+    return new Response(JSON.stringify({
+      status: "success",
+      data: {
+        link: "https://alldebrid.example/fallback.bin",
+        filename: "fallback.bin",
+        filesize: 4096
+      }
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  }
+
+  function deepbridSettings(overrides: Partial<ReturnType<typeof defaultSettings>> = {}) {
+    return {
+      ...defaultSettings(),
+      deepbridApiKey: "synthetic-deepbrid-provider-key",
+      providerOrder: ["deepbrid"] as const,
+      providerPrimary: "deepbrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      autoProviderFallback: false,
+      ...overrides
+    };
+  }
+
+  it("uses Deepbrid with stable source attribution", async () => {
+    globalThis.fetch = vi.fn(async () => deepbridSuccessResponse()) as unknown as typeof fetch;
+
+    const result = await new DebridService(deepbridSettings()).unrestrictLink(sourceLink);
+
+    expect(result).toMatchObject({
+      provider: "deepbrid",
+      providerLabel: "Deepbrid (API)",
+      sourceLabel: "API",
+      sourceAccountId: "svc-deepbrid",
+      sourceAccountLabel: "Deepbrid API",
+      fileName: "deepbrid-file.bin",
+      fileSize: 2048
+    });
+  });
+
+  it("uses Deepbrid through hoster routing before the configured provider order", async () => {
+    const calledUrls: string[] = [];
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      calledUrls.push(url);
+      return url.includes("deepbrid.com/api/v1/generate/link") ? deepbridSuccessResponse() : allDebridSuccessResponse();
+    }) as unknown as typeof fetch;
+    const settings = deepbridSettings({
+      allDebridToken: "synthetic-alldebrid-token",
+      providerOrder: ["alldebrid"] as const,
+      providerPrimary: "alldebrid",
+      autoProviderFallback: true,
+      hosterRouting: { rapidgator: "deepbrid" }
+    });
+
+    const result = await new DebridService(settings).unrestrictLink("https://rapidgator.net/file/synthetic/routed.bin.html");
+
+    expect(result.provider).toBe("deepbrid");
+    expect(calledUrls).toHaveLength(1);
+    expect(calledUrls[0]).toContain("deepbrid.com/api/v1/generate/link");
+  });
+
+  it.each([
+    ["auth", 401],
+    ["link", 400],
+    ["rate_limit", 429],
+    ["temporary", 503]
+  ])("falls back from Deepbrid %s errors when automatic fallback is enabled", async (_classification, status) => {
+    let allDebridCalls = 0;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("deepbrid.com/api/v1/generate/link")) {
+        return new Response(JSON.stringify({ error: status, message: "synthetic failure" }), {
+          status,
+          headers: { "Content-Type": "application/json", "Retry-After": "0" }
+        });
+      }
+      allDebridCalls += 1;
+      return allDebridSuccessResponse();
+    }) as unknown as typeof fetch;
+    const settings = deepbridSettings({
+      allDebridToken: "synthetic-alldebrid-token",
+      providerOrder: ["deepbrid", "alldebrid"] as const,
+      providerSecondary: "alldebrid",
+      autoProviderFallback: true
+    });
+
+    const result = await new DebridService(settings).unrestrictLink(sourceLink);
+
+    expect(result.provider).toBe("alldebrid");
+    expect(allDebridCalls).toBe(1);
+  });
+
+  it.each([
+    ["auth", 401],
+    ["link", 400],
+    ["rate_limit", 429],
+    ["temporary", 503]
+  ])("keeps Deepbrid %s errors assigned to Deepbrid when fallback is disabled", async (classification, status) => {
+    let allDebridCalls = 0;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("deepbrid.com/api/v1/generate/link")) {
+        return new Response(JSON.stringify({ error: status, message: "synthetic failure" }), {
+          status,
+          headers: { "Content-Type": "application/json", "Retry-After": "0" }
+        });
+      }
+      allDebridCalls += 1;
+      return allDebridSuccessResponse();
+    }) as unknown as typeof fetch;
+    const settings = deepbridSettings({
+      allDebridToken: "synthetic-alldebrid-token",
+      providerOrder: ["deepbrid", "alldebrid"] as const,
+      providerSecondary: "alldebrid"
+    });
+
+    const error = await new DebridService(settings).unrestrictLink(sourceLink).then(() => null, (value: unknown) => value);
+    const message = String(error);
+
+    expect(message).toContain("Deepbrid");
+    expect(message).toContain(classification);
+    expect(message).not.toContain("synthetic-deepbrid-provider-key");
+    expect(message).not.toContain(sourceLink);
+    expect(message).not.toContain("download.example");
+    expect(allDebridCalls).toBe(0);
+  });
+
+  it("skips daily-limited Deepbrid and uses the next configured provider", async () => {
+    const calledUrls: string[] = [];
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      calledUrls.push(url);
+      return allDebridSuccessResponse();
+    }) as unknown as typeof fetch;
+    const settings = deepbridSettings({
+      allDebridToken: "synthetic-alldebrid-token",
+      providerOrder: ["deepbrid", "alldebrid"] as const,
+      providerSecondary: "alldebrid",
+      autoProviderFallback: true,
+      providerDailyLimitBytes: { deepbrid: 100 },
+      providerDailyUsageBytes: { deepbrid: 100 },
+      providerDailyUsageDay: getProviderUsageDayKey()
+    });
+
+    const result = await new DebridService(settings).unrestrictLink(sourceLink);
+
+    expect(result.provider).toBe("alldebrid");
+    expect(calledUrls.some((url) => url.includes("deepbrid.com"))).toBe(false);
+  });
+
+  it("keeps configured 1Fichier and DDownload links on their direct special paths", async () => {
+    const calledUrls: string[] = [];
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      calledUrls.push(url);
+      if (url.includes("api.1fichier.com")) {
+        return new Response(JSON.stringify({ url: "https://onefichier-cdn.example/file.bin" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      if (url.endsWith("/login.html")) {
+        return new Response('<input name="token" value="synthetic-login-token">', {
+          status: 200,
+          headers: { "Set-Cookie": "page=synthetic; Path=/" }
+        });
+      }
+      if (url === "https://ddownload.com/" && init?.method === "POST") {
+        return new Response("", { status: 200, headers: { "Set-Cookie": "xfss=synthetic-session; Path=/" } });
+      }
+      if (url.endsWith("/abcdefgh")) {
+        return new Response("", { status: 302, headers: { Location: "https://ddownload-cdn.example/file.bin" } });
+      }
+      return deepbridSuccessResponse();
+    }) as unknown as typeof fetch;
+    const settings = deepbridSettings({
+      oneFichierApiKey: "synthetic-onefichier-key",
+      ddownloadLogin: "synthetic-user",
+      ddownloadPassword: "synthetic-password",
+      autoProviderFallback: true
+    });
+    const service = new DebridService(settings);
+
+    const oneFichier = await service.unrestrictLink("https://1fichier.com/?abc12345xyz");
+    const ddownload = await service.unrestrictLink("https://ddownload.com/abcdefgh/file.bin");
+
+    expect(oneFichier.provider).toBe("onefichier");
+    expect(ddownload.provider).toBe("ddownload");
+    expect(calledUrls.some((url) => url.includes("deepbrid.com"))).toBe(false);
+  });
+});
+
 describe("filenameFromRapidgatorUrlPath", () => {
   it("extracts filename from standard rapidgator URL", () => {
     expect(filenameFromRapidgatorUrlPath("https://rapidgator.net/file/abc123/Show.S01E01.part01.rar.html"))

@@ -14,6 +14,15 @@ export interface HistoryRow extends HistoryViewEntry {
   durationLabel: string;
   averageSpeedLabel: string;
   statusLabel: string;
+  hasStructuredLifecycle: boolean;
+  downloadEndedLabel: string;
+  postProcessStartedLabel: string;
+  downloadDurationLabel: string;
+  extractionDurationLabel: string;
+  remuxDurationLabel: string;
+  postProcessDurationLabel: string;
+  totalDurationLabel: string;
+  failurePhaseLabel: string;
 }
 
 export interface HistoryFilterCounts {
@@ -108,6 +117,7 @@ const providerLabels: Record<DebridProvider, string> = {
   "megadebrid-web": "Mega-Debrid Web",
   bestdebrid: "BestDebrid",
   alldebrid: "AllDebrid",
+  deepbrid: "Deepbrid",
   ddownload: "DDownload",
   onefichier: "1Fichier",
   debridlink: "Debrid-Link",
@@ -116,6 +126,8 @@ const providerLabels: Record<DebridProvider, string> = {
 
 const statusLabels: Record<HistoryViewStatus, string> = {
   completed: "Abgeschlossen",
+  partial: "Teilweise",
+  cancelled: "Abgebrochen",
   deleted: "Gelöscht",
   failed: "Fehlgeschlagen"
 };
@@ -145,7 +157,7 @@ function formatBytes(bytes: number): string {
   return `${numberFormatter.format(value)} ${units[unitIndex]}`;
 }
 
-function formatDuration(durationSeconds: number): string {
+export function formatHistoryDuration(durationSeconds: number): string {
   const total = Math.max(0, Math.floor(Number.isFinite(durationSeconds) ? durationSeconds : 0));
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
@@ -154,6 +166,19 @@ function formatDuration(durationSeconds: number): string {
     return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
   }
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function formatTimestamp(timestamp: number | undefined): string {
+  const safe = Math.max(0, Number.isFinite(timestamp) ? Number(timestamp) : 0);
+  return safe > 0 ? dateFormatter.format(new Date(safe)) : "—";
+}
+
+function failurePhaseLabel(entry: HistoryViewEntry): string {
+  if (entry.failurePhase === "download") return "Download";
+  if (entry.failurePhase === "extract") return "Entpacken";
+  if (entry.failurePhase === "remux") return "Remux";
+  if (entry.failurePhase === "cleanup") return "Aufräumen";
+  return "—";
 }
 
 export function paginateHistoryRows(rows: HistoryRow[], requestedPage: number): HistoryPage {
@@ -232,7 +257,11 @@ export function deriveHistoryHoster(urls: string[] | undefined): string {
   return hostnames.length > 0 ? hostnames.join(", ") : "—";
 }
 
-export function deriveHistoryStartAt(entry: Pick<HistoryViewEntry, "completedAt" | "durationSeconds">): number {
+export function deriveHistoryStartAt(entry: Pick<HistoryViewEntry, "completedAt" | "durationSeconds" | "startedAt">): number {
+  const startedAt = Math.max(0, Number.isFinite(entry.startedAt) ? Number(entry.startedAt) : 0);
+  if (startedAt > 0) {
+    return startedAt;
+  }
   const completedAt = Math.max(0, Number.isFinite(entry.completedAt) ? entry.completedAt : 0);
   const durationMs = Math.max(0, Number.isFinite(entry.durationSeconds) ? entry.durationSeconds : 0) * 1000;
   return Math.max(0, completedAt - durationMs);
@@ -242,19 +271,32 @@ function toHistoryRow(entry: HistoryViewEntry): HistoryRow {
   const hoster = deriveHistoryHoster(entry.urls);
   const providerLabel = entry.provider ? providerLabels[entry.provider] : "—";
   const startAt = deriveHistoryStartAt(entry);
-  const durationSeconds = Math.max(0, entry.durationSeconds || 0);
-  const averageBytesPerSecond = durationSeconds > 0 ? entry.downloadedBytes / durationSeconds : 0;
+  const downloadDurationSeconds = Math.max(0, entry.downloadDurationSeconds ?? entry.durationSeconds ?? 0);
+  const averageBytesPerSecond = downloadDurationSeconds > 0 ? entry.downloadedBytes / downloadDurationSeconds : 0;
+  const hasStructuredLifecycle = entry.startedAt !== undefined
+    || entry.downloadEndedAt !== undefined
+    || entry.postProcessStartedAt !== undefined
+    || entry.totalDurationSeconds !== undefined;
   return {
     ...entry,
     hoster,
     providerLabel,
     startAt,
     sizeLabel: `${formatBytes(entry.downloadedBytes)} / ${formatBytes(entry.totalBytes)}`,
-    startedLabel: dateFormatter.format(new Date(startAt)),
-    completedLabel: dateFormatter.format(new Date(Math.max(0, entry.completedAt))),
-    durationLabel: formatDuration(durationSeconds),
-    averageSpeedLabel: durationSeconds > 0 ? `${formatBytes(averageBytesPerSecond)}/s` : "—",
-    statusLabel: statusLabels[entry.status]
+    startedLabel: formatTimestamp(startAt),
+    completedLabel: formatTimestamp(entry.completedAt),
+    durationLabel: formatHistoryDuration(downloadDurationSeconds),
+    averageSpeedLabel: downloadDurationSeconds > 0 ? `${formatBytes(averageBytesPerSecond)}/s` : "—",
+    statusLabel: statusLabels[entry.status],
+    hasStructuredLifecycle,
+    downloadEndedLabel: formatTimestamp(entry.downloadEndedAt),
+    postProcessStartedLabel: formatTimestamp(entry.postProcessStartedAt),
+    downloadDurationLabel: formatHistoryDuration(entry.downloadDurationSeconds ?? 0),
+    extractionDurationLabel: formatHistoryDuration(entry.extractionDurationSeconds ?? 0),
+    remuxDurationLabel: formatHistoryDuration(entry.remuxDurationSeconds ?? 0),
+    postProcessDurationLabel: formatHistoryDuration(entry.postProcessDurationSeconds ?? 0),
+    totalDurationLabel: formatHistoryDuration(entry.totalDurationSeconds ?? 0),
+    failurePhaseLabel: failurePhaseLabel(entry)
   };
 }
 

@@ -9,7 +9,7 @@ import { parseRealDebridApiAccounts, serializeRealDebridApiAccounts } from "../s
 import { AppSettings } from "../src/shared/types";
 import { defaultSettings } from "../src/main/constants";
 import { configureCredentialProtector } from "../src/main/credential-protection";
-import { addHistoryEntryForRetention, createStoragePaths, emptySession, loadHistory, loadHistoryForRetention, loadSession, loadSettings, normalizeLoadedSession, normalizeSettings, removeHistoryEntries, resetHistoryForRetention, saveHistory, saveSession, saveSessionAsync, saveSettings, saveSettingsAsync } from "../src/main/storage";
+import { addHistoryEntryForRetention, createStoragePaths, emptySession, loadHistory, loadHistoryForRetention, loadSession, loadSessionWithStatus, loadSettings, normalizeHistoryEntry, normalizeLoadedSession, normalizeSettings, removeHistoryEntries, resetHistoryForRetention, saveHistory, saveSession, saveSessionAsync, saveSettings, saveSettingsAsync } from "../src/main/storage";
 
 const tempDirs: string[] = [];
 type SettingsSaveMode = "sync" | "async";
@@ -20,6 +20,14 @@ async function saveSettingsInMode(mode: SettingsSaveMode, paths: ReturnType<type
   } else {
     await saveSettingsAsync(paths, settings);
   }
+}
+
+function loadSettingsFrom(raw: Record<string, unknown>): AppSettings {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+  tempDirs.push(dir);
+  const paths = createStoragePaths(dir);
+  fs.writeFileSync(paths.configFile, JSON.stringify(raw), "utf8");
+  return loadSettings(paths);
 }
 
 beforeEach(() => {
@@ -38,6 +46,225 @@ afterEach(() => {
 });
 
 describe("settings storage", () => {
+  it("defaults and round-trips Deepbrid credentials and provider settings", () => {
+    const key = "fixture-deepbrid-storage-key-2aB4";
+    const defaults = defaultSettings();
+    expect(defaults.deepbridApiKey).toBe("");
+
+    const normalized = normalizeSettings({
+      ...defaults,
+      deepbridApiKey: `  ${key}  `,
+      providerOrder: ["deepbrid", "realdebrid", "deepbrid"],
+      providerPrimary: "deepbrid",
+      providerSecondary: "realdebrid",
+      providerTertiary: "none",
+      disabledProviders: ["deepbrid"],
+      hosterRouting: { rapidgator: "deepbrid" },
+      providerDailyLimitBytes: { deepbrid: 1_024 },
+      providerDailyUsageBytes: { deepbrid: 2_048 },
+      providerTotalUsageBytes: { deepbrid: 4_096 },
+      debridAccountStatuses: {
+        "svc-deepbrid": {
+          accountId: "svc-deepbrid",
+          provider: "deepbrid",
+          label: "Deepbrid",
+          maskedLogin: "••••",
+          valid: true,
+          isPremium: true,
+          premiumUntilMs: null,
+          message: "OK",
+          checkedAt: 1
+        }
+      }
+    } as AppSettings);
+
+    expect(normalized).toMatchObject({
+      deepbridApiKey: key,
+      providerOrder: ["deepbrid", "realdebrid"],
+      providerPrimary: "deepbrid",
+      providerSecondary: "realdebrid",
+      providerTertiary: "none",
+      disabledProviders: ["deepbrid"],
+      hosterRouting: { rapidgator: "deepbrid" },
+      providerDailyLimitBytes: { deepbrid: 1_024 },
+      providerDailyUsageBytes: { deepbrid: 2_048 },
+      providerTotalUsageBytes: { deepbrid: 4_096 }
+    });
+    expect(normalized.debridAccountStatuses["svc-deepbrid"]?.provider).toBe("deepbrid");
+    expect(normalizeSettings({
+      ...defaults,
+      providerPrimary: "realdebrid",
+      providerSecondary: "deepbrid",
+      providerTertiary: "bestdebrid"
+    }).providerSecondary).toBe("deepbrid");
+    expect(normalizeSettings({
+      ...defaults,
+      providerPrimary: "realdebrid",
+      providerSecondary: "bestdebrid",
+      providerTertiary: "deepbrid"
+    }).providerTertiary).toBe("deepbrid");
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    saveSettings(paths, normalized);
+    expect(loadSettings(paths).deepbridApiKey).toBe(key);
+  });
+
+  it("preserves Deepbrid in normalized session items, packages and history", () => {
+    const outputDir = path.resolve("C:\\Downloads\\Deepbrid");
+    const session = normalizeLoadedSession({
+      ...emptySession(),
+      packageOrder: ["pkg-deepbrid"],
+      packages: {
+        "pkg-deepbrid": {
+          id: "pkg-deepbrid",
+          name: "Deepbrid package",
+          outputDir,
+          extractDir: outputDir,
+          status: "completed",
+          itemIds: ["item-deepbrid"],
+          cleanedProviders: ["deepbrid"],
+          createdAt: 1,
+          updatedAt: 2
+        }
+      },
+      items: {
+        "item-deepbrid": {
+          id: "item-deepbrid",
+          packageId: "pkg-deepbrid",
+          url: "https://example.test/deepbrid.bin",
+          provider: "deepbrid",
+          status: "completed",
+          fileName: "deepbrid.bin",
+          targetPath: path.join(outputDir, "deepbrid.bin"),
+          createdAt: 1,
+          updatedAt: 2
+        }
+      }
+    });
+    const history = normalizeHistoryEntry({
+      id: "hist-deepbrid",
+      name: "Deepbrid history",
+      provider: "deepbrid",
+      status: "completed"
+    }, 0);
+
+    expect(session.items["item-deepbrid"]?.provider).toBe("deepbrid");
+    expect(session.packages["pkg-deepbrid"]?.cleanedProviders).toEqual(["deepbrid"]);
+    expect(history?.provider).toBe("deepbrid");
+  });
+
+  it.each([undefined, "megadebrid", "realdebrid", "invalid-provider"])("normalizes svc-deepbrid status with provider %s deterministically to Deepbrid", (provider) => {
+    const key = "fixture-deepbrid-status-key-4pQ5";
+    const normalized = normalizeSettings({
+      ...defaultSettings(),
+      deepbridApiKey: key,
+      debridAccountStatuses: {
+        "svc-deepbrid": {
+          accountId: "svc-deepbrid",
+          ...(provider === undefined ? {} : { provider }),
+          label: "Deepbrid",
+          maskedLogin: "••••",
+          valid: true,
+          isPremium: true,
+          premiumUntilMs: null,
+          message: "OK",
+          checkedAt: 1
+        }
+      }
+    } as AppSettings);
+
+    expect(normalized.debridAccountStatuses["svc-deepbrid"]?.provider).toBe("deepbrid");
+  });
+
+  it("defaults and normalizes persistent daily start calendar fields", () => {
+    const defaults = defaultSettings();
+
+    expect(defaults.dailyStartEnabled).toBe(false);
+    expect(defaults.dailyStartMinuteOfDay).toBe(0);
+    expect(defaults.dailyStartFirstLocalDate).toBe("");
+    expect(defaults.dailyStartLastHandledLocalDate).toBe("");
+    expect(defaults.dailyStartPendingLocalDate).toBe("");
+    expect(defaults.dailyStartLastOutcome).toBe("");
+
+    expect(normalizeSettings({
+      ...defaults,
+      dailyStartEnabled: true,
+      dailyStartMinuteOfDay: 1_500,
+      dailyStartFirstLocalDate: "2026-02-29",
+      dailyStartLastHandledLocalDate: "2026-08-21",
+      dailyStartPendingLocalDate: "not-a-day",
+      dailyStartLastOutcome: "unsupported"
+    } as unknown as AppSettings)).toMatchObject({
+      dailyStartEnabled: true,
+      dailyStartMinuteOfDay: 1_439,
+      dailyStartFirstLocalDate: "",
+      dailyStartLastHandledLocalDate: "2026-08-21",
+      dailyStartPendingLocalDate: "",
+      dailyStartLastOutcome: ""
+    });
+  });
+
+  it("reports whether a loaded session was active before transient normalization", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const session = emptySession();
+    session.running = true;
+    saveSession(paths, session);
+
+    const loaded = loadSessionWithStatus(paths);
+
+    expect(loaded.wasRunning).toBe(true);
+    expect(loaded.session.running).toBe(false);
+  });
+
+  it("migrates legacy package success notifications without changing their delivery frequency", () => {
+    expect(loadSettingsFrom({ notifyOnPackageCompleted: true }).notifyPackageSuccessMode).toBe("individual");
+    expect(loadSettingsFrom({}).notifyPackageSuccessMode).toBe("digest");
+    expect(loadSettingsFrom({ notifyOnPackageCompleted: true, notifyPackageSuccessMode: "digest" }).notifyPackageSuccessMode).toBe("digest");
+  });
+
+  it("preserves an explicit individual success mode when legacy package notifications are disabled", () => {
+    expect(loadSettingsFrom({ notifyOnPackageCompleted: false, notifyPackageSuccessMode: "individual" }).notifyPackageSuccessMode).toBe("individual");
+  });
+
+  it("falls back from an invalid persisted success mode according to the legacy package toggle", () => {
+    expect(loadSettingsFrom({ notifyOnPackageCompleted: true, notifyPackageSuccessMode: "invalid" }).notifyPackageSuccessMode).toBe("individual");
+    expect(loadSettingsFrom({ notifyOnPackageCompleted: false, notifyPackageSuccessMode: "invalid" }).notifyPackageSuccessMode).toBe("digest");
+  });
+
+  it("loads notification defaults for new settings", () => {
+    const defaults = loadSettingsFrom({});
+
+    expect(defaults).toEqual(expect.objectContaining({
+      notifyPackageSuccessMode: "digest",
+      notifyOnRemainingBelow: false,
+      notifyRemainingThresholdGb: 50,
+      notifyOnDownloadStall: false,
+      notifyStallAfterSeconds: 90,
+      notifyStallCooldownMinutes: 10,
+      notifyOnDownloadRecovery: true
+    }));
+  });
+
+  it.each([
+    ["notifyRemainingThresholdGb", 0, 1],
+    ["notifyRemainingThresholdGb", 100_001, 100_000],
+    ["notifyRemainingThresholdGb", "invalid", 50],
+    ["notifyStallAfterSeconds", 59, 60],
+    ["notifyStallAfterSeconds", 3_601, 3_600],
+    ["notifyStallAfterSeconds", "invalid", 90],
+    ["notifyStallCooldownMinutes", 4, 5],
+    ["notifyStallCooldownMinutes", 1_441, 1_440],
+    ["notifyStallCooldownMinutes", "invalid", 10]
+  ] as const)("normalizes %s from %s to %s", (key, input, expected) => {
+    const normalized = normalizeSettings({ ...defaultSettings(), [key]: input } as AppSettings);
+
+    expect(normalized[key]).toBe(expected);
+  });
+
   it("enables package disclosure motion by default and preserves an explicit opt-out", () => {
     const legacy = { ...defaultSettings() } as Partial<AppSettings>;
     delete legacy.animatePackageDisclosure;
@@ -937,6 +1164,266 @@ describe("settings storage", () => {
     });
 
     expect(normalized.historyRetentionMode).toBe("permanent");
+  });
+
+  it("loads legacy history without inventing structured durations", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    fs.writeFileSync(paths.historyFile, JSON.stringify([{
+      id: "legacy",
+      name: "Altbestand",
+      totalBytes: 1_000,
+      downloadedBytes: 1_000,
+      fileCount: 1,
+      provider: "realdebrid",
+      completedAt: 10_000,
+      durationSeconds: 9,
+      status: "completed",
+      outputDir: "C:\\Downloads\\Altbestand"
+    }]), "utf8");
+
+    const [loaded] = loadHistory(paths);
+
+    expect(loaded).toEqual(expect.objectContaining({
+      durationSeconds: 9,
+      status: "completed"
+    }));
+    expect(loaded.downloadDurationSeconds).toBeUndefined();
+    expect(loaded.totalDurationSeconds).toBeUndefined();
+  });
+
+  it.each(["completed", "partial", "failed", "cancelled", "deleted"] as const)("preserves the %s history status", (status) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    fs.writeFileSync(paths.historyFile, JSON.stringify([{
+      id: `history-${status}`,
+      name: "Paket",
+      completedAt: 10_000,
+      durationSeconds: 1,
+      status,
+      outputDir: "C:\\Downloads\\Paket"
+    }]), "utf8");
+
+    expect(loadHistory(paths)[0]?.status).toBe(status);
+  });
+
+  it("clamps expanded history metrics and preserves normalized operations", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    fs.writeFileSync(paths.historyFile, JSON.stringify([{
+      id: "structured",
+      name: "Paket",
+      completedAt: 50_000,
+      durationSeconds: 1,
+      status: "failed",
+      outputDir: "C:\\Downloads\\Paket",
+      startedAt: -10,
+      downloadEndedAt: 20_000,
+      postProcessStartedAt: 25_000,
+      downloadDurationSeconds: -120,
+      extractionDurationSeconds: 30,
+      remuxDurationSeconds: 5,
+      postProcessDurationSeconds: 35,
+      totalDurationSeconds: 50,
+      successfulFiles: -1,
+      failedFiles: 1,
+      cancelledFiles: 0,
+      archiveCount: 1,
+      partCount: 16,
+      outputCount: 15,
+      failurePhase: "extract",
+      archiveOperations: [{
+        id: "archive-1",
+        name: "Paket.part01.rar",
+        itemIds: ["item-1", "", "item-2"],
+        partCount: -16,
+        startedAt: 25_000,
+        completedAt: 50_000,
+        durationMs: -30_000,
+        status: "failed",
+        errorCategory: "checksum"
+      }],
+      remuxOperations: [{
+        id: "remux-1",
+        fileName: "episode.mkv",
+        startedAt: 30_000,
+        completedAt: 35_000,
+        durationMs: 5_000,
+        status: "cancelled",
+        errorCategory: "cancelled"
+      }]
+    }]), "utf8");
+
+    expect(loadHistory(paths)[0]).toEqual(expect.objectContaining({
+      status: "failed",
+      startedAt: 0,
+      downloadEndedAt: 20_000,
+      postProcessStartedAt: 25_000,
+      downloadDurationSeconds: 0,
+      extractionDurationSeconds: 30,
+      remuxDurationSeconds: 5,
+      postProcessDurationSeconds: 35,
+      totalDurationSeconds: 50,
+      successfulFiles: 0,
+      failedFiles: 1,
+      cancelledFiles: 0,
+      archiveCount: 1,
+      partCount: 16,
+      outputCount: 15,
+      failurePhase: "extract",
+      archiveOperations: [{
+        id: "archive-1",
+        name: "Paket.part01.rar",
+        itemIds: ["item-1", "item-2"],
+        partCount: 0,
+        startedAt: 25_000,
+        completedAt: 50_000,
+        durationMs: 0,
+        status: "failed",
+        errorCategory: "Entpacken"
+      }],
+      remuxOperations: [{
+        id: "remux-1",
+        fileName: "episode.mkv",
+        startedAt: 30_000,
+        completedAt: 35_000,
+        durationMs: 5_000,
+        status: "cancelled",
+        errorCategory: "Remux"
+      }]
+    }));
+  });
+
+  it("preserves package lifecycle timestamps and operation metrics when loading a session", () => {
+    const normalized = normalizeLoadedSession({
+      version: 2,
+      packageOrder: ["pkg-1"],
+      packages: {
+        "pkg-1": {
+          id: "pkg-1",
+          name: "Paket",
+          outputDir: "C:\\Downloads\\Paket",
+          extractDir: "C:\\Downloads\\Paket",
+          status: "completed",
+          itemIds: [],
+          cancelled: false,
+          enabled: true,
+          resultGeneration: 7,
+          downloadStartedAt: 1_000,
+          downloadCompletedAt: 10_000,
+          downloadEndedAt: 12_000,
+          postProcessQueuedAt: 13_000,
+          postProcessStartedAt: 14_000,
+          postProcessCompletedAt: 20_000,
+          terminalAt: 21_000,
+          archiveOperations: [{
+            id: "archive-1",
+            name: "Paket.rar",
+            itemIds: [],
+            partCount: 1,
+            startedAt: 14_000,
+            completedAt: 18_000,
+            durationMs: 4_000,
+            status: "completed",
+            errorCategory: ""
+          }],
+          remuxOperations: [],
+          outputCount: 1,
+          cleanupErrorCategory: "",
+          createdAt: 1_000,
+          updatedAt: 21_000
+        }
+      },
+      items: {},
+      runStartedAt: 1_000,
+      totalDownloadedBytes: 0,
+      summaryText: "",
+      reconnectUntil: 0,
+      reconnectReason: "",
+      paused: false,
+      running: false,
+      updatedAt: 21_000
+    });
+
+    expect(normalized.packages["pkg-1"]).toEqual(expect.objectContaining({
+      resultGeneration: 7,
+      downloadEndedAt: 12_000,
+      postProcessQueuedAt: 13_000,
+      postProcessStartedAt: 14_000,
+      postProcessCompletedAt: 20_000,
+      terminalAt: 21_000,
+      archiveOperations: [expect.objectContaining({ id: "archive-1", durationMs: 4_000 })],
+      remuxOperations: [],
+      outputCount: 1,
+      cleanupErrorCategory: ""
+    }));
+  });
+
+  it("migrates persisted package failure details to safe categories", () => {
+    const normalized = normalizeLoadedSession({
+      version: 2,
+      packageOrder: ["pkg-private"],
+      packages: {
+        "pkg-private": {
+          id: "pkg-private",
+          name: "Private telemetry",
+          outputDir: "C:\\Downloads\\Private",
+          extractDir: "C:\\Downloads\\Private",
+          status: "failed",
+          itemIds: [],
+          cancelled: false,
+          enabled: true,
+          archiveOperations: [{
+            id: "archive-private",
+            name: "private.rar",
+            itemIds: [],
+            partCount: 1,
+            startedAt: 1_000,
+            completedAt: 2_000,
+            durationMs: 1_000,
+            status: "failed",
+            errorCategory: "CRC_ERROR in C:\\Users\\Alice\\private.rar"
+          }],
+          remuxOperations: [{
+            id: "remux-private",
+            fileName: "private.mkv",
+            startedAt: 2_000,
+            completedAt: 3_000,
+            durationMs: 1_000,
+            status: "failed",
+            errorCategory: "ffmpeg failed for https://private.example.test/private.mkv"
+          }, {
+            id: "remux-disk-full",
+            fileName: "disk-full.mkv",
+            startedAt: 3_000,
+            completedAt: 4_000,
+            durationMs: 1_000,
+            status: "failed",
+            errorCategory: "disk_full at C:\\Users\\Alice\\disk-full.mkv"
+          }],
+          cleanupErrorCategory: "unlink failed for C:\\Users\\Alice\\private.rar",
+          createdAt: 1_000,
+          updatedAt: 4_000
+        }
+      },
+      items: {},
+      runStartedAt: 1_000,
+      totalDownloadedBytes: 0,
+      summaryText: "",
+      reconnectUntil: 0,
+      reconnectReason: "",
+      paused: false,
+      running: false,
+      updatedAt: 4_000
+    });
+    const pkg = normalized.packages["pkg-private"];
+
+    expect(pkg.archiveOperations?.[0]?.errorCategory).toBe("Entpacken");
+    expect(pkg.remuxOperations?.map((operation) => operation.errorCategory)).toEqual(["Remux", "Speicherplatz"]);
+    expect(pkg.cleanupErrorCategory).toBe("Cleanup");
   });
 
   it("skips adding persisted history entries when history retention is never", () => {

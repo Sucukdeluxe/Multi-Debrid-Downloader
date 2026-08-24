@@ -22,6 +22,7 @@ const SECRET_RETAIN_CASES: Array<{
   { kind: "megadebrid-web", identity: "retain-mega-web@example.test", secret: "fixture-retain-mega-web-3cE5", retained: (settings) => settings.megaDebridWebCredentials === "retain-mega-web@example.test:fixture-retain-mega-web-3cE5" },
   { kind: "bestdebrid-api", identity: "", secret: "fixture-retain-best-4dF6", retained: (settings) => settings.bestToken === "fixture-retain-best-4dF6" },
   { kind: "alldebrid-api", identity: "", secret: "fixture-retain-all-5eG7", retained: (settings) => settings.allDebridToken === "fixture-retain-all-5eG7" },
+  { kind: "deepbrid-api", identity: "", secret: "fixture-retain-deepbrid-6fH8", retained: (settings) => settings.deepbridApiKey === "fixture-retain-deepbrid-6fH8" },
   { kind: "ddownload-login", identity: "retain-dd@example.test", secret: "fixture-retain-dd-6fH8", retained: (settings) => settings.ddownloadPassword === "fixture-retain-dd-6fH8" },
   { kind: "onefichier-api", identity: "", secret: "fixture-retain-one-7gJ9", retained: (settings) => settings.oneFichierApiKey === "fixture-retain-one-7gJ9" },
   { kind: "debridlink-api", identity: "", secret: "fixture-retain-dl-8hK1", retained: (settings) => settings.debridLinkApiKeys === "fixture-retain-dl-8hK1" },
@@ -37,6 +38,7 @@ const ACCOUNT_KINDS: RendererAccountKind[] = [
   "bestdebrid-web",
   "alldebrid-api",
   "alldebrid-web",
+  "deepbrid-api",
   "ddownload-login",
   "onefichier-api",
   "debridlink-api",
@@ -115,6 +117,7 @@ describe("write-only account commands", () => {
       debridLinkApiKeys: "fixture-reveal-dl-5eF6",
       bestToken: "fixture-reveal-best-7gH8",
       allDebridToken: "fixture-reveal-all-9iJ1",
+      deepbridApiKey: "fixture-reveal-deepbrid-1jK2",
       ddownloadLogin: "reveal-dd@example.test",
       ddownloadPassword: "fixture-reveal-dd-2kL3",
       oneFichierApiKey: "fixture-reveal-one-4mN5",
@@ -134,6 +137,8 @@ describe("write-only account commands", () => {
     expect(api.resolveStoredAccountSecret?.(settings, { kind: "debridlink-api", accountId: getDebridLinkApiKeyId("fixture-reveal-dl-5eF6") })).toBe("fixture-reveal-dl-5eF6");
     expect(api.resolveStoredAccountSecret?.(settings, { kind: "bestdebrid-api", accountId: "svc-bestdebrid" })).toBe("fixture-reveal-best-7gH8");
     expect(api.resolveStoredAccountSecret?.(settings, { kind: "alldebrid-api", accountId: "svc-alldebrid" })).toBe("fixture-reveal-all-9iJ1");
+    expect(api.resolveStoredAccountSecret?.(settings, { kind: "deepbrid-api", accountId: "svc-deepbrid" })).toBe("fixture-reveal-deepbrid-1jK2");
+    expect(() => api.resolveStoredAccountSecret?.(settings, { kind: "deepbrid-api", accountId: "svc-realdebrid" })).toThrow(/nicht gefunden/i);
     expect(api.resolveStoredAccountSecret?.(settings, { kind: "ddownload-login", accountId: "svc-ddownload" })).toBe("fixture-reveal-dd-2kL3");
     expect(api.resolveStoredAccountSecret?.(settings, { kind: "onefichier-api", accountId: "svc-onefichier" })).toBe("fixture-reveal-one-4mN5");
     expect(api.resolveStoredAccountSecret?.(settings, { kind: "linksnappy-login", accountId: "svc-linksnappy" })).toBe("fixture-reveal-ls-6pQ7");
@@ -150,6 +155,23 @@ describe("write-only account commands", () => {
     });
   });
 
+  it("accepts an unsaved or stable Deepbrid account and rejects every other account ID for credential checks", () => {
+    expect(validateAccountCredentialCheckInput({ kind: "deepbrid-api" })).toEqual({
+      kind: "deepbrid-api",
+      accountId: undefined,
+      identity: undefined,
+      secret: undefined
+    });
+    expect(validateAccountCredentialCheckInput({ kind: "deepbrid-api", accountId: "svc-deepbrid" })).toEqual({
+      kind: "deepbrid-api",
+      accountId: "svc-deepbrid",
+      identity: undefined,
+      secret: undefined
+    });
+    expect(() => validateAccountCredentialCheckInput({ kind: "deepbrid-api", accountId: "svc-realdebrid" })).toThrow(/ungültig/i);
+    expect(() => validateAccountCredentialCheckInput({ kind: "deepbrid-api", accountId: "deepbrid-other" })).toThrow(/ungültig/i);
+  });
+
   it.each([
     ["realdebrid-api", "", "fixture-rd-provider-secret-1fA4", "token"],
     ["realdebrid-web", "", "", "realDebridUseWebLogin"],
@@ -157,6 +179,7 @@ describe("write-only account commands", () => {
     ["bestdebrid-web", "", "", "bestDebridUseWebLogin"],
     ["alldebrid-api", "", "fixture-ad-provider-secret-3hC6", "allDebridToken"],
     ["alldebrid-web", "", "", "allDebridUseWebLogin"],
+    ["deepbrid-api", "", "fixture-deepbrid-provider-secret-4jD7", "deepbridApiKey"],
     ["ddownload-login", "dd-safe@example.test", "fixture-dd-provider-secret-4jD7", "ddownloadPassword"],
     ["onefichier-api", "", "fixture-one-provider-secret-5kE8", "oneFichierApiKey"],
     ["linksnappy-login", "ls-safe@example.test", "fixture-ls-provider-secret-6mF9", "linkSnappyPassword"]
@@ -179,6 +202,115 @@ describe("write-only account commands", () => {
     }));
 
     expect(deleted.settings[configuredKey]).toBe(secret ? "" : false);
+  });
+
+  it("manages the single Deepbrid account without exposing or retaining deleted state", () => {
+    const original = "fixture-deepbrid-original-key-7mN1";
+    const replacement = "fixture-deepbrid-replacement-key-8pQ2";
+    const created = applyAccountCommand(defaultSettings(), validateAccountCommand({
+      action: "create",
+      kind: "deepbrid-api",
+      secret: original,
+      dailyLimitBytes: 2 * GIB
+    }));
+
+    expect(created.response).toEqual({ accountId: "svc-deepbrid" });
+    expect(created.settings.deepbridApiKey).toBe(original);
+    expect(created.settings.providerDailyLimitBytes.deepbrid).toBe(2 * GIB);
+    expect(JSON.stringify(created.response)).not.toContain(original);
+    expect(() => applyAccountCommand(created.settings, validateAccountCommand({ action: "create", kind: "deepbrid-api", secret: replacement }))).toThrow(/ungültig/i);
+
+    const retained = applyAccountCommand(created.settings, validateAccountCommand({
+      action: "replace",
+      kind: "deepbrid-api",
+      accountId: "svc-deepbrid",
+      secret: "",
+      dailyLimitBytes: 3 * GIB
+    }));
+    expect(retained.settings.deepbridApiKey).toBe(original);
+
+    const updated = applyAccountCommand(retained.settings, validateAccountCommand({
+      action: "update-secret",
+      kind: "deepbrid-api",
+      accountId: "svc-deepbrid",
+      secret: replacement
+    }));
+    const populated = {
+      ...updated.settings,
+      providerDailyUsageBytes: { ...updated.settings.providerDailyUsageBytes, deepbrid: GIB },
+      providerTotalUsageBytes: { ...updated.settings.providerTotalUsageBytes, deepbrid: 5 * GIB },
+      debridAccountStatuses: {
+        ...updated.settings.debridAccountStatuses,
+        "svc-deepbrid": {
+          accountId: "svc-deepbrid",
+          provider: "deepbrid" as const,
+          label: "Deepbrid",
+          maskedLogin: "••••",
+          valid: true,
+          isPremium: true,
+          premiumUntilMs: null,
+          message: "OK",
+          checkedAt: 1
+        }
+      }
+    };
+    expect(updated.settings.deepbridApiKey).toBe(replacement);
+    expect(JSON.stringify(updated.response)).not.toContain(replacement);
+
+    const deleted = applyAccountCommand(populated, validateAccountCommand({
+      action: "delete",
+      kind: "deepbrid-api",
+      accountId: "svc-deepbrid"
+    }));
+    expect(deleted.response).toEqual({ accountId: null });
+    expect(deleted.settings.deepbridApiKey).toBe("");
+    expect(deleted.settings.providerDailyLimitBytes).not.toHaveProperty("deepbrid");
+    expect(deleted.settings.providerDailyUsageBytes).not.toHaveProperty("deepbrid");
+    expect(deleted.settings.providerTotalUsageBytes).not.toHaveProperty("deepbrid");
+    expect(deleted.settings.debridAccountStatuses).not.toHaveProperty("svc-deepbrid");
+  });
+
+  it.each([
+    { kind: "bestdebrid-api", identity: "", secret: "fixture-status-best-1aB2", provider: "bestdebrid" },
+    { kind: "alldebrid-api", identity: "", secret: "fixture-status-all-3cD4", provider: "alldebrid" },
+    { kind: "ddownload-login", identity: "status-dd@example.test", secret: "fixture-status-dd-5eF6", provider: "ddownload" },
+    { kind: "onefichier-api", identity: "", secret: "fixture-status-one-7gH8", provider: "onefichier" },
+    { kind: "linksnappy-login", identity: "status-ls@example.test", secret: "fixture-status-ls-9jK1", provider: "linksnappy" },
+    { kind: "deepbrid-api", identity: "", secret: "fixture-status-deepbrid-2mN3", provider: "deepbrid" }
+  ] as const)("deletes only the selected $provider single-account status", ({ kind, identity, secret, provider }) => {
+    const created = applyAccountCommand(defaultSettings(), validateAccountCommand({ action: "create", kind, identity, secret }));
+    const accountId = created.response.accountId!;
+    const foreignStatus = {
+      accountId: "foreign-account",
+      provider: "realdebrid" as const,
+      label: "Foreign",
+      maskedLogin: "fo***gn",
+      valid: true,
+      isPremium: true,
+      premiumUntilMs: null,
+      message: "OK",
+      checkedAt: 2
+    };
+    const selectedStatus = {
+      accountId,
+      provider,
+      label: provider,
+      maskedLogin: "se***ed",
+      valid: true,
+      isPremium: true,
+      premiumUntilMs: null,
+      message: "OK",
+      checkedAt: 1
+    };
+    const deleted = applyAccountCommand({
+      ...created.settings,
+      debridAccountStatuses: {
+        [accountId]: selectedStatus,
+        "foreign-account": foreignStatus
+      }
+    }, validateAccountCommand({ action: "delete", kind, accountId }));
+
+    expect(deleted.settings.debridAccountStatuses).toEqual({ "foreign-account": foreignStatus });
   });
 
   it("creates an account without returning submitted secrets", () => {

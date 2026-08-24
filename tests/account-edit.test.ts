@@ -112,4 +112,23 @@ describe("renderer-safe account editing", () => {
       accountId: target.type === "mega" ? target.accountId : ""
     });
   });
+
+  it("uses the synthetic Deepbrid account id for edit, reveal and delete", () => {
+    const renderer = createRendererState({ ...defaultSettings(), deepbridApiKey: "synthetic-deepbrid-key" });
+    const target: AccountEditTarget = {
+      type: "single",
+      rowKey: "svc-deepbrid",
+      kind: "deepbrid-api",
+      service: "deepbrid",
+      provider: "deepbrid"
+    };
+    const edit = createAccountEditState(target, renderer.accounts);
+
+    expect(buildAccountReplaceCommand({ ...edit, token: "replacement-deepbrid-key" })).toEqual(expect.objectContaining({
+      kind: "deepbrid-api",
+      accountId: "svc-deepbrid",
+      secret: "replacement-deepbrid-key"
+    }));
+    expect(buildAccountDeleteCommand(target).accountId).toBe("svc-deepbrid");
+  });
 });

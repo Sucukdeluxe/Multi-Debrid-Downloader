@@ -2,6 +2,7 @@ import type { AccountCheckScope, AppSettings, DebridAccountStatus, DebridProvide
 import { getMegaDebridAccountsForMode, getMegaDebridDisabledAccountIdsForMode, parseMegaDebridAccounts, type MegaDebridAccountEntry } from "../shared/mega-debrid-accounts";
 import { parseDebridLinkApiKeys, type DebridLinkApiKeyEntry } from "../shared/debrid-link-keys";
 import { getRealDebridAccounts, type RealDebridAccountEntry } from "../shared/real-debrid-accounts";
+import { DEEPBRID_ACCOUNT_ID, DeepbridApiError, DeepbridClient } from "./deepbrid";
 import { logger } from "./logger";
 import { compactErrorText } from "./utils";
 
@@ -176,6 +177,57 @@ export async function checkRealDebridAccount(
   }
 }
 
+export async function checkDeepbridAccount(
+  apiKey: string,
+  signal?: AbortSignal,
+  now = Date.now()
+): Promise<DebridAccountStatus> {
+  const key = apiKey.trim();
+  const base: DebridAccountStatus = {
+    accountId: DEEPBRID_ACCOUNT_ID,
+    provider: "deepbrid",
+    label: "Deepbrid",
+    maskedLogin: maskSecret(key),
+    valid: false,
+    isPremium: false,
+    premiumUntilMs: null,
+    message: "",
+    checkedAt: now
+  };
+  if (!key) {
+    return { ...base, message: "Kein API-Key hinterlegt" };
+  }
+  try {
+    const user = await new DeepbridClient(key).getUser(signal);
+    const expiration = Date.parse(user.expiration);
+    const premiumUntilMs = Number.isFinite(expiration) ? expiration : null;
+    const isPremium = user.type.trim().toLowerCase() === "premium"
+      && premiumUntilMs !== null
+      && premiumUntilMs > now;
+    return {
+      ...base,
+      valid: true,
+      isPremium,
+      premiumUntilMs,
+      username: user.username.trim() || undefined,
+      email: user.email.trim() || undefined,
+      message: isPremium
+        ? formatRemaining(premiumUntilMs, now)
+        : user.type.trim().toLowerCase() === "premium" && premiumUntilMs !== null
+          ? formatRemaining(premiumUntilMs, now)
+          : "Kein Premium (Free)"
+    };
+  } catch (error) {
+    if (signal?.aborted) {
+      return { ...base, message: "Prüfung abgebrochen" };
+    }
+    if (error instanceof DeepbridApiError && error.classification === "auth") {
+      return { ...base, message: error.status === 403 ? "Deepbrid API-Key gesperrt" : "Ungültiger Deepbrid API-Key" };
+    }
+    return { ...base, message: "Prüfung fehlgeschlagen" };
+  }
+}
+
 export async function checkMegaDebridAccount(
   account: MegaDebridAccountEntry,
   signal?: AbortSignal,
@@ -337,6 +389,8 @@ export async function checkAllDebridAccounts(
   const realDebridAccounts = scope === "all"
     ? allRealDebridAccounts
     : providerEnabled("realdebrid") ? allRealDebridAccounts.filter((account) => account.enabled) : [];
+  const deepbridApiKey = String(settings.deepbridApiKey || "").trim();
+  const checkDeepbrid = Boolean(deepbridApiKey) && (scope === "all" || providerEnabled("deepbrid"));
 
   const taskFns: Array<() => Promise<DebridAccountStatus>> = [
     ...realDebridAccounts.map((account) => () => checkRealDebridAccount(
@@ -348,7 +402,8 @@ export async function checkAllDebridAccounts(
         : undefined
     )),
     ...megaAccounts.map((account) => () => checkMegaDebridAccount(account, signal, now)),
-    ...debridLinkKeys.map((key) => () => checkDebridLinkKey(key, signal, now))
+    ...debridLinkKeys.map((key) => () => checkDebridLinkKey(key, signal, now)),
+    ...(checkDeepbrid ? [() => checkDeepbridAccount(deepbridApiKey, signal, now)] : [])
   ];
 
   const results = await runWithConcurrency(taskFns, CHECK_CONCURRENCY);

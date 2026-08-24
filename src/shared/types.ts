@@ -21,6 +21,7 @@ export type DebridProvider =
   | "megadebrid-web"
   | "bestdebrid"
   | "alldebrid"
+  | "deepbrid"
   | "ddownload"
   | "onefichier"
   | "debridlink"
@@ -120,7 +121,20 @@ export interface DebridAccountStatus {
   checkedAt: number;
 }
 
-export interface AppSettings {
+export type NotifyPackageSuccessMode = "digest" | "individual";
+
+export type DailyStartOutcome = "" | "started" | "already_active" | "empty_queue" | "missing_account" | "start_failed" | "missed";
+
+export interface DailyStartSettings {
+  dailyStartEnabled: boolean;
+  dailyStartMinuteOfDay: number;
+  dailyStartFirstLocalDate: string;
+  dailyStartLastHandledLocalDate: string;
+  dailyStartPendingLocalDate: string;
+  dailyStartLastOutcome: DailyStartOutcome;
+}
+
+export interface AppSettings extends DailyStartSettings {
   language: AppLanguage;
   token: string;
   realDebridUseWebLogin: boolean;
@@ -142,6 +156,7 @@ export interface AppSettings {
   bestDebridUseWebLogin: boolean;
   allDebridToken: string;
   allDebridUseWebLogin: boolean;
+  deepbridApiKey: string;
   ddownloadLogin: string;
   ddownloadPassword: string;
   oneFichierApiKey: string;
@@ -205,6 +220,13 @@ export interface AppSettings {
   notifyOnPackageCompleted: boolean;
   notifyOnPackageFailed: boolean;
   notifyOnRunFinished: boolean;
+  notifyPackageSuccessMode: NotifyPackageSuccessMode;
+  notifyOnRemainingBelow: boolean;
+  notifyRemainingThresholdGb: number;
+  notifyOnDownloadStall: boolean;
+  notifyStallAfterSeconds: number;
+  notifyStallCooldownMinutes: number;
+  notifyOnDownloadRecovery: boolean;
   totalDownloadedAllTime: number;
   totalCompletedFilesAllTime: number;
   totalRuntimeAllTimeMs: number;
@@ -243,6 +265,7 @@ export type RendererAccountKind =
   | "bestdebrid-web"
   | "alldebrid-api"
   | "alldebrid-web"
+  | "deepbrid-api"
   | "ddownload-login"
   | "onefichier-api"
   | "debridlink-api"
@@ -262,7 +285,7 @@ export interface RendererAccount {
   status: DebridAccountStatus | null;
 }
 
-export interface RendererSettings {
+export interface RendererSettings extends DailyStartSettings {
   language: AppLanguage;
   realDebridUseWebLogin: boolean;
   realDebridDisabledAccountIds: string[];
@@ -332,6 +355,13 @@ export interface RendererSettings {
   notifyOnPackageCompleted: boolean;
   notifyOnPackageFailed: boolean;
   notifyOnRunFinished: boolean;
+  notifyPackageSuccessMode: NotifyPackageSuccessMode;
+  notifyOnRemainingBelow: boolean;
+  notifyRemainingThresholdGb: number;
+  notifyOnDownloadStall: boolean;
+  notifyStallAfterSeconds: number;
+  notifyStallCooldownMinutes: number;
+  notifyOnDownloadRecovery: boolean;
   totalDownloadedAllTime: number;
   totalCompletedFilesAllTime: number;
   totalRuntimeAllTimeMs: number;
@@ -357,9 +387,15 @@ export interface RendererSettings {
   debridAccountStatuses: Record<string, DebridAccountStatus>;
   providerDailyUsageDay: string;
   scheduledStartEpochMs: number;
+  nextDailyStartEpochMs: number;
 }
 
-export type RendererSettingsUpdate = Partial<RendererSettings> & {
+export type RendererSettingsUpdate = Partial<Omit<RendererSettings,
+  "dailyStartLastHandledLocalDate"
+  | "dailyStartPendingLocalDate"
+  | "dailyStartLastOutcome"
+  | "nextDailyStartEpochMs"
+>> & {
   archivePasswordList?: string;
   notifyUrl?: string;
 };
@@ -403,7 +439,7 @@ export interface AccountCommandResult {
 }
 
 export interface AccountCredentialCheckInput {
-  kind: "realdebrid-api" | "realdebrid-web" | "megadebrid-api" | "megadebrid-web" | "debridlink-api";
+  kind: "realdebrid-api" | "realdebrid-web" | "megadebrid-api" | "megadebrid-web" | "debridlink-api" | "deepbrid-api";
   accountId?: string;
   identity?: string;
   secret?: string;
@@ -466,6 +502,73 @@ export interface AudioStripSummary {
   files: AudioStripFileResult[];
 }
 
+export type PackageResultStatus = "completed" | "partial" | "failed" | "cancelled";
+export type FailurePhase = "download" | "extract" | "remux" | "cleanup" | null;
+
+export interface ArchiveOperationMetric {
+  id: string;
+  name: string;
+  itemIds: string[];
+  partCount: number;
+  startedAt: number;
+  completedAt: number;
+  durationMs: number;
+  status: "completed" | "failed" | "cancelled";
+  errorCategory: string;
+}
+
+export interface RemuxOperationMetric {
+  id: string;
+  fileName: string;
+  startedAt: number;
+  completedAt: number;
+  durationMs: number;
+  status: "completed" | "failed" | "cancelled";
+  errorCategory: string;
+}
+
+export interface PackageTelemetry {
+  package: PackageEntry;
+  items: DownloadItem[];
+  archiveOperations?: ArchiveOperationMetric[];
+  remuxOperations?: RemuxOperationMetric[];
+  outputCount?: number;
+  cleanupErrorCategory?: string;
+}
+
+export interface PackageResult {
+  packageId: string;
+  name: string;
+  status: PackageResultStatus;
+  startedAt: number;
+  downloadEndedAt: number;
+  postProcessStartedAt: number;
+  completedAt: number;
+  downloadDurationSeconds: number;
+  extractionDurationSeconds: number;
+  remuxDurationSeconds: number;
+  postProcessDurationSeconds: number;
+  totalDurationSeconds: number;
+  totalBytes: number;
+  downloadedBytes: number;
+  averageDownloadSpeedBps: number;
+  successfulFiles: number;
+  failedFiles: number;
+  cancelledFiles: number;
+  downloadFailures: number;
+  offlineFailures: number;
+  extractionFailures: number;
+  remuxFailures: number;
+  cleanupFailures: number;
+  archiveCount: number;
+  partCount: number;
+  outputCount: number;
+  failurePhase: FailurePhase;
+  errorCategory: string;
+  archiveOperations: ArchiveOperationMetric[];
+  remuxOperations: RemuxOperationMetric[];
+}
+
 export interface PackageEntry {
   id: string;
   name: string;
@@ -486,6 +589,16 @@ export interface PackageEntry {
   cleanedProviders?: DebridProvider[];
   downloadStartedAt?: number;
   downloadCompletedAt?: number;
+  downloadEndedAt?: number;
+  postProcessQueuedAt?: number;
+  postProcessStartedAt?: number;
+  postProcessCompletedAt?: number;
+  terminalAt?: number;
+  archiveOperations?: ArchiveOperationMetric[];
+  remuxOperations?: RemuxOperationMetric[];
+  outputCount?: number;
+  cleanupErrorCategory?: string;
+  resultGeneration?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -814,9 +927,26 @@ export interface HistoryEntry {
   provider: DebridProvider | null;
   completedAt: number;
   durationSeconds: number;
-  status: "completed" | "deleted";
+  status: PackageResultStatus | "deleted";
   outputDir: string;
   urls?: string[];
+  startedAt?: number;
+  downloadEndedAt?: number;
+  postProcessStartedAt?: number;
+  downloadDurationSeconds?: number;
+  extractionDurationSeconds?: number;
+  remuxDurationSeconds?: number;
+  postProcessDurationSeconds?: number;
+  totalDurationSeconds?: number;
+  successfulFiles?: number;
+  failedFiles?: number;
+  cancelledFiles?: number;
+  archiveCount?: number;
+  partCount?: number;
+  outputCount?: number;
+  failurePhase?: FailurePhase;
+  archiveOperations?: ArchiveOperationMetric[];
+  remuxOperations?: RemuxOperationMetric[];
 }
 
 export interface HistoryState {

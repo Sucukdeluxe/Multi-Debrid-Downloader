@@ -32,6 +32,21 @@ function localTime(day: number, hour = 12): number {
 }
 
 describe("statistics ledger", () => {
+  it("normalizes and records Deepbrid provider statistics", () => {
+    const now = localTime(10);
+    let ledger = recordStatisticsBytes(createStatisticsLedger(now), "deepbrid", 2_048, now);
+    ledger = recordStatisticsOutcome(ledger, "deepbrid", "completed", now);
+    addStatisticsAccountBytesInPlace(ledger, "deepbrid", 1_024, "svc-deepbrid", "Deepbrid", now);
+
+    const normalized = normalizeStatisticsLedger(ledger, now);
+    expect(normalized.days[0]?.providers.deepbrid).toEqual({ bytes: 2_048, completed: 1, failed: 0 });
+    expect(normalized.minutes[0]?.accounts["svc-deepbrid"]).toEqual({
+      provider: "deepbrid",
+      label: "Deepbrid",
+      bytes: 1_024
+    });
+  });
+
   it("migrates version one ledgers without inventing minute history", () => {
     const now = localTime(10);
     const legacy = {

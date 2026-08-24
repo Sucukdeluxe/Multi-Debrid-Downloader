@@ -106,6 +106,7 @@ import {
   DownloadsSidebar,
   DownloadsSidebarStatus,
   DownloadsToolbar,
+  type DailyScheduleStartDay,
   type DownloadsViewActions,
   type DownloadsViewModel
 } from "./views/downloads/DownloadsView";
@@ -115,6 +116,7 @@ import {
   buildTargetedAccountCheck,
   projectAccountRows,
   resolveHistoryRetentionSelection,
+  normalizeNotificationNumberField,
   sortAccountRows,
   formatAccountContextHeading,
   type AccountAddOption,
@@ -329,7 +331,7 @@ interface RendererSettingsDraft extends RendererSettings {
   notifyUrl: string;
 }
 
-function createSettingsDraft(settings: RendererSettings, current?: RendererSettingsDraft): RendererSettingsDraft {
+export function createSettingsDraft(settings: RendererSettings, current?: RendererSettingsDraft): RendererSettingsDraft {
   return {
     ...settings,
     archivePasswordList: current?.archivePasswordList || "",
@@ -512,6 +514,15 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
     pickerDescription: "Login über Browserfenster für reCAPTCHA.",
   },
   {
+    kind: "deepbrid-api",
+    service: "deepbrid",
+    serviceLabel: "Deepbrid",
+    title: "Deepbrid API",
+    modeLabel: "API",
+    pickerDescription: "Direkter Zugriff über API-Key.",
+    needsToken: true
+  },
+  {
     kind: "ddownload-login",
     service: "ddownload",
     serviceLabel: "DDownload",
@@ -549,7 +560,7 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
   }
 ];
 
-const ACCOUNT_SERVICES: AccountService[] = ["realdebrid", "megadebrid-api", "megadebrid-web", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink", "linksnappy"];
+const ACCOUNT_SERVICES: AccountService[] = ["realdebrid", "megadebrid-api", "megadebrid-web", "bestdebrid", "alldebrid", "deepbrid", "ddownload", "onefichier", "debridlink", "linksnappy"];
 const ACCOUNT_LIMIT_BYTES_PER_GIB = 1024 * 1024 * 1024;
 function findAccountOption(kind: AccountKind): AccountOption {
   const option = ACCOUNT_OPTIONS.find((entry) => entry.kind === kind);
@@ -590,6 +601,7 @@ function getAccountPickerFunctionLabel(option: AccountOption): string {
     case "bestdebrid-web":
       return "Cookies.txt-Import";
     case "alldebrid-api":
+    case "deepbrid-api":
     case "onefichier-api":
       return "API-Key";
     case "ddownload-login":
@@ -613,6 +625,7 @@ function getAccountCredentialLabel(kind: AccountKind): string {
     case "realdebrid-api":
     case "bestdebrid-api":
     case "alldebrid-api":
+    case "deepbrid-api":
     case "onefichier-api":
     case "debridlink-api":
       return "API-Key gespeichert";
@@ -649,6 +662,12 @@ function normalizeProviderSelectionForSettings(
   };
 }
 
+export function buildAccountCreateProviderOrderUpdate(
+  settings: RendererSettings
+): Pick<RendererSettings, "providerOrder" | "providerPrimary" | "providerSecondary" | "providerTertiary"> {
+  return normalizeProviderSelectionForSettings(settings);
+}
+
 function getConfiguredAccountKind(settings: RendererSettings, service: AccountService): AccountKind | null {
   const configured = new Set(settings.configuredProviders);
   switch (service) {
@@ -665,6 +684,8 @@ function getConfiguredAccountKind(settings: RendererSettings, service: AccountSe
     case "alldebrid":
       if (settings.allDebridUseWebLogin) return "alldebrid-web";
       return configured.has("alldebrid") ? "alldebrid-api" : null;
+    case "deepbrid":
+      return configured.has("deepbrid") ? "deepbrid-api" : null;
     case "ddownload":
       return configured.has("ddownload") ? "ddownload-login" : null;
     case "onefichier":
@@ -836,6 +857,8 @@ const emptySnapshot = (): UiSnapshot => ({
     updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, minimizeToTray: false,
     theme: "dark", logStorageLocation: "appdata", collapseNewPackages: true, animatePackageDisclosure: true, historyRetentionMode: "permanent", historyMaxEntries: 500, historyMaxAgeDays: 0, autoSortPackagesByProgress: false, autoSkipExtracted: false, hideExtractedItems: true, confirmDeleteSelection: true, backupIncludeDownloads: false, backupIncludeRemoteDiagnostics: false,
     notifyMention: "", notifyOnPackageCompleted: false, notifyOnPackageFailed: false, notifyOnRunFinished: false,
+    notifyPackageSuccessMode: "digest", notifyOnRemainingBelow: false, notifyRemainingThresholdGb: 50,
+    notifyOnDownloadStall: false, notifyStallAfterSeconds: 90, notifyStallCooldownMinutes: 10, notifyOnDownloadRecovery: true,
     accountListShowDetailedDebridLinkKeys: false,
     bandwidthSchedules: [], totalDownloadedAllTime: 0, totalCompletedFilesAllTime: 0, totalRuntimeAllTimeMs: 0,
     columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed", "availability"],
@@ -857,7 +880,14 @@ const emptySnapshot = (): UiSnapshot => ({
     megaDebridAccountTotalUsageBytes: {},
     debridAccountStatuses: {},
     providerDailyUsageDay: getProviderUsageDayKey(),
-    scheduledStartEpochMs: 0
+    dailyStartEnabled: false,
+    dailyStartMinuteOfDay: 0,
+    dailyStartFirstLocalDate: "",
+    dailyStartLastHandledLocalDate: "",
+    dailyStartPendingLocalDate: "",
+    dailyStartLastOutcome: "",
+    scheduledStartEpochMs: 0,
+    nextDailyStartEpochMs: 0
   },
   accounts: [],
   session: {
@@ -1532,6 +1562,100 @@ export async function runLatestUpdateCheck(
   await apply(result, generation);
 }
 
+interface DailySchedulePersistenceDependencies {
+  updateSettings: (update: RendererSettingsUpdate) => Promise<RendererSettings>;
+  getSnapshot: () => Promise<UiSnapshot>;
+  applySettings: (settings: RendererSettings) => void;
+  applySnapshot: (snapshot: UiSnapshot) => void;
+  showError: (message: string) => void;
+}
+
+function formatDailyScheduleLocalDate(date: Date): string {
+  const year = String(date.getFullYear()).padStart(4, "0");
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function formatDailyScheduleTime(minuteOfDay: number): string {
+  const minute = Math.max(0, Math.min(1_439, Math.floor(minuteOfDay)));
+  return `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
+}
+
+export function resolveDailyScheduleInitialTime(
+  settings: Pick<RendererSettings, "dailyStartMinuteOfDay" | "dailyStartFirstLocalDate">,
+  now = new Date()
+): string {
+  const minuteOfDay = settings.dailyStartFirstLocalDate
+    ? settings.dailyStartMinuteOfDay
+    : now.getHours() * 60 + now.getMinutes();
+  return formatDailyScheduleTime(minuteOfDay);
+}
+
+export function buildDailyScheduleSettingsUpdate(
+  time: string,
+  startDay: DailyScheduleStartDay,
+  now = new Date()
+): RendererSettingsUpdate | null {
+  const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(time);
+  if (!match) {
+    return null;
+  }
+  const firstDate = new Date(now);
+  if (startDay === "tomorrow") {
+    firstDate.setDate(firstDate.getDate() + 1);
+  }
+  return {
+    dailyStartEnabled: true,
+    dailyStartMinuteOfDay: Number(match[1]) * 60 + Number(match[2]),
+    dailyStartFirstLocalDate: formatDailyScheduleLocalDate(firstDate)
+  };
+}
+
+export function buildScheduleCancellationSettingsUpdate(
+  settings: Pick<RendererSettings, "dailyStartEnabled" | "scheduledStartEpochMs">
+): RendererSettingsUpdate {
+  return settings.dailyStartEnabled
+    ? { dailyStartEnabled: false }
+    : { scheduledStartEpochMs: 0 };
+}
+
+export async function activateDailyScheduleSettings(
+  time: string,
+  startDay: DailyScheduleStartDay,
+  persist: (update: RendererSettingsUpdate) => Promise<boolean>,
+  showError: (message: string) => void,
+  now = new Date()
+): Promise<boolean> {
+  const update = buildDailyScheduleSettingsUpdate(time, startDay, now);
+  if (!update) {
+    showError("Bitte eine gültige Startzeit auswählen.");
+    return false;
+  }
+  return persist(update);
+}
+
+export async function persistDailyScheduleSettingsUpdate(
+  update: RendererSettingsUpdate,
+  operation: "activate" | "cancel",
+  dependencies: DailySchedulePersistenceDependencies
+): Promise<boolean> {
+  try {
+    const settings = await dependencies.updateSettings(update);
+    dependencies.applySettings(settings);
+    return true;
+  } catch (error) {
+    const action = operation === "activate" ? "aktiviert" : "abgebrochen";
+    dependencies.showError(`Zeitplan konnte nicht ${action} werden: ${String(error)}`);
+    try {
+      dependencies.applySnapshot(await dependencies.getSnapshot());
+    } catch (snapshotError) {
+      dependencies.showError(`Zeitplan konnte nicht abgeglichen werden: ${String(snapshotError)}`);
+    }
+    return false;
+  }
+}
+
 export function App(): ReactElement {
   const [snapshot, setSnapshot] = useState<UiSnapshot>(emptySnapshot);
   const [appVersion, setAppVersion] = useState("");
@@ -1548,6 +1672,7 @@ export function App(): ReactElement {
   const [settingsSaveState, setSettingsSaveState] = useState<SettingsSaveState>("clean");
   const [schedulePickerOpen, setSchedulePickerOpen] = useState(false);
   const [scheduleTimeInput, setScheduleTimeInput] = useState("");
+  const [scheduleStartDay, setScheduleStartDay] = useState<DailyScheduleStartDay>("today");
   const [scheduleCountdown, setScheduleCountdown] = useState("");
   const [runtimeNow, setRuntimeNow] = useState(() => Date.now());
   const updateCheckGenerationRef = useRef(0);
@@ -1771,7 +1896,9 @@ export function App(): ReactElement {
   }, [settingsDraft.speedLimitKbps]);
 
   useEffect(() => {
-    const schedMs = snapshot.settings.scheduledStartEpochMs || 0;
+    const schedMs = snapshot.settings.dailyStartEnabled
+      ? snapshot.settings.nextDailyStartEpochMs
+      : snapshot.settings.scheduledStartEpochMs || 0;
     if (schedMs <= 0) { setScheduleCountdown(""); return; }
     const update = (): void => {
       const remaining = schedMs - Date.now();
@@ -1785,7 +1912,7 @@ export function App(): ReactElement {
     update();
     const timer = setInterval(update, 1000);
     return () => clearInterval(timer);
-  }, [snapshot.settings.scheduledStartEpochMs]);
+  }, [snapshot.settings.dailyStartEnabled, snapshot.settings.nextDailyStartEpochMs, snapshot.settings.scheduledStartEpochMs]);
 
   useEffect(() => {
     const timer = setInterval(() => setRuntimeNow(Date.now()), 1000);
@@ -2514,7 +2641,9 @@ export function App(): ReactElement {
           });
         }
       } else {
-        const serviceAccountId = null;
+        const serviceAccountId = entry.kind === "deepbrid-api"
+          ? accountsOfKind(entry.kind, snapshot.accounts)[0]?.accountId || "svc-deepbrid"
+          : null;
         rows.push({
           rowKey: `svc-${entry.service}`,
           entry,
@@ -2535,7 +2664,8 @@ export function App(): ReactElement {
             rowKey: `svc-${entry.service}`,
             kind: entry.kind as SingleAccountKind,
             service: entry.service,
-            provider: entry.provider
+            provider: entry.provider,
+            accountId: serviceAccountId || undefined
           }
         });
       }
@@ -2931,8 +3061,9 @@ export function App(): ReactElement {
       const command = buildAccountCreateCommand(dialogSnapshot);
       if (!command) throw new Error("Account-Payload ist ungültig");
       const result = await window.rd.createAccount(command);
-      setSnapshot((current) => ({ ...current, settings: result.settings, accounts: result.accounts }));
-      applyPersistedSettings(result.settings);
+      const persistedSettings = await window.rd.updateSettings(buildAccountCreateProviderOrderUpdate(result.settings));
+      setSnapshot((current) => ({ ...current, settings: persistedSettings, accounts: result.accounts }));
+      applyPersistedSettings(persistedSettings);
       closeAccountDialog();
       if (quickAction) {
         await runAccountQuickAction(quickAction, result.accountId);
@@ -3091,7 +3222,13 @@ export function App(): ReactElement {
         ...settingsDraft,
         disabledProviders: nextDisabledProviders
       };
-      await persistAccountToggle(nextDraft);
+      const enabled = current.includes(provider);
+      await persistAccountToggle(
+        nextDraft,
+        enabled && entry.kind === "deepbrid-api"
+          ? () => window.rd.checkAccountCredentials({ kind: "deepbrid-api", accountId: "svc-deepbrid" })
+          : undefined
+      );
       showToast(
         nextDisabledProviders.includes(provider)
           ? `${entry.serviceLabel} deaktiviert`
@@ -4809,16 +4946,46 @@ export function App(): ReactElement {
       });
   }, [setClipboardWatcherActive, showToast]);
 
+  const applyDailyScheduleSettings = useCallback((settings: RendererSettings): void => {
+    const apply = (current: UiSnapshot): UiSnapshot => ({ ...current, settings });
+    const next = apply(snapshotRef.current);
+    snapshotRef.current = next;
+    masterSnapshotRef.current = masterSnapshotRef.current ? apply(masterSnapshotRef.current) : next;
+    if (latestStateRef.current) {
+      latestStateRef.current = apply(latestStateRef.current);
+    }
+    setSnapshot(next);
+  }, []);
+
+  const applyAuthoritativeDailyScheduleSnapshot = useCallback((state: UiSnapshot): void => {
+    masterSnapshotRef.current = state;
+    latestStateRef.current = null;
+    snapshotRef.current = state;
+    setSnapshot(state);
+  }, []);
+
+  const persistDownloadSchedule = useCallback((update: RendererSettingsUpdate, operation: "activate" | "cancel"): Promise<boolean> => (
+    persistDailyScheduleSettingsUpdate(update, operation, {
+      updateSettings: (value) => window.rd.updateSettings(value),
+      getSnapshot: () => window.rd.getSnapshot(),
+      applySettings: applyDailyScheduleSettings,
+      applySnapshot: applyAuthoritativeDailyScheduleSnapshot,
+      showError: (message) => showToast(message, 3200)
+    })
+  ), [applyAuthoritativeDailyScheduleSnapshot, applyDailyScheduleSettings, showToast]);
+
   const activateDownloadSchedule = useCallback((): void => {
-    if (!scheduleTimeInput) return;
-    const [hours, minutes] = scheduleTimeInput.split(":").map(Number);
-    const now = new Date();
-    const target = new Date(now);
-    target.setHours(hours, minutes, 0, 0);
-    if (target.getTime() <= now.getTime()) target.setDate(target.getDate() + 1);
-    void window.rd.updateSettings({ scheduledStartEpochMs: target.getTime() }).catch(() => {});
-    setSchedulePickerOpen(false);
-  }, [scheduleTimeInput]);
+    void activateDailyScheduleSettings(
+      scheduleTimeInput,
+      scheduleStartDay,
+      (update) => persistDownloadSchedule(update, "activate"),
+      (message) => showToast(message, 2800)
+    ).then((persisted) => {
+      if (persisted) {
+        setSchedulePickerOpen(false);
+      }
+    });
+  }, [persistDownloadSchedule, scheduleStartDay, scheduleTimeInput, showToast]);
 
   const removeActionableDownloads = useCallback((): void => {
     const ids = new Set(downloadsViewCore.actionableSelectedIds);
@@ -4849,10 +5016,16 @@ export function App(): ReactElement {
     reconnectSeconds: snapshot.reconnectSeconds,
     reconnectReason: snapshot.session.reconnectReason,
     clipboardWatcher: snapshot.clipboardActive,
-    scheduleActive: snapshot.settings.scheduledStartEpochMs > 0,
+    scheduleActive: snapshot.settings.dailyStartEnabled || snapshot.settings.scheduledStartEpochMs > 0,
     scheduleOpen: schedulePickerOpen,
     scheduleTime: scheduleTimeInput,
-    scheduleLabel: scheduleCountdown || (snapshot.settings.scheduledStartEpochMs > 0 ? new Date(snapshot.settings.scheduledStartEpochMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""),
+    scheduleTimeValid: buildDailyScheduleSettingsUpdate(scheduleTimeInput, scheduleStartDay) !== null,
+    scheduleStartDay,
+    scheduleLabel: scheduleCountdown || (snapshot.settings.dailyStartEnabled
+      ? formatDailyScheduleTime(snapshot.settings.dailyStartMinuteOfDay)
+      : snapshot.settings.scheduledStartEpochMs > 0
+        ? new Date(snapshot.settings.scheduledStartEpochMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+        : ""),
     packageSpeedBps: downloadPackageSpeeds,
     editingPackageId,
     editingName,
@@ -4876,7 +5049,7 @@ export function App(): ReactElement {
       speed: liveDownloadSpeedBps > 0 ? formatSpeedMbps(liveDownloadSpeedBps) : "0 B/s",
       eta: snapshot.etaText
     }
-  }), [actionBusy, columnOrder, downloadDisclosureRevision, downloadPackageSpeeds, downloadQueueTotalBytes, downloadRemaining, downloadsSortColumn, downloadsSortDescending, downloadsViewCore, editingName, editingPackageId, gridTemplate, liveDownloadSpeedBps, providerStats.length, scheduleCountdown, schedulePickerOpen, scheduleTimeInput, snapshot.canPause, snapshot.canStart, snapshot.canStop, snapshot.clipboardActive, snapshot.etaText, snapshot.reconnectSeconds, snapshot.session.items, snapshot.session.paused, snapshot.session.reconnectReason, snapshot.session.running, snapshot.settings.animatePackageDisclosure, snapshot.settings.scheduledStartEpochMs, snapshot.stats.totalDownloaded, snapshot.stats.totalPackages]);
+  }), [actionBusy, columnOrder, downloadDisclosureRevision, downloadPackageSpeeds, downloadQueueTotalBytes, downloadRemaining, downloadsSortColumn, downloadsSortDescending, downloadsViewCore, editingName, editingPackageId, gridTemplate, liveDownloadSpeedBps, providerStats.length, scheduleCountdown, schedulePickerOpen, scheduleStartDay, scheduleTimeInput, snapshot.canPause, snapshot.canStart, snapshot.canStop, snapshot.clipboardActive, snapshot.etaText, snapshot.reconnectSeconds, snapshot.session.items, snapshot.session.paused, snapshot.session.reconnectReason, snapshot.session.running, snapshot.settings.animatePackageDisclosure, snapshot.settings.dailyStartEnabled, snapshot.settings.dailyStartMinuteOfDay, snapshot.settings.scheduledStartEpochMs, snapshot.stats.totalDownloaded, snapshot.stats.totalPackages]);
 
   const resetColumnLayout = useCallback((): void => {
     if (columnDragSettleTimerRef.current !== null) {
@@ -4917,12 +5090,17 @@ export function App(): ReactElement {
     },
     onStopDownloads: () => { void performQuickAction(() => window.rd.stop()); },
     onToggleSchedule: () => {
-      setSchedulePickerOpen((current) => !current);
-      setScheduleTimeInput("");
+      if (!schedulePickerOpen) {
+        const now = new Date();
+        setScheduleTimeInput(resolveDailyScheduleInitialTime(snapshot.settings, now));
+        setScheduleStartDay("today");
+      }
+      setSchedulePickerOpen(!schedulePickerOpen);
     },
     onScheduleTimeChange: setScheduleTimeInput,
+    onScheduleStartDayChange: setScheduleStartDay,
     onActivateSchedule: activateDownloadSchedule,
-    onCancelSchedule: () => { void window.rd.updateSettings({ scheduledStartEpochMs: 0 }).catch(() => {}); },
+    onCancelSchedule: () => { void persistDownloadSchedule(buildScheduleCancellationSettingsUpdate(snapshot.settings), "cancel"); },
     onMoveSelectionUp: () => moveSelectedPackages("up", downloadsViewCore.actionableSelectedIds),
     onMoveSelectionDown: () => moveSelectedPackages("down", downloadsViewCore.actionableSelectedIds),
     onRenameSelection: () => {
@@ -5150,6 +5328,7 @@ export function App(): ReactElement {
       },
       dailyLimitBytes: row.dailyLimitBytes,
       dailyUsageBytes: row.dailyUsedBytes,
+      totalUsageBytes: row.totalUsedBytes,
       username: row.username,
       credentialKind: row.credentialLabel.includes("API") ? "api-key" : row.credentialLabel.includes("•") ? "password" : "protected",
       canCheck: row.checkable
@@ -5449,6 +5628,11 @@ export function App(): ReactElement {
       }
       if (typeof value === "boolean") {
         setBool(fieldId as keyof RendererSettingsDraft, value);
+        return;
+      }
+      const notificationNumber = normalizeNotificationNumberField(fieldId, value);
+      if (notificationNumber !== undefined) {
+        setNum(fieldId as keyof RendererSettingsDraft, notificationNumber);
         return;
       }
       const numericLimits: Partial<Record<keyof RendererSettingsDraft, [number, number, number]>> = {

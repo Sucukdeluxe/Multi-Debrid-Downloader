@@ -146,6 +146,7 @@ export interface AccountRowSource {
   };
   dailyLimitBytes?: number;
   dailyUsageBytes?: number;
+  totalUsageBytes?: number;
   username: string;
   credentialKind: "password" | "api-key" | "protected";
   canCheck: boolean;
@@ -268,6 +269,22 @@ export interface SettingsFormProjectionInput {
   speedLimitInput: string;
   scheduleSpeedInputs: Readonly<Record<string, string>>;
   themeChoice?: "light" | "dark" | "system";
+}
+
+const NOTIFICATION_NUMBER_LIMITS = {
+  notifyRemainingThresholdGb: { min: 1, max: 100000, fallback: 50 },
+  notifyStallAfterSeconds: { min: 60, max: 3600, fallback: 90 },
+  notifyStallCooldownMinutes: { min: 5, max: 1440, fallback: 10 }
+} as const;
+
+export function normalizeNotificationNumberField(fieldId: string, value: unknown): number | undefined {
+  const limits = NOTIFICATION_NUMBER_LIMITS[fieldId as keyof typeof NOTIFICATION_NUMBER_LIMITS];
+  if (!limits) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  const normalized = Number.isFinite(parsed) ? Math.floor(parsed) : limits.fallback;
+  return Math.max(limits.min, Math.min(limits.max, normalized));
 }
 
 export function buildSettingsFormViewModel({
@@ -600,7 +617,24 @@ export function buildSettingsFormViewModel({
           { id: "notifyMention", kind: "text", label: "Discord-Erwähnung (optional)", value: settings.notifyMention },
           { id: "notifyOnPackageCompleted", kind: "switch", label: "Melden, wenn ein Paket fertig ist", value: settings.notifyOnPackageCompleted },
           { id: "notifyOnPackageFailed", kind: "switch", label: "Melden, wenn ein Paket fehlschlägt", value: settings.notifyOnPackageFailed },
-          { id: "notifyOnRunFinished", kind: "switch", label: "Melden, wenn alles fertig ist", value: settings.notifyOnRunFinished }
+          {
+            id: "notifyPackageSuccessMode",
+            kind: "select",
+            label: "Erfolgsmeldungen senden",
+            value: settings.notifyPackageSuccessMode,
+            disabled: !settings.notifyOnPackageCompleted,
+            options: [
+              { value: "digest", label: "Gesammelt (alle 2 Minuten)" },
+              { value: "individual", label: "Jedes Paket einzeln" }
+            ]
+          },
+          { id: "notifyOnRunFinished", kind: "switch", label: "Melden, wenn der gesamte Lauf fertig ist", value: settings.notifyOnRunFinished },
+          { id: "notifyOnRemainingBelow", kind: "switch", label: "Melden, wenn die Restmenge unterschritten wird", value: settings.notifyOnRemainingBelow },
+          { id: "notifyRemainingThresholdGb", kind: "number", label: "Restmengenschwelle (GB)", value: String(settings.notifyRemainingThresholdGb), min: 1, max: 100000, disabled: !settings.notifyOnRemainingBelow },
+          { id: "notifyOnDownloadStall", kind: "switch", label: "Melden, wenn Downloads stillstehen", value: settings.notifyOnDownloadStall },
+          { id: "notifyStallAfterSeconds", kind: "number", label: "Stillstand bestätigen nach (Sek.)", value: String(settings.notifyStallAfterSeconds), min: 60, max: 3600, disabled: !settings.notifyOnDownloadStall },
+          { id: "notifyStallCooldownMinutes", kind: "number", label: "Frühestens erneut melden nach (Min.)", value: String(settings.notifyStallCooldownMinutes), min: 5, max: 1440, disabled: !settings.notifyOnDownloadStall },
+          { id: "notifyOnDownloadRecovery", kind: "switch", label: "Melden, wenn Downloads wieder laufen", value: settings.notifyOnDownloadRecovery, disabled: !settings.notifyOnDownloadStall }
         ]
       }
     ]
@@ -621,12 +655,15 @@ function formatBytes(bytes: number): string {
   return `${new Intl.NumberFormat("de-DE", { maximumFractionDigits: value >= 100 ? 0 : value >= 10 ? 1 : 2 }).format(value)} ${units[unitIndex]}`;
 }
 
-function formatTraffic(limitBytes?: number, usageBytes?: number): string {
+function formatTraffic(limitBytes?: number, usageBytes?: number, totalUsageBytes?: number): string {
+  const total = Number.isFinite(totalUsageBytes) && totalUsageBytes && totalUsageBytes > 0
+    ? ` · Gesamt ${formatBytes(totalUsageBytes)}`
+    : "";
   if (!Number.isFinite(limitBytes) || !limitBytes || limitBytes <= 0) {
-    return "Unbeschränkt";
+    return `Unbeschränkt${total}`;
   }
   const safeUsage = Number.isFinite(usageBytes) && usageBytes && usageBytes > 0 ? usageBytes : 0;
-  return `${formatBytes(Math.max(0, limitBytes - safeUsage))} von ${formatBytes(limitBytes)} übrig`;
+  return `${formatBytes(Math.max(0, limitBytes - safeUsage))} von ${formatBytes(limitBytes)} übrig${total}`;
 }
 
 function formatExpiry(premiumUntilMs: number | null): string {
@@ -714,7 +751,7 @@ export function projectAccountRows(
       enabled: source.enabled,
       selected: selected.has(id),
       status: { ...status, checkedAgo: formatCheckedAgo(source.status.checkedAt, nowMs) },
-      traffic: formatTraffic(source.dailyLimitBytes, source.dailyUsageBytes),
+      traffic: formatTraffic(source.dailyLimitBytes, source.dailyUsageBytes, source.totalUsageBytes),
       username: identity.username,
       email: identity.email,
       expires: formatExpiry(source.status.premiumUntilMs),

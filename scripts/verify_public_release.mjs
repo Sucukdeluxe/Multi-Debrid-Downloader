@@ -38,7 +38,7 @@ const REDISTRIBUTION_FILES = Object.freeze([
   Object.freeze({
     sourcePath: "THIRD_PARTY_NOTICES.md",
     packagedPath: "resources/THIRD_PARTY_NOTICES.md",
-    sha256: "28f9d1f8692811758c41584e59d0db6cbf26654b4b93e335626921bef86bdf76"
+    sha256: "1fabeb71bbbf9a58c88b5014a5c12370fc2f9558c2f0b09f4b615bb4f89458a8"
   }),
   Object.freeze({
     sourcePath: "resources/extractor-jvm/licenses/LGPL-2.1.txt",

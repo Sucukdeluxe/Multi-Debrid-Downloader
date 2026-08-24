@@ -1,6 +1,6 @@
 import type { AccountDeleteCommand, AccountReplaceCommand, AccountSecretRequest, DebridProvider, RendererAccount, RendererAccountKind } from "../shared/types";
 
-export type AccountService = "realdebrid" | "megadebrid-api" | "megadebrid-web" | "bestdebrid" | "alldebrid" | "ddownload" | "onefichier" | "debridlink" | "linksnappy";
+export type AccountService = "realdebrid" | "megadebrid-api" | "megadebrid-web" | "bestdebrid" | "alldebrid" | "deepbrid" | "ddownload" | "onefichier" | "debridlink" | "linksnappy";
 export type AccountKind = RendererAccountKind;
 export type SingleAccountKind = Exclude<AccountKind, "megadebrid-api" | "megadebrid-web" | "debridlink-api">;
 

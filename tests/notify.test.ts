@@ -53,24 +53,64 @@ describe("truncateContent", () => {
 });
 
 describe("buildNotifyRequest", () => {
-  it("builds a Discord-compatible JSON webhook POST (bold title + message as content)", () => {
-    const req = buildNotifyRequest(` ${WEBHOOK} `, { title: "✅ Paket fertig", message: "Show.S01\n5 Datei(en)" });
+  it("builds a bounded Discord embed with the product username", () => {
+    const req = buildNotifyRequest(` ${WEBHOOK} `, {
+      title: "Paket fehlgeschlagen",
+      message: "Eine Datei konnte nicht verarbeitet werden.",
+      color: 0xe74c3c,
+      fields: [
+        { name: "Ergebnis", value: "Fehlgeschlagen", inline: true },
+        { name: "Dateien", value: "0 erfolgreich, 1 fehlgeschlagen", inline: true }
+      ],
+      timestamp: 1000
+    });
     expect(req.url).toBe(WEBHOOK);
     expect(req.init.method).toBe("POST");
     expect(req.init.headers).toMatchObject({ "Content-Type": "application/json" });
     const body = JSON.parse(String(req.init.body));
-    expect(body.content).toBe("**✅ Paket fertig**\nShow.S01\n5 Datei(en)");
-    expect(body.username).toBe("Real-Debrid Downloader");
+    expect(body).toEqual({
+      username: "Multi-Debrid Downloader",
+      content: "",
+      embeds: [{
+        title: "Paket fehlgeschlagen",
+        description: "Eine Datei konnte nicht verarbeitet werden.",
+        color: 0xe74c3c,
+        fields: [
+          { name: "Ergebnis", value: "Fehlgeschlagen", inline: true },
+          { name: "Dateien", value: "0 erfolgreich, 1 fehlgeschlagen", inline: true }
+        ],
+        timestamp: "1970-01-01T00:00:01.000Z"
+      }]
+    });
   });
   it("prepends the mention so Discord pings (bare ID gets wrapped)", () => {
     const req = buildNotifyRequest(WEBHOOK, { title: "T", message: "M", mention: "123456789012345678" });
     const body = JSON.parse(String(req.init.body));
-    expect(body.content).toBe("<@123456789012345678> **T**\nM");
+    expect(body.content).toBe("<@123456789012345678>");
+    expect(body.embeds[0]).toMatchObject({ title: "T", description: "M" });
   });
   it("sends no mention prefix when the field is empty", () => {
     const req = buildNotifyRequest(WEBHOOK, { title: "T", message: "M", mention: "" });
     const body = JSON.parse(String(req.init.body));
-    expect(body.content).toBe("**T**\nM");
+    expect(body.content).toBe("");
+  });
+  it("enforces Discord title, description, field, and total embed limits", () => {
+    const req = buildNotifyRequest(WEBHOOK, {
+      title: "T".repeat(400),
+      message: "M".repeat(5000),
+      fields: Array.from({ length: 30 }, (_, index) => ({
+        name: `${index}-${"N".repeat(300)}`,
+        value: "V".repeat(1400)
+      }))
+    });
+    const body = JSON.parse(String(req.init.body));
+    const embed = body.embeds[0] as { title: string; description: string; fields: Array<{ name: string; value: string }> };
+    expect(embed.title.length).toBeLessThanOrEqual(256);
+    expect(embed.description.length).toBeLessThanOrEqual(4096);
+    expect(embed.fields.length).toBeLessThanOrEqual(25);
+    expect(embed.fields.every((field) => field.name.length <= 256 && field.value.length <= 1024)).toBe(true);
+    const total = embed.title.length + embed.description.length + embed.fields.reduce((sum, field) => sum + field.name.length + field.value.length, 0);
+    expect(total).toBeLessThanOrEqual(6000);
   });
 });
 
@@ -107,7 +147,7 @@ describe("sendNotification", () => {
   it("serializes concurrent sends in order (burst protection)", async () => {
     const order: string[] = [];
     const fetchFn = vi.fn().mockImplementation(async (_url: string, init: RequestInit) => {
-      order.push(JSON.parse(String(init.body)).content);
+      order.push(JSON.parse(String(init.body)).embeds[0].title);
       return new Response(null, { status: 204 });
     });
     const sends = [
@@ -116,7 +156,7 @@ describe("sendNotification", () => {
       sendNotification(WEBHOOK, { title: "3", message: "" }, fetchFn, noSleep)
     ];
     await expect(Promise.all(sends)).resolves.toEqual([true, true, true]);
-    expect(order).toEqual(["**1**\n", "**2**\n", "**3**\n"]);
+    expect(order).toEqual(["1", "2", "3"]);
   });
   it("does not call fetch for an invalid URL", async () => {
     const fetchFn = vi.fn();

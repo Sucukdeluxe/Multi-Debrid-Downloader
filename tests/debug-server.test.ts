@@ -54,6 +54,7 @@ import { createStoragePaths, saveHistory, saveSettings } from "../src/main/stora
 import { getTraceConfigPath, getTraceLogPath, initTraceLog, logTraceEvent, setTraceEnabled, shutdownTraceLog } from "../src/main/trace-log";
 import { getDebridLinkApiKeyIds } from "../src/shared/debrid-link-keys";
 import type { DownloadManager } from "../src/main/download-manager";
+import type { NotificationSupportPayload } from "../src/main/support-data";
 import type { UiSnapshot } from "../src/shared/types";
 
 const tempDirs: string[] = [];
@@ -326,7 +327,16 @@ async function createFixture() {
     getItemLogPath: (itemId: string) => itemId === "item-2" ? itemLogPath : null
   } as unknown as DownloadManager;
 
-  startDebugServer(manager, baseDir);
+  const notificationStatus: NotificationSupportPayload & Record<string, unknown> = {
+    queued: 7,
+    lastSuccessAt: 1_700_000_000_000,
+    incidentType: "no_data",
+    incidentAgeMs: 30_000,
+    events: [{ payload: "PRIVATE_DEBUG_EVENT_PAYLOAD" }],
+    url: "https://private.example.test/webhook",
+    mention: "@private"
+  };
+  startDebugServer(manager, baseDir, () => notificationStatus);
   const baseUrl = `http://127.0.0.1:${port}`;
   await waitForReady(`${baseUrl}/health`);
   await new Promise((resolve) => setTimeout(resolve, 300));
@@ -334,7 +344,8 @@ async function createFixture() {
   return {
     baseUrl,
     token,
-    baseDir
+    baseDir,
+    notificationStatus
   };
 }
 
@@ -359,6 +370,36 @@ afterEach(() => {
 });
 
 describe("debug-server", () => {
+  it("serves the exact safe notification DTO in its endpoint and diagnostics", async () => {
+    const fixture = await createFixture();
+    const response = await authedFetch(`${fixture.baseUrl}/notifications`, fixture.token);
+    expect(response.ok).toBe(true);
+    const payload = await response.json() as Record<string, unknown>;
+
+    expect(payload).toEqual({
+      queued: 7,
+      lastSuccessAt: 1_700_000_000_000,
+      incidentType: "no_data",
+      incidentAgeMs: 30_000
+    });
+
+    fixture.notificationStatus.queued = 9;
+    fixture.notificationStatus.lastSuccessAt = 1_700_000_060_000;
+    const currentResponse = await authedFetch(`${fixture.baseUrl}/notifications`, fixture.token);
+    const currentPayload = await currentResponse.json() as Record<string, unknown>;
+    expect(currentPayload).toEqual({
+      queued: 9,
+      lastSuccessAt: 1_700_000_060_000,
+      incidentType: "no_data",
+      incidentAgeMs: 30_000
+    });
+
+    const diagnosticsResponse = await authedFetch(`${fixture.baseUrl}/diagnostics`, fixture.token);
+    const diagnostics = await diagnosticsResponse.json() as Record<string, any>;
+    expect(diagnostics.notifications).toEqual(currentPayload);
+    expect(JSON.stringify([payload, currentPayload, diagnostics.notifications])).not.toMatch(/PRIVATE_|https:\/\/private|@private|events|payload/i);
+  });
+
   it("serves diagnostics with main, session, and package log tails", async () => {
     const fixture = await createFixture();
     const response = await authedFetch(`${fixture.baseUrl}/diagnostics?package=server-package&lines=20`, fixture.token);
@@ -585,6 +626,7 @@ describe("debug-server", () => {
     expect(entries).toContain("overview/debug-setup.json");
     expect(entries).toContain("overview/self-check.json");
     expect(entries).toContain("overview/trace-config.json");
+    expect(entries).toContain("overview/notifications.json");
     expect(entries).toContain("logs/audit.log");
     expect(entries).toContain("logs/rename.log");
     expect(entries).toContain("logs/trace.log");
@@ -593,6 +635,14 @@ describe("debug-server", () => {
     expect(entries).not.toContain(`runtime/${legacyManifestFile}`);
     expect(entries).not.toContain(["overview/", "a", "i-manifest.json"].join(""));
     expect(entries).not.toContain("runtime/debug_token.txt");
+    const notifications = JSON.parse(zip.getEntry("overview/notifications.json")?.getData().toString("utf8") || "null");
+    expect(notifications).toEqual({
+      queued: 7,
+      lastSuccessAt: 1_700_000_000_000,
+      incidentType: "no_data",
+      incidentAgeMs: 30_000
+    });
+    expect(buffer.toString("utf8")).not.toMatch(/PRIVATE_DEBUG_EVENT_PAYLOAD|https:\/\/private|@private/);
   });
 
   it("rejects unauthenticated requests", async () => {

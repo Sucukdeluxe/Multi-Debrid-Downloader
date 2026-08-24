@@ -1,10 +1,87 @@
-import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import AdmZip from "adm-zip";
+import { describe, expect, it, vi } from "vitest";
+import { AppController } from "../src/main/app-controller";
 import { defaultSettings } from "../src/main/constants";
-import { buildAccountSummary, buildStatsPayload } from "../src/main/support-data";
+import { buildAccountSummary, buildNotificationSupportPayload, buildStatsPayload } from "../src/main/support-data";
+import { buildSupportBundle } from "../src/main/support-bundle";
+import { createStoragePaths } from "../src/main/storage";
 import { serializeRealDebridApiAccounts } from "../src/shared/real-debrid-accounts";
 import { createVisualFixture } from "./visual/fixtures";
 
 describe("Real-Debrid support summary", () => {
+  it("projects the current private AppController notification state into the safe DTO", () => {
+    const controller = Object.create(AppController.prototype) as AppController;
+    const internals = controller as unknown as {
+      notificationOutbox: { getStatus: () => Record<string, unknown> };
+      downloadHealthMonitor: { getState: () => Record<string, unknown> };
+    };
+    internals.notificationOutbox = {
+      getStatus: () => ({
+        queued: 4,
+        lastSuccessAt: 1_700_000_000_000,
+        lastFailureAt: 1_700_000_010_000,
+        events: [{ payload: "PRIVATE_CONTROLLER_EVENT" }]
+      })
+    };
+    internals.downloadHealthMonitor = {
+      getState: () => ({
+        incidentType: "scheduler",
+        incidentStartedAt: 1_700_000_020_000,
+        runFingerprint: "PRIVATE_CONTROLLER_FINGERPRINT"
+      })
+    };
+    vi.spyOn(Date, "now").mockReturnValue(1_700_000_050_000);
+
+    const payload = controller.getNotificationSupportPayload();
+    expect(payload).toEqual({
+      queued: 4,
+      lastSuccessAt: 1_700_000_000_000,
+      incidentType: "scheduler",
+      incidentAgeMs: 30_000
+    });
+    expect(JSON.stringify(payload)).not.toMatch(/PRIVATE_|event|payload|fingerprint|lastFailure/i);
+    vi.restoreAllMocks();
+  });
+
+  it("projects only safe notification delivery and incident aggregates", () => {
+    const payload = buildNotificationSupportPayload(
+      {
+        queued: 7,
+        lastSuccessAt: 1_700_000_000_000,
+        lastFailureAt: 1_700_000_010_000,
+        events: [{ payload: { url: "https://private.example.test/hook", mention: "@private" } }]
+      } as Parameters<typeof buildNotificationSupportPayload>[0],
+      {
+        status: "alerted",
+        incidentType: "no_data",
+        incidentStartedAt: 1_700_000_020_000,
+        runFingerprint: "private-run",
+        url: "https://private.example.test/hook",
+        mention: "@private"
+      } as Parameters<typeof buildNotificationSupportPayload>[1],
+      1_700_000_050_000
+    );
+
+    expect(payload).toEqual({
+      queued: 7,
+      lastSuccessAt: 1_700_000_000_000,
+      incidentType: "no_data",
+      incidentAgeMs: 30_000
+    });
+    expect(JSON.stringify(payload)).not.toMatch(/payload|https?:|mention|private|lastFailure/i);
+  });
+
+  it("reports no active incident when the health state has no incident", () => {
+    expect(buildNotificationSupportPayload(
+      { queued: 0, lastSuccessAt: 0 },
+      { incidentType: null, incidentStartedAt: 0 },
+      1_700_000_050_000
+    )).toEqual({ queued: 0, lastSuccessAt: null, incidentType: null, incidentAgeMs: null });
+  });
+
   it("reports pool counts without exposing account IDs or credentials", () => {
     const summary = buildAccountSummary({
       ...defaultSettings(),
@@ -31,6 +108,35 @@ describe("Real-Debrid support summary", () => {
     expect(serialized).not.toContain("secret-");
   });
 
+  it("reports only safe Deepbrid configuration, status and usage aggregates", () => {
+    const settings = defaultSettings();
+    settings.deepbridApiKey = "synthetic-private-deepbrid-key";
+    settings.providerDailyLimitBytes.deepbrid = 10_000;
+    settings.providerDailyUsageBytes.deepbrid = 4_000;
+    settings.providerTotalUsageBytes.deepbrid = 20_000;
+    settings.debridAccountStatuses["svc-deepbrid"] = {
+      accountId: "svc-deepbrid",
+      provider: "deepbrid",
+      label: "Deepbrid",
+      maskedLogin: "synthetic-masked-login",
+      valid: true,
+      isPremium: true,
+      premiumUntilMs: 1_800_000_000_000,
+      checkedAt: 1_700_000_000_000,
+      message: "PRIVATE_STATUS_MESSAGE"
+    };
+
+    const deepbrid = buildAccountSummary(settings).deepbrid;
+    const serialized = JSON.stringify(deepbrid);
+    expect(deepbrid).toEqual({
+      configured: true,
+      apiKeyConfigured: true,
+      status: { checked: true, valid: true, premium: true, premiumUntilMs: 1_800_000_000_000, checkedAt: 1_700_000_000_000 },
+      usage: { dailyLimitBytes: 10_000, dailyUsageBytes: 4_000, totalUsageBytes: 20_000 }
+    });
+    expect(serialized).not.toMatch(/synthetic-private|PRIVATE_STATUS/);
+  });
+
   it("removes rolling account IDs and labels from support statistics", () => {
     const snapshot = structuredClone(createVisualFixture("empty").snapshot);
     snapshot.stats.rolling24Hours = {
@@ -52,5 +158,29 @@ describe("Real-Debrid support summary", () => {
     expect(serialized).not.toContain("private-user@example.test");
     expect(serialized).toContain("realdebrid");
     expect(serialized).toContain("4096");
+  });
+
+  it("keeps the persisted notification health incident outside support bundles", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-support-health-"));
+    try {
+      const paths = createStoragePaths(root);
+      fs.mkdirSync(root, { recursive: true });
+      fs.writeFileSync(paths.notificationHealthFile, "PRIVATE_HEALTH_INCIDENT_PAYLOAD", "utf8");
+      const snapshot = structuredClone(createVisualFixture("empty").snapshot);
+      const manager = {
+        getSnapshot: () => snapshot,
+        getPackageLogPath: () => null,
+        getItemLogPath: () => null
+      };
+
+      const buffer = await buildSupportBundle(manager as any, root, { hostDiagnosticsMode: "none" });
+      const zip = new AdmZip(buffer);
+      const entries = zip.getEntries().map((entry) => entry.entryName);
+
+      expect(entries).not.toContain(path.basename(paths.notificationHealthFile));
+      expect(buffer.toString("utf8")).not.toContain("PRIVATE_HEALTH_INCIDENT_PAYLOAD");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

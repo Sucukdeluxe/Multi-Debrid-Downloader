@@ -76,6 +76,7 @@ function createSettings(): AppSettings {
     bestDebridUseWebLogin: false,
     allDebridToken: "visual-all-debrid-token",
     allDebridUseWebLogin: false,
+    deepbridApiKey: "visual-deepbrid-key",
     ddownloadLogin: "visual-ddownload",
     ddownloadPassword: "visual-password",
     oneFichierApiKey: "visual-onefichier-key",
@@ -139,6 +140,13 @@ function createSettings(): AppSettings {
     notifyOnPackageCompleted: true,
     notifyOnPackageFailed: true,
     notifyOnRunFinished: true,
+    notifyPackageSuccessMode: "digest",
+    notifyOnRemainingBelow: true,
+    notifyRemainingThresholdGb: 75,
+    notifyOnDownloadStall: true,
+    notifyStallAfterSeconds: 120,
+    notifyStallCooldownMinutes: 15,
+    notifyOnDownloadRecovery: true,
     totalDownloadedAllTime: 987654321000,
     totalCompletedFilesAllTime: 842,
     totalRuntimeAllTimeMs: 172800000,
@@ -233,6 +241,12 @@ function createSettings(): AppSettings {
       }
     },
     providerDailyUsageDay: "2026-08-10",
+    dailyStartEnabled: false,
+    dailyStartMinuteOfDay: 0,
+    dailyStartFirstLocalDate: "",
+    dailyStartLastHandledLocalDate: "",
+    dailyStartPendingLocalDate: "",
+    dailyStartLastOutcome: "",
     scheduledStartEpochMs: 0
   };
 }

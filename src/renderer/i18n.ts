@@ -16,6 +16,9 @@ const pairs = [
   ["In den Infobereich minimieren", "Minimize to tray"], ["Vor dem Löschen nachfragen", "Confirm before deleting"], ["Download-Liste mitsichern", "Include download list in backup"],
   ["Ferndiagnose-Einstellungen mitsichern", "Include remote diagnostics settings in backup"], ["Webhook-Adresse", "Webhook address"], ["Discord-Erwähnung (optional)", "Discord mention (optional)"],
   ["Melden, wenn ein Paket fertig ist", "Notify when a package completes"], ["Melden, wenn ein Paket fehlschlägt", "Notify when a package fails"], ["Melden, wenn alles fertig ist", "Notify when everything completes"],
+  ["Erfolgsmeldungen senden", "Send success notifications"], ["Gesammelt (alle 2 Minuten)", "Grouped (every 2 minutes)"], ["Jedes Paket einzeln", "Each package individually"],
+  ["Melden, wenn der gesamte Lauf fertig ist", "Notify when the entire run completes"], ["Melden, wenn die Restmenge unterschritten wird", "Notify when the remaining amount falls below the threshold"], ["Restmengenschwelle (GB)", "Remaining amount threshold (GB)"],
+  ["Melden, wenn Downloads stillstehen", "Notify when downloads stall"], ["Stillstand bestätigen nach (Sek.)", "Confirm stall after (sec.)"], ["Frühestens erneut melden nach (Min.)", "Notify again after at least (min.)"], ["Melden, wenn Downloads wieder laufen", "Notify when downloads resume"],
   ["Quelle und Zeitpunkt der Update-Prüfung.", "Update source and check timing."], ["Aktualisierung", "Update"], ["Beim Start nach Updates suchen", "Check for updates on startup"], ["Update-Quelle", "Update source"],
   ["Jetzt nach einer neuen Version suchen", "Check for a new version now"], ["Nach Updates suchen", "Check for updates"], ["Quelle im Format Benutzer/Repository.", "Source in owner/repository format."],
   ["Update verfügbar", "Update available"], ["Eine neue Version ist bereit. Klicke hier, um sie zu installieren.", "A new version is ready. Click here to install it."], ["Update installieren", "Install update"],
@@ -60,7 +63,7 @@ const pairs = [
   ["Abgeschlossene und gelöschte Pakete erscheinen hier.", "Completed and deleted packages appear here."], ["Passe Filter oder Suche an.", "Adjust the filter or search."], ["Öffne die Ansicht erneut, um es noch einmal zu versuchen.", "Open the view again to retry."],
   ["Alle sichtbaren Einträge auswählen", "Select all visible entries"], ["Details anzeigen", "Show details"], ["Details ausblenden", "Hide details"],
   ["Sichtbar:", "Visible:"], ["pro Seite", "per page"],
-  ["Verfügbarkeit", "Availability"], ["Hinzugefügt am", "Added on"], ["Ungeprüft", "Unchecked"], ["Paket gestoppt", "Package stopped"], ["Alle anzeigen", "Show all"], ["Planen", "Schedule"], ["Startzeit", "Start time"],
+  ["Verfügbarkeit", "Availability"], ["Hinzugefügt am", "Added on"], ["Ungeprüft", "Unchecked"], ["Paket gestoppt", "Package stopped"], ["Alle anzeigen", "Show all"], ["Planen", "Schedule"], ["Startzeit", "Start time"], ["Starttag", "Start day"], ["Ab heute", "Starting today"], ["Ab morgen", "Starting tomorrow"], ["Bitte eine gültige Startzeit auswählen.", "Select a valid start time."],
   ["Keine Downloads", "No downloads"], ["Keine passenden Downloads", "No matching downloads"], ["Füge Links hinzu, um Downloads vorzubereiten.", "Add links to prepare downloads."], ["Passe Filter oder Suche an.", "Adjust the filter or search."],
   ["Keine Links gesammelt", "No links collected"], ["Keine passenden Links", "No matching links"], ["Füge Links oder Text ein, um sie zu sammeln.", "Paste links or text to collect them."], ["Links durchsuchen", "Search links"],
   ["Datenmenge", "Data volume"], ["Sitzungszähler", "Session counter"], ["Sieben Tage", "Seven days"], ["30 Tage", "30 days"], ["Zeitraum", "Period"], ["Erfolgreich", "Successful"],
@@ -208,7 +211,7 @@ const prefixedPairs = [
   ["Sicherung laden fehlgeschlagen: ", "Loading backup failed: "], ["Support-Bundle fehlgeschlagen: ", "Support bundle failed: "], ["Support-Trace fehlgeschlagen: ", "Support trace failed: "],
   ["Debug-Setup-Check fehlgeschlagen: ", "Debug setup check failed: "], ["Fehler-Ansicht fehlgeschlagen: ", "Error view failed: "], ["Token-Rotation fehlgeschlagen: ", "Token rotation failed: "],
   ["Ferndiagnose-Status fehlgeschlagen: ", "Remote diagnostics status failed: "], ["Aktivieren fehlgeschlagen: ", "Enabling failed: "], ["Deaktivieren fehlgeschlagen: ", "Disabling failed: "],
-  ["Session-Reset fehlgeschlagen: ", "Session reset failed: "], ["Download-Reset fehlgeschlagen: ", "Download reset failed: "]
+  ["Session-Reset fehlgeschlagen: ", "Session reset failed: "], ["Download-Reset fehlgeschlagen: ", "Download reset failed: "], ["Zeitplan konnte nicht aktiviert werden: ", "Schedule could not be activated: "], ["Zeitplan konnte nicht abgebrochen werden: ", "Schedule could not be cancelled: "], ["Zeitplan konnte nicht abgeglichen werden: ", "Schedule could not be reconciled: "]
 ] as const;
 
 export function normalizeLanguage(value: unknown): AppLanguage {

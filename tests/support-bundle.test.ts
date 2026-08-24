@@ -4,7 +4,10 @@ import path from "node:path";
 import AdmZip from "adm-zip";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildSupportBundle } from "../src/main/support-bundle";
+import { createStoragePaths, emptySession, loadSession } from "../src/main/storage";
 import type { DownloadManager } from "../src/main/download-manager";
+import type { NotificationSupportPayload } from "../src/main/support-data";
+import type { SessionState } from "../src/shared/types";
 
 const tempDirs: string[] = [];
 const legacyManifestFile = ["debug_", "a", "i", "_manifest.json"].join("");
@@ -15,10 +18,10 @@ afterEach(() => {
   }
 });
 
-function fakeManager(): DownloadManager {
+function fakeManager(session: SessionState = emptySession()): DownloadManager {
   const snapshot = {
     stats: {},
-    session: { packages: {}, items: {}, packageOrder: [] },
+    session,
     speedText: "",
     etaText: "",
     canStart: false,
@@ -70,5 +73,98 @@ describe("buildSupportBundle (async, non-blocking)", () => {
     clearTimeout(timer);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(timerFired).toBe(true);
+  });
+
+  it("writes only the safe notification aggregate and excludes its runtime files", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-bundle-notifications-"));
+    tempDirs.push(root);
+    const paths = createStoragePaths(root);
+    fs.writeFileSync(paths.notificationOutboxFile, "PRIVATE_OUTBOX_RUNTIME_PAYLOAD", "utf8");
+    fs.writeFileSync(paths.notificationHealthFile, "PRIVATE_HEALTH_RUNTIME_PAYLOAD", "utf8");
+    const notificationStatus: NotificationSupportPayload & Record<string, unknown> = {
+      queued: 7,
+      lastSuccessAt: 1_700_000_000_000,
+      incidentType: "scheduler",
+      incidentAgeMs: 45_000,
+      events: [{ payload: "PRIVATE_EVENT_PAYLOAD" }],
+      url: "https://private.example.test/webhook",
+      mention: "@private"
+    };
+
+    const buffer = await buildSupportBundle(fakeManager(), root, { hostDiagnosticsMode: "none", notificationStatus });
+    const zip = new AdmZip(buffer);
+    const entry = zip.getEntry("overview/notifications.json");
+    const payload = JSON.parse(entry?.getData().toString("utf8") || "null");
+    const serializedEntries = zip.getEntries().map((item) => item.getData().toString("utf8")).join("\n");
+
+    expect(payload).toEqual({
+      queued: 7,
+      lastSuccessAt: 1_700_000_000_000,
+      incidentType: "scheduler",
+      incidentAgeMs: 45_000
+    });
+    expect(zip.getEntries().map((item) => item.entryName)).not.toContain(path.basename(paths.notificationOutboxFile));
+    expect(zip.getEntries().map((item) => item.entryName)).not.toContain(path.basename(paths.notificationHealthFile));
+    expect(serializedEntries).not.toMatch(/PRIVATE_|https:\/\/private|@private/);
+  });
+
+  it("excludes legacy raw package failure details after loading persisted sessions", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-bundle-package-telemetry-"));
+    tempDirs.push(root);
+    const paths = createStoragePaths(root);
+    const legacySession = emptySession();
+    legacySession.packageOrder = ["pkg-private"];
+    legacySession.packages["pkg-private"] = {
+      id: "pkg-private",
+      name: "Support diagnostics",
+      outputDir: path.join(root, "downloads"),
+      extractDir: path.join(root, "extract"),
+      status: "failed",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      archiveOperations: [{
+        id: "archive-private",
+        name: "private.rar",
+        itemIds: [],
+        partCount: 1,
+        startedAt: 1_000,
+        completedAt: 2_000,
+        durationMs: 1_000,
+        status: "failed",
+        errorCategory: "ARCHIVE_PRIVATE C:\\Users\\Alice\\private.rar https://private.example.test/archive"
+      }],
+      remuxOperations: [{
+        id: "remux-private",
+        fileName: "private.mkv",
+        startedAt: 2_000,
+        completedAt: 3_000,
+        durationMs: 1_000,
+        status: "failed",
+        errorCategory: "REMUX_PRIVATE C:\\Users\\Alice\\private.mkv https://private.example.test/remux"
+      }],
+      cleanupErrorCategory: "CLEANUP_PRIVATE C:\\Users\\Alice\\private.rar https://private.example.test/cleanup",
+      outputCount: 7,
+      createdAt: 1_000,
+      updatedAt: 3_000
+    };
+    fs.writeFileSync(paths.sessionFile, JSON.stringify(legacySession), "utf8");
+
+    const buffer = await buildSupportBundle(fakeManager(loadSession(paths)), root, { hostDiagnosticsMode: "none" });
+    const zip = new AdmZip(buffer);
+    const payload = JSON.parse(zip.getEntry("overview/packages.json")?.getData().toString("utf8") || "null");
+    const serializedEntries = zip.getEntries().map((entry) => entry.getData().toString("utf8")).join("\n");
+
+    expect(payload).toEqual({
+      count: 1,
+      packages: [expect.objectContaining({
+        name: "Support diagnostics",
+        outputCount: 7,
+        archiveOperations: [expect.objectContaining({ errorCategory: "Entpacken" })],
+        remuxOperations: [expect.objectContaining({ errorCategory: "Remux" })],
+        cleanupErrorCategory: "Cleanup"
+      })]
+    });
+    expect(serializedEntries).not.toMatch(/ARCHIVE_PRIVATE|REMUX_PRIVATE|CLEANUP_PRIVATE|private\.example\.test/);
   });
 });

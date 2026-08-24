@@ -50,6 +50,7 @@ const providerLabels: Record<DebridProvider, string> = {
   "megadebrid-web": "Mega-Debrid Web",
   bestdebrid: "BestDebrid",
   alldebrid: "AllDebrid",
+  deepbrid: "Deepbrid",
   ddownload: "DDownload",
   onefichier: "1Fichier",
   debridlink: "Debrid-Link",

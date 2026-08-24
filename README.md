@@ -46,6 +46,7 @@ Windows 10 or Windows 11 is required. Release executables are currently unsigned
 | Real-Debrid | API token, browser login |
 | AllDebrid | API token, browser login |
 | BestDebrid | API token, cookie import |
+| Deepbrid | API key |
 | Debrid-Link | Multiple API keys |
 | Mega-Debrid | API, web login |
 | LinkSnappy | Account login |
@@ -59,7 +60,7 @@ Provider availability and supported hosters can change independently of the appl
 The Downloads workspace is optimized for large queues:
 
 - Compact package and file rows with progress, downloaded size, total size, hoster, service, priority, status, speed, and availability.
-- RapidGator and DDownload hoster icons with full names in tooltips.
+- RapidGator, 1Fichier, and DDownload hoster icons with full names in tooltips.
 - Online counters for packages and clear online, partial, checking, and offline states.
 - Drag-reorderable columns with a smooth full-column preview and persisted layout.
 - Green progress indicators, animated package expansion, and clear selected-row highlighting.
@@ -93,7 +94,7 @@ The Downloads workspace is optimized for large queues:
 - Global or per-download speed limits and time-based bandwidth schedules.
 - Package speed, ETA, progress, and live bandwidth statistics.
 - Duplicate handling with keep, skip, or overwrite choices.
-- Optional scheduled queue start and automatic resume after restart.
+- Optional one-time or recurring daily queue starts with local-time scheduling and automatic resume after restart.
 
 ## Extraction and cleanup
 
@@ -120,6 +121,7 @@ The Downloads workspace is optimized for large queues:
 - Configurable download folder, queue behavior, history retention, notifications, extraction, cleanup, and bandwidth.
 - GitHub update checks with localized release notes and download actions.
 - Backup export/import for settings and optional queue data.
+- Discord webhook notifications for package and run results, remaining volume, confirmed stalls, and recovery.
 - Optional minimize-to-tray and desktop notifications.
 
 ## Getting started

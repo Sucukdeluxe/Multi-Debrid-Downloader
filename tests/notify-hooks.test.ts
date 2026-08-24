@@ -2,37 +2,42 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-
-vi.mock("../src/main/notify", async (importActual) => {
-  const actual = await importActual<typeof import("../src/main/notify")>();
-  return { ...actual, sendNotification: vi.fn().mockResolvedValue(true) };
-});
-
 import { DownloadManager } from "../src/main/download-manager";
 import { defaultSettings } from "../src/main/constants";
+import { buildRunNotificationEvent, buildRunResult } from "../src/main/notification-events";
+import type { NotificationEvent } from "../src/main/notification-outbox";
 import { createStoragePaths, emptySession } from "../src/main/storage";
 import { shutdownItemLogs } from "../src/main/item-log";
 import { shutdownPackageLogs } from "../src/main/package-log";
 import { shutdownRenameLog } from "../src/main/rename-log";
-import { sendNotification } from "../src/main/notify";
+import type { AppSettings, HistoryEntry, PackageEntry } from "../src/shared/types";
 
-const mockedSend = sendNotification as unknown as ReturnType<typeof vi.fn>;
 const tempDirs: string[] = [];
 
 afterEach(() => {
-  mockedSend.mockClear();
+  vi.restoreAllMocks();
   shutdownItemLogs();
   shutdownPackageLogs();
   shutdownRenameLog();
   for (const dir of tempDirs.splice(0)) {
-    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+    }
   }
 });
 
-function setup(): { manager: DownloadManager; session: ReturnType<typeof emptySession> } {
+function setup(settings: Partial<AppSettings> = {}): {
+  manager: DownloadManager;
+  session: ReturnType<typeof emptySession>;
+  events: NotificationEvent[];
+  history: HistoryEntry[];
+} {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-nh-"));
   tempDirs.push(root);
   const session = emptySession();
+  const events: NotificationEvent[] = [];
+  const history: HistoryEntry[] = [];
   const manager = new DownloadManager(
     {
       ...defaultSettings(),
@@ -41,113 +46,845 @@ function setup(): { manager: DownloadManager; session: ReturnType<typeof emptySe
       extractDir: path.join(root, "extract"),
       notifyUrl: "https://discord.com/api/webhooks/123/abc",
       notifyOnPackageCompleted: true,
-      notifyOnPackageFailed: true
+      notifyOnPackageFailed: true,
+      notifyOnRunFinished: true,
+      notifyPackageSuccessMode: "individual",
+      autoExtract: false,
+      ...settings
     },
     session,
-    createStoragePaths(path.join(root, "state"))
+    createStoragePaths(path.join(root, "state")),
+    {
+      enqueueNotification: async (event: NotificationEvent) => {
+        events.push(event);
+      },
+      onHistoryEntry: (entry) => history.push(entry)
+    }
   );
-  return { manager, session };
+  return { manager, session, events, history };
 }
 
-function addPackage(session: ReturnType<typeof emptySession>, itemStatuses: string[]): any {
-  const pkgId = "pkg-1";
-  const pkg: any = {
-    id: pkgId,
-    name: "Test.Show.S01",
-    outputDir: "C:/out",
-    extractDir: "C:/extract",
+function addPackage(
+  session: ReturnType<typeof emptySession>,
+  statuses: Array<"completed" | "failed" | "cancelled" | "queued"> = ["completed"],
+  packageId = "pkg-1"
+): PackageEntry {
+  const startedAt = Date.now() - 30_000;
+  const pkg: PackageEntry = {
+    id: packageId,
+    name: `Test ${packageId}`,
+    outputDir: `C:/out/${packageId}`,
+    extractDir: `C:/extract/${packageId}`,
     status: "queued",
-    itemIds: itemStatuses.map((_s, i) => `it-${i}`),
+    itemIds: statuses.map((_status, index) => `${packageId}-item-${index}`),
     cancelled: false,
     enabled: true,
     priority: "normal",
-    createdAt: 1,
-    updatedAt: 1
+    downloadStartedAt: startedAt,
+    downloadCompletedAt: startedAt + 10_000,
+    downloadEndedAt: startedAt + 10_000,
+    createdAt: startedAt,
+    updatedAt: startedAt + 10_000
   };
-  session.packages[pkgId] = pkg;
-  session.packageOrder.push(pkgId);
-  itemStatuses.forEach((status, i) => {
-    session.items[`it-${i}`] = {
-      id: `it-${i}`,
-      packageId: pkgId,
-      url: `https://dummy/${i}`,
-      provider: null,
+  session.packages[packageId] = pkg;
+  session.packageOrder.push(packageId);
+  statuses.forEach((status, index) => {
+    const itemId = `${packageId}-item-${index}`;
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: `https://dummy/${packageId}/${index}`,
+      provider: "realdebrid",
       status,
       retries: 0,
       speedBps: 0,
-      downloadedBytes: 0,
-      totalBytes: null,
-      progressPercent: 0,
-      fileName: `f${i}.rar`,
-      targetPath: "",
+      downloadedBytes: status === "completed" ? 1_000 : 0,
+      totalBytes: 1_000,
+      progressPercent: status === "completed" ? 100 : 0,
+      fileName: `${packageId}-${index}.rar`,
+      targetPath: `C:/out/${packageId}/${packageId}-${index}.rar`,
       resumable: true,
       attempts: 1,
-      lastError: "",
-      fullStatus: "",
-      createdAt: 1,
-      updatedAt: 1
-    } as any;
+      lastError: status === "failed" ? "offline" : "",
+      fullStatus: status === "completed" ? "Fertig" : status === "failed" ? "Offline" : "Wartet",
+      createdAt: startedAt,
+      updatedAt: startedAt + 10_000
+    };
   });
   return pkg;
 }
 
-describe("refreshPackageStatus failed-transition notify", () => {
-  it("notifies a MIXED package (some success, last finisher failed) — the lost-webhook case", () => {
-    const { manager, session } = setup();
+function internal(manager: DownloadManager): any {
+  return manager as any;
+}
+
+async function flushNotifications(): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
+describe("authoritative package completion", () => {
+  it("waits for main, deferred, hybrid and file operations before emitting one package result", async () => {
+    const { manager, session, events, history } = setup();
+    const pkg = addPackage(session);
+    const state = internal(manager);
+    state.runPackageIds.add(pkg.id);
+    state.packagePostProcessTasks.set(pkg.id, Promise.resolve());
+    state.packageDeferredPostProcessTasks.set(pkg.id, new Set([Promise.resolve()]));
+    state.packageHybridPostProcessTasks.set(pkg.id, new Set([Promise.resolve()]));
+    state.packageFileOpChain.set(pkg.id, Promise.resolve());
+
+    state.tryFinalizePackageResult?.(pkg.id);
+    await flushNotifications();
+    expect(events).toHaveLength(0);
+    expect(history).toHaveLength(0);
+
+    state.packagePostProcessTasks.delete(pkg.id);
+    state.packageDeferredPostProcessTasks.delete(pkg.id);
+    state.packageHybridPostProcessTasks.delete(pkg.id);
+    state.tryFinalizePackageResult?.(pkg.id);
+    await flushNotifications();
+    expect(events).toHaveLength(0);
+
+    state.packageFileOpChain.delete(pkg.id);
+    state.tryFinalizePackageResult?.(pkg.id);
+    await flushNotifications();
+
+    expect(events.map((event) => event.type)).toEqual(["package_completed"]);
+    expect(history).toHaveLength(1);
+    expect(pkg.postProcessCompletedAt).toBeGreaterThan(0);
+    expect(pkg.terminalAt).toBe(pkg.postProcessCompletedAt);
+  });
+
+  it("keeps postprocess start unset when a queued package never receives a slot", async () => {
+    const { manager, session, history } = setup();
+    const pkg = addPackage(session);
+    const state = internal(manager);
+    pkg.postProcessQueuedAt = Date.now() - 5000;
+    state.runPackageIds.add(pkg.id);
+
+    state.tryFinalizePackageResult(pkg.id);
+    await flushNotifications();
+
+    expect(history).toHaveLength(1);
+    expect(history[0].postProcessStartedAt).toBe(0);
+    expect(history[0].postProcessDurationSeconds).toBe(0);
+  });
+
+  it("records exactly one business history entry when a finalized package is manually deleted", async () => {
+    const { manager, session, history } = setup();
+    const pkg = addPackage(session);
+    const state = internal(manager);
+    state.runPackageIds.add(pkg.id);
+
+    state.tryFinalizePackageResult(pkg.id);
+    await flushNotifications();
+    manager.cancelPackage(pkg.id);
+
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({ id: `hist-${pkg.id}-1`, status: "completed" });
+  });
+
+  it("turns a deferred remux failure into one immediate failed package event", async () => {
+    const { manager, session, events, history } = setup({ notifyPackageSuccessMode: "digest" });
+    const pkg = addPackage(session);
+    const state = internal(manager);
+    state.runPackageIds.add(pkg.id);
+    pkg.remuxOperations = [{
+      id: "remux-1",
+      fileName: "episode.mkv",
+      startedAt: 10_000,
+      completedAt: 14_000,
+      durationMs: 4_000,
+      status: "failed",
+      errorCategory: "ffmpeg"
+    }];
+    state.packageDeferredPostProcessTasks.set(pkg.id, new Set([Promise.resolve()]));
+
+    state.tryFinalizePackageResult?.(pkg.id);
+    await flushNotifications();
+    expect(events).toHaveLength(0);
+
+    state.packageDeferredPostProcessTasks.delete(pkg.id);
+    state.tryFinalizePackageResult?.(pkg.id);
+    await flushNotifications();
+
+    expect(events.map((event) => event.type)).toEqual(["package_failed"]);
+    expect(events[0].priority).toBe("error");
+    expect(history[0]).toMatchObject({ status: "failed", failurePhase: "remux", failedFiles: 1 });
+  });
+
+  it("emits a partial package result when the terminal downloads are mixed", async () => {
+    const { manager, session, events, history } = setup();
     const pkg = addPackage(session, ["completed", "failed"]);
     session.running = true;
+    internal(manager).runPackageIds.add(pkg.id);
 
-    (manager as any).refreshPackageStatus(pkg);
-
-    expect(pkg.status).toBe("failed");
-    expect(mockedSend).toHaveBeenCalledTimes(1);
-    expect(mockedSend.mock.calls[0][1].title).toBe("❌ Paket fehlgeschlagen");
-    expect(mockedSend.mock.calls[0][1].message).toContain("1 von 2");
-  });
-
-  it("notifies an all-failed package and dedups repeat refreshes", () => {
-    const { manager, session } = setup();
-    const pkg = addPackage(session, ["failed", "failed"]);
-    session.running = true;
-
-    (manager as any).refreshPackageStatus(pkg);
-    (manager as any).refreshPackageStatus(pkg);
+    internal(manager).refreshPackageStatus(pkg);
+    await flushNotifications();
 
     expect(pkg.status).toBe("failed");
-    expect(mockedSend).toHaveBeenCalledTimes(1);
+    expect(events.map((event) => event.type)).toEqual(["package_partial"]);
+    expect(history[0]).toMatchObject({ status: "partial", successfulFiles: 1, failedFiles: 1 });
   });
 
-  it("stays silent outside a run (startup recovery must not spam)", () => {
-    const { manager, session } = setup();
-    const pkg = addPackage(session, ["failed"]);
-    session.running = false;
+  it("creates a new result generation when extraction is retried", async () => {
+    const { manager, session, events, history } = setup();
+    const pkg = addPackage(session);
+    const state = internal(manager);
+    state.runPackageIds.add(pkg.id);
+    pkg.archiveOperations = [{
+      id: "archive-1",
+      name: "episode.rar",
+      itemIds: [...pkg.itemIds],
+      partCount: 1,
+      startedAt: 10_000,
+      completedAt: 12_000,
+      durationMs: 2_000,
+      status: "failed",
+      errorCategory: "crc_error"
+    }];
+    state.tryFinalizePackageResult?.(pkg.id);
+    await flushNotifications();
+    const firstId = events[0]?.id;
 
-    (manager as any).refreshPackageStatus(pkg);
+    const postProcess = vi.spyOn(state, "runPackagePostProcessing").mockResolvedValue(undefined);
+    session.items[pkg.itemIds[0]].fullStatus = "Entpacken - Error";
+    manager.retryExtraction(pkg.id);
+    expect(postProcess).toHaveBeenCalledWith(pkg.id);
+    pkg.archiveOperations = [{
+      id: "archive-2",
+      name: "episode.rar",
+      itemIds: [...pkg.itemIds],
+      partCount: 1,
+      startedAt: 20_000,
+      completedAt: 23_000,
+      durationMs: 3_000,
+      status: "completed",
+      errorCategory: ""
+    }];
+    session.items[pkg.itemIds[0]].fullStatus = "Entpackt - Done (3.0s)";
+    pkg.status = "completed";
+    state.tryFinalizePackageResult?.(pkg.id);
+    await flushNotifications();
 
-    expect(pkg.status).toBe("failed");
-    expect(mockedSend).not.toHaveBeenCalled();
+    expect(events).toHaveLength(2);
+    expect(events[1].id).not.toBe(firstId);
+    expect(events[1].type).toBe("package_completed");
+    expect(history).toHaveLength(2);
   });
 
-  it("does not notify while items are still pending", () => {
-    const { manager, session } = setup();
-    const pkg = addPackage(session, ["failed", "queued"]);
+  it("continues the persisted result generation after an extraction retry following restart", async () => {
+    const { manager, session, events, history } = setup();
+    const pkg = addPackage(session);
+    const state = internal(manager);
+    pkg.resultGeneration = 7;
+    pkg.terminalAt = Date.now() - 1_000;
+    pkg.archiveOperations = [{
+      id: "archive-restart-failed",
+      name: "episode.rar",
+      itemIds: [...pkg.itemIds],
+      partCount: 1,
+      startedAt: 10_000,
+      completedAt: 12_000,
+      durationMs: 2_000,
+      status: "failed",
+      errorCategory: "crc_error"
+    }];
+    session.items[pkg.itemIds[0]].fullStatus = "Entpacken - Error";
+    vi.spyOn(state, "runPackagePostProcessing").mockResolvedValue(undefined);
+
+    manager.retryExtraction(pkg.id);
+    expect(pkg.resultGeneration).toBe(8);
+
+    pkg.archiveOperations = [{
+      id: "archive-restart-completed",
+      name: "episode.rar",
+      itemIds: [...pkg.itemIds],
+      partCount: 1,
+      startedAt: 20_000,
+      completedAt: 23_000,
+      durationMs: 3_000,
+      status: "completed",
+      errorCategory: ""
+    }];
+    session.items[pkg.itemIds[0]].fullStatus = "Entpackt - Done (3.0s)";
+    pkg.status = "completed";
+    state.tryFinalizePackageResult(pkg.id);
+    await flushNotifications();
+
+    expect(events).toHaveLength(1);
+    expect(events[0].id).toContain(":8:");
+    expect(history).toHaveLength(1);
+    expect(history[0].id).toBe(`hist-${pkg.id}-8`);
+  });
+
+  it("moves a pending success digest into the outbox before shutdown", async () => {
+    const { manager, session, events } = setup({ notifyPackageSuccessMode: "digest" });
+    const pkg = addPackage(session);
+    const state = internal(manager);
+    state.runPackageIds.add(pkg.id);
+
+    state.tryFinalizePackageResult(pkg.id);
+    await flushNotifications();
+    expect(events).toHaveLength(0);
+
+    await state.flushNotificationsForShutdown?.();
+    await flushNotifications();
+
+    expect(events.map((event) => event.type)).toEqual(["package_completed"]);
+    expect(events[0].payload.title).toContain("Paket-Digest");
+  });
+
+  it("persists a success digest that finalizes after shutdown flushing has started", async () => {
+    const { manager, session, events } = setup({ notifyPackageSuccessMode: "digest" });
+    const pkg = addPackage(session);
+    const state = internal(manager);
+    state.runPackageIds.add(pkg.id);
+
+    await state.flushNotificationsForShutdown();
+    state.tryFinalizePackageResult(pkg.id);
+    await flushNotifications();
+
+    expect(events.map((event) => event.type)).toEqual(["package_completed"]);
+    expect(events[0].payload.title).toContain("Paket-Digest");
+  });
+
+  it.each([
+    ["digest", 4],
+    ["individual", 80]
+  ] as const)("delivers 80 successful packages in %s mode without loss", async (mode, expectedEvents) => {
+    const { manager, session, events } = setup({ notifyPackageSuccessMode: mode });
+    const state = internal(manager);
+    for (let index = 0; index < 80; index += 1) {
+      const pkg = addPackage(session, ["completed"], `bulk-package-${String(index).padStart(2, "0")}`);
+      state.runPackageIds.add(pkg.id);
+      state.tryFinalizePackageResult(pkg.id);
+    }
+    if (mode === "digest") {
+      state.flushPackageSuccessDigest();
+    }
+    await state.notificationEnqueueChain;
+
+    expect(events).toHaveLength(expectedEvents);
+    expect(new Set(events.map((event) => event.id))).toHaveLength(expectedEvents);
+    if (mode === "digest") {
+      expect(events.map((event) => event.payload.fields.length)).toEqual([20, 20, 20, 20]);
+      expect(events.every((event) => event.payload.description === "80 Pakete abgeschlossen")).toBe(true);
+    }
+  });
+});
+
+describe("authoritative run completion", () => {
+  it.each([
+    ["successful", 0, "success"],
+    ["failed", 1, "error"]
+  ] as const)("keeps a %s run_completed event for 24 hours", (_label, failedFiles, priority) => {
+    const notification = buildRunNotificationEvent(buildRunResult({
+      id: `run-${priority}`,
+      stopped: false,
+      startedAt: 1000,
+      completedAt: 2000,
+      packages: [],
+      failedFiles
+    }));
+
+    expect(notification.type).toBe("run_completed");
+    expect(notification.priority).toBe(priority);
+    expect(notification.expiresAt - notification.createdAt).toBe(24 * 60 * 60 * 1000);
+  });
+
+  it("emits run_stopped without run_completed for a manual stop", async () => {
+    const { manager, session, events } = setup();
+    const pkg = addPackage(session, ["completed", "queued"]);
+    const state = internal(manager);
     session.running = true;
+    session.runStartedAt = Date.now() - 10_000;
+    state.runItemIds = new Set(pkg.itemIds);
+    state.runPackageIds = new Set([pkg.id]);
+    state.runOutcomes = new Map([[pkg.itemIds[0], "completed"]]);
 
-    (manager as any).refreshPackageStatus(pkg);
+    manager.stop();
+    await flushNotifications();
 
-    expect(pkg.status).toBe("queued");
-    expect(mockedSend).not.toHaveBeenCalled();
+    expect(events.map((event) => event.type)).toEqual(["run_stopped"]);
+    expect(events.some((event) => event.type === "run_completed")).toBe(false);
   });
 
-  it("releases the dedup marker when the send ultimately fails (retro-notify possible)", async () => {
-    const { manager, session } = setup();
-    const pkg = addPackage(session, ["failed", "failed"]);
+  it("builds run_stopped file counters only from finalized package results", async () => {
+    const { manager, session, events } = setup();
+    const pkg = addPackage(session);
+    const state = internal(manager);
+    state.runPackageIds = new Set([pkg.id]);
+    state.tryFinalizePackageResult(pkg.id);
+    await flushNotifications();
+    events.length = 0;
+
     session.running = true;
-    mockedSend.mockResolvedValueOnce(false);
+    session.runStartedAt = Date.now() - 10_000;
+    state.runItemIds = new Set(pkg.itemIds);
+    state.runPackageIds = new Set([pkg.id]);
+    state.runOutcomes = new Map([[pkg.itemIds[0], "failed"]]);
 
-    (manager as any).refreshPackageStatus(pkg);
-    await new Promise((r) => setTimeout(r, 0));
+    manager.stop();
+    await flushNotifications();
 
-    expect((manager as any).notifiedPackages.has(pkg.id)).toBe(false);
+    const stopped = events.find((event) => event.type === "run_stopped");
+    expect(stopped).toBeDefined();
+    expect(stopped?.payload.fields.some((field) => field.name === "Dateien" && field.value === "1 erfolgreich · 0 fehlgeschlagen · 0 abgebrochen")).toBe(true);
+  });
+
+  it("waits for failed extraction package results before emitting the final run summary", async () => {
+    const { manager, session, events } = setup({ notifyPackageSuccessMode: "digest" });
+    const pkg = addPackage(session);
+    const state = internal(manager);
+    session.running = true;
+    session.runStartedAt = Date.now() - 20_000;
+    state.runItemIds = new Set(pkg.itemIds);
+    state.runPackageIds = new Set([pkg.id]);
+    state.runOutcomes = new Map([[pkg.itemIds[0], "completed"]]);
+    state.packageDeferredPostProcessTasks.set(pkg.id, new Set([Promise.resolve()]));
+    pkg.archiveOperations = [{
+      id: "archive-failed",
+      name: "episode.part01.rar",
+      itemIds: [...pkg.itemIds],
+      partCount: 16,
+      startedAt: 10_000,
+      completedAt: 18_000,
+      durationMs: 8_000,
+      status: "failed",
+      errorCategory: "wrong_password"
+    }];
+
+    state.finishRun();
+    await flushNotifications();
+    expect(events).toHaveLength(0);
+
+    state.packageDeferredPostProcessTasks.delete(pkg.id);
+    state.tryFinalizePackageResult?.(pkg.id);
+    await flushNotifications();
+
+    expect(events.map((event) => event.type)).toEqual(["package_failed", "run_completed"]);
+    const runEvent = events[1];
+    expect(runEvent.payload.fields.some((field) => field.name === "Entpackfehler" && field.value === "1")).toBe(true);
+    expect(runEvent.payload.fields.some((field) => field.name === "Dateien" && field.value === "0 erfolgreich · 1 fehlgeschlagen · 0 abgebrochen")).toBe(true);
+  });
+
+  it("flushes successful package digests before run_completed", async () => {
+    const { manager, session, events } = setup({ notifyPackageSuccessMode: "digest" });
+    const pkg = addPackage(session);
+    const state = internal(manager);
+    session.running = true;
+    session.runStartedAt = Date.now() - 20_000;
+    state.runItemIds = new Set(pkg.itemIds);
+    state.runPackageIds = new Set([pkg.id]);
+    state.runOutcomes = new Map([[pkg.itemIds[0], "completed"]]);
+
+    state.finishRun();
+    state.tryFinalizePackageResult?.(pkg.id);
+    await flushNotifications();
+
+    expect(events.map((event) => event.type)).toEqual(["package_completed", "run_completed"]);
+    expect(events[0].payload.title).toContain("Paket-Digest");
+  });
+
+  it("keeps a finalized success in the digest after package_done removes its session package", async () => {
+    const { manager, session, events } = setup({
+      notifyPackageSuccessMode: "digest",
+      completedCleanupPolicy: "package_done"
+    });
+    const pkg = addPackage(session);
+    const state = internal(manager);
+    session.running = true;
+    session.runStartedAt = Date.now() - 20_000;
+    state.runItemIds = new Set(pkg.itemIds);
+    state.runPackageIds = new Set([pkg.id]);
+    state.runOutcomes = new Map([[pkg.itemIds[0], "completed"]]);
+
+    state.tryFinalizePackageResult(pkg.id);
+    state.applyPackageDoneCleanup(pkg.id);
+    expect(session.packages[pkg.id]).toBeUndefined();
+    state.finishRun();
+    await flushNotifications();
+
+    expect(events.map((event) => event.type)).toEqual(["package_completed", "run_completed"]);
+    expect(events[0].payload.title).toContain("Paket-Digest");
+  });
+
+  it("keeps the active run generation after package_done cleanup removes a generation-seven package", async () => {
+    const { manager, session, events, history } = setup({ completedCleanupPolicy: "package_done" });
+    const pkg = addPackage(session);
+    const state = internal(manager);
+    pkg.resultGeneration = 7;
+    session.running = true;
+    session.runStartedAt = Date.now() - 20_000;
+    state.runItemIds = new Set(pkg.itemIds);
+    state.runPackageIds = new Set([pkg.id]);
+    state.runOutcomes = new Map([[pkg.itemIds[0], "completed"]]);
+    state.beginActiveRunContext?.(state.runPackageIds, session.runStartedAt);
+
+    state.tryFinalizePackageResult(pkg.id);
+    const currentResult = state.finalizedPackageResults.get(`${pkg.id}:7`);
+    expect(currentResult).toBeDefined();
+    state.finalizedPackageResults.set(`${pkg.id}:1`, {
+      ...currentResult,
+      status: "failed",
+      successfulFiles: 0,
+      failedFiles: 9,
+      failurePhase: "download",
+      errorCategory: "stale"
+    });
+    state.applyPackageDoneCleanup(pkg.id);
+    expect(session.packages[pkg.id]).toBeUndefined();
+
+    state.finishRun();
+    await flushNotifications();
+
+    expect(events.filter((event) => event.type === "package_completed")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "run_completed")).toHaveLength(1);
+    const completedRun = events.find((event) => event.type === "run_completed");
+    expect(completedRun?.payload.fields.some((field) => field.name === "Dateien" && field.value === "1 erfolgreich · 0 fehlgeschlagen · 0 abgebrochen")).toBe(true);
+    expect(history).toHaveLength(1);
+    expect(history[0].id).toBe(`hist-${pkg.id}-7`);
+  });
+
+  it("registers a postprocess-only start before a package task without download items completes", async () => {
+    const { manager, session, events, history } = setup();
+    const pkg = addPackage(session);
+    const state = internal(manager);
+    for (const itemId of pkg.itemIds) {
+      delete session.items[itemId];
+    }
+    pkg.itemIds = [];
+    pkg.status = "completed";
+    let releasePostProcess = (): void => {};
+    const postProcessGate = new Promise<void>((resolve) => {
+      releasePostProcess = resolve;
+    });
+    state.handlePackagePostProcessing = vi.fn(async () => postProcessGate);
+
+    const postProcess = state.runPackagePostProcessing(pkg.id);
+    await Promise.resolve();
+    await manager.start();
+    releasePostProcess();
+    await postProcess;
+    await flushNotifications();
+
+    expect(events.filter((event) => event.type === "package_completed")).toHaveLength(1);
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({ name: pkg.name, status: "completed", fileCount: 0 });
+  });
+
+  it("updates an active run from generation one to generation two after resetting the same package", async () => {
+    const { manager, session, events, history } = setup();
+    const pkg = addPackage(session);
+    const state = internal(manager);
+    session.running = true;
+    session.runStartedAt = Date.now() - 20_000;
+    state.runItemIds = new Set(pkg.itemIds);
+    state.runPackageIds = new Set([pkg.id]);
+    state.runOutcomes = new Map([[pkg.itemIds[0], "completed"]]);
+    state.beginActiveRunContext(state.runPackageIds, session.runStartedAt);
+    state.tryFinalizePackageResult(pkg.id);
+    const generationOne = state.finalizedPackageResults.get(`${pkg.id}:1`);
+    state.finalizedPackageResults.set(`${pkg.id}:1`, {
+      ...generationOne,
+      status: "failed",
+      successfulFiles: 0,
+      failedFiles: 9,
+      failurePhase: "download",
+      errorCategory: "stale"
+    });
+    await flushNotifications();
+    events.length = 0;
+    history.length = 0;
+
+    vi.spyOn(state, "ensureScheduler").mockResolvedValue(undefined);
+    await manager.resetPackage(pkg.id);
+    expect(pkg.resultGeneration).toBe(2);
+    const item = session.items[pkg.itemIds[0]];
+    item.status = "completed";
+    item.downloadedBytes = 1_000;
+    item.totalBytes = 1_000;
+    item.progressPercent = 100;
+    item.fullStatus = "Fertig";
+    pkg.status = "completed";
+    state.runOutcomes.set(item.id, "completed");
+    state.tryFinalizePackageResult(pkg.id);
+    state.finishRun();
+    await flushNotifications();
+
+    expect(events.filter((event) => event.type === "package_completed")).toHaveLength(1);
+    expect(events.find((event) => event.type === "package_completed")?.id).toContain(":2:");
+    const completedRun = events.find((event) => event.type === "run_completed");
+    expect(completedRun?.payload.fields.some((field) => field.name === "Dateien" && field.value === "1 erfolgreich · 0 fehlgeschlagen · 0 abgebrochen")).toBe(true);
+    expect(history).toHaveLength(1);
+    expect(history[0].id).toBe(`hist-${pkg.id}-2`);
+    expect([...state.finalizedPackageResults.keys()].filter((key) => key.startsWith(`${pkg.id}:`))).toEqual([`${pkg.id}:2`]);
+  });
+
+  it("tracks a main postprocess task created by triggerPendingExtractions after start begins", async () => {
+    const { manager, session, events, history } = setup({ autoExtract: true });
+    const pkg = addPackage(session);
+    const state = internal(manager);
+    pkg.status = "completed";
+    session.items[pkg.itemIds[0]].fullStatus = "Fertig";
+    let releasePostProcess = (): void => {};
+    const postProcessGate = new Promise<void>((resolve) => {
+      releasePostProcess = resolve;
+    });
+    state.handlePackagePostProcessing = vi.fn(async () => postProcessGate);
+
+    await manager.start();
+    const postProcess = state.packagePostProcessTasks.get(pkg.id);
+    expect(postProcess).toBeDefined();
+    releasePostProcess();
+    await postProcess;
+    await flushNotifications();
+
+    expect(events.filter((event) => event.type === "package_completed")).toHaveLength(1);
+    expect(history).toHaveLength(1);
+    expect(history[0].name).toBe(pkg.name);
+  });
+
+  it("tracks a deferred-only startup task at creation without an active run", async () => {
+    const { manager, session, events, history } = setup();
+    const pkg = addPackage(session);
+    const state = internal(manager);
+    pkg.status = "completed";
+    session.items[pkg.itemIds[0]].fullStatus = "Entpackt - Done (1.0s)";
+    state.executeDeferredPostExtraction = vi.fn(async () => undefined);
+
+    await state.runDeferredPostExtraction(pkg.id, pkg, 1, 0, true, 1);
+    await flushNotifications();
+
+    expect(events.filter((event) => event.type === "package_completed")).toHaveLength(1);
+    expect(history).toHaveLength(1);
+    expect(history[0].name).toBe(pkg.name);
+  });
+
+  it("keeps stopped package postprocessing suppressed when a later start only runs another package", async () => {
+    const { manager, session, events, history } = setup({ autoExtractWhenStopped: true });
+    const packageA = addPackage(session, ["queued"], "stopped-package");
+    const state = internal(manager);
+    vi.spyOn(state, "ensureScheduler").mockResolvedValue(undefined);
+
+    await manager.start();
+    const packageAItem = session.items[packageA.itemIds[0]];
+    packageAItem.status = "completed";
+    packageAItem.downloadedBytes = 1_000;
+    packageAItem.totalBytes = 1_000;
+    packageAItem.progressPercent = 100;
+    packageAItem.fullStatus = "Fertig";
+    packageA.status = "completed";
+    let releasePostProcess = (): void => {};
+    const postProcessGate = new Promise<void>((resolve) => {
+      releasePostProcess = resolve;
+    });
+    state.handlePackagePostProcessing = vi.fn(async () => postProcessGate);
+    const latePostProcess = state.runPackagePostProcessing(packageA.id);
+    await Promise.resolve();
+
+    manager.stop();
+    await flushNotifications();
+
+    const packageB = addPackage(session, ["queued"], "follow-up-package");
+    await manager.start();
+    expect(session.running).toBe(true);
+    expect(state.runPackageIds).toEqual(new Set([packageB.id]));
+
+    releasePostProcess();
+    await latePostProcess;
+    await flushNotifications();
+    expect(events.filter((event) => event.type === "package_completed")).toHaveLength(0);
+    expect(history).toHaveLength(0);
+  });
+
+  it("keeps an earlier run-owned postprocess result alive when a later run is stopped", async () => {
+    const { manager, session, events, history } = setup({ autoExtractWhenStopped: true });
+    const packageA = addPackage(session, ["queued"], "earlier-run-package");
+    const state = internal(manager);
+    vi.spyOn(state, "ensureScheduler").mockResolvedValue(undefined);
+
+    await manager.start();
+    const packageAItem = session.items[packageA.itemIds[0]];
+    packageAItem.status = "completed";
+    packageAItem.downloadedBytes = 1_000;
+    packageAItem.totalBytes = 1_000;
+    packageAItem.progressPercent = 100;
+    packageAItem.fullStatus = "Fertig";
+    packageA.status = "completed";
+    state.runOutcomes.set(packageAItem.id, "completed");
+    let releasePostProcess = (): void => {};
+    const postProcessGate = new Promise<void>((resolve) => {
+      releasePostProcess = resolve;
+    });
+    state.handlePackagePostProcessing = vi.fn(async () => postProcessGate);
+    const packageAPostProcess = state.runPackagePostProcessing(packageA.id);
+    await Promise.resolve();
+    state.finishRun();
+
+    const packageB = addPackage(session, ["queued"], "later-run-package");
+    await manager.start();
+    expect(state.runPackageIds).toEqual(new Set([packageB.id]));
+    manager.stop();
+
+    releasePostProcess();
+    await packageAPostProcess;
+    await flushNotifications();
+
+    expect(events.filter((event) => event.type === "package_completed")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "run_completed")).toHaveLength(1);
+    expect(history.map((entry) => entry.name)).toEqual([packageA.name]);
+  });
+
+  it("keeps run A ownership when its real deferred follow-up starts during run B before run B stops", async () => {
+    const { manager, session, events, history } = setup({ autoExtractWhenStopped: true, maxParallelExtract: 1 });
+    const packageA = addPackage(session, ["queued"], "deferred-owner-package");
+    const state = internal(manager);
+    vi.spyOn(state, "ensureScheduler").mockResolvedValue(undefined);
+
+    await manager.start();
+    const packageAItem = session.items[packageA.itemIds[0]];
+    packageAItem.status = "completed";
+    packageAItem.downloadedBytes = 1_000;
+    packageAItem.totalBytes = 1_000;
+    packageAItem.progressPercent = 100;
+    packageAItem.fullStatus = "Fertig";
+    packageA.status = "completed";
+    state.runOutcomes.set(packageAItem.id, "completed");
+    state.packagePostProcessActive = 1;
+
+    let releaseCollection = (): void => {};
+    const collectionGate = new Promise<void>((resolve) => {
+      releaseCollection = resolve;
+    });
+    const collect = vi.spyOn(state, "collectMkvFilesToLibrary").mockImplementation(async () => collectionGate);
+    const packageAMainPostProcess = state.runPackagePostProcessing(packageA.id);
+    await vi.waitFor(() => expect(state.packagePostProcessWaiters).toHaveLength(1));
+    state.finishRun();
+
+    const packageB = addPackage(session, ["queued"], "active-run-package");
+    await manager.start();
+    expect(state.runPackageIds).toEqual(new Set([packageB.id]));
+
+    state.releasePostProcessSlot();
+    await packageAMainPostProcess;
+    await vi.waitFor(() => expect(collect).toHaveBeenCalled());
+    const deferredTasks = [...(state.packageDeferredPostProcessTasks.get(packageA.id) || [])];
+    expect(deferredTasks).toHaveLength(1);
+
+    manager.stop();
+    releaseCollection();
+    await Promise.allSettled(deferredTasks);
+    await flushNotifications();
+
+    expect(events.filter((event) => event.type === "package_completed")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "run_completed")).toHaveLength(1);
+    expect(history.map((entry) => entry.name)).toEqual([packageA.name]);
+  });
+
+  it("does not reactivate a suppressed foreign package when another start recovers it from disk", async () => {
+    const { manager, session, events, history } = setup({ autoExtractWhenStopped: true });
+    const packageA = addPackage(session, ["queued"], "suppressed-recovery-package");
+    const state = internal(manager);
+    vi.spyOn(state, "ensureScheduler").mockResolvedValue(undefined);
+
+    await manager.start();
+    manager.stop();
+
+    const recoveryDir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-nh-recovery-"));
+    tempDirs.push(recoveryDir);
+    const recoveredPath = path.join(recoveryDir, "recovered-package.rar");
+    fs.writeFileSync(recoveredPath, Buffer.alloc(1_000, 7));
+    const packageAItem = session.items[packageA.itemIds[0]];
+    packageA.enabled = false;
+    packageA.status = "failed";
+    packageAItem.status = "failed";
+    packageAItem.targetPath = recoveredPath;
+    packageAItem.downloadedBytes = 0;
+    packageAItem.totalBytes = 1_000;
+    packageAItem.progressPercent = 0;
+    packageAItem.fullStatus = "Resume-Link erneuern";
+    packageAItem.lastError = "download_underflow";
+
+    const packageB = addPackage(session, ["queued"], "recovery-run-package");
+    await manager.start();
+    await Promise.allSettled([...state.packagePostProcessTasks.values()]);
+    await flushNotifications();
+
+    expect(state.runPackageIds).toEqual(new Set([packageB.id]));
+    expect(events.filter((event) => event.type === "package_completed")).toHaveLength(0);
+    expect(history).toHaveLength(0);
+    manager.stop();
+  });
+
+  it("suppresses a stopped postprocess-only generation and allows an explicit package retry", async () => {
+    const { manager, session, events, history } = setup({ autoExtract: true, autoExtractWhenStopped: true });
+    const pkg = addPackage(session, ["completed"], "postprocess-only-package");
+    const state = internal(manager);
+    vi.spyOn(state, "ensureScheduler").mockResolvedValue(undefined);
+    let releasePostProcess = (): void => {};
+    let postProcessGate = new Promise<void>((resolve) => {
+      releasePostProcess = resolve;
+    });
+    state.handlePackagePostProcessing = vi.fn(async () => postProcessGate);
+
+    await manager.start();
+    const stoppedPostProcess = state.packagePostProcessTasks.get(pkg.id);
+    expect(stoppedPostProcess).toBeDefined();
+    expect(state.runItemIds.size).toBe(0);
+    manager.stop();
+
+    releasePostProcess();
+    await stoppedPostProcess;
+    await flushNotifications();
+    expect(events.filter((event) => event.type === "package_completed")).toHaveLength(0);
+    expect(history).toHaveLength(0);
+
+    session.items[pkg.itemIds[0]].fullStatus = "Entpacken - Error";
+    postProcessGate = new Promise<void>((resolve) => {
+      releasePostProcess = resolve;
+    });
+    manager.retryExtraction(pkg.id);
+    const retriedPostProcess = state.packagePostProcessTasks.get(pkg.id);
+    expect(retriedPostProcess).toBeDefined();
+    releasePostProcess();
+    await retriedPostProcess;
+    await flushNotifications();
+
+    expect(events.filter((event) => event.type === "package_completed")).toHaveLength(1);
+    expect(history.map((entry) => entry.name)).toEqual([pkg.name]);
+  });
+
+  it("finalizes overlapping runs independently when the earlier run finishes deferred work last", async () => {
+    const { manager, session, events, history } = setup();
+    const packageA = addPackage(session, ["completed"], "package-a");
+    const packageB = addPackage(session, ["completed"], "package-b");
+    const state = internal(manager);
+
+    session.running = true;
+    session.runStartedAt = Date.now() - 20_000;
+    state.runItemIds = new Set(packageA.itemIds);
+    state.runPackageIds = new Set([packageA.id]);
+    state.runOutcomes = new Map([[packageA.itemIds[0], "completed"]]);
+    state.packageDeferredPostProcessTasks.set(packageA.id, new Set([Promise.resolve()]));
+    state.finishRun();
+
+    session.running = true;
+    session.runStartedAt = Date.now() - 5_000;
+    state.runItemIds = new Set(packageB.itemIds);
+    state.runPackageIds = new Set([packageB.id]);
+    state.runOutcomes = new Map([[packageB.itemIds[0], "completed"]]);
+    state.finishRun();
+
+    state.packageDeferredPostProcessTasks.delete(packageA.id);
+    state.tryFinalizePackageResult(packageA.id);
+    await flushNotifications();
+
+    expect(events.filter((event) => event.type === "package_completed")).toHaveLength(2);
+    expect(events.filter((event) => event.type === "run_completed")).toHaveLength(2);
+    expect(new Set(events.filter((event) => event.type === "package_completed").map((event) => event.id)).size).toBe(2);
+    expect(new Set(events.filter((event) => event.type === "run_completed").map((event) => event.id)).size).toBe(2);
+    expect(history.map((entry) => entry.name).sort()).toEqual([packageA.name, packageB.name].sort());
   });
 });

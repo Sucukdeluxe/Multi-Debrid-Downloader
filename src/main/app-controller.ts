@@ -35,7 +35,7 @@ import { importDlcContainers } from "./container";
 import { APP_VERSION, ONLINE_BACKUP_API_URL } from "./constants";
 import { DownloadManager } from "./download-manager";
 import { fetchAllDebridHostInfo, fetchDebridLinkHostLimits } from "./debrid";
-import { checkAllDebridAccounts, checkDebridLinkKey, checkMegaDebridAccount, checkRealDebridAccount, retainConfiguredRealDebridStatuses } from "./account-check";
+import { checkAllDebridAccounts, checkDebridLinkKey, checkDeepbridAccount, checkMegaDebridAccount, checkRealDebridAccount, retainConfiguredRealDebridStatuses } from "./account-check";
 import { parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
 import { getMegaDebridAccountsForMode } from "../shared/mega-debrid-accounts";
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
@@ -68,7 +68,7 @@ import { getDebugSetupCheck } from "./debug-setup";
 import { buildLinkExportSelection, serializeLinkExportText } from "./link-export";
 import { getRenameLogPath, initRenameLog, shutdownRenameLog } from "./rename-log";
 import { getDesktopRenameLogPath, initDesktopRenameLogAt, shutdownDesktopRenameLog } from "./desktop-rename-log";
-import { buildAccountSummary, diffAccountSummary } from "./support-data";
+import { buildAccountSummary, buildNotificationSupportPayload, diffAccountSummary, type NotificationSupportPayload } from "./support-data";
 import { buildSupportBundle, getSupportBundleDefaultFileName } from "./support-bundle";
 import { getTraceConfig, getTraceLogPath, initTraceLog, logTraceEvent, setTraceEnabled, shutdownTraceLog } from "./trace-log";
 import type { DebugSetupCheckResult, SupportTraceConfig } from "../shared/types";
@@ -76,6 +76,10 @@ import { createOnlineBackup, downloadOnlineBackup, uploadOnlineBackup } from "./
 import { overlayLiveUsageCounters } from "./settings-live-overlay";
 import { getLegacyDesktopLogDirectory, migrateLogDirectories, prepareLogDirectory, resolveLogDirectory } from "./log-storage";
 import { normalizeStatisticsLedger, saveStatisticsLedger } from "./statistics-ledger";
+import { NotificationOutbox } from "./notification-outbox";
+import { sendNotification } from "./notify";
+import { DownloadHealthMonitor } from "./download-health-monitor";
+import { shouldDeferAutoResumeToDailyStart } from "./daily-start-scheduler";
 
 function sanitizeSettingsPatch(partial: Partial<AppSettings>): Partial<AppSettings> {
   const entries = Object.entries(partial || {}).filter(([, value]) => value !== undefined);
@@ -116,6 +120,14 @@ export class AppController {
 
   private storagePaths = createStoragePaths(path.join(app.getPath("userData"), "runtime"));
 
+  private notificationOutbox: NotificationOutbox;
+
+  private downloadHealthMonitor: DownloadHealthMonitor;
+
+  private downloadHealthTimer: NodeJS.Timeout | null = null;
+
+  private downloadHealthEvaluation: Promise<void> | null = null;
+
   private logDirectory = this.storagePaths.baseDir;
 
   private onStateHandler: ((snapshot: UiSnapshot) => void) | null = null;
@@ -150,6 +162,29 @@ export class AppController {
     resetHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode);
     const loadResult = loadSessionWithStatus(this.storagePaths);
     const session = loadResult.session;
+    this.notificationOutbox = new NotificationOutbox({
+      filePath: this.storagePaths.notificationOutboxFile,
+      autoDrain: true,
+      send: (event) => sendNotification(this.settings.notifyUrl, {
+        title: event.payload.title,
+        message: event.payload.description || "",
+        mention: this.settings.notifyMention,
+        color: event.payload.color ?? (event.priority === "error" ? 0xe74c3c : 0x2ecc71),
+        fields: event.payload.fields,
+        timestamp: event.createdAt
+      }),
+      onDelivered: (event, deliveredAt) => {
+        return this.downloadHealthMonitor?.acknowledgeDelivery(
+          event,
+          deliveredAt,
+          this.settings.notifyStallCooldownMinutes * 60_000
+        );
+      }
+    });
+    this.downloadHealthMonitor = new DownloadHealthMonitor(this.storagePaths.notificationHealthFile);
+    void this.notificationOutbox.drain().catch((error) => {
+      logger.warn(`Notification-Outbox konnte nicht gestartet werden: ${String(error)}`);
+    });
     this.megaWebFallback = new MegaWebFallback(() => ({
       login: this.settings.megaLogin,
       password: this.settings.megaPassword
@@ -163,6 +198,7 @@ export class AppController {
       bestDebridWebUnrestrict: (link: string, signal?: AbortSignal) => this.bestDebridWebFallback.unrestrict(link, signal),
       invalidateMegaSession: () => this.megaWebFallback.invalidateSession(),
       protectEmptyClobber: loadResult.status === "empty-unreadable",
+      enqueueNotification: (event) => this.notificationOutbox.enqueue(event),
       onHistoryEntry: (entry: HistoryEntry) => {
         this.recordHistoryEntry(entry);
       }
@@ -170,6 +206,11 @@ export class AppController {
     this.manager.on("state", (snapshot: UiSnapshot) => {
       this.onStateHandler?.(snapshot);
     });
+    void this.evaluateDownloadHealth();
+    this.downloadHealthTimer = setInterval(() => {
+      void this.evaluateDownloadHealth();
+    }, 15_000);
+    this.downloadHealthTimer.unref?.();
     logger.info(`App gestartet v${APP_VERSION}`);
     logger.info(`Log-Datei: ${getLogFilePath()}`);
     logAuditEvent("INFO", "App gestartet", {
@@ -204,7 +245,7 @@ export class AppController {
     } catch (err) {
       logger.warn(`Health-Check uebersprungen (Fehler): ${String((err as Error).message || err)}`);
     }
-    startDebugServer(this.manager, this.storagePaths.baseDir);
+    startDebugServer(this.manager, this.storagePaths.baseDir, () => this.getNotificationSupportPayload());
     this.runtimeStatsTimer = setInterval(() => {
       this.manager.persistRuntimeStats();
       this.settings = this.manager.getSettings();
@@ -212,7 +253,7 @@ export class AppController {
     }, 60_000);
     this.runtimeStatsTimer.unref?.();
 
-    if (this.settings.autoResumeOnStart) {
+    if (this.settings.autoResumeOnStart && !shouldDeferAutoResumeToDailyStart(this.settings, loadResult.wasRunning)) {
       const snapshot = this.manager.getSnapshot();
       const hasPending = Object.values(snapshot.session.items).some((item) => item.status === "queued" || item.status === "reconnect_wait");
       if (hasPending && this.hasAnyProviderToken(this.settings)) {
@@ -550,6 +591,9 @@ export class AppController {
       if (!account) throw new Error("Account-Payload ist ungültig");
       checkedStatus = await checkRealDebridAccount(account);
     }
+    if (command.action !== "delete" && applied.response.accountId && command.kind === "deepbrid-api") {
+      checkedStatus = await checkDeepbridAccount(applied.settings.deepbridApiKey);
+    }
     if (checkedStatus) {
       checkedStatus = sanitizeDebridAccountStatus(checkedStatus, redactions);
     }
@@ -578,6 +622,15 @@ export class AppController {
 
   public async checkAccountCredentials(input: AccountCredentialCheckInput): Promise<DebridAccountStatus> {
     const redactions = collectAccountStatusRedactionValues(this.settings, input);
+    if (input.kind === "deepbrid-api") {
+      const key = input.secret?.trim() || this.settings.deepbridApiKey.trim();
+      if (!key) throw new Error("Account-Payload ist ungültig");
+      const status = sanitizeDebridAccountStatus(await checkDeepbridAccount(key), redactions);
+      if (!input.secret && input.accountId === "svc-deepbrid" && this.settings.deepbridApiKey.trim()) {
+        this.manager.applyDebridAccountStatuses([status]);
+      }
+      return status;
+    }
     if (input.kind === "realdebrid-api" || input.kind === "realdebrid-web") {
       const useWebLogin = input.kind === "realdebrid-web";
       const account = input.secret?.trim() && !useWebLogin
@@ -1137,13 +1190,23 @@ export class AppController {
       itemCount: Object.keys(this.manager.getSnapshot().session.items).length
     });
     return {
-      buffer: await buildSupportBundle(this.manager, this.storagePaths.baseDir, { hostDiagnosticsMode: "cached" }),
+      buffer: await buildSupportBundle(this.manager, this.storagePaths.baseDir, {
+        hostDiagnosticsMode: "cached",
+        notificationStatus: this.getNotificationSupportPayload()
+      }),
       defaultFileName: getSupportBundleDefaultFileName()
     };
   }
 
   public getSupportBundleDefaultFileName(): string {
     return getSupportBundleDefaultFileName();
+  }
+
+  public getNotificationSupportPayload(): NotificationSupportPayload {
+    return buildNotificationSupportPayload(
+      this.notificationOutbox.getStatus(),
+      this.downloadHealthMonitor.getState()
+    );
   }
 
   public importBackup(data: Buffer, passphrase?: string): { restored: boolean; relaunch: boolean; message: string } {
@@ -1170,7 +1233,7 @@ export class AppController {
     const currentSettingsRecord = this.settings as unknown as Record<string, unknown>;
     const SENSITIVE_KEYS: (keyof AppSettings)[] = [
       "token", "megaLogin", "megaPassword", "bestToken", "allDebridToken",
-      "ddownloadLogin", "ddownloadPassword", "oneFichierApiKey",
+      "deepbridApiKey", "ddownloadLogin", "ddownloadPassword", "oneFichierApiKey",
       "debridLinkApiKeys", "linkSnappyLogin", "linkSnappyPassword",
       "notifyUrl"
     ];
@@ -1265,7 +1328,39 @@ export class AppController {
     return this.manager.getItemLogPath(itemId) || getItemLogPath(itemId);
   }
 
-  public shutdown(): void {
+  private evaluateDownloadHealth(): Promise<void> {
+    if (this.downloadHealthEvaluation) {
+      return this.downloadHealthEvaluation;
+    }
+    const now = Date.now();
+    const task = this.downloadHealthMonitor.sample(
+      this.manager.getDownloadHealthSnapshot(now),
+      now,
+      {
+        stallAfterMs: this.settings.notifyStallAfterSeconds * 1000,
+        cooldownMs: this.settings.notifyStallCooldownMinutes * 60_000,
+        notifyOnStall: this.settings.notifyOnDownloadStall && Boolean(String(this.settings.notifyUrl || "").trim()),
+        notifyOnRecovery: this.settings.notifyOnDownloadRecovery && Boolean(String(this.settings.notifyUrl || "").trim())
+      },
+      (event) => this.notificationOutbox.enqueue(event)
+    ).then(() => undefined).catch((error) => {
+      logger.warn(`Download-Health-Monitor konnte nicht ausgewertet werden: ${String(error)}`);
+    }).finally(() => {
+      if (this.downloadHealthEvaluation === task) {
+        this.downloadHealthEvaluation = null;
+      }
+    });
+    this.downloadHealthEvaluation = task;
+    return task;
+  }
+
+  public async shutdown(): Promise<void> {
+    const deadlineAt = Date.now() + 3000;
+    if (this.downloadHealthTimer) {
+      clearInterval(this.downloadHealthTimer);
+      this.downloadHealthTimer = null;
+    }
+    this.manager.suspendDownloadHealthMonitoring?.();
     if (this.runtimeStatsTimer) {
       clearInterval(this.runtimeStatsTimer);
       this.runtimeStatsTimer = null;
@@ -1274,6 +1369,19 @@ export class AppController {
     abortActiveUpdateDownload();
     cancelPendingAsyncSaves();
     this.manager.prepareForShutdown();
+    if (this.downloadHealthEvaluation) {
+      await this.waitForShutdownTask(this.downloadHealthEvaluation, deadlineAt);
+    }
+    if (this.downloadHealthMonitor && Date.now() < deadlineAt) {
+      await this.waitForShutdownTask(this.evaluateDownloadHealth(), deadlineAt);
+    }
+    const notificationFlush = this.manager.flushNotificationsForShutdown?.();
+    if (notificationFlush && Date.now() < deadlineAt) {
+      await this.waitForShutdownTask(notificationFlush, deadlineAt);
+    }
+    await this.notificationOutbox.drainForShutdown(Math.max(0, deadlineAt - Date.now())).catch((error) => {
+      logger.warn(`Notification-Outbox konnte beim Beenden nicht geleert werden: ${String(error)}`);
+    });
     this.megaWebFallback.dispose();
     for (const fallback of this.realDebridWebFallbacks.values()) {
       fallback.dispose();
@@ -1292,6 +1400,21 @@ export class AppController {
       clearHistory(this.storagePaths);
     }
     logger.info("App beendet");
+  }
+
+  private async waitForShutdownTask(task: Promise<unknown>, deadlineAt: number): Promise<void> {
+    const remainingMs = Math.max(0, deadlineAt - Date.now());
+    if (remainingMs <= 0) {
+      return;
+    }
+    let timer: NodeJS.Timeout | null = null;
+    const timeout = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, remainingMs);
+    });
+    await Promise.race([task.then(() => undefined, () => undefined), timeout]);
+    if (timer) {
+      clearTimeout(timer);
+    }
   }
 
   private getDesktopDirectory(): string | null {

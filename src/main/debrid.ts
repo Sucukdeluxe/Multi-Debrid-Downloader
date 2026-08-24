@@ -6,6 +6,7 @@ import { AllDebridHostInfo, AppSettings, DebridFallbackProvider, DebridLinkHostL
 import { isDebridLinkApiKeyDailyLimitReached, isMegaDebridAccountDisabled, isMegaDebridAccountDailyLimitReached, isProviderDailyLimitReached, isRealDebridAccountDailyLimitReached } from "../shared/provider-daily-limits";
 import { isMegaDebridResolveFailure, germanMegaDebridResolveReason } from "../shared/mega-debrid-errors";
 import { APP_VERSION, REQUEST_RETRIES } from "./constants";
+import { DEEPBRID_ACCOUNT_ID, DeepbridClient } from "./deepbrid";
 import { pruneAccountRuntimeSession, recordAccountRuntimeAttempt, recordAccountRuntimeFailure, recordAccountRuntimeSuccess, resetAccountRuntimeSessionForProvider } from "./account-runtime";
 import { logger } from "./logger";
 import { logAccountRotation } from "./account-rotation-log";
@@ -597,6 +598,7 @@ const PROVIDER_LABELS: Record<DebridProvider, string> = {
   "megadebrid-web": "Mega-Debrid Web",
   bestdebrid: "BestDebrid",
   alldebrid: "AllDebrid",
+  deepbrid: "Deepbrid",
   ddownload: "DDownload",
   onefichier: "1Fichier",
   debridlink: "Debrid-Link",
@@ -4503,6 +4505,9 @@ export class DebridService {
     if (effectiveProvider === "alldebrid") {
       return Boolean(this.shouldUseAllDebridWeb(settings) || settings.allDebridToken.trim());
     }
+    if (effectiveProvider === "deepbrid") {
+      return Boolean(settings.deepbridApiKey.trim());
+    }
     if (effectiveProvider === "ddownload") {
       return Boolean(settings.ddownloadLogin.trim() && settings.ddownloadPassword.trim());
     }
@@ -4664,6 +4669,15 @@ export class DebridService {
       const adResult = await new AllDebridClient(settings.allDebridToken).unrestrictLink(link, signal);
       adResult.sourceLabel = "API";
       return adResult;
+    }
+    if (effectiveProvider === "deepbrid") {
+      const result = await new DeepbridClient(settings.deepbridApiKey).unrestrictLink(link, signal);
+      return {
+        ...result,
+        sourceLabel: "API",
+        sourceAccountId: DEEPBRID_ACCOUNT_ID,
+        sourceAccountLabel: "Deepbrid API"
+      };
     }
     if (effectiveProvider === "ddownload") {
       return this.getDdownloadClient(settings.ddownloadLogin, settings.ddownloadPassword).unrestrictLink(link, signal);

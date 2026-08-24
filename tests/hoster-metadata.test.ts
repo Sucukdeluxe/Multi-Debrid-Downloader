@@ -40,7 +40,7 @@ describe("1Fichier public metadata", () => {
     expect(isOneFichierLink("https://desfichiers.net/?abc12345")).toBe(true);
     expect(isOneFichierLink("https://piecejointe.net/?abc12345")).toBe(true);
     expect(extractHosterFromUrl("https://dl4free.com/?abc12345")).toBe("1fichier");
-    expect(formatHosterLabel("1fichier")).toEqual({ compact: "1F", title: "1Fichier" });
+    expect(formatHosterLabel("1fichier")).toEqual({ compact: "1Fichier", title: "1Fichier", iconSrc: "./provider-icons/onefichier.png" });
   });
 
   it("distinguishes online, missing and private links without inventing metadata", async () => {

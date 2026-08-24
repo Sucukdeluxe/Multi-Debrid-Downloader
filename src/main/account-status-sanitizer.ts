@@ -53,6 +53,7 @@ export function collectAccountStatusRedactionValues(settings?: AppSettings, inpu
     addRedaction(values, settings.megaDebridWebCredentials);
     addRedaction(values, settings.bestToken);
     addRedaction(values, settings.allDebridToken);
+    addRedaction(values, settings.deepbridApiKey);
     addRedaction(values, settings.ddownloadPassword);
     addRedaction(values, settings.oneFichierApiKey);
     addRedaction(values, settings.debridLinkApiKeys);

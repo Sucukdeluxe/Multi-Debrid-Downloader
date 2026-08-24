@@ -40,6 +40,18 @@ const ACCOUNT_FIXTURES: Array<{
 ];
 
 describe("renderer state serialization", () => {
+  it("projects notification controls with their safe defaults", () => {
+    expect(createRendererState(defaultSettings()).settings).toEqual(expect.objectContaining({
+      notifyPackageSuccessMode: "digest",
+      notifyOnRemainingBelow: false,
+      notifyRemainingThresholdGb: 50,
+      notifyOnDownloadStall: false,
+      notifyStallAfterSeconds: 90,
+      notifyStallCooldownMinutes: 10,
+      notifyOnDownloadRecovery: true
+    }));
+  });
+
   it("projects distinct Real-Debrid API and Web rows with per-account state", () => {
     const firstToken = "fixture-renderer-rd-first-1aB2";
     const secondToken = "fixture-renderer-rd-second-3cD4";

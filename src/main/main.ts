@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, safeStorage, shell, Tray, type IpcMainEvent, type IpcMainInvokeEvent } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, powerMonitor, safeStorage, shell, Tray, type IpcMainEvent, type IpcMainInvokeEvent } from "electron";
 import { AddLinksPayload, AppSettings, DebridProvider, EnableRemoteDiagnosticsInput, RendererSettingsUpdate, UpdateInstallProgress } from "../shared/types";
 import { AppController } from "./app-controller";
 import { IPC_CHANNELS } from "../shared/ipc";
@@ -25,6 +25,7 @@ import { validateRealDebridLoginRequest } from "../shared/preload-api";
 import { migrateProductUserDataDirectory } from "./storage";
 import { forceDarkNativeTheme } from "./native-theme";
 import { validateClipboardWriteText } from "./clipboard-write";
+import { DailyStartScheduler, hasDailyStartRulePatch, prepareDailyStartSettingsPatch } from "./daily-start-scheduler";
 
 forceDarkNativeTheme(nativeTheme);
 
@@ -50,6 +51,7 @@ const RESETTABLE_PROVIDER_KEYS = new Set<DebridProvider>([
   "megadebrid-web",
   "bestdebrid",
   "alldebrid",
+  "deepbrid",
   "ddownload",
   "onefichier",
   "debridlink",
@@ -91,10 +93,72 @@ let tray: Tray | null = null;
 let clipboardTimer: ReturnType<typeof setInterval> | null = null;
 let updateQuitTimer: ReturnType<typeof setTimeout> | null = null;
 let scheduledStartTimer: ReturnType<typeof setTimeout> | null = null;
+let dailyStartScheduler: DailyStartScheduler | null = null;
 let lastClipboardText = "";
 let controller: AppController;
 let pendingBackupImport: Buffer | null = null;
 const CLIPBOARD_MAX_TEXT_CHARS = 50_000;
+
+function reconcileDailyStart(source: string): void {
+  void dailyStartScheduler?.reconcile().catch((error) => {
+    logger.warn(`Täglicher Start konnte nach ${source} nicht abgeglichen werden: ${String(error)}`);
+  });
+}
+
+function handlePowerSuspend(): void {
+  reconcileDailyStart("Suspend");
+}
+
+function handlePowerResume(): void {
+  reconcileDailyStart("Resume");
+}
+
+export function cleanupSchedulerLifecycle(
+  scheduler: Pick<DailyStartScheduler, "end"> | null,
+  legacyTimer: ReturnType<typeof setTimeout> | null
+): void {
+  scheduler?.end();
+  if (legacyTimer !== null) {
+    clearTimeout(legacyTimer);
+  }
+  powerMonitor.removeListener("suspend", handlePowerSuspend);
+  powerMonitor.removeListener("resume", handlePowerResume);
+}
+
+export interface BeforeQuitHandlerOptions {
+  cleanup: () => void;
+  shutdown: () => Promise<void>;
+  continueQuit: () => void;
+  onError: (error: unknown) => void;
+}
+
+export function createBeforeQuitHandler(options: BeforeQuitHandlerOptions): (event: { preventDefault: () => void }) => void {
+  let shutdownStarted = false;
+  let quitAllowed = false;
+  return (event) => {
+    if (quitAllowed) {
+      return;
+    }
+    event.preventDefault();
+    if (shutdownStarted) {
+      return;
+    }
+    shutdownStarted = true;
+    let shutdown: Promise<void>;
+    try {
+      options.cleanup();
+      shutdown = options.shutdown();
+    } catch (error) {
+      shutdown = Promise.reject(error);
+    }
+    void shutdown.catch((error) => {
+      options.onError(error);
+    }).finally(() => {
+      quitAllowed = true;
+      options.continueQuit();
+    });
+  };
+}
 
 function isDevMode(): boolean {
   return process.env.NODE_ENV === "development";
@@ -413,13 +477,19 @@ function registerIpcHandlers(): void {
   handleTrusted(IPC_CHANNELS.OPEN_EXTERNAL, async (_event: IpcMainInvokeEvent, rawUrl: string) => {
     return openAllowedExternalUrl(String(rawUrl || "").trim(), MAIN_WINDOW_EXTERNAL_HOSTS);
   });
-  handleTrusted(IPC_CHANNELS.UPDATE_SETTINGS, (_event: IpcMainInvokeEvent, partial: RendererSettingsUpdate) => {
-    const validated = validateRendererSettingsUpdate(partial ?? {}, controller.getSettings());
-    const result = controller.updateSettings(validated as Partial<AppSettings>);
+  handleTrusted(IPC_CHANNELS.UPDATE_SETTINGS, async (_event: IpcMainInvokeEvent, partial: RendererSettingsUpdate) => {
+    const currentSettings = controller.getSettings();
+    const validated = validateRendererSettingsUpdate(partial ?? {}, currentSettings);
+    const result = controller.updateSettings(prepareDailyStartSettingsPatch(validated, currentSettings) as Partial<AppSettings>);
     updateClipboardWatcher();
     updateTray();
     armScheduledStart(result.scheduledStartEpochMs || 0, { startOnPast: true });
-    return createRendererSettings(result);
+    if (hasDailyStartRulePatch(validated)) {
+      await dailyStartScheduler?.reconcile();
+    } else {
+      reconcileDailyStart("Einstellungsänderung");
+    }
+    return createRendererSettings(controller.getSettings());
   });
   handleTrusted(IPC_CHANNELS.RESET_PROVIDER_DAILY_USAGE, (_event: IpcMainInvokeEvent, provider: string) => {
     const validatedProvider = validateString(provider, "provider") as DebridProvider;
@@ -436,28 +506,36 @@ function registerIpcHandlers(): void {
     return createRendererSettings(controller.resetDebridLinkApiKeyDailyUsage(validatedKeyId));
   });
 
-  handleTrusted(IPC_CHANNELS.CREATE_ACCOUNT, (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
+  handleTrusted(IPC_CHANNELS.CREATE_ACCOUNT, async (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
     const command = validateAccountCommand(rawCommand);
     if (command.action !== "create") throw new Error("Account-Payload ist ungültig");
-    return controller.executeAccountCommand(command);
+    const result = await controller.executeAccountCommand(command);
+    reconcileDailyStart("Accountänderung");
+    return result;
   });
 
-  handleTrusted(IPC_CHANNELS.REPLACE_ACCOUNT, (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
+  handleTrusted(IPC_CHANNELS.REPLACE_ACCOUNT, async (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
     const command = validateAccountCommand(rawCommand);
     if (command.action !== "replace") throw new Error("Account-Payload ist ungültig");
-    return controller.executeAccountCommand(command);
+    const result = await controller.executeAccountCommand(command);
+    reconcileDailyStart("Accountänderung");
+    return result;
   });
 
-  handleTrusted(IPC_CHANNELS.UPDATE_ACCOUNT_SECRET, (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
+  handleTrusted(IPC_CHANNELS.UPDATE_ACCOUNT_SECRET, async (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
     const command = validateAccountCommand(rawCommand);
     if (command.action !== "update-secret") throw new Error("Account-Payload ist ungültig");
-    return controller.executeAccountCommand(command);
+    const result = await controller.executeAccountCommand(command);
+    reconcileDailyStart("Accountänderung");
+    return result;
   });
 
-  handleTrusted(IPC_CHANNELS.DELETE_ACCOUNT, (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
+  handleTrusted(IPC_CHANNELS.DELETE_ACCOUNT, async (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
     const command = validateAccountCommand(rawCommand);
     if (command.action !== "delete") throw new Error("Account-Payload ist ungültig");
-    return controller.executeAccountCommand(command);
+    const result = await controller.executeAccountCommand(command);
+    reconcileDailyStart("Accountänderung");
+    return result;
   });
   handleTrusted(IPC_CHANNELS.REVEAL_ACCOUNT_SECRET, (_event: IpcMainInvokeEvent, rawRequest: unknown) => {
     return controller.revealAccountSecret(validateAccountSecretRequest(rawRequest));
@@ -993,6 +1071,7 @@ app.on("second-instance", () => {
 app.whenReady().then(() => {
   configureCredentialProtector(safeStorage);
   controller = new AppController();
+  dailyStartScheduler = new DailyStartScheduler(controller);
   cleanupStaleSubstDrives();
   registerIpcHandlers();
   mainWindow = createWindow();
@@ -1003,6 +1082,11 @@ app.whenReady().then(() => {
   // process — without re-arming it here, any restart (auto-update, reboot,
   // crash) silently swallowed the planned run.
   armScheduledStart(controller.getSettings().scheduledStartEpochMs || 0, { startOnPast: false });
+  dailyStartScheduler.begin((error) => {
+    logger.warn(`Täglicher Start konnte nicht abgeglichen werden: ${String(error)}`);
+  });
+  powerMonitor.on("suspend", handlePowerSuspend);
+  powerMonitor.on("resume", handlePowerResume);
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -1023,16 +1107,22 @@ app.on("window-all-closed", () => {
   }
 });
 
-app.on("before-quit", () => {
-  if (updateQuitTimer) { clearTimeout(updateQuitTimer); updateQuitTimer = null; }
-  stopClipboardWatcher();
-  destroyTray();
-  shutdownDaemon();
-  if (controller) {
-    try {
-      controller.shutdown();
-    } catch (error) {
-      logger.error(`Fehler beim Shutdown: ${String(error)}`);
+app.on("before-quit", createBeforeQuitHandler({
+  cleanup: () => {
+    if (updateQuitTimer) { clearTimeout(updateQuitTimer); updateQuitTimer = null; }
+    cleanupSchedulerLifecycle(dailyStartScheduler, scheduledStartTimer);
+    scheduledStartTimer = null;
+    stopClipboardWatcher();
+    destroyTray();
+    shutdownDaemon();
+  },
+  shutdown: async () => {
+    if (controller) {
+      await controller.shutdown();
     }
+  },
+  continueQuit: () => app.quit(),
+  onError: (error) => {
+    logger.error(`Fehler beim Shutdown: ${String(error)}`);
   }
-});
+}));

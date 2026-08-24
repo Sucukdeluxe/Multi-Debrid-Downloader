@@ -18,6 +18,7 @@ const CREDENTIAL_KEYS = [
   "megaDebridWebCredentials",
   "bestToken",
   "allDebridToken",
+  "deepbridApiKey",
   "ddownloadLogin",
   "ddownloadPassword",
   "oneFichierApiKey",

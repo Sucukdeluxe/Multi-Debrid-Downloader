@@ -4,6 +4,31 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.71] - 2026-08-24
+
+### Deepbrid accounts
+
+- Add Deepbrid API-key accounts with encrypted credential storage, account validation, premium status, expiration details, usage counters, and explicit secret reveal controls.
+- Route downloads through Deepbrid in the normal provider order, hoster rules, daily limits, cooldown handling, and automatic fallback chain.
+- Validate API responses, retry only rate limits and temporary failures, reject unsafe download targets and filenames, and keep keys and provider responses out of logs and diagnostics.
+- Add the Deepbrid service icon and verified support for generating and downloading 1Fichier links.
+
+### Recurring daily starts
+
+- Add a persistent daily queue schedule using the local time zone with separate start-today and start-tomorrow choices.
+- Reconcile schedules after restarts, account changes, suspend, and resume while preventing duplicate starts for the same local calendar day.
+- Preserve existing one-time schedules during unrelated settings saves and show the next daily start as a live countdown.
+
+### Discord notifications
+
+- Add detailed package and run results, grouped or individual success messages, remaining-volume thresholds, confirmed download stalls, and recovery notifications.
+- Persist notifications across restarts with bounded retries, rate-limit handling, FIFO delivery, shutdown recovery, and protection against transient disk-write failures.
+- Store and export only fixed failure categories so local paths, URLs, provider accounts, and raw errors are excluded from Discord messages and support bundles.
+
+### Hoster identification
+
+- Show local 1Fichier and DDownload hoster icons with full names in tooltips throughout the download queue.
+
 ## [2.0.70] - 2026-08-24
 
 ### Real-Debrid browser accounts

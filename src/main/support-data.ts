@@ -2,9 +2,60 @@ import { getDebridLinkApiKeyIds } from "../shared/debrid-link-keys";
 import { getRealDebridAccounts } from "../shared/real-debrid-accounts";
 import { isNotifyUrlValid } from "./notify";
 import type { AppSettings, HistoryEntry, UiSnapshot } from "../shared/types";
+import type { DownloadHealthState } from "./download-health-monitor";
+import type { NotificationOutboxStatus } from "./notification-outbox";
 
 function hasText(value: unknown): boolean {
   return String(value || "").trim().length > 0;
+}
+
+export interface NotificationSupportPayload {
+  queued: number;
+  lastSuccessAt: number | null;
+  incidentType: DownloadHealthState["incidentType"];
+  incidentAgeMs: number | null;
+}
+
+export function normalizeNotificationSupportPayload(
+  value?: Partial<NotificationSupportPayload> | null
+): NotificationSupportPayload {
+  const rawQueued = value?.queued;
+  const rawLastSuccessAt = value?.lastSuccessAt;
+  const rawIncidentAgeMs = value?.incidentAgeMs;
+  const queued = typeof rawQueued === "number" && Number.isFinite(rawQueued)
+    ? Math.max(0, Math.floor(rawQueued))
+    : 0;
+  const lastSuccessAt = typeof rawLastSuccessAt === "number" && Number.isFinite(rawLastSuccessAt) && rawLastSuccessAt > 0
+    ? Math.floor(rawLastSuccessAt)
+    : null;
+  const incidentType = value?.incidentType === "scheduler" || value?.incidentType === "no_data"
+    ? value.incidentType
+    : null;
+  const incidentAgeMs = incidentType && typeof rawIncidentAgeMs === "number" && Number.isFinite(rawIncidentAgeMs) && rawIncidentAgeMs >= 0
+    ? Math.floor(rawIncidentAgeMs)
+    : null;
+  return { queued, lastSuccessAt, incidentType, incidentAgeMs };
+}
+
+export function buildNotificationSupportPayload(
+  outbox: Pick<NotificationOutboxStatus, "queued" | "lastSuccessAt">,
+  health: Pick<DownloadHealthState, "incidentType" | "incidentStartedAt">,
+  now: number = Date.now()
+): NotificationSupportPayload {
+  const queued = Number.isFinite(outbox.queued) ? Math.max(0, Math.floor(outbox.queued)) : 0;
+  const lastSuccessAt = Number.isFinite(outbox.lastSuccessAt) && outbox.lastSuccessAt > 0
+    ? Math.floor(outbox.lastSuccessAt)
+    : null;
+  const incidentType = health.incidentType === "scheduler" || health.incidentType === "no_data"
+    ? health.incidentType
+    : null;
+  const incidentStartedAt = Number.isFinite(health.incidentStartedAt) && health.incidentStartedAt > 0
+    ? Math.floor(health.incidentStartedAt)
+    : 0;
+  const incidentAgeMs = incidentType && incidentStartedAt > 0
+    ? Math.max(0, Math.floor(Number.isFinite(now) ? now : Date.now()) - incidentStartedAt)
+    : null;
+  return normalizeNotificationSupportPayload({ queued, lastSuccessAt, incidentType, incidentAgeMs });
 }
 
 export function buildAccountSummary(settings: AppSettings): Record<string, unknown> {
@@ -12,6 +63,7 @@ export function buildAccountSummary(settings: AppSettings): Record<string, unkno
   const disabledDebridLinkIds = new Set(settings.debridLinkDisabledKeyIds || []);
   const realDebridAccounts = getRealDebridAccounts(settings);
   const enabledRealDebridAccounts = realDebridAccounts.filter((account) => account.enabled);
+  const deepbridStatus = settings.debridAccountStatuses?.["svc-deepbrid"];
 
   return {
     realDebrid: {
@@ -43,6 +95,22 @@ export function buildAccountSummary(settings: AppSettings): Record<string, unkno
       configured: hasText(settings.allDebridToken) || settings.allDebridUseWebLogin,
       tokenConfigured: hasText(settings.allDebridToken),
       webLoginEnabled: settings.allDebridUseWebLogin
+    },
+    deepbrid: {
+      configured: hasText(settings.deepbridApiKey),
+      apiKeyConfigured: hasText(settings.deepbridApiKey),
+      status: {
+        checked: Boolean(deepbridStatus),
+        valid: deepbridStatus?.valid ?? null,
+        premium: deepbridStatus?.isPremium ?? null,
+        premiumUntilMs: deepbridStatus?.premiumUntilMs ?? null,
+        checkedAt: deepbridStatus?.checkedAt ?? null
+      },
+      usage: {
+        dailyLimitBytes: settings.providerDailyLimitBytes.deepbrid || 0,
+        dailyUsageBytes: settings.providerDailyUsageBytes.deepbrid || 0,
+        totalUsageBytes: settings.providerTotalUsageBytes.deepbrid || 0
+      }
     },
     ddownload: {
       configured: hasText(settings.ddownloadLogin) && hasText(settings.ddownloadPassword)

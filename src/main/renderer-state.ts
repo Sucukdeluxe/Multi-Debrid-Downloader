@@ -3,6 +3,7 @@ import { getMegaDebridAccountsForMode, getMegaDebridDisabledAccountIdsForMode } 
 import { getRealDebridAccounts } from "../shared/real-debrid-accounts";
 import type { AppSettings, DebridAccountStatus, DebridProvider, RendererAccount, RendererAccountKind, RendererSettings } from "../shared/types";
 import { collectAccountStatusRedactionValues, sanitizeDebridAccountStatus } from "./account-status-sanitizer";
+import { nextDailyStartEpochMs } from "./daily-start-scheduler";
 
 function maskValue(value: string, keepStart = 3, keepEnd = 3): string {
   const trimmed = value.trim();
@@ -120,6 +121,13 @@ export function createRendererAccounts(settings: AppSettings): RendererAccount[]
       true
     ));
   }
+  if (settings.deepbridApiKey.trim()) {
+    const status = safeStatus(settings.debridAccountStatuses["svc-deepbrid"], redactions);
+    accounts.push({
+      ...singleAccount(settings, "deepbrid-api", "deepbrid", status?.username || "", maskValue(settings.deepbridApiKey), true),
+      status
+    });
+  }
   if (settings.ddownloadLogin.trim() && settings.ddownloadPassword) {
     accounts.push(singleAccount(settings, "ddownload-login", "ddownload", settings.ddownloadLogin.trim(), maskValue(settings.ddownloadLogin, 2, 4), true));
   }
@@ -220,6 +228,13 @@ export function createRendererSettings(settings: AppSettings): RendererSettings 
     notifyOnPackageCompleted: settings.notifyOnPackageCompleted,
     notifyOnPackageFailed: settings.notifyOnPackageFailed,
     notifyOnRunFinished: settings.notifyOnRunFinished,
+    notifyPackageSuccessMode: settings.notifyPackageSuccessMode,
+    notifyOnRemainingBelow: settings.notifyOnRemainingBelow,
+    notifyRemainingThresholdGb: settings.notifyRemainingThresholdGb,
+    notifyOnDownloadStall: settings.notifyOnDownloadStall,
+    notifyStallAfterSeconds: settings.notifyStallAfterSeconds,
+    notifyStallCooldownMinutes: settings.notifyStallCooldownMinutes,
+    notifyOnDownloadRecovery: settings.notifyOnDownloadRecovery,
     totalDownloadedAllTime: settings.totalDownloadedAllTime,
     totalCompletedFilesAllTime: settings.totalCompletedFilesAllTime,
     totalRuntimeAllTimeMs: settings.totalRuntimeAllTimeMs,
@@ -244,7 +259,14 @@ export function createRendererSettings(settings: AppSettings): RendererSettings 
     megaDebridAccountTotalUsageBytes: { ...settings.megaDebridAccountTotalUsageBytes },
     debridAccountStatuses: Object.fromEntries(Object.entries(settings.debridAccountStatuses).map(([id, status]) => [id, safeStatus(status, redactions)])),
     providerDailyUsageDay: settings.providerDailyUsageDay,
-    scheduledStartEpochMs: settings.scheduledStartEpochMs
+    dailyStartEnabled: settings.dailyStartEnabled,
+    dailyStartMinuteOfDay: settings.dailyStartMinuteOfDay,
+    dailyStartFirstLocalDate: settings.dailyStartFirstLocalDate,
+    dailyStartLastHandledLocalDate: settings.dailyStartLastHandledLocalDate,
+    dailyStartPendingLocalDate: settings.dailyStartPendingLocalDate,
+    dailyStartLastOutcome: settings.dailyStartLastOutcome,
+    scheduledStartEpochMs: settings.scheduledStartEpochMs,
+    nextDailyStartEpochMs: nextDailyStartEpochMs(settings)
   } as RendererSettings;
 }
 

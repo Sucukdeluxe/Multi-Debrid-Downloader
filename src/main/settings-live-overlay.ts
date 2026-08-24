@@ -7,11 +7,14 @@ export function overlayLiveUsageCounters(target: AppSettings, liveSettings: AppS
   const debridLinkKeyIds = new Set(getDebridLinkApiKeyIds(target.debridLinkApiKeys));
   const megaAccountIds = new Set(getMegaDebridAccountIds(mergeMegaDebridCredentialPools(target.megaDebridApiCredentials || "", target.megaDebridWebCredentials || "") || target.megaCredentials || "", target.megaPassword || ""));
   const realDebridAccountIds = new Set(getRealDebridAccountIds(target));
+  const targetDeepbridApiKey = target.deepbridApiKey.trim();
+  const liveDeepbridApiKey = liveSettings.deepbridApiKey.trim();
   const validAccountIds = new Set([
     ...debridLinkKeyIds,
     ...megaAccountIds,
     ...realDebridAccountIds,
-    ...(realDebridAccountIds.size === 0 && (target.realDebridUseWebLogin || target.token.trim()) ? ["svc-realdebrid"] : [])
+    ...(realDebridAccountIds.size === 0 && (target.realDebridUseWebLogin || target.token.trim()) ? ["svc-realdebrid"] : []),
+    ...(targetDeepbridApiKey && targetDeepbridApiKey === liveDeepbridApiKey ? ["svc-deepbrid"] : [])
   ]);
   target.totalDownloadedAllTime = Math.max(target.totalDownloadedAllTime || 0, liveSettings.totalDownloadedAllTime || 0);
   target.totalCompletedFilesAllTime = Math.max(target.totalCompletedFilesAllTime || 0, liveSettings.totalCompletedFilesAllTime || 0);

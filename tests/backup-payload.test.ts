@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { buildBackupPayload, planBackupImport } from "../src/main/backup-payload";
+import { decryptBackup, encryptBackup } from "../src/main/backup-crypto";
 import { readFileSync } from "node:fs";
 import type { AppSettings, SessionState, HistoryEntry, StatisticsLedger } from "../src/shared/types";
 
 function settings(overrides: Partial<AppSettings> = {}): AppSettings {
-  return { backupIncludeDownloads: false, token: "secret", outputDir: "C:\\dl" } as unknown as AppSettings;
+  return { backupIncludeDownloads: false, token: "secret", outputDir: "C:\\dl", ...overrides } as unknown as AppSettings;
 }
 
 const session: SessionState = {
@@ -18,6 +19,19 @@ const statistics: StatisticsLedger = { version: 2, startedAt: 1, days: [], minut
 const baseInput = { appVersion: "1.7.183", exportedAt: "2026-06-07T00:00:00Z", session, history, statistics };
 
 describe("buildBackupPayload — default is settings-only", () => {
+  it("keeps the Deepbrid key only inside the encrypted backup payload", () => {
+    const key = "fixture-deepbrid-backup-key-4eF6";
+    const payload = buildBackupPayload({
+      ...baseInput,
+      settings: settings({ deepbridApiKey: key })
+    });
+    const encrypted = encryptBackup(JSON.stringify(payload), "fixture-backup-passphrase-5gH7");
+
+    expect(encrypted.toString("utf8")).not.toContain(key);
+    const restored = JSON.parse(decryptBackup(encrypted, "fixture-backup-passphrase-5gH7")) as { settings: AppSettings };
+    expect(restored.settings.deepbridApiKey).toBe(key);
+  });
+
   it("exports the full statistics ledger instead of the renderer projection", () => {
     const source = readFileSync(new URL("../src/main/app-controller.ts", import.meta.url), "utf8");
     const exportBlock = source.slice(source.indexOf("public exportBackup"), source.indexOf("public async exportOnlineBackup"));

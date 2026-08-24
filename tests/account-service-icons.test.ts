@@ -9,6 +9,7 @@ const services = [
   "megadebrid-web",
   "bestdebrid",
   "alldebrid",
+  "deepbrid",
   "ddownload",
   "onefichier",
   "debridlink",
@@ -30,5 +31,9 @@ describe("account service icons", () => {
 
   it("uses the same Mega-Debrid icon for API and Web accounts", () => {
     expect(ACCOUNT_SERVICE_ICONS["megadebrid-api"]).toBe(ACCOUNT_SERVICE_ICONS["megadebrid-web"]);
+  });
+
+  it("uses the bundled Deepbrid provider icon", () => {
+    expect(ACCOUNT_SERVICE_ICONS.deepbrid).toBe("./provider-icons/deepbrid.png");
   });
 });

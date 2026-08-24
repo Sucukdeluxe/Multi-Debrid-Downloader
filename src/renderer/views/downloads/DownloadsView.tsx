@@ -12,6 +12,8 @@ import "./downloads.css";
 
 const integerFormatter = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 0 });
 
+export type DailyScheduleStartDay = "today" | "tomorrow";
+
 export interface DownloadsStatusModel {
   packages: number;
   links: number;
@@ -40,6 +42,8 @@ export interface DownloadsViewModel extends DownloadsViewModelCore {
   scheduleActive: boolean;
   scheduleOpen: boolean;
   scheduleTime: string;
+  scheduleTimeValid: boolean;
+  scheduleStartDay: DailyScheduleStartDay;
   scheduleLabel: string;
   packageSpeedBps: Record<string, number>;
   editingPackageId: string | null;
@@ -65,6 +69,7 @@ export interface DownloadsViewActions extends DownloadsTableActions {
   onStopDownloads: () => void;
   onToggleSchedule: () => void;
   onScheduleTimeChange: (value: string) => void;
+  onScheduleStartDayChange: (value: DailyScheduleStartDay) => void;
   onActivateSchedule: () => void;
   onCancelSchedule: () => void;
   onMoveSelectionUp: () => void;
@@ -125,14 +130,21 @@ export function DownloadsToolbar({ actions, model }: { actions: DownloadsViewAct
   const hasSelection = model.actionableSelectedIds.length > 0;
   const hasSelectedPackage = model.actionableSelectedPackageIds.length > 0;
   const onePackage = model.actionableSelectedPackageIds.length === 1 && model.actionableSelectedIds.length === 1;
+  const scheduleSlotOpen = model.scheduleActive || model.scheduleOpen;
+  const scheduleSlotClass = `downloads-schedule-slot ${scheduleSlotOpen ? "is-open" : "is-closed"}${model.animationsEnabled ? "" : " is-motion-disabled"}`;
   return (
     <div className="downloads-toolbar" data-visual-region="downloads-toolbar">
       <button disabled={model.actionBusy || !model.canStart} onClick={actions.onStartDownloads} type="button">Start</button>
       <button disabled={!model.canPause || model.paused} onClick={actions.onPauseDownloads} type="button">Pause</button>
       <button disabled={!model.canStop || model.actionBusy} onClick={actions.onStopDownloads} type="button">Stop</button>
-      {model.scheduleActive
-        ? <span className="downloads-schedule-controls"><strong>Geplant: {model.scheduleLabel}</strong><button disabled={false} onClick={actions.onCancelSchedule} type="button">Abbrechen</button></span>
-        : <><button aria-expanded={model.scheduleOpen} onClick={actions.onToggleSchedule} type="button">Zeitplan</button>{model.scheduleOpen ? <span className="downloads-schedule-controls"><input aria-label="Startzeit" onChange={(event) => actions.onScheduleTimeChange(event.target.value)} type="time" value={model.scheduleTime} /><button onClick={actions.onActivateSchedule} type="button">Planen</button></span> : null}</>}
+      {!model.scheduleActive ? <button aria-expanded={model.scheduleOpen} onClick={actions.onToggleSchedule} type="button">Zeitplan</button> : null}
+      <span className={scheduleSlotClass}>
+        <span {...(!scheduleSlotOpen ? { inert: "true" } : {})} aria-hidden={!scheduleSlotOpen} className="downloads-schedule-controls">
+          {model.scheduleActive
+            ? <><strong>Geplant: {model.scheduleLabel}</strong><button disabled={false} onClick={actions.onCancelSchedule} type="button">Abbrechen</button></>
+            : <><input aria-label="Startzeit" disabled={!scheduleSlotOpen} onChange={(event) => actions.onScheduleTimeChange(event.target.value)} type="time" value={model.scheduleTime} /><select aria-label="Starttag" disabled={!scheduleSlotOpen} onChange={(event) => actions.onScheduleStartDayChange(event.target.value as DailyScheduleStartDay)} value={model.scheduleStartDay}><option value="today">Ab heute</option><option value="tomorrow">Ab morgen</option></select><button disabled={!scheduleSlotOpen || !model.scheduleTimeValid} onClick={actions.onActivateSchedule} type="button">Planen</button></>}
+        </span>
+      </span>
       <span className="downloads-toolbar-divider" />
       <button disabled={!hasSelectedPackage} onClick={actions.onMoveSelectionUp} type="button">Nach oben</button>
       <button disabled={!hasSelectedPackage} onClick={actions.onMoveSelectionDown} type="button">Nach unten</button>

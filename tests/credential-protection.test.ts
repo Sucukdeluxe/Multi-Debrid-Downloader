@@ -5,6 +5,7 @@ import { collectAccountStatusRedactionValues, sanitizeAccountStatusText } from "
 import {
   configureCredentialProtector,
   CredentialProtector,
+  needsPersistedSettingsRewrite,
   protectPersistedSettings,
   projectSettingsForRenderer,
   restorePersistedSettings
@@ -50,6 +51,31 @@ describe("credential protection", () => {
       megaLogin: input.megaLogin,
       megaPassword: input.megaPassword
     });
+  });
+
+  it("protects, restores, clears and redacts the Deepbrid API key", () => {
+    const key = "fixture-deepbrid-protection-key-3cD5";
+    const input = { ...defaultSettings(), rememberToken: true, deepbridApiKey: key };
+    const persisted = protectPersistedSettings(input);
+
+    expect(JSON.stringify(persisted)).not.toContain(key);
+    expect(restorePersistedSettings(persisted).deepbridApiKey).toBe(key);
+    expect(projectSettingsForRenderer(input).deepbridApiKey).toBe("••••••••");
+    expect(protectPersistedSettings({ ...input, rememberToken: false }).deepbridApiKey).toBe("");
+
+    const redactions = collectAccountStatusRedactionValues(input);
+    expect(sanitizeAccountStatusText(`Deepbrid api_key=${key}`, redactions)).not.toContain(key);
+  });
+
+  it("requires a persisted settings rewrite only while the Deepbrid key is unprotected", () => {
+    const input = {
+      ...defaultSettings(),
+      rememberToken: true,
+      deepbridApiKey: "fixture-deepbrid-rewrite-key-6rS7"
+    };
+
+    expect(needsPersistedSettingsRewrite(input)).toBe(true);
+    expect(needsPersistedSettingsRewrite(protectPersistedSettings(input))).toBe(false);
   });
 
   it("accepts plaintext values once so existing settings can be migrated", () => {

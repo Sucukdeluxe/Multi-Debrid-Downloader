@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { checkMegaDebridAccount, checkDebridLinkKey, checkAllDebridAccounts, checkRealDebridAccount, REAL_DEBRID_STATUS_ID, retainConfiguredRealDebridStatuses } from "../src/main/account-check";
+import { checkMegaDebridAccount, checkDebridLinkKey, checkAllDebridAccounts, checkDeepbridAccount, checkRealDebridAccount, REAL_DEBRID_STATUS_ID, retainConfiguredRealDebridStatuses } from "../src/main/account-check";
 import type { MegaDebridAccountEntry } from "../src/shared/mega-debrid-accounts";
 import { getDebridLinkApiKeyId, type DebridLinkApiKeyEntry } from "../src/shared/debrid-link-keys";
 import type { AppSettings } from "../src/shared/types";
@@ -22,6 +22,15 @@ function mockFetchOnce(status: number, body: unknown): void {
     status,
     text: async () => text
   })) as unknown as typeof fetch);
+}
+
+function mockDeepbridResponse(status: number, body: unknown, contentType = "application/json"): ReturnType<typeof vi.fn> {
+  const fetchMock = vi.fn(async () => new Response(
+    typeof body === "string" ? body : JSON.stringify(body),
+    { status, headers: { "content-type": contentType } }
+  ));
+  vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+  return fetchMock;
 }
 
 const NOW = 1_700_000_000_000;
@@ -180,7 +189,128 @@ describe("checkRealDebridAccount", () => {
   });
 });
 
+describe("checkDeepbridAccount", () => {
+  const key = "fixture-deepbrid-check-key-4fG7";
+
+  it("reports a current premium account with safe identity metadata", async () => {
+    const expiration = new Date(NOW + 3 * 24 * 60 * 60 * 1000).toISOString();
+    mockDeepbridResponse(200, {
+      username: "deep-user",
+      email: "deep-user@example.test",
+      type: "premium",
+      expiration,
+      maxDownloads: 10,
+      maxConnections: 4
+    });
+
+    const status = await checkDeepbridAccount(key, undefined, NOW);
+
+    expect(status).toMatchObject({
+      accountId: "svc-deepbrid",
+      provider: "deepbrid",
+      label: "Deepbrid",
+      valid: true,
+      isPremium: true,
+      premiumUntilMs: Date.parse(expiration),
+      username: "deep-user",
+      email: "deep-user@example.test"
+    });
+    expect(status.message).toMatch(/Premium noch/);
+    expect(status.maskedLogin).not.toBe(key);
+    expect(JSON.stringify(status)).not.toContain(key);
+  });
+
+  it("keeps a free account valid without marking it as premium", async () => {
+    mockDeepbridResponse(200, {
+      username: "free-user",
+      email: "free-user@example.test",
+      type: "free",
+      expiration: "",
+      maxDownloads: 2,
+      maxConnections: 1
+    });
+
+    const status = await checkDeepbridAccount(key, undefined, NOW);
+
+    expect(status).toMatchObject({ valid: true, isPremium: false, premiumUntilMs: null });
+    expect(status.message).toMatch(/Free/);
+  });
+
+  it.each([
+    [401, /ungültig/i],
+    [403, /gesperrt/i]
+  ])("reports HTTP %i as an honest invalid key status", async (httpStatus, message) => {
+    mockDeepbridResponse(httpStatus, { error: httpStatus });
+
+    const status = await checkDeepbridAccount(key, undefined, NOW);
+
+    expect(status.valid).toBe(false);
+    expect(status.message).toMatch(message);
+    expect(JSON.stringify(status)).not.toContain(key);
+  });
+
+  it("reports HTML instead of account JSON as a failed check", async () => {
+    mockDeepbridResponse(200, "<html>gateway</html>", "text/html");
+
+    const status = await checkDeepbridAccount(key, undefined, NOW);
+
+    expect(status.valid).toBe(false);
+    expect(status.message).toMatch(/Prüfung fehlgeschlagen/);
+    expect(status.message).not.toContain("gateway");
+  });
+
+  it.each([
+    new Error("ECONNRESET fixture-deepbrid-check-key-4fG7"),
+    new DOMException("Timeout fixture-deepbrid-check-key-4fG7", "TimeoutError")
+  ])("reports transport failures without reflecting raw errors", async (error) => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw error; }) as unknown as typeof fetch);
+
+    const status = await checkDeepbridAccount(key, undefined, NOW);
+
+    expect(status.valid).toBe(false);
+    expect(status.message).toBe("Prüfung fehlgeschlagen");
+    expect(JSON.stringify(status)).not.toContain(key);
+  });
+
+  it("distinguishes a caller abort from a failed check", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    const controller = new AbortController();
+    controller.abort(new Error(`cancel ${key}`));
+
+    const status = await checkDeepbridAccount(key, controller.signal, NOW);
+
+    expect(status.message).toBe("Prüfung abgebrochen");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(JSON.stringify(status)).not.toContain(key);
+  });
+});
+
 describe("checkAllDebridAccounts", () => {
+  it("checks one configured Deepbrid account in all scope and only an enabled one in active scope", async () => {
+    const key = "fixture-deepbrid-bulk-key-7hJ2";
+    const fetchMock = mockDeepbridResponse(200, {
+      username: "bulk-user",
+      email: "bulk-user@example.test",
+      type: "free",
+      expiration: "",
+      maxDownloads: 2,
+      maxConnections: 1
+    });
+    const settings = {
+      ...defaultSettings(),
+      deepbridApiKey: key,
+      disabledProviders: ["deepbrid" as const]
+    };
+
+    const active = await checkAllDebridAccounts(settings, undefined, undefined, "active");
+    const all = await checkAllDebridAccounts(settings, undefined, undefined, "all");
+
+    expect(active).toEqual([]);
+    expect(all).toEqual([expect.objectContaining({ accountId: "svc-deepbrid", provider: "deepbrid", valid: true })]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("discards a late Real-Debrid result after its account was removed", () => {
     const removedId = "rda_removedAfterCheck";
     const lateStatus = { accountId: removedId, provider: "realdebrid" as const, label: "API-Token 1", maskedLogin: "Geschützt", valid: true, isPremium: true, premiumUntilMs: null, message: "Premium aktiv", checkedAt: NOW };

@@ -8,6 +8,7 @@ The provider names, logos, and favicons bundled with this application are tradem
 | Mega-Debrid | https://cdn.mega-debrid.eu/images/favicon.png | 2026-08-09 | `12D3DE939965D13F852853A2A5BB873B0D7A89D411BEAFA02518B48356803AE4` |
 | BestDebrid | https://bestdebrid.com/en/files/assets/images/favicon.ico | 2026-08-09 | `11E54B1B0DCBBB8F5BCAA21D0EDC0CF182276C513ED733ACEEEBC35120CD9F33` |
 | AllDebrid | https://cdn.alldebrid.com/lib/images/default/favicon.png | 2026-08-09 | `AE296FBE43A6CCEABC85033E5C063BFCA01932EB3677FB679AF63C23535CD9EF` |
+| Deepbrid | https://www.deepbrid.com/favicon.ico | 2026-08-24 | `8CA0D28FC74B69C5AF146650FF2E6664AD280660D6A2AA53054326C8F6389BBB` |
 | DDownload | https://ddownload.com/images/favicon.ico | 2026-08-09 | `E0413F73F8A2A5AD85BE8082B0897E82AE3B354FE2490884D7A992BB18F34DF3` |
 | RapidGator | https://rapidgator.net/favicon.ico | 2026-08-10 | `9CD57803D93FBD183DE40D1007606A3C30F90FC82A205C7ABF4C12D322B7C144` |
 | 1Fichier | https://img.1fichier.com/favicon.png | 2026-08-09 | `C3567E0299879FE67924C6119BF082BE128A5E8962FC0D61A0D8AAA0B1304CB5` |

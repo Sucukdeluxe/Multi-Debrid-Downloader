@@ -93,6 +93,26 @@ describe("visual fixtures", () => {
     expect(createVisualFixture("dense")).toEqual(dense);
   });
 
+  it("keeps the complete notification center state deterministic without exposing its webhook", () => {
+    const settings = createVisualFixture("dense").snapshot.settings;
+
+    expect(settings).toEqual(expect.objectContaining({
+      notifyUrlConfigured: true,
+      notifyMention: "@visual",
+      notifyOnPackageCompleted: true,
+      notifyOnPackageFailed: true,
+      notifyPackageSuccessMode: "digest",
+      notifyOnRunFinished: true,
+      notifyOnRemainingBelow: true,
+      notifyRemainingThresholdGb: 75,
+      notifyOnDownloadStall: true,
+      notifyStallAfterSeconds: 120,
+      notifyStallCooldownMinutes: 15,
+      notifyOnDownloadRecovery: true
+    }));
+    expect(settings).not.toHaveProperty("notifyUrl");
+  });
+
   it("freezes runtime and recurring chart timers across visual frames", async () => {
     const dense = createVisualFixture("dense");
     const originalDateNow = Date.now;
@@ -170,6 +190,13 @@ describe("visual fixtures", () => {
     expect(debridLinkItem?.providerAccountId).toBe(debridLinkKeys[0].accountId);
     const hostLimits = await createVisualElectronApi(dense).getDebridLinkHostLimits();
     expect(hostLimits[0]?.keyId).toBe(debridLinkKeys[0].accountId);
+  });
+
+  it("includes the configured synthetic Deepbrid account", () => {
+    const dense = createVisualFixture("dense");
+    expect(dense.snapshot.accounts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ accountId: "svc-deepbrid", kind: "deepbrid-api", provider: "deepbrid" })
+    ]));
   });
 
   it("stores every mutable bridge state inside the visual fixture", async () => {

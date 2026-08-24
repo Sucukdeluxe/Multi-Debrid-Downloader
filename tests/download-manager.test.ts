@@ -22,7 +22,8 @@ import { serializeRealDebridApiAccounts } from "../src/shared/real-debrid-accoun
 import { getRenameLogPath, initRenameLog, shutdownRenameLog } from "../src/main/rename-log";
 import { UnrestrictedLink } from "../src/main/realdebrid";
 import { resetVideoToolingCache } from "../src/main/video-processor";
-import type { AppSettings, HistoryEntry, PackageEntry } from "../src/shared/types";
+import { createDownloadHealthState, evaluateDownloadHealth } from "../src/main/download-health-monitor";
+import type { AppSettings, DownloadItem, HistoryEntry, PackageEntry } from "../src/shared/types";
 
 const tempDirs: string[] = [];
 const originalFetch = globalThis.fetch;
@@ -123,6 +124,88 @@ describe("resolveUnrestrictTimeoutBudgetMs", () => {
       "https://rapidgator.net/file/abc123/file.rar.html",
       35_000
     )).toBeGreaterThanOrEqual(70_000);
+  });
+});
+
+describe("Deepbrid download lifecycle", () => {
+  it("treats Deepbrid as the only usable download account", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-deepbrid-only-"));
+    tempDirs.push(root);
+    const settings = {
+      ...defaultSettings(),
+      deepbridApiKey: "synthetic-deepbrid-only-key",
+      providerOrder: ["deepbrid"] as const,
+      providerPrimary: "deepbrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const
+    };
+    const manager = new DownloadManager(settings, emptySession(), createStoragePaths(path.join(root, "state")));
+    const internal = manager as unknown as { hasUsableDownloadAccount: () => boolean };
+
+    expect(internal.hasUsableDownloadAccount()).toBe(true);
+  });
+
+  it.each([
+    ["disabled", { disabledProviders: ["deepbrid"] }],
+    ["daily-limited", { providerDailyLimitBytes: { deepbrid: 100 }, providerDailyUsageBytes: { deepbrid: 100 } }]
+  ])("does not start with %s Deepbrid", (_label, override) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-deepbrid-blocked-"));
+    tempDirs.push(root);
+    const settings = {
+      ...defaultSettings(),
+      deepbridApiKey: "synthetic-deepbrid-blocked-key",
+      providerOrder: ["deepbrid"] as const,
+      providerPrimary: "deepbrid" as const,
+      providerSecondary: "none" as const,
+      providerTertiary: "none" as const,
+      providerDailyUsageDay: getProviderUsageDayKey(),
+      ...override
+    } as ReturnType<typeof defaultSettings>;
+    const manager = new DownloadManager(settings, emptySession(), createStoragePaths(path.join(root, "state")));
+    const internal = manager as unknown as { hasUsableDownloadAccount: () => boolean };
+
+    expect(internal.hasUsableDownloadAccount()).toBe(false);
+  });
+
+  it("records actual Deepbrid bytes in provider totals and rolling account statistics", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-deepbrid-statistics-"));
+    tempDirs.push(root);
+    const settings = {
+      ...defaultSettings(),
+      deepbridApiKey: "synthetic-deepbrid-statistics-key",
+      providerDailyUsageBytes: { deepbrid: 100 },
+      providerTotalUsageBytes: { deepbrid: 1000 },
+      debridAccountStatuses: {
+        "svc-deepbrid": {
+          accountId: "svc-deepbrid",
+          provider: "deepbrid" as const,
+          label: "Deepbrid",
+          maskedLogin: "sy******ey",
+          valid: true,
+          isPremium: true,
+          premiumUntilMs: null,
+          username: "Synthetic Deepbrid User",
+          message: "Valid",
+          checkedAt: Date.now()
+        }
+      }
+    };
+    const manager = new DownloadManager(settings, emptySession(), createStoragePaths(path.join(root, "state")));
+    const internal = manager as unknown as {
+      recordProviderDownloadedBytes: (provider: "deepbrid", bytes: number, accountId: string, accountLabel: string) => void;
+      settings: typeof settings;
+    };
+
+    internal.recordProviderDownloadedBytes("deepbrid", 256, "svc-deepbrid", "Deepbrid API");
+
+    expect(internal.settings.providerDailyUsageBytes.deepbrid).toBe(356);
+    expect(internal.settings.providerTotalUsageBytes.deepbrid).toBe(1256);
+    expect(manager.getStats().rolling24Hours?.accounts).toContainEqual(expect.objectContaining({
+      id: "svc-deepbrid",
+      provider: "deepbrid",
+      label: "Synthetic Deepbrid User",
+      bytes: 256
+    }));
   });
 });
 
@@ -611,6 +694,14 @@ describe("disk write recovery", () => {
       deficitBytes: 640
     }));
     expect((manager as any).diskReservations.getReservedBytesByVolume().get("remux-volume") ?? 0).toBe(0);
+    expect(pkg.remuxOperations).toHaveLength(1);
+    expect(pkg.remuxOperations?.[0]).toMatchObject({
+      fileName: "Show.S01E01.German.DL.720p.mkv",
+      status: "failed",
+      errorCategory: "Speicherplatz"
+    });
+    expect(pkg.remuxOperations?.[0].completedAt).toBeGreaterThanOrEqual(pkg.remuxOperations?.[0].startedAt || 0);
+    expect(pkg.remuxOperations?.[0].durationMs).toBeGreaterThanOrEqual(0);
   });
 });
 
@@ -4114,6 +4205,7 @@ describe("download manager", () => {
 
     let releaseBlockedPostProcess: ((value?: void | PromiseLike<void>) => void) | undefined;
     try {
+      const history: HistoryEntry[] = [];
       const manager = new DownloadManager(
         {
           ...defaultSettings(),
@@ -4124,13 +4216,14 @@ describe("download manager", () => {
           maxParallel: 1
         },
         emptySession(),
-        createStoragePaths(path.join(root, "state"))
+        createStoragePaths(path.join(root, "state")),
+        { onHistoryEntry: (entry) => history.push(entry) }
       );
 
       const blocker = new Promise<void>((resolve) => {
         releaseBlockedPostProcess = resolve;
       });
-      (manager as unknown as { packagePostProcessQueue: Promise<void> }).packagePostProcessQueue = blocker;
+      (manager as any).handlePackagePostProcessing = vi.fn(async () => blocker);
 
       manager.addPackages([
         { name: "first", links: ["https://dummy/first"] },
@@ -4151,14 +4244,26 @@ describe("download manager", () => {
         return state === "validating" || state === "downloading" || state === "integrity_check" || state === "completed";
       }, 6000);
 
+      const pendingPackage = manager.getSnapshot().session.packages[firstPackage];
+      expect(pendingPackage?.downloadStartedAt).toBeGreaterThan(0);
+      expect(pendingPackage?.downloadEndedAt).toBeGreaterThanOrEqual(pendingPackage?.downloadStartedAt || 0);
+      expect(pendingPackage?.downloadEndedAt).toBe(pendingPackage?.downloadCompletedAt);
+      const downloadEndedAt = pendingPackage?.downloadEndedAt || 0;
+      await new Promise((resolve) => setTimeout(resolve, 1_200));
+      expect(manager.getSnapshot().session.packages[firstPackage]?.downloadEndedAt).toBe(downloadEndedAt);
+
       if (releaseBlockedPostProcess) {
         releaseBlockedPostProcess();
       }
       await waitFor(() => !manager.getSnapshot().session.running, 25000);
+      await waitFor(() => history.some((entry) => entry.name === "first"), 6000);
 
       const done = manager.getSnapshot();
       expect(done.session.items[firstItem]?.status).toBe("completed");
       expect(done.session.items[secondItem]?.status).toBe("completed");
+      const firstHistory = history.find((entry) => entry.name === "first");
+      expect(firstHistory?.downloadEndedAt).toBe(downloadEndedAt);
+      expect(firstHistory?.totalDurationSeconds).toBeGreaterThan(firstHistory?.downloadDurationSeconds || 0);
     } finally {
       if (releaseBlockedPostProcess) {
         releaseBlockedPostProcess();
@@ -10709,6 +10814,16 @@ describe("download manager", () => {
     const snapshot = manager.getSnapshot();
     expect(snapshot.session.packages[packageId]?.status).toBe("completed");
     expect(snapshot.session.items[itemId]?.fullStatus.startsWith("Entpackt - Done")).toBe(true);
+    expect(snapshot.session.packages[packageId]?.archiveOperations).toHaveLength(1);
+    expect(snapshot.session.packages[packageId]?.archiveOperations?.[0]).toMatchObject({
+      name: "episode.zip",
+      itemIds: [itemId],
+      partCount: 1,
+      status: "completed",
+      errorCategory: ""
+    });
+    expect(snapshot.session.packages[packageId]?.archiveOperations?.[0].durationMs).toBeGreaterThanOrEqual(0);
+    expect(snapshot.session.packages[packageId]?.outputCount).toBe(1);
   }, 30000);
 
   it("does not fail startup post-processing when source package dir is missing but extract output exists", async () => {
@@ -14267,5 +14382,493 @@ describe("package priority ordering", () => {
     manager.setPackagePriority("high-a", "high");
 
     expect(session.packageOrder).toEqual(["high-a", "high-b", "normal-a"]);
+  });
+});
+
+describe("package lifecycle telemetry boundaries", () => {
+  it("uses item-path provenance for archive identity and leaves unknown part counts at zero", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-archive-identity-"));
+    tempDirs.push(root);
+    const session = emptySession();
+    const manager = new DownloadManager(defaultSettings(), session, createStoragePaths(path.join(root, "state")));
+    const pkg: PackageEntry = {
+      id: "archive-identity-package",
+      name: "Archive identity",
+      outputDir: path.join(root, "downloads"),
+      extractDir: path.join(root, "extract"),
+      status: "completed" as const,
+      itemIds: ["item-a", "item-b"],
+      cancelled: false,
+      enabled: true,
+      createdAt: 1_000,
+      updatedAt: 1_000
+    };
+    const item = (id: string, directory: string) => ({
+      id,
+      packageId: pkg.id,
+      url: `https://example.test/${id}`,
+      provider: "realdebrid" as const,
+      status: "completed" as const,
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 1,
+      totalBytes: 1,
+      progressPercent: 100,
+      fileName: "episode.rar",
+      targetPath: path.join(pkg.outputDir, directory, "episode.rar"),
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Fertig",
+      createdAt: 1_000,
+      updatedAt: 1_000
+    });
+    const progress = (current: number) => ({
+      current,
+      total: 3,
+      percent: 100,
+      archiveName: "episode.rar",
+      archivePercent: 100,
+      elapsedMs: 1_000,
+      archiveDone: true,
+      archiveSuccess: true
+    });
+    const state = manager as any;
+
+    state.recordArchiveOperation(pkg, progress(0), [item("item-a", "season-a")]);
+    state.recordArchiveOperation(pkg, progress(1), [item("item-b", "season-b")]);
+    state.recordArchiveOperation(pkg, { ...progress(2), archiveName: "unresolved.rar" }, []);
+
+    const operations = pkg.archiveOperations || [];
+    expect(operations).toHaveLength(3);
+    expect(new Set(operations.map((operation) => operation.id))).toHaveLength(3);
+    expect(operations.map((operation) => operation.partCount)).toEqual([1, 1, 0]);
+  });
+
+  it("projects archive failure details before storing operation telemetry", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-archive-failure-category-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(root, "state")));
+    const pkg: PackageEntry = {
+      id: "archive-failure-package",
+      name: "Archive failure",
+      outputDir: path.join(root, "downloads"),
+      extractDir: path.join(root, "extract"),
+      status: "failed",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      createdAt: 1_000,
+      updatedAt: 1_000
+    };
+    const progress = (current: number, archiveName: string) => ({
+      current,
+      total: 2,
+      percent: 100,
+      archiveName,
+      archivePercent: 100,
+      elapsedMs: 1_000,
+      archiveDone: true,
+      archiveSuccess: false
+    });
+    const state = manager as unknown as {
+      recordArchiveOperation: (entry: PackageEntry, update: ReturnType<typeof progress>, items: DownloadItem[], errorCategory: string) => void;
+    };
+
+    state.recordArchiveOperation(pkg, progress(0, "private.rar"), [], "C:\\Users\\Alice\\private.rar https://private.example.test/file");
+    state.recordArchiveOperation(pkg, progress(1, "disk-full.rar"), [], "ENOSPC: no space left on device C:\\Users\\Alice\\disk-full.rar");
+
+    expect(pkg.archiveOperations?.map((operation) => operation.errorCategory)).toEqual(["Entpacken", "Speicherplatz"]);
+  });
+
+  it("records queued, slot start and terminal timestamps around real post-processing", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-lifecycle-boundaries-"));
+    tempDirs.push(root);
+    const session = emptySession();
+    const packageId = "lifecycle-package";
+    const itemId = "lifecycle-item";
+    const createdAt = Date.now() - 5_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "Lifecycle",
+      outputDir: path.join(root, "downloads", "lifecycle"),
+      extractDir: path.join(root, "extract", "lifecycle"),
+      status: "completed",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      downloadStartedAt: createdAt,
+      downloadCompletedAt: createdAt + 1_000,
+      downloadEndedAt: createdAt + 1_000,
+      createdAt,
+      updatedAt: createdAt + 1_000
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://dummy/lifecycle",
+      provider: "realdebrid",
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 65_536,
+      totalBytes: 65_536,
+      progressPercent: 100,
+      fileName: "lifecycle.txt",
+      targetPath: path.join(root, "downloads", "lifecycle", "lifecycle.txt"),
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Fertig",
+      createdAt,
+      updatedAt: createdAt + 1_000
+    };
+    fs.mkdirSync(path.dirname(session.items[itemId].targetPath), { recursive: true });
+    fs.writeFileSync(session.items[itemId].targetPath, Buffer.alloc(65_536, 1));
+    const manager = new DownloadManager(
+      { ...defaultSettings(), autoExtract: false },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+    const state = manager as any;
+    state.runPackageIds.add(packageId);
+    state.handlePackagePostProcessing = vi.fn(async () => undefined);
+
+    await state.runPackagePostProcessing(packageId);
+
+    const pkg = session.packages[packageId];
+    expect(session.items[itemId].status).toBe("completed");
+    expect(pkg.postProcessQueuedAt).toBeGreaterThan(0);
+    expect(pkg.postProcessStartedAt).toBeGreaterThanOrEqual(pkg.postProcessQueuedAt || 0);
+    expect(pkg.postProcessCompletedAt).toBeGreaterThanOrEqual(pkg.postProcessStartedAt || 0);
+    expect(pkg.terminalAt).toBe(pkg.postProcessCompletedAt);
+  });
+});
+
+describe("download health snapshot", () => {
+  function createHealthManager(root: string, settings = defaultSettings()) {
+    const session = emptySession();
+    const packageId = "private-package-id";
+    const itemId = "private-item-id";
+    const now = 100_000;
+    session.running = true;
+    session.runStartedAt = 10_000;
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "Private package name",
+      outputDir: path.join(root, "private-output"),
+      extractDir: path.join(root, "private-extract"),
+      status: "downloading",
+      itemIds: [itemId],
+      cancelled: false,
+      enabled: true,
+      createdAt: 1_000,
+      updatedAt: now
+    };
+    session.items[itemId] = {
+      id: itemId,
+      packageId,
+      url: "https://private.example.test/file",
+      provider: "realdebrid",
+      providerLabel: "Private provider label",
+      providerAccountId: "private-account-id",
+      providerAccountLabel: "private@example.test",
+      status: "downloading",
+      retries: 0,
+      speedBps: 8192,
+      downloadedBytes: 4096,
+      totalBytes: 16384,
+      progressPercent: 25,
+      fileName: "private-file.bin",
+      targetPath: path.join(root, "private-output", "private-file.bin"),
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Download läuft",
+      createdAt: 2_000,
+      updatedAt: now
+    };
+    const manager = new DownloadManager(settings, session, createStoragePaths(path.join(root, "state")));
+    const state = manager as any;
+    session.running = true;
+    session.items[itemId].status = "downloading";
+    session.items[itemId].speedBps = 8192;
+    session.packages[packageId].status = "downloading";
+    state.runItemIds.add(itemId);
+    state.runPackageIds.add(packageId);
+    return { manager, session, state, packageId, itemId };
+  }
+
+  it("exposes only aggregate run-scope health data and opaque fingerprints", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-health-snapshot-"));
+    tempDirs.push(root);
+    const { manager, state, packageId, itemId } = createHealthManager(root);
+    state.lastSchedulerTickAt = 99_000;
+    state.activeTasks.set(itemId, {
+      itemId,
+      packageId,
+      abortController: new AbortController(),
+      abortReason: "none",
+      resumable: true,
+      nonResumableCounted: false,
+      phase: "downloading",
+      phaseStartedAt: 90_000,
+      phaseDeadlineAt: 0,
+      blockedOnDiskWrite: false,
+      blockedOnDiskSince: 0,
+      blockedOnThrottleUntil: 0
+    });
+
+    const health = manager.getDownloadHealthSnapshot(100_000);
+    const serialized = JSON.stringify(health);
+
+    expect(health).toMatchObject({
+      runActive: true,
+      openItems: 1,
+      openPackages: 1,
+      knownDownloadedBytes: 4096,
+      activeTasks: 1,
+      startableItems: 0,
+      lastSchedulerTickAt: 99_000,
+      currentSpeedBps: 8192
+    });
+    expect(health.runFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(health.queueFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(serialized).not.toMatch(/private|example\.test|realdebrid|file\.bin/i);
+  });
+
+  it("keeps the run fingerprint stable across restart time changes for the same generation scope", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-health-fingerprint-"));
+    tempDirs.push(root);
+    const { manager, session } = createHealthManager(root);
+    session.packages[session.packageOrder[0]].resultGeneration = 4;
+
+    const before = manager.getDownloadHealthSnapshot(100_000);
+    session.runStartedAt = 200_000;
+    const after = manager.getDownloadHealthSnapshot(210_000);
+
+    expect(after.runFingerprint).toBe(before.runFingerprint);
+    expect(after.queueFingerprint).toBe(before.queueFingerprint);
+  });
+
+  it("advances progress sequences only for positive byte events and successful item completions", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-health-sequences-"));
+    tempDirs.push(root);
+    const { manager, session, state, packageId, itemId } = createHealthManager(root);
+
+    state.recordSpeed(1024, packageId);
+    state.recordSpeed(0, packageId);
+    state.recordSpeed(-512, packageId);
+    session.totalDownloadedBytes = 10_000_000;
+    session.totalDownloadedBytes = 0;
+    state.recordRunOutcome(itemId, "completed");
+    state.recordRunOutcome(itemId, "completed");
+
+    const health = manager.getDownloadHealthSnapshot(100_000);
+
+    expect(health.downloadProgressSequence).toBe(1);
+    expect(health.lastPositiveByteAt).toBeGreaterThan(0);
+    expect(health.itemCompletionSequence).toBe(1);
+  });
+
+  it("projects retry, cooldown, disk, throttle and valid phase waits without stale disk events", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-health-waits-"));
+    tempDirs.push(root);
+    const { manager, session, state, packageId, itemId } = createHealthManager(root);
+    const active = {
+      itemId,
+      packageId,
+      abortController: new AbortController(),
+      abortReason: "none",
+      resumable: true,
+      nonResumableCounted: false,
+      phase: "validating",
+      phaseStartedAt: 90_000,
+      phaseDeadlineAt: 130_000,
+      blockedOnDiskWrite: true,
+      blockedOnDiskSince: 95_000,
+      blockedOnThrottleUntil: 120_000
+    };
+    state.activeTasks.set(itemId, active);
+    state.diskWaitEvents = [{
+      phase: "download",
+      targetPath: "C:\\private\\disk",
+      requiredBytes: 100,
+      availableBytes: 0,
+      reserveBytes: 0,
+      retryAt: 80_000,
+      itemId,
+      packageId
+    }];
+
+    const activeWait = manager.getDownloadHealthSnapshot(100_000);
+
+    expect(activeWait.blockedOnDisk).toBe(true);
+    expect(activeWait.blockedOnThrottleUntil).toBe(120_000);
+    expect(activeWait.activePhaseDeadlineAt).toBe(130_000);
+
+    state.activeTasks.clear();
+    session.items[itemId].status = "queued";
+    state.retryAfterByItem.set(itemId, 140_000);
+    state.providerFailures.set("realdebrid", { count: 20, lastFailAt: 99_000, cooldownUntil: 150_000 });
+
+    const queuedWait = manager.getDownloadHealthSnapshot(100_000);
+
+    expect(queuedWait.startableItems).toBe(0);
+    expect(queuedWait.nextRetryAt).toBe(140_000);
+    expect(queuedWait.providerCooldownUntil).toBe(150_000);
+    expect(queuedWait.blockedOnDisk).toBe(false);
+  });
+
+  it("does not project a partial retry as a global wait while another download is active", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-health-partial-wait-"));
+    tempDirs.push(root);
+    const { manager, session, state, packageId, itemId } = createHealthManager(root);
+    const queuedId = "private-queued-id";
+    session.items[queuedId] = {
+      ...session.items[itemId],
+      id: queuedId,
+      status: "queued",
+      downloadedBytes: 0,
+      speedBps: 0
+    };
+    session.packages[packageId].itemIds.push(queuedId);
+    state.runItemIds.add(queuedId);
+    state.activeTasks.set(itemId, {
+      itemId,
+      packageId,
+      abortController: new AbortController(),
+      abortReason: "none",
+      resumable: true,
+      nonResumableCounted: false,
+      phase: "downloading",
+      phaseStartedAt: 90_000,
+      phaseDeadlineAt: 0,
+      blockedOnDiskWrite: false,
+      blockedOnDiskSince: 0,
+      blockedOnThrottleUntil: 0
+    });
+    state.retryAfterByItem.set(queuedId, 140_000);
+
+    const health = manager.getDownloadHealthSnapshot(100_000);
+
+    expect(health.activeTasks).toBe(1);
+    expect(health.nextRetryAt).toBe(0);
+  });
+
+  it("freezes health while two active downloads wait in the real global speed-limit queue", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    try {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-health-global-throttle-"));
+      tempDirs.push(root);
+      const settings = {
+        ...defaultSettings(),
+        speedLimitEnabled: true,
+        speedLimitMode: "global" as const,
+        speedLimitKbps: 1
+      };
+      const { manager, session, state, packageId, itemId } = createHealthManager(root, settings);
+      const secondItemId = "private-throttled-item-2";
+      session.items[secondItemId] = {
+        ...session.items[itemId],
+        id: secondItemId
+      };
+      session.packages[packageId].itemIds.push(secondItemId);
+      state.runItemIds.add(secondItemId);
+      const firstActive = {
+        itemId,
+        packageId,
+        abortController: new AbortController(),
+        abortReason: "none",
+        resumable: true,
+        nonResumableCounted: false,
+        phase: "downloading",
+        phaseStartedAt: 10_000,
+        phaseDeadlineAt: 0,
+        blockedOnDiskWrite: false,
+        blockedOnDiskSince: 0,
+        blockedOnThrottleUntil: 0
+      };
+      const secondActive = {
+        ...firstActive,
+        itemId: secondItemId,
+        abortController: new AbortController()
+      };
+      state.activeTasks.set(itemId, firstActive);
+      state.activeTasks.set(secondItemId, secondActive);
+
+      await state.applySpeedLimit(100 * 1024, 0, 10_000, firstActive);
+      const secondWait = state.applySpeedLimit(100 * 1024, 0, 10_000, secondActive);
+      const firstWait = state.applySpeedLimit(100 * 1024, 0, 10_000, firstActive);
+      const waitsSettled = Promise.allSettled([secondWait, firstWait]);
+      await Promise.resolve();
+
+      let healthState = createDownloadHealthState();
+      const events = [];
+      for (const now of [10_000, 55_000, 105_000]) {
+        vi.setSystemTime(now);
+        const result = evaluateDownloadHealth(
+          healthState,
+          manager.getDownloadHealthSnapshot(now),
+          now,
+          {
+            stallAfterMs: 90_000,
+            cooldownMs: 600_000,
+            notifyOnStall: true,
+            notifyOnRecovery: true
+          }
+        );
+        healthState = result.state;
+        events.push(...result.events);
+      }
+
+      expect(firstActive.blockedOnThrottleUntil).toBeGreaterThan(105_000);
+      expect(secondActive.blockedOnThrottleUntil).toBeGreaterThan(105_000);
+      expect(manager.getDownloadHealthSnapshot(105_000).blockedOnThrottleUntil).toBeGreaterThan(105_000);
+      expect(healthState.status).toBe("expected_wait");
+      expect(healthState.suspiciousDurationMs).toBe(0);
+      expect(events).toEqual([]);
+
+      firstActive.abortController.abort("test-finished");
+      secondActive.abortController.abort("test-finished");
+      await vi.runAllTimersAsync();
+      await waitsSettled;
+      expect(firstActive.blockedOnThrottleUntil).toBe(0);
+      expect(secondActive.blockedOnThrottleUntil).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("counts one technical recovery when the existing global watchdog restarts stalled tasks", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-health-watchdog-"));
+    tempDirs.push(root);
+    const { manager, state, packageId, itemId } = createHealthManager(root);
+    const active = {
+      itemId,
+      packageId,
+      abortController: new AbortController(),
+      abortReason: "none",
+      resumable: true,
+      nonResumableCounted: false,
+      phase: "downloading",
+      phaseStartedAt: 1,
+      phaseDeadlineAt: 0,
+      blockedOnDiskWrite: false,
+      blockedOnDiskSince: 0,
+      blockedOnThrottleUntil: 0
+    };
+    state.activeTasks.set(itemId, active);
+    state.lastGlobalProgressBytes = 0;
+    state.lastGlobalProgressAt = 1;
+
+    state.runGlobalStallWatchdog(90_000);
+
+    expect(active.abortController.signal.aborted).toBe(true);
+    expect(active.abortReason).toBe("stall");
+    expect(manager.getDownloadHealthSnapshot(90_000).technicalRecoveryCount).toBe(1);
   });
 });
