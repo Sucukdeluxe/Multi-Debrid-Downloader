@@ -117,8 +117,11 @@ export function getRemainingDownloadBytes(items: Iterable<DownloadItem>): { byte
 }
 
 export function formatRemainingDownloadBytes(summary: { bytes: number; unknownItems: number }): string {
-  if (summary.unknownItems <= 0) return humanSize(summary.bytes);
-  return summary.bytes > 0 ? `≥ ${humanSize(summary.bytes)}` : "Unbekannt";
+  const value = summary.bytes >= 1024 ** 4
+    ? `${(summary.bytes / 1024 ** 4).toFixed(4)} TB`
+    : humanSize(summary.bytes);
+  if (summary.unknownItems <= 0) return value;
+  return summary.bytes > 0 ? `≥ ${value}` : "Unbekannt";
 }
 
 export function formatRemainingDownloadTooltip(summary: { bytes: number; unknownItems: number }): string {

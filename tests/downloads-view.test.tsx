@@ -69,7 +69,7 @@ import {
   formatHosterLabel,
   normalizeDownloadServiceLabel
 } from "../src/renderer/download-format";
-import { getRollingMetricDirection } from "../src/renderer/ui/RollingMetricValue";
+import { getRollingMetricDirection, shouldAnimateRollingMetric } from "../src/renderer/ui/RollingMetricValue";
 import { SlidingSelection } from "../src/renderer/ui/SlidingSelection";
 
 const now = new Date(2026, 7, 10, 12, 0, 0, 0).getTime();
@@ -153,6 +153,11 @@ describe("Downloadtabellen-Spalten", () => {
 });
 
 describe("rollende Downloadkennzahlen", () => {
+  it("does not animate raw byte changes while the visible value stays unchanged", () => {
+    expect(shouldAnimateRollingMetric("1.111 TB", "1.111 TB")).toBe(false);
+    expect(shouldAnimateRollingMetric("1.111 TB", "1.110 TB")).toBe(true);
+  });
+
   it("moves increasing values up and decreasing values down", () => {
     expect(getRollingMetricDirection(300, 600)).toBe("up");
     expect(getRollingMetricDirection(600, 300)).toBe("down");
@@ -227,6 +232,10 @@ describe("Download-Gesamtgröße", () => {
 });
 
 describe("verbleibendes Downloadvolumen", () => {
+  it("shows a fourth TB decimal so fast downloads stay visibly responsive", () => {
+    expect(formatRemainingDownloadBytes({ bytes: Math.round(1.125 * 1024 ** 4), unknownItems: 0 })).toBe("1.1250 TB");
+  });
+
   it("summiert nur offene bekannte Restbytes und klemmt überladene Fortschritte bei null", () => {
     const items = [
       item("partial", "remaining", "downloading", { downloadedBytes: 750_000_000, totalBytes: 2_000_000_000 }),
