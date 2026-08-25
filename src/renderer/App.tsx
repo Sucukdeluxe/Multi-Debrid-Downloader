@@ -975,15 +975,26 @@ const KNOWN_HOSTERS: { id: string; label: string }[] = [
   { id: "isra", label: "Isra.cloud" }
 ];
 
+export function buildProviderOrderEntry(provider: DebridProvider, settings: RendererSettings): {
+  id: DebridProvider;
+  label: string;
+  icon: string;
+} {
+  const legacyMegaService = settings.megaDebridPreferApi ? "megadebrid-api" : "megadebrid-web";
+  const service = provider === "megadebrid" ? legacyMegaService : provider as AccountService;
+  const kind = getConfiguredAccountKind(settings, service);
+  const option = kind ? ACCOUNT_OPTIONS.find((entry) => entry.kind === kind) : null;
+  const modeLabel = option?.modeLabel || (provider === "megadebrid" ? (settings.megaDebridPreferApi ? "API" : "Web-Login") : "");
+  const serviceLabel = option?.serviceLabel || providerLabels[provider];
+  return {
+    id: provider,
+    label: modeLabel ? `${serviceLabel} (${modeLabel})` : serviceLabel,
+    icon: ACCOUNT_SERVICE_ICONS[option?.service || service]
+  };
+}
+
 function providerLabelWithMode(provider: DebridProvider, settings: RendererSettings): string {
-  const base = providerLabels[provider];
-  if (provider === "megadebrid" || provider === "megadebrid-api" || provider === "megadebrid-web") {
-    return base;
-  }
-  const kind = getConfiguredAccountKind(settings, provider as AccountService);
-  if (!kind) return base;
-  const opt = ACCOUNT_OPTIONS.find((o) => o.kind === kind);
-  return opt?.modeLabel ? `${base} (${opt.modeLabel})` : base;
+  return buildProviderOrderEntry(provider, settings).label;
 }
 
 function formatAllDebridSourceLabel(source: AllDebridHostInfo["source"]): string {
@@ -5586,7 +5597,7 @@ export function App(): ReactElement {
     statusSort: accountStatusSort,
     runtime: accountRuntimeModel,
     rules: {
-      providerOrder: activeProviderOrder.map((provider) => providerLabelWithMode(provider, settingsDraft)),
+      providerOrder: activeProviderOrder.map((provider) => buildProviderOrderEntry(provider, settingsDraft)),
       routing: routingEntries.map(([hosterId, provider]) => `${KNOWN_HOSTERS.find((hoster) => hoster.id === hosterId)?.label || hosterId} → ${providerLabelWithMode(provider, settingsDraft)}`),
       autoFallback: settingsDraft.autoProviderFallback,
       rememberCredentials: settingsDraft.rememberToken,

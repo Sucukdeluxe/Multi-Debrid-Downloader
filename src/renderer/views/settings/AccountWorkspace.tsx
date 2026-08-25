@@ -81,7 +81,7 @@ function getAccountPanelNavigationIndex(currentIndex: number, key: string): numb
 }
 
 export interface AccountRulesViewModel {
-  providerOrder: readonly string[];
+  providerOrder: readonly { id: string; label: string; icon: string }[];
   routing: readonly string[];
   autoFallback: boolean;
   rememberCredentials?: boolean;
@@ -508,17 +508,20 @@ function AccountRules({ model, actions }: AccountWorkspaceProps): ReactElement {
             {model.rules.providerOrder.map((provider, index) => (
               <li
                 draggable={Boolean(actions.onProviderDragStart)}
-                key={`${provider}-${index}`}
+                key={provider.id}
                 onDragEnd={actions.onProviderDragEnd}
                 onDragOver={(event) => actions.onProviderDragOver?.(event, index)}
                 onDragStart={(event) => actions.onProviderDragStart?.(event, index)}
                 onDrop={(event) => actions.onProviderDrop?.(event, index)}
               >
-                <span>{provider}</span>
+                <span className="settings-provider-order-provider">
+                  <img alt="" aria-hidden="true" draggable={false} height="20" src={provider.icon} width="20" />
+                  <span>{provider.label}</span>
+                </span>
                 {actions.onMoveProvider ? (
                   <span className="settings-provider-order-actions">
-                    <button aria-label={`${provider} nach oben`} disabled={index === 0} onClick={() => actions.onMoveProvider?.(index, -1)} type="button">↑</button>
-                    <button aria-label={`${provider} nach unten`} disabled={index === model.rules.providerOrder.length - 1} onClick={() => actions.onMoveProvider?.(index, 1)} type="button">↓</button>
+                    <button aria-label={`${provider.label} nach oben`} disabled={index === 0} onClick={() => actions.onMoveProvider?.(index, -1)} type="button">↑</button>
+                    <button aria-label={`${provider.label} nach unten`} disabled={index === model.rules.providerOrder.length - 1} onClick={() => actions.onMoveProvider?.(index, 1)} type="button">↓</button>
                   </span>
                 ) : null}
               </li>

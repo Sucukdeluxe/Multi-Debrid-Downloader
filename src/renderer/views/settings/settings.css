@@ -1067,6 +1067,19 @@
   gap: 4px;
 }
 
+.settings-provider-order-provider {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 9px;
+  color: var(--ui-text);
+}
+
+.settings-provider-order-provider img {
+  flex: 0 0 auto;
+  object-fit: contain;
+}
+
 .settings-provider-order-actions button {
   width: 30px;
   height: 28px;

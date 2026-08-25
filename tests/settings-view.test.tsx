@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { defaultSettings } from "../src/main/constants";
 import { createRendererSettings, createRendererState } from "../src/main/renderer-state";
-import { buildAccountAddFields, buildAccountCreateProviderOrderUpdate, createAccountDialogState, createDiscardedSettingsState, createSettingsDraft, resolveSettingsSaveCompletion } from "../src/renderer/App";
+import { buildAccountAddFields, buildAccountCreateProviderOrderUpdate, buildProviderOrderEntry, createAccountDialogState, createDiscardedSettingsState, createSettingsDraft, resolveSettingsSaveCompletion } from "../src/renderer/App";
 import { buildAccountReplaceCommand, createAccountEditState, type AccountEditTarget } from "../src/renderer/account-edit";
 import {
   buildScopedAccountEnabledState,
@@ -292,7 +292,10 @@ function workspaceModel(): AccountWorkspaceViewModel {
     selectedIds: [buildAccountRowId("megadebrid-api", "API", "mega-premium")],
     busy: false,
     rules: {
-      providerOrder: ["Debrid-Link", "Real-Debrid"],
+      providerOrder: [
+        { id: "debridlink", label: "Debrid-Link (API)", icon: "./provider-icons/debrid-link.ico" },
+        { id: "realdebrid", label: "Real-Debrid (Web-Login)", icon: "./provider-icons/real-debrid.png" }
+      ],
       routing: ["rapidgator.net → Debrid-Link"],
       autoFallback: true
     },
@@ -1146,6 +1149,10 @@ describe("account workspace", () => {
     expect(html).toContain("Hoster-Routing");
     expect(html).toContain("Automatischer Fallback");
     expect(html).toContain("Provider-Laufzeit");
+    expect(html).toContain("Debrid-Link (API)");
+    expect(html).toContain("Real-Debrid (Web-Login)");
+    expect(html).toContain("./provider-icons/debrid-link.ico");
+    expect(html).toContain("./provider-icons/real-debrid.png");
   });
 
   it("keeps add and edit dialogs separate and every secret field protected", () => {
@@ -1347,6 +1354,27 @@ describe("account workspace", () => {
 });
 
 describe("settings App integration", () => {
+  it("projects provider order entries with logos and explicit login modes", () => {
+    const settings = createRendererSettings({
+      ...defaultSettings(),
+      megaDebridWebEnabled: true,
+      megaDebridWebCredentials: "member:password",
+      deepbridApiKey: "test-key",
+      providerOrder: ["megadebrid-web", "deepbrid"]
+    });
+
+    expect(buildProviderOrderEntry("megadebrid-web", settings)).toEqual({
+      id: "megadebrid-web",
+      label: "Mega-Debrid (Web-Login)",
+      icon: "./provider-icons/mega-debrid.png"
+    });
+    expect(buildProviderOrderEntry("deepbrid", settings)).toEqual({
+      id: "deepbrid",
+      label: "Deepbrid (API)",
+      icon: "./provider-icons/deepbrid.png"
+    });
+  });
+
   it("preserves the write-only webhook during live snapshots and clears it for backup reseeding", () => {
     const safe = createRendererSettings({ ...defaultSettings(), notifyUrl: "https://private.example.test/hook" });
     const current = { ...safe, archivePasswordList: "loaded-password", notifyUrl: "https://private.example.test/hook" };
