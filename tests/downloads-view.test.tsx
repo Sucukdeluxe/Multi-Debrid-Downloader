@@ -63,6 +63,7 @@ import {
   DOWNLOAD_PACKAGE_ROW_HEIGHT,
   calculateDownloadVirtualWindow
 } from "../src/renderer/views/downloads/download-virtualizer";
+import { isDownloadItemVisuallySelected } from "../src/renderer/views/downloads/VirtualizedDownloadsBody";
 import {
   compactDownloadServiceLabel,
   extractHoster,
@@ -945,6 +946,15 @@ describe("downloads model", () => {
 
     expect(model.visibleRowIds).not.toContain("active");
     expect(model.actionableSelectedIds).toEqual(["package-a"]);
+  });
+
+  it("visually inherits package selection without adding child ids to the action selection", () => {
+    const selectedIds = new Set(["package-a"]);
+    const child = item("active", "package-a", "downloading");
+
+    expect(isDownloadItemVisuallySelected(child, selectedIds, "packages")).toBe(true);
+    expect(isDownloadItemVisuallySelected(child, selectedIds, "files")).toBe(false);
+    expect([...selectedIds]).toEqual(["package-a"]);
   });
 
   it("keeps occupied package rows logical while preserving active packages and an actionable visible selection", () => {

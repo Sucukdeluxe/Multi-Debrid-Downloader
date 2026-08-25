@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactElement } from "react";
-import { buildDownloadLogicalRows, type DownloadLogicalRow } from "./downloads-model";
+import type { DownloadItem } from "../../../shared/types";
+import { buildDownloadLogicalRows, type DownloadDisplayMode, type DownloadLogicalRow } from "./downloads-model";
 import {
   activateDownloadDisclosureTransition,
   DOWNLOAD_DISCLOSURE_DURATION_MS,
@@ -78,19 +79,27 @@ function disclosureOpacity(row: DownloadLogicalRow | DownloadDisclosureRow): num
   return "disclosureOpacity" in row && typeof row.disclosureOpacity === "number" ? row.disclosureOpacity : 1;
 }
 
+export function isDownloadItemVisuallySelected(
+  item: Pick<DownloadItem, "id" | "packageId">,
+  selectedIds: ReadonlySet<string>,
+  displayMode: DownloadDisplayMode
+): boolean {
+  return selectedIds.has(item.id) || (displayMode === "packages" && selectedIds.has(item.packageId));
+}
+
 function renderVirtualRow(row: DownloadLogicalRow | DownloadDisclosureRow, model: DownloadsViewModel, actions: DownloadsViewActions): ReactElement {
   if (row.type === "item-group") {
     return (
       <div className="downloads-disclosure-item-group">
         {row.items.map((entry) => (
-          <ItemRow actions={actions} columnOrder={model.columnOrder} gridTemplate={model.gridTemplate} item={entry.item} key={entry.id} selected={model.selectedIds.has(entry.item.id)} sessionRunning={model.running} />
+          <ItemRow actions={actions} columnOrder={model.columnOrder} gridTemplate={model.gridTemplate} item={entry.item} key={entry.id} selected={isDownloadItemVisuallySelected(entry.item, model.selectedIds, model.displayMode)} sessionRunning={model.running} />
         ))}
       </div>
     );
   }
   if (row.type === "item") {
     return (
-      <ItemRow actions={actions} columnOrder={model.columnOrder} gridTemplate={model.gridTemplate} item={row.item} selected={model.selectedIds.has(row.item.id)} sessionRunning={model.running} />
+      <ItemRow actions={actions} columnOrder={model.columnOrder} gridTemplate={model.gridTemplate} item={row.item} selected={isDownloadItemVisuallySelected(row.item, model.selectedIds, model.displayMode)} sessionRunning={model.running} />
     );
   }
   return (
