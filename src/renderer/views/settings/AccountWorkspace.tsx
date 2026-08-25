@@ -363,6 +363,7 @@ function AccountRow({
           disabled={busy}
           onChange={(event) => actions.onToggleEnabled(row.id, event.target.checked)}
           onClick={(event) => event.stopPropagation()}
+          onDoubleClick={(event) => event.stopPropagation()}
           type="checkbox"
         />
       </span>

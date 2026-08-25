@@ -1063,6 +1063,7 @@ describe("account workspace", () => {
     row.props.onKeyDown({ key: "Enter", target: row, currentTarget: row, preventDefault: () => {} });
     row.props.onKeyDown({ key: " ", target: checkbox, currentTarget: row, preventDefault: () => {} });
     checkbox.props.onChange({ target: { checked: false } });
+    checkbox.props.onDoubleClick({ stopPropagation: () => calls.push("checkbox-double-click-stopped") });
     row.props.onDoubleClick();
     actionButton.props.onClick({ stopPropagation: () => {}, currentTarget: { getBoundingClientRect: () => ({ right: 20, bottom: 30 }) } });
     actionButton.props.onDoubleClick({ stopPropagation: () => calls.push("action-double-click-stopped") });
@@ -1072,6 +1073,7 @@ describe("account workspace", () => {
       `select:${rowId}:true`,
       `select:${rowId}:false`,
       `toggle:${rowId}:false`,
+      "checkbox-double-click-stopped",
       `edit:${rowId}`,
       `context:${rowId}`,
       "action-double-click-stopped"
