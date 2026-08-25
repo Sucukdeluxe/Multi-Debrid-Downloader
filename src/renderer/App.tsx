@@ -339,6 +339,33 @@ export function createSettingsDraft(settings: RendererSettings, current?: Render
   };
 }
 
+export function createDiscardedSettingsState(settings: RendererSettings, themeChoice: SettingsThemeChoice = settings.theme): {
+  draft: RendererSettingsDraft;
+  themeChoice: SettingsThemeChoice;
+  speedLimitInput: string;
+  scheduleSpeedInputs: Record<string, string>;
+} {
+  return {
+    draft: createSettingsDraft(settings),
+    themeChoice,
+    speedLimitInput: formatMbpsInputFromKbps(settings.speedLimitKbps),
+    scheduleSpeedInputs: Object.fromEntries(
+      (settings.bandwidthSchedules || []).map((schedule) => [schedule.id, formatMbpsInputFromKbps(schedule.speedLimitKbps)])
+    )
+  };
+}
+
+export function resolveSettingsSaveCompletion(revisionAtStart: number, currentRevision: number): {
+  saveState: Extract<SettingsSaveState, "saved" | "dirty">;
+  applyPersistedTheme: boolean;
+  toast: string;
+} {
+  const unchanged = revisionAtStart === currentRevision;
+  return unchanged
+    ? { saveState: "saved", applyPersistedTheme: true, toast: "Einstellungen gespeichert" }
+    : { saveState: "dirty", applyPersistedTheme: false, toast: "Zwischenstand gespeichert – weitere Änderungen sind ungespeichert" };
+}
+
 function settingsValueEqual(left: unknown, right: unknown): boolean {
   return Object.is(left, right) || JSON.stringify(left) === JSON.stringify(right);
 }
@@ -1670,6 +1697,7 @@ export function App(): ReactElement {
   const [scheduleSpeedInputs, setScheduleSpeedInputs] = useState<Record<string, string>>({});
   const [settingsDirty, setSettingsDirty] = useState(false);
   const [settingsSaveState, setSettingsSaveState] = useState<SettingsSaveState>("clean");
+  const [settingsSaveInFlight, setSettingsSaveInFlight] = useState(false);
   const [schedulePickerOpen, setSchedulePickerOpen] = useState(false);
   const [scheduleTimeInput, setScheduleTimeInput] = useState("");
   const [scheduleStartDay, setScheduleStartDay] = useState<DailyScheduleStartDay>("today");
@@ -1678,6 +1706,7 @@ export function App(): ReactElement {
   const updateCheckGenerationRef = useRef(0);
   const dismissedUpdateTagRef = useRef("");
   const settingsDirtyRef = useRef(false);
+  const settingsSaveInFlightRef = useRef(false);
   const writeOnlySettingsDirtyRef = useRef(new Set<"archivePasswordList" | "notifyUrl">());
   const archivePasswordLoadGenerationRef = useRef(0);
   const settingsDraftRevisionRef = useRef(0);
@@ -1690,7 +1719,11 @@ export function App(): ReactElement {
   const latestStateRef = useRef<UiSnapshot | null>(null);
   const masterSnapshotRef = useRef<UiSnapshot | null>(null);
   const snapshotRef = useRef(snapshot);
+  const persistedSettingsRef = useRef<RendererSettings>(emptySnapshot().settings);
+  const settingsThemeChoiceRef = useRef<SettingsThemeChoice>(settingsThemeChoice);
+  const persistedThemeChoiceRef = useRef<SettingsThemeChoice>(emptySnapshot().settings.theme);
   snapshotRef.current = snapshot;
+  settingsThemeChoiceRef.current = settingsThemeChoice;
   const tabRef = useRef(tab);
   tabRef.current = tab;
   const stateFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2129,6 +2162,8 @@ export function App(): ReactElement {
         return;
       }
       masterSnapshotRef.current = state;
+      persistedSettingsRef.current = state.settings;
+      persistedThemeChoiceRef.current = state.settings.theme;
       setSnapshot(state);
       if (state.settings.columnOrder?.length > 0) {
         columnOrderPersistenceRef.current?.applyAuthoritative(state.settings.columnOrder);
@@ -2140,6 +2175,7 @@ export function App(): ReactElement {
       setSettingsDirty(false);
       setSettingsSaveState("clean");
       setSettingsThemeChoice(state.settings.theme);
+      settingsThemeChoiceRef.current = state.settings.theme;
       applyTheme(state.settings.theme);
       if (state.settings.autoUpdateCheck) {
         void runLatestUpdateCheck(
@@ -2175,6 +2211,7 @@ export function App(): ReactElement {
         merged = wireState;
       }
       masterSnapshotRef.current = merged;
+      persistedSettingsRef.current = merged.settings;
       latestStateRef.current = merged;
       if (stateFlushTimerRef.current) { return; }
 
@@ -2809,16 +2846,57 @@ export function App(): ReactElement {
       return;
     }
     const revisionAtStart = settingsDraftRevisionRef.current;
+    const themeChoiceAtStart = settingsThemeChoiceRef.current;
+    settingsSaveInFlightRef.current = true;
+    setSettingsSaveInFlight(true);
     setSettingsSaveState("saving");
-    await performQuickAction(async () => {
-      const result = await persistDraftSettings();
-      applyTheme(result.theme);
-      setSettingsSaveState(settingsDraftRevisionRef.current === revisionAtStart ? "saved" : "dirty");
-      showToast("Einstellungen gespeichert", 1800);
-    }, (error) => {
-      setSettingsSaveState("error");
-      showToast(`Einstellungen konnten nicht gespeichert werden: ${String(error)}`, 2800);
-    });
+    try {
+      await performQuickAction(async () => {
+        const result = await persistDraftSettings(themeChoiceAtStart);
+        const completion = resolveSettingsSaveCompletion(revisionAtStart, settingsDraftRevisionRef.current);
+        if (completion.applyPersistedTheme) {
+          applyTheme(result.theme);
+        }
+        setSettingsSaveState(completion.saveState);
+        showToast(completion.toast, 1800);
+      }, (error) => {
+        setSettingsSaveState("error");
+        showToast(`Einstellungen konnten nicht gespeichert werden: ${String(error)}`, 2800);
+      });
+    } finally {
+      settingsSaveInFlightRef.current = false;
+      setSettingsSaveInFlight(false);
+    }
+  };
+
+  const discardSettingsChanges = (): void => {
+    if (settingsSaveInFlightRef.current || actionBusyRef.current || settingsSaveState === "saving" || !settingsDirtyRef.current) {
+      return;
+    }
+    const restored = createDiscardedSettingsState(persistedSettingsRef.current, persistedThemeChoiceRef.current);
+    settingsDraftRevisionRef.current += 1;
+    archivePasswordLoadGenerationRef.current += 1;
+    panelDirtyRevisionRef.current = 0;
+    writeOnlySettingsDirtyRef.current.clear();
+    settingsDirtyRef.current = false;
+    setSettingsDirty(false);
+    setSettingsSaveState("clean");
+    setSettingsDraft(restored.draft);
+    setSettingsThemeChoice(restored.themeChoice);
+    settingsThemeChoiceRef.current = restored.themeChoice;
+    setSpeedLimitInput(restored.speedLimitInput);
+    setScheduleSpeedInputs(restored.scheduleSpeedInputs);
+    applyTheme(restored.draft.theme);
+    showToast("Ungespeicherte Änderungen verworfen", 1800);
+    if (settingsSubTab === "extract") {
+      const generation = archivePasswordLoadGenerationRef.current;
+      void window.rd.getArchivePasswordList().then(({ passwords }) => {
+        if (archivePasswordLoadGenerationRef.current !== generation || writeOnlySettingsDirtyRef.current.has("archivePasswordList")) {
+          return;
+        }
+        setSettingsDraft((current) => ({ ...current, archivePasswordList: passwords }));
+      }).catch(() => undefined);
+    }
   };
 
   const onOpenRealDebridLogin = async (): Promise<void> => {
@@ -2855,7 +2933,13 @@ export function App(): ReactElement {
     });
   };
 
-  const applyPersistedSettings = (result: RendererSettings, preserveWriteOnlyValues = true): void => {
+  const applyPersistedSettings = (
+    result: RendererSettings,
+    preserveWriteOnlyValues = true,
+    themeChoice: SettingsThemeChoice = settingsThemeChoiceRef.current === "system" ? "system" : result.theme
+  ): void => {
+    persistedSettingsRef.current = result;
+    persistedThemeChoiceRef.current = themeChoice;
     if (!preserveWriteOnlyValues) {
       archivePasswordLoadGenerationRef.current += 1;
     }
@@ -2868,11 +2952,13 @@ export function App(): ReactElement {
     panelDirtyRevisionRef.current = 0;
     setSettingsDirty(false);
     setSettingsSaveState("clean");
-    setSettingsThemeChoice((current) => current === "system" ? current : result.theme);
+    setSettingsThemeChoice(themeChoice);
+    settingsThemeChoiceRef.current = themeChoice;
     applyTheme(result.theme);
   };
 
   const syncLiveProviderUsageSettings = (result: RendererSettings): void => {
+    persistedSettingsRef.current = result;
     setSnapshot((prev) => ({ ...prev, settings: result }));
     if (!settingsDirtyRef.current) {
       applyPersistedSettings(result);
@@ -2891,9 +2977,15 @@ export function App(): ReactElement {
     }));
   };
 
-  const persistSpecificSettings = async (nextDraft: RendererSettingsDraft): Promise<RendererSettings> => {
-    const revisionAtStart = settingsDraftRevisionRef.current;
-    const draftAtStart = settingsDraft;
+  const persistSpecificSettings = async (
+    nextDraft: RendererSettingsDraft,
+    persistenceContext = {
+      revisionAtStart: settingsDraftRevisionRef.current,
+      draftAtStart: settingsDraft,
+      themeChoiceAtStart: settingsThemeChoiceRef.current
+    }
+  ): Promise<RendererSettings> => {
+    const { revisionAtStart, draftAtStart, themeChoiceAtStart } = persistenceContext;
     const normalizedDraft = {
       ...nextDraft,
       ...normalizeProviderSelectionForSettings(nextDraft)
@@ -2902,8 +2994,10 @@ export function App(): ReactElement {
     if (!writeOnlySettingsDirtyRef.current.has("archivePasswordList")) delete update.archivePasswordList;
     if (!writeOnlySettingsDirtyRef.current.has("notifyUrl")) delete update.notifyUrl;
     const result = await window.rd.updateSettings(update);
+    persistedSettingsRef.current = result;
+    persistedThemeChoiceRef.current = themeChoiceAtStart;
     if (settingsDraftRevisionRef.current === revisionAtStart) {
-      applyPersistedSettings(result);
+      applyPersistedSettings(result, true, themeChoiceAtStart);
     } else {
       setSettingsDraft((current) => mergeConcurrentSpecificSettings(draftAtStart, normalizedDraft, result, current));
       settingsDirtyRef.current = true;
@@ -3103,7 +3197,13 @@ export function App(): ReactElement {
     const previousDraft = settingsDraft;
     const previousDirty = settingsDirtyRef.current;
     const previousSaveState = settingsSaveState;
+    const themeChoiceAtStart = settingsThemeChoiceRef.current;
     const revision = ++settingsDraftRevisionRef.current;
+    const persistenceContext = {
+      revisionAtStart: revision,
+      draftAtStart: previousDraft,
+      themeChoiceAtStart
+    };
     return runOptimisticAccountUpdate(
       () => {
         settingsDirtyRef.current = true;
@@ -3113,7 +3213,7 @@ export function App(): ReactElement {
       },
       () => runAccountEnableRefresh(
         refreshBeforePersist,
-        () => persistSpecificSettings(nextDraft)
+        () => persistSpecificSettings(nextDraft, persistenceContext)
       ),
       () => {
         if (settingsDraftRevisionRef.current !== revision) return;
@@ -3351,14 +3451,16 @@ export function App(): ReactElement {
     });
   };
 
-  const persistDraftSettings = async (): Promise<RendererSettings> => {
+  const persistDraftSettings = async (themeChoiceAtStart: SettingsThemeChoice = settingsThemeChoiceRef.current): Promise<RendererSettings> => {
     const revisionAtStart = settingsDraftRevisionRef.current;
     const update: RendererSettingsUpdate = { ...normalizedSettingsDraft };
     if (!writeOnlySettingsDirtyRef.current.has("archivePasswordList")) delete update.archivePasswordList;
     if (!writeOnlySettingsDirtyRef.current.has("notifyUrl")) delete update.notifyUrl;
     const result = await window.rd.updateSettings(update);
+    persistedSettingsRef.current = result;
+    persistedThemeChoiceRef.current = themeChoiceAtStart;
     if (settingsDraftRevisionRef.current === revisionAtStart) {
-      applyPersistedSettings(result);
+      applyPersistedSettings(result, true, themeChoiceAtStart);
     }
     return result;
   };
@@ -4959,6 +5061,7 @@ export function App(): ReactElement {
 
   const applyAuthoritativeDailyScheduleSnapshot = useCallback((state: UiSnapshot): void => {
     masterSnapshotRef.current = state;
+    persistedSettingsRef.current = state.settings;
     latestStateRef.current = null;
     snapshotRef.current = state;
     setSnapshot(state);
@@ -5717,11 +5820,13 @@ export function App(): ReactElement {
   const settingsViewModel: SettingsViewModel = {
     section: settingsSubTab,
     saveState: settingsDirty && settingsSaveState === "clean" ? "dirty" : settingsSaveState,
+    saveInFlight: settingsSaveInFlight,
     form: settingsFormModel,
     accounts: accountWorkspaceModel
   };
   const settingsViewActions: SettingsViewActions = {
     onSectionChange: setSettingsSubTab,
+    onDiscard: discardSettingsChanges,
     onSave: () => { void onSaveSettings(); },
     form: settingsFormActions,
     accounts: accountWorkspaceActions

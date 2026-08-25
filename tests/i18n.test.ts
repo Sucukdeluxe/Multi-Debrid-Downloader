@@ -11,6 +11,10 @@ describe("renderer localization", () => {
   it("translates exact interface labels in both directions", () => {
     expect(translateUiText("Einstellungen speichern", "en")).toBe("Save settings");
     expect(translateUiText("Save settings", "de")).toBe("Einstellungen speichern");
+    expect(translateUiText("Änderungen verwerfen", "en")).toBe("Discard changes");
+    expect(translateUiText("Discard changes", "de")).toBe("Änderungen verwerfen");
+    expect(translateUiText("Ungespeicherte Änderungen verworfen", "en")).toBe("Unsaved changes discarded");
+    expect(translateUiText("Zwischenstand gespeichert – weitere Änderungen sind ungespeichert", "en")).toBe("Progress saved – additional changes remain unsaved");
     expect(translateUiText("Passwort/Zugang", "en")).toBe("Password/access");
     expect(translateUiText("Animationen", "en")).toBe("Animations");
     expect(translateUiText("Animations", "de")).toBe("Animationen");

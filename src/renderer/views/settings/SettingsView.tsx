@@ -20,12 +20,14 @@ export type SettingsViewRegion = "all" | "sidebar" | "content";
 export interface SettingsViewModel {
   section: SettingsSection;
   saveState: SettingsSaveState;
+  saveInFlight: boolean;
   form: SettingsFormViewModel;
   accounts: AccountWorkspaceViewModel;
 }
 
 export interface SettingsViewActions {
   onSectionChange: (section: SettingsSection) => void;
+  onDiscard: () => void;
   onSave: () => void;
   form: SettingsFormActions;
   accounts: AccountWorkspaceActions;
@@ -62,7 +64,8 @@ export function SettingsSidebar({ model, actions }: SettingsViewProps): ReactEle
 
 export function SettingsContent({ model, actions }: SettingsViewProps): ReactElement {
   const saveLabel = getSettingsSaveLabel(model.saveState);
-  const saveDisabled = model.saveState === "clean" || model.saveState === "saved" || model.saveState === "saving";
+  const saveDisabled = model.saveInFlight || model.saveState === "clean" || model.saveState === "saved" || model.saveState === "saving";
+  const discardDisabled = model.saveInFlight || model.saveState === "clean" || model.saveState === "saved" || model.saveState === "saving";
   return (
     <section aria-label="Einstellungsbereich" className="settings-content settings-static">
       <header className="settings-content-header">
@@ -70,12 +73,21 @@ export function SettingsContent({ model, actions }: SettingsViewProps): ReactEle
           <h1>Einstellungen</h1>
           <span aria-live="polite" className={`settings-save-state is-${model.saveState}`} role="status">{saveLabel}</span>
         </div>
-        <button
-          className="settings-button settings-button-primary settings-save-button"
-          disabled={saveDisabled}
-          onClick={actions.onSave}
-          type="button"
-        >Einstellungen speichern</button>
+        <div className="settings-content-actions">
+          <button
+            className="settings-button settings-button-secondary settings-discard-button"
+            disabled={discardDisabled}
+            onClick={actions.onDiscard}
+            title="Stellt den letzten gespeicherten Stand wieder her."
+            type="button"
+          >Änderungen verwerfen</button>
+          <button
+            className="settings-button settings-button-primary settings-save-button"
+            disabled={saveDisabled}
+            onClick={actions.onSave}
+            type="button"
+          >Einstellungen speichern</button>
+        </div>
       </header>
       <div className={`settings-content-body${model.section === "accounts" ? " is-accounts" : ""}`}>
         {model.section === "accounts"

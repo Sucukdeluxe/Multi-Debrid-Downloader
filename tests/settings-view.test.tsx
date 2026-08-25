@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { defaultSettings } from "../src/main/constants";
 import { createRendererSettings, createRendererState } from "../src/main/renderer-state";
-import { buildAccountAddFields, buildAccountCreateProviderOrderUpdate, createAccountDialogState, createSettingsDraft } from "../src/renderer/App";
+import { buildAccountAddFields, buildAccountCreateProviderOrderUpdate, createAccountDialogState, createDiscardedSettingsState, createSettingsDraft, resolveSettingsSaveCompletion } from "../src/renderer/App";
 import { buildAccountReplaceCommand, createAccountEditState, type AccountEditTarget } from "../src/renderer/account-edit";
 import {
   buildScopedAccountEnabledState,
@@ -342,10 +342,11 @@ function workspaceActions(overrides: Partial<AccountWorkspaceActions> = {}): Acc
   };
 }
 
-function viewModel(saveState: SettingsViewModel["saveState"] = "clean"): SettingsViewModel {
+function viewModel(saveState: SettingsViewModel["saveState"] = "clean", saveInFlight = false): SettingsViewModel {
   return {
     section: "accounts",
     saveState,
+    saveInFlight,
     form: formModel(),
     accounts: workspaceModel()
   };
@@ -354,6 +355,7 @@ function viewModel(saveState: SettingsViewModel["saveState"] = "clean"): Setting
 function viewActions(): SettingsViewActions {
   return {
     onSectionChange: () => {},
+    onDiscard: () => {},
     onSave: () => {},
     form: { onChange: () => {}, onAction: () => {} },
     accounts: workspaceActions()
@@ -776,6 +778,37 @@ describe("settings views", () => {
       expect(html).not.toContain("table-pagination");
       expect(html).not.toContain("ui-context-info");
     }
+  });
+
+  it("enables discarding only for unsaved or failed settings drafts", () => {
+    let discarded = 0;
+    const actions = { ...viewActions(), onDiscard: () => { discarded += 1; } };
+    const findDiscard = (content: ReactElement): ReactElement<{ disabled?: boolean; onClick: () => void }> => {
+      let result: ReactElement<{ disabled?: boolean; onClick: () => void }> | null = null;
+      visitElements(content, (element) => {
+        if (element.type === "button" && element.props.children === "Änderungen verwerfen") {
+          result = element as ReactElement<{ disabled?: boolean; onClick: () => void }>;
+        }
+      });
+      if (!result) throw new Error("Discard button missing");
+      return result;
+    };
+
+    const dirty = findDiscard(SettingsContent({ actions, model: viewModel("dirty") }));
+    const clean = findDiscard(SettingsContent({ actions, model: viewModel("clean") }));
+    const saving = findDiscard(SettingsContent({ actions, model: viewModel("saving") }));
+    const saved = findDiscard(SettingsContent({ actions, model: viewModel("saved") }));
+    const error = findDiscard(SettingsContent({ actions, model: viewModel("error") }));
+    const dirtyWhileSaving = findDiscard(SettingsContent({ actions, model: viewModel("dirty", true) }));
+
+    expect(dirty.props.disabled).toBe(false);
+    expect(clean.props.disabled).toBe(true);
+    expect(saving.props.disabled).toBe(true);
+    expect(saved.props.disabled).toBe(true);
+    expect(error.props.disabled).toBe(false);
+    expect(dirtyWhileSaving.props.disabled).toBe(true);
+    dirty.props.onClick();
+    expect(discarded).toBe(1);
   });
 
   it("renders the settings save action with a green background and black text", () => {
@@ -1323,6 +1356,35 @@ describe("settings App integration", () => {
     expect(appSource).toContain("applyPersistedSettings(fresh.settings, false)");
   });
 
+  it("rebuilds every local settings input from the last persisted state", () => {
+    const persisted = createRendererSettings({
+      ...defaultSettings(),
+      theme: "light",
+      speedLimitKbps: 12 * 1024,
+      bandwidthSchedules: [{ id: "night", startHour: 22, endHour: 6, speedLimitKbps: 8 * 1024, enabled: true }]
+    });
+
+    expect(createDiscardedSettingsState(persisted, "system")).toEqual({
+      draft: { ...persisted, archivePasswordList: "", notifyUrl: "" },
+      themeChoice: "system",
+      speedLimitInput: "12",
+      scheduleSpeedInputs: { night: "8" }
+    });
+  });
+
+  it("does not apply a stale save result over newer draft changes", () => {
+    expect(resolveSettingsSaveCompletion(4, 4)).toEqual({
+      saveState: "saved",
+      applyPersistedTheme: true,
+      toast: "Einstellungen gespeichert"
+    });
+    expect(resolveSettingsSaveCompletion(4, 5)).toEqual({
+      saveState: "dirty",
+      applyPersistedTheme: false,
+      toast: "Zwischenstand gespeichert – weitere Änderungen sind ungespeichert"
+    });
+  });
+
   it("loads and preserves the stored archive password list in the extraction section", () => {
     const revealBlock = sourceBlock(appSource, "const showToast", "const clearImportQueueFocusListener");
     const applyBlock = sourceBlock(appSource, "const applyPersistedSettings", "const syncLiveProviderUsageSettings");
@@ -1429,9 +1491,20 @@ describe("settings App integration", () => {
 
   it("keeps specific persistence revision-safe when the draft changes in flight", () => {
     const block = sourceBlock(appSource, "const persistSpecificSettings", "const runAccountQuickAction");
+    const toggleBlock = sourceBlock(appSource, "const persistAccountToggle", "const onToggleDebridLinkApiKeyEnabled");
     expect(block).toContain("revisionAtStart");
     expect(block).toContain("mergeConcurrentSpecificSettings");
     expect(block).toContain('setSettingsSaveState("dirty")');
+    expect(block).toContain("persistedSettingsRef.current = result");
+    expect(block.indexOf("persistedSettingsRef.current = result")).toBeLessThan(block.indexOf("if (settingsDraftRevisionRef.current === revisionAtStart)"));
+    expect(block).toContain("themeChoiceAtStart: settingsThemeChoiceRef.current");
+    expect(block).toContain("const { revisionAtStart, draftAtStart, themeChoiceAtStart } = persistenceContext");
+    expect(block).toContain("persistedThemeChoiceRef.current = themeChoiceAtStart");
+    expect(block.indexOf("persistedThemeChoiceRef.current = themeChoiceAtStart")).toBeLessThan(block.indexOf("if (settingsDraftRevisionRef.current === revisionAtStart)"));
+    expect(toggleBlock).toContain("const themeChoiceAtStart = settingsThemeChoiceRef.current");
+    expect(toggleBlock).toContain("const persistenceContext = {");
+    expect(toggleBlock.indexOf("const persistenceContext = {")).toBeLessThan(toggleBlock.indexOf("runAccountEnableRefresh("));
+    expect(toggleBlock).toContain("persistSpecificSettings(nextDraft, persistenceContext)");
   });
 
   it("keeps unchecked single accounts honest without a positive status", () => {

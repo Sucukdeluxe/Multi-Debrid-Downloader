@@ -98,6 +98,13 @@
   gap: 12px;
 }
 
+.settings-content-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .settings-content-header h1,
 .settings-form-heading h2,
 .settings-account-heading h2,
