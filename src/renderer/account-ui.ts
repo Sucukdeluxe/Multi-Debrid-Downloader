@@ -15,6 +15,10 @@ export interface AccountToggleQueue {
   enqueue<T>(key: string, task: (isCurrent: () => boolean) => Promise<T>): Promise<AccountToggleQueueResult<T>>;
 }
 
+export function resolveAccountToggleIntentEnabled(pendingEnabled: boolean | undefined, eventEnabled: boolean): boolean {
+  return pendingEnabled === undefined ? eventEnabled : !pendingEnabled;
+}
+
 export function createAccountToggleQueue(): AccountToggleQueue {
   let tail = Promise.resolve();
   const versions = new Map<string, number>();

@@ -1356,6 +1356,16 @@ describe("account workspace", () => {
 });
 
 describe("settings App integration", () => {
+  it("serializes local and online backup imports with pending account mutations", () => {
+    const localImport = sourceBlock(appSource, "const onImportBackup", "const onCreateOnlineBackup");
+    const onlineImport = sourceBlock(appSource, "const onImportOnlineBackup", "const onCopyOnlineBackupKey");
+
+    expect(localImport).toContain("runQueuedSettingsMutation");
+    expect(onlineImport).toContain("runQueuedSettingsMutation");
+    expect(localImport.indexOf("runQueuedSettingsMutation")).toBeLessThan(localImport.indexOf("runLocalBackupImport"));
+    expect(onlineImport.indexOf("runQueuedSettingsMutation")).toBeLessThan(onlineImport.indexOf("window.rd.importOnlineBackup"));
+  });
+
   it("projects provider order entries with logos and explicit login modes", () => {
     const settings = createRendererSettings({
       ...defaultSettings(),

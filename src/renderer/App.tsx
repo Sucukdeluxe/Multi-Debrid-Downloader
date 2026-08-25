@@ -41,7 +41,7 @@ import {
 } from "../shared/provider-daily-limits";
 import { preservePackageOrderForDisplay, sortPackageOrderByName } from "./package-order";
 import { pruneSelection, releaseAccountSelectionFocus, resolveEscapeSelectionScope, shouldClearDownloadSelection } from "./selection";
-import { buildConfiguredProviderOrder, createAccountToggleQueue, enqueueAccountToggleIntent, filterAccountDialogOptions, getAccountDialogSelectableOptions, getAvailableAccountOptions, mergeAccountToggleSettings, pruneAccountRowSelections, resolveAccountStatusState, resolveAccountUsername, resolveVisibleAccountKind, sortAccountServices, updateAccountRowSelection, type AccountToggleTarget } from "./account-ui";
+import { buildConfiguredProviderOrder, createAccountToggleQueue, enqueueAccountToggleIntent, filterAccountDialogOptions, getAccountDialogSelectableOptions, getAvailableAccountOptions, mergeAccountToggleSettings, pruneAccountRowSelections, resolveAccountStatusState, resolveAccountToggleIntentEnabled, resolveAccountUsername, resolveVisibleAccountKind, sortAccountServices, updateAccountRowSelection, type AccountToggleTarget } from "./account-ui";
 import { buildAccountDeleteCommand, buildAccountReplaceCommand, buildAccountSecretRequest, createAccountEditState, validateAccountEdit } from "./account-edit";
 import type { AccountEditState, AccountEditTarget, AccountKind, AccountService, SingleAccountKind } from "./account-edit";
 import { ACCOUNT_SERVICE_ICONS } from "./account-service-icons";
@@ -1803,6 +1803,7 @@ export function App(): ReactElement {
   const [accountDialogSearch, setAccountDialogSearch] = useState("");
   const [accountDialogServiceFilter, setAccountDialogServiceFilter] = useState("all");
   const [pendingAccountToggles, setPendingAccountToggles] = useState<Record<string, { enabled: boolean; sequence: number }>>({});
+  const pendingAccountTogglesRef = useRef<Record<string, { enabled: boolean; sequence: number }>>({});
   const accountToggleQueueRef = useRef(createAccountToggleQueue());
   const accountToggleSequenceRef = useRef(0);
   const settingsMutationSequenceRef = useRef(0);
@@ -3184,10 +3185,11 @@ export function App(): ReactElement {
 
   const requestAccountToggle = (row: AccountTableRow, enabled: boolean): void => {
     const sequence = ++accountToggleSequenceRef.current;
+    const requestedEnabled = resolveAccountToggleIntentEnabled(pendingAccountTogglesRef.current[row.rowKey]?.enabled, enabled);
     const subject = row.toggleKind === "dl" && row.dlKey
       ? `${row.entry.serviceLabel} ${row.dlKey.label}`
       : row.entry.serviceLabel;
-    const check = enabled
+    const check = requestedEnabled
       ? row.toggleKind === "rd" && row.accountId
         ? () => window.rd.checkAccountCredentials({ kind: row.entry.kind as "realdebrid-api" | "realdebrid-web", accountId: row.accountId || undefined })
         : row.toggleKind === "mega" && row.accountId
@@ -3198,14 +3200,16 @@ export function App(): ReactElement {
               ? () => window.rd.checkAccountCredentials({ kind: "deepbrid-api", accountId: "svc-deepbrid" })
               : undefined
       : undefined;
-    setPendingAccountToggles((current) => ({
-      ...current,
-      [row.rowKey]: { enabled, sequence }
-    }));
+    const nextPending = {
+      ...pendingAccountTogglesRef.current,
+      [row.rowKey]: { enabled: requestedEnabled, sequence }
+    };
+    pendingAccountTogglesRef.current = nextPending;
+    setPendingAccountToggles(nextPending);
     void enqueueAccountToggleIntent(accountToggleQueueRef.current, {
       key: row.rowKey,
       target: getAccountToggleTarget(row),
-      enabled,
+      enabled: requestedEnabled,
       check
     }, {
       getSettings: () => persistedSettingsRef.current,
@@ -3218,17 +3222,16 @@ export function App(): ReactElement {
       }
     }).then((result) => {
       if (result.status === "superseded") return;
-      setPendingAccountToggles((current) => {
-        if (current[row.rowKey]?.sequence !== sequence) return current;
-        const next = { ...current };
-        delete next[row.rowKey];
-        return next;
-      });
+      if (pendingAccountTogglesRef.current[row.rowKey]?.sequence !== sequence) return;
+      const settledPending = { ...pendingAccountTogglesRef.current };
+      delete settledPending[row.rowKey];
+      pendingAccountTogglesRef.current = settledPending;
+      setPendingAccountToggles(settledPending);
       if (result.status === "failed") {
         showToast(`${subject}: Umschalten fehlgeschlagen: ${String(result.error)}`, 3200);
         return;
       }
-      showToast(`${subject} ${enabled ? "aktiviert" : "deaktiviert"}`, 2200);
+      showToast(`${subject} ${requestedEnabled ? "aktiviert" : "deaktiviert"}`, 2200);
     });
   };
 
@@ -4545,19 +4548,18 @@ export function App(): ReactElement {
   const onImportBackup = async (): Promise<void> => {
     closeMenus();
     await performQuickAction(async () => {
-      const result = await runLocalBackupImport(window.rd, askBackupPassphrase);
-      if (result.restored) {
-        showToast(result.message, 4000);
-        // A settings-only import applies live without a relaunch, so the editable
-        // settings form would otherwise keep showing the old values. Pull the
-        // fresh settings and re-seed the draft so the UI reflects the import.
-        if (!result.relaunch) {
-          const fresh = await window.rd.getSnapshot();
-          applyPersistedSettings(fresh.settings, false);
+      await runQueuedSettingsMutation(async () => {
+        const result = await runLocalBackupImport(window.rd, askBackupPassphrase);
+        if (result.restored) {
+          showToast(result.message, 4000);
+          if (!result.relaunch) {
+            const fresh = await window.rd.getSnapshot();
+            applyPersistedSettings(fresh.settings, false);
+          }
+        } else if (result.message !== "Abgebrochen") {
+          showToast(`Sicherung laden fehlgeschlagen: ${result.message}`, 3000);
         }
-      } else if (result.message !== "Abgebrochen") {
-        showToast(`Sicherung laden fehlgeschlagen: ${result.message}`, 3000);
-      }
+      });
     }, (error) => {
       showToast(`Sicherung laden fehlgeschlagen: ${String(error)}`, 2600);
     });
@@ -4585,11 +4587,13 @@ export function App(): ReactElement {
     if (!key) return;
     setOnlineBackupDialog((current) => current ? { ...current, busy: true, error: "" } : current);
     try {
-      const result = await window.rd.importOnlineBackup(key);
-      const fresh = await window.rd.getSnapshot();
-      applyPersistedSettings(fresh.settings, false);
-      setOnlineBackupDialog(null);
-      showToast(result.message, 4000);
+      await runQueuedSettingsMutation(async () => {
+        const result = await window.rd.importOnlineBackup(key);
+        const fresh = await window.rd.getSnapshot();
+        applyPersistedSettings(fresh.settings, false);
+        setOnlineBackupDialog(null);
+        showToast(result.message, 4000);
+      });
     } catch {
       setOnlineBackupDialog((current) => current ? { ...current, busy: false, error: "Online-Sicherung konnte nicht geladen werden. Schlüssel prüfen und erneut versuchen." } : current);
     }

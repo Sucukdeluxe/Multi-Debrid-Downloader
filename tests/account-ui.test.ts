@@ -13,6 +13,7 @@ import {
   matchesAccountModeFilter,
   mergeAccountToggleSettings,
   pruneAccountRowSelection,
+  resolveAccountToggleIntentEnabled,
   resolveAccountUsername,
   resolveVisibleAccountKind,
   sortAccountServices
@@ -143,6 +144,12 @@ describe("account usernames", () => {
 });
 
 describe("account toggle bursts", () => {
+  it("toggles from the synchronous pending intent when the controlled DOM value lags", () => {
+    expect(resolveAccountToggleIntentEnabled(undefined, false)).toBe(false);
+    expect(resolveAccountToggleIntentEnabled(false, false)).toBe(true);
+    expect(resolveAccountToggleIntentEnabled(true, true)).toBe(false);
+  });
+
   it("serializes different account intents without dropping the second task", async () => {
     const queue = createAccountToggleQueue();
     const events: string[] = [];
