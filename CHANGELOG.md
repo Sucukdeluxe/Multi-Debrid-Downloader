@@ -4,6 +4,24 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.73] - 2026-08-25
+
+### Settings workflow
+
+- Highlight the primary save action and add a discard action that restores the last persisted settings without reverting account changes that were saved immediately.
+- Preserve edits made during an active save as unsaved changes and restore write-only extraction password values safely when pending edits are discarded.
+- Show provider icons and explicit access-mode labels in the configurable provider order.
+
+### Download queue presentation
+
+- Display remaining download volume with four decimal places above 1 TB and avoid rolling animations when the formatted value has not changed.
+- Extend package selection highlighting to visible child files while keeping package actions scoped to the selected package.
+
+### Account controls
+
+- Serialize rapid account enable and disable requests so the final click wins and stale validation or persistence results cannot reverse newer input.
+- Prevent checkbox double-clicks from opening the account editor and coordinate account updates with settings and backup mutations.
+
 ## [2.0.72] - 2026-08-24
 
 ### Package history telemetry
