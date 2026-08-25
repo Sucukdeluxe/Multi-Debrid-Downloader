@@ -41,7 +41,7 @@ import {
 } from "../shared/provider-daily-limits";
 import { preservePackageOrderForDisplay, sortPackageOrderByName } from "./package-order";
 import { pruneSelection, releaseAccountSelectionFocus, resolveEscapeSelectionScope, shouldClearDownloadSelection } from "./selection";
-import { buildConfiguredProviderOrder, buildScopedAccountEnabledState, filterAccountDialogOptions, getAccountDialogSelectableOptions, getAvailableAccountOptions, pruneAccountRowSelections, resolveAccountStatusState, resolveAccountUsername, resolveVisibleAccountKind, runAccountEnableRefresh, runOptimisticAccountUpdate, sortAccountServices, updateAccountRowSelection } from "./account-ui";
+import { buildConfiguredProviderOrder, createAccountToggleQueue, enqueueAccountToggleIntent, filterAccountDialogOptions, getAccountDialogSelectableOptions, getAvailableAccountOptions, mergeAccountToggleSettings, pruneAccountRowSelections, resolveAccountStatusState, resolveAccountUsername, resolveVisibleAccountKind, sortAccountServices, updateAccountRowSelection, type AccountToggleTarget } from "./account-ui";
 import { buildAccountDeleteCommand, buildAccountReplaceCommand, buildAccountSecretRequest, createAccountEditState, validateAccountEdit } from "./account-edit";
 import type { AccountEditState, AccountEditTarget, AccountKind, AccountService, SingleAccountKind } from "./account-edit";
 import { ACCOUNT_SERVICE_ICONS } from "./account-service-icons";
@@ -324,6 +324,15 @@ interface AccountContextMenuState {
   rowId: string;
 }
 
+function getAccountToggleTarget(account: AccountTableRow): AccountToggleTarget {
+  if (account.toggleKind === "rd" && account.accountId) return { type: "realdebrid", accountId: account.accountId };
+  if (account.toggleKind === "mega" && account.accountId) {
+    return { type: "megadebrid", provider: account.entry.kind as "megadebrid-api" | "megadebrid-web", accountId: account.accountId };
+  }
+  if (account.toggleKind === "dl" && account.dlKey) return { type: "debridlink", accountId: account.dlKey.id };
+  return { type: "provider", provider: account.entry.provider };
+}
+
 type SettingsThemeChoice = AppTheme | "system";
 
 interface RendererSettingsDraft extends RendererSettings {
@@ -364,25 +373,6 @@ export function resolveSettingsSaveCompletion(revisionAtStart: number, currentRe
   return unchanged
     ? { saveState: "saved", applyPersistedTheme: true, toast: "Einstellungen gespeichert" }
     : { saveState: "dirty", applyPersistedTheme: false, toast: "Zwischenstand gespeichert – weitere Änderungen sind ungespeichert" };
-}
-
-function settingsValueEqual(left: unknown, right: unknown): boolean {
-  return Object.is(left, right) || JSON.stringify(left) === JSON.stringify(right);
-}
-
-export function mergeConcurrentSpecificSettings(
-  base: RendererSettingsDraft,
-  requested: RendererSettingsDraft,
-  persisted: RendererSettings,
-  current: RendererSettingsDraft
-): RendererSettingsDraft {
-  const merged = { ...current } as Record<string, unknown>;
-  for (const key of Object.keys(requested) as Array<keyof RendererSettingsDraft>) {
-    if (!settingsValueEqual(base[key], requested[key]) && settingsValueEqual(base[key], current[key]) && key in persisted) {
-      merged[key] = persisted[key as keyof RendererSettings];
-    }
-  }
-  return merged as unknown as RendererSettingsDraft;
 }
 
 export function resolveSettingsThemeChoice(choice: SettingsThemeChoice, prefersLight: boolean): AppTheme {
@@ -1812,6 +1802,10 @@ export function App(): ReactElement {
   const [accountEditSecretBusy, setAccountEditSecretBusy] = useState<string | null>(null);
   const [accountDialogSearch, setAccountDialogSearch] = useState("");
   const [accountDialogServiceFilter, setAccountDialogServiceFilter] = useState("all");
+  const [pendingAccountToggles, setPendingAccountToggles] = useState<Record<string, { enabled: boolean; sequence: number }>>({});
+  const accountToggleQueueRef = useRef(createAccountToggleQueue());
+  const accountToggleSequenceRef = useRef(0);
+  const settingsMutationSequenceRef = useRef(0);
   const [keyStatsPopup, setKeyStatsPopup] = useState<string | null>(null);
   const [debridLinkHostLimits, setDebridLinkHostLimits] = useState<Record<string, DebridLinkHostLimitInfo>>({});
   const [debridLinkHostLimitsLoading, setDebridLinkHostLimitsLoading] = useState(false);
@@ -2718,8 +2712,21 @@ export function App(): ReactElement {
         });
       }
     }
-    return rows;
-  }, [configuredAccounts, settingsDraft, snapshot.accounts]);
+    return rows.map((row) => {
+      const pending = pendingAccountToggles[row.rowKey];
+      if (!pending) return row;
+      const disabled = !pending.enabled;
+      return {
+        ...row,
+        disabled,
+        entry: {
+          ...row.entry,
+          disabled,
+          statusLabel: disabled ? "Deaktiviert" : "Aktiviert"
+        }
+      };
+    });
+  }, [configuredAccounts, pendingAccountToggles, settingsDraft, snapshot.accounts]);
 
   const [accountStatusSort, setAccountStatusSort] = useState<"none" | "desc" | "asc">("none");
   const cycleAccountStatusSort = (): void => setAccountStatusSort((s) => (s === "none" ? "desc" : s === "desc" ? "asc" : "none"));
@@ -2988,36 +2995,6 @@ export function App(): ReactElement {
     }));
   };
 
-  const persistSpecificSettings = async (
-    nextDraft: RendererSettingsDraft,
-    persistenceContext = {
-      revisionAtStart: settingsDraftRevisionRef.current,
-      draftAtStart: settingsDraft,
-      themeChoiceAtStart: settingsThemeChoiceRef.current
-    }
-  ): Promise<RendererSettings> => {
-    const { revisionAtStart, draftAtStart, themeChoiceAtStart } = persistenceContext;
-    const normalizedDraft = {
-      ...nextDraft,
-      ...normalizeProviderSelectionForSettings(nextDraft)
-    };
-    const update: RendererSettingsUpdate = { ...normalizedDraft };
-    if (!writeOnlySettingsDirtyRef.current.has("archivePasswordList")) delete update.archivePasswordList;
-    if (!writeOnlySettingsDirtyRef.current.has("notifyUrl")) delete update.notifyUrl;
-    const result = await window.rd.updateSettings(update);
-    persistedSettingsRef.current = result;
-    persistedThemeChoiceRef.current = themeChoiceAtStart;
-    if (settingsDraftRevisionRef.current === revisionAtStart) {
-      applyPersistedSettings(result, true, themeChoiceAtStart);
-    } else {
-      setSettingsDraft((current) => mergeConcurrentSpecificSettings(draftAtStart, normalizedDraft, result, current));
-      settingsDirtyRef.current = true;
-      setSettingsDirty(true);
-      setSettingsSaveState("dirty");
-    }
-    return result;
-  };
-
   const runAccountQuickAction = async (action: AccountQuickAction, accountId?: string | null): Promise<void> => {
     switch (action) {
       case "realdebrid-login":
@@ -3122,16 +3099,18 @@ export function App(): ReactElement {
       return;
     }
     await performQuickAction(async () => {
-      await persistDraftSettings();
-      const result = await window.rd.replaceAccount(buildAccountReplaceCommand(editSnapshot));
-      setSnapshot((current) => ({ ...current, settings: result.settings, accounts: result.accounts }));
-      applyPersistedSettings(result.settings);
-      closeAccountEditDialog();
-      if (quickAction) {
-        await runAccountQuickAction(quickAction, editSnapshot.target.type === "single" ? editSnapshot.target.accountId : null);
-      } else {
-        showToast(`${findAccountOption(editSnapshot.target.kind).title} gespeichert`, 2200);
-      }
+      await runQueuedSettingsMutation(async () => {
+        await persistDraftSettingsDirect();
+        const result = await window.rd.replaceAccount(buildAccountReplaceCommand(editSnapshot));
+        setSnapshot((current) => ({ ...current, settings: result.settings, accounts: result.accounts }));
+        applyPersistedSettings(result.settings);
+        closeAccountEditDialog();
+        if (quickAction) {
+          await runAccountQuickAction(quickAction, editSnapshot.target.type === "single" ? editSnapshot.target.accountId : null);
+        } else {
+          showToast(`${findAccountOption(editSnapshot.target.kind).title} gespeichert`, 2200);
+        }
+      });
     }, (error) => {
       showToast(`Account konnte nicht gespeichert werden: ${String(error)}`, 3200);
     });
@@ -3153,29 +3132,31 @@ export function App(): ReactElement {
     }
     const selectedOption = dialogSnapshot.kind ? findAccountOption(dialogSnapshot.kind) : null;
     await performQuickAction(async () => {
-      await persistDraftSettings();
-      if (dialogSnapshot.kind === "realdebrid-web") {
-        const accountId = `rdw_${crypto.randomUUID().replace(/-/g, "")}`;
-        const request = buildRealDebridWebCreateLoginRequest(dialogSnapshot, accountId);
-        if (!request) throw new Error("Account-Payload ist ungültig");
-        await window.rd.openRealDebridLogin(request);
+      await runQueuedSettingsMutation(async () => {
+        await persistDraftSettingsDirect();
+        if (dialogSnapshot.kind === "realdebrid-web") {
+          const accountId = `rdw_${crypto.randomUUID().replace(/-/g, "")}`;
+          const request = buildRealDebridWebCreateLoginRequest(dialogSnapshot, accountId);
+          if (!request) throw new Error("Account-Payload ist ungültig");
+          await window.rd.openRealDebridLogin(request);
+          closeAccountDialog();
+          showToast("Real-Debrid Login-Fenster geöffnet", 2200);
+          return;
+        }
+        const command = buildAccountCreateCommand(dialogSnapshot);
+        if (!command) throw new Error("Account-Payload ist ungültig");
+        const result = await window.rd.createAccount(command);
+        const persistedSettings = await window.rd.updateSettings(buildAccountCreateProviderOrderUpdate(result.settings));
+        setSnapshot((current) => ({ ...current, settings: persistedSettings, accounts: result.accounts }));
+        applyPersistedSettings(persistedSettings);
         closeAccountDialog();
-        showToast("Real-Debrid Login-Fenster geöffnet", 2200);
-        return;
-      }
-      const command = buildAccountCreateCommand(dialogSnapshot);
-      if (!command) throw new Error("Account-Payload ist ungültig");
-      const result = await window.rd.createAccount(command);
-      const persistedSettings = await window.rd.updateSettings(buildAccountCreateProviderOrderUpdate(result.settings));
-      setSnapshot((current) => ({ ...current, settings: persistedSettings, accounts: result.accounts }));
-      applyPersistedSettings(persistedSettings);
-      closeAccountDialog();
-      if (quickAction) {
-        await runAccountQuickAction(quickAction, result.accountId);
-      } else if (selectedOption) {
-        showToast(`${selectedOption.title} gespeichert`, 2200);
-      }
-      void checkAccounts("active");
+        if (quickAction) {
+          await runAccountQuickAction(quickAction, result.accountId);
+        } else if (selectedOption) {
+          showToast(`${selectedOption.title} gespeichert`, 2200);
+        }
+        void checkAccounts("active");
+      });
     }, (error) => {
       showToast(`Account konnte nicht gespeichert werden: ${String(error)}`, 3200);
     });
@@ -3201,68 +3182,53 @@ export function App(): ReactElement {
     });
   };
 
-  const persistAccountToggle = async (
-    nextDraft: RendererSettingsDraft,
-    refreshBeforePersist?: () => ReturnType<typeof window.rd.checkAccountCredentials>
-  ): Promise<RendererSettings> => {
-    const previousDraft = settingsDraft;
-    const previousDirty = settingsDirtyRef.current;
-    const previousSaveState = settingsSaveState;
-    const themeChoiceAtStart = settingsThemeChoiceRef.current;
-    const revision = ++settingsDraftRevisionRef.current;
-    const persistenceContext = {
-      revisionAtStart: revision,
-      draftAtStart: previousDraft,
-      themeChoiceAtStart
-    };
-    return runOptimisticAccountUpdate(
-      () => {
-        settingsDirtyRef.current = true;
-        setSettingsDirty(true);
-        setSettingsSaveState("saving");
-        setSettingsDraft(nextDraft);
-      },
-      () => runAccountEnableRefresh(
-        refreshBeforePersist,
-        () => persistSpecificSettings(nextDraft, persistenceContext)
-      ),
-      () => {
-        if (settingsDraftRevisionRef.current !== revision) return;
-        settingsDraftRevisionRef.current += 1;
-        settingsDirtyRef.current = previousDirty;
-        setSettingsDirty(previousDirty);
-        setSettingsSaveState(previousSaveState);
-        setSettingsDraft(previousDraft);
+  const requestAccountToggle = (row: AccountTableRow, enabled: boolean): void => {
+    const sequence = ++accountToggleSequenceRef.current;
+    const subject = row.toggleKind === "dl" && row.dlKey
+      ? `${row.entry.serviceLabel} ${row.dlKey.label}`
+      : row.entry.serviceLabel;
+    const check = enabled
+      ? row.toggleKind === "rd" && row.accountId
+        ? () => window.rd.checkAccountCredentials({ kind: row.entry.kind as "realdebrid-api" | "realdebrid-web", accountId: row.accountId || undefined })
+        : row.toggleKind === "mega" && row.accountId
+          ? () => window.rd.checkAccountCredentials({ kind: row.entry.kind as "megadebrid-api" | "megadebrid-web", accountId: row.accountId || undefined })
+          : row.toggleKind === "dl" && row.dlKey
+            ? () => window.rd.checkAccountCredentials({ kind: "debridlink-api", accountId: row.dlKey?.id })
+            : row.entry.kind === "deepbrid-api"
+              ? () => window.rd.checkAccountCredentials({ kind: "deepbrid-api", accountId: "svc-deepbrid" })
+              : undefined
+      : undefined;
+    setPendingAccountToggles((current) => ({
+      ...current,
+      [row.rowKey]: { enabled, sequence }
+    }));
+    void enqueueAccountToggleIntent(accountToggleQueueRef.current, {
+      key: row.rowKey,
+      target: getAccountToggleTarget(row),
+      enabled,
+      check
+    }, {
+      getSettings: () => persistedSettingsRef.current,
+      persist: async (patch) => {
+        const result = await window.rd.updateSettings(patch);
+        persistedSettingsRef.current = result;
+        setSnapshot((current) => ({ ...current, settings: result }));
+        setSettingsDraft((current) => mergeAccountToggleSettings(current, result));
+        return result;
       }
-    );
-  };
-
-  const onToggleDebridLinkApiKeyEnabled = async (entry: ConfiguredAccountEntry, key: DebridLinkAccountKeyEntry, enabled: boolean): Promise<void> => {
-    await performQuickAction(async () => {
-      const nextState = buildScopedAccountEnabledState(
-        settingsDraft.disabledProviders || [],
-        ["debridlink"],
-        settingsDraft.debridLinkDisabledKeyIds || [],
-        key.id,
-        enabled
-      );
-      const nextDraft: RendererSettingsDraft = {
-        ...settingsDraft,
-        disabledProviders: nextState.disabledProviders,
-        debridLinkDisabledKeyIds: nextState.disabledAccountIds
-      };
-      await persistAccountToggle(
-        nextDraft,
-        enabled ? () => window.rd.checkAccountCredentials({ kind: "debridlink-api", accountId: key.id }) : undefined
-      );
-      showToast(
-        enabled
-          ? `${entry.serviceLabel} ${key.label} aktiviert`
-          : `${entry.serviceLabel} ${key.label} deaktiviert`,
-        2200
-      );
-    }, (error) => {
-      showToast(`${entry.serviceLabel} ${key.label}: Umschalten fehlgeschlagen: ${String(error)}`, 3200);
+    }).then((result) => {
+      if (result.status === "superseded") return;
+      setPendingAccountToggles((current) => {
+        if (current[row.rowKey]?.sequence !== sequence) return current;
+        const next = { ...current };
+        delete next[row.rowKey];
+        return next;
+      });
+      if (result.status === "failed") {
+        showToast(`${subject}: Umschalten fehlgeschlagen: ${String(result.error)}`, 3200);
+        return;
+      }
+      showToast(`${subject} ${enabled ? "aktiviert" : "deaktiviert"}`, 2200);
     });
   };
 
@@ -3278,113 +3244,23 @@ export function App(): ReactElement {
     });
   };
 
-  const onToggleMegaAccountEnabled = async (kind: "megadebrid-api" | "megadebrid-web", accountId: string, enabled: boolean): Promise<void> => {
-    await performQuickAction(async () => {
-      const mode = kind === "megadebrid-web" ? "web" : "api";
-      const current = mode === "api" ? settingsDraft.megaDebridApiDisabledAccountIds : settingsDraft.megaDebridWebDisabledAccountIds;
-      const nextState = buildScopedAccountEnabledState(
-        settingsDraft.disabledProviders || [],
-        ["megadebrid", kind],
-        current,
-        accountId,
-        enabled
-      );
-      const next = nextState.disabledAccountIds;
-      const apiDisabledIds = mode === "api" ? next : settingsDraft.megaDebridApiDisabledAccountIds;
-      const webDisabledIds = mode === "web" ? next : settingsDraft.megaDebridWebDisabledAccountIds;
-      await persistAccountToggle({
-        ...settingsDraft,
-        disabledProviders: nextState.disabledProviders,
-        megaDebridApiEnabled: mode === "api" && enabled ? true : settingsDraft.megaDebridApiEnabled,
-        megaDebridWebEnabled: mode === "web" && enabled ? true : settingsDraft.megaDebridWebEnabled,
-        megaDebridDisabledAccountIds: [...new Set([...apiDisabledIds, ...webDisabledIds])],
-        megaDebridApiDisabledAccountIds: apiDisabledIds,
-        megaDebridWebDisabledAccountIds: webDisabledIds
-      }, enabled
-        ? () => window.rd.checkAccountCredentials({ kind, accountId })
-        : undefined
-      );
-      showToast(enabled ? "Account aktiviert" : "Account deaktiviert", 2000);
-    }, (error) => {
-      showToast(`Umschalten fehlgeschlagen: ${String(error)}`, 3200);
-    });
-  };
-
   const onRemoveDebridLinkKey = async (key: DebridLinkAccountKeyEntry): Promise<void> => {
     const confirmed = await askConfirmPrompt({ title: "Key entfernen", message: `Soll der Debrid-Link-Key ${key.masked} wirklich entfernt werden?`, confirmLabel: "Entfernen", danger: true });
     if (!confirmed) return;
     await performQuickAction(async () => {
-      await persistDraftSettings();
-      const result = await window.rd.deleteAccount({ action: "delete", kind: "debridlink-api", accountId: key.id });
-      setSnapshot((current) => ({ ...current, settings: result.settings, accounts: result.accounts }));
-      applyPersistedSettings(result.settings);
-      showToast("Key entfernt", 2000);
+      await runQueuedSettingsMutation(async () => {
+        await persistDraftSettingsDirect();
+        const result = await window.rd.deleteAccount({ action: "delete", kind: "debridlink-api", accountId: key.id });
+        setSnapshot((current) => ({ ...current, settings: result.settings, accounts: result.accounts }));
+        applyPersistedSettings(result.settings);
+        showToast("Key entfernt", 2000);
+      });
     }, (error) => { showToast(`Entfernen fehlgeschlagen: ${String(error)}`, 3200); });
   };
 
-  const onToggleAccountEnabled = async (entry: ConfiguredAccountEntry): Promise<void> => {
-    await performQuickAction(async () => {
-      const provider = entry.service as DebridProvider;
-      const current = settingsDraft.disabledProviders || [];
-      const nextDisabledProviders = current.includes(provider)
-        ? current.filter((existing) => existing !== provider)
-        : [...current, provider];
-      const nextDraft: RendererSettingsDraft = {
-        ...settingsDraft,
-        disabledProviders: nextDisabledProviders
-      };
-      const enabled = current.includes(provider);
-      await persistAccountToggle(
-        nextDraft,
-        enabled && entry.kind === "deepbrid-api"
-          ? () => window.rd.checkAccountCredentials({ kind: "deepbrid-api", accountId: "svc-deepbrid" })
-          : undefined
-      );
-      showToast(
-        nextDisabledProviders.includes(provider)
-          ? `${entry.serviceLabel} deaktiviert`
-          : `${entry.serviceLabel} aktiviert`,
-        2200
-      );
-    }, (error) => {
-      showToast(`${entry.serviceLabel} konnte nicht umgeschaltet werden: ${String(error)}`, 3200);
-    });
-  };
-
-  const onToggleRealDebridAccountEnabled = async (kind: "realdebrid-api" | "realdebrid-web", accountId: string, enabled: boolean): Promise<void> => {
-    await performQuickAction(async () => {
-      const nextState = buildScopedAccountEnabledState(
-        settingsDraft.disabledProviders || [],
-        ["realdebrid"],
-        settingsDraft.realDebridDisabledAccountIds || [],
-        accountId,
-        enabled
-      );
-      await persistAccountToggle({
-        ...settingsDraft,
-        disabledProviders: nextState.disabledProviders,
-        realDebridDisabledAccountIds: nextState.disabledAccountIds
-      }, enabled
-        ? () => window.rd.checkAccountCredentials({ kind, accountId })
-        : undefined
-      );
-      showToast(enabled ? "Account aktiviert" : "Account deaktiviert", 2000);
-    }, (error) => {
-      showToast(`Umschalten fehlgeschlagen: ${String(error)}`, 3200);
-    });
-  };
-
-  const toggleAccountTableRow = (row: AccountTableRow): void => {
+  const toggleAccountTableRow = (row: AccountTableRow, enabled = row.disabled): void => {
     setAccountContextMenu(null);
-    if (row.toggleKind === "rd" && row.accountId) {
-      void onToggleRealDebridAccountEnabled(row.entry.kind as "realdebrid-api" | "realdebrid-web", row.accountId, row.disabled);
-    } else if (row.toggleKind === "mega" && row.accountId) {
-      void onToggleMegaAccountEnabled(row.entry.kind as "megadebrid-api" | "megadebrid-web", row.accountId, row.disabled);
-    } else if (row.toggleKind === "dl" && row.dlKey) {
-      void onToggleDebridLinkApiKeyEnabled(row.entry, row.dlKey, row.disabled);
-    } else {
-      void onToggleAccountEnabled(row.entry);
-    }
+    requestAccountToggle(row, enabled);
   };
 
   const removeAccountTableRows = (rows: readonly AccountTableRow[]): void => {
@@ -3410,18 +3286,20 @@ export function App(): ReactElement {
         return;
       }
       await performQuickAction(async () => {
-        await persistDraftSettings();
-        for (const selectedRow of rows) {
-          const result = await window.rd.deleteAccount(buildAccountDeleteCommand(selectedRow.editTarget));
-          setSnapshot((current) => ({ ...current, settings: result.settings, accounts: result.accounts }));
-          applyPersistedSettings(result.settings);
-          if (selectedRow.entry.service === "alldebrid") {
-            setAllDebridHostInfo(null);
+        await runQueuedSettingsMutation(async () => {
+          await persistDraftSettingsDirect();
+          for (const selectedRow of rows) {
+            const result = await window.rd.deleteAccount(buildAccountDeleteCommand(selectedRow.editTarget));
+            setSnapshot((current) => ({ ...current, settings: result.settings, accounts: result.accounts }));
+            applyPersistedSettings(result.settings);
+            if (selectedRow.entry.service === "alldebrid") {
+              setAllDebridHostInfo(null);
+            }
           }
-        }
-        const removedRowKeys = new Set(rows.map((selectedRow) => selectedRow.rowKey));
-        setSelectedAccountRowKeys((current) => new Set([...current].filter((rowKey) => !removedRowKeys.has(rowKey))));
-        showToast(rows.length === 1 ? `${row.hosterLabel} entfernt` : `${rows.length} Accounts entfernt`, 2200);
+          const removedRowKeys = new Set(rows.map((selectedRow) => selectedRow.rowKey));
+          setSelectedAccountRowKeys((current) => new Set([...current].filter((rowKey) => !removedRowKeys.has(rowKey))));
+          showToast(rows.length === 1 ? `${row.hosterLabel} entfernt` : `${rows.length} Accounts entfernt`, 2200);
+        });
       }, (error) => {
         showToast(`${rows.length === 1 ? "Account" : "Accounts"} konnte${rows.length === 1 ? "" : "n"} nicht entfernt werden: ${String(error)}`, 3200);
       });
@@ -3462,9 +3340,17 @@ export function App(): ReactElement {
     });
   };
 
-  const persistDraftSettings = async (themeChoiceAtStart: SettingsThemeChoice = settingsThemeChoiceRef.current): Promise<RendererSettings> => {
+  const runQueuedSettingsMutation = async <T,>(task: () => Promise<T>): Promise<T> => {
+    const result = await accountToggleQueueRef.current.enqueue(`settings-mutation-${++settingsMutationSequenceRef.current}`, async () => task());
+    if (result.status === "failed") throw result.error;
+    if (result.status === "superseded") throw new Error("Einstellungsänderung wurde ersetzt");
+    return result.value;
+  };
+
+  const persistDraftSettingsDirect = async (themeChoiceAtStart: SettingsThemeChoice = settingsThemeChoiceRef.current): Promise<RendererSettings> => {
     const revisionAtStart = settingsDraftRevisionRef.current;
-    const update: RendererSettingsUpdate = { ...normalizedSettingsDraft };
+    const rebasedDraft = mergeAccountToggleSettings(normalizedSettingsDraft, persistedSettingsRef.current);
+    const update: RendererSettingsUpdate = { ...rebasedDraft };
     if (!writeOnlySettingsDirtyRef.current.has("archivePasswordList")) delete update.archivePasswordList;
     if (!writeOnlySettingsDirtyRef.current.has("notifyUrl")) delete update.notifyUrl;
     const result = await window.rd.updateSettings(update);
@@ -3475,6 +3361,10 @@ export function App(): ReactElement {
     }
     return result;
   };
+
+  const persistDraftSettings = async (themeChoiceAtStart: SettingsThemeChoice = settingsThemeChoiceRef.current): Promise<RendererSettings> => (
+    runQueuedSettingsMutation(() => persistDraftSettingsDirect(themeChoiceAtStart))
+  );
 
   const closeStartConflictPrompt = (result: { policy: Extract<DuplicatePolicy, "skip" | "overwrite">; applyToAll: boolean } | null): void => {
     const resolver = startConflictResolverRef.current;
@@ -5635,9 +5525,9 @@ export function App(): ReactElement {
       }
       setSelectedAccountRowKeys((current) => new Set(updateAccountRowSelection([...current], rowKey, additive)));
     },
-    onToggleEnabled: (rowId) => {
+    onToggleEnabled: (rowId, enabled) => {
       const row = accountRowBindings.get(rowId);
-      if (row) toggleAccountTableRow(row);
+      if (row) toggleAccountTableRow(row, enabled);
     },
     onEdit: (rowId) => {
       const row = accountRowBindings.get(rowId);
@@ -6007,7 +5897,7 @@ export function App(): ReactElement {
           if (row) removeAccountTableRow(row);
         },
         onToggleEnabled: () => {
-          if (accountEditRow) toggleAccountTableRow(accountEditRow);
+          if (accountEditRow) toggleAccountTableRow(accountEditRow, accountEditRow.disabled);
         },
         onToggleSecret: (fieldId) => { void toggleAccountEditSecret(fieldId); },
         onCopySecret: (fieldId) => { void copyAccountEditSecret(fieldId); }
@@ -6949,8 +6839,10 @@ export function App(): ReactElement {
                   <span className="col-links">RG Links</span>
                   <span className="col-action"></span>
                 </div>
-                {entry.debridLinkKeys.map((key, ki) => (
-                  <div key={key.id} className={`account-subkey-table-row${key.dailyLimitReached || (debridLinkHostLimits[key.id] && debridLinkHostLimits[key.id].state !== "ready") ? " warning" : ""}${entry.disabled || key.disabled ? " disabled" : ""}`}>
+                {entry.debridLinkKeys.map((key, ki) => {
+                  const toggleRow = accountRows.find((candidate) => candidate.toggleKind === "dl" && candidate.dlKey?.id === key.id);
+                  const disabled = toggleRow ? toggleRow.disabled : entry.disabled || key.disabled;
+                  return <div key={key.id} className={`account-subkey-table-row${key.dailyLimitReached || (debridLinkHostLimits[key.id] && debridLinkHostLimits[key.id].state !== "ready") ? " warning" : ""}${disabled ? " disabled" : ""}`}>
                     {(() => {
                       const hostInfo = debridLinkHostLimits[key.id];
                       const statusDisplay = getDebridLinkKeyStatusDisplay(key, hostInfo);
@@ -6971,17 +6863,18 @@ export function App(): ReactElement {
                       {key.masked}
                     </button>
                     <span className="col-usage">{humanSize(key.dailyUsedBytes)}</span>
-                    <span className="col-limit">{entry.disabled || key.disabled ? "Deaktiviert" : key.dailyLimitBytes > 0 ? humanSize(key.dailyLimitBytes) : "Kein Limit"}</span>
+                    <span className="col-limit">{disabled ? "Deaktiviert" : key.dailyLimitBytes > 0 ? humanSize(key.dailyLimitBytes) : "Kein Limit"}</span>
                     <span className={`col-status status-pill status-pill-${statusDisplay.tone}`} title={statusDisplay.title}>{statusDisplay.label}</span>
                     <span className="col-traffic" title={hostInfo?.note || ""}>{formatDebridLinkTraffic(hostInfo)}</span>
                     <span className="col-links" title={hostInfo?.note || ""}>{formatDebridLinkCountQuota(hostInfo)}</span>
                     <span className="col-action">
                       <button
-                        className={`btn btn-sm ${entry.disabled || key.disabled ? "success" : "danger"}`}
-                        disabled={actionBusy}
-                        onClick={() => { void onToggleDebridLinkApiKeyEnabled(entry, key, entry.disabled || key.disabled); }}
+                        className={`btn btn-sm ${disabled ? "success" : "danger"}`}
+                        onClick={() => {
+                          if (toggleRow) requestAccountToggle(toggleRow, toggleRow.disabled);
+                        }}
                       >
-                        {entry.disabled || key.disabled ? "Aktivieren" : "Deaktivieren"}
+                        {disabled ? "Aktivieren" : "Deaktivieren"}
                       </button>
                       <button
                         className="btn btn-sm"
@@ -6994,8 +6887,8 @@ export function App(): ReactElement {
                         </>
                       );
                     })()}
-                  </div>
-                ))}
+                  </div>;
+                })}
               </div>
               <div className="modal-actions">
                 <button className="btn" onClick={() => setKeyStatsPopup(null)}>Schließen</button>

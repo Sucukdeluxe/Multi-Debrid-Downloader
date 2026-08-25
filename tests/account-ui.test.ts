@@ -1,17 +1,23 @@
 import { describe, expect, it } from "vitest";
+import { defaultSettings } from "../src/main/constants";
+import { createRendererSettings } from "../src/main/renderer-state";
 import {
+  buildAccountTogglePatch,
   buildConfiguredProviderOrder,
+  createAccountToggleQueue,
+  enqueueAccountToggleIntent,
   filterAccountDialogOptions,
   getAvailableAccountOptions,
   getAccountDialogSelectableOptions,
   isAccountRowSelectionKey,
   matchesAccountModeFilter,
+  mergeAccountToggleSettings,
   pruneAccountRowSelection,
   resolveAccountUsername,
   resolveVisibleAccountKind,
-  runAccountEnableRefresh,
   sortAccountServices
 } from "../src/renderer/account-ui";
+import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import * as accountUi from "../src/renderer/account-ui";
 
 describe("account mode filter", () => {
@@ -136,37 +142,150 @@ describe("account usernames", () => {
   });
 });
 
-describe("account activation refresh", () => {
-  it("checks an account before enabling it", async () => {
+describe("account toggle bursts", () => {
+  it("serializes different account intents without dropping the second task", async () => {
+    const queue = createAccountToggleQueue();
     const events: string[] = [];
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const first = queue.enqueue("account-a", async () => {
+      events.push("a:start");
+      await firstGate;
+      events.push("a:end");
+      return "a";
+    });
+    const second = queue.enqueue("account-b", async () => {
+      events.push("b:start");
+      events.push("b:end");
+      return "b";
+    });
 
-    await runAccountEnableRefresh(
-      async () => { events.push("check"); return { valid: true, message: "Premium aktiv" }; },
-      async () => { events.push("persist"); }
-    );
-
-    expect(events).toEqual(["check", "persist"]);
+    await Promise.resolve();
+    expect(events).toEqual(["a:start"]);
+    releaseFirst();
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      { status: "applied", value: "a" },
+      { status: "applied", value: "b" }
+    ]);
+    expect(events).toEqual(["a:start", "a:end", "b:start", "b:end"]);
   });
 
-  it("does not check an account while disabling it", async () => {
-    const events: string[] = [];
+  it("lets only the latest queued intent for the same account persist", async () => {
+    const queue = createAccountToggleQueue();
+    const persisted: string[] = [];
+    let releaseBlocker: () => void = () => {};
+    const blocker = queue.enqueue("blocker", async () => new Promise<string>((resolve) => {
+      releaseBlocker = () => resolve("released");
+    }));
+    const stale = queue.enqueue("account-a", async () => {
+      persisted.push("stale");
+      return "stale";
+    });
+    const latest = queue.enqueue("account-a", async () => {
+      persisted.push("latest");
+      return "latest";
+    });
 
-    await runAccountEnableRefresh(
-      undefined,
-      async () => { events.push("persist"); }
-    );
-
-    expect(events).toEqual(["persist"]);
+    await Promise.resolve();
+    releaseBlocker();
+    await blocker;
+    await expect(stale).resolves.toEqual({ status: "superseded" });
+    await expect(latest).resolves.toEqual({ status: "applied", value: "latest" });
+    expect(persisted).toEqual(["latest"]);
   });
 
-  it("does not enable an account whose silent refresh is invalid", async () => {
-    const events: string[] = [];
+  it("rebases consecutive account patches on the latest persisted settings", () => {
+    const source = defaultSettings();
+    source.debridLinkApiKeys = "first-key\nsecond-key";
+    const settings = createRendererSettings(source);
+    const [first, second] = parseDebridLinkApiKeys(source.debridLinkApiKeys);
+    const afterFirst = { ...settings, ...buildAccountTogglePatch(settings, { type: "debridlink", accountId: first.id }, false) };
+    const afterSecond = { ...afterFirst, ...buildAccountTogglePatch(afterFirst, { type: "debridlink", accountId: second.id }, false) };
 
-    await expect(runAccountEnableRefresh(
-      async () => { events.push("check"); return { valid: false, message: "Sitzung abgelaufen" }; },
-      async () => { events.push("persist"); }
-    )).rejects.toThrow("Sitzung abgelaufen");
+    expect(afterSecond.debridLinkDisabledKeyIds).toEqual([first.id, second.id]);
+  });
 
-    expect(events).toEqual(["check"]);
+  it("does not let a stale enable check overwrite a newer disable intent", async () => {
+    const queue = createAccountToggleQueue();
+    let settings = createRendererSettings({ ...defaultSettings(), deepbridApiKey: "test-key" });
+    let releaseCheck: () => void = () => {};
+    const checkGate = new Promise<void>((resolve) => { releaseCheck = resolve; });
+    const persistedPatches: unknown[] = [];
+    const dependencies = {
+      getSettings: () => settings,
+      persist: async (patch: ReturnType<typeof buildAccountTogglePatch>) => {
+        persistedPatches.push(patch);
+        settings = { ...settings, ...patch };
+        return settings;
+      }
+    };
+    const target = { type: "provider", provider: "deepbrid" } as const;
+    const enable = enqueueAccountToggleIntent(queue, {
+      key: "svc-deepbrid",
+      target,
+      enabled: true,
+      check: async () => {
+        await checkGate;
+        return { valid: true };
+      }
+    }, dependencies);
+
+    await Promise.resolve();
+    const disable = enqueueAccountToggleIntent(queue, { key: "svc-deepbrid", target, enabled: false }, dependencies);
+    releaseCheck();
+
+    await expect(enable).resolves.toEqual({ status: "superseded" });
+    await expect(disable).resolves.toEqual(expect.objectContaining({ status: "applied" }));
+    expect(persistedPatches).toHaveLength(1);
+    expect(settings.disabledProviders).toContain("deepbrid");
+  });
+
+  it("continues with the next account after an earlier toggle fails", async () => {
+    const queue = createAccountToggleQueue();
+    const first = queue.enqueue("account-a", async () => { throw new Error("invalid account"); });
+    const second = queue.enqueue("account-b", async () => "saved-b");
+
+    await expect(first).resolves.toEqual(expect.objectContaining({ status: "failed" }));
+    await expect(second).resolves.toEqual({ status: "applied", value: "saved-b" });
+  });
+
+  it("rebases a full settings save onto the latest persisted account state", () => {
+    const base = createRendererSettings({ ...defaultSettings(), deepbridApiKey: "test-key" });
+    const draft = { ...base, theme: "light" as const, disabledProviders: [] };
+    const persisted = { ...base, theme: "dark" as const, disabledProviders: ["deepbrid" as const] };
+
+    expect(mergeAccountToggleSettings(draft, persisted)).toEqual(expect.objectContaining({
+      theme: "light",
+      disabledProviders: ["deepbrid"]
+    }));
+  });
+
+  it("preserves a queued account toggle when a full settings save follows immediately", async () => {
+    const queue = createAccountToggleQueue();
+    let settings = createRendererSettings({ ...defaultSettings(), deepbridApiKey: "test-key" });
+    const draft = { ...settings, theme: "light" as const };
+    const dependencies = {
+      getSettings: () => settings,
+      persist: async (patch: ReturnType<typeof buildAccountTogglePatch>) => {
+        settings = { ...settings, ...patch };
+        return settings;
+      }
+    };
+    const toggle = enqueueAccountToggleIntent(queue, {
+      key: "svc-deepbrid",
+      target: { type: "provider", provider: "deepbrid" },
+      enabled: false
+    }, dependencies);
+    const fullSave = queue.enqueue("settings-save-1", async () => {
+      settings = mergeAccountToggleSettings(draft, settings);
+      return settings;
+    });
+
+    await expect(toggle).resolves.toEqual(expect.objectContaining({ status: "applied" }));
+    await expect(fullSave).resolves.toEqual(expect.objectContaining({ status: "applied" }));
+    expect(settings).toEqual(expect.objectContaining({
+      theme: "light",
+      disabledProviders: ["deepbrid"]
+    }));
   });
 });

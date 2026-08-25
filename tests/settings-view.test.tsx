@@ -7,10 +7,10 @@ import { createRendererSettings, createRendererState } from "../src/main/rendere
 import { buildAccountAddFields, buildAccountCreateProviderOrderUpdate, buildProviderOrderEntry, createAccountDialogState, createDiscardedSettingsState, createSettingsDraft, resolveSettingsSaveCompletion } from "../src/renderer/App";
 import { buildAccountReplaceCommand, createAccountEditState, type AccountEditTarget } from "../src/renderer/account-edit";
 import {
+  buildAccountTogglePatch,
   buildScopedAccountEnabledState,
   buildConfiguredProviderOrder,
-  resolveAccountStatusState,
-  runOptimisticAccountUpdate
+  resolveAccountStatusState
 } from "../src/renderer/account-ui";
 import { getDebridLinkApiKeyId } from "../src/shared/debrid-link-keys";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
@@ -1048,7 +1048,7 @@ describe("account workspace", () => {
       model: workspaceModel(),
       actions: workspaceActions({
         onSelect: (id, additive) => calls.push(`select:${id}:${additive}`),
-        onToggleEnabled: (id) => calls.push(`toggle:${id}`),
+        onToggleEnabled: (id, enabled) => calls.push(`toggle:${id}:${enabled}`),
         onEdit: (id) => calls.push(`edit:${id}`),
         onContextMenu: (id) => calls.push(`context:${id}`)
       })
@@ -1062,7 +1062,7 @@ describe("account workspace", () => {
     row.props.onClick({ target: { role: "cell" }, currentTarget: row, ctrlKey: true, metaKey: false });
     row.props.onKeyDown({ key: "Enter", target: row, currentTarget: row, preventDefault: () => {} });
     row.props.onKeyDown({ key: " ", target: checkbox, currentTarget: row, preventDefault: () => {} });
-    checkbox.props.onChange();
+    checkbox.props.onChange({ target: { checked: false } });
     row.props.onDoubleClick();
     actionButton.props.onClick({ stopPropagation: () => {}, currentTarget: { getBoundingClientRect: () => ({ right: 20, bottom: 30 }) } });
     actionButton.props.onDoubleClick({ stopPropagation: () => calls.push("action-double-click-stopped") });
@@ -1071,7 +1071,7 @@ describe("account workspace", () => {
       `select:${rowId}:false`,
       `select:${rowId}:true`,
       `select:${rowId}:false`,
-      `toggle:${rowId}`,
+      `toggle:${rowId}:false`,
       `edit:${rowId}`,
       `context:${rowId}`,
       "action-double-click-stopped"
@@ -1432,10 +1432,10 @@ describe("settings App integration", () => {
     const deleteKeyBlock = sourceBlock(appSource, "const onRemoveDebridLinkKey", "const onToggleAccountEnabled");
     const deleteRowsBlock = sourceBlock(appSource, "const removeAccountTableRows", "const checkAccountsActive");
 
-    expect(editBlock.indexOf("await persistDraftSettings()")).toBeLessThan(editBlock.indexOf("window.rd.replaceAccount"));
-    expect(createBlock.indexOf("await persistDraftSettings()")).toBeLessThan(createBlock.indexOf("window.rd.createAccount"));
-    expect(deleteKeyBlock.indexOf("await persistDraftSettings()")).toBeLessThan(deleteKeyBlock.indexOf("window.rd.deleteAccount"));
-    expect(deleteRowsBlock.indexOf("await persistDraftSettings()")).toBeLessThan(deleteRowsBlock.indexOf("window.rd.deleteAccount"));
+    expect(editBlock.indexOf("await persistDraftSettingsDirect()")).toBeLessThan(editBlock.indexOf("window.rd.replaceAccount"));
+    expect(createBlock.indexOf("await persistDraftSettingsDirect()")).toBeLessThan(createBlock.indexOf("window.rd.createAccount"));
+    expect(deleteKeyBlock.indexOf("await persistDraftSettingsDirect()")).toBeLessThan(deleteKeyBlock.indexOf("window.rd.deleteAccount"));
+    expect(deleteRowsBlock.indexOf("await persistDraftSettingsDirect()")).toBeLessThan(deleteRowsBlock.indexOf("window.rd.deleteAccount"));
   });
 
   it("invalidates an archive password reveal before applying imported settings", () => {
@@ -1462,40 +1462,24 @@ describe("settings App integration", () => {
       disabledAccountIds: ["key-active"]
     });
 
-    const debridLinkBlock = sourceBlock(appSource, "const onToggleDebridLinkApiKeyEnabled", "const onAccountRowQuickAction");
-    const megaBlock = sourceBlock(appSource, "const onToggleMegaAccountEnabled", "const onRemoveDebridLinkKey");
-    expect(debridLinkBlock).toContain("buildScopedAccountEnabledState");
-    expect(megaBlock).toContain("buildScopedAccountEnabledState");
-    expect(megaBlock).toContain('megaDebridApiEnabled: mode === "api" && enabled ? true');
-    expect(megaBlock).toContain('megaDebridWebEnabled: mode === "web" && enabled ? true');
+    const rendererSettings = createRendererSettings(defaultSettings());
+    const megaPatch = buildAccountTogglePatch({
+      ...rendererSettings,
+      disabledProviders: ["megadebrid-web"],
+      megaDebridWebEnabled: false,
+      megaDebridWebDisabledAccountIds: ["mega-web-account"]
+    }, { type: "megadebrid", provider: "megadebrid-web", accountId: "mega-web-account" }, true);
+    expect(megaPatch).toEqual(expect.objectContaining({
+      disabledProviders: [],
+      megaDebridWebEnabled: true,
+      megaDebridWebDisabledAccountIds: []
+    }));
   });
 
   it("shows a failed all-account check even when the account is disabled", () => {
     expect(resolveAccountStatusState(true, { valid: false, isPremium: false })).toBe("invalid");
     expect(resolveAccountStatusState(true, { valid: true, isPremium: true })).toBe("disabled");
     expect(resolveAccountStatusState(false, undefined)).toBe("unchecked");
-  });
-
-  it("applies account switches before persistence settles and rolls back failed saves", async () => {
-    const events: string[] = [];
-    let resolvePersist: (value: string) => void = () => { throw new Error("persist resolver missing"); };
-    const pending = runOptimisticAccountUpdate(
-      () => events.push("apply"),
-      () => new Promise<string>((resolve) => { resolvePersist = resolve; }),
-      () => events.push("rollback")
-    );
-
-    expect(events).toEqual(["apply"]);
-    resolvePersist("saved");
-    await expect(pending).resolves.toBe("saved");
-    expect(events).toEqual(["apply"]);
-
-    await expect(runOptimisticAccountUpdate(
-      () => events.push("apply-failed"),
-      async () => { throw new Error("save failed"); },
-      () => events.push("rollback")
-    )).rejects.toThrow("save failed");
-    expect(events.slice(-2)).toEqual(["apply-failed", "rollback"]);
   });
 
   it("keeps new Mega-Debrid credentials empty and never exposes stored accounts as an API key", () => {
@@ -1515,24 +1499,6 @@ describe("settings App integration", () => {
     expect(megaFields.map((field) => field.id)).toEqual(["megaNewLogin", "megaNewPassword", "dailyLimitGb"]);
     expect(megaFields.map((field) => field.label)).not.toContain("Token / API-Key");
     expect(debridLinkFields.find((field) => field.id === "token")).toEqual(expect.objectContaining({ value: "" }));
-  });
-
-  it("keeps specific persistence revision-safe when the draft changes in flight", () => {
-    const block = sourceBlock(appSource, "const persistSpecificSettings", "const runAccountQuickAction");
-    const toggleBlock = sourceBlock(appSource, "const persistAccountToggle", "const onToggleDebridLinkApiKeyEnabled");
-    expect(block).toContain("revisionAtStart");
-    expect(block).toContain("mergeConcurrentSpecificSettings");
-    expect(block).toContain('setSettingsSaveState("dirty")');
-    expect(block).toContain("persistedSettingsRef.current = result");
-    expect(block.indexOf("persistedSettingsRef.current = result")).toBeLessThan(block.indexOf("if (settingsDraftRevisionRef.current === revisionAtStart)"));
-    expect(block).toContain("themeChoiceAtStart: settingsThemeChoiceRef.current");
-    expect(block).toContain("const { revisionAtStart, draftAtStart, themeChoiceAtStart } = persistenceContext");
-    expect(block).toContain("persistedThemeChoiceRef.current = themeChoiceAtStart");
-    expect(block.indexOf("persistedThemeChoiceRef.current = themeChoiceAtStart")).toBeLessThan(block.indexOf("if (settingsDraftRevisionRef.current === revisionAtStart)"));
-    expect(toggleBlock).toContain("const themeChoiceAtStart = settingsThemeChoiceRef.current");
-    expect(toggleBlock).toContain("const persistenceContext = {");
-    expect(toggleBlock.indexOf("const persistenceContext = {")).toBeLessThan(toggleBlock.indexOf("runAccountEnableRefresh("));
-    expect(toggleBlock).toContain("persistSpecificSettings(nextDraft, persistenceContext)");
   });
 
   it("keeps unchecked single accounts honest without a positive status", () => {

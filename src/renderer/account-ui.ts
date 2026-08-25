@@ -1,4 +1,43 @@
-import type { DebridProvider } from "../shared/types";
+import type { DebridProvider, RendererSettings, RendererSettingsUpdate } from "../shared/types";
+
+export type AccountToggleTarget =
+  | { type: "provider"; provider: DebridProvider }
+  | { type: "realdebrid"; accountId: string }
+  | { type: "megadebrid"; provider: "megadebrid-api" | "megadebrid-web"; accountId: string }
+  | { type: "debridlink"; accountId: string };
+
+export type AccountToggleQueueResult<T> =
+  | { status: "applied"; value: T }
+  | { status: "failed"; error: unknown }
+  | { status: "superseded" };
+
+export interface AccountToggleQueue {
+  enqueue<T>(key: string, task: (isCurrent: () => boolean) => Promise<T>): Promise<AccountToggleQueueResult<T>>;
+}
+
+export function createAccountToggleQueue(): AccountToggleQueue {
+  let tail = Promise.resolve();
+  const versions = new Map<string, number>();
+  return {
+    enqueue<T>(key: string, task: (isCurrent: () => boolean) => Promise<T>): Promise<AccountToggleQueueResult<T>> {
+      const version = (versions.get(key) || 0) + 1;
+      versions.set(key, version);
+      const isCurrent = (): boolean => versions.get(key) === version;
+      const execute = async (): Promise<AccountToggleQueueResult<T>> => {
+        if (!isCurrent()) return { status: "superseded" };
+        try {
+          const value = await task(isCurrent);
+          return isCurrent() ? { status: "applied", value } : { status: "superseded" };
+        } catch (error) {
+          return isCurrent() ? { status: "failed", error } : { status: "superseded" };
+        }
+      };
+      const result = tail.then(execute);
+      tail = result.then(() => undefined);
+      return result;
+    }
+  };
+}
 
 export type AccountModeFilter = "all" | "api" | "web";
 
@@ -139,33 +178,6 @@ export function resolveAccountStatusState(
   return checkedStatus.isPremium ? "premium" : "free";
 }
 
-export async function runOptimisticAccountUpdate<T>(
-  apply: () => void,
-  persist: () => Promise<T>,
-  rollback: () => void
-): Promise<T> {
-  apply();
-  try {
-    return await persist();
-  } catch (error) {
-    rollback();
-    throw error;
-  }
-}
-
-export async function runAccountEnableRefresh<T>(
-  refresh: (() => Promise<{ valid: boolean; message?: string }>) | undefined,
-  persist: () => Promise<T>
-): Promise<T> {
-  if (refresh) {
-    const status = await refresh();
-    if (!status.valid) {
-      throw new Error(status.message || "Accountprüfung fehlgeschlagen");
-    }
-  }
-  return persist();
-}
-
 export function buildScopedAccountEnabledState(
   currentDisabledProviders: DebridProvider[],
   providerIds: DebridProvider[],
@@ -181,5 +193,107 @@ export function buildScopedAccountEnabledState(
     disabledAccountIds: enabled
       ? currentDisabledAccountIds.filter((id) => id !== accountId)
       : [...new Set([...currentDisabledAccountIds, accountId])]
+  };
+}
+
+export function buildAccountTogglePatch(
+  settings: RendererSettings,
+  target: AccountToggleTarget,
+  enabled: boolean
+): RendererSettingsUpdate {
+  if (target.type === "provider") {
+    return {
+      disabledProviders: enabled
+        ? settings.disabledProviders.filter((provider) => provider !== target.provider)
+        : [...new Set([...settings.disabledProviders, target.provider])]
+    };
+  }
+  if (target.type === "realdebrid") {
+    const next = buildScopedAccountEnabledState(
+      settings.disabledProviders,
+      ["realdebrid"],
+      settings.realDebridDisabledAccountIds,
+      target.accountId,
+      enabled
+    );
+    return {
+      disabledProviders: next.disabledProviders,
+      realDebridDisabledAccountIds: next.disabledAccountIds
+    };
+  }
+  if (target.type === "debridlink") {
+    const next = buildScopedAccountEnabledState(
+      settings.disabledProviders,
+      ["debridlink"],
+      settings.debridLinkDisabledKeyIds,
+      target.accountId,
+      enabled
+    );
+    return {
+      disabledProviders: next.disabledProviders,
+      debridLinkDisabledKeyIds: next.disabledAccountIds
+    };
+  }
+  const web = target.provider === "megadebrid-web";
+  const currentDisabledIds = web ? settings.megaDebridWebDisabledAccountIds : settings.megaDebridApiDisabledAccountIds;
+  const next = buildScopedAccountEnabledState(
+    settings.disabledProviders,
+    ["megadebrid", target.provider],
+    currentDisabledIds,
+    target.accountId,
+    enabled
+  );
+  const apiDisabledIds = web ? settings.megaDebridApiDisabledAccountIds : next.disabledAccountIds;
+  const webDisabledIds = web ? next.disabledAccountIds : settings.megaDebridWebDisabledAccountIds;
+  return {
+    disabledProviders: next.disabledProviders,
+    megaDebridApiEnabled: !web && enabled ? true : settings.megaDebridApiEnabled,
+    megaDebridWebEnabled: web && enabled ? true : settings.megaDebridWebEnabled,
+    megaDebridDisabledAccountIds: [...new Set([...apiDisabledIds, ...webDisabledIds])],
+    megaDebridApiDisabledAccountIds: apiDisabledIds,
+    megaDebridWebDisabledAccountIds: webDisabledIds
+  };
+}
+
+export interface AccountToggleIntent {
+  key: string;
+  target: AccountToggleTarget;
+  enabled: boolean;
+  check?: () => Promise<{ valid: boolean; message?: string }>;
+}
+
+export interface AccountToggleIntentDependencies {
+  getSettings: () => RendererSettings;
+  persist: (patch: RendererSettingsUpdate) => Promise<RendererSettings>;
+}
+
+export function enqueueAccountToggleIntent(
+  queue: AccountToggleQueue,
+  intent: AccountToggleIntent,
+  dependencies: AccountToggleIntentDependencies
+): Promise<AccountToggleQueueResult<RendererSettings>> {
+  return queue.enqueue(intent.key, async (isCurrent) => {
+    if (intent.check) {
+      const status = await intent.check();
+      if (!isCurrent()) return dependencies.getSettings();
+      if (!status.valid) throw new Error(status.message || "Accountprüfung fehlgeschlagen");
+    }
+    if (!isCurrent()) return dependencies.getSettings();
+    const patch = buildAccountTogglePatch(dependencies.getSettings(), intent.target, intent.enabled);
+    return dependencies.persist(patch);
+  });
+}
+
+export function mergeAccountToggleSettings<T extends RendererSettings>(current: T, persisted: RendererSettings): T {
+  return {
+    ...current,
+    disabledProviders: [...persisted.disabledProviders],
+    realDebridDisabledAccountIds: [...persisted.realDebridDisabledAccountIds],
+    debridLinkDisabledKeyIds: [...persisted.debridLinkDisabledKeyIds],
+    megaDebridApiEnabled: persisted.megaDebridApiEnabled,
+    megaDebridWebEnabled: persisted.megaDebridWebEnabled,
+    megaDebridDisabledAccountIds: [...persisted.megaDebridDisabledAccountIds],
+    megaDebridApiDisabledAccountIds: [...persisted.megaDebridApiDisabledAccountIds],
+    megaDebridWebDisabledAccountIds: [...persisted.megaDebridWebDisabledAccountIds]
   };
 }

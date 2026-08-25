@@ -137,7 +137,7 @@ export interface AccountWorkspaceViewModel {
 export interface AccountWorkspaceActions {
   onPanelChange: (panel: AccountWorkspacePanel) => void;
   onSelect: (rowId: string, additive: boolean) => void;
-  onToggleEnabled: (rowId: string) => void;
+  onToggleEnabled: (rowId: string, enabled: boolean) => void;
   onEdit: (rowId: string) => void;
   onContextMenu: (rowId: string, x: number, y: number) => void;
   onCopyIdentity: (label: "Benutzername" | "E-Mail", value: string) => void;
@@ -361,7 +361,7 @@ function AccountRow({
           aria-label={`${row.hoster} ${row.enabled ? "deaktivieren" : "aktivieren"}`}
           checked={row.enabled}
           disabled={busy}
-          onChange={() => actions.onToggleEnabled(row.id)}
+          onChange={(event) => actions.onToggleEnabled(row.id, event.target.checked)}
           onClick={(event) => event.stopPropagation()}
           type="checkbox"
         />
