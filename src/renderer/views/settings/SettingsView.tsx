@@ -71,7 +71,7 @@ export function SettingsContent({ model, actions }: SettingsViewProps): ReactEle
           <span aria-live="polite" className={`settings-save-state is-${model.saveState}`} role="status">{saveLabel}</span>
         </div>
         <button
-          className="settings-button settings-button-primary"
+          className="settings-button settings-button-primary settings-save-button"
           disabled={saveDisabled}
           onClick={actions.onSave}
           type="button"

@@ -478,6 +478,12 @@
   color: var(--ui-primary-text);
 }
 
+.settings-save-button {
+  border-color: var(--ui-success);
+  background: var(--ui-success);
+  color: #000000;
+}
+
 .settings-button-danger {
   border-color: color-mix(in srgb, var(--ui-danger) 70%, var(--ui-border));
   background: transparent;
@@ -494,6 +500,11 @@
 .settings-button-primary:hover:not(:disabled) {
   background: var(--ui-primary-hover);
   color: var(--ui-primary-text);
+}
+
+.settings-save-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ui-success) 86%, #ffffff);
+  color: #000000;
 }
 
 .settings-account-workspace {

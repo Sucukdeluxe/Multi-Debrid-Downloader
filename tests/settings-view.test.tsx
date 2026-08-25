@@ -778,6 +778,15 @@ describe("settings views", () => {
     }
   });
 
+  it("renders the settings save action with a green background and black text", () => {
+    const html = renderToStaticMarkup(<SettingsContent actions={viewActions()} model={viewModel("dirty")} />);
+    const css = readFileSync(new URL("../src/renderer/views/settings/settings.css", import.meta.url), "utf8");
+
+    expect(html).toContain('class="settings-button settings-button-primary settings-save-button"');
+    expect(css).toMatch(/\.settings-save-button\s*{[^}]*border-color:\s*var\(--ui-success\);[^}]*background:\s*var\(--ui-success\);[^}]*color:\s*#000000;/s);
+    expect(css).toMatch(/\.settings-save-button:hover:not\(:disabled\)\s*{[^}]*background:\s*color-mix\(in srgb, var\(--ui-success\) 86%, #ffffff\);[^}]*color:\s*#000000;/s);
+  });
+
   it("renders the sidebar and content once in the complete view", () => {
     const html = renderToStaticMarkup(<SettingsView actions={viewActions()} model={viewModel()} />);
     expect(count(html, "data-visual-region=\"settings-sidebar\"")).toBe(1);
