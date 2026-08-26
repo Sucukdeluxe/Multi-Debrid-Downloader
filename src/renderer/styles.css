@@ -629,12 +629,14 @@ body,
 }
 
 .speed-sparkline-value {
+  flex: 0 0 12ch;
+  width: 12ch;
+  min-width: 12ch;
   font-size: 12px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: var(--text);
   white-space: nowrap;
-  min-width: 32px;
   text-align: right;
 }
 
