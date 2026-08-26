@@ -1403,7 +1403,9 @@ const DownloadSpeedSparkline = memo(function DownloadSpeedSparkline({ speedBps, 
 
   return (
     <div className={`speed-sparkline${hidden ? " speed-sparkline-hidden" : ""}`} aria-hidden={hidden} title="Aktuelle Download-Geschwindigkeit (geglättet)">
-      <canvas ref={canvasRef} className="speed-sparkline-canvas" />
+      <div className="speed-sparkline-graph">
+        <canvas ref={canvasRef} className="speed-sparkline-canvas" />
+      </div>
       <span className="speed-sparkline-value">{speedBps > 0 ? formatSpeedMbps(speedBps) : "0 B/s"}</span>
     </div>
   );
