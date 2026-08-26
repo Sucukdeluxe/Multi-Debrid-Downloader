@@ -623,7 +623,7 @@ body,
 }
 
 .speed-sparkline-canvas {
-  width: 128px;
+  width: 140px;
   height: 22px;
   display: block;
 }
@@ -634,7 +634,7 @@ body,
   font-variant-numeric: tabular-nums;
   color: var(--text);
   white-space: nowrap;
-  min-width: 54px;
+  min-width: 42px;
   text-align: right;
 }
 
