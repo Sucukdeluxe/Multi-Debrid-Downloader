@@ -643,10 +643,10 @@ body,
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  flex: 0 0 10ch;
-  width: 10ch;
-  min-width: 10ch;
-  padding: 0 8px;
+  flex: 0 0 9ch;
+  width: 9ch;
+  min-width: 9ch;
+  padding: 0 7px;
   font-size: 12px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
