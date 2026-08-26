@@ -7,7 +7,8 @@ const electron = vi.hoisted(() => ({
   invoke: vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => undefined),
   getPathForFile: vi.fn(() => "C:\\Imports\\dropped.dlc"),
   on: vi.fn(),
-  removeListener: vi.fn()
+  removeListener: vi.fn(),
+  sendSync: vi.fn((_: unknown, state: unknown) => state)
 }));
 
 vi.mock("electron", () => ({
@@ -20,6 +21,7 @@ vi.mock("electron", () => ({
     invoke: electron.invoke,
     on: electron.on,
     removeListener: electron.removeListener,
+    sendSync: electron.sendSync,
     send: vi.fn()
   },
   webUtils: { getPathForFile: electron.getPathForFile }
@@ -32,6 +34,7 @@ describe("account preload contract", () => {
 
   beforeEach(() => {
     electron.invoke.mockClear();
+    electron.sendSync.mockClear();
   });
 
   it("forwards submitted secrets only in write-only account commands", async () => {
@@ -127,6 +130,20 @@ describe("account preload contract", () => {
       [IPC_CHANNELS.PREPARE_COLLECTOR_CONTAINERS, ["C:\\Imports\\sample.dlc"], 2345],
       [IPC_CHANNELS.ENRICH_COLLECTOR_PACKAGES, { requestId: "request-preload", packages }]
     ]);
+  });
+
+  it("loads and saves the persistent collector state through dedicated channels", async () => {
+    const state = { packages: [], collapsedPackageIds: [] };
+
+    await electron.api?.getCollectorState();
+    await electron.api?.saveCollectorState(state);
+    electron.api?.saveCollectorStateSync(state);
+
+    expect(electron.invoke.mock.calls).toEqual([
+      [IPC_CHANNELS.GET_COLLECTOR_STATE],
+      [IPC_CHANNELS.SAVE_COLLECTOR_STATE, state]
+    ]);
+    expect(electron.sendSync).toHaveBeenCalledWith(IPC_CHANNELS.SAVE_COLLECTOR_STATE_SYNC, state);
   });
 
   it("resolves dropped files through Electron webUtils without IPC", () => {

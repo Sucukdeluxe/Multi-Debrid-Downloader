@@ -1,5 +1,5 @@
 import type { DownloadItem, DownloadStatus, PackageEntry } from "../../../shared/types";
-import { humanSize } from "../../download-format";
+import { extractHoster, humanSize } from "../../download-format";
 import { DOWNLOAD_FILE_ROW_HEIGHT, DOWNLOAD_PACKAGE_ROW_HEIGHT, type DownloadVirtualRowInput } from "./download-virtualizer";
 
 export type DownloadDisplayMode = "packages" | "files";
@@ -43,6 +43,8 @@ export interface DownloadsViewModelCore {
   providerOptions: Array<{ id: string; label: string }>;
   query: string;
   counts: DownloadFilterCounts;
+  eligibleItems: DownloadItem[];
+  eligiblePackageCount: number;
   packageRows: DownloadPackageRow[];
   fileRows: DownloadItem[];
   visibleItemIds: string[];
@@ -116,6 +118,22 @@ export function getRemainingDownloadBytes(items: Iterable<DownloadItem>): { byte
   return { bytes, unknownItems };
 }
 
+export function getDownloadQueueStatusMetrics(items: readonly DownloadItem[]): {
+  packageCount: number;
+  pendingItemCount: number;
+  totalBytes: number;
+  remaining: { bytes: number; unknownItems: number };
+  hosterCount: number;
+} {
+  return {
+    packageCount: new Set(items.map((item) => item.packageId)).size,
+    pendingItemCount: getPendingDownloadItemCount(items),
+    totalBytes: getDownloadQueueTotalBytes(items),
+    remaining: getRemainingDownloadBytes(items),
+    hosterCount: new Set(items.map((item) => extractHoster(item.url)).filter(Boolean)).size
+  };
+}
+
 export function formatRemainingDownloadBytes(summary: { bytes: number; unknownItems: number }): string {
   const value = summary.bytes >= 1024 ** 4
     ? `${(summary.bytes / 1024 ** 4).toFixed(4)} TB`
@@ -174,9 +192,11 @@ export function buildDownloadsViewModel(input: DownloadsModelInput): DownloadsVi
     .map((id) => input.packages[id])
     .filter((entry): entry is PackageEntry => Boolean(entry));
   const allItems = allPackages.flatMap((entry) => entry.itemIds.map((id) => input.items[id]).filter((item): item is DownloadItem => Boolean(item)));
-  const counts = buildDownloadSidebarCounts(allItems);
+  const eligibleItems = input.hideExtractedItems ? allItems.filter((item) => !isExtracted(item)) : allItems;
+  const eligiblePackageCount = new Set(eligibleItems.map((item) => item.packageId)).size;
+  const counts = buildDownloadSidebarCounts(eligibleItems);
   const providerMap = new Map<string, string>();
-  for (const entry of allItems) {
+  for (const entry of eligibleItems) {
     if (entry.provider) providerMap.set(entry.provider, entry.providerLabel?.trim() || entry.provider);
   }
 
@@ -204,7 +224,7 @@ export function buildDownloadsViewModel(input: DownloadsModelInput): DownloadsVi
     const visibleItems = packageMatchesQuery && query !== ""
       ? items.filter((item) => matchesFilter(item, input.filter) && matchesProvider(item, input.providerFilter))
       : matchingItems;
-    return [{ package: entry, items: visibleItems, allItems: allPackageItems, collapsed: collapsed.has(entry.id) }];
+    return [{ package: entry, items: visibleItems, allItems: items, collapsed: collapsed.has(entry.id) }];
   });
 
   const totalPackageRows = packageRows.length;
@@ -234,6 +254,8 @@ export function buildDownloadsViewModel(input: DownloadsModelInput): DownloadsVi
     providerOptions: [...providerMap].map(([id, label]) => ({ id, label })).sort((left, right) => left.label.localeCompare(right.label, "de")),
     query: input.query,
     counts,
+    eligibleItems,
+    eligiblePackageCount,
     packageRows: displayedPackages,
     fileRows,
     visibleItemIds,
@@ -245,7 +267,7 @@ export function buildDownloadsViewModel(input: DownloadsModelInput): DownloadsVi
     totalMainRowCount,
     paginationLabel: paginationLabel(mainRowCount, totalMainRowCount),
     limited: false,
-    empty: allItems.length === 0,
-    filteredEmpty: allItems.length > 0 && mainRowCount === 0
+    empty: eligibleItems.length === 0,
+    filteredEmpty: eligibleItems.length > 0 && mainRowCount === 0
   };
 }

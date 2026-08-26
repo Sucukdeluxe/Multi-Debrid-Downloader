@@ -29,6 +29,7 @@ import { DailyStartScheduler, hasDailyStartRulePatch, prepareDailyStartSettingsP
 import {
   validateCollectorContainerPreparationRequest,
   validateCollectorEnrichmentRequest,
+  validateCollectorPersistenceState,
   validateCollectorTextPreparationRequest
 } from "../shared/collector";
 
@@ -576,6 +577,19 @@ function registerIpcHandlers(): void {
         event.sender.send(IPC_CHANNELS.COLLECTOR_ENRICHMENT_PROGRESS, { requestId: request.requestId, result });
       }
     });
+  });
+  handleTrusted(IPC_CHANNELS.GET_COLLECTOR_STATE, () => controller.getCollectorState());
+  handleTrusted(IPC_CHANNELS.SAVE_COLLECTOR_STATE, (_event: IpcMainInvokeEvent, value: unknown) => {
+    return controller.saveCollectorState(validateCollectorPersistenceState(value));
+  });
+  onTrusted(IPC_CHANNELS.SAVE_COLLECTOR_STATE_SYNC, (event: IpcMainEvent, value: unknown) => {
+    try {
+      controller.saveCollectorState(validateCollectorPersistenceState(value));
+      event.returnValue = true;
+    } catch (error) {
+      logger.warn(`Linksammler-Abschlussspeicherung fehlgeschlagen: ${String(error)}`);
+      event.returnValue = false;
+    }
   });
   handleTrusted(IPC_CHANNELS.GET_START_CONFLICTS, () => controller.getStartConflicts());
   handleTrusted(IPC_CHANNELS.RESOLVE_START_CONFLICT, (_event: IpcMainInvokeEvent, packageId: string, policy: "keep" | "skip" | "overwrite") => {

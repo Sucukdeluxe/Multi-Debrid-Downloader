@@ -47,6 +47,11 @@ export interface CollectorInspectionResult {
   duplicateCount: number;
 }
 
+export interface CollectorPersistenceState {
+  packages: CollectorPackage[];
+  collapsedPackageIds: string[];
+}
+
 function validAddedAt(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
@@ -145,6 +150,31 @@ export function validateCollectorEnrichmentRequest(value: unknown): CollectorEnr
     throw new Error("Linksammler-Anreicherung ist ungültig");
   }
   return { requestId: raw.requestId, packages: structuredClone(raw.packages) as CollectorPackage[] };
+}
+
+export function validateCollectorPersistenceState(value: unknown): CollectorPersistenceState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Linksammler-Speicherzustand ist ungültig");
+  }
+  const raw = value as Record<string, unknown>;
+  const packages = raw.packages;
+  const collapsedPackageIds = raw.collapsedPackageIds;
+  if (Object.keys(raw).some((key) => key !== "packages" && key !== "collapsedPackageIds")
+    || !Array.isArray(packages)
+    || packages.length > 2_000
+    || packages.some((entry) => !validCollectorPackage(entry))
+    || packages.reduce((sum, entry) => sum + (entry as CollectorPackage).links.length, 0) > 20_000
+    || !Array.isArray(collapsedPackageIds)
+    || collapsedPackageIds.length > 2_000
+    || collapsedPackageIds.some((entry) => typeof entry !== "string" || entry.length === 0 || entry.length > 160)) {
+    throw new Error("Linksammler-Speicherzustand ist ungültig");
+  }
+  const packageIds = new Set(packages.map((pkg) => (pkg as CollectorPackage).id));
+  const collapsed = [...new Set(collapsedPackageIds)].filter((id) => packageIds.has(id));
+  return {
+    packages: structuredClone(packages) as CollectorPackage[],
+    collapsedPackageIds: collapsed
+  };
 }
 
 function collectorMarkerValue(value: string): string {

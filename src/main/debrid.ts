@@ -773,6 +773,11 @@ function getRealDebridAccountCooldown(accountId: string, now = Date.now()): Real
   return detail;
 }
 
+export function isRealDebridAccountBlockedForStart(accountId: string, now = Date.now()): boolean {
+  const cooldown = getRealDebridAccountCooldown(accountId, now);
+  return Boolean(cooldown && cooldown.category !== "temporary");
+}
+
 export function getAvailableRealDebridAccounts(settings: AppSettings, now = Date.now()): RealDebridAccountEntry[] {
   return getConfiguredRealDebridAccounts(settings).filter((account) => account.enabled
     && !isRealDebridAccountDailyLimitReached(settings, account.id, now)

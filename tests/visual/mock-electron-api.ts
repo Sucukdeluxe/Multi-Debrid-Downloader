@@ -63,6 +63,9 @@ export function createVisualElectronApi(
     prepareCollectorContainers: async () => ({ packages: [], invalidCount: 0, duplicateCount: 0 }),
     enrichCollectorPackages: async (request) => ({ packages: clone(request.packages), invalidCount: 0, duplicateCount: 0 }),
     onCollectorEnrichmentProgress: () => () => {},
+    getCollectorState: async () => ({ packages: [], collapsedPackageIds: [] }),
+    saveCollectorState: async (state) => clone(state),
+    saveCollectorStateSync: () => {},
     getPathForDroppedFile: () => "",
     getStartConflicts: async () => [],
     resolveStartConflict: async (_packageId, policy) => ({

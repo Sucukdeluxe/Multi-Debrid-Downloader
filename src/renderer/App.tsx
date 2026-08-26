@@ -74,6 +74,7 @@ import {
   selectCollectorPackageLinks,
   type CollectorWorkspaceFilter
 } from "./views/collector/collector-model";
+import { createCollectorPersistenceCoordinator, restoreCollectorPersistenceState, type CollectorPersistenceCoordinator } from "./views/collector/collector-persistence";
 import {
   CollectorInputDialog,
   MemoizedCollectorContent,
@@ -106,7 +107,7 @@ import {
   StatisticsSidebarStatus,
   type StatisticsViewActions
 } from "./views/statistics/StatisticsView";
-import { buildDownloadsViewModel, formatRemainingDownloadBytes, formatRemainingDownloadTooltip, getDownloadQueueTotalBytes, getDownloadSpeedBps, getPendingDownloadItemCount, getRemainingDownloadBytes, type DownloadDisplayMode, type DownloadSidebarFilter } from "./views/downloads/downloads-model";
+import { buildDownloadsViewModel, formatRemainingDownloadBytes, formatRemainingDownloadTooltip, getDownloadQueueStatusMetrics, getDownloadSpeedBps, type DownloadDisplayMode, type DownloadSidebarFilter } from "./views/downloads/downloads-model";
 import { downloadColumnDefinitions, type DownloadSortColumn } from "./views/downloads/DownloadsTable";
 import { DeleteConfirmationDialog } from "./views/downloads/DeleteConfirmationDialog";
 import { beginDownloadColumnDrag, clearDownloadColumnDrag, commitDownloadColumnDrag, createDownloadColumnOrderPersistence, DOWNLOAD_COLUMN_MOVE_DURATION_MS, updateDownloadColumnDrag, type DownloadColumnDragSession, type DownloadColumnOrderPersistence } from "./views/downloads/column-drag";
@@ -1721,6 +1722,9 @@ export function App(): ReactElement {
   const [collectorError, setCollectorError] = useState("");
   const [collectorInput, setCollectorInput] = useState<CollectorInputState | null>(null);
   const collectorPackagesRef = useRef<CollectorPackage[]>(collectorPackages);
+  const collapsedCollectorPackageIdsRef = useRef<Set<string>>(collapsedCollectorPackageIds);
+  const collectorPersistenceHydratedRef = useRef(false);
+  const collectorPersistenceCoordinatorRef = useRef<CollectorPersistenceCoordinator | null>(null);
   const collectorEnrichmentGenerationsRef = useRef(new Map<string, number>());
   const collectorEnrichmentRequestsRef = useRef(new Map<string, ReturnType<typeof beginCollectorEnrichment>>());
   const importCollectorTextRef = useRef<(rawText: string) => Promise<void>>(() => Promise.resolve());
@@ -1872,6 +1876,7 @@ export function App(): ReactElement {
   );
 
   collectorPackagesRef.current = collectorPackages;
+  collapsedCollectorPackageIdsRef.current = collapsedCollectorPackageIds;
 
   useEffect(() => {
     activeTabRef.current = tab;
@@ -3652,6 +3657,65 @@ export function App(): ReactElement {
     }, true);
   }), []);
 
+  useEffect(() => {
+    let cancelled = false;
+    const coordinator = createCollectorPersistenceCoordinator((state) => window.rd.saveCollectorState(state));
+    collectorPersistenceCoordinatorRef.current = coordinator;
+    const saveBeforeUnload = (): void => {
+      if (!collectorPersistenceHydratedRef.current) return;
+      window.rd.saveCollectorStateSync({
+        packages: collectorPackagesRef.current,
+        collapsedPackageIds: [...collapsedCollectorPackageIdsRef.current]
+      });
+    };
+    window.addEventListener("beforeunload", saveBeforeUnload);
+    void window.rd.getCollectorState().then((persisted) => {
+      if (cancelled) return;
+      const restored = restoreCollectorPersistenceState(
+        persisted,
+        collectorPackagesRef.current,
+        collapsedCollectorPackageIdsRef.current
+      );
+      collectorPackagesRef.current = restored.packages;
+      collapsedCollectorPackageIdsRef.current = new Set(restored.collapsedPackageIds);
+      setCollectorPackages(restored.packages);
+      setCollapsedCollectorPackageIds(new Set(restored.collapsedPackageIds));
+      collectorPersistenceHydratedRef.current = true;
+      coordinator.schedule(restored);
+      if (restored.packages.length > 0) enrichCollectorResult(restored.packages);
+    }).catch((error) => {
+      if (cancelled) return;
+      collectorPersistenceHydratedRef.current = true;
+      setCollectorError(`Linksammler konnte nicht wiederhergestellt werden: ${String(error)}`);
+      coordinator.schedule({
+        packages: collectorPackagesRef.current,
+        collapsedPackageIds: [...collapsedCollectorPackageIdsRef.current]
+      });
+    });
+    return () => {
+      cancelled = true;
+      window.removeEventListener("beforeunload", saveBeforeUnload);
+      if (!collectorPersistenceHydratedRef.current) {
+        coordinator.dispose();
+        return;
+      }
+      coordinator.schedule({
+        packages: collectorPackagesRef.current,
+        collapsedPackageIds: [...collapsedCollectorPackageIdsRef.current]
+      });
+      void coordinator.flush().finally(() => coordinator.dispose());
+    };
+  }, []);
+
+  useEffect(() => {
+    collapsedCollectorPackageIdsRef.current = collapsedCollectorPackageIds;
+    if (!collectorPersistenceHydratedRef.current) return;
+    collectorPersistenceCoordinatorRef.current?.schedule({
+      packages: collectorPackages,
+      collapsedPackageIds: [...collapsedCollectorPackageIds]
+    });
+  }, [collapsedCollectorPackageIds, collectorPackages]);
+
   const importCollectorText = async (rawText: string): Promise<void> => {
     if (!rawText.trim()) {
       showToast("Keine Links eingegeben", 2200);
@@ -4877,21 +4941,6 @@ export function App(): ReactElement {
     return map;
   }, [snapshot.packageSpeedBps]);
 
-  const providerStats = useMemo(() => {
-    const stats: Record<string, { total: number; completed: number; failed: number; bytes: number }> = {};
-    for (const item of Object.values(snapshot.session.items)) {
-      const hoster = extractHoster(item.url) || "unknown";
-      if (!stats[hoster]) {
-        stats[hoster] = { total: 0, completed: 0, failed: 0, bytes: 0 };
-      }
-      stats[hoster].total += 1;
-      if (item.status === "completed") stats[hoster].completed += 1;
-      if (item.status === "failed") stats[hoster].failed += 1;
-      stats[hoster].bytes += item.downloadedBytes;
-    }
-    return Object.entries(stats);
-  }, [snapshot.session.items]);
-
   const sortDownloadsByColumn = useCallback((column: DownloadSortColumn): void => {
     const nextDescending = downloadsSortColumn === column ? !downloadsSortDescending : false;
     setDownloadsSortColumn(column);
@@ -5018,8 +5067,9 @@ export function App(): ReactElement {
     if (!snapshot.session.running || snapshot.session.paused) return;
     speedHistoryRef.current = appendBandwidthSample(speedHistoryRef.current, liveDownloadSpeedBps);
   }, [liveDownloadSpeedBps, snapshot.packageSpeedBps, snapshot.session.paused, snapshot.session.running]);
-  const downloadQueueTotalBytes = useMemo(() => getDownloadQueueTotalBytes(Object.values(snapshot.session.items)), [snapshot.session.items]);
-  const downloadRemaining = useMemo(() => getRemainingDownloadBytes(Object.values(snapshot.session.items)), [snapshot.session.items]);
+  const downloadQueueMetrics = useMemo(() => getDownloadQueueStatusMetrics(downloadsViewCore.eligibleItems), [downloadsViewCore.eligibleItems]);
+  const downloadQueueTotalBytes = downloadQueueMetrics.totalBytes;
+  const downloadRemaining = downloadQueueMetrics.remaining;
   const downloadsViewModel = useMemo<DownloadsViewModel>(() => ({
     ...downloadsViewCore,
     running: snapshot.session.running,
@@ -5051,8 +5101,8 @@ export function App(): ReactElement {
     disclosureRevision: downloadDisclosureRevision,
     animationsEnabled: snapshot.settings.animatePackageDisclosure,
     status: {
-      packages: snapshot.stats.totalPackages,
-      links: getPendingDownloadItemCount(Object.values(snapshot.session.items)),
+      packages: downloadQueueMetrics.packageCount,
+      links: downloadQueueMetrics.pendingItemCount,
       session: humanSize(snapshot.stats.totalDownloaded),
       sessionBytes: snapshot.stats.totalDownloaded,
       total: humanSize(downloadQueueTotalBytes),
@@ -5060,11 +5110,11 @@ export function App(): ReactElement {
       remaining: formatRemainingDownloadBytes(downloadRemaining),
       remainingBytes: downloadRemaining.bytes,
       remainingTooltip: formatRemainingDownloadTooltip(downloadRemaining),
-      hosters: providerStats.length,
+      hosters: downloadQueueMetrics.hosterCount,
       speed: liveDownloadSpeedBps > 0 ? formatSpeedMbps(liveDownloadSpeedBps) : "0 B/s",
       eta: snapshot.etaText
     }
-  }), [actionBusy, columnOrder, downloadDisclosureRevision, downloadPackageSpeeds, downloadQueueTotalBytes, downloadRemaining, downloadsSortColumn, downloadsSortDescending, downloadsViewCore, editingName, editingPackageId, gridTemplate, liveDownloadSpeedBps, providerStats.length, scheduleCountdown, schedulePickerOpen, scheduleStartDay, scheduleTimeInput, snapshot.canPause, snapshot.canStart, snapshot.canStop, snapshot.clipboardActive, snapshot.etaText, snapshot.reconnectSeconds, snapshot.session.items, snapshot.session.paused, snapshot.session.reconnectReason, snapshot.session.running, snapshot.settings.animatePackageDisclosure, snapshot.settings.dailyStartEnabled, snapshot.settings.dailyStartMinuteOfDay, snapshot.settings.scheduledStartEpochMs, snapshot.stats.totalDownloaded, snapshot.stats.totalPackages]);
+  }), [actionBusy, columnOrder, downloadDisclosureRevision, downloadPackageSpeeds, downloadQueueMetrics.hosterCount, downloadQueueMetrics.packageCount, downloadQueueMetrics.pendingItemCount, downloadQueueTotalBytes, downloadRemaining, downloadsSortColumn, downloadsSortDescending, downloadsViewCore, editingName, editingPackageId, gridTemplate, liveDownloadSpeedBps, scheduleCountdown, schedulePickerOpen, scheduleStartDay, scheduleTimeInput, snapshot.canPause, snapshot.canStart, snapshot.canStop, snapshot.clipboardActive, snapshot.etaText, snapshot.reconnectSeconds, snapshot.session.paused, snapshot.session.reconnectReason, snapshot.session.running, snapshot.settings.animatePackageDisclosure, snapshot.settings.dailyStartEnabled, snapshot.settings.dailyStartMinuteOfDay, snapshot.settings.scheduledStartEpochMs, snapshot.stats.totalDownloaded]);
 
   const resetColumnLayout = useCallback((): void => {
     if (columnDragSettleTimerRef.current !== null) {

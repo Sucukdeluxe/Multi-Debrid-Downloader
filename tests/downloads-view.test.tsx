@@ -12,6 +12,7 @@ import {
   formatRemainingDownloadBytes,
   formatRemainingDownloadTooltip,
   getDownloadQueueTotalBytes,
+  getDownloadQueueStatusMetrics,
   getRemainingDownloadBytes,
   getPendingDownloadItemCount,
   getDownloadSpeedBps,
@@ -895,6 +896,52 @@ describe("downloads model", () => {
     expect(byFile.packageRows[0].items.map((entry) => entry.id)).toEqual(["done"]);
     expect(byProvider.visibleItemIds).toEqual(["queued"]);
     expect(hiddenExtracted.visibleItemIds).not.toContain("done");
+  });
+
+  it("removes hidden extracted downloads from every queue-wide model source", () => {
+    const model = buildDownloadsViewModel(createInput({
+      packageOrder: ["visible-package", "extracted-package"],
+      packages: {
+        "visible-package": pkg("visible-package", "Wartend", ["visible-item"]),
+        "extracted-package": pkg("extracted-package", "Entpackt", ["extracted-item"])
+      },
+      items: {
+        "visible-item": item("visible-item", "visible-package", "queued", { provider: "debridlink", providerLabel: "Debrid-Link" }),
+        "extracted-item": item("extracted-item", "extracted-package", "completed", { provider: "alldebrid", providerLabel: "AllDebrid", fullStatus: "Entpackt" })
+      },
+      hideExtractedItems: true
+    }));
+
+    expect(model.counts).toEqual({ all: 1, active: 0, queued: 1, paused: 0, completed: 0, failed: 0 });
+    expect(model.providerOptions).toEqual([{ id: "debridlink", label: "Debrid-Link" }]);
+    expect(model.eligibleItems.map((entry) => entry.id)).toEqual(["visible-item"]);
+    expect(model.eligiblePackageCount).toBe(1);
+    expect(model.packageRows[0].allItems.map((entry) => entry.id)).toEqual(["visible-item"]);
+    expect(model.empty).toBe(false);
+    expect(model.filteredEmpty).toBe(false);
+  });
+
+  it("treats a queue containing only hidden extracted downloads as empty", () => {
+    const model = buildDownloadsViewModel(createInput({
+      packageOrder: ["extracted-package"],
+      packages: { "extracted-package": pkg("extracted-package", "Entpackt", ["extracted-item"]) },
+      items: { "extracted-item": item("extracted-item", "extracted-package", "completed", { fullStatus: "Entpackt" }) },
+      hideExtractedItems: true
+    }));
+
+    expect(model.eligibleItems).toEqual([]);
+    expect(model.eligiblePackageCount).toBe(0);
+    expect(model.counts.all).toBe(0);
+    expect(model.providerOptions).toEqual([]);
+    expect(model.empty).toBe(true);
+    expect(model.filteredEmpty).toBe(false);
+    expect(getDownloadQueueStatusMetrics(model.eligibleItems)).toEqual({
+      packageCount: 0,
+      pendingItemCount: 0,
+      totalBytes: 0,
+      remaining: { bytes: 0, unknownItems: 0 },
+      hosterCount: 0
+    });
   });
 
   it("supports the genuine flat file mode without synthetic package rows", () => {

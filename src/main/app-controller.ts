@@ -77,6 +77,8 @@ import { getDesktopRenameLogPath, initDesktopRenameLogAt, shutdownDesktopRenameL
 import { buildAccountSummary, buildNotificationSupportPayload, diffAccountSummary, type NotificationSupportPayload } from "./support-data";
 import { buildSupportBundle, getSupportBundleDefaultFileName } from "./support-bundle";
 import { getTraceConfig, getTraceLogPath, initTraceLog, logTraceEvent, setTraceEnabled, shutdownTraceLog } from "./trace-log";
+import { CollectorStore } from "./collector-store";
+import type { CollectorPersistenceState } from "../shared/collector";
 import type { DebugSetupCheckResult, SupportTraceConfig } from "../shared/types";
 import { createOnlineBackup, downloadOnlineBackup, uploadOnlineBackup } from "./online-backup";
 import { overlayLiveUsageCounters } from "./settings-live-overlay";
@@ -125,6 +127,8 @@ export class AppController {
   private lastUpdateCheckAt = 0;
 
   private storagePaths = createStoragePaths(path.join(app.getPath("userData"), "runtime"));
+
+  private collectorStore = new CollectorStore(this.storagePaths.collectorFile);
 
   private notificationOutbox: NotificationOutbox;
 
@@ -997,6 +1001,15 @@ export class AppController {
     return prepareCollectorText(request);
   }
 
+  public getCollectorState(): CollectorPersistenceState {
+    return this.collectorStore.getState();
+  }
+
+  public saveCollectorState(state: CollectorPersistenceState): CollectorPersistenceState {
+    this.collectorStore.update(state);
+    return this.collectorStore.getState();
+  }
+
   public prepareCollectorContainers(filePaths: string[], addedAt: number): Promise<CollectorInspectionResult> {
     return prepareCollectorContainers(filePaths, addedAt);
   }
@@ -1388,6 +1401,11 @@ export class AppController {
     }
     stopDebugServer();
     abortActiveUpdateDownload();
+    try {
+      this.collectorStore?.flushSync();
+    } catch (error) {
+      logger.warn(`Linksammler konnte beim Beenden nicht gespeichert werden: ${String(error)}`);
+    }
     cancelPendingAsyncSaves();
     this.manager.prepareForShutdown();
     if (this.downloadHealthEvaluation) {

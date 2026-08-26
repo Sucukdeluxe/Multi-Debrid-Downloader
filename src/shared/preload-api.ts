@@ -38,6 +38,7 @@ import type {
   CollectorEnrichmentRequest,
   CollectorEnrichmentProgress,
   CollectorInspectionResult,
+  CollectorPersistenceState,
   CollectorTextPreparationRequest
 } from "./collector";
 
@@ -89,6 +90,9 @@ export interface ElectronApi {
   prepareCollectorContainers: (filePaths: string[], addedAt: number) => Promise<CollectorInspectionResult>;
   enrichCollectorPackages: (request: CollectorEnrichmentRequest) => Promise<CollectorInspectionResult>;
   onCollectorEnrichmentProgress: (callback: (progress: CollectorEnrichmentProgress) => void) => () => void;
+  getCollectorState: () => Promise<CollectorPersistenceState>;
+  saveCollectorState: (state: CollectorPersistenceState) => Promise<CollectorPersistenceState>;
+  saveCollectorStateSync: (state: CollectorPersistenceState) => void;
   getPathForDroppedFile: (file: File) => string;
   getStartConflicts: () => Promise<StartConflictEntry[]>;
   resolveStartConflict: (packageId: string, policy: DuplicatePolicy) => Promise<StartConflictResolutionResult>;

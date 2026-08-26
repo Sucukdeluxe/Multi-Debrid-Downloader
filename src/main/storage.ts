@@ -719,6 +719,7 @@ export interface StoragePaths {
   statisticsFile: string;
   notificationOutboxFile: string;
   notificationHealthFile: string;
+  collectorFile: string;
 }
 
 export function createStoragePaths(baseDir: string): StoragePaths {
@@ -729,7 +730,8 @@ export function createStoragePaths(baseDir: string): StoragePaths {
     historyFile: path.join(baseDir, "rd_history.json"),
     statisticsFile: path.join(baseDir, "rd_statistics.json"),
     notificationOutboxFile: path.join(baseDir, "rd_notification_outbox.json"),
-    notificationHealthFile: path.join(baseDir, "rd_notification_health.json")
+    notificationHealthFile: path.join(baseDir, "rd_notification_health.json"),
+    collectorFile: path.join(baseDir, "rd_collector_state.json")
   };
 }
 

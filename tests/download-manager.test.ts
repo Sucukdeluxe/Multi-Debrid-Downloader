@@ -962,6 +962,50 @@ describe("download start account gate", () => {
     expect(getProviderRuntimeSnapshot().realDebrid.accounts.find((entry) => entry.accountId === accountId)?.cooldown ?? null).toBeNull();
   });
 
+  it("keeps start available after stop when the last enabled Real-Debrid account has a transient cooldown", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-survivor-cooldown-gate-"));
+    tempDirs.push(root);
+    const accountIds = ["rdw_first", "rdw_second", "rdw_third", "rdw_survivor"];
+    const session = emptySession();
+    session.running = true;
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        realDebridUseWebLogin: true,
+        realDebridWebAccountIds: accountIds,
+        realDebridDisabledAccountIds: accountIds.slice(0, 3),
+        providerOrder: ["realdebrid"]
+      },
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+    primeRealDebridRuntimeCooldownForTests("rdw_survivor", 60_000, "Temporärer Providerfehler");
+
+    await manager.stop();
+
+    expect(manager.getSnapshot().session.running).toBe(false);
+    expect(manager.getSnapshot().canStart).toBe(true);
+  });
+
+  it.each(["invalid", "rate_limit", "quota"] as const)("keeps start blocked for a Real-Debrid %s cooldown", (category) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `rd-${category}-cooldown-gate-`));
+    tempDirs.push(root);
+    const accountId = `rdw_${category}`;
+    const manager = new DownloadManager(
+      {
+        ...defaultSettings(),
+        realDebridUseWebLogin: true,
+        realDebridWebAccountIds: [accountId],
+        providerOrder: ["realdebrid"]
+      },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+    primeRealDebridRuntimeCooldownForTests(accountId, 60_000, "Account nicht nutzbar", category);
+
+    expect(manager.getSnapshot().canStart).toBe(false);
+  });
+
   it("allows start when an active account is available", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-active-account-gate-"));
     tempDirs.push(root);

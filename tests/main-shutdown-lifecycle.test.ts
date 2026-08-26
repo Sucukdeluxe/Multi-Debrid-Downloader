@@ -73,6 +73,33 @@ afterEach(() => {
 });
 
 describe("main shutdown lifecycle", () => {
+  it("continues the full shutdown when the collector state cannot be flushed", async () => {
+    const controller = Object.create(AppController.prototype) as any;
+    controller.runtimeStatsTimer = null;
+    controller.collectorStore = { flushSync: vi.fn(() => { throw new Error("collector locked"); }) };
+    controller.notificationOutbox = { drainForShutdown: vi.fn(async () => undefined) };
+    controller.manager = {
+      suspendDownloadHealthMonitoring: vi.fn(),
+      prepareForShutdown: vi.fn(),
+      flushNotificationsForShutdown: vi.fn(async () => undefined)
+    };
+    controller.downloadHealthTimer = null;
+    controller.downloadHealthEvaluation = null;
+    controller.downloadHealthMonitor = null;
+    controller.megaWebFallback = { dispose: vi.fn() };
+    controller.realDebridWebFallbacks = new Map();
+    controller.pendingRealDebridWebAccountIds = new Map();
+    controller.allDebridWebFallback = { dispose: vi.fn() };
+    controller.bestDebridWebFallback = { dispose: vi.fn() };
+    controller.shutdownLogStorage = vi.fn();
+    controller.audit = vi.fn();
+    controller.settings = { historyRetentionMode: "never" };
+
+    await expect(controller.shutdown()).resolves.toBeUndefined();
+    expect(controller.manager.prepareForShutdown).toHaveBeenCalledTimes(1);
+    expect(controller.shutdownLogStorage).toHaveBeenCalledTimes(1);
+  });
+
   it("AppController waits for the bounded outbox drain before disposing runtime owners", async () => {
     const drain = deferred();
     const manager = { prepareForShutdown: vi.fn() };
