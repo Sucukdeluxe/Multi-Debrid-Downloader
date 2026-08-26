@@ -557,7 +557,7 @@ describe("bandwidth chart palette", () => {
 
     expect(theme).toMatch(/:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--ui-focus\);/s);
     expect(shell).toContain("color: var(--ui-update-text);");
-    expect(collector.match(/color:\s*var\(--ui-primary-text\);/g)).toHaveLength(3);
+    expect(collector.match(/color:\s*var\(--ui-primary-text\);/g)).toHaveLength(1);
   });
 
   it("requests only the semantic UI color properties and keeps the computed font family", () => {
@@ -591,6 +591,13 @@ describe("bandwidth chart palette", () => {
 
     expect(requested).toEqual(["--ui-speed-accent"]);
     expect(palette).toEqual({ accent: "rgb(74, 222, 128)" });
+  });
+
+  it("uses the spare zero-speed label space for a longer sparkline", () => {
+    const css = readFileSync(new URL("../src/renderer/styles.css", import.meta.url), "utf8");
+
+    expect(css).toMatch(/\.speed-sparkline-canvas\s*\{[^}]*width:\s*128px;/s);
+    expect(css).toMatch(/\.speed-sparkline-value\s*\{[^}]*min-width:\s*54px;/s);
   });
 
   it("aligns the idle speed line to one physical pixel at every display scale", () => {
