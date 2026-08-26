@@ -20,20 +20,12 @@ describe("desktop shell", () => {
     expect(source).toContain("Maskierte Kennung kopiert");
   });
 
-  it("confirms before removing a collector tab", () => {
-    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
-    const removal = source.slice(source.indexOf("const removeCollectorTab"), source.indexOf("const openCollectorInput"));
-
-    expect(removal).toContain("askConfirmPrompt");
-    expect(removal.indexOf("askConfirmPrompt")).toBeLessThan(removal.indexOf("planCollectorTabRemoval"));
-  });
-
   it("confirms before removing selected collector links", () => {
     const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
-    const removal = source.slice(source.indexOf("const removeSelectedCollectorRows"), source.indexOf("const onPackageStartEdit"));
+    const removal = source.slice(source.indexOf("const removeSelectedCollectorLinks"), source.indexOf("const onPackageStartEdit"));
 
     expect(removal).toContain("askConfirmPrompt");
-    expect(removal.indexOf("askConfirmPrompt")).toBeLessThan(removal.indexOf("setCollectorTabs"));
+    expect(removal.indexOf("askConfirmPrompt")).toBeLessThan(removal.indexOf("setCollectorPackages"));
     expect(removal).toContain('title: "Ausgewählte Links löschen"');
   });
 
@@ -62,7 +54,7 @@ describe("desktop shell", () => {
 
   it("redraws the header speed sparkline on the same 750 ms cadence", () => {
     const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
-    const sparklineBlock = source.slice(source.indexOf("const DownloadSpeedSparkline"), source.indexOf("const initialCollectorTabs"));
+    const sparklineBlock = source.slice(source.indexOf("const DownloadSpeedSparkline"), source.indexOf("function createScheduleId"));
 
     expect(sparklineBlock).toContain("window.setInterval(tick, 750)");
   });

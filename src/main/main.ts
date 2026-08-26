@@ -26,6 +26,11 @@ import { migrateProductUserDataDirectory } from "./storage";
 import { forceDarkNativeTheme } from "./native-theme";
 import { validateClipboardWriteText } from "./clipboard-write";
 import { DailyStartScheduler, hasDailyStartRulePatch, prepareDailyStartSettingsPatch } from "./daily-start-scheduler";
+import {
+  validateCollectorContainerPreparationRequest,
+  validateCollectorEnrichmentRequest,
+  validateCollectorTextPreparationRequest
+} from "../shared/collector";
 
 forceDarkNativeTheme(nativeTheme);
 
@@ -556,6 +561,16 @@ function registerIpcHandlers(): void {
     const validPaths = validateStringArray(filePaths ?? [], "filePaths");
     const safePaths = validPaths.filter((p) => path.isAbsolute(p));
     return controller.addContainers(safePaths);
+  });
+  handleTrusted(IPC_CHANNELS.PREPARE_COLLECTOR_TEXT, (_event: IpcMainInvokeEvent, value: unknown) => {
+    return controller.prepareCollectorText(validateCollectorTextPreparationRequest(value));
+  });
+  handleTrusted(IPC_CHANNELS.PREPARE_COLLECTOR_CONTAINERS, (_event: IpcMainInvokeEvent, filePaths: unknown, addedAt: unknown) => {
+    const request = validateCollectorContainerPreparationRequest({ filePaths, addedAt });
+    return controller.prepareCollectorContainers(request.filePaths, request.addedAt);
+  });
+  handleTrusted(IPC_CHANNELS.ENRICH_COLLECTOR_PACKAGES, (_event: IpcMainInvokeEvent, value: unknown) => {
+    return controller.enrichCollectorPackages(validateCollectorEnrichmentRequest(value));
   });
   handleTrusted(IPC_CHANNELS.GET_START_CONFLICTS, () => controller.getStartConflicts());
   handleTrusted(IPC_CHANNELS.RESOLVE_START_CONFLICT, (_event: IpcMainInvokeEvent, packageId: string, policy: "keep" | "skip" | "overwrite") => {

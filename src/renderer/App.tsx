@@ -61,9 +61,17 @@ import { Dialog } from "./ui/Dialog";
 import { Icon } from "./ui/Icon";
 import { Toast } from "./ui/Toast";
 import { LinkAddressesDialog } from "./ui/LinkAddressesDialog";
+import { serializeCollectorPackages, type CollectorInspectionResult, type CollectorPackage } from "../shared/collector";
+import { routeDroppedDlcFiles } from "./collector-drop";
+import { beginCollectorEnrichment, filterCurrentCollectorEnrichment } from "./collector-enrichment";
 import {
-  buildCollectorViewModel,
-  type CollectorSourceTab
+  buildCollectorTransferPackages,
+  buildCollectorWorkspaceViewModel,
+  mergeCollectorEnrichment,
+  mergeCollectorPackages,
+  removeCollectorLinks,
+  selectCollectorPackageLinks,
+  type CollectorWorkspaceFilter
 } from "./views/collector/collector-model";
 import {
   CollectorContent,
@@ -141,63 +149,8 @@ import {
 
 type Tab = MainView;
 
-type CollectorTab = CollectorSourceTab;
-
 interface CollectorInputState {
-  tabId: string;
-  tabName: string;
-  baseText: string;
   draft: string;
-}
-export function mergeCollectorDraftText(baseText: string, currentText: string, draft: string): string {
-  if (currentText === baseText) {
-    return draft;
-  }
-  const appended = currentText.startsWith(baseText) ? currentText.slice(baseText.length) : currentText;
-  if (!appended) {
-    return draft;
-  }
-  const normalizedAppend = appended.replace(/^\r?\n/, "");
-  if (!draft) {
-    return normalizedAppend;
-  }
-  if (!normalizedAppend) {
-    return draft;
-  }
-  return `${draft}${draft.endsWith("\n") ? "" : "\n"}${normalizedAppend}`;
-}
-
-export function planCollectorTabRemoval(
-  tabs: CollectorTab[],
-  activeTabId: string,
-  removedTabId: string
-): { tabs: CollectorTab[]; activeTabId: string } {
-  if (tabs.length <= 1) {
-    return { tabs, activeTabId };
-  }
-  const removedIndex = tabs.findIndex((tab) => tab.id === removedTabId);
-  if (removedIndex < 0) {
-    return {
-      tabs,
-      activeTabId: tabs.some((tab) => tab.id === activeTabId) ? activeTabId : (tabs[0]?.id ?? "")
-    };
-  }
-  const nextTabs = tabs.filter((tab) => tab.id !== removedTabId);
-  const nextActiveTabId = activeTabId === removedTabId
-    ? (nextTabs[Math.max(0, removedIndex - 1)]?.id ?? nextTabs[0]?.id ?? "")
-    : (nextTabs.some((tab) => tab.id === activeTabId) ? activeTabId : (nextTabs[0]?.id ?? ""));
-  return { tabs: nextTabs, activeTabId: nextActiveTabId };
-}
-
-export function planCollectorTextReplacement(
-  tabs: CollectorTab[],
-  tabId: string,
-  text: string
-): { tabs: CollectorTab[]; selectedIds: string[] } {
-  return {
-    tabs: tabs.map((tab) => tab.id === tabId ? { ...tab, text } : tab),
-    selectedIds: []
-  };
 }
 
 interface StartConflictPromptState {
@@ -1434,8 +1387,6 @@ const DownloadSpeedSparkline = memo(function DownloadSpeedSparkline({ speedBps, 
   );
 });
 
-let nextCollectorId = 1;
-
 function createScheduleId(): string {
   return `schedule-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -1735,16 +1686,17 @@ export function App(): ReactElement {
   const [providerDropTarget, setProviderDropTarget] = useState<DebridProvider | null>(null);
   const [editingPackageId, setEditingPackageId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
-  const [collectorTabs, setCollectorTabs] = useState<CollectorTab[]>([
-    { id: `tab-${nextCollectorId++}`, name: "Tab 1", text: "" }
-  ]);
-  const [activeCollectorTab, setActiveCollectorTab] = useState(collectorTabs[0].id);
+  const [collectorPackages, setCollectorPackages] = useState<CollectorPackage[]>([]);
+  const [collectorFilter, setCollectorFilter] = useState<CollectorWorkspaceFilter>("all");
   const [collectorQuery, setCollectorQuery] = useState("");
-  const [selectedCollectorRowIds, setSelectedCollectorRowIds] = useState<Set<string>>(() => new Set());
+  const [selectedCollectorLinkIds, setSelectedCollectorLinkIds] = useState<Set<string>>(() => new Set());
+  const [collapsedCollectorPackageIds, setCollapsedCollectorPackageIds] = useState<Set<string>>(() => new Set());
+  const [collectorAnalyzingCount, setCollectorAnalyzingCount] = useState(0);
   const [collectorError, setCollectorError] = useState("");
   const [collectorInput, setCollectorInput] = useState<CollectorInputState | null>(null);
-  const collectorTabsRef = useRef<CollectorTab[]>(collectorTabs);
-  const activeCollectorTabRef = useRef(activeCollectorTab);
+  const collectorPackagesRef = useRef<CollectorPackage[]>(collectorPackages);
+  const collectorEnrichmentGenerationsRef = useRef(new Map<string, number>());
+  const importCollectorTextRef = useRef<(rawText: string) => Promise<void>>(() => Promise.resolve());
   const activeTabRef = useRef<Tab>(tab);
   const packageOrderRef = useRef<string[]>([]);
   const serverPackageOrderRef = useRef<string[]>([]);
@@ -1864,14 +1816,16 @@ export function App(): ReactElement {
     columnOrderPersistenceRef.current?.enqueue(order);
   }, []);
 
-  const collectorViewModel = useMemo(() => buildCollectorViewModel(
-    collectorTabs,
-    activeCollectorTab,
+  const collectorViewModel = useMemo(() => buildCollectorWorkspaceViewModel(
+    collectorPackages,
+    collectorFilter,
     collectorQuery,
-    actionBusy,
-    [...selectedCollectorRowIds],
-    collectorError
-  ), [actionBusy, activeCollectorTab, collectorError, collectorQuery, collectorTabs, selectedCollectorRowIds]);
+    collectorAnalyzingCount > 0,
+    [...selectedCollectorLinkIds],
+    [...collapsedCollectorPackageIds],
+    collectorError,
+    snapshot.settings.animatePackageDisclosure
+  ), [collapsedCollectorPackageIds, collectorAnalyzingCount, collectorError, collectorFilter, collectorPackages, collectorQuery, selectedCollectorLinkIds, snapshot.settings.animatePackageDisclosure]);
 
   const historyViewModel = useMemo(() => buildHistoryViewModel(
     historyEntries,
@@ -1890,13 +1844,7 @@ export function App(): ReactElement {
     [runtimeNow, snapshot, statisticsRange]
   );
 
-  useEffect(() => {
-    activeCollectorTabRef.current = activeCollectorTab;
-  }, [activeCollectorTab]);
-
-  useEffect(() => {
-    collectorTabsRef.current = collectorTabs;
-  }, [collectorTabs]);
+  collectorPackagesRef.current = collectorPackages;
 
   useEffect(() => {
     activeTabRef.current = tab;
@@ -2238,12 +2186,7 @@ export function App(): ReactElement {
     });
     unsubClipboard = window.rd.onClipboardDetected((links) => {
       showToast(`Zwischenablage: ${links.length} Link(s) erkannt`, 3000);
-      setCollectorTabs((prev) => {
-        const active = prev.find((t) => t.id === activeCollectorTabRef.current) ?? prev[0];
-        if (!active) { return prev; }
-        const newText = active.text ? `${active.text}\n${links.join("\n")}` : links.join("\n");
-        return prev.map((t) => t.id === active.id ? { ...t, text: newText } : t);
-      });
+      void importCollectorTextRef.current(links.join("\n"));
     });
     unsubUpdateInstallProgress = window.rd.onUpdateInstallProgress((progress) => {
       if (!mountedRef.current) {
@@ -3626,47 +3569,142 @@ export function App(): ReactElement {
     }
   };
 
-  const onAddLinks = async (): Promise<void> => {
-    setCollectorError("");
-    await performQuickAction(async () => {
-      const activeId = activeCollectorTabRef.current;
-      const active = collectorTabsRef.current.find((t) => t.id === activeId) ?? collectorTabsRef.current[0];
-      const rawText = active?.text ?? "";
-      const persisted = await persistDraftSettings();
-      const existingIds = new Set(Object.keys(snapshotRef.current.session.packages));
-      const result = await window.rd.addLinks({ rawText, packageName: persisted.packageName });
-      if (result.addedLinks > 0) {
-        showToast(`${result.addedPackages} Paket(e), ${result.addedLinks} Link(s) hinzugefügt`);
-        setCollectorTabs((prev) => planCollectorTextReplacement(prev, activeId, "").tabs);
-        setSelectedCollectorRowIds(new Set());
-        if (snapshotRef.current.settings.collapseNewPackages) { await collapseNewPackages(existingIds); }
-      } else {
-        showToast("Keine gültigen Links gefunden");
-      }
-    }, (error) => {
-      setCollectorError(`Fehler beim Hinzufügen: ${String(error)}`);
-      showToast(`Fehler beim Hinzufügen: ${String(error)}`, 2600);
+  const mergeCollectorResult = (result: CollectorInspectionResult, enrichment = false): void => {
+    setCollectorPackages((current) => {
+      const merged = enrichment
+        ? mergeCollectorEnrichment(current, result.packages)
+        : mergeCollectorPackages(current, result.packages);
+      collectorPackagesRef.current = merged.packages;
+      return merged.packages;
     });
   };
 
-  const onImportDlc = async (): Promise<void> => {
+  const enrichCollectorResult = (packages: CollectorPackage[]): void => {
+    if (packages.length === 0) {
+      return;
+    }
+    const generations = beginCollectorEnrichment(packages, collectorEnrichmentGenerationsRef.current);
+    setCollectorAnalyzingCount((current) => current + 1);
+    void window.rd.enrichCollectorPackages({ packages }).then((result) => {
+      mergeCollectorResult({
+        ...result,
+        packages: filterCurrentCollectorEnrichment(
+          result.packages,
+          generations,
+          collectorEnrichmentGenerationsRef.current
+        )
+      }, true);
+    }).catch((error) => {
+      if (filterCurrentCollectorEnrichment(packages, generations, collectorEnrichmentGenerationsRef.current).length > 0) {
+        setCollectorError(`Metadatenprüfung fehlgeschlagen: ${String(error)}`);
+      }
+    }).finally(() => {
+      setCollectorAnalyzingCount((current) => Math.max(0, current - 1));
+    });
+  };
+
+  const importCollectorText = async (rawText: string): Promise<void> => {
+    if (!rawText.trim()) {
+      showToast("Keine Links eingegeben", 2200);
+      return;
+    }
     setCollectorError("");
+    setCollectorAnalyzingCount((current) => current + 1);
+    try {
+      const prepared = await window.rd.prepareCollectorText({ rawText, addedAt: Date.now() });
+      if (prepared.packages.length === 0) {
+        const message = "Keine gültigen Links gefunden";
+        setCollectorError(message);
+        showToast(message, 2600);
+        return;
+      }
+      mergeCollectorResult(prepared);
+      setCollectorFilter("all");
+      setTab("collector");
+      const linkCount = prepared.packages.reduce((sum, pkg) => sum + pkg.links.length, 0);
+      showToast(`${prepared.packages.length} Paket(e), ${linkCount} Link(s) gesammelt`);
+      enrichCollectorResult(prepared.packages);
+    } catch (error) {
+      const message = `Links konnten nicht vorbereitet werden: ${String(error)}`;
+      setCollectorError(message);
+      showToast(message, 2800);
+    } finally {
+      setCollectorAnalyzingCount((current) => Math.max(0, current - 1));
+    }
+  };
+
+  importCollectorTextRef.current = importCollectorText;
+
+  const importCollectorContainers = async (filePaths: string[]): Promise<CollectorInspectionResult | null> => {
+    if (filePaths.length === 0) {
+      return null;
+    }
+    setCollectorError("");
+    setCollectorAnalyzingCount((current) => current + 1);
+    try {
+      const prepared = await window.rd.prepareCollectorContainers(filePaths, Date.now());
+      if (prepared.packages.length === 0) {
+        const message = "Keine gültigen Links in den DLC-Dateien gefunden";
+        setCollectorError(message);
+        showToast(message, 3000);
+        return prepared;
+      }
+      mergeCollectorResult(prepared);
+      setCollectorFilter("all");
+      setTab("collector");
+      const linkCount = prepared.packages.reduce((sum, pkg) => sum + pkg.links.length, 0);
+      showToast(`DLC gesammelt: ${prepared.packages.length} Paket(e), ${linkCount} Link(s)`);
+      enrichCollectorResult(prepared.packages);
+      return prepared;
+    } catch (error) {
+      const message = `Fehler beim DLC-Import: ${String(error)}`;
+      setCollectorError(message);
+      showToast(message, 2800);
+      return null;
+    } finally {
+      setCollectorAnalyzingCount((current) => Math.max(0, current - 1));
+    }
+  };
+
+  const onImportDlc = async (): Promise<void> => {
+    const files = await window.rd.pickContainers();
+    if (files.length > 0) {
+      await importCollectorContainers(files);
+    }
+  };
+
+  const submitCollectorPackages = async (packages: CollectorPackage[]): Promise<void> => {
+    const transferable = packages.flatMap((pkg) => {
+      const links = pkg.links.filter((link) => link.availability !== "offline");
+      return links.length > 0 ? [{ ...pkg, links }] : [];
+    });
+    const linkIds = new Set(transferable.flatMap((pkg) => pkg.links.map((link) => link.id)));
+    if (linkIds.size === 0) {
+      showToast("Keine übertragbaren Links ausgewählt", 2400);
+      return;
+    }
     await performQuickAction(async () => {
-      const files = await window.rd.pickContainers();
-      if (files.length === 0) { return; }
-      await persistDraftSettings();
       const existingIds = new Set(Object.keys(snapshotRef.current.session.packages));
-      const result = await window.rd.addContainers(files);
-      if (result.addedLinks > 0) {
-        showToast(`DLC importiert: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
-        if (snapshotRef.current.settings.collapseNewPackages) { await collapseNewPackages(existingIds); }
-      } else {
-        setCollectorError("Keine gültigen Links in den DLC-Dateien gefunden");
-        showToast("Keine gültigen Links in den DLC-Dateien gefunden", 3000);
+      const result = await window.rd.addLinks({ rawText: serializeCollectorPackages(transferable), packageName: "" });
+      if (result.addedLinks !== linkIds.size) {
+        showToast(`${result.addedLinks} von ${linkIds.size} Link(s) übergeben; Sammlung bleibt erhalten`, 3200);
+        return;
+      }
+      setCollectorPackages((current) => {
+        const next = removeCollectorLinks(current, linkIds);
+        collectorPackagesRef.current = next;
+        return next;
+      });
+      setSelectedCollectorLinkIds((current) => new Set([...current].filter((id) => !linkIds.has(id))));
+      setTab("downloads");
+      showToast(`${result.addedPackages} Paket(e), ${result.addedLinks} Link(s) übergeben`);
+      if (snapshotRef.current.settings.collapseNewPackages) {
+        await collapseNewPackages(existingIds);
       }
     }, (error) => {
-      setCollectorError(`Fehler beim DLC-Import: ${String(error)}`);
-      showToast(`Fehler beim DLC-Import: ${String(error)}`, 2600);
+      const message = `Übergabe fehlgeschlagen: ${String(error)}`;
+      setCollectorError(message);
+      showToast(message, 2800);
     });
   };
 
@@ -3705,56 +3743,38 @@ export function App(): ReactElement {
     const hasUri = event.dataTransfer.types.includes("text/uri-list");
     if (!hasFiles && !hasUri) { return; }
     const files = Array.from(event.dataTransfer.files ?? []) as File[];
-    const dlc = files.filter((f) => f.name.toLowerCase().endsWith(".dlc")).map((f) => (f as unknown as { path?: string }).path).filter((v): v is string => !!v);
+    const hasDlc = files.some((file) => file.name.toLowerCase().endsWith(".dlc"));
     const importFiles = files.filter((f) => /\.(json|txt)$/i.test(f.name));
     const droppedText = event.dataTransfer.getData("text/plain") || event.dataTransfer.getData("text/uri-list") || "";
-    if (dlc.length > 0) {
-      setCollectorError("");
-      await performQuickAction(async () => {
-        await persistDraftSettings();
+    if (hasDlc) {
+      try {
+        const mode = tabRef.current === "collector" ? "collector" : "downloads";
         const existingIds = new Set(Object.keys(snapshotRef.current.session.packages));
-        const result = await window.rd.addContainers(dlc);
-        if (result.addedLinks > 0) {
-          showToast(`Drag-and-Drop: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
+        const routed = await routeDroppedDlcFiles(files, mode, window.rd.getPathForDroppedFile, {
+          addContainers: window.rd.addContainers,
+          inspectContainers: (filePaths) => importCollectorContainers(filePaths)
+        });
+        if (routed.kind === "empty") {
+          showToast("DLC-Dateipfad konnte nicht gelesen werden", 2800);
+        } else if (routed.kind === "downloads" && routed.result.addedLinks > 0) {
+          setTab("downloads");
+          showToast(`Drag-and-Drop: ${routed.result.addedPackages} Paket(e), ${routed.result.addedLinks} Link(s)`);
           if (snapshotRef.current.settings.collapseNewPackages) { await collapseNewPackages(existingIds); }
-        } else {
-          setCollectorError("Keine gültigen Links in den DLC-Dateien gefunden");
+        } else if (routed.kind === "downloads") {
           showToast("Keine gültigen Links in den DLC-Dateien gefunden", 3000);
         }
-      }, (error) => {
-        setCollectorError(`Fehler bei Drag-and-Drop: ${String(error)}`);
+      } catch (error) {
         showToast(`Fehler bei Drag-and-Drop: ${String(error)}`, 2600);
-      });
+      }
     } else if (importFiles.length > 0) {
-      setCollectorError("");
-      await performQuickAction(async () => {
-        await persistDraftSettings();
-        const existingIds = new Set(Object.keys(snapshotRef.current.session.packages));
-        let addedPackages = 0;
-        let addedLinks = 0;
-        for (const file of importFiles) {
-          const text = await file.text();
-          const result = await window.rd.importQueue(text);
-          addedPackages += result.addedPackages;
-          addedLinks += result.addedLinks;
-        }
-        if (addedLinks > 0) {
-          showToast(`Importiert: ${addedPackages} Paket(e), ${addedLinks} Link(s)`);
-          if (snapshotRef.current.settings.collapseNewPackages) { await collapseNewPackages(existingIds); }
-        } else {
-          setCollectorError("Keine gültigen Links in den Import-Dateien gefunden");
-          showToast("Keine gültigen Links in den Import-Dateien gefunden", 3000);
-        }
-      }, (error) => {
-        setCollectorError(`Fehler bei Drag-and-Drop: ${String(error)}`);
+      try {
+        const text = (await Promise.all(importFiles.map((file) => file.text()))).join("\n");
+        await importCollectorText(text);
+      } catch (error) {
         showToast(`Fehler bei Drag-and-Drop: ${String(error)}`, 2600);
-      });
+      }
     } else if (droppedText.trim()) {
-      const activeCollectorId = activeCollectorTabRef.current;
-      setCollectorTabs((prev) => prev.map((t) => t.id === activeCollectorId
-        ? { ...t, text: t.text ? `${t.text}\n${droppedText}` : droppedText } : t));
-      setTab("collector");
-      showToast("Links per Drag-and-Drop eingefügt");
+      await importCollectorText(droppedText);
     }
   };
 
@@ -3802,22 +3822,12 @@ export function App(): ReactElement {
         return;
       }
       releasePickerBusy();
-      await performQuickAction(async () => {
-        await persistDraftSettings();
-        const existingIds = new Set(Object.keys(snapshotRef.current.session.packages));
+      try {
         const text = await file.text();
-        const result = await window.rd.importQueue(text);
-        if (result.addedLinks > 0) {
-          showToast(`Importiert: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
-          if (snapshotRef.current.settings.collapseNewPackages) { await collapseNewPackages(existingIds); }
-        } else {
-          setCollectorError("Keine gültigen Links in der Datei gefunden");
-          showToast("Keine gültigen Links in der Datei gefunden", 3000);
-        }
-      }, (error) => {
-        setCollectorError(`Import fehlgeschlagen: ${String(error)}`);
+        await importCollectorText(text);
+      } catch (error) {
         showToast(`Import fehlgeschlagen: ${String(error)}`, 2600);
-      });
+      }
     };
 
     clearImportQueueFocusListener();
@@ -3922,112 +3932,57 @@ export function App(): ReactElement {
     });
   }, [showToast]);
 
-  const addCollectorTab = (): void => {
-    const id = `tab-${nextCollectorId++}`;
-    setCollectorTabs((prev) => {
-      const name = `Tab ${prev.length + 1}`;
-      return [...prev, { id, name, text: "" }];
-    });
-    setActiveCollectorTab(id);
-    setSelectedCollectorRowIds(new Set());
-    setCollectorError("");
-  };
-
-  const removeCollectorTab = (id: string): void => {
-    const tab = collectorTabsRef.current.find((entry) => entry.id === id);
-    if (!tab || collectorTabsRef.current.length <= 1) {
-      return;
-    }
-    const linkCount = tab.text.split(/\r?\n/).filter((line) => line.trim().length > 0).length;
-    void askConfirmPrompt({
-      title: "Sammlung entfernen",
-      message: linkCount > 0
-        ? `Soll die Sammlung ${tab.name} mit ${linkCount} Link(s) wirklich entfernt werden?`
-        : `Soll die leere Sammlung ${tab.name} wirklich entfernt werden?`,
-      confirmLabel: "Sammlung entfernen",
-      danger: true
-    }).then((confirmed) => {
-      if (!confirmed) {
-        return;
-      }
-      const removal = planCollectorTabRemoval(
-        collectorTabsRef.current,
-        activeCollectorTabRef.current,
-        id
-      );
-      if (removal.tabs === collectorTabsRef.current) {
-        return;
-      }
-      collectorTabsRef.current = removal.tabs;
-      activeCollectorTabRef.current = removal.activeTabId;
-      setCollectorTabs(removal.tabs);
-      setActiveCollectorTab(removal.activeTabId);
-      setSelectedCollectorRowIds(new Set());
-      setCollectorError("");
-    });
-  };
-
   const openCollectorInput = (): void => {
-    const activeId = activeCollectorTabRef.current;
-    const active = collectorTabsRef.current.find((entry) => entry.id === activeId) ?? collectorTabsRef.current[0];
-    if (!active) {
-      return;
-    }
     setCollectorError("");
-    setCollectorInput({
-      tabId: active.id,
-      tabName: active.name,
-      baseText: active.text,
-      draft: active.text
-    });
+    setCollectorInput({ draft: "" });
   };
 
   const commitCollectorInput = (): void => {
     if (!collectorInput) {
       return;
     }
-    const input = collectorInput;
-    setCollectorTabs((prev) => {
-      const currentText = prev.find((entry) => entry.id === input.tabId)?.text ?? input.baseText;
-      const text = mergeCollectorDraftText(input.baseText, currentText, input.draft);
-      return planCollectorTextReplacement(prev, input.tabId, text).tabs;
-    });
-    setSelectedCollectorRowIds(new Set());
+    const draft = collectorInput.draft;
     setCollectorInput(null);
-    setCollectorError("");
+    void importCollectorText(draft);
   };
 
-  const toggleCollectorRowSelection = (rowId: string): void => {
-    setSelectedCollectorRowIds((prev) => {
+  const setCollectorLinkSelection = (linkId: string, selected: boolean): void => {
+    setSelectedCollectorLinkIds((prev) => {
       const next = new Set(prev);
-      if (next.has(rowId)) {
-        next.delete(rowId);
-      } else {
-        next.add(rowId);
-      }
+      if (selected) next.add(linkId);
+      else next.delete(linkId);
       return next;
     });
   };
 
-  const removeSelectedCollectorRows = (): void => {
-    if (selectedCollectorRowIds.size === 0) {
+  const setCollectorPackageSelection = (packageId: string, selected: boolean): void => {
+    const pkg = collectorPackagesRef.current.find((entry) => entry.id === packageId);
+    if (pkg) {
+      setSelectedCollectorLinkIds((current) => selectCollectorPackageLinks(current, pkg, selected));
+    }
+  };
+
+  const toggleCollectorPackageCollapse = (packageId: string): void => {
+    setCollapsedCollectorPackageIds((current) => {
+      const next = new Set(current);
+      if (next.has(packageId)) next.delete(packageId);
+      else next.add(packageId);
+      return next;
+    });
+  };
+
+  const toggleAllCollectorPackages = (): void => {
+    const packageIds = collectorPackagesRef.current.map((pkg) => pkg.id);
+    setCollapsedCollectorPackageIds((current) => packageIds.some((id) => !current.has(id))
+      ? new Set(packageIds)
+      : new Set());
+  };
+
+  const removeSelectedCollectorLinks = (): void => {
+    if (selectedCollectorLinkIds.size === 0) {
       return;
     }
-    const activeId = activeCollectorTabRef.current;
-    const indexes = new Set<number>();
-    for (const rowId of selectedCollectorRowIds) {
-      const separator = rowId.lastIndexOf(":");
-      if (separator <= 0 || rowId.slice(0, separator) !== activeId) {
-        continue;
-      }
-      const index = Number(rowId.slice(separator + 1));
-      if (Number.isInteger(index) && index >= 0) {
-        indexes.add(index);
-      }
-    }
-    if (indexes.size === 0) {
-      return;
-    }
+    const removedIds = new Set(selectedCollectorLinkIds);
     void askConfirmPrompt({
       title: "Ausgewählte Links löschen",
       message: "Die ausgewählten Links werden aus der Sammlung entfernt. Dieser Schritt kann nicht rückgängig gemacht werden.",
@@ -4037,10 +3992,12 @@ export function App(): ReactElement {
       if (!confirmed) {
         return;
       }
-      setCollectorTabs((prev) => prev.map((entry) => entry.id === activeId
-        ? { ...entry, text: entry.text.split(/\r?\n/).filter((_line, index) => !indexes.has(index)).join("\n") }
-        : entry));
-      setSelectedCollectorRowIds(new Set());
+      setCollectorPackages((current) => {
+        const next = removeCollectorLinks(current, removedIds);
+        collectorPackagesRef.current = next;
+        return next;
+      });
+      setSelectedCollectorLinkIds(new Set());
       setCollectorError("");
     });
   };
@@ -4509,6 +4466,7 @@ export function App(): ReactElement {
         if (selectionScope) {
           if (document.querySelector(".ctx-menu") || document.querySelector(".modal-backdrop")) return;
           if (selectionScope === "downloads") setSelectedIds(new Set());
+          else if (selectionScope === "collector") setSelectedCollectorLinkIds(new Set());
           else if (selectionScope === "history") setSelectedHistoryIds(new Set());
           else if (selectedAccountRowKeys.size > 0) {
             setSelectedAccountRowKeys(new Set());
@@ -5281,22 +5239,20 @@ export function App(): ReactElement {
     }
   };
   const collectorActions: CollectorViewActions = {
-    onTabSelect: (tabId) => {
-      activeCollectorTabRef.current = tabId;
-      setActiveCollectorTab(tabId);
-      setSelectedCollectorRowIds(new Set());
-      setCollectorError("");
-    },
-    onTabAdd: addCollectorTab,
-    onTabRemove: removeCollectorTab,
+    onFilterChange: setCollectorFilter,
     onOpenInput: openCollectorInput,
     onImportDlc: () => { void onImportDlc(); },
     onImportFile: () => { void onImportQueue(); },
-    onExportQueue: () => { void onExportQueue(); },
-    onSubmit: () => { void onAddLinks(); },
+    onSubmitSelected: () => {
+      void submitCollectorPackages(buildCollectorTransferPackages(collectorPackagesRef.current, selectedCollectorLinkIds));
+    },
+    onSubmitAll: () => { void submitCollectorPackages(collectorPackagesRef.current); },
     onQueryChange: setCollectorQuery,
-    onSelectionChange: toggleCollectorRowSelection,
-    onRemoveSelected: removeSelectedCollectorRows
+    onLinkSelectionChange: setCollectorLinkSelection,
+    onPackageSelectionChange: setCollectorPackageSelection,
+    onPackageCollapseChange: toggleCollectorPackageCollapse,
+    onToggleAllPackages: toggleAllCollectorPackages,
+    onRemoveSelected: removeSelectedCollectorLinks
   };
 
   const settingsFormModel = useMemo<SettingsFormViewModel>(() => buildSettingsFormViewModel({
@@ -6266,9 +6222,9 @@ export function App(): ReactElement {
           <DownloadsSidebarStatus model={downloadsViewModel} />
         ) : tab === "collector" ? (
           <>
-            <span>Sammlungen: {collectorViewModel.tabs.length}</span>
-            <span>Links: {collectorViewModel.tabs.reduce((sum, entry) => sum + entry.linkCount, 0)}</span>
-            <span>Zwischenablage: {snapshot.clipboardActive ? "An" : "Aus"}</span>
+            <span>Pakete: {collectorPackages.length}</span>
+            <span>Links: {collectorViewModel.totalCount}</span>
+            <span>Ausgewählt: {collectorViewModel.selectedCount}</span>
           </>
         ) : tab === "history" ? (
           <>
@@ -6908,7 +6864,6 @@ export function App(): ReactElement {
                 onClose={() => setCollectorInput(null)}
                 onCommit={commitCollectorInput}
                 open
-                tabName={collectorInput.tabName}
                 value={collectorInput.draft}
               />
             ) : null}

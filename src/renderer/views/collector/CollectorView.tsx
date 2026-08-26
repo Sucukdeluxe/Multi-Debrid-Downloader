@@ -1,149 +1,255 @@
 import type { ChangeEvent, ReactElement } from "react";
-import {
-  DataTable,
-  DataTableBody,
-  DataTableEmpty,
-  DataTableHeader
-} from "../../ui/DataTable";
+import { formatDateTime, formatHosterLabel, humanSize } from "../../download-format";
+import { DataTable, DataTableBody, DataTableEmpty, DataTableHeader } from "../../ui/DataTable";
 import { Dialog } from "../../ui/Dialog";
-import { Toolbar, ToolbarGroup, ToolbarSearch } from "../../ui/Toolbar";
 import { SlidingSelection } from "../../ui/SlidingSelection";
-import type { CollectorViewModel } from "./collector-model";
+import { Toolbar, ToolbarGroup, ToolbarSearch } from "../../ui/Toolbar";
+import type {
+  CollectorWorkspaceFilter,
+  CollectorWorkspacePackageRow,
+  CollectorWorkspaceViewModel
+} from "./collector-model";
 import "./collector.css";
 
 export interface CollectorViewActions {
-  onTabSelect: (tabId: string) => void;
-  onTabAdd: () => void;
-  onTabRemove: (tabId: string) => void;
+  onFilterChange: (filter: CollectorWorkspaceFilter) => void;
   onOpenInput: () => void;
   onImportDlc: () => void;
   onImportFile: () => void;
-  onExportQueue: () => void;
-  onSubmit: () => void;
+  onSubmitSelected: () => void;
+  onSubmitAll: () => void;
   onQueryChange: (value: string) => void;
-  onSelectionChange: (rowId: string) => void;
+  onLinkSelectionChange: (linkId: string, selected: boolean) => void;
+  onPackageSelectionChange: (packageId: string, selected: boolean) => void;
+  onPackageCollapseChange: (packageId: string) => void;
+  onToggleAllPackages: () => void;
   onRemoveSelected: () => void;
 }
 
 export type CollectorViewRegion = "all" | "sidebar" | "toolbar" | "content";
 
 export interface CollectorViewProps {
-  model: CollectorViewModel;
+  model: CollectorWorkspaceViewModel;
   actions: CollectorViewActions;
   region?: CollectorViewRegion;
 }
 
 export interface CollectorInputDialogProps {
   open: boolean;
-  tabName: string;
+  tabName?: string;
   value: string;
   onChange: (value: string) => void;
   onClose: () => void;
   onCommit: () => void;
 }
 
+function packageStatus(row: CollectorWorkspacePackageRow): string {
+  const ready = row.allLinks.reduce((count, link) => count + (link.status === "ready" ? 1 : 0), 0);
+  if (row.offlineCount === row.totalCount) return "Offline";
+  if (ready === row.totalCount) return "Bereit";
+  if (ready > 0 || row.onlineCount > 0) return `${ready}/${row.totalCount} geprüft`;
+  return "Ungeprüft";
+}
+
+function packageAvailability(row: CollectorWorkspacePackageRow): string {
+  if (row.onlineCount === row.totalCount) return `${row.onlineCount}/${row.totalCount} online`;
+  if (row.offlineCount === row.totalCount) return "Offline";
+  if (row.onlineCount > 0) return `${row.onlineCount}/${row.totalCount} online`;
+  return "Ungeprüft";
+}
+
+function packageSize(row: CollectorWorkspacePackageRow): string {
+  if (row.totalBytes <= 0) return "Unbekannt";
+  return `${row.unknownSizeCount > 0 ? "≥ " : ""}${humanSize(row.totalBytes)}`;
+}
+
+function availabilityClass(row: CollectorWorkspacePackageRow): string {
+  if (row.offlineCount === row.totalCount) return "offline";
+  if (row.onlineCount === row.totalCount) return "online";
+  return "unknown";
+}
+
+function linkStatus(status: "ready" | "offline" | "unknown"): string {
+  if (status === "ready") return "Bereit";
+  if (status === "offline") return "Offline";
+  return "Ungeprüft";
+}
+
+function linkAvailability(availability: "online" | "offline" | "unknown"): string {
+  if (availability === "online") return "Online";
+  if (availability === "offline") return "Offline";
+  return "Ungeprüft";
+}
+
+export function toggleAllCollectorPackageIds(
+  packageIds: readonly string[],
+  collapsedPackageIds: ReadonlySet<string>
+): Set<string> {
+  return packageIds.some((packageId) => !collapsedPackageIds.has(packageId))
+    ? new Set(packageIds)
+    : new Set();
+}
+
+function CollectorHosterLabel({ hoster }: { hoster: ReturnType<typeof formatHosterLabel> }): ReactElement {
+  return (
+    <span className="collector-hoster-label" title={hoster.title}>
+      {hoster.iconSrc ? (
+        <>
+          <img
+            alt=""
+            className="collector-hoster-icon"
+            data-hoster={hoster.title.toLowerCase()}
+            onError={(event) => {
+              event.currentTarget.hidden = true;
+              event.currentTarget.nextElementSibling?.removeAttribute("hidden");
+            }}
+            src={hoster.iconSrc}
+          />
+          <span hidden>{hoster.compact}</span>
+        </>
+      ) : hoster.compact}
+    </span>
+  );
+}
+
 export function CollectorSidebar({ model, actions }: CollectorViewProps): ReactElement {
   return (
-    <div aria-label="Sammlungen" className="collector-sidebar" data-visual-region="collector-sidebar">
-      <div className="collector-sidebar-heading">
-        <strong>Sammlungen</strong>
-        <span>{model.tabs.length}</span>
-      </div>
-      <SlidingSelection activeKey={model.activeTabId} axis="vertical" className="collector-sidebar-list">
-        {model.tabs.map((tab) => (
-          <div className={`collector-sidebar-item${tab.id === model.activeTabId ? " is-active" : ""}`} data-sliding-selection-active={tab.id === model.activeTabId} data-sliding-selection-item="true" key={tab.id}>
-            <button
-              aria-current={tab.id === model.activeTabId ? "page" : undefined}
-              className="collector-sidebar-select"
-              onClick={() => actions.onTabSelect(tab.id)}
-              type="button"
-            >
-              <span>{tab.name}</span>
-              <span className="collector-sidebar-count">{tab.linkCount}</span>
-            </button>
-            {model.tabs.length > 1 ? (
-              <button
-                aria-label={`${tab.name} entfernen`}
-                className="collector-sidebar-remove"
-                onClick={() => actions.onTabRemove(tab.id)}
-                type="button"
-              >×</button>
-            ) : null}
-          </div>
+    <div aria-label="Linksammler-Filter" className="collector-sidebar" data-visual-region="collector-sidebar">
+      <div className="collector-sidebar-heading"><strong>Status</strong><span>{model.totalCount}</span></div>
+      <SlidingSelection activeKey={model.filter} axis="vertical" className="collector-sidebar-list">
+        {model.filters.map((filter) => (
+          <button
+            aria-current={filter.id === model.filter ? "page" : undefined}
+            className={`collector-sidebar-filter${filter.id === model.filter ? " is-active" : ""}`}
+            data-sliding-selection-active={filter.id === model.filter}
+            data-sliding-selection-item="true"
+            key={filter.id}
+            onClick={() => actions.onFilterChange(filter.id)}
+            type="button"
+          >
+            <span>{filter.label}</span><span>{filter.count}</span>
+          </button>
         ))}
       </SlidingSelection>
-      <button className="collector-sidebar-add" onClick={actions.onTabAdd} type="button">Neue Sammlung</button>
     </div>
   );
 }
 
 export function CollectorToolbar({ model, actions }: CollectorViewProps): ReactElement {
-  const activeTab = model.tabs.find((tab) => tab.id === model.activeTabId) ?? model.tabs[0];
   return (
     <Toolbar className="collector-toolbar" data-visual-region="collector-toolbar" label="Linksammler-Aktionen">
       <ToolbarGroup label="Links erfassen">
-        <button className="collector-action collector-action-primary" disabled={model.busy} onClick={actions.onOpenInput} type="button">Links hinzufügen</button>
-        <button className="collector-action" disabled={model.busy} onClick={actions.onImportDlc} type="button">DLC importieren</button>
-        <button className="collector-action" disabled={model.busy} onClick={actions.onImportFile} type="button">Datei importieren</button>
+        <button className="collector-action collector-action-primary" onClick={actions.onOpenInput} type="button">Links hinzufügen</button>
+        <button className="collector-action" onClick={actions.onImportDlc} type="button">DLC importieren</button>
+        <button className="collector-action" onClick={actions.onImportFile} type="button">Datei importieren</button>
       </ToolbarGroup>
-      <ToolbarGroup label="Sammlung verarbeiten">
-        <button className="collector-action" disabled={model.busy} onClick={actions.onExportQueue} type="button">Queue exportieren</button>
-        <button className="collector-action" disabled={model.busy || !activeTab || activeTab.linkCount === 0} onClick={actions.onSubmit} type="button">An Downloads übergeben</button>
-        <button className="collector-action collector-action-danger" disabled={model.busy || model.selectedIds.length === 0} onClick={actions.onRemoveSelected} type="button">Auswahl entfernen</button>
+      <ToolbarGroup label="Downloads übergeben">
+        <button className="collector-action" disabled={model.selectedCount === 0} onClick={actions.onSubmitSelected} type="button">{`Auswahl übergeben (${model.selectedCount})`}</button>
+        <button className="collector-action" disabled={model.totalCount === 0} onClick={actions.onSubmitAll} type="button">{`Alle übergeben (${model.totalCount})`}</button>
+        <button className="collector-action collector-action-danger" disabled={model.selectedCount === 0} onClick={actions.onRemoveSelected} type="button">Auswahl entfernen</button>
       </ToolbarGroup>
-      <ToolbarSearch
-        label="Links durchsuchen"
-        onChange={(event) => actions.onQueryChange(event.target.value)}
-        placeholder="Links durchsuchen"
-        value={model.query}
-      />
+      <ToolbarGroup className="collector-toolbar-tail" label="Suche und Paketdarstellung">
+        <ToolbarSearch label="Links durchsuchen" onChange={(event) => actions.onQueryChange(event.target.value)} placeholder="Name, URL oder Hoster" value={model.query} />
+        <button className="collector-action" disabled={model.totalCount === 0} onClick={actions.onToggleAllPackages} type="button">Alle ein-/ausklappen</button>
+      </ToolbarGroup>
     </Toolbar>
+  );
+}
+
+function CollectorPackageGroup({ row, model, actions, selected }: {
+  row: CollectorWorkspacePackageRow;
+  model: CollectorWorkspaceViewModel;
+  actions: CollectorViewActions;
+  selected: ReadonlySet<string>;
+}): ReactElement {
+  const allSelected = row.selectedCount === row.totalCount;
+  const partiallySelected = row.selectedCount > 0 && !allSelected;
+  const animateItems = model.animationsEnabled && row.allLinks.length <= 64;
+  const renderItems = !row.collapsed || animateItems;
+  return (
+    <div className={`collector-package-group${row.collapsed ? " is-collapsed" : ""}${model.animationsEnabled ? " is-motion-enabled" : ""}`} role="rowgroup">
+      <div className={`collector-package-row${row.selectedCount > 0 ? " is-selected" : ""}`} role="row">
+        <span className="collector-column-select" role="cell">
+          <input
+            aria-checked={partiallySelected ? "mixed" : allSelected}
+            aria-label={`Paket ${row.name} auswählen`}
+            checked={allSelected}
+            onChange={(event) => actions.onPackageSelectionChange(row.id, event.target.checked)}
+            ref={(node) => { if (node) node.indeterminate = partiallySelected; }}
+            type="checkbox"
+          />
+        </span>
+        <span className="collector-name-cell" role="cell">
+          <button
+            aria-expanded={!row.collapsed}
+            aria-label={row.collapsed ? `${row.name} ausklappen` : `${row.name} einklappen`}
+            className="collector-collapse-button"
+            onClick={() => actions.onPackageCollapseChange(row.id)}
+            type="button"
+          >{row.collapsed ? "+" : "−"}</button>
+          <strong title={row.name}>{row.name}</strong>
+          <small>{row.totalCount} Dateien</small>
+        </span>
+        <span className="collector-size-cell" role="cell">{packageSize(row)}</span>
+        <span className="collector-hoster-cell" role="cell">
+          {row.hosters.map(formatHosterLabel).map((hoster) => <CollectorHosterLabel hoster={hoster} key={hoster.title} />)}
+        </span>
+        <span className="collector-status-cell" role="cell">{packageStatus(row)}</span>
+        <span className={`collector-availability-cell is-${availabilityClass(row)}`} role="cell">{packageAvailability(row)}</span>
+        <span className="collector-added-cell" role="cell">{formatDateTime(row.addedAt)}</span>
+      </div>
+      {renderItems ? (
+        <div className={`collector-package-items-frame${row.collapsed ? " is-collapsed" : ""}${animateItems ? " is-animated" : ""}`}>
+          <div className="collector-package-items">
+            {row.links.map((link) => {
+              const hoster = formatHosterLabel(link.hoster);
+              return (
+                <div className={`collector-file-row${selected.has(link.id) ? " is-selected" : ""}`} key={link.id} role="row">
+                  <span className="collector-column-select" role="cell">
+                    <input aria-label={`${link.fileName} auswählen`} checked={selected.has(link.id)} onChange={(event) => actions.onLinkSelectionChange(link.id, event.target.checked)} type="checkbox" />
+                  </span>
+                  <span className="collector-name-cell is-file" role="cell" title={link.url}><span className={`collector-link-state is-${link.availability}`} />{link.fileName}</span>
+                  <span className="collector-size-cell" role="cell">{link.fileSizeBytes === null ? "Unbekannt" : humanSize(link.fileSizeBytes)}</span>
+                  <span className="collector-hoster-cell" role="cell"><CollectorHosterLabel hoster={hoster} /></span>
+                  <span className="collector-status-cell" role="cell">{linkStatus(link.status)}</span>
+                  <span className={`collector-availability-cell is-${link.availability}`} role="cell">{linkAvailability(link.availability)}</span>
+                  <span className="collector-added-cell" role="cell">{formatDateTime(link.addedAt)}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
 export function CollectorContent({ model, actions }: CollectorViewProps): ReactElement {
   const selected = new Set(model.selectedIds);
   return (
-    <section className="collector-content" aria-label="Gesammelte Links">
-      <DataTable className="collector-table" label="Gesammelte Links">
+    <section className="collector-content" aria-label="Gesammelte Downloadpakete">
+      <DataTable className="collector-table" label="Gesammelte Downloadpakete">
         <DataTableHeader className="collector-table-header">
           <div className="collector-table-header-row" role="row">
             <span aria-label="Auswahl" className="collector-column-select" role="columnheader" />
-            <span role="columnheader">Sammlung</span>
-            <span role="columnheader">URL oder Rohzeile</span>
-            <span role="columnheader">Zeile</span>
+            <span role="columnheader">Name</span>
+            <span role="columnheader">Größe</span>
+            <span role="columnheader">Hoster</span>
             <span role="columnheader">Status</span>
+            <span role="columnheader">Verfügbarkeit</span>
+            <span role="columnheader">Hinzugefügt</span>
           </div>
         </DataTableHeader>
         <DataTableBody className="collector-table-body" data-visual-region="collector-table-body">
-          {model.busy ? (
-            <DataTableEmpty title="Links werden verarbeitet" description="Die laufende Aktion wird abgeschlossen." />
-          ) : model.error ? (
-            <DataTableEmpty className="collector-table-error" title={model.error} description="Die lokale Sammlung bleibt unverändert." />
-          ) : model.empty ? (
+          {model.analyzing ? <div aria-live="polite" className="collector-background-state" role="status"><span />Analyse läuft im Hintergrund</div> : null}
+          {model.error ? <div aria-live="polite" className="collector-background-error" role="status">{model.error}</div> : null}
+          {model.empty ? (
             <DataTableEmpty
               data-visual-region="collector-empty-state"
-              description={model.query ? "Passe die Suche an oder lösche den Filter." : "Füge Links hinzu oder importiere eine vorhandene Liste."}
-              title={model.query ? "Keine passenden Links" : "Noch keine Links"}
+              description={model.query || model.filter !== "all" ? "Passe Suche oder Statusfilter an." : model.analyzing ? "Die ersten Links erscheinen sofort nach dem Import." : "Füge Links hinzu, um Pakete vor dem Download zu prüfen."}
+              title={model.query || model.filter !== "all" ? "Keine passenden Links" : model.analyzing ? "Links werden vorbereitet" : "Noch keine Links"}
             />
-          ) : (
-            model.rows.map((row) => (
-              <div className={`collector-row${selected.has(row.id) ? " is-selected" : ""}`} key={row.id} role="row">
-                <span className="collector-column-select" role="cell">
-                  <input
-                    aria-label={`${row.value} aus ${row.tabName}, Zeile ${row.lineNumber} auswählen`}
-                    checked={selected.has(row.id)}
-                    onChange={() => actions.onSelectionChange(row.id)}
-                    type="checkbox"
-                  />
-                </span>
-                <span className="collector-row-source" role="cell">{row.tabName}</span>
-                <span className="collector-row-value" role="cell" title={row.value}>{row.value}</span>
-                <span className="collector-row-line" role="cell">{row.lineNumber}</span>
-                <span className="collector-row-status" role="cell">Lokal</span>
-              </div>
-            ))
-          )}
+          ) : model.packages.map((row) => <CollectorPackageGroup actions={actions} key={row.id} model={model} row={row} selected={selected} />)}
         </DataTableBody>
       </DataTable>
     </section>
@@ -151,15 +257,9 @@ export function CollectorContent({ model, actions }: CollectorViewProps): ReactE
 }
 
 export function CollectorView({ model, actions, region = "all" }: CollectorViewProps): ReactElement {
-  if (region === "sidebar") {
-    return <CollectorSidebar actions={actions} model={model} />;
-  }
-  if (region === "toolbar") {
-    return <CollectorToolbar actions={actions} model={model} />;
-  }
-  if (region === "content") {
-    return <CollectorContent actions={actions} model={model} />;
-  }
+  if (region === "sidebar") return <CollectorSidebar actions={actions} model={model} />;
+  if (region === "toolbar") return <CollectorToolbar actions={actions} model={model} />;
+  if (region === "content") return <CollectorContent actions={actions} model={model} />;
   return (
     <div className="collector-view">
       <CollectorSidebar actions={actions} model={model} />
@@ -171,23 +271,16 @@ export function CollectorView({ model, actions, region = "all" }: CollectorViewP
   );
 }
 
-export function CollectorInputDialog({
-  open,
-  tabName,
-  value,
-  onChange,
-  onClose,
-  onCommit
-}: CollectorInputDialogProps): ReactElement | null {
+export function CollectorInputDialog({ open, value, onChange, onClose, onCommit }: CollectorInputDialogProps): ReactElement | null {
   return (
     <Dialog
       actions={(
         <>
           <button className="collector-dialog-secondary" onClick={onClose} type="button">Abbrechen</button>
-          <button className="collector-dialog-primary" onClick={onCommit} type="button">Übernehmen</button>
+          <button className="collector-dialog-primary" onClick={onCommit} type="button">Hinzufügen</button>
         </>
       )}
-      description={`Links für ${tabName} lokal erfassen.`}
+      description="Links erscheinen sofort und werden anschließend im Hintergrund geprüft."
       onClose={onClose}
       open={open}
       size="wide"
@@ -200,7 +293,7 @@ export function CollectorInputDialog({
           autoFocus
           className="collector-input"
           onChange={(event: ChangeEvent<HTMLTextAreaElement>) => onChange(event.target.value)}
-          placeholder="Eine URL oder Rohzeile pro Zeile"
+          placeholder="Eine URL pro Zeile"
           rows={12}
           value={value}
         />

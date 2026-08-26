@@ -4,7 +4,8 @@ import type { ElectronApi } from "../src/shared/preload-api";
 
 const electron = vi.hoisted(() => ({
   api: undefined as ElectronApi | undefined,
-  invoke: vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => undefined)
+  invoke: vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => undefined),
+  getPathForFile: vi.fn(() => "C:\\Imports\\dropped.dlc")
 }));
 
 vi.mock("electron", () => ({
@@ -18,7 +19,8 @@ vi.mock("electron", () => ({
     on: vi.fn(),
     removeListener: vi.fn(),
     send: vi.fn()
-  }
+  },
+  webUtils: { getPathForFile: electron.getPathForFile }
 }));
 
 describe("account preload contract", () => {
@@ -108,5 +110,28 @@ describe("account preload contract", () => {
 
     expect(electron.invoke).toHaveBeenCalledWith(IPC_CHANNELS.GET_ARCHIVE_PASSWORD_LIST);
     expect(result).toEqual({ passwords });
+  });
+
+  it("exposes separate collector preparation and enrichment channels", async () => {
+    const textRequest = { rawText: "https://example.com/file", addedAt: 1234 };
+    const packages = [{ id: "package", name: "Paket", nameSource: "inferred" as const, addedAt: 1234, links: [] }];
+
+    await electron.api?.prepareCollectorText(textRequest);
+    await electron.api?.prepareCollectorContainers(["C:\\Imports\\sample.dlc"], 2345);
+    await electron.api?.enrichCollectorPackages({ packages });
+
+    expect(electron.invoke.mock.calls).toEqual([
+      [IPC_CHANNELS.PREPARE_COLLECTOR_TEXT, textRequest],
+      [IPC_CHANNELS.PREPARE_COLLECTOR_CONTAINERS, ["C:\\Imports\\sample.dlc"], 2345],
+      [IPC_CHANNELS.ENRICH_COLLECTOR_PACKAGES, { packages }]
+    ]);
+  });
+
+  it("resolves dropped files through Electron webUtils without IPC", () => {
+    const file = { name: "dropped.dlc" } as File;
+
+    expect(electron.api?.getPathForDroppedFile(file)).toBe("C:\\Imports\\dropped.dlc");
+    expect(electron.getPathForFile).toHaveBeenCalledWith(file);
+    expect(electron.invoke).not.toHaveBeenCalled();
   });
 });

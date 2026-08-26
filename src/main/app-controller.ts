@@ -45,6 +45,12 @@ import { applyAccountCommand, resolveStoredAccountSecret } from "./account-comma
 import { collectAccountStatusRedactionValues, sanitizeDebridAccountStatus, sanitizeDebridAccountStatuses } from "./account-status-sanitizer";
 import { createRendererState } from "./renderer-state";
 import { parseCollectorInput } from "./link-parser";
+import { enrichCollectorPackages, prepareCollectorContainers, prepareCollectorText } from "./collector-inspection";
+import type {
+  CollectorEnrichmentRequest,
+  CollectorInspectionResult,
+  CollectorTextPreparationRequest
+} from "../shared/collector";
 import { configureLogger, flushLoggerSync, getLogFilePath, logger } from "./logger";
 import { AllDebridWebFallback } from "./all-debrid-web";
 import { BestDebridWebFallback } from "./bestdebrid-web";
@@ -985,6 +991,18 @@ export class AppController {
       requestedPackages: parsed.length
     });
     return { ...result, invalidCount: 0 };
+  }
+
+  public prepareCollectorText(request: CollectorTextPreparationRequest): CollectorInspectionResult {
+    return prepareCollectorText(request);
+  }
+
+  public prepareCollectorContainers(filePaths: string[], addedAt: number): Promise<CollectorInspectionResult> {
+    return prepareCollectorContainers(filePaths, addedAt);
+  }
+
+  public enrichCollectorPackages(request: CollectorEnrichmentRequest): Promise<CollectorInspectionResult> {
+    return enrichCollectorPackages(request, this.settings);
   }
 
   public async addContainers(filePaths: string[]): Promise<{ addedPackages: number; addedLinks: number }> {

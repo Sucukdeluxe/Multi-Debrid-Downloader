@@ -34,6 +34,11 @@ import type {
   UpdateInstallResult
 } from "./types";
 import { isRealDebridWebAccountId } from "./real-debrid-accounts";
+import type {
+  CollectorEnrichmentRequest,
+  CollectorInspectionResult,
+  CollectorTextPreparationRequest
+} from "./collector";
 
 export interface RealDebridLoginRequest {
   accountId: string;
@@ -79,6 +84,10 @@ export interface ElectronApi {
   deleteAccount: (command: AccountDeleteCommand) => Promise<AccountCommandResult>;
   addLinks: (payload: AddLinksPayload) => Promise<{ addedPackages: number; addedLinks: number; invalidCount: number }>;
   addContainers: (filePaths: string[]) => Promise<{ addedPackages: number; addedLinks: number }>;
+  prepareCollectorText: (request: CollectorTextPreparationRequest) => Promise<CollectorInspectionResult>;
+  prepareCollectorContainers: (filePaths: string[], addedAt: number) => Promise<CollectorInspectionResult>;
+  enrichCollectorPackages: (request: CollectorEnrichmentRequest) => Promise<CollectorInspectionResult>;
+  getPathForDroppedFile: (file: File) => string;
   getStartConflicts: () => Promise<StartConflictEntry[]>;
   resolveStartConflict: (packageId: string, policy: DuplicatePolicy) => Promise<StartConflictResolutionResult>;
   clearAll: () => Promise<void>;

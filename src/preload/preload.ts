@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import {
   AddLinksPayload,
   AccountCheckScope,
@@ -31,6 +31,11 @@ import {
   UpdateInstallProgress
 } from "../shared/types";
 import type { RealDebridLoginRequest } from "../shared/preload-api";
+import type {
+  CollectorEnrichmentRequest,
+  CollectorInspectionResult,
+  CollectorTextPreparationRequest
+} from "../shared/collector";
 import { IPC_CHANNELS } from "../shared/ipc";
 import { ElectronApi } from "../shared/preload-api";
 
@@ -51,6 +56,13 @@ const api: ElectronApi = {
     ipcRenderer.invoke(IPC_CHANNELS.ADD_LINKS, payload),
   addContainers: (filePaths: string[]): Promise<{ addedPackages: number; addedLinks: number }> =>
     ipcRenderer.invoke(IPC_CHANNELS.ADD_CONTAINERS, filePaths),
+  prepareCollectorText: (request: CollectorTextPreparationRequest): Promise<CollectorInspectionResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.PREPARE_COLLECTOR_TEXT, request),
+  prepareCollectorContainers: (filePaths: string[], addedAt: number): Promise<CollectorInspectionResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.PREPARE_COLLECTOR_CONTAINERS, filePaths, addedAt),
+  enrichCollectorPackages: (request: CollectorEnrichmentRequest): Promise<CollectorInspectionResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.ENRICH_COLLECTOR_PACKAGES, request),
+  getPathForDroppedFile: (file: File): string => webUtils.getPathForFile(file),
   getStartConflicts: (): Promise<StartConflictEntry[]> => ipcRenderer.invoke(IPC_CHANNELS.GET_START_CONFLICTS),
   resolveStartConflict: (packageId: string, policy: DuplicatePolicy): Promise<StartConflictResolutionResult> =>
     ipcRenderer.invoke(IPC_CHANNELS.RESOLVE_START_CONFLICT, packageId, policy),

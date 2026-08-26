@@ -74,6 +74,7 @@ describe("global Escape selection routing", () => {
     expect(api.resolveEscapeSelectionScope?.("settings", "accounts", "BODY")).toBe("accounts");
     expect(api.resolveEscapeSelectionScope?.("settings", "accounts", "INPUT", "text")).toBeNull();
     expect(api.resolveEscapeSelectionScope?.("downloads", "allgemein", "DIV")).toBe("downloads");
+    expect(api.resolveEscapeSelectionScope?.("collector", "allgemein", "DIV")).toBe("collector");
     expect(api.resolveEscapeSelectionScope?.("history", "accounts", "DIV")).toBe("history");
   });
 

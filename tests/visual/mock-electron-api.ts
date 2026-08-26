@@ -59,6 +59,10 @@ export function createVisualElectronApi(
     deleteAccount: async () => ({ accountId: null, settings: clone(fixture.snapshot.settings), accounts: clone(fixture.snapshot.accounts) }),
     addLinks: async () => ({ addedPackages: 0, addedLinks: 0, invalidCount: 0 }),
     addContainers: async () => ({ addedPackages: 0, addedLinks: 0 }),
+    prepareCollectorText: async () => ({ packages: [], invalidCount: 0, duplicateCount: 0 }),
+    prepareCollectorContainers: async () => ({ packages: [], invalidCount: 0, duplicateCount: 0 }),
+    enrichCollectorPackages: async (request) => ({ packages: clone(request.packages), invalidCount: 0, duplicateCount: 0 }),
+    getPathForDroppedFile: () => "",
     getStartConflicts: async () => [],
     resolveStartConflict: async (_packageId, policy) => ({
       skipped: policy === "skip",
