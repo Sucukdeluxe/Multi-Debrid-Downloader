@@ -186,6 +186,37 @@ export function mergeCollectorEnrichment(current: CollectorPackage[], incoming: 
   return mergeCollectorPackages(current, retained);
 }
 
+export function reconcileCollectorCollapsedPackageIds(
+  current: Set<string>,
+  previousPackages: CollectorPackage[],
+  packages: CollectorPackage[],
+  incoming: CollectorPackage[],
+  collapseImported: boolean
+): Set<string> {
+  const incomingUrls = new Set(incoming.flatMap((pkg) => pkg.links.map((link) => collectorUrlKey(link.url))));
+  const previousPackageByUrl = new Map<string, string>();
+  const collapsedUrls = new Set<string>();
+  for (const pkg of previousPackages) {
+    for (const link of pkg.links) {
+      const key = collectorUrlKey(link.url);
+      previousPackageByUrl.set(key, pkg.id);
+      if (current.has(pkg.id)) collapsedUrls.add(key);
+    }
+  }
+  const next = new Set<string>();
+  for (const pkg of packages) {
+    const keys = pkg.links.map((link) => collectorUrlKey(link.url));
+    const preservesCollapsedState = current.has(pkg.id) || keys.some((key) => collapsedUrls.has(key));
+    const receivesImportedContent = collapseImported && keys.some((key) => {
+      if (!incomingUrls.has(key)) return false;
+      const previousPackageId = previousPackageByUrl.get(key);
+      return !previousPackageId || previousPackageId !== pkg.id;
+    });
+    if (preservesCollapsedState || receivesImportedContent) next.add(pkg.id);
+  }
+  return next;
+}
+
 export function selectCollectorPackageLinks(current: Set<string>, pkg: CollectorPackage, selected: boolean): Set<string> {
   const next = new Set(current);
   for (const link of pkg.links) {

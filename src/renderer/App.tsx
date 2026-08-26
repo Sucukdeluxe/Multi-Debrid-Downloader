@@ -70,6 +70,7 @@ import {
   mergeCollectorEnrichment,
   mergeCollectorPackages,
   removeCollectorLinks,
+  reconcileCollectorCollapsedPackageIds,
   selectCollectorPackageLinks,
   type CollectorWorkspaceFilter
 } from "./views/collector/collector-model";
@@ -3596,13 +3597,19 @@ export function App(): ReactElement {
   };
 
   const mergeCollectorResult = (result: CollectorInspectionResult, enrichment = false): void => {
-    setCollectorPackages((current) => {
-      const merged = enrichment
-        ? mergeCollectorEnrichment(current, result.packages)
-        : mergeCollectorPackages(current, result.packages);
-      collectorPackagesRef.current = merged.packages;
-      return merged.packages;
-    });
+    const current = collectorPackagesRef.current;
+    const merged = enrichment
+      ? mergeCollectorEnrichment(current, result.packages)
+      : mergeCollectorPackages(current, result.packages);
+    collectorPackagesRef.current = merged.packages;
+    setCollectorPackages(merged.packages);
+    setCollapsedCollectorPackageIds((collapsed) => reconcileCollectorCollapsedPackageIds(
+      collapsed,
+      current,
+      merged.packages,
+      result.packages,
+      !enrichment
+    ));
   };
 
   const enrichCollectorResult = (packages: CollectorPackage[]): void => {

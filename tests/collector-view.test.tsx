@@ -8,6 +8,7 @@ import {
   mergeCollectorEnrichment,
   mergeCollectorPackages,
   removeCollectorLinks,
+  reconcileCollectorCollapsedPackageIds,
   selectCollectorPackageLinks,
   type CollectorPackage
 } from "../src/renderer/views/collector/collector-model";
@@ -335,6 +336,26 @@ describe("collector disclosure virtualization", () => {
 });
 
 describe("CollectorView", () => {
+  it("collapses newly imported packages while preserving existing disclosure state", () => {
+    const incoming = [{ ...packages[0], id: "temporary-import-package" }];
+    const collapsed = reconcileCollectorCollapsedPackageIds(new Set(["package-mixed"]), [packages[1]], packages, incoming, true);
+
+    expect(collapsed).toEqual(new Set(["package-mixed", "package-sbs"]));
+  });
+
+  it("does not collapse an expanded package for a duplicate-only import", () => {
+    const incoming = [{ ...packages[0], id: "temporary-import-package" }];
+
+    expect([...reconcileCollectorCollapsedPackageIds(new Set(), packages, packages, incoming, true)]).toEqual([]);
+  });
+
+  it("moves collapsed state to regrouped package ids during enrichment", () => {
+    const before = [{ ...packages[0], id: "package-before" }];
+    const after = [{ ...packages[0], id: "package-after" }];
+
+    expect([...reconcileCollectorCollapsedPackageIds(new Set(["package-before"]), before, after, after, false)]).toEqual(["package-after"]);
+  });
+
   it("reserves the exact package height while content visibility skips offscreen rows", () => {
     const expanded = buildCollectorWorkspaceViewModel([packages[0]], "all", "", false, [], [], "", true).packages[0];
     const collapsed = { ...expanded, collapsed: true };
