@@ -506,4 +506,11 @@ describe("CollectorView", () => {
     expect(toolbarGap).toBeTruthy();
     expect(groupGap).toBe(toolbarGap);
   });
+
+  it("uses the green confirmation style for the add-links action", () => {
+    const css = readFileSync(new URL("../src/renderer/views/collector/collector.css", import.meta.url), "utf8");
+
+    expect(css).toMatch(/\.collector-action-primary\s*\{[^}]*border-color:\s*var\(--ui-success\);[^}]*background:\s*var\(--ui-success\);[^}]*color:\s*#000000;/s);
+    expect(css).toMatch(/\.collector-action-primary:hover:not\(:disabled\)\s*\{[^}]*background:\s*color-mix\(in srgb, var\(--ui-success\) 86%, #ffffff\);[^}]*color:\s*#000000;/s);
+  });
 });

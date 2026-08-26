@@ -109,14 +109,14 @@
 }
 
 .collector-action-primary {
-  background: var(--ui-primary);
-  border-color: var(--ui-primary);
-  color: var(--ui-primary-text);
+  border-color: var(--ui-success);
+  background: var(--ui-success);
+  color: #000000;
 }
 
 .collector-action-primary:hover:not(:disabled) {
-  background: var(--ui-primary-hover);
-  color: var(--ui-primary-text);
+  background: color-mix(in srgb, var(--ui-success) 86%, #ffffff);
+  color: #000000;
 }
 
 .collector-action-danger:not(:disabled) {
