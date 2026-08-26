@@ -388,12 +388,10 @@ describe("CollectorView", () => {
   it("renders expandable package and file rows with preview columns", () => {
     const html = renderToStaticMarkup(<CollectorView actions={createActions()} model={buildCollectorWorkspaceViewModel(packages, "all", "", false, [], [], "", true)} />);
 
-    for (const heading of ["Name", "Datei", "Größe", "Hoster", "Status", "Verfügbarkeit", "Hinzugefügt"]) expect(html).toContain(`>${heading}<`);
+    for (const heading of ["Name", "Größe", "Hoster", "Status", "Verfügbarkeit", "Hinzugefügt"]) expect(html).toContain(`>${heading}<`);
     expect(html).toContain("SBS14HD");
     expect(html).toContain("SBS14HD.part01.rar");
     expect(html).toContain("SBS14HD.part02.rar");
-    expect(html).toMatch(/collector-package-row[\s\S]*collector-name-cell[\s\S]*<strong[^>]*>SBS14HD<\/strong>[\s\S]*collector-file-cell is-package[^>]*>2 Dateien<[\s\S]*collector-size-cell/);
-    expect(html).toMatch(/collector-file-row[\s\S]*aria-label="Paket SBS14HD" class="collector-name-cell is-empty"[^>]*><\/span>[\s\S]*collector-file-cell[^>]*>[\s\S]*SBS14HD\.part01\.rar[\s\S]*collector-size-cell/);
     expect(html).toContain("2/2 online");
     expect(html).toContain(">Online<");
     expect(html).toContain("aria-label=\"SBS14HD einklappen\"");
@@ -537,15 +535,11 @@ describe("CollectorView", () => {
     expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.collector-virtual-spacer\.is-motion-enabled \.collector-virtual-package\s*\{[^}]*transition-duration:\s*300ms, 300ms !important;/s);
     expect(css).toMatch(/\.collector-package-items-frame\.is-expanding\s*\{[^}]*animation:\s*collector-items-expand/s);
     expect(css).not.toMatch(/\.collector-package-items-frame\.is-animated\s*\{[^}]*animation:\s*collector-items-expand/s);
-    expect(css).toMatch(/\.collector-column-name\s*\{[^}]*padding-left:\s*48px;/s);
-    expect(css).toMatch(/\.collector-name-cell strong,\s*\.collector-file-cell\s*\{[^}]*text-overflow:\s*ellipsis;/s);
-    expect(css).toMatch(/\.collector-file-cell\s*\{[^}]*display:\s*flex;/s);
+    expect(css).toMatch(/\.collector-table-header-row > span:nth-child\(2\)\s*\{[^}]*padding-left:\s*48px;/s);
+    expect(css).toMatch(/\.collector-name-cell\.is-file\s*\{[^}]*padding-left:\s*32px;/s);
     expect(css).toMatch(/\.collector-table-header,\s*\.collector-table-body\s*\{[^}]*scrollbar-gutter:\s*stable;/s);
     expect(css).toMatch(/\.collector-size-cell,\s*\.collector-hoster-cell,\s*\.collector-status-cell,\s*\.collector-availability-cell,\s*\.collector-added-cell\s*\{[^}]*text-align:\s*center;/s);
-    expect(css).toMatch(/\.collector-table-header-row > span:nth-child\(n\+4\)\s*\{[^}]*justify-content:\s*center;[^}]*text-align:\s*center;/s);
-    expect(css).toMatch(/@media \(max-width: 1530px\)[\s\S]*grid-template-columns:[^;]+;[\s\S]*min-width:\s*1040px;/s);
-    expect(css).toMatch(/@media \(max-width: 1530px\)[\s\S]*\.collector-virtual-spacer\s*\{[^}]*min-width:\s*1040px;/s);
-    expect(css).toMatch(/@media \(max-width: 1120px\)[\s\S]*\.collector-virtual-spacer\s*\{[^}]*min-width:\s*940px;/s);
+    expect(css).toMatch(/\.collector-table-header-row > span:nth-child\(n\+3\)\s*\{[^}]*justify-content:\s*center;[^}]*text-align:\s*center;/s);
     expect(collectorHeaderScrollStyle(37)).toEqual({ transform: "translateX(-37px)" });
   });
 

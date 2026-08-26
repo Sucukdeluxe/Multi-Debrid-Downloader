@@ -314,8 +314,8 @@ function CollectorPackageGroup({ row, model, actions, selected, focusIndexStart,
             type="button"
           >{row.collapsed ? "+" : "−"}</button>
           <strong title={row.name}>{row.name}</strong>
+          <small>{row.totalCount} Dateien</small>
         </span>
-        <span className="collector-file-cell is-package" role="cell">{row.totalCount} Dateien</span>
         <span className="collector-size-cell" role="cell">{packageSize(row)}</span>
         <span className="collector-hoster-cell" role="cell">
           {row.hosters.map(formatHosterLabel).map((hoster) => <CollectorHosterLabel hoster={hoster} key={hoster.title} />)}
@@ -335,8 +335,7 @@ function CollectorPackageGroup({ row, model, actions, selected, focusIndexStart,
                   <span className="collector-column-select" role="cell">
                     <input aria-label={`${link.fileName} auswählen`} checked={selected.has(link.id)} data-collector-focus-index={interaction.focusIndex} onChange={(event) => actions.onLinkSelectionChange(link.id, event.target.checked)} tabIndex={interaction.tabIndex} type="checkbox" />
                   </span>
-                  <span aria-label={`Paket ${row.name}`} className="collector-name-cell is-empty" role="cell" />
-                  <span className="collector-file-cell" role="cell" title={link.url}><span className={`collector-link-state is-${link.availability}`} />{link.fileName}</span>
+                  <span className="collector-name-cell is-file" role="cell" title={link.url}><span className={`collector-link-state is-${link.availability}`} />{link.fileName}</span>
                   <span className="collector-size-cell" role="cell">{link.fileSizeBytes === null ? "Unbekannt" : humanSize(link.fileSizeBytes)}</span>
                   <span className="collector-hoster-cell" role="cell"><CollectorHosterLabel hoster={hoster} /></span>
                   <span className={`collector-status-cell is-${link.availability}`} role="cell">{linkAvailability(link.availability)}</span>
@@ -429,8 +428,7 @@ export function CollectorContent({ model, actions }: CollectorViewProps): ReactE
         <DataTableHeader className="collector-table-header">
             <div aria-rowindex={1} className="collector-table-header-row" role="row" style={collectorHeaderScrollStyle(viewport.scrollLeft)}>
             <span aria-label="Auswahl" className="collector-column-select" role="columnheader" />
-            <span className="collector-column-name" role="columnheader">Name</span>
-            <span className="collector-column-file" role="columnheader">Datei</span>
+            <span role="columnheader">Name</span>
             <span role="columnheader">Größe</span>
             <span role="columnheader">Hoster</span>
             <span role="columnheader">Status</span>
