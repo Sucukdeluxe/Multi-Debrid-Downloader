@@ -14,6 +14,7 @@ import {
 import {
   CollectorContent,
   CollectorInputDialog,
+  MemoizedCollectorContent,
   CollectorSidebar,
   CollectorToolbar,
   CollectorView,
@@ -323,10 +324,20 @@ describe("CollectorView", () => {
     expect(html).not.toContain("SBS14HD.part01.rar");
   });
 
-  it("keeps the animated disclosure frame mounted for compact packages", () => {
-    const html = renderToStaticMarkup(<CollectorContent actions={createActions()} model={buildCollectorWorkspaceViewModel(packages, "all", "", false, [], ["package-sbs"], "", true)} />);
-    expect(html).toContain("collector-package-items-frame is-collapsed is-animated");
-    expect(html).toContain("SBS14HD.part01.rar");
+  it("removes collapsed child rows from the DOM even when animations are enabled", () => {
+    const html = renderToStaticMarkup(<CollectorContent actions={createActions()} model={buildCollectorWorkspaceViewModel([packages[0]], "all", "", false, [], ["package-sbs"], "", true)} />);
+    expect(html).not.toContain("collector-package-items-frame");
+    expect(html).not.toContain("SBS14HD.part01.rar");
+  });
+
+  it("reuses the collector content when app snapshots keep the same collector model", () => {
+    const model = buildCollectorWorkspaceViewModel(packages, "all", "", false, [], [], "", true);
+    const compare = (MemoizedCollectorContent as unknown as {
+      compare: (previous: { model: typeof model; actions: CollectorViewActions }, next: { model: typeof model; actions: CollectorViewActions }) => boolean;
+    }).compare;
+
+    expect(compare({ model, actions: createActions() }, { model, actions: createActions() })).toBe(true);
+    expect(compare({ model, actions: createActions() }, { model: { ...model, query: "neu" }, actions: createActions() })).toBe(false);
   });
 
   it("offers selected and all transfer actions", () => {

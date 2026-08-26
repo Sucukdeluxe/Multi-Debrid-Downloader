@@ -74,8 +74,8 @@ import {
   type CollectorWorkspaceFilter
 } from "./views/collector/collector-model";
 import {
-  CollectorContent,
   CollectorInputDialog,
+  MemoizedCollectorContent,
   CollectorSidebar,
   CollectorToolbar,
   type CollectorViewActions
@@ -1120,6 +1120,15 @@ export function readDownloadSpeedSparklinePalette(
   };
 }
 
+export function getIdleSparklineStroke(cssHeight: number, devicePixelRatio: number): { y: number; lineWidth: number } {
+  const dpr = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1;
+  const baseline = Math.max(0, cssHeight - 2);
+  return {
+    y: (Math.floor(baseline * dpr) + 0.5) / dpr,
+    lineWidth: 1 / dpr
+  };
+}
+
 export function appendBandwidthSample(
   history: { time: number; speed: number }[],
   speed: number,
@@ -1339,6 +1348,7 @@ const DownloadSpeedSparkline = memo(function DownloadSpeedSparkline({ speedBps, 
 
       let maxV = 0;
       for (const v of hist) if (v > maxV) maxV = v;
+      const idle = maxV <= 0;
       maxV = Math.max(maxV, 1024 * 1024);
 
       const pad = 2;
@@ -1347,6 +1357,18 @@ const DownloadSpeedSparkline = memo(function DownloadSpeedSparkline({ speedBps, 
       const startIdx = DOWNLOAD_SPEED_MAX_SAMPLES - hist.length;
       const px = (i: number): number => (startIdx + i) * step;
       const py = (v: number): number => pad + h - (v / maxV) * h;
+
+      if (idle) {
+        const stroke = getIdleSparklineStroke(cssH, dpr);
+        ctx.beginPath();
+        ctx.moveTo(px(0), stroke.y);
+        ctx.lineTo(px(hist.length - 1), stroke.y);
+        ctx.strokeStyle = palette.accent;
+        ctx.lineWidth = stroke.lineWidth;
+        ctx.lineCap = "butt";
+        ctx.stroke();
+        return;
+      }
 
       ctx.beginPath();
       ctx.moveTo(px(0), py(hist[0]));
@@ -6245,7 +6267,7 @@ export function App(): ReactElement {
       >
       <main className="md-runtime-view-content">
         {tab === "collector" && (
-          <CollectorContent actions={collectorActions} model={collectorViewModel} />
+          <MemoizedCollectorContent actions={collectorActions} model={collectorViewModel} />
         )}
 
         {tab === "downloads" && <DownloadsContent actions={downloadsActions} model={downloadsViewModel} />}

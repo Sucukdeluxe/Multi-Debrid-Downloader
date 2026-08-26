@@ -1,4 +1,4 @@
-import type { ChangeEvent, ReactElement } from "react";
+import { memo, useEffect, useState, type ChangeEvent, type ReactElement } from "react";
 import { formatDateTime, formatHosterLabel, humanSize } from "../../download-format";
 import { DataTable, DataTableBody, DataTableEmpty, DataTableHeader } from "../../ui/DataTable";
 import { Dialog } from "../../ui/Dialog";
@@ -165,7 +165,19 @@ function CollectorPackageGroup({ row, model, actions, selected }: {
   const allSelected = row.selectedCount === row.totalCount;
   const partiallySelected = row.selectedCount > 0 && !allSelected;
   const animateItems = model.animationsEnabled && row.allLinks.length <= 64;
-  const renderItems = !row.collapsed || animateItems;
+  const [renderItems, setRenderItems] = useState(!row.collapsed);
+  useEffect(() => {
+    if (!row.collapsed) {
+      setRenderItems(true);
+      return;
+    }
+    if (!animateItems) {
+      setRenderItems(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setRenderItems(false), 300);
+    return () => window.clearTimeout(timer);
+  }, [animateItems, row.collapsed]);
   return (
     <div className={`collector-package-group${row.collapsed ? " is-collapsed" : ""}${model.animationsEnabled ? " is-motion-enabled" : ""}`} role="rowgroup">
       <div className={`collector-package-row${row.selectedCount > 0 ? " is-selected" : ""}`} role="row">
@@ -256,16 +268,21 @@ export function CollectorContent({ model, actions }: CollectorViewProps): ReactE
   );
 }
 
+export const MemoizedCollectorContent = memo(
+  CollectorContent,
+  (previous, next) => previous.model === next.model
+);
+
 export function CollectorView({ model, actions, region = "all" }: CollectorViewProps): ReactElement {
   if (region === "sidebar") return <CollectorSidebar actions={actions} model={model} />;
   if (region === "toolbar") return <CollectorToolbar actions={actions} model={model} />;
-  if (region === "content") return <CollectorContent actions={actions} model={model} />;
+  if (region === "content") return <MemoizedCollectorContent actions={actions} model={model} />;
   return (
     <div className="collector-view">
       <CollectorSidebar actions={actions} model={model} />
       <div className="collector-view-main">
         <CollectorToolbar actions={actions} model={model} />
-        <CollectorContent actions={actions} model={model} />
+        <MemoizedCollectorContent actions={actions} model={model} />
       </div>
     </div>
   );

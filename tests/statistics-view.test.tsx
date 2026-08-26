@@ -3,7 +3,7 @@ import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { DownloadItem, DownloadStatus, UiSnapshot } from "../src/shared/types";
-import { appendBandwidthSample, readBandwidthChartPalette, readDownloadSpeedSparklinePalette } from "../src/renderer/App";
+import { appendBandwidthSample, getIdleSparklineStroke, readBandwidthChartPalette, readDownloadSpeedSparklinePalette } from "../src/renderer/App";
 import {
   buildStatisticsViewModel,
   type StatisticsMetric
@@ -591,6 +591,12 @@ describe("bandwidth chart palette", () => {
 
     expect(requested).toEqual(["--ui-speed-accent"]);
     expect(palette).toEqual({ accent: "rgb(74, 222, 128)" });
+  });
+
+  it("aligns the idle speed line to one physical pixel at every display scale", () => {
+    expect(getIdleSparklineStroke(22, 1)).toEqual({ y: 20.5, lineWidth: 1 });
+    expect(getIdleSparklineStroke(22, 1.25)).toEqual({ y: 20.4, lineWidth: 0.8 });
+    expect(getIdleSparklineStroke(22, 2)).toEqual({ y: 20.25, lineWidth: 0.5 });
   });
 
   it("labels the live chart and slows redraws when reduced motion is requested", () => {

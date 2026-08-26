@@ -251,6 +251,7 @@
 }
 
 .collector-package-items-frame.is-animated {
+  animation: collector-items-expand 300ms cubic-bezier(0.2, 0.8, 0.2, 1);
   transition: grid-template-rows 300ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 300ms ease;
 }
 
@@ -263,6 +264,17 @@
 .collector-package-items {
   min-height: 0;
   overflow: hidden;
+}
+
+@keyframes collector-items-expand {
+  from {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+  to {
+    grid-template-rows: 1fr;
+    opacity: 1;
+  }
 }
 
 .collector-column-select {
