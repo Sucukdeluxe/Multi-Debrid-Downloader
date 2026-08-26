@@ -59,7 +59,7 @@ import { getItemLogPath, initItemLogs, shutdownItemLogs } from "./item-log";
 import { getPackageLogPath, initPackageLogs, shutdownPackageLogs } from "./package-log";
 import { initSessionLog, getSessionLogPath, shutdownSessionLog } from "./session-log";
 import { MegaWebFallback } from "./mega-web-fallback";
-import { addHistoryEntry, addHistoryEntryForRetention, cancelPendingAsyncSaves, clearHistory, createStoragePaths, loadHistory, loadHistoryForRetention, loadSessionWithStatus, loadSettings, normalizeHistoryEntry, normalizeLoadedSession, normalizeLoadedSessionTransientFields, normalizeSettings, removeHistoryEntries, resetHistoryForRetention, saveHistory, saveSession, saveSettings } from "./storage";
+import { acquirePersistenceBarrier, addHistoryEntry, addHistoryEntryForRetention, cancelPendingAsyncSaves, clearHistory, createFileRollback, createHistoryRollback, createStoragePaths, loadHistory, loadHistoryForRetention, loadSessionWithStatus, loadSettings, normalizeHistoryEntry, normalizeLoadedSession, normalizeLoadedSessionTransientFields, normalizeSettings, removeHistoryEntries, replaceHistory, resetHistoryForRetention, saveHistory, saveSession, saveSettings } from "./storage";
 import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate } from "./update";
 import { runInstallWithResume } from "./update-install-flow";
 import { rotateDebugToken, startDebugServer, stopDebugServer, restartDebugServer, getDebugServerRuntimeStatus, getActiveDebugToken, getDebugAllowlist, writeDebugServerConfig, clearDebugToken } from "./debug-server";
@@ -169,7 +169,7 @@ export class AppController {
       );
     }
     this.initializeLogStorage();
-    resetHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode);
+    this.runHistoryLifecycleCleanup("Start", () => resetHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode));
     const loadResult = loadSessionWithStatus(this.storagePaths);
     const session = loadResult.session;
     this.notificationOutbox = new NotificationOutbox({
@@ -465,14 +465,33 @@ export class AppController {
     return this.getRemoteDiagnostics();
   }
 
-  private restoreRemoteDiagnosticsFromBackup(section: unknown, restartNow: boolean): void {
+  private persistRemoteDiagnosticsFromBackup(section: unknown): ReturnType<typeof resolveRemoteDiagnosticsRestore> {
     const restore = resolveRemoteDiagnosticsRestore(section);
+    if (!restore) {
+      return null;
+    }
+    writeDebugServerConfig({ host: restore.host, port: restore.port, allowlist: restore.allowlist });
+    return restore;
+  }
+
+  private async restartRemoteDiagnosticsRestore(
+    restore: ReturnType<typeof resolveRemoteDiagnosticsRestore>,
+    restartNow: boolean
+  ): Promise<void> {
     if (!restore) {
       return;
     }
-    writeDebugServerConfig({ host: restore.host, port: restore.port, allowlist: restore.allowlist });
     if (restartNow) {
-      void restartDebugServer().catch(() => {});
+      await restartDebugServer();
+    }
+  }
+
+  private auditRemoteDiagnosticsRestore(
+    restore: ReturnType<typeof resolveRemoteDiagnosticsRestore>,
+    restartNow: boolean
+  ): void {
+    if (!restore) {
+      return;
     }
     this.audit("INFO", "Ferndiagnose-Einstellungen aus Backup wiederhergestellt", {
       port: restore.port ?? null,
@@ -510,22 +529,124 @@ export class AppController {
     this.onHistoryEntryAddedHandler = handler;
   }
 
-  private applySettingsOnlyBackup(importedSettings: AppSettings, remoteDiagnostics?: unknown, restoreRemoteDiagnostics = false): void {
-    let restoredSettings = normalizeSettings(importedSettings);
-    if (this.settings.logStorageLocation !== restoredSettings.logStorageLocation
-      && !this.reconfigureLogStorage(restoredSettings.logStorageLocation)) {
-      restoredSettings = normalizeSettings({
-        ...restoredSettings,
-        logStorageLocation: this.settings.logStorageLocation
-      });
+  private prepareImportedLogStorage(restoredSettings: AppSettings): AppSettings {
+    if (this.settings.logStorageLocation === restoredSettings.logStorageLocation) {
+      return restoredSettings;
     }
-    this.overlayLiveUsageCounters(restoredSettings);
-    this.settings = restoredSettings;
-    saveSettings(this.storagePaths, this.settings);
-    this.manager.setSettings(this.settings, { settingsOnlyImport: true });
-    if (restoreRemoteDiagnostics) {
-      this.restoreRemoteDiagnosticsFromBackup(remoteDiagnostics, true);
+    const nextDirectory = resolveLogDirectory(
+      this.storagePaths.baseDir,
+      this.getDesktopDirectory(),
+      restoredSettings.logStorageLocation
+    );
+    return prepareLogDirectory(nextDirectory)
+      ? restoredSettings
+      : normalizeSettings({ ...restoredSettings, logStorageLocation: this.settings.logStorageLocation });
+  }
+
+  private createBackupImportRollback(includeDownloads: boolean): () => void {
+    const baseDir = this.storagePaths.baseDir;
+    const files = [
+      this.storagePaths.configFile,
+      `${this.storagePaths.configFile}.bak`,
+      `${this.storagePaths.configFile}.tmp`,
+      `${this.storagePaths.configFile}.bak.tmp`,
+      path.join(baseDir, "debug_host.txt"),
+      path.join(baseDir, "debug_port.txt"),
+      path.join(baseDir, "debug_allowlist.txt")
+    ];
+    if (includeDownloads) {
+      files.push(
+        this.storagePaths.sessionFile,
+        `${this.storagePaths.sessionFile}.bak`,
+        `${this.storagePaths.sessionFile}.sync.tmp`,
+        `${this.storagePaths.sessionFile}.async.tmp`,
+        this.storagePaths.historyFile,
+        `${this.storagePaths.historyFile}.bak`,
+        `${this.storagePaths.historyFile}.tmp`,
+        `${this.storagePaths.historyFile}.bak.tmp`,
+        this.storagePaths.statisticsFile,
+        `${this.storagePaths.statisticsFile}.tmp`
+      );
     }
+    return createFileRollback(files);
+  }
+
+  private rollbackImportPersistence(rollback: () => void, context: string): void {
+    try {
+      rollback();
+    } catch (error) {
+      logger.error(`Backup-Import konnte nach ${context} nicht zurückgerollt werden: ${String(error)}`);
+    }
+  }
+
+  private restoreLogStorageAfterFailedImport(location: AppSettings["logStorageLocation"]): void {
+    try {
+      this.reconfigureLogStorage(location);
+    } catch (error) {
+      logger.error(`Log-Speicherort konnte nach fehlgeschlagenem Backup-Import nicht wiederhergestellt werden: ${String(error)}`);
+    }
+  }
+
+  private async applySettingsOnlyBackup(importedSettings: AppSettings, remoteDiagnostics?: unknown, restoreRemoteDiagnostics = false): Promise<void> {
+    const barrier = await acquirePersistenceBarrier();
+    const previousSettings = this.settings;
+    let restoredSettings: AppSettings | null = null;
+    let rollback: (() => void) | null = null;
+    let remoteRestore: ReturnType<typeof resolveRemoteDiagnosticsRestore> = null;
+    let logStorageChanged = false;
+    let runtimeApplied = false;
+    try {
+      restoredSettings = this.prepareImportedLogStorage(normalizeSettings(importedSettings));
+      this.overlayLiveUsageCounters(restoredSettings);
+      rollback = this.createBackupImportRollback(false);
+      saveSettings(this.storagePaths, restoredSettings);
+      remoteRestore = restoreRemoteDiagnostics
+        ? this.persistRemoteDiagnosticsFromBackup(remoteDiagnostics)
+        : null;
+      if (previousSettings.logStorageLocation !== restoredSettings.logStorageLocation) {
+        if (!this.reconfigureLogStorage(restoredSettings.logStorageLocation)) {
+          throw new Error("Log-Speicherort konnte nicht wiederhergestellt werden");
+        }
+        logStorageChanged = true;
+      }
+      await this.restartRemoteDiagnosticsRestore(remoteRestore, restoreRemoteDiagnostics);
+      this.overlayLiveUsageCounters(restoredSettings);
+      saveSettings(this.storagePaths, restoredSettings);
+      this.settings = restoredSettings;
+      runtimeApplied = true;
+      this.manager.setSettings(this.settings, { settingsOnlyImport: true });
+      this.manager.persistNowSync();
+      await barrier.release({ replayBlocked: false });
+    } catch (error) {
+      if (rollback) {
+        this.rollbackImportPersistence(rollback, "fehlgeschlagenem Settings-Import");
+      }
+      this.settings = previousSettings;
+      if (runtimeApplied) {
+        try {
+          this.manager.setSettings(previousSettings, { settingsOnlyImport: true });
+        } catch (runtimeError) {
+          logger.error(`Backup-Import konnte die vorherigen Laufzeiteinstellungen nicht wiederherstellen: ${String(runtimeError)}`);
+        }
+      }
+      if (logStorageChanged) {
+        this.restoreLogStorageAfterFailedImport(previousSettings.logStorageLocation);
+      }
+      if (remoteRestore && restoreRemoteDiagnostics) {
+        try {
+          await restartDebugServer();
+        } catch (runtimeError) {
+          logger.error(`Ferndiagnose konnte nach fehlgeschlagenem Backup-Import nicht wiederhergestellt werden: ${String(runtimeError)}`);
+        }
+      }
+      try {
+        await barrier.release({ replayBlocked: true });
+      } catch (releaseError) {
+        logger.error(`Blockierte Persistenz konnte nach fehlgeschlagenem Backup-Import nicht fortgesetzt werden: ${String(releaseError)}`);
+      }
+      throw error;
+    }
+    this.auditRemoteDiagnosticsRestore(remoteRestore, restoreRemoteDiagnostics);
   }
 
   public updateSettings(partial: Partial<AppSettings>): AppSettings {
@@ -551,13 +672,22 @@ export class AppController {
     const retentionChanged = previousSettings.historyRetentionMode !== nextSettings.historyRetentionMode;
     const historyLimitsChanged = previousSettings.historyMaxEntries !== nextSettings.historyMaxEntries
       || previousSettings.historyMaxAgeDays !== nextSettings.historyMaxAgeDays;
-    this.settings = nextSettings;
-    if (retentionChanged) {
-      resetHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode);
-    } else if (historyLimitsChanged && this.settings.historyRetentionMode !== "never") {
-      saveHistory(this.storagePaths, loadHistory(this.storagePaths), this.historyLimits());
+    const rollbackHistory = retentionChanged || historyLimitsChanged ? createHistoryRollback(this.storagePaths) : null;
+    try {
+      if (retentionChanged) {
+        resetHistoryForRetention(this.storagePaths, nextSettings.historyRetentionMode);
+      } else if (historyLimitsChanged && nextSettings.historyRetentionMode !== "never") {
+        saveHistory(this.storagePaths, loadHistory(this.storagePaths), {
+          maxEntries: nextSettings.historyMaxEntries,
+          maxAgeDays: nextSettings.historyMaxAgeDays
+        });
+      }
+      saveSettings(this.storagePaths, nextSettings);
+    } catch (error) {
+      this.rollbackHistoryAfterFailure(rollbackHistory, "fehlgeschlagener Einstellungsänderung");
+      throw error;
     }
-    saveSettings(this.storagePaths, this.settings);
+    this.settings = nextSettings;
     this.manager.setSettings(this.settings);
     this.audit("INFO", "Einstellungen aktualisiert", {
       changedKeys: Object.keys(sanitizedPatch),
@@ -698,8 +828,23 @@ export class AppController {
       ...liveSettings,
       ...resetProviderDailyUsage(liveSettings, provider)
     });
+    const rollback = createFileRollback([
+      this.storagePaths.configFile,
+      `${this.storagePaths.configFile}.bak`,
+      this.storagePaths.statisticsFile,
+      `${this.storagePaths.statisticsFile}.tmp`
+    ]);
+    try {
+      saveSettings(this.storagePaths, nextSettings);
+      this.manager.rebaseStatisticsProviderDailyUsage(
+        provider,
+        nextSettings.providerDailyUsageBytes[provider] ?? 0
+      );
+    } catch (error) {
+      this.rollbackImportPersistence(rollback, "fehlgeschlagener Provider-Nutzungsrücksetzung");
+      throw error;
+    }
     this.settings = nextSettings;
-    saveSettings(this.storagePaths, this.settings);
     this.manager.setSettings(this.settings);
     this.audit("INFO", "Provider-Tagesnutzung zurückgesetzt", { provider });
     return this.settings;
@@ -1010,6 +1155,12 @@ export class AppController {
     return this.collectorStore.getState();
   }
 
+  public saveCollectorStateSync(state: CollectorPersistenceState): CollectorPersistenceState {
+    this.collectorStore.update(state);
+    this.collectorStore.flushSync();
+    return this.collectorStore.getState();
+  }
+
   public prepareCollectorContainers(filePaths: string[], addedAt: number): Promise<CollectorInspectionResult> {
     return prepareCollectorContainers(filePaths, addedAt);
   }
@@ -1209,7 +1360,7 @@ export class AppController {
 
   public async importOnlineBackup(key: string): Promise<{ restored: boolean; relaunch: false; message: string }> {
     const payload = await downloadOnlineBackup(key, ONLINE_BACKUP_API_URL);
-    this.applySettingsOnlyBackup(payload.settings);
+    await this.applySettingsOnlyBackup(payload.settings);
     this.audit("INFO", "Online-Sicherung importiert", {
       kind: "settings-only",
       accountSummary: buildAccountSummary(this.settings)
@@ -1243,7 +1394,7 @@ export class AppController {
     );
   }
 
-  public importBackup(data: Buffer, passphrase?: string): { restored: boolean; relaunch: boolean; message: string } {
+  public async importBackup(data: Buffer, passphrase?: string): Promise<{ restored: boolean; relaunch: boolean; message: string }> {
     let parsed: Record<string, unknown>;
     try {
       const json = decryptBackup(data, passphrase);
@@ -1261,6 +1412,15 @@ export class AppController {
       return { restored: false, relaunch: false, message: plan.message };
     }
     const hasSession = plan.restoreDownloads;
+    let restoredHistory: HistoryEntry[] | undefined;
+    if (Array.isArray(parsed.history)) {
+      restoredHistory = (parsed.history as unknown[])
+        .map((raw, idx) => normalizeHistoryEntry(raw, idx))
+        .filter((entry): entry is HistoryEntry => entry !== null);
+      if (parsed.history.length > 0 && restoredHistory.length === 0) {
+        return { restored: false, relaunch: false, message: "Backup-Verlauf enthält keine gültigen Einträge" };
+      }
+    }
 
     const importedSettings = parsed.settings as AppSettings;
     const importedSettingsRecord = importedSettings as unknown as Record<string, unknown>;
@@ -1286,7 +1446,7 @@ export class AppController {
     // policy still governs FUTURE completions through the normal path. Do NOT stop the
     // manager, wipe the session, block persistence or relaunch.
     if (!hasSession) {
-      this.applySettingsOnlyBackup(restoredSettings, parsed.remoteDiagnostics, true);
+      await this.applySettingsOnlyBackup(restoredSettings, parsed.remoteDiagnostics, true);
       this.audit("INFO", "Backup importiert (nur Einstellungen)", {
         accountSummary: buildAccountSummary(this.settings)
       });
@@ -1297,47 +1457,75 @@ export class AppController {
       };
     }
 
-    if (this.settings.logStorageLocation !== restoredSettings.logStorageLocation
-      && !this.reconfigureLogStorage(restoredSettings.logStorageLocation)) {
-      restoredSettings = normalizeSettings({
-        ...restoredSettings,
-        logStorageLocation: this.settings.logStorageLocation
-      });
-    }
-    this.settings = restoredSettings;
-    saveSettings(this.storagePaths, this.settings);
-    this.manager.setSettings(this.settings);
-
-    this.manager.stop();
-    this.manager.abortAllPostProcessing();
-    this.manager.clearPersistTimer();
-    cancelPendingAsyncSaves();
-
-    const restoredSession = normalizeLoadedSessionTransientFields(
-      normalizeLoadedSession(parsed.session)
-    );
-    saveSession(this.storagePaths, restoredSession);
-
-    if (parsed.statistics) {
-      saveStatisticsLedger(this.storagePaths.statisticsFile, normalizeStatisticsLedger(parsed.statistics));
-    }
-
-    if (Array.isArray(parsed.history) && parsed.history.length > 0) {
-      const normalizedHistory = (parsed.history as unknown[])
-        .map((raw, idx) => normalizeHistoryEntry(raw, idx))
-        .filter((entry): entry is HistoryEntry => entry !== null);
-      if (normalizedHistory.length > 0) {
-        saveHistory(this.storagePaths, normalizedHistory);
-        logger.info(`Backup: ${normalizedHistory.length} History-Einträge wiederhergestellt`);
+    restoredSettings = this.prepareImportedLogStorage(restoredSettings);
+    const barrier = await acquirePersistenceBarrier();
+    const previousSettings = this.settings;
+    const previousLogStorageLocation = this.settings.logStorageLocation;
+    const previousSkipShutdownPersist = this.manager.skipShutdownPersist;
+    const previousBlockAllPersistence = this.manager.blockAllPersistence;
+    let rollbackPersistence: (() => void) | null = null;
+    let remoteRestore: ReturnType<typeof resolveRemoteDiagnosticsRestore> = null;
+    let logStorageChanged = false;
+    let runtimeApplied = false;
+    try {
+      rollbackPersistence = this.createBackupImportRollback(true);
+      if (restoredHistory) {
+        replaceHistory(this.storagePaths, restoredHistory);
       }
+      saveSettings(this.storagePaths, restoredSettings);
+      const restoredSession = normalizeLoadedSessionTransientFields(
+        normalizeLoadedSession(parsed.session)
+      );
+      saveSession(this.storagePaths, restoredSession);
+
+      if (parsed.statistics) {
+        saveStatisticsLedger(this.storagePaths.statisticsFile, normalizeStatisticsLedger(parsed.statistics));
+      }
+      resetHistoryForRetention(this.storagePaths, restoredSettings.historyRetentionMode);
+      remoteRestore = this.persistRemoteDiagnosticsFromBackup(parsed.remoteDiagnostics);
+      if (previousLogStorageLocation !== restoredSettings.logStorageLocation) {
+        if (!this.reconfigureLogStorage(restoredSettings.logStorageLocation)) {
+          throw new Error("Log-Speicherort konnte nicht wiederhergestellt werden");
+        }
+        logStorageChanged = true;
+      }
+      this.manager.skipShutdownPersist = true;
+      this.manager.blockAllPersistence = true;
+      this.settings = restoredSettings;
+      runtimeApplied = true;
+      this.manager.setSettings(this.settings);
+      this.manager.stop();
+      this.manager.abortAllPostProcessing();
+      this.manager.clearPersistTimer();
+      await barrier.release({ replayBlocked: false });
+    } catch (error) {
+      if (rollbackPersistence) {
+        this.rollbackImportPersistence(rollbackPersistence, "fehlgeschlagenem Full-Backup-Import");
+      }
+      this.manager.skipShutdownPersist = previousSkipShutdownPersist;
+      this.manager.blockAllPersistence = previousBlockAllPersistence;
+      this.settings = previousSettings;
+      if (runtimeApplied) {
+        try {
+          this.manager.setSettings(previousSettings, { settingsOnlyImport: true });
+        } catch (runtimeError) {
+          logger.error(`Full-Backup-Import konnte die vorherigen Laufzeiteinstellungen nicht wiederherstellen: ${String(runtimeError)}`);
+        }
+      }
+      if (logStorageChanged) {
+        this.restoreLogStorageAfterFailedImport(previousLogStorageLocation);
+      }
+      try {
+        await barrier.release({ replayBlocked: true });
+      } catch (releaseError) {
+        logger.error(`Blockierte Persistenz konnte nach fehlgeschlagenem Full-Backup-Import nicht fortgesetzt werden: ${String(releaseError)}`);
+      }
+      throw error;
     }
-
-    resetHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode);
-
-    this.restoreRemoteDiagnosticsFromBackup(parsed.remoteDiagnostics, false);
-
-    this.manager.skipShutdownPersist = true;
-    this.manager.blockAllPersistence = true;
+    if (restoredHistory) {
+      logger.info(`Backup: ${restoredHistory.length} History-Einträge wiederhergestellt`);
+    }
+    this.auditRemoteDiagnosticsRestore(remoteRestore, false);
     logger.info("Backup wiederhergestellt — App startet automatisch neu");
     this.audit("WARN", "Backup importiert", {
       historyEntries: Array.isArray(parsed.history) ? parsed.history.length : 0,
@@ -1429,15 +1617,15 @@ export class AppController {
     this.pendingRealDebridWebAccountIds.clear();
     this.allDebridWebFallback.dispose();
     this.bestDebridWebFallback.dispose();
+    if (this.settings.historyRetentionMode === "session") {
+      this.runHistoryLifecycleCleanup("Beenden", () => clearHistory(this.storagePaths));
+    }
     this.shutdownLogStorage();
     this.audit("INFO", "App beendet");
     shutdownTraceLog();
     shutdownAccountRotationLog();
     shutdownConversionLog();
     shutdownAuditLog();
-    if (this.settings.historyRetentionMode === "session") {
-      clearHistory(this.storagePaths);
-    }
     logger.info("App beendet");
   }
 
@@ -1516,10 +1704,33 @@ export class AppController {
     return { maxEntries: this.settings.historyMaxEntries, maxAgeDays: this.settings.historyMaxAgeDays };
   }
 
+  private runHistoryLifecycleCleanup(phase: "Start" | "Beenden", cleanup: () => void): void {
+    try {
+      cleanup();
+    } catch (error) {
+      logger.warn(`Verlauf konnte beim ${phase} nicht bereinigt werden: ${String(error)}`);
+    }
+  }
+
+  private rollbackHistoryAfterFailure(rollback: (() => void) | null, context: string): void {
+    if (!rollback) {
+      return;
+    }
+    try {
+      rollback();
+    } catch (error) {
+      logger.error(`Verlauf konnte nach ${context} nicht zurückgerollt werden: ${String(error)}`);
+    }
+  }
+
   private recordHistoryEntry(entry: HistoryEntry): void {
-    const entries = addHistoryEntryForRetention(this.storagePaths, this.settings.historyRetentionMode, entry, this.historyLimits());
-    if (entries[0]?.id === entry.id) {
-      this.onHistoryEntryAddedHandler?.(entry);
+    try {
+      const entries = addHistoryEntryForRetention(this.storagePaths, this.settings.historyRetentionMode, entry, this.historyLimits());
+      if (entries[0]?.id === entry.id) {
+        this.onHistoryEntryAddedHandler?.(entry);
+      }
+    } catch (error) {
+      logger.error(`Verlaufseintrag konnte nicht gespeichert werden: ${String(error)}`);
     }
   }
 

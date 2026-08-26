@@ -4,6 +4,7 @@ import { ACCOUNT_SERVICE_ICONS } from "../../account-service-icons";
 
 export type SettingsSection = "allgemein" | "accounts" | "extract" | "speed" | "cleanup" | "updates";
 export type SettingsSaveState = "clean" | "dirty" | "saving" | "saved" | "error";
+export type SettingsThemeChoice = RendererSettings["themePreference"];
 
 export const SETTINGS_SECTIONS: readonly { id: SettingsSection; label: string }[] = [
   { id: "allgemein", label: "Allgemein" },
@@ -234,8 +235,8 @@ export interface SettingsSwitchFieldViewModel extends SettingsFieldBase {
 
 export interface SettingsThemeFieldViewModel extends SettingsFieldBase {
   kind: "theme";
-  value: string;
-  options: readonly { value: string; label: string }[];
+  value: SettingsThemeChoice;
+  options: readonly { value: SettingsThemeChoice; label: string }[];
 }
 
 export interface SettingsActionFieldViewModel extends SettingsFieldBase {
@@ -268,7 +269,7 @@ export interface SettingsFormProjectionInput {
   section: SettingsSection;
   speedLimitInput: string;
   scheduleSpeedInputs: Readonly<Record<string, string>>;
-  themeChoice?: "light" | "dark" | "system";
+  themeChoice?: SettingsThemeChoice;
 }
 
 const NOTIFICATION_NUMBER_LIMITS = {
@@ -292,7 +293,7 @@ export function buildSettingsFormViewModel({
   section,
   speedLimitInput,
   scheduleSpeedInputs,
-  themeChoice = settings.theme
+  themeChoice = settings.themePreference
 }: SettingsFormProjectionInput): SettingsFormViewModel {
   if (section === "extract") {
     return {
@@ -602,8 +603,8 @@ export function buildSettingsFormViewModel({
             label: "Theme",
             value: themeChoice,
             options: [
-              { value: "light", label: "Light" },
-              { value: "dark", label: "Dark" },
+              { value: "light", label: "Hell" },
+              { value: "dark", label: "Dunkel" },
               { value: "system", label: "System" }
             ]
           }

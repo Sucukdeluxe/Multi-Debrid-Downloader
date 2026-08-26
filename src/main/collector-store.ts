@@ -3,12 +3,12 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import {
+  COLLECTOR_MAX_PERSISTENCE_BYTES,
   validateCollectorPersistenceState,
   type CollectorPersistenceState
 } from "../shared/collector";
 import { logger } from "./logger";
 
-const maxPersistenceBytes = 64 * 1024 * 1024;
 const writeDelayMs = 300;
 const renameRetryDelaysMs = [15, 40, 90];
 
@@ -62,7 +62,7 @@ async function renameWithRetry(tempPath: string, filePath: string): Promise<void
 function parsePersistenceFile(filePath: string): CollectorPersistenceFile | null {
   try {
     const stat = fs.statSync(filePath);
-    if (!stat.isFile() || stat.size > maxPersistenceBytes) return null;
+    if (!stat.isFile() || stat.size > COLLECTOR_MAX_PERSISTENCE_BYTES) return null;
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as Record<string, unknown>;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
     if (Object.keys(parsed).some((key) => !["version", "packages", "collapsedPackageIds", "updatedAt"].includes(key))) return null;
@@ -163,7 +163,7 @@ export class CollectorStore {
   public update(state: CollectorPersistenceState): void {
     const nextState = validateCollectorPersistenceState(state);
     const nextUpdatedAt = Math.max(Date.now(), this.updatedAt + 1);
-    if (Buffer.byteLength(serializeState(nextState, nextUpdatedAt), "utf8") > maxPersistenceBytes) {
+    if (Buffer.byteLength(serializeState(nextState, nextUpdatedAt), "utf8") > COLLECTOR_MAX_PERSISTENCE_BYTES) {
       throw new Error("Linksammler-Speicherzustand ist zu groß");
     }
     this.state = nextState;

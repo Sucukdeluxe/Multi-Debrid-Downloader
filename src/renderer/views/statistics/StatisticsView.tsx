@@ -151,7 +151,7 @@ export function StatisticsSidebarStatus({ model }: Pick<StatisticsViewProps, "mo
     metrics.files.available ? `Dateien: ${formatMetric(metrics.files, "count")}` : null,
     metrics.successRate.available ? `Erfolg: ${formatMetric(metrics.successRate, "percent")}` : null,
     metrics.errors.available ? `Fehler: ${formatMetric(metrics.errors, "count")}` : null,
-    model.providerScope ? `${model.usageKind === "accounts" ? "Accounts" : "Provider"}: ${model.providers.length}` : null
+    model.providerScope ? `${model.usageKind === "accounts" ? "Accounts" : "Provider"}: ${numberFormatter.format(model.providers.length)}` : null
   ].filter((value): value is string => value !== null);
   if (rows.length === 0) {
     return null;
@@ -221,7 +221,7 @@ export function StatisticsContent({ model, actions, chart }: StatisticsViewProps
                   <span className={provider.failed && provider.failed > 0 ? "statistics-provider-errors" : undefined} role="cell">
                     {provider.completed === null || provider.failed === null
                       ? "–"
-                      : `${provider.completed} fertig · ${provider.failed} Fehler`}
+                      : `${numberFormatter.format(provider.completed)} fertig · ${numberFormatter.format(provider.failed)} Fehler`}
                   </span>
                 </div>
               )) : (

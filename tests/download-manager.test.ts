@@ -14,8 +14,8 @@ import { parseDebridLinkApiKeys } from "../src/shared/debrid-link-keys";
 import { getProviderUsageDayKey } from "../src/shared/provider-daily-limits";
 import { getItemLogPath, initItemLogs, shutdownItemLogs } from "../src/main/item-log";
 import { initPackageLogs, shutdownPackageLogs } from "../src/main/package-log";
-import { createStoragePaths, emptySession, loadSession, saveSession } from "../src/main/storage";
-import { loadStatisticsLedger } from "../src/main/statistics-ledger";
+import { createStoragePaths, emptySession, loadSession, loadSettings, saveSession } from "../src/main/storage";
+import { loadStatisticsLedger, saveStatisticsLedger } from "../src/main/statistics-ledger";
 import { getProviderRuntimeSnapshot, primeDebridLinkRuntimeCooldownForTests, resetDebridLinkRuntimeStateForTests, primeMegaDebridRuntimeCooldownForTests, resetMegaDebridRuntimeStateForTests, primeMegaDebridInFlightForTests, primeRealDebridRuntimeCooldownForTests, resetRealDebridRuntimeStateForTests } from "../src/main/debrid";
 import { getMegaDebridAccountId } from "../src/shared/mega-debrid-accounts";
 import { serializeRealDebridApiAccounts } from "../src/shared/real-debrid-accounts";
@@ -83,6 +83,22 @@ describe("download live update cadence", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("snapshot revision", () => {
+  it("assigns a strictly increasing revision to every captured snapshot", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-snapshot-revision-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(root, "state")));
+
+    const first = manager.getSnapshot() as ReturnType<DownloadManager["getSnapshot"]> & { snapshotRevision?: number };
+    const second = manager.getSnapshot() as ReturnType<DownloadManager["getSnapshot"]> & { snapshotRevision?: number };
+    const emitted = manager.getSnapshotForEmit() as ReturnType<DownloadManager["getSnapshotForEmit"]> & { snapshotRevision?: number };
+
+    expect(first.snapshotRevision).toEqual(expect.any(Number));
+    expect(second.snapshotRevision).toBeGreaterThan(first.snapshotRevision ?? Number.MAX_SAFE_INTEGER);
+    expect(emitted.snapshotRevision).toBeGreaterThan(second.snapshotRevision ?? Number.MAX_SAFE_INTEGER);
   });
 });
 
@@ -1037,6 +1053,35 @@ describe("download start account gate", () => {
     expect(manager.getSnapshot().canStart).toBe(false);
     expect(() => manager.togglePause()).toThrow("Kein aktiver Download-Account verfügbar");
     expect(manager.getSnapshot().session.paused).toBe(true);
+  });
+});
+
+describe("run-scoped remaining volume", () => {
+  it("projects remaining bytes only for items in the current run", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-run-remaining-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager(
+      { ...defaultSettings(), token: "rd-token" },
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+    manager.addPackages([
+      { name: "selected", links: ["https://example.test/selected"] },
+      { name: "excluded", links: ["https://example.test/excluded"] }
+    ]);
+    const internal = manager as any;
+    const itemIds = Object.keys(internal.session.items);
+    internal.session.running = true;
+    internal.runItemIds = new Set([itemIds[0]]);
+    internal.session.items[itemIds[0]].totalBytes = 600 * 1024 * 1024;
+    internal.session.items[itemIds[0]].downloadedBytes = 0;
+    internal.session.items[itemIds[1]].totalBytes = 60 * 1024 * 1024 * 1024;
+    internal.session.items[itemIds[1]].downloadedBytes = 0;
+
+    const snapshot = manager.getSnapshot();
+    expect(snapshot.runRemainingBytes).toBe(600 * 1024 * 1024);
+    expect(snapshot.runRemainingUnknownItems).toBe(0);
+    expect("runItemIds" in snapshot).toBe(false);
   });
 });
 
@@ -13818,6 +13863,195 @@ describe("download manager", () => {
     manager.resetDownloadStats();
     expect(manager.getStats().rolling24Hours).toMatchObject({ downloadedBytes: 0, accounts: [] });
     expect(loadStatisticsLedger(createStoragePaths(path.join(root, "state")).statisticsFile).minutes).toEqual([]);
+  });
+
+  it("keeps today's statistics reset after restart without clearing provider quota usage", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-statistics-reset-restart-"));
+    tempDirs.push(root);
+    const paths = createStoragePaths(path.join(root, "state"));
+    const day = getProviderUsageDayKey();
+    const settings = {
+      ...defaultSettings(),
+      providerDailyUsageDay: day,
+      providerDailyUsageBytes: { realdebrid: 4_096 }
+    };
+    const manager = new DownloadManager(settings, emptySession(), paths);
+
+    manager.resetDownloadStats();
+
+    const resetLedger = loadStatisticsLedger(paths.statisticsFile);
+    expect(settings.providerDailyUsageBytes).toEqual({ realdebrid: 4_096 });
+    expect(resetLedger.providerSeedSuppressedDay).toBe(day);
+    expect(resetLedger.providerSeedBaselineBytes).toEqual({ realdebrid: 4_096 });
+    expect(resetLedger.days.find((entry) => entry.day === day)).toBeUndefined();
+
+    const restored = new DownloadManager(settings, emptySession(), paths);
+    const restoredDay = restored.getStats().statistics?.days.find((entry) => entry.day === day);
+    expect(settings.providerDailyUsageBytes).toEqual({ realdebrid: 4_096 });
+    expect(restored.getStats().statistics?.providerSeedSuppressedDay).toBe(day);
+    expect(restoredDay).toBeUndefined();
+  });
+
+  it("recovers post-reset provider traffic from disk after a failed ledger save", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-statistics-reset-catchup-"));
+    tempDirs.push(root);
+    const paths = createStoragePaths(path.join(root, "state"));
+    const settings = {
+      ...defaultSettings(),
+      providerDailyUsageDay: getProviderUsageDayKey(),
+      providerDailyUsageBytes: { realdebrid: 4_096 }
+    };
+    const manager = new DownloadManager(settings, emptySession(), paths);
+    const internal = manager as unknown as {
+      recordProviderDownloadedBytes: (provider: "realdebrid", bytes: number) => void;
+      persistNow: () => void;
+    };
+
+    manager.resetDownloadStats();
+    internal.recordProviderDownloadedBytes("realdebrid", 1_024);
+    const renameFile = fs.renameSync.bind(fs);
+    let failed = false;
+    const rename = vi.spyOn(fs, "renameSync").mockImplementation((source, target) => {
+      if (!failed && String(target) === paths.statisticsFile) {
+        failed = true;
+        throw Object.assign(new Error("ledger write failed"), { code: "EIO" });
+      }
+      return renameFile(source, target);
+    });
+
+    try {
+      internal.persistNow();
+    } finally {
+      rename.mockRestore();
+    }
+
+    const persistedSettings = loadSettings(paths);
+    const restored = new DownloadManager(persistedSettings, emptySession(), paths);
+    const day = restored.getStats().statistics?.days.find((entry) => entry.day === getProviderUsageDayKey());
+
+    expect(failed).toBe(true);
+    expect(persistedSettings.providerDailyUsageBytes.realdebrid).toBe(5_120);
+    expect(day?.downloadedBytes).toBe(1_024);
+    expect(day?.providers.realdebrid?.bytes).toBe(1_024);
+  });
+
+  it("captures the reset baseline only after refreshing stale daily provider usage", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-statistics-reset-baseline-day-"));
+    tempDirs.push(root);
+    const paths = createStoragePaths(path.join(root, "state"));
+    const settings = {
+      ...defaultSettings(),
+      providerDailyUsageDay: "2000-01-01",
+      providerDailyUsageBytes: { realdebrid: 4_096 }
+    };
+    const manager = new DownloadManager(settings, emptySession(), paths);
+
+    manager.resetDownloadStats();
+
+    const resetLedger = loadStatisticsLedger(paths.statisticsFile);
+    expect(settings.providerDailyUsageDay).toBe(getProviderUsageDayKey());
+    expect(settings.providerDailyUsageBytes).toEqual({});
+    expect(resetLedger.providerSeedBaselineBytes).toEqual({});
+  });
+
+  it("persists a rebased provider quota baseline for manual daily usage resets", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-statistics-manual-quota-reset-"));
+    tempDirs.push(root);
+    const paths = createStoragePaths(path.join(root, "state"));
+    const settings = {
+      ...defaultSettings(),
+      providerDailyUsageDay: getProviderUsageDayKey(),
+      providerDailyUsageBytes: { realdebrid: 500 }
+    };
+    const manager = new DownloadManager(settings, emptySession(), paths);
+    const internal = manager as unknown as {
+      recordProviderDownloadedBytes: (provider: "realdebrid", bytes: number) => void;
+    };
+
+    manager.resetDownloadStats();
+    internal.recordProviderDownloadedBytes("realdebrid", 200);
+    manager.rebaseStatisticsProviderDailyUsage("realdebrid", 0);
+
+    expect(loadStatisticsLedger(paths.statisticsFile).providerSeedBaselineBytes).toEqual({ realdebrid: -200 });
+    expect(manager.getStats().statistics?.days[0]?.providers.realdebrid?.bytes).toBe(200);
+  });
+
+  it("keeps runtime and disk statistics unchanged when the ledger reset write fails", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-statistics-reset-ledger-failure-"));
+    tempDirs.push(root);
+    const paths = createStoragePaths(path.join(root, "state"));
+    const settings = {
+      ...defaultSettings(),
+      totalDownloadedAllTime: 8_192,
+      providerDailyUsageDay: getProviderUsageDayKey(),
+      providerDailyUsageBytes: { realdebrid: 1_024 }
+    };
+    const manager = new DownloadManager(settings, emptySession(), paths);
+    const internal = manager as unknown as {
+      recordProviderDownloadedBytes: (provider: "realdebrid", bytes: number) => void;
+    };
+    internal.recordProviderDownloadedBytes("realdebrid", 512);
+    manager.persistNowSync();
+    const beforeLedger = loadStatisticsLedger(paths.statisticsFile);
+    const renameFile = fs.renameSync.bind(fs);
+    let failed = false;
+    const rename = vi.spyOn(fs, "renameSync").mockImplementation((source, target) => {
+      if (!failed && String(target) === paths.statisticsFile) {
+        failed = true;
+        throw Object.assign(new Error("ledger write failed"), { code: "EIO" });
+      }
+      return renameFile(source, target);
+    });
+
+    try {
+      expect(() => manager.resetDownloadStats()).toThrow("ledger write failed");
+    } finally {
+      rename.mockRestore();
+    }
+
+    expect(settings.totalDownloadedAllTime).toBe(8_192);
+    expect(manager.getStats().statistics?.days).toEqual(beforeLedger.days);
+    expect(loadStatisticsLedger(paths.statisticsFile).days).toEqual(beforeLedger.days);
+    expect(loadSettings(paths).totalDownloadedAllTime).toBe(8_192);
+  });
+
+  it("rolls back the persisted ledger when the settings reset write fails", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-statistics-reset-settings-failure-"));
+    tempDirs.push(root);
+    const paths = createStoragePaths(path.join(root, "state"));
+    const settings = {
+      ...defaultSettings(),
+      totalDownloadedAllTime: 16_384,
+      providerDailyUsageDay: getProviderUsageDayKey(),
+      providerDailyUsageBytes: { realdebrid: 2_048 }
+    };
+    const manager = new DownloadManager(settings, emptySession(), paths);
+    const internal = manager as unknown as {
+      recordProviderDownloadedBytes: (provider: "realdebrid", bytes: number) => void;
+    };
+    internal.recordProviderDownloadedBytes("realdebrid", 768);
+    manager.persistNowSync();
+    const beforeLedger = loadStatisticsLedger(paths.statisticsFile);
+    const renameFile = fs.renameSync.bind(fs);
+    let failed = false;
+    const rename = vi.spyOn(fs, "renameSync").mockImplementation((source, target) => {
+      if (!failed && String(target) === paths.configFile) {
+        failed = true;
+        throw Object.assign(new Error("settings write failed"), { code: "EIO" });
+      }
+      return renameFile(source, target);
+    });
+
+    try {
+      expect(() => manager.resetDownloadStats()).toThrow("settings write failed");
+    } finally {
+      rename.mockRestore();
+    }
+
+    expect(settings.totalDownloadedAllTime).toBe(16_384);
+    expect(manager.getStats().statistics?.days).toEqual(beforeLedger.days);
+    expect(loadStatisticsLedger(paths.statisticsFile).days).toEqual(beforeLedger.days);
+    expect(loadSettings(paths).totalDownloadedAllTime).toBe(16_384);
   });
 
   it("does not recreate account usage when the source account was removed during the download", () => {

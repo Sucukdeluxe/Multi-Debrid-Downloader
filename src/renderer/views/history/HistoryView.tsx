@@ -20,11 +20,12 @@ import { Toolbar, ToolbarGroup, ToolbarSearch } from "../../ui/Toolbar";
 import { SlidingSelection } from "../../ui/SlidingSelection";
 import {
   createHistoryTableColumnWidths,
+  formatHistoryInteger,
   formatHistoryDuration,
+  getHistoryPage,
   getHistoryTableGridTemplate,
   getHistoryTableMinWidth,
   HISTORY_TABLE_COLUMN_IDS,
-  paginateHistoryRows,
   resizeHistoryTableColumn,
   type HistoryFilter,
   type HistoryPage,
@@ -47,6 +48,8 @@ export interface HistoryViewActions {
   onClearSelection: () => void;
   onClearHistory: () => void;
   onContextMenu: (entryId: string, x: number, y: number) => void;
+  onVisiblePageCountChange?: (count: number) => void;
+  onVisiblePageChange?: (ids: string[]) => void;
 }
 
 export interface HistoryViewProps {
@@ -191,7 +194,7 @@ function HistoryRowDetails({
           <div className="history-detail-cell" role="cell">
             <dl className="history-details-grid">
               <div><dt>Provider</dt><dd>{row.providerLabel}</dd></div>
-              <div><dt>Dateien</dt><dd>{row.fileCount}</dd></div>
+              <div><dt>Dateien</dt><dd>{formatHistoryInteger(row.fileCount, row.language)}</dd></div>
               {row.hasStructuredLifecycle ? (
                 <>
                   <div><dt>Download gestartet</dt><dd>{row.startedLabel}</dd></div>
@@ -204,8 +207,8 @@ function HistoryRowDetails({
                   <div><dt>Nachbearbeitungsdauer</dt><dd>{row.postProcessDurationLabel}</dd></div>
                   <div><dt>Gesamtdauer</dt><dd>{row.totalDurationLabel}</dd></div>
                   <div><dt>Status</dt><dd>{row.statusLabel}</dd></div>
-                  <div><dt>Erfolgreich / Fehlgeschlagen / Abgebrochen</dt><dd>{row.successfulFiles ?? 0} / {row.failedFiles ?? 0} / {row.cancelledFiles ?? 0}</dd></div>
-                  <div><dt>Archive / Parts / Ausgaben</dt><dd>{row.archiveCount ?? 0} / {row.partCount ?? 0} / {row.outputCount ?? 0}</dd></div>
+                  <div><dt>Erfolgreich / Fehlgeschlagen / Abgebrochen</dt><dd>{formatHistoryInteger(row.successfulFiles ?? 0, row.language)} / {formatHistoryInteger(row.failedFiles ?? 0, row.language)} / {formatHistoryInteger(row.cancelledFiles ?? 0, row.language)}</dd></div>
+                  <div><dt>Archive / Parts / Ausgaben</dt><dd>{formatHistoryInteger(row.archiveCount ?? 0, row.language)} / {formatHistoryInteger(row.partCount ?? 0, row.language)} / {formatHistoryInteger(row.outputCount ?? 0, row.language)}</dd></div>
                   <div><dt>Fehlerphase</dt><dd>{row.failurePhaseLabel}</dd></div>
                   <div><dt>Fehlerkategorie</dt><dd>{row.errorCategory || "—"}</dd></div>
                   <div><dt>Download / Offline / Entpacken / Remux / Cleanup / Nachbearbeitung</dt><dd>{row.failureCountsLabel}</dd></div>
@@ -226,7 +229,7 @@ function HistoryRowDetails({
                       {row.archiveOperations.map((operation) => (
                         <li key={operation.id}>
                           <strong>{operation.name}</strong>
-                          <span>{operation.partCount} Parts · {formatHistoryDuration(operation.durationMs / 1000)} · {operationStatusLabel(operation.status)}{operation.errorCategory ? ` · ${operation.errorCategory}` : ""}</span>
+                          <span>{formatHistoryInteger(operation.partCount, row.language)} Parts · {formatHistoryDuration(operation.durationMs / 1000)} · {operationStatusLabel(operation.status)}{operation.errorCategory ? ` · ${operation.errorCategory}` : ""}</span>
                         </li>
                       ))}
                     </ul>
@@ -270,7 +273,7 @@ export function HistorySidebar({ model, actions }: HistoryViewProps): ReactEleme
             type="button"
           >
             <span>{item.label}</span>
-            <span>{model.counts[item.id]}</span>
+            <span>{formatHistoryInteger(model.counts[item.id], model.language)}</span>
           </button>
         ))}
       </SlidingSelection>
@@ -286,12 +289,10 @@ export function HistorySidebar({ model, actions }: HistoryViewProps): ReactEleme
 
 export function HistoryToolbar({ model, actions }: HistoryViewProps): ReactElement {
   const selectedIds = model.selectedIds;
-  const selectedSet = new Set(selectedIds);
-  const restorable = model.rows.some((row) => selectedSet.has(row.id) && (row.urls?.length ?? 0) > 0);
   return (
     <Toolbar className="history-workspace-toolbar" data-visual-region="history-toolbar" label="Verlaufsaktionen">
       <ToolbarGroup label="Einträge">
-        <button className="history-action" disabled={selectedIds.length === 0 || !restorable} onClick={() => actions.onRestore(selectedIds)} type="button">Erneut hinzufügen</button>
+        <button className="history-action" disabled={selectedIds.length === 0 || !model.restorableSelected} onClick={() => actions.onRestore(selectedIds)} type="button">Erneut hinzufügen</button>
         <button className="history-action" disabled={selectedIds.length !== 1} onClick={() => actions.onReveal(selectedIds[0])} type="button">Im Ordner zeigen</button>
         <button className="history-action history-action-danger" disabled={selectedIds.length === 0} onClick={() => actions.onRemove(selectedIds)} type="button">Entfernen</button>
         <button className="history-action" disabled={selectedIds.length === 0} onClick={actions.onClearSelection} type="button">Auswahl löschen</button>
@@ -308,7 +309,10 @@ export function HistoryToolbar({ model, actions }: HistoryViewProps): ReactEleme
 }
 
 export function historyPageStatusLabel(page: HistoryPage): string {
-  return `Seite ${page.page} von ${page.totalPages}`;
+  const language = page.language ?? "de";
+  return language === "en"
+    ? `Page ${formatHistoryInteger(page.page, language)} of ${formatHistoryInteger(page.totalPages, language)}`
+    : `Seite ${formatHistoryInteger(page.page, language)} von ${formatHistoryInteger(page.totalPages, language)}`;
 }
 
 export function HistoryPagination({
@@ -318,9 +322,10 @@ export function HistoryPagination({
   page: HistoryPage;
   onPageChange: (page: number) => void;
 }): ReactElement {
+  const language = page.language ?? "de";
   return (
     <nav aria-label="Verlaufsseiten" className="history-pagination" data-visual-region="history-pagination">
-      <span className="history-pagination-size">{page.pageSize} pro Seite</span>
+      <span className="history-pagination-size">{formatHistoryInteger(page.pageSize, language)} {language === "en" ? "per page" : "pro Seite"}</span>
       <div className="history-pagination-controls">
         <button
           aria-label="Vorherige Verlaufsseite"
@@ -341,6 +346,22 @@ export function HistoryPagination({
       </div>
     </nav>
   );
+}
+
+export function reportHistoryVisiblePageCount(
+  actions: Pick<HistoryViewActions, "onVisiblePageCountChange">,
+  page: HistoryPage
+): void {
+  actions.onVisiblePageCountChange?.(page.rows.length);
+}
+
+export function reportHistoryVisiblePage(
+  actions: Pick<HistoryViewActions, "onVisiblePageChange" | "onVisiblePageCountChange">,
+  page: HistoryPage
+): void {
+  const ids = page.rows.map((row) => row.id);
+  actions.onVisiblePageCountChange?.(ids.length);
+  actions.onVisiblePageChange?.(ids);
 }
 
 interface HistoryContentPageProps extends HistoryViewProps {
@@ -516,7 +537,11 @@ export function HistoryContentPage({ model, actions, page, onPageChange }: Histo
 
 function PaginatedHistoryContent({ model, actions }: HistoryViewProps): ReactElement {
   const [requestedPage, setRequestedPage] = useState(1);
-  const page = paginateHistoryRows(model.rows, requestedPage);
+  const page = getHistoryPage(model, requestedPage);
+
+  useEffect(() => {
+    reportHistoryVisiblePage(actions, page);
+  }, [actions.onVisiblePageChange, actions.onVisiblePageCountChange, page]);
 
   useEffect(() => {
     setRequestedPage((current) => current === page.page ? current : page.page);

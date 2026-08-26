@@ -63,18 +63,22 @@ import { Toast } from "./ui/Toast";
 import { LinkAddressesDialog } from "./ui/LinkAddressesDialog";
 import { serializeCollectorPackages, type CollectorEnrichmentProgress, type CollectorInspectionResult, type CollectorPackage } from "../shared/collector";
 import { routeDroppedDlcFiles } from "./collector-drop";
-import { beginCollectorEnrichment, filterCurrentCollectorEnrichment } from "./collector-enrichment";
+import { beginCollectorEnrichment, filterCurrentCollectorEnrichment, pruneCollectorEnrichmentGenerations } from "./collector-enrichment";
 import {
   buildCollectorTransferPackages,
   buildCollectorWorkspaceViewModel,
-  mergeCollectorEnrichment,
-  mergeCollectorPackages,
+  mergeCollectorPackagesWithinCapacity,
   removeCollectorLinks,
   reconcileCollectorCollapsedPackageIds,
+  reconcileCollectorCollapsedPackageIdsWithPackages,
+  reconcileCollectorSelectionWithPackages,
+  setCollectorVisibleSelection,
   selectCollectorPackageLinks,
   type CollectorWorkspaceFilter
 } from "./views/collector/collector-model";
-import { createCollectorPersistenceCoordinator, restoreCollectorPersistenceState, type CollectorPersistenceCoordinator } from "./views/collector/collector-persistence";
+import { guardCollectorBeforeUnload, resolveCollectorLateHydration } from "./views/collector/collector-hydration";
+import { createCollectorPersistenceCoordinator, type CollectorPersistenceCoordinator } from "./views/collector/collector-persistence";
+import { advanceCollectorPersistenceBudget, createCollectorPersistenceBudget, type CollectorPersistenceBudget } from "./views/collector/collector-persistence-budget";
 import {
   CollectorInputDialog,
   MemoizedCollectorContent,
@@ -87,7 +91,7 @@ import {
   buildHistoryViewModel,
   mergeLiveHistoryEntry,
   pruneHistoryIds,
-  selectVisibleHistoryIds,
+  toggleHistoryPageSelection,
   type HistoryFilter
 } from "./views/history/history-model";
 import {
@@ -107,16 +111,20 @@ import {
   StatisticsSidebarStatus,
   type StatisticsViewActions
 } from "./views/statistics/StatisticsView";
-import { buildDownloadsViewModel, formatRemainingDownloadBytes, formatRemainingDownloadTooltip, getDownloadQueueStatusMetrics, getDownloadSpeedBps, type DownloadDisplayMode, type DownloadSidebarFilter } from "./views/downloads/downloads-model";
+import { buildDownloadsViewModel, formatDownloadEta, formatRemainingDownloadBytes, formatRemainingDownloadTooltip, getDownloadQueueStatusMetrics, getDownloadSpeedBps, type DownloadDisplayMode, type DownloadSidebarFilter } from "./views/downloads/downloads-model";
 import { downloadColumnDefinitions, type DownloadSortColumn } from "./views/downloads/DownloadsTable";
 import { DeleteConfirmationDialog } from "./views/downloads/DeleteConfirmationDialog";
 import { beginDownloadColumnDrag, clearDownloadColumnDrag, commitDownloadColumnDrag, createDownloadColumnOrderPersistence, DOWNLOAD_COLUMN_MOVE_DURATION_MS, updateDownloadColumnDrag, type DownloadColumnDragSession, type DownloadColumnOrderPersistence } from "./views/downloads/column-drag";
 import {
+  DownloadContextStartActions,
   DownloadsContent,
   DownloadsFooter,
   DownloadsSidebar,
   DownloadsSidebarStatus,
   DownloadsToolbar,
+  runPauseDownloadAction,
+  runResumeDownloadAction,
+  runDownloadStartAction,
   type DailyScheduleStartDay,
   type DownloadsViewActions,
   type DownloadsViewModel
@@ -134,7 +142,8 @@ import {
   type AccountRowSource,
   type SettingsFormViewModel,
   type SettingsSaveState,
-  type SettingsSection
+  type SettingsSection,
+  type SettingsThemeChoice
 } from "./views/settings/settings-model";
 import {
   AccountAddDialog,
@@ -151,6 +160,121 @@ import {
 } from "./views/settings/SettingsView";
 
 type Tab = MainView;
+
+const appIntegerFormatter = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 0 });
+
+export function formatHistorySidebarCounts(entries: number, visible: number, selected: number): {
+  entries: string;
+  visible: string;
+  selected: string;
+} {
+  return {
+    entries: `Einträge: ${appIntegerFormatter.format(entries)}`,
+    visible: `Sichtbar: ${appIntegerFormatter.format(visible)}`,
+    selected: `Ausgewählt: ${appIntegerFormatter.format(selected)}`
+  };
+}
+
+function mergeSnapshotWireState(master: UiSnapshot, wireState: UiSnapshot): UiSnapshot {
+  if (wireState.payloadKind !== "delta") return wireState;
+  const items: Record<string, DownloadItem> = { ...master.session.items, ...wireState.session.items };
+  for (const id of wireState.removedItemIds ?? []) delete items[id];
+  const packages: Record<string, PackageEntry> = { ...master.session.packages, ...wireState.session.packages };
+  for (const id of wireState.removedPackageIds ?? []) delete packages[id];
+  return {
+    ...wireState,
+    session: {
+      ...wireState.session,
+      items,
+      packages
+    }
+  };
+}
+
+function getSnapshotRevision(snapshot: UiSnapshot): number | null {
+  const revision = snapshot.snapshotRevision;
+  return typeof revision === "number" && Number.isSafeInteger(revision) && revision >= 0
+    ? revision
+    : null;
+}
+
+function mergeNewerSnapshot(master: UiSnapshot, incoming: UiSnapshot): UiSnapshot | null {
+  const masterRevision = getSnapshotRevision(master);
+  const incomingRevision = getSnapshotRevision(incoming);
+  if (masterRevision !== null && (incomingRevision === null || incomingRevision <= masterRevision)) {
+    return null;
+  }
+  return mergeSnapshotWireState(master, incoming);
+}
+
+export interface SnapshotBootstrapCoordinator {
+  initialize: (snapshot: UiSnapshot) => UiSnapshot;
+  push: (snapshot: UiSnapshot) => UiSnapshot | null;
+  getStatus: () => SnapshotBootstrapStatus;
+  fail: (message: string) => SnapshotBootstrapStatus;
+  retry: () => SnapshotBootstrapStatus;
+}
+
+export type SnapshotBootstrapStatus = {
+  phase: "loading" | "ready" | "error";
+  message: string;
+};
+
+export function createSnapshotBootstrapCoordinator(): SnapshotBootstrapCoordinator {
+  let initialized = false;
+  let current: UiSnapshot | null = null;
+  let pending: UiSnapshot[] = [];
+  let status: SnapshotBootstrapStatus = { phase: "loading", message: "" };
+  return {
+    initialize: (snapshot) => {
+      if (initialized && current) {
+        const currentRevision = getSnapshotRevision(current);
+        const snapshotRevision = getSnapshotRevision(snapshot);
+        if (snapshotRevision !== null && (currentRevision === null || snapshotRevision > currentRevision)) {
+          current = snapshot;
+        }
+        return current;
+      }
+      current = pending.reduce((master, incoming) => mergeNewerSnapshot(master, incoming) ?? master, snapshot);
+      pending = [];
+      initialized = true;
+      status = { phase: "ready", message: "" };
+      return current;
+    },
+    push: (snapshot) => {
+      if (!initialized) {
+        if (snapshot.payloadKind === "delta") {
+          pending.push(snapshot);
+          return null;
+        }
+        current = snapshot;
+        pending = [];
+        initialized = true;
+        status = { phase: "ready", message: "" };
+        return current;
+      }
+      const merged = mergeNewerSnapshot(current as UiSnapshot, snapshot);
+      if (!merged) {
+        return null;
+      }
+      current = merged;
+      return current;
+    },
+    getStatus: () => ({ ...status }),
+    fail: (message) => {
+      if (!initialized) {
+        status = { phase: "error", message };
+      }
+      return { ...status };
+    },
+    retry: () => {
+      if (!initialized) {
+        status = { phase: "loading", message: "" };
+      }
+      return { ...status };
+    }
+  };
+}
 
 interface CollectorInputState {
   draft: string;
@@ -289,8 +413,6 @@ function getAccountToggleTarget(account: AccountTableRow): AccountToggleTarget {
   return { type: "provider", provider: account.entry.provider };
 }
 
-type SettingsThemeChoice = AppTheme | "system";
-
 interface RendererSettingsDraft extends RendererSettings {
   archivePasswordList: string;
   notifyUrl: string;
@@ -304,7 +426,7 @@ export function createSettingsDraft(settings: RendererSettings, current?: Render
   };
 }
 
-export function createDiscardedSettingsState(settings: RendererSettings, themeChoice: SettingsThemeChoice = settings.theme): {
+export function createDiscardedSettingsState(settings: RendererSettings, themeChoice: SettingsThemeChoice = settings.themePreference): {
   draft: RendererSettingsDraft;
   themeChoice: SettingsThemeChoice;
   speedLimitInput: string;
@@ -329,6 +451,10 @@ export function resolveSettingsSaveCompletion(revisionAtStart: number, currentRe
   return unchanged
     ? { saveState: "saved", applyPersistedTheme: true, toast: "Einstellungen gespeichert" }
     : { saveState: "dirty", applyPersistedTheme: false, toast: "Zwischenstand gespeichert – weitere Änderungen sind ungespeichert" };
+}
+
+export function captureSettingsSaveIntent<T>(revision: number, draft: T): { revision: number; draft: T } {
+  return { revision, draft: structuredClone(draft) };
 }
 
 export function resolveSettingsThemeChoice(choice: SettingsThemeChoice, prefersLight: boolean): AppTheme {
@@ -828,7 +954,7 @@ const emptySnapshot = (): UiSnapshot => ({
     autoReconnect: false, reconnectWaitSeconds: 45, completedCleanupPolicy: "never",
     maxParallel: 4, maxParallelExtract: 2, extractCpuPriority: "high", retryLimit: 0, speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
     updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, minimizeToTray: false,
-    theme: "dark", logStorageLocation: "appdata", collapseNewPackages: true, animatePackageDisclosure: true, historyRetentionMode: "permanent", historyMaxEntries: 500, historyMaxAgeDays: 0, autoSortPackagesByProgress: false, autoSkipExtracted: false, hideExtractedItems: true, confirmDeleteSelection: true, backupIncludeDownloads: false, backupIncludeRemoteDiagnostics: false,
+    theme: "dark", themePreference: "dark", logStorageLocation: "appdata", collapseNewPackages: true, animatePackageDisclosure: true, historyRetentionMode: "permanent", historyMaxEntries: 500, historyMaxAgeDays: 0, autoSortPackagesByProgress: false, autoSkipExtracted: false, hideExtractedItems: true, confirmDeleteSelection: true, backupIncludeDownloads: false, backupIncludeRemoteDiagnostics: false,
     notifyMention: "", notifyOnPackageCompleted: false, notifyOnPackageFailed: false, notifyOnRunFinished: false,
     notifyPackageSuccessMode: "digest", notifyOnRemainingBelow: false, notifyRemainingThresholdGb: 50,
     notifyOnDownloadStall: false, notifyStallAfterSeconds: 90, notifyStallCooldownMinutes: 10, notifyOnDownloadRecovery: true,
@@ -869,7 +995,7 @@ const emptySnapshot = (): UiSnapshot => ({
     paused: false, running: false, updatedAt: Date.now()
   },
   summary: null, stats: emptyStats(), speedText: "Geschwindigkeit: 0 B/s", etaText: "ETA: --",
-  canStart: false, canStop: false, canPause: false, clipboardActive: false, reconnectSeconds: 0, packageSpeedBps: {}
+    canStart: false, canStop: false, canPause: false, clipboardActive: false, reconnectSeconds: 0, packageSpeedBps: {}, runRemainingBytes: 0, runRemainingUnknownItems: 0
 });
 
 const cleanupLabels: Record<string, string> = {
@@ -1662,8 +1788,29 @@ export async function persistDailyScheduleSettingsUpdate(
   }
 }
 
+export function routeHistoryLiveEntry(
+  entry: HistoryEntry,
+  loadFailed: boolean,
+  actions: { reload: () => void; accept: (entry: HistoryEntry) => void }
+): void {
+  if (loadFailed) {
+    actions.reload();
+    return;
+  }
+  actions.accept(entry);
+}
+
+export function selectHistoryPageFromShortcut(current: ReadonlySet<string>, visibleIds: readonly string[]): Set<string> {
+  return toggleHistoryPageSelection(current, visibleIds);
+}
+
+export function resolveHistoryContextSelection(current: ReadonlySet<string>, entryId: string): Set<string> {
+  return current.has(entryId) ? new Set(current) : new Set([entryId]);
+}
+
 export function App(): ReactElement {
   const [snapshot, setSnapshot] = useState<UiSnapshot>(emptySnapshot);
+  const [snapshotBootstrapStatus, setSnapshotBootstrapStatus] = useState<SnapshotBootstrapStatus>({ phase: "loading", message: "" });
   const [appVersion, setAppVersion] = useState("");
   const [tab, setTab] = useState<Tab>("downloads");
   const [statusToast, setStatusToast] = useState("");
@@ -1671,7 +1818,7 @@ export function App(): ReactElement {
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
   const [updateInstallProgress, setUpdateInstallProgress] = useState<UpdateInstallProgress | null>(null);
   const [settingsDraft, setSettingsDraft] = useState<RendererSettingsDraft>(() => createSettingsDraft(emptySnapshot().settings));
-  const [settingsThemeChoice, setSettingsThemeChoice] = useState<SettingsThemeChoice>(emptySnapshot().settings.theme);
+  const [settingsThemeChoice, setSettingsThemeChoice] = useState<SettingsThemeChoice>(emptySnapshot().settings.themePreference);
   const [speedLimitInput, setSpeedLimitInput] = useState(() => formatMbpsInputFromKbps(emptySnapshot().settings.speedLimitKbps));
   const [scheduleSpeedInputs, setScheduleSpeedInputs] = useState<Record<string, string>>({});
   const [settingsDirty, setSettingsDirty] = useState(false);
@@ -1698,11 +1845,25 @@ export function App(): ReactElement {
   const latestStateRef = useRef<UiSnapshot | null>(null);
   const masterSnapshotRef = useRef<UiSnapshot | null>(null);
   const snapshotRef = useRef(snapshot);
+  const retrySnapshotBootstrapRef = useRef<() => void>(() => {});
   const persistedSettingsRef = useRef<RendererSettings>(emptySnapshot().settings);
   const settingsThemeChoiceRef = useRef<SettingsThemeChoice>(settingsThemeChoice);
-  const persistedThemeChoiceRef = useRef<SettingsThemeChoice>(emptySnapshot().settings.theme);
+  const persistedThemeChoiceRef = useRef<SettingsThemeChoice>(emptySnapshot().settings.themePreference);
   snapshotRef.current = snapshot;
   settingsThemeChoiceRef.current = settingsThemeChoice;
+  useEffect(() => {
+    const systemTheme = window.matchMedia("(prefers-color-scheme: light)");
+    const onSystemThemeChange = (): void => {
+      if (settingsThemeChoiceRef.current !== "system") {
+        return;
+      }
+      const next = resolveSettingsThemeChoice("system", systemTheme.matches);
+      setSettingsDraft((current) => ({ ...current, theme: next }));
+      applyTheme(next);
+    };
+    systemTheme.addEventListener("change", onSystemThemeChange);
+    return () => systemTheme.removeEventListener("change", onSystemThemeChange);
+  }, []);
   const tabRef = useRef(tab);
   tabRef.current = tab;
   const stateFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1723,8 +1884,10 @@ export function App(): ReactElement {
   const [collectorInput, setCollectorInput] = useState<CollectorInputState | null>(null);
   const collectorPackagesRef = useRef<CollectorPackage[]>(collectorPackages);
   const collapsedCollectorPackageIdsRef = useRef<Set<string>>(collapsedCollectorPackageIds);
+  const collectorVisibleIdsRef = useRef<string[]>([]);
   const collectorPersistenceHydratedRef = useRef(false);
   const collectorPersistenceCoordinatorRef = useRef<CollectorPersistenceCoordinator | null>(null);
+  const collectorPersistenceBudgetRef = useRef<CollectorPersistenceBudget | null>(null);
   const collectorEnrichmentGenerationsRef = useRef(new Map<string, number>());
   const collectorEnrichmentRequestsRef = useRef(new Map<string, ReturnType<typeof beginCollectorEnrichment>>());
   const importCollectorTextRef = useRef<(rawText: string) => Promise<void>>(() => Promise.resolve());
@@ -1829,6 +1992,7 @@ export function App(): ReactElement {
   const [selectedHistoryIds, setSelectedHistoryIds] = useState<Set<string>>(new Set());
   const [historyFilter, setHistoryFilter] = useState<HistoryFilter>("all");
   const [historyQuery, setHistoryQuery] = useState("");
+  const [historyVisiblePageCount, setHistoryVisiblePageCount] = useState(0);
   const [statisticsRange, setStatisticsRange] = useState<StatisticsRange>("session");
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState("");
@@ -1836,6 +2000,7 @@ export function App(): ReactElement {
   const historyCtxMenuRef = useRef<HTMLDivElement>(null);
   const historyLoadGenerationRef = useRef(0);
   const historyLoadActiveRef = useRef(false);
+  const historyLoadFailedRef = useRef(false);
   const pendingLiveHistoryEntriesRef = useRef<HistoryEntry[]>([]);
   const historyVisibleIdsRef = useRef<string[]>([]);
   const [allDebridHostInfo, setAllDebridHostInfo] = useState<AllDebridHostInfo | null>(null);
@@ -1857,6 +2022,11 @@ export function App(): ReactElement {
     collectorError,
     snapshot.settings.animatePackageDisclosure
   ), [collapsedCollectorPackageIds, collectorAnalyzingCount, collectorError, collectorFilter, collectorPackages, collectorQuery, selectedCollectorLinkIds, snapshot.settings.animatePackageDisclosure]);
+  collectorVisibleIdsRef.current = collectorViewModel.visibleIds;
+
+  const historyCalendarDate = new Date(runtimeNow);
+  historyCalendarDate.setHours(0, 0, 0, 0);
+  const historyCalendarDayStart = historyCalendarDate.getTime();
 
   const historyViewModel = useMemo(() => buildHistoryViewModel(
     historyEntries,
@@ -1866,10 +2036,15 @@ export function App(): ReactElement {
     historyExpandedIds,
     historyLoading,
     historyError,
-    runtimeNow,
-    snapshot.settings.animatePackageDisclosure
-  ), [historyEntries, historyError, historyExpandedIds, historyFilter, historyLoading, historyQuery, runtimeNow, selectedHistoryIds, snapshot.settings.animatePackageDisclosure]);
-  historyVisibleIdsRef.current = historyViewModel.rows.map((entry) => entry.id);
+    historyCalendarDayStart,
+    snapshot.settings.animatePackageDisclosure,
+    normalizeLanguage(settingsDraft.language)
+  ), [historyCalendarDayStart, historyEntries, historyError, historyExpandedIds, historyFilter, historyLoading, historyQuery, selectedHistoryIds, settingsDraft.language, snapshot.settings.animatePackageDisclosure]);
+  const historySidebarCounts = formatHistorySidebarCounts(
+    historyViewModel.totalCount,
+    historyViewModel.loading || historyViewModel.error ? 0 : historyVisiblePageCount,
+    historyViewModel.selectedIds.length
+  );
   const statisticsViewModel = useMemo(
     () => buildStatisticsViewModel(snapshot, statisticsRange, runtimeNow),
     [runtimeNow, snapshot, statisticsRange]
@@ -1986,6 +2161,7 @@ export function App(): ReactElement {
   const loadHistoryEntries = useCallback(async (): Promise<void> => {
     const generation = ++historyLoadGenerationRef.current;
     historyLoadActiveRef.current = true;
+    historyLoadFailedRef.current = false;
     pendingLiveHistoryEntriesRef.current = [];
     setHistoryLoading(true);
     setHistoryError("");
@@ -2006,6 +2182,9 @@ export function App(): ReactElement {
       applyHistoryEntries(merged);
     } catch {
       if (mountedRef.current && generation === historyLoadGenerationRef.current) {
+        historyLoadFailedRef.current = true;
+        pendingLiveHistoryEntriesRef.current = [];
+        applyHistoryEntries([]);
         setHistoryError("Verlauf konnte nicht geladen werden");
       }
     } finally {
@@ -2034,21 +2213,26 @@ export function App(): ReactElement {
       if (activeTabRef.current !== "history") {
         return;
       }
-      if (historyLoadActiveRef.current) {
-        pendingLiveHistoryEntriesRef.current = [
-          entry,
-          ...pendingLiveHistoryEntriesRef.current.filter((pending) => pending.id !== entry.id)
-        ];
-      }
-      const settings = snapshotRef.current.settings;
-      applyHistoryEntries(mergeLiveHistoryEntry(historyEntriesRef.current, entry, {
-        maxEntries: settings.historyMaxEntries,
-        maxAgeDays: settings.historyMaxAgeDays
-      }));
-      setHistoryError("");
+      routeHistoryLiveEntry(entry, historyLoadFailedRef.current, {
+        reload: () => { void loadHistoryEntries(); },
+        accept: (liveEntry) => {
+          if (historyLoadActiveRef.current) {
+            pendingLiveHistoryEntriesRef.current = [
+              liveEntry,
+              ...pendingLiveHistoryEntriesRef.current.filter((pending) => pending.id !== liveEntry.id)
+            ];
+          }
+          const settings = snapshotRef.current.settings;
+          applyHistoryEntries(mergeLiveHistoryEntry(historyEntriesRef.current, liveEntry, {
+            maxEntries: settings.historyMaxEntries,
+            maxAgeDays: settings.historyMaxAgeDays
+          }));
+          setHistoryError("");
+        }
+      });
     });
     return unsubscribeHistoryEntryAdded;
-  }, [applyHistoryEntries]);
+  }, [applyHistoryEntries, loadHistoryEntries]);
 
   const loadAllDebridHostInfo = useCallback(async (silent = false): Promise<void> => {
     const requestId = allDebridHostRequestRef.current + 1;
@@ -2137,32 +2321,56 @@ export function App(): ReactElement {
     let unsubscribe: (() => void) | null = null;
     let unsubClipboard: (() => void) | null = null;
     let unsubUpdateInstallProgress: (() => void) | null = null;
-    void window.rd.getVersion().then((v) => { if (mountedRef.current) { setAppVersion(v); } }).catch(() => undefined);
-    void window.rd.getTraceConfig().then((config) => {
-      if (mountedRef.current) {
-        setSupportTraceEnabled(config.enabled);
-      }
-    }).catch(() => undefined);
-    void window.rd.getSnapshot().then((state) => {
-      if (!mountedRef.current) {
+    let snapshotRequestGeneration = 0;
+    let authoritativeSnapshotApplied = false;
+    const snapshotCoordinator = createSnapshotBootstrapCoordinator();
+    const applyStreamSnapshot = (merged: UiSnapshot): void => {
+      masterSnapshotRef.current = merged;
+      persistedSettingsRef.current = merged.settings;
+      latestStateRef.current = merged;
+      if (stateFlushTimerRef.current) return;
+      const itemCount = Object.keys(merged.session.items).length;
+      const flushDelay = getSnapshotRenderDelay(itemCount, merged.session.running, activeTabRef.current);
+      stateFlushTimerRef.current = setTimeout(() => {
+        stateFlushTimerRef.current = null;
+        if (!latestStateRef.current) return;
+        const next = latestStateRef.current;
+        setSnapshot(next);
+        if (!settingsDirtyRef.current) {
+          setSettingsDraft((current) => createSettingsDraft(next.settings, current));
+        }
+        latestStateRef.current = null;
+      }, flushDelay);
+    };
+    const applyAuthoritativeSnapshot = (
+      state: UiSnapshot,
+      storedThemeChoice: SettingsThemeChoice = state.settings.themePreference
+    ): void => {
+      if (authoritativeSnapshotApplied) {
         return;
       }
+      authoritativeSnapshotApplied = true;
       masterSnapshotRef.current = state;
       persistedSettingsRef.current = state.settings;
-      persistedThemeChoiceRef.current = state.settings.theme;
+      const resolvedTheme = resolveSettingsThemeChoice(
+        storedThemeChoice,
+        window.matchMedia("(prefers-color-scheme: light)").matches
+      );
+      persistedThemeChoiceRef.current = storedThemeChoice;
       setSnapshot(state);
+      setSnapshotBootstrapStatus(snapshotCoordinator.getStatus());
       if (state.settings.columnOrder?.length > 0) {
         columnOrderPersistenceRef.current?.applyAuthoritative(state.settings.columnOrder);
       }
-      setSettingsDraft((current) => createSettingsDraft(state.settings, current));
+      setSettingsDraft((current) => createSettingsDraft({ ...state.settings, theme: resolvedTheme }, current));
       writeOnlySettingsDirtyRef.current.clear();
       settingsDirtyRef.current = false;
       panelDirtyRevisionRef.current = 0;
       setSettingsDirty(false);
       setSettingsSaveState("clean");
-      setSettingsThemeChoice(state.settings.theme);
-      settingsThemeChoiceRef.current = state.settings.theme;
-      applyTheme(state.settings.theme);
+      setSettingsThemeChoice(storedThemeChoice);
+      settingsThemeChoiceRef.current = storedThemeChoice;
+      applyTheme(resolvedTheme);
       if (state.settings.autoUpdateCheck) {
         void runLatestUpdateCheck(
           updateCheckGenerationRef,
@@ -2170,52 +2378,49 @@ export function App(): ReactElement {
           (result, generation) => handleUpdateResult(result, "startup", generation)
         ).catch(() => undefined);
       }
-    }).catch((error) => {
-      showToast(`Snapshot konnte nicht geladen werden: ${String(error)}`, 2800);
-    });
+    };
     unsubscribe = window.rd.onStateUpdate((wireState) => {
-      let merged: UiSnapshot;
-      const master = masterSnapshotRef.current;
-      if (wireState.payloadKind === "delta" && master) {
-        const newItems: Record<string, DownloadItem> = { ...master.session.items, ...wireState.session.items };
-        if (wireState.removedItemIds && wireState.removedItemIds.length > 0) {
-          for (const id of wireState.removedItemIds) delete newItems[id];
-        }
-        const newPackages: Record<string, PackageEntry> = { ...master.session.packages, ...wireState.session.packages };
-        if (wireState.removedPackageIds && wireState.removedPackageIds.length > 0) {
-          for (const id of wireState.removedPackageIds) delete newPackages[id];
-        }
-        merged = {
-          ...wireState,
-          session: {
-            ...wireState.session,
-            items: newItems,
-            packages: newPackages,
-          },
-        };
-      } else {
-        merged = wireState;
+      const merged = snapshotCoordinator.push(wireState);
+      if (!merged) {
+        return;
       }
-      masterSnapshotRef.current = merged;
-      persistedSettingsRef.current = merged.settings;
-      latestStateRef.current = merged;
-      if (stateFlushTimerRef.current) { return; }
-
-      const itemCount = Object.keys(merged.session.items).length;
-      const flushDelay = getSnapshotRenderDelay(itemCount, merged.session.running, activeTabRef.current);
-
-      stateFlushTimerRef.current = setTimeout(() => {
-        stateFlushTimerRef.current = null;
-        if (latestStateRef.current) {
-          const next = latestStateRef.current;
-          setSnapshot(next);
-          if (!settingsDirtyRef.current) {
-            setSettingsDraft((current) => createSettingsDraft(next.settings, current));
-          }
-          latestStateRef.current = null;
-        }
-      }, flushDelay);
+      if (!authoritativeSnapshotApplied && snapshotCoordinator.getStatus().phase === "ready") {
+        applyAuthoritativeSnapshot(merged);
+        return;
+      }
+      applyStreamSnapshot(merged);
     });
+    void window.rd.getVersion().then((v) => { if (mountedRef.current) { setAppVersion(v); } }).catch(() => undefined);
+    void window.rd.getTraceConfig().then((config) => {
+      if (mountedRef.current) {
+        setSupportTraceEnabled(config.enabled);
+      }
+    }).catch(() => undefined);
+    const loadInitialSnapshot = (): void => {
+      const generation = ++snapshotRequestGeneration;
+      setSnapshotBootstrapStatus(snapshotCoordinator.retry());
+      void window.rd.getSnapshot().then((initialState) => {
+        if (!mountedRef.current || generation !== snapshotRequestGeneration) {
+          return;
+        }
+        const state = snapshotCoordinator.initialize(initialState);
+        if (authoritativeSnapshotApplied) {
+          if (state !== masterSnapshotRef.current) {
+            applyStreamSnapshot(state);
+          }
+        } else {
+          applyAuthoritativeSnapshot(state, state.settings.themePreference);
+        }
+      }).catch((error) => {
+        if (!mountedRef.current || generation !== snapshotRequestGeneration) {
+          return;
+        }
+        const message = `Snapshot konnte nicht geladen werden: ${String(error)}`;
+        setSnapshotBootstrapStatus(snapshotCoordinator.fail(message));
+      });
+    };
+    retrySnapshotBootstrapRef.current = loadInitialSnapshot;
+    loadInitialSnapshot();
     unsubClipboard = window.rd.onClipboardDetected((links) => {
       showToast(`Zwischenablage: ${links.length} Link(s) erkannt`, 3000);
       void importCollectorTextRef.current(links.join("\n"));
@@ -2254,6 +2459,7 @@ export function App(): ReactElement {
       if (unsubscribe) { unsubscribe(); }
       if (unsubClipboard) { unsubClipboard(); }
       if (unsubUpdateInstallProgress) { unsubUpdateInstallProgress(); }
+      retrySnapshotBootstrapRef.current = () => {};
     };
   }, [clearImportQueueFocusListener]);
 
@@ -2338,6 +2544,12 @@ export function App(): ReactElement {
     showAllPackages: showAllPackages || !snapshot.session.running,
     renderLimit: AUTO_RENDER_PACKAGE_LIMIT
   }), [collapsedPackages, deferredDownloadSearch, downloadDisplayMode, downloadFilter, downloadProviderFilter, selectedIds, showAllPackages, snapshot.session.items, snapshot.session.packages, snapshot.session.running, snapshot.settings.hideExtractedItems, visiblePackages]);
+
+  useEffect(() => {
+    if (downloadsTabActive && downloadProviderFilter !== downloadsViewCore.providerFilter) {
+      setDownloadProviderFilter(downloadsViewCore.providerFilter);
+    }
+  }, [downloadProviderFilter, downloadsTabActive, downloadsViewCore.providerFilter]);
 
   const hasSavedAllDebridAccount = snapshot.accounts.some((account) => account.provider === "alldebrid");
   const allDebridSettingsDirty = snapshot.settings.allDebridUseWebLogin !== settingsDraft.allDebridUseWebLogin;
@@ -2841,15 +3053,20 @@ export function App(): ReactElement {
     }
     const revisionAtStart = settingsDraftRevisionRef.current;
     const themeChoiceAtStart = settingsThemeChoiceRef.current;
+    const saveIntent = captureSettingsSaveIntent(revisionAtStart, normalizedSettingsDraft);
+    const writeOnlyFieldsAtStart = new Set(writeOnlySettingsDirtyRef.current);
     settingsSaveInFlightRef.current = true;
     setSettingsSaveInFlight(true);
     setSettingsSaveState("saving");
     try {
       await performQuickAction(async () => {
-        const result = await persistDraftSettings(themeChoiceAtStart);
+        const result = await persistDraftSettings(themeChoiceAtStart, saveIntent, writeOnlyFieldsAtStart);
         const completion = resolveSettingsSaveCompletion(revisionAtStart, settingsDraftRevisionRef.current);
         if (completion.applyPersistedTheme) {
-          applyTheme(result.theme);
+          applyTheme(resolveSettingsThemeChoice(
+            themeChoiceAtStart,
+            window.matchMedia("(prefers-color-scheme: light)").matches
+          ));
         }
         setSettingsSaveState(completion.saveState);
         showToast(completion.toast, 1800);
@@ -2880,7 +3097,10 @@ export function App(): ReactElement {
     settingsThemeChoiceRef.current = restored.themeChoice;
     setSpeedLimitInput(restored.speedLimitInput);
     setScheduleSpeedInputs(restored.scheduleSpeedInputs);
-    applyTheme(restored.draft.theme);
+    applyTheme(resolveSettingsThemeChoice(
+      restored.themeChoice,
+      window.matchMedia("(prefers-color-scheme: light)").matches
+    ));
     showToast("Ungespeicherte Änderungen verworfen", 1800);
     if (settingsSubTab === "extract") {
       const generation = archivePasswordLoadGenerationRef.current;
@@ -2930,7 +3150,7 @@ export function App(): ReactElement {
   const applyPersistedSettings = (
     result: RendererSettings,
     preserveWriteOnlyValues = true,
-    themeChoice: SettingsThemeChoice = settingsThemeChoiceRef.current === "system" ? "system" : result.theme
+    themeChoice: SettingsThemeChoice = result.themePreference
   ): void => {
     persistedSettingsRef.current = result;
     persistedThemeChoiceRef.current = themeChoice;
@@ -2948,7 +3168,10 @@ export function App(): ReactElement {
     setSettingsSaveState("clean");
     setSettingsThemeChoice(themeChoice);
     settingsThemeChoiceRef.current = themeChoice;
-    applyTheme(result.theme);
+    applyTheme(resolveSettingsThemeChoice(
+      themeChoice,
+      window.matchMedia("(prefers-color-scheme: light)").matches
+    ));
   };
 
   const syncLiveProviderUsageSettings = (result: RendererSettings): void => {
@@ -3325,23 +3548,34 @@ export function App(): ReactElement {
     return result.value;
   };
 
-  const persistDraftSettingsDirect = async (themeChoiceAtStart: SettingsThemeChoice = settingsThemeChoiceRef.current): Promise<RendererSettings> => {
-    const revisionAtStart = settingsDraftRevisionRef.current;
-    const rebasedDraft = mergeAccountToggleSettings(normalizedSettingsDraft, persistedSettingsRef.current);
-    const update: RendererSettingsUpdate = { ...rebasedDraft };
-    if (!writeOnlySettingsDirtyRef.current.has("archivePasswordList")) delete update.archivePasswordList;
-    if (!writeOnlySettingsDirtyRef.current.has("notifyUrl")) delete update.notifyUrl;
+  const persistDraftSettingsDirect = async (
+    themeChoiceAtStart: SettingsThemeChoice = settingsThemeChoiceRef.current,
+    intent = captureSettingsSaveIntent(settingsDraftRevisionRef.current, normalizedSettingsDraft),
+    writeOnlyFields = new Set(writeOnlySettingsDirtyRef.current)
+  ): Promise<RendererSettings> => {
+    const rebasedDraft = mergeAccountToggleSettings(intent.draft, persistedSettingsRef.current);
+    const update: RendererSettingsUpdate = {
+      ...rebasedDraft,
+      theme: resolveSettingsThemeChoice(themeChoiceAtStart, window.matchMedia("(prefers-color-scheme: light)").matches),
+      themePreference: themeChoiceAtStart
+    };
+    if (!writeOnlyFields.has("archivePasswordList")) delete update.archivePasswordList;
+    if (!writeOnlyFields.has("notifyUrl")) delete update.notifyUrl;
     const result = await window.rd.updateSettings(update);
     persistedSettingsRef.current = result;
-    persistedThemeChoiceRef.current = themeChoiceAtStart;
-    if (settingsDraftRevisionRef.current === revisionAtStart) {
-      applyPersistedSettings(result, true, themeChoiceAtStart);
+    persistedThemeChoiceRef.current = result.themePreference;
+    if (settingsDraftRevisionRef.current === intent.revision) {
+      applyPersistedSettings(result);
     }
     return result;
   };
 
-  const persistDraftSettings = async (themeChoiceAtStart: SettingsThemeChoice = settingsThemeChoiceRef.current): Promise<RendererSettings> => (
-    runQueuedSettingsMutation(() => persistDraftSettingsDirect(themeChoiceAtStart))
+  const persistDraftSettings = async (
+    themeChoiceAtStart: SettingsThemeChoice = settingsThemeChoiceRef.current,
+    intent = captureSettingsSaveIntent(settingsDraftRevisionRef.current, normalizedSettingsDraft),
+    writeOnlyFields = new Set(writeOnlySettingsDirtyRef.current)
+  ): Promise<RendererSettings> => (
+    runQueuedSettingsMutation(() => persistDraftSettingsDirect(themeChoiceAtStart, intent, writeOnlyFields))
   );
 
   const closeStartConflictPrompt = (result: { policy: Extract<DuplicatePolicy, "skip" | "overwrite">; applyToAll: boolean } | null): void => {
@@ -3510,10 +3744,7 @@ export function App(): ReactElement {
       });
     },
     onToggleSelectAll: (visibleIds) => {
-      setSelectedHistoryIds((current) => {
-        const allSelected = visibleIds.length > 0 && visibleIds.every((id) => current.has(id));
-        return allSelected ? new Set() : selectVisibleHistoryIds(visibleIds);
-      });
+      setSelectedHistoryIds((current) => toggleHistoryPageSelection(current, visibleIds));
     },
     onToggleExpansion: (entryId) => {
       setHistoryExpandedIds((current) => {
@@ -3531,11 +3762,12 @@ export function App(): ReactElement {
     onRemove: (entryIds) => { void removeHistoryEntries(entryIds); },
     onClearSelection: () => setSelectedHistoryIds(new Set()),
     onClearHistory: () => { void clearHistoryEntries(); },
+    onVisiblePageChange: (ids) => {
+      historyVisibleIdsRef.current = ids;
+      setHistoryVisiblePageCount(ids.length);
+    },
     onContextMenu: (entryId, x, y) => {
-      setSelectedHistoryIds((current) => {
-        const visibleSelection = pruneHistoryIds(current, historyVisibleIdsRef.current);
-        return visibleSelection.has(entryId) ? visibleSelection : new Set([entryId]);
-      });
+      setSelectedHistoryIds((current) => resolveHistoryContextSelection(current, entryId));
       setHistoryCtxMenu({ entryId, x, y });
     }
   }), [clearHistoryEntries, removeHistoryEntries, restoreHistoryEntries, revealHistoryEntry]);
@@ -3601,20 +3833,88 @@ export function App(): ReactElement {
     }
   };
 
-  const mergeCollectorResult = (result: CollectorInspectionResult, enrichment = false): void => {
+  const mergeCollectorResult = (result: CollectorInspectionResult, enrichment = false): boolean => {
     const current = collectorPackagesRef.current;
-    const merged = enrichment
-      ? mergeCollectorEnrichment(current, result.packages)
-      : mergeCollectorPackages(current, result.packages);
-    collectorPackagesRef.current = merged.packages;
-    setCollectorPackages(merged.packages);
-    setCollapsedCollectorPackageIds((collapsed) => reconcileCollectorCollapsedPackageIds(
-      collapsed,
+    const decision = mergeCollectorPackagesWithinCapacity(current, result.packages, enrichment);
+    if (!decision.ok) {
+      setCollectorError(decision.message);
+      if (!enrichment) showToast(decision.message, 3200);
+      return false;
+    }
+    const merged = decision.value;
+    const nextCollapsed = reconcileCollectorCollapsedPackageIds(
+      collapsedCollectorPackageIdsRef.current,
       current,
       merged.packages,
       result.packages,
       !enrichment
-    ));
+    );
+    const nextState = {
+      packages: merged.packages,
+      collapsedPackageIds: [...nextCollapsed]
+    };
+    const persistenceBudget = enrichment && collectorPersistenceBudgetRef.current
+      ? advanceCollectorPersistenceBudget(
+        collectorPersistenceBudgetRef.current,
+        merged.persistenceDelta,
+        nextState.collapsedPackageIds
+      )
+      : createCollectorPersistenceBudget(nextState);
+    if (!persistenceBudget.ok) {
+      setCollectorError(persistenceBudget.message);
+      if (!enrichment) showToast(persistenceBudget.message, 3200);
+      return false;
+    }
+    collectorPersistenceBudgetRef.current = persistenceBudget.nextBudget;
+    collectorPackagesRef.current = merged.packages;
+    collapsedCollectorPackageIdsRef.current = nextCollapsed;
+    setCollectorPackages(merged.packages);
+    setCollapsedCollectorPackageIds(nextCollapsed);
+    return true;
+  };
+
+  const reconcileCollectorDependentState = (packages: CollectorPackage[]): void => {
+    setSelectedCollectorLinkIds((current) => reconcileCollectorSelectionWithPackages(current, packages));
+    const nextCollapsed = reconcileCollectorCollapsedPackageIdsWithPackages(collapsedCollectorPackageIdsRef.current, packages);
+    collapsedCollectorPackageIdsRef.current = nextCollapsed;
+    setCollapsedCollectorPackageIds(nextCollapsed);
+    pruneCollectorEnrichmentGenerations(
+      collectorEnrichmentGenerationsRef.current,
+      packages,
+      collectorEnrichmentRequestsRef.current.values()
+    );
+    const budget = createCollectorPersistenceBudget({
+      packages,
+      collapsedPackageIds: [...nextCollapsed]
+    });
+    collectorPersistenceBudgetRef.current = budget.ok ? budget.nextBudget : null;
+  };
+
+  const applyCollectorCollapsedPackageIds = (next: Set<string>): boolean => {
+    const state = {
+      packages: collectorPackagesRef.current,
+      collapsedPackageIds: [...next]
+    };
+    const budget = collectorPersistenceBudgetRef.current
+      ? advanceCollectorPersistenceBudget(
+        collectorPersistenceBudgetRef.current,
+        {
+          links: [],
+          packages: [],
+          removedPackageIds: [],
+          packageCount: collectorPersistenceBudgetRef.current.packageCount
+        },
+        state.collapsedPackageIds
+      )
+      : createCollectorPersistenceBudget(state);
+    if (!budget.ok) {
+      setCollectorError(budget.message);
+      return false;
+    }
+    collectorPersistenceBudgetRef.current = budget.nextBudget;
+    collapsedCollectorPackageIdsRef.current = next;
+    setCollapsedCollectorPackageIds(next);
+    return true;
   };
 
   const enrichCollectorResult = (packages: CollectorPackage[]): void => {
@@ -3640,6 +3940,11 @@ export function App(): ReactElement {
       }
     }).finally(() => {
       collectorEnrichmentRequestsRef.current.delete(requestId);
+      pruneCollectorEnrichmentGenerations(
+        collectorEnrichmentGenerationsRef.current,
+        collectorPackagesRef.current,
+        collectorEnrichmentRequestsRef.current.values()
+      );
       setCollectorAnalyzingCount((current) => Math.max(0, current - 1));
     });
   };
@@ -3659,38 +3964,72 @@ export function App(): ReactElement {
 
   useEffect(() => {
     let cancelled = false;
-    const coordinator = createCollectorPersistenceCoordinator((state) => window.rd.saveCollectorState(state));
+    const coordinator = createCollectorPersistenceCoordinator(
+      (state) => window.rd.saveCollectorState(state),
+      300,
+      (failure) => {
+        if (cancelled) return;
+        setCollectorError(`Linksammler konnte nicht gespeichert werden: ${String(failure.error)}`);
+        if (!failure.rollbackState) return;
+        collectorPackagesRef.current = failure.rollbackState.packages;
+        collapsedCollectorPackageIdsRef.current = new Set(failure.rollbackState.collapsedPackageIds);
+        setCollectorPackages(failure.rollbackState.packages);
+        setCollapsedCollectorPackageIds(new Set(failure.rollbackState.collapsedPackageIds));
+        setSelectedCollectorLinkIds((current) => reconcileCollectorSelectionWithPackages(current, failure.rollbackState?.packages ?? []));
+        pruneCollectorEnrichmentGenerations(
+          collectorEnrichmentGenerationsRef.current,
+          failure.rollbackState.packages,
+          collectorEnrichmentRequestsRef.current.values()
+        );
+        const rollbackBudget = createCollectorPersistenceBudget(failure.rollbackState);
+        collectorPersistenceBudgetRef.current = rollbackBudget.ok ? rollbackBudget.nextBudget : null;
+      }
+    );
     collectorPersistenceCoordinatorRef.current = coordinator;
-    const saveBeforeUnload = (): void => {
-      if (!collectorPersistenceHydratedRef.current) return;
-      window.rd.saveCollectorStateSync({
-        packages: collectorPackagesRef.current,
-        collapsedPackageIds: [...collapsedCollectorPackageIdsRef.current]
+    const saveBeforeUnload = (event: BeforeUnloadEvent): void => {
+      const saved = guardCollectorBeforeUnload(event, {
+        hydrated: collectorPersistenceHydratedRef.current,
+        currentState: {
+          packages: collectorPackagesRef.current,
+          collapsedPackageIds: [...collapsedCollectorPackageIdsRef.current]
+        },
+        getPersistedStateSync: window.rd.getCollectorStateSync,
+        saveStateSync: window.rd.saveCollectorStateSync
       });
+      if (!saved) setCollectorError("Linksammler konnte nicht gespeichert werden: Speichern fehlgeschlagen");
     };
     window.addEventListener("beforeunload", saveBeforeUnload);
     void window.rd.getCollectorState().then((persisted) => {
       if (cancelled) return;
-      const restored = restoreCollectorPersistenceState(
-        persisted,
-        collectorPackagesRef.current,
-        collapsedCollectorPackageIdsRef.current
-      );
+      const hydration = resolveCollectorLateHydration(persisted, {
+        packages: collectorPackagesRef.current,
+        collapsedPackageIds: [...collapsedCollectorPackageIdsRef.current]
+      });
+      const restored = hydration.ok ? hydration.state : hydration.rollbackState;
       collectorPackagesRef.current = restored.packages;
       collapsedCollectorPackageIdsRef.current = new Set(restored.collapsedPackageIds);
       setCollectorPackages(restored.packages);
       setCollapsedCollectorPackageIds(new Set(restored.collapsedPackageIds));
+      setSelectedCollectorLinkIds((current) => reconcileCollectorSelectionWithPackages(current, restored.packages));
+      pruneCollectorEnrichmentGenerations(
+        collectorEnrichmentGenerationsRef.current,
+        restored.packages,
+        collectorEnrichmentRequestsRef.current.values()
+      );
+      const restoredBudget = createCollectorPersistenceBudget(restored);
+      collectorPersistenceBudgetRef.current = restoredBudget.ok ? restoredBudget.nextBudget : null;
       collectorPersistenceHydratedRef.current = true;
+      coordinator.setBaseline(persisted);
+      if (!hydration.ok) {
+        setCollectorError(hydration.message);
+        if (restored.packages.length > 0) enrichCollectorResult(restored.packages);
+        return;
+      }
       coordinator.schedule(restored);
       if (restored.packages.length > 0) enrichCollectorResult(restored.packages);
     }).catch((error) => {
       if (cancelled) return;
-      collectorPersistenceHydratedRef.current = true;
       setCollectorError(`Linksammler konnte nicht wiederhergestellt werden: ${String(error)}`);
-      coordinator.schedule({
-        packages: collectorPackagesRef.current,
-        collapsedPackageIds: [...collapsedCollectorPackageIdsRef.current]
-      });
     });
     return () => {
       cancelled = true;
@@ -3731,7 +4070,7 @@ export function App(): ReactElement {
         showToast(message, 2600);
         return;
       }
-      mergeCollectorResult(prepared);
+      if (!mergeCollectorResult(prepared)) return;
       setCollectorFilter("all");
       setTab("collector");
       const linkCount = prepared.packages.reduce((sum, pkg) => sum + pkg.links.length, 0);
@@ -3762,7 +4101,7 @@ export function App(): ReactElement {
         showToast(message, 3000);
         return prepared;
       }
-      mergeCollectorResult(prepared);
+      if (!mergeCollectorResult(prepared)) return prepared;
       setCollectorFilter("all");
       setTab("collector");
       const linkCount = prepared.packages.reduce((sum, pkg) => sum + pkg.links.length, 0);
@@ -3803,12 +4142,10 @@ export function App(): ReactElement {
         showToast(`${result.addedLinks} von ${linkIds.size} Link(s) übergeben; Sammlung bleibt erhalten`, 3200);
         return;
       }
-      setCollectorPackages((current) => {
-        const next = removeCollectorLinks(current, linkIds);
-        collectorPackagesRef.current = next;
-        return next;
-      });
-      setSelectedCollectorLinkIds((current) => new Set([...current].filter((id) => !linkIds.has(id))));
+      const nextCollectorPackages = removeCollectorLinks(collectorPackagesRef.current, linkIds);
+      collectorPackagesRef.current = nextCollectorPackages;
+      setCollectorPackages(nextCollectorPackages);
+      reconcileCollectorDependentState(nextCollectorPackages);
       setTab("downloads");
       showToast(`${result.addedPackages} Paket(e), ${result.addedLinks} Link(s) übergeben`);
       if (snapshotRef.current.settings.collapseNewPackages) {
@@ -4069,33 +4406,31 @@ export function App(): ReactElement {
   };
 
   const setCollectorPackageSelection = (packageId: string, selected: boolean): void => {
-    const pkg = collectorPackagesRef.current.find((entry) => entry.id === packageId);
-    if (pkg) {
-      setSelectedCollectorLinkIds((current) => selectCollectorPackageLinks(current, pkg, selected));
+    const row = collectorViewModel.packages.find((entry) => entry.id === packageId);
+    if (row) {
+      setSelectedCollectorLinkIds((current) => selectCollectorPackageLinks(current, row, selected));
     }
   };
 
   const toggleCollectorPackageCollapse = (packageId: string): void => {
-    setCollapsedCollectorPackageIds((current) => {
-      const next = new Set(current);
-      if (next.has(packageId)) next.delete(packageId);
-      else next.add(packageId);
-      return next;
-    });
+    const next = new Set(collapsedCollectorPackageIdsRef.current);
+    if (next.has(packageId)) next.delete(packageId);
+    else next.add(packageId);
+    applyCollectorCollapsedPackageIds(next);
   };
 
   const toggleAllCollectorPackages = (): void => {
     const packageIds = collectorPackagesRef.current.map((pkg) => pkg.id);
-    setCollapsedCollectorPackageIds((current) => packageIds.some((id) => !current.has(id))
+    applyCollectorCollapsedPackageIds(packageIds.some((id) => !collapsedCollectorPackageIdsRef.current.has(id))
       ? new Set(packageIds)
       : new Set());
   };
 
   const removeSelectedCollectorLinks = (): void => {
-    if (selectedCollectorLinkIds.size === 0) {
+    const removedIds = new Set(collectorViewModel.selectedIds);
+    if (removedIds.size === 0) {
       return;
     }
-    const removedIds = new Set(selectedCollectorLinkIds);
     void askConfirmPrompt({
       title: "Ausgewählte Links löschen",
       message: "Die ausgewählten Links werden aus der Sammlung entfernt. Dieser Schritt kann nicht rückgängig gemacht werden.",
@@ -4105,12 +4440,10 @@ export function App(): ReactElement {
       if (!confirmed) {
         return;
       }
-      setCollectorPackages((current) => {
-        const next = removeCollectorLinks(current, removedIds);
-        collectorPackagesRef.current = next;
-        return next;
-      });
-      setSelectedCollectorLinkIds(new Set());
+      const nextCollectorPackages = removeCollectorLinks(collectorPackagesRef.current, removedIds);
+      collectorPackagesRef.current = nextCollectorPackages;
+      setCollectorPackages(nextCollectorPackages);
+      reconcileCollectorDependentState(nextCollectorPackages);
       setCollectorError("");
     });
   };
@@ -4908,9 +5241,12 @@ export function App(): ReactElement {
             // the active search / collapse / hide-extracted filters — selecting
             // the unfiltered package map would let a later delete hit hidden ones.
             setSelectedIds(new Set(visibleOrderIdsRef.current));
+          } else if (tabRef.current === "collector") {
+            e.preventDefault();
+            setSelectedCollectorLinkIds((current) => setCollectorVisibleSelection(current, collectorVisibleIdsRef.current, true));
           } else if (tabRef.current === "history") {
             e.preventDefault();
-            setSelectedHistoryIds(selectVisibleHistoryIds(historyVisibleIdsRef.current));
+            setSelectedHistoryIds((current) => selectHistoryPageFromShortcut(current, historyVisibleIdsRef.current));
           }
           return;
         }
@@ -5068,10 +5404,15 @@ export function App(): ReactElement {
     speedHistoryRef.current = appendBandwidthSample(speedHistoryRef.current, liveDownloadSpeedBps);
   }, [liveDownloadSpeedBps, snapshot.packageSpeedBps, snapshot.session.paused, snapshot.session.running]);
   const downloadQueueMetrics = useMemo(() => getDownloadQueueStatusMetrics(downloadsViewCore.eligibleItems), [downloadsViewCore.eligibleItems]);
-  const downloadQueueTotalBytes = downloadQueueMetrics.totalBytes;
+  const downloadQueueTotal = downloadQueueMetrics.total;
   const downloadRemaining = downloadQueueMetrics.remaining;
+  const downloadRunRemaining = useMemo(() => ({
+    bytes: snapshot.runRemainingBytes ?? 0,
+    unknownItems: snapshot.runRemainingUnknownItems ?? 0
+  }), [snapshot.runRemainingBytes, snapshot.runRemainingUnknownItems]);
   const downloadsViewModel = useMemo<DownloadsViewModel>(() => ({
     ...downloadsViewCore,
+    query: downloadSearch,
     running: snapshot.session.running,
     paused: snapshot.session.paused,
     canStart: snapshot.canStart,
@@ -5105,16 +5446,16 @@ export function App(): ReactElement {
       links: downloadQueueMetrics.pendingItemCount,
       session: humanSize(snapshot.stats.totalDownloaded),
       sessionBytes: snapshot.stats.totalDownloaded,
-      total: humanSize(downloadQueueTotalBytes),
-      totalBytes: downloadQueueTotalBytes,
+      total: formatRemainingDownloadBytes(downloadQueueTotal),
+      totalBytes: downloadQueueTotal.bytes,
       remaining: formatRemainingDownloadBytes(downloadRemaining),
       remainingBytes: downloadRemaining.bytes,
       remainingTooltip: formatRemainingDownloadTooltip(downloadRemaining),
       hosters: downloadQueueMetrics.hosterCount,
       speed: liveDownloadSpeedBps > 0 ? formatSpeedMbps(liveDownloadSpeedBps) : "0 B/s",
-      eta: snapshot.etaText
+      eta: `ETA: ${formatDownloadEta(downloadRunRemaining, liveDownloadSpeedBps, snapshot.session.running, snapshot.session.paused)}`
     }
-  }), [actionBusy, columnOrder, downloadDisclosureRevision, downloadPackageSpeeds, downloadQueueMetrics.hosterCount, downloadQueueMetrics.packageCount, downloadQueueMetrics.pendingItemCount, downloadQueueTotalBytes, downloadRemaining, downloadsSortColumn, downloadsSortDescending, downloadsViewCore, editingName, editingPackageId, gridTemplate, liveDownloadSpeedBps, scheduleCountdown, schedulePickerOpen, scheduleStartDay, scheduleTimeInput, snapshot.canPause, snapshot.canStart, snapshot.canStop, snapshot.clipboardActive, snapshot.etaText, snapshot.reconnectSeconds, snapshot.session.paused, snapshot.session.reconnectReason, snapshot.session.running, snapshot.settings.animatePackageDisclosure, snapshot.settings.dailyStartEnabled, snapshot.settings.dailyStartMinuteOfDay, snapshot.settings.scheduledStartEpochMs, snapshot.stats.totalDownloaded]);
+  }), [actionBusy, columnOrder, downloadDisclosureRevision, downloadPackageSpeeds, downloadQueueMetrics.hosterCount, downloadQueueMetrics.packageCount, downloadQueueMetrics.pendingItemCount, downloadQueueTotal, downloadRemaining, downloadRunRemaining, downloadSearch, downloadsSortColumn, downloadsSortDescending, downloadsViewCore, editingName, editingPackageId, gridTemplate, liveDownloadSpeedBps, scheduleCountdown, schedulePickerOpen, scheduleStartDay, scheduleTimeInput, snapshot.canPause, snapshot.canStart, snapshot.canStop, snapshot.clipboardActive, snapshot.reconnectSeconds, snapshot.session.paused, snapshot.session.reconnectReason, snapshot.session.running, snapshot.settings.animatePackageDisclosure, snapshot.settings.dailyStartEnabled, snapshot.settings.dailyStartMinuteOfDay, snapshot.settings.scheduledStartEpochMs, snapshot.stats.totalDownloaded]);
 
   const resetColumnLayout = useCallback((): void => {
     if (columnDragSettleTimerRef.current !== null) {
@@ -5142,16 +5483,28 @@ export function App(): ReactElement {
       openCollectorInput();
     },
     onStartDownloads: () => {
+      const onBlocked = (): void => showToast("Downloads können derzeit nicht gestartet werden", 2400);
+      const onError = (error: unknown): void => showToast(`Start fehlgeschlagen: ${String(error)}`, 2800);
       if (snapshot.session.paused) {
-        setSnapshot((current) => ({ ...current, session: { ...current.session, paused: false } }));
-        void window.rd.togglePause().catch(() => {});
-      } else {
-        void onStartDownloads();
+        void runResumeDownloadAction(
+          performQuickAction,
+          snapshot.canStart,
+          () => window.rd.togglePause(),
+          (paused) => setSnapshot((current) => ({ ...current, session: { ...current.session, paused } })),
+          onBlocked,
+          onError
+        );
+        return;
       }
+      void runDownloadStartAction(snapshot.canStart, onStartDownloads, onBlocked, onError);
     },
     onPauseDownloads: () => {
-      setSnapshot((current) => ({ ...current, session: { ...current.session, paused: true } }));
-      void window.rd.togglePause().catch(() => {});
+      void runPauseDownloadAction(
+        performQuickAction,
+        () => window.rd.togglePause(),
+        (paused) => setSnapshot((current) => ({ ...current, session: { ...current.session, paused } })),
+        (error) => showToast(`Pause fehlgeschlagen: ${String(error)}`, 2800)
+      );
     },
     onStopDownloads: () => { void performQuickAction(() => window.rd.stop()); },
     onToggleSchedule: () => {
@@ -5304,6 +5657,7 @@ export function App(): ReactElement {
           return;
         }
         return window.rd.resetSessionStats().then(() => {
+          speedHistoryRef.current = [];
           showToast("Session-Statistik zurückgesetzt", 1800);
         }).catch((error) => {
           showToast(`Session-Reset fehlgeschlagen: ${String(error)}`, 2400);
@@ -5343,12 +5697,17 @@ export function App(): ReactElement {
     onImportDlc: () => { void onImportDlc(); },
     onImportFile: () => { void onImportQueue(); },
     onSubmitSelected: () => {
-      void submitCollectorPackages(buildCollectorTransferPackages(collectorPackagesRef.current, selectedCollectorLinkIds));
+      void submitCollectorPackages(buildCollectorTransferPackages(collectorPackagesRef.current, new Set(collectorViewModel.selectedTransferableIds)));
     },
-    onSubmitAll: () => { void submitCollectorPackages(collectorPackagesRef.current); },
+    onSubmitAll: () => {
+      void submitCollectorPackages(buildCollectorTransferPackages(collectorPackagesRef.current, new Set(collectorViewModel.visibleTransferableIds)));
+    },
     onQueryChange: setCollectorQuery,
     onLinkSelectionChange: setCollectorLinkSelection,
     onPackageSelectionChange: setCollectorPackageSelection,
+    onSetVisibleSelection: (ids, selected) => {
+      setSelectedCollectorLinkIds((current) => setCollectorVisibleSelection(current, ids, selected));
+    },
     onPackageCollapseChange: toggleCollectorPackageCollapse,
     onToggleAllPackages: toggleAllCollectorPackages,
     onRemoveSelected: removeSelectedCollectorLinks
@@ -5679,6 +6038,7 @@ export function App(): ReactElement {
         const choice = value as SettingsThemeChoice;
         const next = resolveSettingsThemeChoice(choice, window.matchMedia("(prefers-color-scheme: light)").matches);
         setSettingsThemeChoice(choice);
+        setText("themePreference", choice);
         setText("theme", next);
         applyTheme(next);
         return;
@@ -5973,6 +6333,38 @@ export function App(): ReactElement {
       }}
     />
   ) : null;
+
+  if (snapshotBootstrapStatus.phase !== "ready") {
+    const snapshotBootstrapFailed = snapshotBootstrapStatus.phase === "error";
+    return (
+      <main
+        aria-busy={!snapshotBootstrapFailed}
+        aria-labelledby="snapshot-bootstrap-title"
+        className="snapshot-bootstrap-root"
+      >
+        <section
+          aria-live={snapshotBootstrapFailed ? "assertive" : "polite"}
+          className={`snapshot-bootstrap-panel${snapshotBootstrapFailed ? " is-error" : ""}`}
+          role={snapshotBootstrapFailed ? "alert" : "status"}
+        >
+          {!snapshotBootstrapFailed ? <span aria-hidden="true" className="snapshot-bootstrap-spinner" /> : null}
+          <h1 id="snapshot-bootstrap-title">
+            {snapshotBootstrapFailed ? "Anwendungsdaten konnten nicht geladen werden" : "Anwendungsdaten werden geladen"}
+          </h1>
+          <p>
+            {snapshotBootstrapFailed
+              ? snapshotBootstrapStatus.message || "Der aktuelle Stand konnte nicht abgerufen werden."
+              : "Der aktuelle Stand wird sicher geladen."}
+          </p>
+          {snapshotBootstrapFailed ? (
+            <button className="snapshot-bootstrap-retry" onClick={() => retrySnapshotBootstrapRef.current()} type="button">
+              Erneut versuchen
+            </button>
+          ) : null}
+        </section>
+      </main>
+    );
+  }
 
   return (
     <div
@@ -6323,9 +6715,9 @@ export function App(): ReactElement {
           <CollectorSidebarStatus model={collectorViewModel} />
         ) : tab === "history" ? (
           <>
-            <span>Einträge: {historyViewModel.totalCount}</span>
-            <span>Sichtbar: {historyViewModel.rows.length}</span>
-            <span>Ausgewählt: {historyViewModel.selectedIds.length}</span>
+            <span>{historySidebarCounts.entries}</span>
+            <span>{historySidebarCounts.visible}</span>
+            <span>{historySidebarCounts.selected}</span>
           </>
         ) : tab === "statistics" ? (
           <StatisticsSidebarStatus model={statisticsViewModel} />
@@ -6637,18 +7029,30 @@ export function App(): ReactElement {
         const startableStatuses = new Set(["queued", "cancelled", "reconnect_wait"]);
         const hasStartableItems = actionableSelectedIds.some((id) => { const it = snapshot.session.items[id]; return it && startableStatuses.has(it.status); });
         const hasItems = selectedItemIds.length > 0;
+        const startSelected = (): void => {
+          const packageIds = selectedPackageIds;
+          const itemIds = selectedItemIds.filter((id) => { const item = snapshot.session.items[id]; return item && startableStatuses.has(item.status); });
+          void runDownloadStartAction(
+            snapshot.canStart,
+            async () => {
+              if (packageIds.length > 0) await window.rd.startPackages(packageIds);
+              if (itemIds.length > 0) await window.rd.startItems(itemIds);
+            },
+            () => showToast("Downloads können derzeit nicht gestartet werden", 2400),
+            (error) => showToast(`Start fehlgeschlagen: ${String(error)}`, 2800)
+          );
+          setContextMenu(null);
+        };
         return (
         <ContextMenu ariaLabel="Downloadaktionen" onClose={() => setContextMenu(null)} open ref={ctxMenuRef} x={contextMenu.x} y={contextMenu.y}>
-          {(hasPackages || hasStartableItems) && (
-            <button className="ctx-menu-item" onClick={() => {
-              const pkgIds = selectedPackageIds;
-              const itemIds = selectedItemIds.filter((id) => { const it = snapshot.session.items[id]; return it && startableStatuses.has(it.status); });
-              if (pkgIds.length > 0) void window.rd.startPackages(pkgIds).catch(() => {});
-              if (itemIds.length > 0) void window.rd.startItems(itemIds).catch(() => {});
-              setContextMenu(null);
-            }}>Ausgewählte Downloads starten{multi ? ` (${actionableSelectedIds.length})` : ""}</button>
-          )}
-          <button className="ctx-menu-item" onClick={() => { downloadsActions.onStartDownloads(); setContextMenu(null); }}>Alle Downloads starten</button>
+          <DownloadContextStartActions
+            actionBusy={actionBusy}
+            canStart={snapshot.canStart}
+            onStartAll={() => { downloadsActions.onStartDownloads(); setContextMenu(null); }}
+            onStartSelected={startSelected}
+            selectedLabel={`Ausgewählte Downloads starten${multi ? ` (${actionableSelectedIds.length})` : ""}`}
+            showSelected={hasPackages || hasStartableItems}
+          />
           <div className="ctx-menu-sep" />
           <button className="ctx-menu-item" onClick={() => showLinksPopup(contextMenu.packageId, contextMenu.itemId)}>Linkadressen anzeigen</button>
           {hasPackages && !contextMenu.itemId && (
@@ -6813,7 +7217,7 @@ export function App(): ReactElement {
         </ContextMenu>
         ) : null}
         historyContextMenu={historyCtxMenu ? (() => {
-        const selectedEntryIds = [...pruneHistoryIds(selectedHistoryIds, historyVisibleIdsRef.current)];
+        const selectedEntryIds = historyViewModel.selectedIds;
         const multi = selectedEntryIds.length > 1;
         const contextEntry = historyEntriesRef.current.find(e => e.id === historyCtxMenu.entryId);
         const hasUrls = (contextEntry?.urls?.length ?? 0) > 0;

@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { defaultSettings } from "../src/main/constants";
 import { createRendererSettings, createRendererState } from "../src/main/renderer-state";
-import { buildAccountAddFields, buildAccountCreateProviderOrderUpdate, buildProviderOrderEntry, createAccountDialogState, createDiscardedSettingsState, createSettingsDraft, resolveSettingsSaveCompletion } from "../src/renderer/App";
+import { buildAccountAddFields, buildAccountCreateProviderOrderUpdate, buildProviderOrderEntry, captureSettingsSaveIntent, createAccountDialogState, createDiscardedSettingsState, createSettingsDraft, resolveSettingsSaveCompletion } from "../src/renderer/App";
 import { buildAccountReplaceCommand, createAccountEditState, type AccountEditTarget } from "../src/renderer/account-edit";
 import {
   buildAccountTogglePatch,
@@ -65,6 +65,26 @@ const settingsCss = readFileSync(
   new URL("../src/renderer/views/settings/settings.css", import.meta.url),
   "utf8"
 );
+
+describe("settings save intent", () => {
+  it("captures the clicked draft before waiting for queued account mutations", () => {
+    const clicked = { outputDir: "C:\\Clicked", maxParallel: 4 };
+    const intent = captureSettingsSaveIntent(7, clicked);
+    clicked.outputDir = "C:\\Edited later";
+
+    expect(intent).toEqual({ revision: 7, draft: { outputDir: "C:\\Clicked", maxParallel: 4 } });
+  });
+
+  it("keeps edits made after the save click dirty when the older request completes", () => {
+    const intent = captureSettingsSaveIntent(7, { outputDir: "C:\\Clicked" });
+
+    expect(resolveSettingsSaveCompletion(intent.revision, 8)).toEqual({
+      saveState: "dirty",
+      applyPersistedTheme: false,
+      toast: "Zwischenstand gespeichert – weitere Änderungen sind ungespeichert"
+    });
+  });
+});
 
 function sourceBlock(source: string, start: string, end: string): string {
   return source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start)));
@@ -268,8 +288,8 @@ function formModel(): SettingsFormViewModel {
             label: "Theme",
             value: "dark",
             options: [
-              { value: "light", label: "Light" },
-              { value: "dark", label: "Dark" },
+              { value: "light", label: "Hell" },
+              { value: "dark", label: "Dunkel" },
               { value: "system", label: "System" }
             ]
           },
@@ -840,8 +860,8 @@ describe("settings views", () => {
     });
     const html = renderToStaticMarkup(form);
 
-    expect(html).toContain("Light");
-    expect(html).toContain("Dark");
+    expect(html).toContain("Hell");
+    expect(html).toContain("Dunkel");
     expect(html).toContain("System");
     expect(html).toContain("role=\"switch\"");
     const switchButton = findElement(form, (element) => element.props.role === "switch");
@@ -1412,6 +1432,28 @@ describe("settings App integration", () => {
     });
   });
 
+  it("uses the persisted semantic theme preference as the settings field value", () => {
+    const form = buildSettingsFormViewModel({
+      settings: {
+        ...createRendererSettings({ ...defaultSettings(), theme: "dark", themePreference: "system" }),
+        archivePasswordList: "",
+        notifyUrl: ""
+      },
+      section: "allgemein",
+      speedLimitInput: "0",
+      scheduleSpeedInputs: {}
+    });
+
+    expect(form.groups.flatMap((group) => group.fields).find((field) => field.id === "theme")).toEqual(expect.objectContaining({
+      value: "system",
+      options: [
+        { value: "light", label: "Hell" },
+        { value: "dark", label: "Dunkel" },
+        { value: "system", label: "System" }
+      ]
+    }));
+  });
+
   it("does not apply a stale save result over newer draft changes", () => {
     expect(resolveSettingsSaveCompletion(4, 4)).toEqual({
       saveState: "saved",
@@ -1432,7 +1474,7 @@ describe("settings App integration", () => {
 
     expect(revealBlock).toContain("window.rd.getArchivePasswordList()");
     expect(revealBlock).toContain('settingsSubTab !== "extract"');
-    expect(appSource).toContain("setSettingsDraft((current) => createSettingsDraft(state.settings, current))");
+    expect(appSource).toContain("setSettingsDraft((current) => createSettingsDraft({ ...state.settings, theme: resolvedTheme }, current))");
     expect(appSource).toContain("setSettingsDraft((current) => createSettingsDraft(next.settings, current))");
     expect(applyBlock).toContain("setSettingsDraft((current) => createSettingsDraft(result, preserveWriteOnlyValues ? current : undefined))");
     expect(mainSource).toContain("handleTrusted(IPC_CHANNELS.GET_ARCHIVE_PASSWORD_LIST");
@@ -1528,6 +1570,40 @@ describe("settings App integration", () => {
   it("preserves the System theme choice while applying its resolved palette", () => {
     expect(appSource).toContain("settingsThemeChoice");
     expect(appSource).toContain("resolveSettingsThemeChoice");
+  });
+
+  it("restores and persists the semantic theme choice through backend settings", () => {
+    const startupBlock = sourceBlock(appSource, "void window.rd.getSnapshot()", "unsubscribe = window.rd.onStateUpdate");
+    const saveBlock = sourceBlock(appSource, "const persistDraftSettingsDirect", "const persistDraftSettings =");
+
+    expect(appSource).not.toContain("SETTINGS_THEME_CHOICE_STORAGE_KEY");
+    expect(appSource).not.toContain("window.localStorage");
+    expect(startupBlock).toContain("state.settings.themePreference");
+    expect(saveBlock).toContain("themePreference: themeChoiceAtStart");
+  });
+
+  it("tracks operating-system palette changes only while System is selected", () => {
+    expect(appSource).toContain('addEventListener("change", onSystemThemeChange)');
+    expect(appSource).toContain('removeEventListener("change", onSystemThemeChange)');
+    expect(appSource).toContain('settingsThemeChoiceRef.current !== "system"');
+  });
+
+  it("clears the live bandwidth chart only after a confirmed session reset succeeds", () => {
+    const resetBlock = sourceBlock(appSource, "onResetSession: () => {", "onResetAll: () => {");
+    const resetSuccessBlock = sourceBlock(resetBlock, "return window.rd.resetSessionStats().then(() => {", "}).catch((error) => {");
+
+    expect(resetSuccessBlock).toContain("speedHistoryRef.current = []");
+    expect(resetBlock.indexOf("window.rd.resetSessionStats()")).toBeLessThan(resetBlock.indexOf("speedHistoryRef.current = []"));
+  });
+
+  it("clears stale history state when loading the persisted history fails", () => {
+    const loadBlock = sourceBlock(appSource, "const loadHistoryEntries", "useEffect(() => {");
+    const catchBlock = sourceBlock(loadBlock, "} catch {", "} finally {");
+
+    expect(catchBlock).toContain("pendingLiveHistoryEntriesRef.current = []");
+    expect(catchBlock).toContain("applyHistoryEntries([])");
+    expect(catchBlock.indexOf("pendingLiveHistoryEntriesRef.current = []")).toBeLessThan(catchBlock.indexOf("setHistoryError"));
+    expect(catchBlock.indexOf("applyHistoryEntries([])")).toBeLessThan(catchBlock.indexOf("setHistoryError"));
   });
 });
 

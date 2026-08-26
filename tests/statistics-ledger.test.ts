@@ -13,10 +13,13 @@ import {
   loadStatisticsLedger,
   normalizeStatisticsLedger,
   projectStatisticsLedger,
+  rebaseStatisticsProviderSeedBaseline,
   recordStatisticsActiveInterval,
   recordStatisticsBytes,
   recordStatisticsOutcome,
-  saveStatisticsLedger
+  saveStatisticsLedger,
+  seedStatisticsDayProviderBytes,
+  suppressStatisticsProviderSeedForDay
 } from "../src/main/statistics-ledger";
 
 const roots: string[] = [];
@@ -66,8 +69,19 @@ describe("statistics ledger", () => {
     const migrated = normalizeStatisticsLedger(legacy, now);
 
     expect(migrated.version).toBe(2);
+    expect(migrated.startedAt).toBe(legacy.startedAt);
+    expect(migrated.minuteTrackingStartedAt).toBe(now);
     expect(migrated.days).toEqual(legacy.days);
     expect(migrated.minutes).toEqual([]);
+  });
+
+  it("preserves the persisted minute tracking coverage start", () => {
+    const now = localTime(10);
+    const minuteTrackingStartedAt = now - (25 * 60 * 60 * 1_000);
+    const ledger = createStatisticsLedger(now);
+
+    expect(ledger.minuteTrackingStartedAt).toBe(now);
+    expect(normalizeStatisticsLedger({ ...ledger, minuteTrackingStartedAt }, now).minuteTrackingStartedAt).toBe(minuteTrackingStartedAt);
   });
 
   it("normalizes, merges, and bounds sparse account minute history", () => {
@@ -199,6 +213,108 @@ describe("statistics ledger", () => {
     expect(month).toMatchObject({ downloadedBytes: 107_000, activeDownloadMs: 3_000 });
   });
 
+  it("reconciles provider usage unless the day carries an explicit reset marker", () => {
+    const previousDay = recordStatisticsBytes(createStatisticsLedger(localTime(9)), "debridlink", 200, localTime(9));
+    const migrated = seedStatisticsDayProviderBytes(previousDay, { realdebrid: 500 }, localTime(10));
+
+    expect(migrated.days).toEqual([
+      expect.objectContaining({ day: "2026-08-09", downloadedBytes: 200 }),
+      expect.objectContaining({ day: "2026-08-10", downloadedBytes: 500, providers: { realdebrid: expect.objectContaining({ bytes: 500 }) } })
+    ]);
+
+    const existingToday = recordStatisticsBytes(createStatisticsLedger(localTime(10)), "realdebrid", 200, localTime(10));
+    expect(seedStatisticsDayProviderBytes(existingToday, { realdebrid: 500 }, localTime(10)).days[0]).toMatchObject({
+      downloadedBytes: 500,
+      providers: { realdebrid: expect.objectContaining({ bytes: 500 }) }
+    });
+
+    const resetDay = suppressStatisticsProviderSeedForDay(createStatisticsLedger(localTime(10)), localTime(10));
+    const preserved = seedStatisticsDayProviderBytes(resetDay, { realdebrid: 500 }, localTime(10));
+
+    expect(preserved.providerSeedSuppressedDay).toBe("2026-08-10");
+    expect(preserved.days).toEqual([]);
+  });
+
+  it("catches up only provider traffic recorded after a statistics reset baseline", () => {
+    const now = localTime(10);
+    const reset = suppressStatisticsProviderSeedForDay(
+      createStatisticsLedger(now),
+      now,
+      { realdebrid: 500, debridlink: 200 }
+    );
+    const staleSavedLedger = recordStatisticsBytes(reset, "realdebrid", 100, now);
+
+    const caughtUp = seedStatisticsDayProviderBytes(
+      staleSavedLedger,
+      { realdebrid: 650, debridlink: 200, deepbrid: 50 },
+      now
+    );
+
+    expect(caughtUp.providerSeedSuppressedDay).toBe("2026-08-10");
+    expect(caughtUp.providerSeedBaselineBytes).toEqual({ realdebrid: 500, debridlink: 200 });
+    expect(caughtUp.providerBytesOnlyDays).toEqual(["2026-08-10"]);
+    expect(caughtUp.days[0]).toMatchObject({
+      downloadedBytes: 200,
+      providers: {
+        realdebrid: { bytes: 150 },
+        deepbrid: { bytes: 50 }
+      }
+    });
+    expect(caughtUp.days[0].providers.debridlink).toBeUndefined();
+  });
+
+  it("normalizes reset baselines and preserves legacy marker suppression", () => {
+    const now = localTime(10);
+    const normalized = normalizeStatisticsLedger({
+      ...createStatisticsLedger(now),
+      providerSeedSuppressedDay: "2026-08-10",
+      providerSeedBaselineBytes: { realdebrid: 100.9, deepbrid: -5, unsafe: 999 }
+    }, now);
+
+    expect(normalized.providerSeedBaselineBytes).toEqual({ realdebrid: 100, deepbrid: -5 });
+
+    const legacy = normalizeStatisticsLedger({
+      ...createStatisticsLedger(now),
+      providerSeedSuppressedDay: "2026-08-10"
+    }, now);
+    expect(legacy.providerSeedBaselineBytes).toBeUndefined();
+    expect(seedStatisticsDayProviderBytes(legacy, { realdebrid: 500 }, now).days).toEqual([]);
+
+    const nextDay = seedStatisticsDayProviderBytes(normalized, { realdebrid: 25 }, localTime(11));
+    expect(nextDay.providerSeedSuppressedDay).toBeUndefined();
+    expect(nextDay.providerSeedBaselineBytes).toBeUndefined();
+    expect(nextDay.days[0]?.providers.realdebrid?.bytes).toBe(25);
+  });
+
+  it("rebases an active provider quota baseline without losing post-reset statistics", () => {
+    const now = localTime(10);
+    const reset = suppressStatisticsProviderSeedForDay(createStatisticsLedger(now), now, {
+      realdebrid: 500,
+      debridlink: 200
+    });
+    const withPostResetTraffic = recordStatisticsBytes(reset, "realdebrid", 200, now);
+
+    const rebased = rebaseStatisticsProviderSeedBaseline(withPostResetTraffic, "realdebrid", 0, now);
+    const afterMoreTraffic = seedStatisticsDayProviderBytes(rebased, { realdebrid: 100, debridlink: 200 }, now);
+
+    expect(rebased.providerSeedBaselineBytes).toEqual({ realdebrid: -200, debridlink: 200 });
+    expect(rebased.days[0]?.providers.realdebrid?.bytes).toBe(200);
+    expect(afterMoreTraffic.days[0]?.providers.realdebrid?.bytes).toBe(300);
+    expect(afterMoreTraffic.days[0]?.downloadedBytes).toBe(300);
+  });
+
+  it("establishes a catch-up baseline when quota usage is reset without a statistics reset", () => {
+    const now = localTime(10);
+    const existing = recordStatisticsBytes(createStatisticsLedger(now), "realdebrid", 500, now);
+    const rebased = rebaseStatisticsProviderSeedBaseline(existing, "realdebrid", 0, now);
+    const restored = seedStatisticsDayProviderBytes(rebased, { realdebrid: 100 }, now);
+
+    expect(rebased.providerSeedSuppressedDay).toBe("2026-08-10");
+    expect(rebased.providerSeedBaselineBytes).toEqual({ realdebrid: -500 });
+    expect(restored.days[0]?.providers.realdebrid?.bytes).toBe(600);
+    expect(restored.days[0]?.downloadedBytes).toBe(600);
+  });
+
   it("splits active intervals across local calendar days", () => {
     const start = new Date(2026, 7, 9, 23, 59, 59, 500).getTime();
     const end = new Date(2026, 7, 10, 0, 0, 0, 500).getTime();
@@ -218,6 +334,7 @@ describe("statistics ledger", () => {
       "completed",
       localTime(10)
     );
+    ledger.providerBytesOnlyDays = ["2026-08-10"];
 
     saveStatisticsLedger(filePath, ledger);
     expect(loadStatisticsLedger(filePath, localTime(10))).toEqual(ledger);

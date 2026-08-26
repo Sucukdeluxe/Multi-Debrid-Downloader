@@ -54,6 +54,14 @@ function finiteNonNegative(value: unknown): number {
   return Number.isFinite(number) ? Math.max(0, Math.floor(number)) : 0;
 }
 
+function finiteInteger(value: unknown): number {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return 0;
+  }
+  return Math.max(-Number.MAX_SAFE_INTEGER, Math.min(Number.MAX_SAFE_INTEGER, Math.trunc(number)));
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -176,6 +184,20 @@ function normalizeProviderBucket(value: unknown): StatisticsProviderBucket {
   };
 }
 
+function normalizeProviderSeedBaseline(value: unknown): Partial<Record<DebridProvider, number>> | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const baseline: Partial<Record<DebridProvider, number>> = {};
+  for (const [provider, bytes] of Object.entries(record)) {
+    if (providers.has(provider as DebridProvider)) {
+      baseline[provider as DebridProvider] = finiteInteger(bytes);
+    }
+  }
+  return baseline;
+}
+
 function normalizeDay(value: unknown): StatisticsDayBucket | null {
   const record = asRecord(value);
   const day = String(record?.day || "");
@@ -201,7 +223,7 @@ function normalizeDay(value: unknown): StatisticsDayBucket | null {
 }
 
 export function createStatisticsLedger(now = Date.now()): StatisticsLedger {
-  return { version: 2, startedAt: now, days: [], minutes: [] };
+  return { version: 2, startedAt: now, minuteTrackingStartedAt: now, days: [], minutes: [] };
 }
 
 export function normalizeStatisticsLedger(value: unknown, now = Date.now()): StatisticsLedger {
@@ -216,9 +238,23 @@ export function normalizeStatisticsLedger(value: unknown, now = Date.now()): Sta
       byDay.set(day.day, day);
     }
   }
+  const providerSeedSuppressedDay = /^\d{4}-\d{2}-\d{2}$/.test(String(record.providerSeedSuppressedDay || ""))
+    ? String(record.providerSeedSuppressedDay)
+    : undefined;
+  const providerBytesOnlyDays = [...new Set(
+    (Array.isArray(record.providerBytesOnlyDays) ? record.providerBytesOnlyDays : [])
+      .map((day) => String(day || ""))
+      .filter((day) => /^\d{4}-\d{2}-\d{2}$/.test(day) && byDay.has(day))
+  )].sort();
   return {
     version: 2,
     startedAt: finiteNonNegative(record.startedAt) || now,
+    minuteTrackingStartedAt: Math.min(finiteNonNegative(record.minuteTrackingStartedAt) || now, now),
+    providerSeedSuppressedDay,
+    providerSeedBaselineBytes: providerSeedSuppressedDay
+      ? normalizeProviderSeedBaseline(record.providerSeedBaselineBytes)
+      : undefined,
+    providerBytesOnlyDays: providerBytesOnlyDays.length > 0 ? providerBytesOnlyDays : undefined,
     days: [...byDay.values()].sort((left, right) => left.day.localeCompare(right.day)),
     minutes: normalizeMinutes(record.minutes, now)
   };
@@ -401,16 +437,58 @@ function mutableDay(ledger: StatisticsLedger, epochMs: number): StatisticsDayBuc
   return day;
 }
 
+function markProviderBytesOnlyDay(ledger: StatisticsLedger, dayKey: string): StatisticsLedger {
+  return {
+    ...ledger,
+    providerBytesOnlyDays: [...new Set([...(ledger.providerBytesOnlyDays ?? []), dayKey])].sort()
+  };
+}
+
 export function seedStatisticsDayProviderBytes(
   ledger: StatisticsLedger,
   usage: Partial<Record<DebridProvider, number>>,
   epochMs = Date.now()
 ): StatisticsLedger {
-  return updateDay(ledger, epochMs, (day) => {
+  const normalized = normalizeStatisticsLedger(ledger, epochMs);
+  const dayKey = getProviderUsageDayKey(epochMs);
+  if (normalized.providerSeedSuppressedDay === dayKey) {
+    const baseline = normalized.providerSeedBaselineBytes;
+    if (!baseline) {
+      return normalized;
+    }
+    const deltas: Partial<Record<DebridProvider, number>> = {};
+    for (const [provider, rawBytes] of Object.entries(usage) as Array<[DebridProvider, number | undefined]>) {
+      if (!providers.has(provider)) continue;
+      const delta = Math.max(0, finiteNonNegative(rawBytes) - finiteInteger(baseline[provider]));
+      if (delta > 0) {
+        deltas[provider] = delta;
+      }
+    }
+    if (Object.keys(deltas).length === 0) {
+      return normalized;
+    }
+    let recovered = false;
+    const seeded = updateDay(normalized, epochMs, (day) => {
+      for (const [provider, bytes] of Object.entries(deltas) as Array<[DebridProvider, number]>) {
+        const existing = day.providers[provider] ?? emptyProviderBucket();
+        recovered ||= bytes > existing.bytes;
+        existing.bytes = Math.max(existing.bytes, bytes);
+        day.providers[provider] = existing;
+      }
+      day.downloadedBytes = Math.max(
+        day.downloadedBytes,
+        Object.values(day.providers).reduce((total, bucket) => total + finiteNonNegative(bucket?.bytes), 0)
+      );
+    });
+    return recovered ? markProviderBytesOnlyDay(seeded, dayKey) : seeded;
+  }
+  let recovered = false;
+  const seeded = updateDay(normalized, epochMs, (day) => {
     for (const [provider, rawBytes] of Object.entries(usage) as Array<[DebridProvider, number | undefined]>) {
       if (!providers.has(provider)) continue;
       const bytes = finiteNonNegative(rawBytes);
       const existing = day.providers[provider] ?? emptyProviderBucket();
+      recovered ||= bytes > existing.bytes;
       existing.bytes = Math.max(existing.bytes, bytes);
       day.providers[provider] = existing;
     }
@@ -419,6 +497,54 @@ export function seedStatisticsDayProviderBytes(
       Object.values(day.providers).reduce((total, bucket) => total + finiteNonNegative(bucket?.bytes), 0)
     );
   });
+  const current = normalized.providerSeedSuppressedDay && normalized.providerSeedSuppressedDay !== dayKey
+    ? { ...seeded, providerSeedSuppressedDay: undefined, providerSeedBaselineBytes: undefined }
+    : seeded;
+  return recovered ? markProviderBytesOnlyDay(current, dayKey) : current;
+}
+
+export function rebaseStatisticsProviderSeedBaseline(
+  ledger: StatisticsLedger,
+  provider: DebridProvider,
+  providerUsageBytes: number,
+  epochMs = Date.now()
+): StatisticsLedger {
+  const normalized = normalizeStatisticsLedger(ledger, epochMs);
+  const dayKey = getProviderUsageDayKey(epochMs);
+  if (!providers.has(provider)) {
+    return normalized;
+  }
+  const activeBaseline = normalized.providerSeedSuppressedDay === dayKey
+    ? normalized.providerSeedBaselineBytes
+    : {};
+  if (normalized.providerSeedSuppressedDay === dayKey && activeBaseline === undefined) {
+    return normalized;
+  }
+  const providerBytes = finiteNonNegative(
+    normalized.days.find((day) => day.day === dayKey)?.providers[provider]?.bytes
+  );
+  return {
+    ...normalized,
+    providerSeedSuppressedDay: dayKey,
+    providerSeedBaselineBytes: {
+      ...activeBaseline,
+      [provider]: finiteNonNegative(providerUsageBytes) - providerBytes
+    }
+  };
+}
+
+export function suppressStatisticsProviderSeedForDay(
+  ledger: StatisticsLedger,
+  epochMs = Date.now(),
+  baselineUsage?: Partial<Record<DebridProvider, number>>
+): StatisticsLedger {
+  return {
+    ...normalizeStatisticsLedger(ledger, epochMs),
+    providerSeedSuppressedDay: getProviderUsageDayKey(epochMs),
+    providerSeedBaselineBytes: baselineUsage === undefined
+      ? undefined
+      : normalizeProviderSeedBaseline(baselineUsage) ?? {}
+  };
 }
 
 export function recordStatisticsBytes(

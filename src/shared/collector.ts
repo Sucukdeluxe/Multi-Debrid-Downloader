@@ -2,6 +2,11 @@ export type CollectorAvailability = "online" | "offline" | "unknown";
 export type CollectorLinkStatus = "ready" | "offline" | "unknown";
 export type CollectorPackageNameSource = "explicit" | "inferred";
 
+export const COLLECTOR_MAX_PACKAGES = 2_000;
+export const COLLECTOR_MAX_LINKS = 20_000;
+export const COLLECTOR_MAX_NAME_LENGTH = 1_024;
+export const COLLECTOR_MAX_PERSISTENCE_BYTES = 64 * 1024 * 1024;
+
 export interface CollectorLink {
   id: string;
   url: string;
@@ -50,6 +55,64 @@ export interface CollectorInspectionResult {
 export interface CollectorPersistenceState {
   packages: CollectorPackage[];
   collapsedPackageIds: string[];
+}
+
+export type CollectorCapacityResult = {
+  ok: true;
+  packageCount: number;
+  linkCount: number;
+} | {
+  ok: false;
+  packageCount: number;
+  linkCount: number;
+  message: string;
+};
+
+export type CollectorPersistenceSizeResult = {
+  ok: true;
+  byteCount: number;
+} | {
+  ok: false;
+  byteCount: number;
+  message: string;
+};
+
+export function inspectCollectorCapacity(packages: readonly Pick<CollectorPackage, "links">[]): CollectorCapacityResult {
+  const packageCount = packages.length;
+  let linkCount = 0;
+  for (const pkg of packages) linkCount += pkg.links.length;
+  if (packageCount > COLLECTOR_MAX_PACKAGES) {
+    return {
+      ok: false,
+      packageCount,
+      linkCount,
+      message: `Der Linksammler kann höchstens ${COLLECTOR_MAX_PACKAGES.toLocaleString("de-DE")} Pakete enthalten.`
+    };
+  }
+  if (linkCount > COLLECTOR_MAX_LINKS) {
+    return {
+      ok: false,
+      packageCount,
+      linkCount,
+      message: `Der Linksammler kann höchstens ${COLLECTOR_MAX_LINKS.toLocaleString("de-DE")} Links enthalten.`
+    };
+  }
+  return { ok: true, packageCount, linkCount };
+}
+
+export function inspectCollectorPersistenceSize(
+  state: CollectorPersistenceState,
+  maximumBytes = COLLECTOR_MAX_PERSISTENCE_BYTES
+): CollectorPersistenceSizeResult {
+  const byteCount = new TextEncoder().encode(JSON.stringify({
+    version: 1,
+    packages: state.packages,
+    collapsedPackageIds: state.collapsedPackageIds,
+    updatedAt: Number.MAX_SAFE_INTEGER
+  })).byteLength;
+  return byteCount <= maximumBytes
+    ? { ok: true, byteCount }
+    : { ok: false, byteCount, message: "Der Linksammler ist zu groß, um gespeichert zu werden." };
 }
 
 function validAddedAt(value: unknown): value is number {
@@ -107,7 +170,7 @@ function validCollectorLink(value: unknown): value is CollectorLink {
     && raw.url.length <= 32767
     && /^https?:\/\/[^\s]+$/i.test(raw.url)
     && typeof raw.fileName === "string"
-    && raw.fileName.length <= 1024
+    && raw.fileName.length <= COLLECTOR_MAX_NAME_LENGTH
     && (raw.fileSizeBytes === null || (typeof raw.fileSizeBytes === "number" && Number.isSafeInteger(raw.fileSizeBytes) && raw.fileSizeBytes >= 0))
     && typeof raw.hoster === "string"
     && raw.hoster.length <= 255
@@ -125,7 +188,7 @@ function validCollectorPackage(value: unknown): value is CollectorPackage {
     && raw.id.length <= 160
     && typeof raw.name === "string"
     && raw.name.length > 0
-    && raw.name.length <= 1024
+    && raw.name.length <= COLLECTOR_MAX_NAME_LENGTH
     && (raw.nameSource === "explicit" || raw.nameSource === "inferred")
     && Array.isArray(raw.links)
     && raw.links.length > 0
@@ -144,9 +207,9 @@ export function validateCollectorEnrichmentRequest(value: unknown): CollectorEnr
     || raw.requestId.length > 160
     || !Array.isArray(raw.packages)
     || raw.packages.length === 0
-    || raw.packages.length > 2_000
+    || raw.packages.length > COLLECTOR_MAX_PACKAGES
     || raw.packages.some((entry) => !validCollectorPackage(entry))
-    || raw.packages.reduce((sum, entry) => sum + (entry as CollectorPackage).links.length, 0) > 20_000) {
+    || raw.packages.reduce((sum, entry) => sum + (entry as CollectorPackage).links.length, 0) > COLLECTOR_MAX_LINKS) {
     throw new Error("Linksammler-Anreicherung ist ungültig");
   }
   return { requestId: raw.requestId, packages: structuredClone(raw.packages) as CollectorPackage[] };
@@ -161,11 +224,11 @@ export function validateCollectorPersistenceState(value: unknown): CollectorPers
   const collapsedPackageIds = raw.collapsedPackageIds;
   if (Object.keys(raw).some((key) => key !== "packages" && key !== "collapsedPackageIds")
     || !Array.isArray(packages)
-    || packages.length > 2_000
+    || packages.length > COLLECTOR_MAX_PACKAGES
     || packages.some((entry) => !validCollectorPackage(entry))
-    || packages.reduce((sum, entry) => sum + (entry as CollectorPackage).links.length, 0) > 20_000
+    || packages.reduce((sum, entry) => sum + (entry as CollectorPackage).links.length, 0) > COLLECTOR_MAX_LINKS
     || !Array.isArray(collapsedPackageIds)
-    || collapsedPackageIds.length > 2_000
+    || collapsedPackageIds.length > COLLECTOR_MAX_PACKAGES
     || collapsedPackageIds.some((entry) => typeof entry !== "string" || entry.length === 0 || entry.length > 160)) {
     throw new Error("Linksammler-Speicherzustand ist ungültig");
   }

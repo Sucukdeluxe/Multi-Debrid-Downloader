@@ -9,7 +9,7 @@ import { parseRealDebridApiAccounts, serializeRealDebridApiAccounts } from "../s
 import { AppSettings } from "../src/shared/types";
 import { defaultSettings } from "../src/main/constants";
 import { configureCredentialProtector } from "../src/main/credential-protection";
-import { addHistoryEntryForRetention, createStoragePaths, emptySession, loadHistory, loadHistoryForRetention, loadSession, loadSessionWithStatus, loadSettings, normalizeHistoryEntry, normalizeLoadedSession, normalizeSettings, removeHistoryEntries, resetHistoryForRetention, saveHistory, saveSession, saveSessionAsync, saveSettings, saveSettingsAsync } from "../src/main/storage";
+import { acquirePersistenceBarrier, addHistoryEntryForRetention, clearHistory, createStoragePaths, emptySession, loadHistory, loadHistoryForRetention, loadSession, loadSessionWithStatus, loadSettings, normalizeHistoryEntry, normalizeLoadedSession, normalizeSettings, removeHistoryEntries, replaceHistory, resetHistoryForRetention, saveHistory, saveSession, saveSessionAsync, saveSettings, saveSettingsAsync } from "../src/main/storage";
 
 const tempDirs: string[] = [];
 type SettingsSaveMode = "sync" | "async";
@@ -1490,10 +1490,161 @@ describe("settings storage", () => {
       outputDir: path.join(dir, "out"),
       urls: ["https://example.com/file2.rar"]
     }]);
+    saveHistory(paths, [{
+      id: "hist-3",
+      name: "newer",
+      totalBytes: 4096,
+      downloadedBytes: 4096,
+      fileCount: 1,
+      provider: "realdebrid",
+      completedAt: Date.now(),
+      durationSeconds: 25,
+      status: "completed",
+      outputDir: path.join(dir, "out"),
+      urls: ["https://example.com/file3.rar"]
+    }]);
 
     resetHistoryForRetention(paths, "session");
 
     expect(loadHistory(paths)).toEqual([]);
+    expect(fs.existsSync(`${paths.historyFile}.bak`)).toBe(false);
+  });
+
+  it("recovers history from the last valid backup when the primary file is corrupted", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const entry = {
+      id: "history-backup",
+      name: "Backup",
+      totalBytes: 1,
+      downloadedBytes: 1,
+      fileCount: 1,
+      provider: "realdebrid" as const,
+      completedAt: Date.now(),
+      durationSeconds: 1,
+      status: "completed" as const,
+      outputDir: path.join(dir, "out"),
+      urls: []
+    };
+    saveHistory(paths, [entry]);
+    saveHistory(paths, [{ ...entry, id: "newer", name: "Neuer" }]);
+    fs.writeFileSync(paths.historyFile, "{broken", "utf8");
+
+    expect(loadHistory(paths).map((item) => item.id)).toEqual(["history-backup"]);
+    expect(loadHistory(paths).map((item) => item.id)).toEqual(["history-backup"]);
+  });
+
+  it("reports an unreadable history instead of silently replacing it with an empty list", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    fs.mkdirSync(paths.baseDir, { recursive: true });
+    fs.writeFileSync(paths.historyFile, "{broken", "utf8");
+    fs.writeFileSync(`${paths.historyFile}.bak`, "{also-broken", "utf8");
+
+    expect(() => loadHistory(paths)).toThrow("Verlaufsspeicher ist beschädigt");
+  });
+
+  it("returns a valid history backup even when repairing the primary file fails", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const entry = {
+      id: "readable-backup",
+      name: "Backup",
+      totalBytes: 1,
+      downloadedBytes: 1,
+      fileCount: 1,
+      provider: "realdebrid" as const,
+      completedAt: Date.now(),
+      durationSeconds: 1,
+      status: "completed" as const,
+      outputDir: path.join(dir, "out"),
+      urls: []
+    };
+    saveHistory(paths, [entry]);
+    saveHistory(paths, [{ ...entry, id: "newer" }]);
+    fs.writeFileSync(paths.historyFile, "{broken", "utf8");
+    const rename = vi.spyOn(fs, "renameSync").mockImplementation(() => {
+      throw Object.assign(new Error("locked"), { code: "EPERM" });
+    });
+    try {
+      expect(loadHistory(paths).map((item) => item.id)).toEqual(["readable-backup"]);
+    } finally {
+      rename.mockRestore();
+    }
+  });
+
+  it("authoritatively replaces both history copies without retaining previous entries", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    saveHistory(paths, [{ id: "old", name: "Alt" } as never]);
+
+    replaceHistory(paths, [{ id: "new", name: "Neu" } as never]);
+
+    expect(loadHistory(paths).map((entry) => entry.id)).toEqual(["new"]);
+    expect((JSON.parse(fs.readFileSync(`${paths.historyFile}.bak`, "utf8")) as Array<{ id: string }>).map((entry) => entry.id)).toEqual(["new"]);
+  });
+
+  it("rolls back the backup copy when authoritative primary replacement fails", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    saveHistory(paths, [{ id: "older", name: "Älter" } as never]);
+    saveHistory(paths, [{ id: "old", name: "Alt" } as never]);
+    const previousBackup = fs.readFileSync(`${paths.historyFile}.bak`, "utf8");
+    const renameFile = fs.renameSync.bind(fs);
+    let failed = false;
+    const rename = vi.spyOn(fs, "renameSync").mockImplementation((source, destination) => {
+      if (!failed && String(destination) === paths.historyFile) {
+        failed = true;
+        throw Object.assign(new Error("primary locked"), { code: "EPERM" });
+      }
+      return renameFile(source, destination);
+    });
+
+    try {
+      expect(() => replaceHistory(paths, [{ id: "new", name: "Neu" } as never])).toThrow("primary locked");
+    } finally {
+      rename.mockRestore();
+    }
+
+    expect(loadHistory(paths).map((entry) => entry.id)).toEqual(["old"]);
+    expect(fs.readFileSync(`${paths.historyFile}.bak`, "utf8")).toBe(previousBackup);
+  });
+
+  it("keeps the primary history intact when clearing its backup fails", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const entry = {
+      id: "clear-protected",
+      name: "Geschützt",
+      totalBytes: 1,
+      downloadedBytes: 1,
+      fileCount: 1,
+      provider: "realdebrid" as const,
+      completedAt: Date.now(),
+      durationSeconds: 1,
+      status: "completed" as const,
+      outputDir: path.join(dir, "out"),
+      urls: []
+    };
+    saveHistory(paths, [entry]);
+    saveHistory(paths, [{ ...entry, id: "clear-current" }]);
+    const removeFile = fs.rmSync.bind(fs);
+    const remove = vi.spyOn(fs, "rmSync").mockImplementation((filePath, options) => {
+      if (String(filePath) === `${paths.historyFile}.bak`) throw Object.assign(new Error("busy"), { code: "EBUSY" });
+      return removeFile(filePath, options);
+    });
+    try {
+      expect(() => clearHistory(paths)).toThrow();
+      expect(fs.existsSync(paths.historyFile)).toBe(true);
+    } finally {
+      remove.mockRestore();
+    }
   });
 
   it("caps persisted history to the configured maxEntries", () => {
@@ -1734,7 +1885,8 @@ describe("settings storage", () => {
 
     const updated = removeHistoryEntries(paths, ["hist-0", "hist-599"], limits);
 
-    expect(renameSpy).toHaveBeenCalledTimes(1);
+    expect(renameSpy).toHaveBeenCalledTimes(2);
+    expect(renameSpy.mock.calls.map((call) => call[1])).toEqual([`${paths.historyFile}.bak`, paths.historyFile]);
     renameSpy.mockRestore();
     expect(updated).toHaveLength(598);
     expect(updated.some((entry) => entry.id === "hist-0" || entry.id === "hist-599")).toBe(false);
@@ -1968,6 +2120,181 @@ describe("settings storage", () => {
     expect(persisted.summaryText).toBe("before-mutation");
   });
 
+  it("keeps newer synchronous settings and session saves when older async commits resume", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-sync-wins-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const oldSettings = { ...defaultSettings(), packageName: "old-async" };
+    const newSettings = { ...defaultSettings(), packageName: "new-sync" };
+    const oldSession = { ...emptySession(), summaryText: "old-async" };
+    const newSession = { ...emptySession(), summaryText: "new-sync" };
+    saveSettings(paths, defaultSettings());
+    saveSession(paths, emptySession());
+
+    let releaseSettingsCommit = () => {};
+    let releaseSessionCommit = () => {};
+    let markSettingsCommitStarted = () => {};
+    let markSessionCommitStarted = () => {};
+    const settingsCommitStarted = new Promise<void>((resolve) => { markSettingsCommitStarted = resolve; });
+    const sessionCommitStarted = new Promise<void>((resolve) => { markSessionCommitStarted = resolve; });
+    const settingsCommitRelease = new Promise<void>((resolve) => { releaseSettingsCommit = resolve; });
+    const sessionCommitRelease = new Promise<void>((resolve) => { releaseSessionCommit = resolve; });
+    const renameFile = fs.promises.rename.bind(fs.promises);
+    const rename = vi.spyOn(fs.promises, "rename").mockImplementation(async (source, destination) => {
+      const sourcePath = String(source);
+      if (sourcePath === `${paths.configFile}.settings.tmp`) {
+        markSettingsCommitStarted();
+        await settingsCommitRelease;
+      }
+      if (sourcePath === `${paths.sessionFile}.async.tmp`) {
+        markSessionCommitStarted();
+        await sessionCommitRelease;
+      }
+      await renameFile(source, destination);
+    });
+
+    try {
+      const oldSettingsSave = saveSettingsAsync(paths, oldSettings);
+      const oldSessionSave = saveSessionAsync(paths, oldSession);
+      const oldSaves = Promise.all([oldSettingsSave, oldSessionSave]);
+      const asyncCommitPaused = await Promise.race([
+        Promise.all([settingsCommitStarted, sessionCommitStarted]).then(() => true),
+        oldSaves.then(() => false)
+      ]);
+
+      saveSettings(paths, newSettings);
+      saveSession(paths, newSession);
+      if (asyncCommitPaused) {
+        releaseSettingsCommit();
+        releaseSessionCommit();
+      }
+      await oldSaves;
+
+      expect(loadSettings(paths).packageName).toBe("new-sync");
+      expect(loadSession(paths).summaryText).toBe("new-sync");
+    } finally {
+      releaseSettingsCommit();
+      releaseSessionCommit();
+      rename.mockRestore();
+    }
+  });
+
+  it("persists the async session primary when replacing its backup is temporarily blocked", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-session-backup-blocked-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    saveSession(paths, { ...emptySession(), summaryText: "previous" });
+    const renameFile = fs.renameSync.bind(fs);
+    const rename = vi.spyOn(fs, "renameSync").mockImplementation((source, destination) => {
+      if (String(destination) === `${paths.sessionFile}.bak`) {
+        throw Object.assign(new Error("backup busy"), { code: "EBUSY" });
+      }
+      return renameFile(source, destination);
+    });
+
+    try {
+      await saveSessionAsync(paths, { ...emptySession(), summaryText: "latest" });
+    } finally {
+      rename.mockRestore();
+    }
+
+    expect(loadSession(paths).summaryText).toBe("latest");
+  });
+
+  it("waits for in-flight settings and session writes and discards saves blocked by an import barrier", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-barrier-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const oldSettings = { ...defaultSettings(), packageName: "old-settings" };
+    const importedSettings = { ...defaultSettings(), packageName: "imported-settings" };
+    const oldSession = { ...emptySession(), summaryText: "old-session" };
+    const importedSession = { ...emptySession(), summaryText: "imported-session" };
+    saveSettings(paths, defaultSettings());
+    saveSession(paths, emptySession());
+
+    let releaseSettingsWrite = () => {};
+    let releaseSessionWrite = () => {};
+    let markSettingsWriteStarted = () => {};
+    let markSessionWriteStarted = () => {};
+    const settingsWriteStarted = new Promise<void>((resolve) => { markSettingsWriteStarted = resolve; });
+    const sessionWriteStarted = new Promise<void>((resolve) => { markSessionWriteStarted = resolve; });
+    const settingsWriteRelease = new Promise<void>((resolve) => { releaseSettingsWrite = resolve; });
+    const sessionWriteRelease = new Promise<void>((resolve) => { releaseSessionWrite = resolve; });
+    const writeFile = fs.promises.writeFile.bind(fs.promises);
+    const openFile = fs.promises.open.bind(fs.promises);
+    const write = vi.spyOn(fs.promises, "writeFile").mockImplementation(async (filePath, data, options) => {
+      await writeFile(filePath, data, options);
+      if (String(filePath) === `${paths.configFile}.settings.tmp`) {
+        markSettingsWriteStarted();
+        await settingsWriteRelease;
+      }
+    });
+    const open = vi.spyOn(fs.promises, "open").mockImplementation(async (filePath, flags, mode) => {
+      const handle = await openFile(filePath, flags, mode);
+      if (String(filePath) === `${paths.sessionFile}.async.tmp`) {
+        const originalWrite = handle.writeFile.bind(handle);
+        handle.writeFile = async (...args: Parameters<typeof handle.writeFile>) => {
+          const result = await originalWrite(...args);
+          markSessionWriteStarted();
+          await sessionWriteRelease;
+          return result;
+        };
+      }
+      return handle;
+    });
+
+    try {
+      const oldSettingsSave = saveSettingsAsync(paths, oldSettings);
+      const oldSessionSave = saveSessionAsync(paths, oldSession);
+      await Promise.all([settingsWriteStarted, sessionWriteStarted]);
+
+      let barrierAcquired = false;
+      const barrierPromise = acquirePersistenceBarrier().then((barrier) => {
+        barrierAcquired = true;
+        return barrier;
+      });
+      await Promise.resolve();
+      expect(barrierAcquired).toBe(false);
+
+      releaseSettingsWrite();
+      releaseSessionWrite();
+      const barrier = await barrierPromise;
+      await Promise.all([oldSettingsSave, oldSessionSave]);
+
+      const blockedSettingsSave = saveSettingsAsync(paths, oldSettings);
+      const blockedSessionSave = saveSessionAsync(paths, oldSession);
+      saveSettings(paths, importedSettings);
+      saveSession(paths, importedSession);
+      await barrier.release({ replayBlocked: false });
+      await Promise.all([blockedSettingsSave, blockedSessionSave]);
+
+      expect(loadSettings(paths).packageName).toBe("imported-settings");
+      expect(loadSession(paths).summaryText).toBe("imported-session");
+    } finally {
+      releaseSettingsWrite();
+      releaseSessionWrite();
+      write.mockRestore();
+      open.mockRestore();
+    }
+  });
+
+  it("replays the latest saves blocked by a failed import and releases the barrier", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-barrier-replay-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const barrier = await acquirePersistenceBarrier();
+    const settingsSave = saveSettingsAsync(paths, { ...defaultSettings(), packageName: "replayed-settings" });
+    const sessionSave = saveSessionAsync(paths, { ...emptySession(), summaryText: "replayed-session" });
+
+    await barrier.release({ replayBlocked: true });
+    await Promise.all([settingsSave, sessionSave]);
+
+    expect(loadSettings(paths).packageName).toBe("replayed-settings");
+    expect(loadSession(paths).summaryText).toBe("replayed-session");
+    const nextBarrier = await acquirePersistenceBarrier();
+    await nextBarrier.release({ replayBlocked: false });
+  });
+
   it("creates session backup before sync and async session overwrites", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
     tempDirs.push(dir);
@@ -2025,7 +2352,33 @@ describe("settings storage", () => {
     expect(loaded.collectMkvToLibrary).toBe(defaults.collectMkvToLibrary);
     expect(loaded.mkvLibraryDir).toBe(defaults.mkvLibraryDir);
     expect(loaded.theme).toBe(defaults.theme);
+    expect(loaded.themePreference).toBe(defaults.themePreference);
     expect(loaded.bandwidthSchedules).toEqual(defaults.bandwidthSchedules);
     expect(loaded.updateRepo).toBe(defaults.updateRepo);
+  });
+
+  it("persists the semantic theme preference and migrates legacy fixed themes", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+
+    const legacy = { ...defaultSettings(), theme: "light" as const } as Partial<AppSettings>;
+    delete legacy.themePreference;
+    fs.mkdirSync(path.dirname(paths.configFile), { recursive: true });
+    fs.writeFileSync(paths.configFile, JSON.stringify(legacy), "utf8");
+
+    expect(loadSettings(paths).themePreference).toBe("light");
+
+    saveSettings(paths, { ...defaultSettings(), theme: "dark", themePreference: "system" });
+
+    expect(loadSettings(paths)).toEqual(expect.objectContaining({
+      theme: "dark",
+      themePreference: "system"
+    }));
+    expect(normalizeSettings({
+      ...defaultSettings(),
+      theme: "light",
+      themePreference: "invalid" as AppSettings["themePreference"]
+    }).themePreference).toBe("light");
   });
 });

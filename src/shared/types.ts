@@ -28,6 +28,7 @@ export type DebridProvider =
   | "linksnappy";
 export type DebridFallbackProvider = DebridProvider | "none";
 export type AppTheme = "dark" | "light";
+export type ThemePreference = AppTheme | "system";
 export type AppLanguage = "en" | "de";
 export type PackagePriority = "high" | "normal" | "low";
 export type ExtractCpuPriority = "high" | "middle" | "low";
@@ -87,6 +88,10 @@ export interface StatisticsRolling24Hours {
 export interface StatisticsLedger {
   version: 2;
   startedAt: number;
+  minuteTrackingStartedAt?: number;
+  providerSeedSuppressedDay?: string;
+  providerSeedBaselineBytes?: Partial<Record<DebridProvider, number>>;
+  providerBytesOnlyDays?: string[];
   days: StatisticsDayBucket[];
   minutes: StatisticsMinuteBucket[];
 }
@@ -202,6 +207,7 @@ export interface AppSettings extends DailyStartSettings {
   clipboardWatch: boolean;
   minimizeToTray: boolean;
   theme: AppTheme;
+  themePreference: ThemePreference;
   logStorageLocation: LogStorageLocation;
   collapseNewPackages: boolean;
   animatePackageDisclosure: boolean;
@@ -336,6 +342,7 @@ export interface RendererSettings extends DailyStartSettings {
   clipboardWatch: boolean;
   minimizeToTray: boolean;
   theme: AppTheme;
+  themePreference: ThemePreference;
   logStorageLocation: LogStorageLocation;
   collapseNewPackages: boolean;
   animatePackageDisclosure: boolean;
@@ -687,6 +694,8 @@ export interface UiSnapshot {
   clipboardActive: boolean;
   reconnectSeconds: number;
   packageSpeedBps: Record<string, number>;
+  runRemainingBytes?: number;
+  runRemainingUnknownItems?: number;
   diskWaitEvents?: Array<{
     phase: "download" | "extract" | "remux";
     ownerId: string;
@@ -698,6 +707,7 @@ export interface UiSnapshot {
     deficitBytes: number;
     retryAt: number;
   }>;
+  snapshotRevision?: number;
   payloadKind?: "full" | "delta";
   removedItemIds?: string[];
   removedPackageIds?: string[];

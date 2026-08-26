@@ -19,6 +19,19 @@ const statistics: StatisticsLedger = { version: 2, startedAt: 1, days: [], minut
 const baseInput = { appVersion: "1.7.183", exportedAt: "2026-06-07T00:00:00Z", session, history, statistics };
 
 describe("buildBackupPayload — default is settings-only", () => {
+  it("keeps the semantic theme preference in exported settings", () => {
+    const payload = buildBackupPayload({
+      ...baseInput,
+      settings: settings({ theme: "dark", themePreference: "system" })
+    });
+
+    expect(payload.settings).toEqual(expect.objectContaining({
+      theme: "dark",
+      themePreference: "system"
+    }));
+    expect((JSON.parse(JSON.stringify(payload)) as { settings: AppSettings }).settings.themePreference).toBe("system");
+  });
+
   it("keeps the Deepbrid key only inside the encrypted backup payload", () => {
     const key = "fixture-deepbrid-backup-key-4eF6";
     const payload = buildBackupPayload({

@@ -2,6 +2,7 @@
 :root[data-theme="dark"] {
   --ui-canvas: #0F0F0F;
   --ui-surface: #232323;
+  --ui-panel: var(--ui-surface);
   --ui-input: #2B2B2B;
   --ui-table-header: #313131;
   --ui-active: #333436;

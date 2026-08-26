@@ -44,6 +44,36 @@ describe("link-parser", () => {
       expect(result[0]?.links).toEqual(["http://link1", "http://link2", "http://link3"]);
       expect(result[0]?.fileNames).toEqual(["one.rar", "two.rar", "three.rar"]);
     });
+
+    it("merges 20,000 unique links without quadratic duplicate scans", () => {
+      const prefix = "https://linear.example/";
+      const links = Array.from({ length: 20_000 }, (_, index) => `${prefix}${index}`);
+      const originalDescriptor = Object.getOwnPropertyDescriptor(Array.prototype, "includes");
+      const originalIncludes = Array.prototype.includes;
+      const maximumScannedSlots = 1_000_000;
+      let scannedSlots = 0;
+      let result: ReturnType<typeof mergePackageInputs> = [];
+
+      Object.defineProperty(Array.prototype, "includes", {
+        configurable: true,
+        writable: true,
+        value(this: unknown[], searchElement: unknown, fromIndex?: number): boolean {
+          if (typeof searchElement === "string" && searchElement.startsWith(prefix)) {
+            scannedSlots += this.length;
+            if (scannedSlots > maximumScannedSlots) throw new Error("quadratic duplicate scan limit exceeded");
+          }
+          return Reflect.apply(originalIncludes, this, [searchElement, fromIndex]) as boolean;
+        }
+      });
+      try {
+        result = mergePackageInputs([{ name: "Large package", links }]);
+      } finally {
+        if (originalDescriptor) Object.defineProperty(Array.prototype, "includes", originalDescriptor);
+      }
+
+      expect(result).toEqual([{ name: "Large package", links }]);
+      expect(scannedSlots).toBeLessThanOrEqual(maximumScannedSlots);
+    });
   });
 
   describe("parseCollectorInput", () => {

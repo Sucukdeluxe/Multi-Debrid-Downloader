@@ -6,8 +6,10 @@ import {
   prepareCollectorText
 } from "../src/main/collector-inspection";
 import {
+  COLLECTOR_MAX_NAME_LENGTH,
   validateCollectorContainerPreparationRequest,
   validateCollectorEnrichmentRequest,
+  validateCollectorPersistenceState,
   validateCollectorTextPreparationRequest
 } from "../src/shared/collector";
 import type { CollectorInspectionResult } from "../src/shared/collector";
@@ -45,6 +47,30 @@ describe("collector preparation", () => {
     fetchRequest.mockRestore();
   });
 
+  it("prepares the app's queue export JSON as collector packages", () => {
+    const rawText = JSON.stringify({
+      version: 1,
+      packages: [{
+        name: "Roundtrip",
+        links: ["https://example.test/one", "https://example.test/two"],
+        fileNames: ["one.bin", "two.bin"]
+      }]
+    }, null, 2);
+
+    const result = prepareCollectorText({ rawText, addedAt: 4_000 });
+
+    expect(result.invalidCount).toBe(0);
+    expect(result.duplicateCount).toBe(0);
+    expect(result.packages).toEqual([expect.objectContaining({
+      name: "Roundtrip",
+      nameSource: "explicit",
+      links: [
+        expect.objectContaining({ url: "https://example.test/one", fileName: "one.bin" }),
+        expect.objectContaining({ url: "https://example.test/two", fileName: "two.bin" })
+      ]
+    })]);
+  });
+
   it("decrypts selected DLC files into a skeleton without metadata enrichment", async () => {
     const importContainers = vi.fn(async () => [{
       name: "DLC Paket",
@@ -68,6 +94,33 @@ describe("collector preparation", () => {
       availability: "unknown",
       status: "ready"
     }));
+  });
+
+  it("normalizes package names from every preparation input to the persistence limit", async () => {
+    const oversizedName = "n".repeat(COLLECTOR_MAX_NAME_LENGTH + 1);
+    const textResult = prepareCollectorText({
+      rawText: [`# Package: ${oversizedName}`, "# File: text.bin", "https://example.com/text"].join("\n"),
+      addedAt: 3_100
+    });
+    const containerResult = await prepareCollectorContainers(
+      ["C:\\Imports\\oversized.dlc"],
+      3_200,
+      {
+        importContainers: async () => [{
+          name: oversizedName,
+          links: ["https://example.com/container"],
+          fileNames: ["container.bin"]
+        }]
+      }
+    );
+
+    for (const result of [textResult, containerResult]) {
+      expect(result.packages[0].name).toBe("n".repeat(COLLECTOR_MAX_NAME_LENGTH));
+      expect(() => validateCollectorPersistenceState({
+        packages: result.packages,
+        collapsedPackageIds: []
+      })).not.toThrow();
+    }
   });
 
   it("rejects oversized text and invalid container paths", () => {
@@ -179,6 +232,55 @@ describe("collector enrichment", () => {
       fileSizeBytes: 200
     });
     await run;
+  });
+
+  it("normalizes every external enrichment file name before progress and persistence", async () => {
+    const urls = [
+      "https://1fichier.com/?abc123def456ghi789jk",
+      "https://rapidgator.net/file/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/opaque.html",
+      "https://ddownload.com/abcdefghij",
+      "https://example.com/"
+    ];
+    const prepared = prepareCollectorText({
+      rawText: ["# Package: External", ...urls.slice(0, 3), "# File: download.bin", urls[3]].join("\n"),
+      addedAt: 8_000
+    });
+    const externalFileName = "x".repeat(1_025);
+    const progress: CollectorInspectionResult[] = [];
+
+    const result = await enrichCollectorPackages(
+      { requestId: "request-external-file-names", packages: prepared.packages },
+      defaultSettings(),
+      {
+        checkOneFichier: async (links) => new Map(links.map((url) => [url, {
+          online: true,
+          fileName: externalFileName,
+          fileSizeBytes: 100,
+          accessRestricted: false
+        }])),
+        checkRapidgator: async () => ({ online: true, fileName: externalFileName, fileSizeBytes: 200 }),
+        checkDdownload: async () => ({ online: true, fileName: externalFileName, fileSizeBytes: 300 }),
+        resolveFilenames: async (links, onResolved) => {
+          for (const url of links) onResolved?.(url, externalFileName);
+          return new Map(links.map((url) => [url, externalFileName]));
+        }
+      },
+      (entry) => progress.push(entry)
+    );
+
+    const finalLinks = result.packages.flatMap((pkg) => pkg.links);
+    const progressLinks = progress.flatMap((entry) => entry.packages).flatMap((pkg) => pkg.links);
+    expect(finalLinks.map((link) => link.url).sort()).toEqual([...urls].sort());
+    expect([...new Set(progressLinks.map((link) => link.url))].sort()).toEqual([...urls].sort());
+    for (const link of [...finalLinks, ...progressLinks]) {
+      expect(link.fileName).toBe("x".repeat(1_024));
+    }
+    for (const entry of [...progress, result]) {
+      expect(() => validateCollectorPersistenceState({
+        packages: entry.packages,
+        collapsedPackageIds: []
+      })).not.toThrow();
+    }
   });
 
   it("rejects enrichment payloads that do not contain prepared absolute links", () => {

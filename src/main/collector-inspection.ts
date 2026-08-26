@@ -7,7 +7,7 @@ import type {
   CollectorPackage,
   CollectorTextPreparationRequest
 } from "../shared/collector";
-import { serializeCollectorPackages } from "../shared/collector";
+import { COLLECTOR_MAX_NAME_LENGTH, serializeCollectorPackages } from "../shared/collector";
 import { extractHosterFromUrl } from "../shared/hoster";
 import type { AppSettings, ParsedPackageInput } from "../shared/types";
 import {
@@ -20,8 +20,16 @@ import {
   type OneFichierCheckResult
 } from "./debrid";
 import { importDlcContainers } from "./container";
+import { parseCollectorQueueExport } from "./collector-import";
 import { parseCollectorInput } from "./link-parser";
 import { filenameFromUrl, isHttpLink, looksLikeOpaqueFilename, sanitizeFilename } from "./utils";
+
+function normalizeCollectorName(value: string): string {
+  const sanitized = sanitizeFilename(value);
+  return sanitized.length <= COLLECTOR_MAX_NAME_LENGTH
+    ? sanitized
+    : sanitizeFilename(sanitized.slice(0, COLLECTOR_MAX_NAME_LENGTH));
+}
 
 export interface CollectorInspectionDependencies {
   checkDdownload?: typeof checkDdownloadOnline;
@@ -82,7 +90,7 @@ function readableHosterName(hoster: string): string {
 }
 
 export function inferCollectorPackageName(fileName: string, hoster: string): string {
-  const safeName = sanitizeFilename(fileName || "");
+  const safeName = normalizeCollectorName(fileName || "");
   if (!safeName || looksLikeOpaqueFilename(safeName)) return readableHosterName(hoster);
   const patterns = [
     /^(.*)\.part\d+\.rar$/i,
@@ -93,10 +101,10 @@ export function inferCollectorPackageName(fileName: string, hoster: string): str
   ];
   for (const pattern of patterns) {
     const match = safeName.match(pattern);
-    if (match?.[1]?.trim()) return sanitizeFilename(match[1]);
+    if (match?.[1]?.trim()) return normalizeCollectorName(match[1]);
   }
   const stem = path.parse(safeName).name.trim();
-  return sanitizeFilename(stem || readableHosterName(hoster));
+  return normalizeCollectorName(stem || readableHosterName(hoster));
 }
 
 function countInputLines(rawText: string): { invalidCount: number; duplicateCount: number } {
@@ -129,8 +137,8 @@ function preparePackages(packages: ParsedPackageInput[], addedAt: number, nameSo
       const url = String(pkg.links[index] || "").trim();
       if (!url || seen.has(url)) continue;
       seen.add(url);
-      const explicitFileName = sanitizeFilename(String(pkg.fileNames?.[index] || "").trim());
-      const fileName = explicitFileName || filenameFromUrl(url);
+      const explicitFileName = normalizeCollectorName(String(pkg.fileNames?.[index] || "").trim());
+      const fileName = explicitFileName || normalizeCollectorName(filenameFromUrl(url));
       links.push({
         id: stableId("link", url),
         url,
@@ -143,13 +151,21 @@ function preparePackages(packages: ParsedPackageInput[], addedAt: number, nameSo
       });
     }
     if (links.length === 0) continue;
-    const name = sanitizeFilename(pkg.name || inferCollectorPackageName(links[0].fileName, links[0].hoster));
+    const name = normalizeCollectorName(pkg.name || inferCollectorPackageName(links[0].fileName, links[0].hoster));
     prepared.push({ id: packageId(links), name, nameSource, links, addedAt });
   }
   return prepared;
 }
 
 export function prepareCollectorText(request: CollectorTextPreparationRequest): CollectorInspectionResult {
+  const queueExport = parseCollectorQueueExport(request.rawText);
+  if (queueExport) {
+    return {
+      packages: preparePackages(queueExport, request.addedAt, "explicit"),
+      invalidCount: 0,
+      duplicateCount: 0
+    };
+  }
   const parsed = parseCollectorInput(request.rawText, "");
   const nameSource = /^#\s*package\s*:/im.test(request.rawText) ? "explicit" : "inferred";
   return {
@@ -235,9 +251,10 @@ export async function enrichCollectorPackages(
       for (const [url, result] of results) {
         const link = linksByUrl.get(url);
         if (!link) continue;
+        const fileName = result.fileName ? normalizeCollectorName(result.fileName) : "";
         link.availability = result.online ? "online" : "offline";
-        link.status = result.online ? (result.fileName ? "ready" : "unknown") : "offline";
-        if (result.fileName) link.fileName = sanitizeFilename(result.fileName);
+        link.status = result.online ? (fileName ? "ready" : "unknown") : "offline";
+        if (fileName) link.fileName = fileName;
         if (result.fileSizeBytes !== null && result.fileSizeBytes >= 0) link.fileSizeBytes = result.fileSizeBytes;
         progress.queue(url);
       }
@@ -248,9 +265,10 @@ export async function enrichCollectorPackages(
     const result = await checkRapidgator(url).catch(() => null);
     const link = linksByUrl.get(url);
     if (!link || !result) return;
+    const fileName = result.fileName ? normalizeCollectorName(result.fileName) : "";
     link.availability = result.online ? "online" : "offline";
-    link.status = result.online ? (result.fileName ? "ready" : "unknown") : "offline";
-    if (result.fileName) link.fileName = sanitizeFilename(result.fileName);
+    link.status = result.online ? (fileName ? "ready" : "unknown") : "offline";
+    if (fileName) link.fileName = fileName;
     if (result.fileSizeBytes !== null && result.fileSizeBytes >= 0) link.fileSizeBytes = result.fileSizeBytes;
     progress.queue(url);
   });
@@ -258,9 +276,10 @@ export async function enrichCollectorPackages(
     const result = await checkDdownload(url).catch(() => null);
     const link = linksByUrl.get(url);
     if (!link || !result) return;
+    const fileName = result.fileName ? normalizeCollectorName(result.fileName) : "";
     link.availability = result.online ? "online" : "offline";
-    link.status = result.online ? (result.fileName ? "ready" : "unknown") : "offline";
-    if (result.fileName) link.fileName = sanitizeFilename(result.fileName);
+    link.status = result.online ? (fileName ? "ready" : "unknown") : "offline";
+    if (fileName) link.fileName = fileName;
     if (result.fileSizeBytes !== null && result.fileSizeBytes >= 0) link.fileSizeBytes = result.fileSizeBytes;
     progress.queue(url);
   });
@@ -268,7 +287,7 @@ export async function enrichCollectorPackages(
     ? resolveFilenames(genericLinks, (url, fileName) => {
       const link = linksByUrl.get(url);
       if (!link || !fileName) return;
-      link.fileName = sanitizeFilename(fileName);
+      link.fileName = normalizeCollectorName(fileName);
       link.status = "ready";
       progress.queue(url);
     }).catch(() => new Map<string, string>())
@@ -283,7 +302,7 @@ export async function enrichCollectorPackages(
   for (const [url, fileName] of genericResults) {
     const link = linksByUrl.get(url);
     if (!link || !fileName) continue;
-    link.fileName = sanitizeFilename(fileName);
+    link.fileName = normalizeCollectorName(fileName);
     link.status = "ready";
     progress.queue(url);
   }

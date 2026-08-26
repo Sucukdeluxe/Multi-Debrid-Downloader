@@ -70,8 +70,9 @@ const api: ElectronApi = {
     return () => ipcRenderer.removeListener(IPC_CHANNELS.COLLECTOR_ENRICHMENT_PROGRESS, listener);
   },
   getCollectorState: (): Promise<CollectorPersistenceState> => ipcRenderer.invoke(IPC_CHANNELS.GET_COLLECTOR_STATE),
+  getCollectorStateSync: (): CollectorPersistenceState | null => ipcRenderer.sendSync(IPC_CHANNELS.GET_COLLECTOR_STATE_SYNC) as CollectorPersistenceState | null,
   saveCollectorState: (state: CollectorPersistenceState): Promise<CollectorPersistenceState> => ipcRenderer.invoke(IPC_CHANNELS.SAVE_COLLECTOR_STATE, state),
-  saveCollectorStateSync: (state: CollectorPersistenceState): void => { ipcRenderer.sendSync(IPC_CHANNELS.SAVE_COLLECTOR_STATE_SYNC, state); },
+  saveCollectorStateSync: (state: CollectorPersistenceState): boolean => ipcRenderer.sendSync(IPC_CHANNELS.SAVE_COLLECTOR_STATE_SYNC, state) === true,
   getPathForDroppedFile: (file: File): string => webUtils.getPathForFile(file),
   getStartConflicts: (): Promise<StartConflictEntry[]> => ipcRenderer.invoke(IPC_CHANNELS.GET_START_CONFLICTS),
   resolveStartConflict: (packageId: string, policy: DuplicatePolicy): Promise<StartConflictResolutionResult> =>

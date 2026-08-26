@@ -91,8 +91,9 @@ export interface ElectronApi {
   enrichCollectorPackages: (request: CollectorEnrichmentRequest) => Promise<CollectorInspectionResult>;
   onCollectorEnrichmentProgress: (callback: (progress: CollectorEnrichmentProgress) => void) => () => void;
   getCollectorState: () => Promise<CollectorPersistenceState>;
+  getCollectorStateSync: () => CollectorPersistenceState | null;
   saveCollectorState: (state: CollectorPersistenceState) => Promise<CollectorPersistenceState>;
-  saveCollectorStateSync: (state: CollectorPersistenceState) => void;
+  saveCollectorStateSync: (state: CollectorPersistenceState) => boolean;
   getPathForDroppedFile: (file: File) => string;
   getStartConflicts: () => Promise<StartConflictEntry[]>;
   resolveStartConflict: (packageId: string, policy: DuplicatePolicy) => Promise<StartConflictResolutionResult>;

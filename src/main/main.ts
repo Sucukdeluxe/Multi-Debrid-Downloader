@@ -208,6 +208,32 @@ function onTrusted<TArgs extends unknown[]>(channel: string, listener: (event: I
   });
 }
 
+export function saveCollectorStateFromSyncIpc(
+  target: Pick<AppController, "saveCollectorStateSync">,
+  event: Pick<IpcMainEvent, "returnValue">,
+  value: unknown
+): void {
+  try {
+    target.saveCollectorStateSync(validateCollectorPersistenceState(value));
+    event.returnValue = true;
+  } catch (error) {
+    logger.warn(`Linksammler-Abschlussspeicherung fehlgeschlagen: ${String(error)}`);
+    event.returnValue = false;
+  }
+}
+
+export function getCollectorStateFromSyncIpc(
+  target: Pick<AppController, "getCollectorState">,
+  event: Pick<IpcMainEvent, "returnValue">
+): void {
+  try {
+    event.returnValue = validateCollectorPersistenceState(target.getCollectorState());
+  } catch (error) {
+    logger.warn(`Synchrones Laden des Linksammlers fehlgeschlagen: ${String(error)}`);
+    event.returnValue = null;
+  }
+}
+
 // Single owner of the scheduled-start timer. startOnPast: a past time entered
 // interactively starts right away; at boot a stale past time is cleared instead
 // (an unattended auto-start at boot would race autoResumeOnStart's conflict gate).
@@ -579,17 +605,14 @@ function registerIpcHandlers(): void {
     });
   });
   handleTrusted(IPC_CHANNELS.GET_COLLECTOR_STATE, () => controller.getCollectorState());
+  onTrusted(IPC_CHANNELS.GET_COLLECTOR_STATE_SYNC, (event: IpcMainEvent) => {
+    getCollectorStateFromSyncIpc(controller, event);
+  });
   handleTrusted(IPC_CHANNELS.SAVE_COLLECTOR_STATE, (_event: IpcMainInvokeEvent, value: unknown) => {
     return controller.saveCollectorState(validateCollectorPersistenceState(value));
   });
   onTrusted(IPC_CHANNELS.SAVE_COLLECTOR_STATE_SYNC, (event: IpcMainEvent, value: unknown) => {
-    try {
-      controller.saveCollectorState(validateCollectorPersistenceState(value));
-      event.returnValue = true;
-    } catch (error) {
-      logger.warn(`Linksammler-Abschlussspeicherung fehlgeschlagen: ${String(error)}`);
-      event.returnValue = false;
-    }
+    saveCollectorStateFromSyncIpc(controller, event, value);
   });
   handleTrusted(IPC_CHANNELS.GET_START_CONFLICTS, () => controller.getStartConflicts());
   handleTrusted(IPC_CHANNELS.RESOLVE_START_CONFLICT, (_event: IpcMainInvokeEvent, packageId: string, policy: "keep" | "skip" | "overwrite") => {
@@ -1022,7 +1045,7 @@ function registerIpcHandlers(): void {
       return { restored: false, relaunch: false, message: "Keine Backup-Datei ausgewählt" };
     }
     const passphrase = typeof rawPassphrase === "string" ? rawPassphrase : undefined;
-    const importResult = controller.importBackup(data, passphrase);
+    const importResult = await controller.importBackup(data, passphrase);
     // Only a full restore (queue swapped) needs the auto-relaunch. A settings-
     // only import applied live — relaunching would be pointless and would drop
     // the running queue.

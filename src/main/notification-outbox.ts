@@ -4,6 +4,7 @@ import path from "node:path";
 import type { DiscordEmbedFieldPayload } from "./notify";
 import { projectPackageFailureCategory } from "./package-telemetry";
 import type { FailurePhase } from "../shared/types";
+import { logger } from "./logger";
 
 export type NotificationEventType =
   | "package_completed"
@@ -71,6 +72,7 @@ const EVENT_TYPES = new Set<NotificationEventType>([
 const MAX_EVENTS = 250;
 const MAX_RETRY_DELAY_MS = 10 * 60 * 1000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 3000;
+const RENAME_RETRY_DELAYS_MS = [15, 40, 90];
 const PACKAGE_FAILURE_EVENT_TYPES = new Set<NotificationEventType>([
   "package_partial",
   "package_failed",
@@ -83,6 +85,40 @@ const PACKAGE_FAILURE_PHASES = new Map<string, FailurePhase>([
   ["Aufräumen", "cleanup"],
   ["Nachbearbeitung", "postprocess"]
 ]);
+
+function renameErrorCode(error: unknown): string {
+  return error && typeof error === "object" && "code" in error
+    ? String((error as NodeJS.ErrnoException).code || "")
+    : "";
+}
+
+function isTransientRenameError(error: unknown): boolean {
+  return ["EPERM", "EACCES", "EBUSY"].includes(renameErrorCode(error));
+}
+
+function renameFileSyncWithRetry(tempPath: string, filePath: string): void {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      fs.renameSync(tempPath, filePath);
+      return;
+    } catch (error) {
+      if (!isTransientRenameError(error) || attempt >= RENAME_RETRY_DELAYS_MS.length) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, RENAME_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+}
+
+async function renameFileWithRetry(tempPath: string, filePath: string): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await fsp.rename(tempPath, filePath);
+      return;
+    } catch (error) {
+      if (!isTransientRenameError(error) || attempt >= RENAME_RETRY_DELAYS_MS.length) throw error;
+      await new Promise((resolve) => setTimeout(resolve, RENAME_RETRY_DELAYS_MS[attempt]));
+    }
+  }
+}
 
 function finiteInteger(value: unknown, fallback = 0): number {
   const numeric = Number(value);
@@ -188,8 +224,12 @@ export class NotificationOutbox {
     this.clock = options.now || Date.now;
     this.autoDrain = Boolean(options.autoDrain);
     this.load();
-    if (this.autoDrain && this.events.length > 0) {
-      this.scheduleDrain(Math.max(0, this.events[0].nextAttemptAt - this.clock()));
+    if (this.autoDrain) {
+      if (this.persistenceRequired) {
+        this.schedulePersistenceRetry(retryDelayMs(this.persistenceRetryAttempts));
+      } else if (this.events.length > 0) {
+        this.scheduleDrain(Math.max(0, this.events[0].nextAttemptAt - this.clock()));
+      }
     }
   }
 
@@ -381,7 +421,18 @@ export class NotificationOutbox {
       this.lastSuccessAt = 0;
       this.lastFailureAt = 0;
     }
-    this.persistSync(this.clock());
+    try {
+      this.persistSync(this.clock());
+    } catch (error) {
+      this.persistenceRequired = true;
+      this.persistenceRetryAttempts += 1;
+      const code = renameErrorCode(error) || "UNKNOWN";
+      if (isTransientRenameError(error)) {
+        logger.warn(`Notification-Outbox beim Laden vorübergehend gesperrt (${code}); Persistenz wird erneut versucht`);
+      } else {
+        logger.error(`Notification-Outbox konnte beim Laden nicht gespeichert werden (${code}): ${String(error)}`);
+      }
+    }
   }
 
   private enforceLimits(now: number): void {
@@ -411,7 +462,7 @@ export class NotificationOutbox {
     try {
       await fsp.mkdir(path.dirname(this.filePath), { recursive: true });
       await fsp.writeFile(tempPath, JSON.stringify(state), "utf8");
-      await fsp.rename(tempPath, this.filePath);
+      await renameFileWithRetry(tempPath, this.filePath);
       this.persistenceRequired = false;
       this.persistenceRetryAttempts = 0;
     } catch (error) {
@@ -436,7 +487,7 @@ export class NotificationOutbox {
     };
     try {
       fs.writeFileSync(tempPath, JSON.stringify(state), "utf8");
-      fs.renameSync(tempPath, this.filePath);
+      renameFileSyncWithRetry(tempPath, this.filePath);
     } catch (error) {
       try {
         fs.rmSync(tempPath, { force: true });

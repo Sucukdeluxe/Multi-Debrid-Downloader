@@ -36,26 +36,54 @@ export function restoreCollectorPersistenceState(
 
 export interface CollectorPersistenceCoordinator {
   schedule: (state: CollectorPersistenceState) => void;
+  setBaseline: (state: CollectorPersistenceState) => void;
   flush: () => Promise<void>;
   dispose: () => void;
 }
 
+export interface CollectorPersistenceFailure {
+  error: unknown;
+  attemptedState: CollectorPersistenceState;
+  rollbackState: CollectorPersistenceState | null;
+}
+
 export function createCollectorPersistenceCoordinator(
   save: (state: CollectorPersistenceState) => Promise<CollectorPersistenceState>,
-  delayMs = 300
+  delayMs = 300,
+  onFailure?: (failure: CollectorPersistenceFailure) => void
 ): CollectorPersistenceCoordinator {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let pending: CollectorPersistenceState | null = null;
   let running: Promise<void> | null = null;
+  let rollbackState: CollectorPersistenceState | null = null;
   let disposed = false;
+
+  const reportFailure = (error: unknown, attemptedState: CollectorPersistenceState): void => {
+    try {
+      onFailure?.({ error, attemptedState, rollbackState });
+    } catch {
+    }
+  };
 
   const drain = (): Promise<void> => {
     if (running) return running;
     const task = (async () => {
       while (pending && !disposed) {
-        const state = pending;
+        const attemptedState = pending;
         pending = null;
-        await save(state);
+        let state: CollectorPersistenceState;
+        try {
+          state = validateCollectorPersistenceState(attemptedState);
+        } catch (error) {
+          reportFailure(error, attemptedState);
+          continue;
+        }
+        try {
+          await save(state);
+          rollbackState = state;
+        } catch (error) {
+          reportFailure(error, attemptedState);
+        }
       }
     })().finally(() => {
       if (running === task) running = null;
@@ -67,19 +95,30 @@ export function createCollectorPersistenceCoordinator(
   return {
     schedule: (state) => {
       if (disposed) return;
-      pending = validateCollectorPersistenceState(state);
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
+      pending = state;
+      try {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          timer = null;
+          void drain();
+        }, Math.max(0, delayMs));
+      } catch {
         timer = null;
-        void drain().catch(() => {});
-      }, Math.max(0, delayMs));
+        void drain();
+      }
+    },
+    setBaseline: (state) => {
+      rollbackState = state;
     },
     flush: async () => {
       if (timer) {
         clearTimeout(timer);
         timer = null;
       }
-      await drain();
+      while (!disposed) {
+        await drain();
+        if (!pending) break;
+      }
     },
     dispose: () => {
       disposed = true;

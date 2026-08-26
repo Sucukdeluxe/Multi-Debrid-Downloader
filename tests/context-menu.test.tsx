@@ -117,4 +117,10 @@ describe("ContextMenu", () => {
     expect(stylesSource).toMatch(/\.ctx-menu-sub-items\s*{[^}]*position:\s*fixed;/s);
     expect(stylesSource).not.toMatch(/\.ctx-menu-sub-items\s*{[^}]*position:\s*absolute;/s);
   });
+
+  it("dims disabled context actions without pointer or hover affordances", () => {
+    expect(stylesSource).toMatch(/\.ctx-menu-item:disabled\s*\{[^}]*opacity:\s*(?:0?\.\d+|\d+%);[^}]*cursor:\s*(?:default|not-allowed);/s);
+    expect(stylesSource).toMatch(/\.ctx-menu-item:hover:not\(:disabled\)\s*\{[^}]*background:\s*var\(--button-bg-hover\);/s);
+    expect(stylesSource).not.toMatch(/\.ctx-menu-item:hover\s*\{[^}]*background:/s);
+  });
 });

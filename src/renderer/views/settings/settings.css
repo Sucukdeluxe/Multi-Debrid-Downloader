@@ -18,6 +18,10 @@
   background: var(--ui-surface);
 }
 
+.md-shell-sidebar-scroll > .settings-sidebar {
+  border-right: 0;
+}
+
 .settings-sidebar-heading {
   display: flex;
   min-height: 32px;

@@ -6,8 +6,200 @@ import { AppHeader } from "../src/renderer/shell/AppHeader";
 import { AppShell } from "../src/renderer/shell/AppShell";
 import { buildMainNavigation } from "../src/renderer/shell/shell-model";
 import { getSnapshotRenderDelay } from "../src/renderer/App";
+import * as appModule from "../src/renderer/App";
+import { createVisualFixture } from "./visual/fixtures";
 
 describe("desktop shell", () => {
+  it("keeps delta-only startup state behind the loading gate", () => {
+    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
+    const coordinator = appModule.createSnapshotBootstrapCoordinator() as ReturnType<typeof appModule.createSnapshotBootstrapCoordinator> & {
+      getStatus?: () => { phase: string; message: string };
+    };
+    const delta = structuredClone(createVisualFixture("dense").snapshot);
+    delta.payloadKind = "delta";
+
+    expect(coordinator.push(delta)).toBeNull();
+    expect(coordinator.getStatus).toBeTypeOf("function");
+    if (!coordinator.getStatus) return;
+    expect(coordinator.getStatus()).toEqual({ phase: "loading", message: "" });
+    expect(source).toContain('if (snapshotBootstrapStatus.phase !== "ready")');
+    expect(source).toContain("Anwendungsdaten werden geladen");
+    expect(source.indexOf('if (snapshotBootstrapStatus.phase !== "ready")')).toBeLessThan(source.indexOf("<AppShell"));
+  });
+
+  it("accepts an early full stream snapshot as authoritative startup state", () => {
+    const coordinator = appModule.createSnapshotBootstrapCoordinator() as ReturnType<typeof appModule.createSnapshotBootstrapCoordinator> & {
+      getStatus?: () => { phase: string; message: string };
+    };
+    const full = structuredClone(createVisualFixture("dense").snapshot);
+    full.payloadKind = "full";
+
+    expect(coordinator.push(full)).toEqual(full);
+    expect(coordinator.getStatus).toBeTypeOf("function");
+    if (!coordinator.getStatus) return;
+    expect(coordinator.getStatus()).toEqual({ phase: "ready", message: "" });
+  });
+
+  it("marks the initial snapshot as authoritative after replaying queued deltas", () => {
+    const coordinator = appModule.createSnapshotBootstrapCoordinator() as ReturnType<typeof appModule.createSnapshotBootstrapCoordinator> & {
+      getStatus?: () => { phase: string; message: string };
+    };
+    const initial = structuredClone(createVisualFixture("dense").snapshot);
+    const delta = structuredClone(initial);
+    delta.payloadKind = "delta";
+    delta.session.running = true;
+
+    expect(coordinator.push(delta)).toBeNull();
+    expect(coordinator.initialize(initial).session.running).toBe(true);
+    expect(coordinator.getStatus).toBeTypeOf("function");
+    if (!coordinator.getStatus) return;
+    expect(coordinator.getStatus()).toEqual({ phase: "ready", message: "" });
+  });
+
+  it("shows a retryable startup error without promoting placeholder data", () => {
+    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
+    const coordinator = appModule.createSnapshotBootstrapCoordinator() as ReturnType<typeof appModule.createSnapshotBootstrapCoordinator> & {
+      fail?: (message: string) => { phase: string; message: string };
+      getStatus?: () => { phase: string; message: string };
+    };
+
+    expect(coordinator.fail).toBeTypeOf("function");
+    if (!coordinator.fail || !coordinator.getStatus) return;
+    expect(coordinator.fail("Snapshot nicht erreichbar")).toEqual({ phase: "error", message: "Snapshot nicht erreichbar" });
+    expect(coordinator.getStatus()).toEqual({ phase: "error", message: "Snapshot nicht erreichbar" });
+    expect(source).toContain('snapshotBootstrapStatus.phase === "error"');
+    expect(source).toContain('onClick={() => retrySnapshotBootstrapRef.current()}');
+    expect(source).toContain("Erneut versuchen");
+  });
+
+  it("retries a failed snapshot load until authoritative state arrives", () => {
+    const coordinator = appModule.createSnapshotBootstrapCoordinator() as ReturnType<typeof appModule.createSnapshotBootstrapCoordinator> & {
+      fail?: (message: string) => { phase: string; message: string };
+      retry?: () => { phase: string; message: string };
+      getStatus?: () => { phase: string; message: string };
+    };
+    const full = structuredClone(createVisualFixture("dense").snapshot);
+    full.payloadKind = "full";
+
+    expect(coordinator.fail).toBeTypeOf("function");
+    expect(coordinator.retry).toBeTypeOf("function");
+    if (!coordinator.fail || !coordinator.retry || !coordinator.getStatus) return;
+    coordinator.fail("Snapshot nicht erreichbar");
+    expect(coordinator.retry()).toEqual({ phase: "loading", message: "" });
+    coordinator.push(full);
+    coordinator.fail("Verspäteter Fehler");
+    expect(coordinator.getStatus()).toEqual({ phase: "ready", message: "" });
+  });
+
+  it("applies queued live removals before accepting a delayed initial snapshot", () => {
+    const createSnapshotBootstrapCoordinator = (appModule as unknown as {
+      createSnapshotBootstrapCoordinator?: () => {
+        initialize: (snapshot: ReturnType<typeof createVisualFixture>["snapshot"]) => ReturnType<typeof createVisualFixture>["snapshot"];
+        push: (snapshot: ReturnType<typeof createVisualFixture>["snapshot"]) => ReturnType<typeof createVisualFixture>["snapshot"] | null;
+      };
+    }).createSnapshotBootstrapCoordinator;
+    expect(createSnapshotBootstrapCoordinator).toBeTypeOf("function");
+    if (!createSnapshotBootstrapCoordinator) return;
+
+    const initial = structuredClone(createVisualFixture("dense").snapshot);
+    const removedItemId = Object.keys(initial.session.items)[0];
+    const removedPackageId = initial.session.items[removedItemId].packageId;
+    const coordinator = createSnapshotBootstrapCoordinator();
+    const delta = structuredClone(initial);
+    delta.payloadKind = "delta";
+    delta.session.items = {};
+    delta.session.packages = {};
+    delta.removedItemIds = [removedItemId];
+    delta.removedPackageIds = [removedPackageId];
+
+    expect(coordinator.push(delta)).toBeNull();
+    const merged = coordinator.initialize(initial);
+
+    expect(merged.session.items[removedItemId]).toBeUndefined();
+    expect(merged.session.packages[removedPackageId]).toBeUndefined();
+    expect(coordinator.push({ ...merged, payloadKind: "full" })).toEqual(expect.objectContaining({ payloadKind: "full" }));
+
+    const fullCoordinator = createSnapshotBootstrapCoordinator();
+    const newerFull = structuredClone(initial);
+    newerFull.payloadKind = "full";
+    delete newerFull.session.items[removedItemId];
+    expect(fullCoordinator.push(newerFull)?.session.items[removedItemId]).toBeUndefined();
+    expect(fullCoordinator.initialize(initial).session.items[removedItemId]).toBeUndefined();
+  });
+
+  it("drops buffered snapshots that are not newer than a retry snapshot", () => {
+    const coordinator = appModule.createSnapshotBootstrapCoordinator();
+    const retrySnapshot = structuredClone(createVisualFixture("dense").snapshot) as ReturnType<typeof createVisualFixture>["snapshot"] & {
+      snapshotRevision?: number;
+    };
+    retrySnapshot.snapshotRevision = 20;
+    retrySnapshot.canStart = true;
+    const staleDelta = structuredClone(retrySnapshot);
+    staleDelta.snapshotRevision = 19;
+    staleDelta.payloadKind = "delta";
+    staleDelta.canStart = false;
+    staleDelta.session.packageOrder = [];
+    staleDelta.session.items = {};
+    staleDelta.session.packages = {};
+
+    expect(coordinator.push(staleDelta)).toBeNull();
+    coordinator.fail("Snapshot nicht erreichbar");
+    coordinator.retry();
+
+    const restored = coordinator.initialize(retrySnapshot);
+    expect(restored.canStart).toBe(true);
+    expect(restored.session.packageOrder).toEqual(retrySnapshot.session.packageOrder);
+    expect(restored.snapshotRevision).toBe(20);
+  });
+
+  it("ignores stale live snapshots and accepts a newer full snapshot", () => {
+    const coordinator = appModule.createSnapshotBootstrapCoordinator();
+    const current = structuredClone(createVisualFixture("dense").snapshot) as ReturnType<typeof createVisualFixture>["snapshot"] & {
+      snapshotRevision?: number;
+    };
+    current.snapshotRevision = 30;
+    current.payloadKind = "full";
+    current.canStart = true;
+    const stale = structuredClone(current);
+    stale.snapshotRevision = 29;
+    stale.canStart = false;
+    const newer = structuredClone(current);
+    newer.snapshotRevision = 31;
+    newer.canStart = false;
+
+    expect(coordinator.push(current)).toEqual(current);
+    expect(coordinator.push(stale)).toBeNull();
+    expect(coordinator.push(newer)).toEqual(newer);
+  });
+
+  it("lets a newer initial GET replace an earlier full stream snapshot", () => {
+    const coordinator = appModule.createSnapshotBootstrapCoordinator();
+    const early = structuredClone(createVisualFixture("dense").snapshot) as ReturnType<typeof createVisualFixture>["snapshot"] & {
+      snapshotRevision?: number;
+    };
+    early.snapshotRevision = 40;
+    early.payloadKind = "full";
+    early.canStart = false;
+    const initial = structuredClone(early);
+    initial.snapshotRevision = 41;
+    initial.canStart = true;
+
+    expect(coordinator.push(early)).toEqual(early);
+    expect(coordinator.initialize(initial)).toEqual(initial);
+  });
+
+  it("applies a resolved initial GET after an early full stream bootstrap", () => {
+    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
+    const start = source.indexOf("const state = snapshotCoordinator.initialize(initialState)");
+    const end = source.indexOf("}).catch((error) =>", start);
+    const resolution = source.slice(start, end);
+
+    expect(start).toBeGreaterThan(-1);
+    expect(resolution).toContain("authoritativeSnapshotApplied");
+    expect(resolution).toContain("applyStreamSnapshot(state)");
+    expect(resolution).toContain("applyAuthoritativeSnapshot(state");
+  });
+
   it("uses keyboard-focusable controls for every copy target", () => {
     const appSource = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
     const dialogSource = readFileSync(new URL("../src/renderer/ui/LinkAddressesDialog.tsx", import.meta.url), "utf8");

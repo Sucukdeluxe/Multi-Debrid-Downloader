@@ -20,6 +20,7 @@ import {
   type HistoryFilter,
   type HistoryViewEntry
 } from "../src/renderer/views/history/history-model";
+import * as historyModelModule from "../src/renderer/views/history/history-model";
 import {
   HistoryContent,
   HistoryContentPage,
@@ -30,6 +31,9 @@ import {
   historyPageStatusLabel,
   type HistoryViewActions
 } from "../src/renderer/views/history/HistoryView";
+import * as historyViewModule from "../src/renderer/views/history/HistoryView";
+import { routeHistoryLiveEntry } from "../src/renderer/App";
+import * as appModule from "../src/renderer/App";
 import { createVisualFixture } from "./visual/fixtures";
 import { createVisualElectronApi } from "./visual/mock-electron-api";
 
@@ -44,6 +48,82 @@ function visitElements(node: ReactNode, visit: (element: ReactElement) => void):
   visit(node);
   visitElements(node.props.children, visit);
 }
+
+describe("history sidepanel counts", () => {
+  it("formats all three counters with the same German integer formatter", () => {
+    const formatHistorySidebarCounts = (appModule as unknown as {
+      formatHistorySidebarCounts?: (entries: number, visible: number, selected: number) => {
+        entries: string;
+        visible: string;
+        selected: string;
+      };
+    }).formatHistorySidebarCounts;
+    expect(formatHistorySidebarCounts).toBeTypeOf("function");
+    if (!formatHistorySidebarCounts) return;
+
+    expect(formatHistorySidebarCounts(1_234, 2_345, 3_456)).toEqual({
+      entries: "Einträge: 1.234",
+      visible: "Sichtbar: 2.345",
+      selected: "Ausgewählt: 3.456"
+    });
+  });
+});
+
+describe("history page selection", () => {
+  it("adds the current page without replacing selections from other pages", () => {
+    const toggleHistoryPageSelection = (historyModelModule as unknown as {
+      toggleHistoryPageSelection?: (current: ReadonlySet<string>, visibleIds: readonly string[]) => Set<string>;
+    }).toggleHistoryPageSelection;
+    expect(toggleHistoryPageSelection).toBeTypeOf("function");
+    if (!toggleHistoryPageSelection) return;
+
+    expect([...toggleHistoryPageSelection(new Set(["other-page"]), ["page-a", "page-b"])]).toEqual([
+      "other-page",
+      "page-a",
+      "page-b"
+    ]);
+  });
+
+  it("removes only the current page when every visible row is selected", () => {
+    const toggleHistoryPageSelection = (historyModelModule as unknown as {
+      toggleHistoryPageSelection?: (current: ReadonlySet<string>, visibleIds: readonly string[]) => Set<string>;
+    }).toggleHistoryPageSelection;
+    expect(toggleHistoryPageSelection).toBeTypeOf("function");
+    if (!toggleHistoryPageSelection) return;
+
+    expect([...toggleHistoryPageSelection(new Set(["other-page", "page-a", "page-b"]), ["page-a", "page-b"])]).toEqual([
+      "other-page"
+    ]);
+  });
+
+  it("keeps other pages selected when Ctrl+A toggles the current page", () => {
+    const selectHistoryPageFromShortcut = (appModule as unknown as {
+      selectHistoryPageFromShortcut?: (current: ReadonlySet<string>, visibleIds: readonly string[]) => Set<string>;
+    }).selectHistoryPageFromShortcut;
+    expect(selectHistoryPageFromShortcut).toBeTypeOf("function");
+    if (!selectHistoryPageFromShortcut) return;
+
+    expect([...selectHistoryPageFromShortcut(new Set(["other-page"]), ["page-a", "page-b"])]).toEqual([
+      "other-page",
+      "page-a",
+      "page-b"
+    ]);
+  });
+
+  it("keeps other pages selected when opening context actions for a selected entry", () => {
+    const resolveHistoryContextSelection = (appModule as unknown as {
+      resolveHistoryContextSelection?: (current: ReadonlySet<string>, entryId: string) => Set<string>;
+    }).resolveHistoryContextSelection;
+    expect(resolveHistoryContextSelection).toBeTypeOf("function");
+    if (!resolveHistoryContextSelection) return;
+
+    expect([...resolveHistoryContextSelection(new Set(["other-page", "page-a"]), "page-a")]).toEqual([
+      "other-page",
+      "page-a"
+    ]);
+    expect([...resolveHistoryContextSelection(new Set(["other-page"]), "page-a")]).toEqual(["page-a"]);
+  });
+});
 
 function findElement(node: ReactNode, predicate: (element: ReactElement) => boolean): ReactElement {
   let result: ReactElement | null = null;
@@ -108,6 +188,87 @@ const entries: HistoryViewEntry[] = [
 ];
 
 describe("history model", () => {
+  it("indexes matching history once per local day and projects only the requested page", () => {
+    const getHistoryPage = (historyModelModule as unknown as {
+      getHistoryPage?: (
+        model: ReturnType<typeof buildHistoryViewModel>,
+        requestedPage: number
+      ) => ReturnType<typeof paginateHistoryRows>;
+    }).getHistoryPage;
+    expect(getHistoryPage).toBeTypeOf("function");
+    if (!getHistoryPage) return;
+
+    const source = Array.from({ length: 205 }, (_, index) => entry({
+      id: `indexed-${index + 1}`,
+      name: `Indexed ${index + 1}`,
+      completedAt: now - index
+    }));
+    const firstModel = buildHistoryViewModel(source, "all", "", ["indexed-101"], [], false, "", now);
+    const secondModel = buildHistoryViewModel(source, "all", "", ["indexed-101"], [], false, "", now + 1_000);
+    const firstPage = getHistoryPage(firstModel, 2);
+    const repeatedPage = getHistoryPage(secondModel, 2);
+
+    expect(firstModel.rows).toBe(secondModel.rows);
+    expect(firstModel.counts).toBe(secondModel.counts);
+    expect(firstModel.visibleIds).toBe(secondModel.visibleIds);
+    expect(repeatedPage).toBe(firstPage);
+    expect(firstPage.rows).toHaveLength(100);
+    expect(firstPage.rows[0]).toEqual(expect.objectContaining({
+      id: "indexed-101",
+      statusLabel: "Abgeschlossen"
+    }));
+    expect(firstPage.rows[99].id).toBe("indexed-200");
+  });
+
+  it("formats projected history rows and pagination with the selected locale", () => {
+    const getHistoryPage = (historyModelModule as unknown as {
+      getHistoryPage?: (
+        model: ReturnType<typeof buildHistoryViewModel>,
+        requestedPage: number
+      ) => ReturnType<typeof paginateHistoryRows>;
+    }).getHistoryPage;
+    expect(getHistoryPage).toBeTypeOf("function");
+    if (!getHistoryPage) return;
+
+    const completedAt = new Date(2026, 7, 10, 14, 5, 0, 0).getTime();
+    const localized = entry({
+      id: "localized",
+      name: "Localized",
+      completedAt,
+      startedAt: completedAt - 60_000,
+      downloadedBytes: 1_572_864,
+      totalBytes: 2_097_152,
+      downloadFailures: 1_000,
+      offlineFailures: 2,
+      extractionFailures: 3,
+      remuxFailures: 4,
+      cleanupFailures: 5,
+      postProcessFailures: 6
+    });
+    const tiny = { ...localized, id: "tiny", downloadedBytes: 1_000, totalBytes: 1_000 };
+    const german = getHistoryPage(buildHistoryViewModel([localized], "all", "", [], [], false, "", now, true, "de"), 1);
+    const english = getHistoryPage(buildHistoryViewModel([localized], "all", "", [], [], false, "", now, true, "en"), 1);
+    const germanTiny = getHistoryPage(buildHistoryViewModel([tiny], "all", "", [], [], false, "", now, true, "de"), 1);
+    const englishTiny = getHistoryPage(buildHistoryViewModel([tiny], "all", "", [], [], false, "", now, true, "en"), 1);
+
+    expect(german).toEqual(expect.objectContaining({ rangeLabel: "1–1 von 1", language: "de" }));
+    expect(german.rows[0]).toEqual(expect.objectContaining({
+      sizeLabel: "1,5 MB / 2 MB",
+      completedLabel: "10.08.2026, 14:05",
+      failureCountsLabel: "1.000 / 2 / 3 / 4 / 5 / 6",
+      statusLabel: "Abgeschlossen"
+    }));
+    expect(english).toEqual(expect.objectContaining({ rangeLabel: "1–1 of 1", language: "en" }));
+    expect(english.rows[0]).toEqual(expect.objectContaining({
+      sizeLabel: "1.5 MB / 2 MB",
+      completedLabel: "08/10/2026, 02:05 PM",
+      failureCountsLabel: "1,000 / 2 / 3 / 4 / 5 / 6",
+      statusLabel: "Completed"
+    }));
+    expect(germanTiny.rows[0].sizeLabel).toBe("1.000 B / 1.000 B");
+    expect(englishTiny.rows[0].sizeLabel).toBe("1,000 B / 1,000 B");
+  });
+
   it("prepends live entries without duplicates and applies retention limits", () => {
     const incoming = entry({ id: "live", name: "Live", completedAt: now }) as HistoryEntry;
     const existing: HistoryEntry[] = [
@@ -120,11 +281,11 @@ describe("history model", () => {
       .toEqual(["live", "current"]);
   });
 
-  it("separates today, previous six calendar days, older and status filters at exact boundaries", () => {
+  it("defines the last seven days as today plus the previous six calendar days", () => {
     const expected: Record<HistoryFilter, string[]> = {
       all: ["today", "week-edge", "week", "older"],
       today: ["today"],
-      week: ["week-edge", "week"],
+      week: ["today", "week-edge", "week"],
       older: ["older"],
       completed: ["today", "week-edge"],
       partial: [],
@@ -193,6 +354,59 @@ describe("history model", () => {
     ];
 
     expect(filterHistoryRows(temporalEntries, "today", "", now).map((row) => row.id)).toEqual(["today-last"]);
+    expect(filterHistoryRows(temporalEntries, "week", "", now).map((row) => row.id)).toEqual(["today-last"]);
+  });
+
+  it("suppresses stale history rows and counters while loading or after a load error", () => {
+    const loading = buildHistoryViewModel(entries, "all", "", ["today"], ["today"], true, "", now);
+    const failed = buildHistoryViewModel(entries, "all", "", ["today"], ["today"], false, "Verlauf konnte nicht geladen werden", now);
+
+    for (const model of [loading, failed]) {
+      expect(model.rows).toEqual([]);
+      expect(model.counts).toEqual({
+        all: 0,
+        today: 0,
+        week: 0,
+        older: 0,
+        completed: 0,
+        partial: 0,
+        cancelled: 0,
+        deleted: 0,
+        failed: 0
+      });
+      expect(model.totalCount).toBe(0);
+      expect(model.selectedIds).toEqual([]);
+    }
+  });
+
+  it("reloads the full history instead of accepting one live entry after a load failure", () => {
+    const transitions: string[] = [];
+
+    routeHistoryLiveEntry(
+      entry({ id: "live-after-error", name: "Live after error" }) as HistoryEntry,
+      true,
+      {
+        reload: () => transitions.push("reload"),
+        accept: () => transitions.push("accept")
+      }
+    );
+
+    expect(transitions).toEqual(["reload"]);
+  });
+
+  it("accepts live entries directly after a successful history load", () => {
+    const transitions: string[] = [];
+
+    routeHistoryLiveEntry(
+      entry({ id: "live-after-success", name: "Live after success" }) as HistoryEntry,
+      false,
+      {
+        reload: () => transitions.push("reload"),
+        accept: (value) => transitions.push(`accept:${value.id}`)
+      }
+    );
+
+    expect(transitions).toEqual(["accept:live-after-success"]);
   });
 
   it("searches name, path, hoster, provider and URLs without changing newest-first input order", () => {
@@ -326,16 +540,11 @@ describe("HistoryView", () => {
   });
 
   it("renders only one fixed-size page with accessible previous and next controls", () => {
-    const template = filterHistoryRows([entry({ id: "template", name: "Vorlage" })], "all", "", now)[0];
-    const model = {
-      ...buildHistoryViewModel([], "all", "", [], [], false, "", now),
-      rows: Array.from({ length: 205 }, (_, index) => ({
-        ...template,
-        id: `visible-${index + 1}`,
-        name: `Sichtbar ${index + 1}`
-      })),
-      totalCount: 205
-    };
+    const source = Array.from({ length: 205 }, (_, index) => entry({
+      id: `visible-${index + 1}`,
+      name: `Sichtbar ${index + 1}`
+    }));
+    const model = buildHistoryViewModel(source, "all", "", [], [], false, "", now);
     const html = renderToStaticMarkup(<HistoryView actions={createActions()} model={model} />);
 
     expect(html.match(/data-history-row-id=/g)).toHaveLength(100);
@@ -366,6 +575,29 @@ describe("HistoryView", () => {
     findButton(middle, "Vor").props.onClick();
     expect(findButton(last, "Vor").props.disabled).toBe(true);
     expect(calls).toEqual([2, 1, 3]);
+  });
+
+  it("reports the number of rows actually shown on the current page", () => {
+    const template = filterHistoryRows([entry({ id: "template", name: "Vorlage" })], "all", "", now)[0];
+    const rows = Array.from({ length: 205 }, (_, index) => ({
+      ...template,
+      id: `visible-${index + 1}`,
+      name: `Sichtbar ${index + 1}`
+    }));
+    const report = (historyViewModule as unknown as {
+      reportHistoryVisiblePageCount?: (
+        actions: { onVisiblePageCountChange?: (count: number) => void },
+        page: ReturnType<typeof paginateHistoryRows>
+      ) => void;
+    }).reportHistoryVisiblePageCount;
+    const counts: number[] = [];
+    const actions = { onVisiblePageCountChange: (count: number) => counts.push(count) };
+
+    expect(report).toBeTypeOf("function");
+    report?.(actions, paginateHistoryRows(rows, 1));
+    report?.(actions, paginateHistoryRows(rows, 3));
+
+    expect(counts).toEqual([100, 5]);
   });
 
   it("keeps a visible page title in the main content when the filter sidebar is unavailable", () => {
@@ -404,6 +636,30 @@ describe("HistoryView", () => {
     expect(html).toContain("ui-sliding-selection ui-sliding-selection-vertical");
     expect(html.match(/data-sliding-selection-item="true"/g)).toHaveLength(9);
     expect(html.match(/data-sliding-selection-active="true"/g)).toHaveLength(1);
+  });
+
+  it("formats history filter counters as German integers", () => {
+    const base = buildHistoryViewModel(entries, "all", "", [], [], false, "", now);
+    const model = {
+      ...base,
+      counts: {
+        all: 3_180,
+        today: 1_250,
+        week: 1_000,
+        older: 900,
+        completed: 20,
+        partial: 5,
+        failed: 3,
+        cancelled: 2,
+        deleted: 0
+      }
+    };
+    const html = renderToStaticMarkup(<HistorySidebar actions={createActions()} model={model} />);
+
+    for (const count of ["3.180", "1.250", "1.000", "900", "20", "5", "3", "2", "0"]) {
+      expect(html).toContain(`<span>${count}</span>`);
+    }
+    expect(html).not.toContain("<span>3180</span>");
   });
 
   it("keeps one clipped header synchronized with the scrollable history rows", () => {
@@ -720,6 +976,41 @@ describe("HistoryView", () => {
     expect(html).not.toContain("Downloaddauer (Altbestand)");
   });
 
+  it("formats lifecycle and operation counts with the selected history locale", () => {
+    const structured = entry({
+      id: "localized-counts",
+      name: "Localized counts",
+      startedAt: todayStart,
+      successfulFiles: 1_000,
+      failedFiles: 2_000,
+      cancelledFiles: 3_000,
+      archiveCount: 4_000,
+      partCount: 5_000,
+      outputCount: 6_000,
+      archiveOperations: [{
+        id: "archive-localized",
+        name: "archive.rar",
+        itemIds: ["item-1"],
+        partCount: 7_000,
+        startedAt: todayStart,
+        completedAt: todayStart + 1_000,
+        durationMs: 1_000,
+        status: "completed",
+        errorCategory: ""
+      }]
+    });
+    const html = renderToStaticMarkup(
+      <HistoryView
+        actions={createActions()}
+        model={buildHistoryViewModel([structured], "all", "", [], [structured.id], false, "", now, true, "en")}
+      />
+    );
+
+    expect(html).toContain("1,000 / 2,000 / 3,000");
+    expect(html).toContain("4,000 / 5,000 / 6,000");
+    expect(html).toContain("7,000 Parts");
+  });
+
   it("labels durationSeconds honestly for legacy entries", () => {
     const legacy = entry({ id: "legacy", name: "Altbestand" });
     const html = renderToStaticMarkup(
@@ -784,6 +1075,19 @@ describe("visual history states", () => {
     expect(listener).toContain('activeTabRef.current !== "history"');
     expect(listener).toContain("mergeLiveHistoryEntry");
     expect(listener).not.toContain("getHistory()");
+  });
+
+  it("reloads the complete history before accepting a live entry after a load failure", () => {
+    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+    const listenerStart = source.indexOf("window.rd.onHistoryEntryAdded");
+    const listenerEnd = source.indexOf("return unsubscribeHistoryEntryAdded", listenerStart);
+    const listener = source.slice(listenerStart, listenerEnd);
+
+    expect(source).toContain("historyLoadFailedRef.current = true");
+    expect(source).toContain("historyLoadFailedRef.current = false");
+    expect(listener).toContain("routeHistoryLiveEntry(");
+    expect(listener).toContain("historyLoadFailedRef.current");
+    expect(listener).toContain("loadHistoryEntries");
   });
 
   it("removes the selected history ids through one backend call", () => {

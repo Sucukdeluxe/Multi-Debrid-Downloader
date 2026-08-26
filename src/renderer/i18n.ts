@@ -8,7 +8,7 @@ const pairs = [
   ["Entpacken", "Extraction"], ["Geschwindigkeit", "Speed"], ["Bereinigung", "Cleanup"], ["Updates", "Updates"],
   ["Einstellungen speichern", "Save settings"], ["Änderungen verwerfen", "Discard changes"], ["Stellt den letzten gespeicherten Stand wieder her.", "Restores the last saved settings."], ["Ungespeicherte Änderungen verworfen", "Unsaved changes discarded"], ["Zwischenstand gespeichert – weitere Änderungen sind ungespeichert", "Progress saved – additional changes remain unsaved"], ["Gespeichert", "Saved"], ["Ungespeicherte Änderungen", "Unsaved changes"], ["Wird gespeichert…", "Saving…"], ["Speichern fehlgeschlagen", "Save failed"],
   ["Sprache", "Language"], ["Speicherort", "Storage location"], ["Download-Verhalten", "Download behavior"], ["Oberfläche und Bedienung", "Interface and controls"], ["Discord-Benachrichtigungen", "Discord notifications"],
-  ["Speicherort, Download-Verhalten, Verlauf, Oberfläche und Benachrichtigungen.", "Storage location, download behavior, history, interface and notifications."],
+  ["Speicherort, Download-Verhalten, Verlauf, Oberfläche und Benachrichtigungen.", "Storage location, download behavior, history, interface and notifications."], ["Hell", "Light"], ["Dunkel", "Dark"],
   ["Download-Ordner", "Download folder"], ["Paketname (optional)", "Package name (optional)"], ["Max. gleichzeitige Downloads", "Max. concurrent downloads"], ["Automatische Wiederholungen", "Automatic retries"],
   ["Zielordner für heruntergeladene Dateien.", "Destination folder for downloaded files."],
   ["Beim Start automatisch fortsetzen", "Resume automatically on startup"], ["Zwischenablage überwachen", "Monitor clipboard"], ["Verlauf speichern", "Save history"], ["Nur aktuelle Session", "Current session only"], ["Nur letzte 100 Einträge", "Last 100 entries only"], ["Nur letzte 250 Einträge", "Last 250 entries only"], ["Dauerhaft", "Permanent"],
@@ -62,17 +62,31 @@ const pairs = [
   ["Verlaufstabelle", "History table"], ["Verlaufsseiten", "History pages"], ["Vorherige Verlaufsseite", "Previous history page"], ["Nächste Verlaufsseite", "Next history page"], ["Zurück", "Back"], ["Vor", "Next"], ["Verlauf wird geladen", "Loading history"], ["Die gespeicherten Einträge werden geladen.", "Saved entries are being loaded."], ["Verlauf wird geladen. Die gespeicherten Einträge werden geladen.", "History is loading. Saved entries are being loaded."], ["Noch kein Verlauf", "No history yet"], ["Keine passenden Einträge", "No matching entries"],
   ["Abgeschlossene und gelöschte Pakete erscheinen hier.", "Completed and deleted packages appear here."], ["Passe Filter oder Suche an.", "Adjust the filter or search."], ["Öffne die Ansicht erneut, um es noch einmal zu versuchen.", "Open the view again to retry."],
   ["Alle sichtbaren Einträge auswählen", "Select all visible entries"], ["Details anzeigen", "Show details"], ["Details ausblenden", "Hide details"],
+  ["Download gestartet", "Download started"], ["Download beendet", "Download finished"], ["Nachbearbeitung gestartet", "Post-processing started"], ["Gesamtdauer", "Total duration"],
+  ["Erfolgreich / Fehlgeschlagen / Abgebrochen", "Successful / Failed / Cancelled"], ["Archive / Parts / Ausgaben", "Archives / parts / outputs"], ["Fehlerphase", "Failure phase"], ["Fehlerkategorie", "Error category"],
+  ["Download / Offline / Entpacken / Remux / Cleanup / Nachbearbeitung", "Download / Offline / Extraction / Remux / Cleanup / Post-processing"], ["Downloaddauer (Altbestand)", "Download duration (legacy)"],
+  ["Archivvorgänge", "Archive operations"], ["Remuxvorgänge", "Remux operations"], ["Keine Archivvorgänge", "No archive operations"], ["Keine Remuxvorgänge", "No remux operations"],
   ["Sichtbar:", "Visible:"], ["pro Seite", "per page"],
   ["Verfügbarkeit", "Availability"], ["Hinzugefügt am", "Added on"], ["Ungeprüft", "Unchecked"], ["Paket gestoppt", "Package stopped"], ["Alle anzeigen", "Show all"], ["Planen", "Schedule"], ["Startzeit", "Start time"], ["Starttag", "Start day"], ["Ab heute", "Starting today"], ["Ab morgen", "Starting tomorrow"], ["Bitte eine gültige Startzeit auswählen.", "Select a valid start time."],
   ["Keine Downloads", "No downloads"], ["Keine passenden Downloads", "No matching downloads"], ["Füge Links hinzu, um Downloads vorzubereiten.", "Add links to prepare downloads."], ["Passe Filter oder Suche an.", "Adjust the filter or search."],
+  ["Entpackte Downloads sind ausgeblendet", "Extracted downloads are hidden"], ["Deaktiviere „Entpackte Einträge ausblenden“, um sie wieder anzuzeigen.", "Disable “Hide extracted entries” to show them again."], ["Downloads können derzeit nicht gestartet werden", "Downloads cannot be started right now"],
   ["Keine Links gesammelt", "No links collected"], ["Keine passenden Links", "No matching links"], ["Füge Links oder Text ein, um sie zu sammeln.", "Paste links or text to collect them."], ["Links durchsuchen", "Search links"],
   ["Datenmenge", "Data volume"], ["Sitzungszähler", "Session counter"], ["Sieben Tage", "Seven days"], ["30 Tage", "30 days"], ["Zeitraum", "Period"], ["Erfolgreich", "Successful"],
+  ["Letzte 24 Stunden", "Last 24 hours"], ["Letzte sieben Tage", "Last seven days"], ["Letzte 30 Tage", "Last 30 days"], ["Seit Beginn der Statistikaufzeichnung", "Since statistics tracking began"],
+  ["Account-Traffic der vergangenen 24 Stunden.", "Account traffic over the past 24 hours."], ["Letzte 24 Stunden: Werte seit Beginn der Aufzeichnung.", "Last 24 hours: values since tracking began."],
+  ["Heutige Werte stammen aus der lokalen Statistikaufzeichnung.", "Today's values come from local statistics tracking."], ["Datenmenge und Dateien stammen aus den Gesamtzählern; Ergebnisse und Durchschnitt seit Beginn der Statistikaufzeichnung.", "Data volume and files come from the total counters; results and averages cover the period since statistics tracking began."],
+  ["Dateien werden nicht minutengenau nach Account erfasst", "File counts are not tracked per account at minute precision"], ["Ergebnisse werden nicht minutengenau nach Account erfasst", "Results are not tracked per account at minute precision"],
+  ["Aktive Downloadzeit wird nur tagesweise erfasst", "Active download time is tracked by day only"], ["Fehler werden nicht minutengenau nach Account erfasst", "Errors are not tracked per account at minute precision"],
+  ["Noch keine aktive Downloadzeit mit übertragenen Daten erfasst", "No active download time with transferred data has been recorded yet"], ["In den vergangenen 24 Stunden wurde noch kein Account-Traffic erfasst.", "No account traffic has been recorded in the past 24 hours."], ["In diesem Zeitraum wurden noch keine Providerwerte erfasst.", "No provider values have been recorded for this period."],
   ["Sitzungszähler und Ergebnisse der aktuellen Queue werden angezeigt.", "Session counters and results for the current queue are shown."], ["Sitzung zurücksetzen", "Reset session"], ["Gesamt zurücksetzen", "Reset total"], ["Fehler zurücksetzen", "Reset errors"],
   ["Bandbreitenverlauf", "Bandwidth history"], ["Bandbreitenverlauf der letzten 60 Sekunden", "Bandwidth history for the last 60 seconds"], ["Provider", "Provider"], ["Daten", "Data"], ["Ergebnisse", "Results"],
   ["Nie", "Never"], ["Sofort", "Immediately"], ["Beim App-Start", "On app startup"], ["Sobald Paket fertig ist", "When package completes"], ["Überschreiben", "Overwrite"], ["Überspringen", "Skip"], ["Nachfragen", "Ask"],
   ["Abbrechen", "Cancel"], ["Speichern", "Save"], ["Schließen", "Close"], ["Löschen", "Delete"], ["Suchen", "Search"], ["Zurücksetzen", "Reset"], ["Testen", "Test"], ["Öffnen", "Open"],
   ["Noch keine Downloads", "No downloads yet"], ["Füge Links hinzu, um den ersten Download zu starten.", "Add links to start the first download."], ["Keine passenden Downloads", "No matching downloads"], ["Alle anzeigen", "Show all"],
-  ["Neue Sammlung", "New collection"], ["Linksammler-Aktionen", "Link collector actions"], ["Links erfassen", "Capture links"], ["DLC importieren", "Import DLC"], ["Datei importieren", "Import file"],
+  ["Neue Sammlung", "New collection"], ["Linksammler-Aktionen", "Link collector actions"], ["Linksammler-Filter", "Link collector filters"], ["Links erfassen", "Capture links"], ["DLC importieren", "Import DLC"], ["Datei importieren", "Import file"],
+  ["Pakete:", "Packages:"], ["Links:", "Links:"], ["Downloads übergeben", "Transfer downloads"], ["Analyse läuft im Hintergrund", "Analysis is running in the background"], ["Name, URL oder Hoster", "Name, URL, or host"], ["Teilweise online", "Partially online"],
+  ["Suche und Paketdarstellung", "Search and package display"], ["Gesammelte Downloadpakete", "Collected download packages"], ["Hinzugefügt", "Added"], ["Passe Suche oder Statusfilter an.", "Adjust the search or status filter."],
+  ["Die ersten Links erscheinen sofort nach dem Import.", "The first links appear immediately after import."], ["Links werden vorbereitet", "Links are being prepared"], ["Füge Links hinzu, um Pakete vor dem Download zu prüfen.", "Add links to check packages before downloading."], ["Links erscheinen sofort und werden anschließend im Hintergrund geprüft.", "Links appear immediately and are then checked in the background."], ["Eine URL pro Zeile", "One URL per line"], ["Keine übertragbaren Links ausgewählt", "No transferable links selected"], ["Alle sichtbaren Links auswählen", "Select all visible links"], ["Der Linksammler ist zu groß, um gespeichert zu werden.", "The link collector is too large to save."], ["Der Queue-Export ist ungültig.", "The queue export is invalid."], ["Der Queue-Export enthält ungültiges JSON.", "The queue export contains invalid JSON."], ["Linksammler-Payload ist ungültig", "Link collector payload is invalid"], ["Linksammler-Anreicherung ist ungültig", "Link collector enrichment is invalid"], ["Linksammler-Speicherzustand ist ungültig", "Link collector persistence state is invalid"],
   ["Sammlung verarbeiten", "Process collection"], ["Queue exportieren", "Export queue"], ["An Downloads übergeben", "Send to downloads"], ["Auswahl entfernen", "Remove selection"], ["Ausgewählte Links löschen", "Delete selected links"], ["Links löschen", "Delete links"], ["Die ausgewählten Links werden aus der Sammlung entfernt. Dieser Schritt kann nicht rückgängig gemacht werden.", "The selected links will be removed from the collection. This action cannot be undone."], ["Gesammelte Links", "Collected links"],
   ["Auswahl", "Selection"], ["Links werden verarbeitet", "Processing links"], ["Die laufende Aktion wird abgeschlossen.", "The current action is being completed."], ["Die lokale Sammlung bleibt unverändert.", "The local collection remains unchanged."],
   ["Passe die Suche an oder lösche den Filter.", "Adjust the search or clear the filter."], ["Füge Links hinzu oder importiere eine vorhandene Liste.", "Add links or import an existing list."], ["Keine passenden Links", "No matching links"], ["Noch keine Links", "No links yet"],
@@ -211,19 +225,104 @@ const prefixedPairs = [
   ["Sicherung laden fehlgeschlagen: ", "Loading backup failed: "], ["Support-Bundle fehlgeschlagen: ", "Support bundle failed: "], ["Support-Trace fehlgeschlagen: ", "Support trace failed: "],
   ["Debug-Setup-Check fehlgeschlagen: ", "Debug setup check failed: "], ["Fehler-Ansicht fehlgeschlagen: ", "Error view failed: "], ["Token-Rotation fehlgeschlagen: ", "Token rotation failed: "],
   ["Ferndiagnose-Status fehlgeschlagen: ", "Remote diagnostics status failed: "], ["Aktivieren fehlgeschlagen: ", "Enabling failed: "], ["Deaktivieren fehlgeschlagen: ", "Disabling failed: "],
-  ["Session-Reset fehlgeschlagen: ", "Session reset failed: "], ["Download-Reset fehlgeschlagen: ", "Download reset failed: "], ["Zeitplan konnte nicht aktiviert werden: ", "Schedule could not be activated: "], ["Zeitplan konnte nicht abgebrochen werden: ", "Schedule could not be cancelled: "], ["Zeitplan konnte nicht abgeglichen werden: ", "Schedule could not be reconciled: "]
+  ["Session-Reset fehlgeschlagen: ", "Session reset failed: "], ["Download-Reset fehlgeschlagen: ", "Download reset failed: "], ["Zeitplan konnte nicht aktiviert werden: ", "Schedule could not be activated: "], ["Zeitplan konnte nicht abgebrochen werden: ", "Schedule could not be cancelled: "], ["Zeitplan konnte nicht abgeglichen werden: ", "Schedule could not be reconciled: "],
+  ["Metadatenprüfung fehlgeschlagen: ", "Metadata check failed: "], ["Linksammler konnte nicht gespeichert werden: ", "Link collector could not be saved: "], ["Linksammler konnte nicht wiederhergestellt werden: ", "Link collector could not be restored: "], ["Links konnten nicht vorbereitet werden: ", "Links could not be prepared: "], ["Übergabe fehlgeschlagen: ", "Transfer failed: "],
+  ["Start fehlgeschlagen: ", "Start failed: "], ["Pause fehlgeschlagen: ", "Pause failed: "]
 ] as const;
 
 export function normalizeLanguage(value: unknown): AppLanguage {
   return value === "de" ? "de" : "en";
 }
 
+function germanNumberToEnglish(value: string): string {
+  const [integer, fraction] = value.split(",");
+  const grouped = integer.replace(/\./g, "").replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return fraction === undefined ? grouped : `${grouped}.${fraction}`;
+}
+
+function englishNumberToGerman(value: string): string {
+  const [integer, fraction] = value.split(".");
+  const grouped = integer.replace(/,/g, "").replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return fraction === undefined ? grouped : `${grouped},${fraction}`;
+}
+
+function formatGermanInteger(value: string): string {
+  return value.replace(/[.,]/g, "").replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+}
+
 function translateDynamic(value: string, language: AppLanguage): string {
+  if (value.startsWith("Error: ")) return `Error: ${translateUiText(value.slice(7), language)}`;
+  if (language === "en") {
+    const statisticsStatus = value.match(/^(Daten|Dateien|Erfolg|Fehler|Provider|Accounts): ((?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d+)?(?: (?:B|KB|MB|GB|TB|PB)(?:\/s)?| %)?$)/);
+    if (statisticsStatus) {
+      const labels: Record<string, string> = { Daten: "Data", Dateien: "Files", Erfolg: "Success", Fehler: "Errors", Provider: "Providers", Accounts: "Accounts" };
+      return `${labels[statisticsStatus[1]]}: ${translateUiText(statisticsStatus[2], language)}`;
+    }
+  } else {
+    const statisticsStatus = value.match(/^(Data|Files|Success|Errors|Providers|Accounts): ((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?: (?:B|KB|MB|GB|TB|PB)(?:\/s)?| %)?$)/);
+    if (statisticsStatus) {
+      const labels: Record<string, string> = { Data: "Daten", Files: "Dateien", Success: "Erfolg", Errors: "Fehler", Providers: "Provider", Accounts: "Accounts" };
+      return `${labels[statisticsStatus[1]]}: ${translateUiText(statisticsStatus[2], language)}`;
+    }
+    const germanCountAction = value.match(/^(Ausgewählte Downloads starten|Ausgewählte Pakete exportieren|Ausgewählte Dateien exportieren|Ausgewählte Dateien entfernen|Zurücksetzen|überspringen|Ausgewählte entfernen) \(([\d.,]+)\)$/);
+    if (germanCountAction) return `${germanCountAction[1]} (${formatGermanInteger(germanCountAction[2])})`;
+    const germanToggleAll = value.match(/^Alle ([\d.,]+) umschalten$/);
+    if (germanToggleAll) return `Alle ${formatGermanInteger(germanToggleAll[1])} umschalten`;
+  }
   for (const [german, english] of prefixedPairs) {
     const source = language === "en" ? german : english;
-    if (value.startsWith(source)) return `${language === "en" ? english : german}${value.slice(source.length)}`;
+    if (value.startsWith(source)) {
+      const suffix = value.slice(source.length);
+      return `${language === "en" ? english : german}${suffix ? translateUiText(suffix, language) : ""}`;
+    }
   }
   if (language === "en") {
+    const groupedInteger = value.match(/^\d{1,3}(?:\.\d{3})+$/);
+    if (groupedInteger) return value.replace(/\./g, ",");
+    const englishMeasurement = value.match(/^(?:\d{1,3}(?:,\d{3})+|\d{1,3})(?:\.\d{1,2})? (?:B|KB|MB|GB|TB|PB)(?:\/s)?$/);
+    if (englishMeasurement) return value;
+    const englishPercentage = value.match(/^(?:\d{1,3}(?:,\d{3})+|\d{1,3})(?:\.\d{1,2})? %$/);
+    if (englishPercentage) return value;
+    const measurement = value.match(/^((?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d+)?) (B|KB|MB|GB|TB|PB)(\/s)?$/);
+    if (measurement) return `${germanNumberToEnglish(measurement[1])} ${measurement[2]}${measurement[3] ?? ""}`;
+    const percentage = value.match(/^((?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d+)?) %$/);
+    if (percentage) return `${germanNumberToEnglish(percentage[1])} %`;
+    const recordedDays = value.match(/^(Letzte sieben Tage|Letzte 30 Tage): (\d+) (erfasster Tag wird|erfasste Tage werden) bis heute zusammengefasst\.$/);
+    if (recordedDays) return `${recordedDays[1] === "Letzte sieben Tage" ? "Last seven days" : "Last 30 days"}: ${recordedDays[2]} recorded ${recordedDays[3] === "erfasster Tag wird" ? "day is" : "days are"} summarized through today.`;
+    const statisticsOutcome = value.match(/^([\d.,]+) fertig · ([\d.,]+) Fehler$/);
+    if (statisticsOutcome) return `${germanNumberToEnglish(statisticsOutcome[1])} completed · ${germanNumberToEnglish(statisticsOutcome[2])} errors`;
+    const historyParts = value.match(/^([\d.,]+) Parts$/);
+    if (historyParts) return `${germanNumberToEnglish(historyParts[1])} parts`;
+    const selectedDownloadsStart = value.match(/^Ausgewählte Downloads starten \(([\d.,]+)\)$/);
+    if (selectedDownloadsStart) return `Start selected downloads (${germanNumberToEnglish(selectedDownloadsStart[1])})`;
+    const selectedFilesRemove = value.match(/^Ausgewählte Dateien entfernen \(([\d.,]+)\)$/);
+    if (selectedFilesRemove) return `Remove selected files (${germanNumberToEnglish(selectedFilesRemove[1])})`;
+    const resetCount = value.match(/^Zurücksetzen \(([\d.,]+)\)$/);
+    if (resetCount) return `Reset (${germanNumberToEnglish(resetCount[1])})`;
+    const skipCount = value.match(/^überspringen \(([\d.,]+)\)$/);
+    if (skipCount) return `skip (${germanNumberToEnglish(skipCount[1])})`;
+    const collectorSelected = value.match(/^Auswahl übergeben \(([\d.,]+)\)$/);
+    if (collectorSelected) return `Send selection (${collectorSelected[1].replace(/\./g, ",")})`;
+    const collectorAll = value.match(/^Alle übergeben \(([\d.,]+)\)$/);
+    if (collectorAll) return `Send all (${collectorAll[1].replace(/\./g, ",")})`;
+    const collectorPackage = value.match(/^Paket (.+) auswählen$/);
+    if (collectorPackage) return `Select package ${collectorPackage[1]}`;
+    const collectorFiles = value.match(/^([\d.,]+) Dateien$/);
+    if (collectorFiles) return `${collectorFiles[1].replace(/\./g, ",")} files`;
+    const collectorAvailability = value.match(/^([\d.,]+)\/([\d.,]+) online$/);
+    if (collectorAvailability) return `${collectorAvailability[1].replace(/\./g, ",")}/${collectorAvailability[2].replace(/\./g, ",")} online`;
+    const collectorCapacity = value.match(/^Der Linksammler kann höchstens ([\d.,]+) (Pakete|Links) enthalten\.$/);
+    if (collectorCapacity) return `The link collector can contain at most ${collectorCapacity[1].replace(/\./g, ",")} ${collectorCapacity[2] === "Pakete" ? "packages" : "links"}.`;
+    const collectorImportCapacity = value.match(/^Der Queue-Export überschreitet das Collector-Limit von ([\d.,]+) (Paketen|Links)\.$/);
+    if (collectorImportCapacity) return `The queue export exceeds the link collector limit of ${collectorImportCapacity[1].replace(/\./g, ",")} ${collectorImportCapacity[2] === "Paketen" ? "packages" : "links"}.`;
+    const collectorCollected = value.match(/^([\d.,]+) Paket\(e\), ([\d.,]+) Link\(s\) gesammelt$/);
+    if (collectorCollected) return `${collectorCollected[1].replace(/\./g, ",")} package(s), ${collectorCollected[2].replace(/\./g, ",")} link(s) collected`;
+    const collectorDlcCollected = value.match(/^DLC gesammelt: ([\d.,]+) Paket\(e\), ([\d.,]+) Link\(s\)$/);
+    if (collectorDlcCollected) return `DLC collected: ${collectorDlcCollected[1].replace(/\./g, ",")} package(s), ${collectorDlcCollected[2].replace(/\./g, ",")} link(s)`;
+    const collectorPartialTransfer = value.match(/^([\d.,]+) von ([\d.,]+) Link\(s\) übergeben; Sammlung bleibt erhalten$/);
+    if (collectorPartialTransfer) return `${collectorPartialTransfer[1].replace(/\./g, ",")} of ${collectorPartialTransfer[2].replace(/\./g, ",")} link(s) transferred; collection remains`;
+    const collectorTransferred = value.match(/^([\d.,]+) Paket\(e\), ([\d.,]+) Link\(s\) übergeben$/);
+    if (collectorTransferred) return `${collectorTransferred[1].replace(/\./g, ",")} package(s), ${collectorTransferred[2].replace(/\./g, ",")} link(s) transferred`;
     const update = value.match(/^(.+) ist verfügbar\. Installierte Version: (.+)\.$/);
     if (update) return `${update[1]} is available. Installed version: ${update[2]}.`;
     const pagination = value.match(/^([\d.,]+\s*[–-]\s*[\d.,]+) von ([\d.,]+)$/);
@@ -234,8 +333,8 @@ function translateDynamic(value: string, language: AppLanguage): string {
     if (scheduled) return `Scheduled: ${scheduled[1].replace(/^Heute\b/, "Today")}`;
     const cancelled = value.match(/^(\d+) abgebrochen$/);
     if (cancelled) return `${cancelled[1]} cancelled`;
-    const labelledCount = value.match(/^(Einträge|Sichtbar|Ausgewählt): (\d+)$/);
-    if (labelledCount) return `${({ Einträge: "Entries", Sichtbar: "Visible", Ausgewählt: "Selected" } as const)[labelledCount[1] as "Einträge" | "Sichtbar" | "Ausgewählt"]}: ${labelledCount[2]}`;
+    const labelledCount = value.match(/^(Pakete|Links|Einträge|Sichtbar|Ausgewählt): ([\d.,]+)$/);
+    if (labelledCount) return `${({ Pakete: "Packages", Links: "Links", Einträge: "Entries", Sichtbar: "Visible", Ausgewählt: "Selected" } as Record<string, string>)[labelledCount[1]]}: ${labelledCount[2].replace(/\./g, ",")}`;
     const perPage = value.match(/^(\d+) pro Seite$/);
     if (perPage) return `${perPage[1]} per page`;
     const pageStatus = value.match(/^Seite ([\d.,\s]+) von ([\d.,\s]+)$/);
@@ -364,12 +463,12 @@ function translateDynamic(value: string, language: AppLanguage): string {
     if (packageCount) return `${packageCount[1]} package(s)`;
     const linkCount = value.match(/^(\d+) Link\(s\)$/);
     if (linkCount) return `${linkCount[1]} link(s)`;
-    const exportSelected = value.match(/^Ausgewählte (Pakete|Dateien) exportieren \((\d+)\)$/);
-    if (exportSelected) return `Export selected ${exportSelected[1] === "Pakete" ? "packages" : "files"} (${exportSelected[2]})`;
-    const toggleAll = value.match(/^Alle (.+) umschalten$/);
-    if (toggleAll) return `Toggle all ${toggleAll[1]}`;
-    const removeSelected = value.match(/^Ausgewählte entfernen \((\d+)\)$/);
-    if (removeSelected) return `Remove selected (${removeSelected[1]})`;
+    const exportSelected = value.match(/^Ausgewählte (Pakete|Dateien) exportieren \(([\d.,]+)\)$/);
+    if (exportSelected) return `Export selected ${exportSelected[1] === "Pakete" ? "packages" : "files"} (${germanNumberToEnglish(exportSelected[2])})`;
+    const toggleAll = value.match(/^Alle ([\d.,]+) umschalten$/);
+    if (toggleAll) return `Toggle all ${germanNumberToEnglish(toggleAll[1])}`;
+    const removeSelected = value.match(/^Ausgewählte entfernen \(([\d.,]+)\)$/);
+    if (removeSelected) return `Remove selected (${germanNumberToEnglish(removeSelected[1])})`;
     const removeCollection = value.match(/^Soll die Sammlung (.+) mit (\d+) Link\(s\) wirklich entfernt werden\?$/);
     if (removeCollection) return `Do you really want to remove collection ${removeCollection[1]} with ${removeCollection[2]} link(s)?`;
     const removeEmptyCollection = value.match(/^Soll die leere Sammlung (.+) wirklich entfernt werden\?$/);
@@ -393,6 +492,52 @@ function translateDynamic(value: string, language: AppLanguage): string {
       .replace(/Fehlgeschlagen nach (\d+) Versuchen/g, "Failed after $1 attempts")
       .replace(/(\d+) Fehler/g, "$1 errors");
   } else {
+    const groupedInteger = value.match(/^\d{1,3}(?:,\d{3})+$/);
+    if (groupedInteger) return value.replace(/,/g, ".");
+    const germanMeasurement = value.match(/^(?:\d{1,3}(?:\.\d{3})+|\d{1,3})(?:,\d{1,2})? (?:B|KB|MB|GB|TB|PB)(?:\/s)?$/);
+    if (germanMeasurement) return value;
+    const germanPercentage = value.match(/^(?:\d{1,3}(?:\.\d{3})+|\d{1,3})(?:,\d{1,2})? %$/);
+    if (germanPercentage) return value;
+    const measurement = value.match(/^((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?) (B|KB|MB|GB|TB|PB)(\/s)?$/);
+    if (measurement) return `${englishNumberToGerman(measurement[1])} ${measurement[2]}${measurement[3] ?? ""}`;
+    const percentage = value.match(/^((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?) %$/);
+    if (percentage) return `${englishNumberToGerman(percentage[1])} %`;
+    const recordedDays = value.match(/^(Last seven days|Last 30 days): (\d+) recorded (day is|days are) summarized through today\.$/);
+    if (recordedDays) return `${recordedDays[1] === "Last seven days" ? "Letzte sieben Tage" : "Letzte 30 Tage"}: ${recordedDays[2]} ${recordedDays[3] === "day is" ? "erfasster Tag wird" : "erfasste Tage werden"} bis heute zusammengefasst.`;
+    const statisticsOutcome = value.match(/^([\d.,]+) completed · ([\d.,]+) errors$/);
+    if (statisticsOutcome) return `${englishNumberToGerman(statisticsOutcome[1])} fertig · ${englishNumberToGerman(statisticsOutcome[2])} Fehler`;
+    const historyParts = value.match(/^([\d.,]+) parts$/);
+    if (historyParts) return `${englishNumberToGerman(historyParts[1])} Parts`;
+    const selectedDownloadsStart = value.match(/^Start selected downloads \(([\d.,]+)\)$/);
+    if (selectedDownloadsStart) return `Ausgewählte Downloads starten (${englishNumberToGerman(selectedDownloadsStart[1])})`;
+    const selectedFilesRemove = value.match(/^Remove selected files \(([\d.,]+)\)$/);
+    if (selectedFilesRemove) return `Ausgewählte Dateien entfernen (${englishNumberToGerman(selectedFilesRemove[1])})`;
+    const resetCount = value.match(/^Reset \(([\d.,]+)\)$/);
+    if (resetCount) return `Zurücksetzen (${englishNumberToGerman(resetCount[1])})`;
+    const skipCount = value.match(/^skip \(([\d.,]+)\)$/);
+    if (skipCount) return `überspringen (${englishNumberToGerman(skipCount[1])})`;
+    const collectorSelected = value.match(/^Send selection \(([\d.,]+)\)$/);
+    if (collectorSelected) return `Auswahl übergeben (${collectorSelected[1].replace(/,/g, ".")})`;
+    const collectorAll = value.match(/^Send all \(([\d.,]+)\)$/);
+    if (collectorAll) return `Alle übergeben (${collectorAll[1].replace(/,/g, ".")})`;
+    const collectorPackage = value.match(/^Select package (.+)$/);
+    if (collectorPackage) return `Paket ${collectorPackage[1]} auswählen`;
+    const collectorFiles = value.match(/^([\d.,]+) files$/);
+    if (collectorFiles) return `${collectorFiles[1].replace(/,/g, ".")} Dateien`;
+    const collectorAvailability = value.match(/^([\d.,]+)\/([\d.,]+) online$/);
+    if (collectorAvailability) return `${collectorAvailability[1].replace(/,/g, ".")}/${collectorAvailability[2].replace(/,/g, ".")} online`;
+    const collectorCapacity = value.match(/^The link collector can contain at most ([\d.,]+) (packages|links)\.$/);
+    if (collectorCapacity) return `Der Linksammler kann höchstens ${collectorCapacity[1].replace(/,/g, ".")} ${collectorCapacity[2] === "packages" ? "Pakete" : "Links"} enthalten.`;
+    const collectorImportCapacity = value.match(/^The queue export exceeds the link collector limit of ([\d.,]+) (packages|links)\.$/);
+    if (collectorImportCapacity) return `Der Queue-Export überschreitet das Collector-Limit von ${collectorImportCapacity[1].replace(/,/g, ".")} ${collectorImportCapacity[2] === "packages" ? "Paketen" : "Links"}.`;
+    const collectorCollected = value.match(/^([\d.,]+) package\(s\), ([\d.,]+) link\(s\) collected$/);
+    if (collectorCollected) return `${collectorCollected[1].replace(/,/g, ".")} Paket(e), ${collectorCollected[2].replace(/,/g, ".")} Link(s) gesammelt`;
+    const collectorDlcCollected = value.match(/^DLC collected: ([\d.,]+) package\(s\), ([\d.,]+) link\(s\)$/);
+    if (collectorDlcCollected) return `DLC gesammelt: ${collectorDlcCollected[1].replace(/,/g, ".")} Paket(e), ${collectorDlcCollected[2].replace(/,/g, ".")} Link(s)`;
+    const collectorPartialTransfer = value.match(/^([\d.,]+) of ([\d.,]+) link\(s\) transferred; collection remains$/);
+    if (collectorPartialTransfer) return `${collectorPartialTransfer[1].replace(/,/g, ".")} von ${collectorPartialTransfer[2].replace(/,/g, ".")} Link(s) übergeben; Sammlung bleibt erhalten`;
+    const collectorTransferred = value.match(/^([\d.,]+) package\(s\), ([\d.,]+) link\(s\) transferred$/);
+    if (collectorTransferred) return `${collectorTransferred[1].replace(/,/g, ".")} Paket(e), ${collectorTransferred[2].replace(/,/g, ".")} Link(s) übergeben`;
     const update = value.match(/^(.+) is available\. Installed version: (.+)\.$/);
     if (update) return `${update[1]} ist verfügbar. Installierte Version: ${update[2]}.`;
     const pagination = value.match(/^([\d.,]+\s*[–-]\s*[\d.,]+) of ([\d.,]+)$/);
@@ -403,8 +548,8 @@ function translateDynamic(value: string, language: AppLanguage): string {
     if (scheduled) return `Geplant: ${scheduled[1].replace(/^Today\b/, "Heute")}`;
     const cancelled = value.match(/^(\d+) cancelled$/);
     if (cancelled) return `${cancelled[1]} abgebrochen`;
-    const labelledCount = value.match(/^(Entries|Visible|Selected): (\d+)$/);
-    if (labelledCount) return `${({ Entries: "Einträge", Visible: "Sichtbar", Selected: "Ausgewählt" } as const)[labelledCount[1] as "Entries" | "Visible" | "Selected"]}: ${labelledCount[2]}`;
+    const labelledCount = value.match(/^(Packages|Links|Entries|Visible|Selected): ([\d.,]+)$/);
+    if (labelledCount) return `${({ Packages: "Pakete", Links: "Links", Entries: "Einträge", Visible: "Sichtbar", Selected: "Ausgewählt" } as Record<string, string>)[labelledCount[1]]}: ${labelledCount[2].replace(/,/g, ".")}`;
     const perPage = value.match(/^(\d+) per page$/);
     if (perPage) return `${perPage[1]} pro Seite`;
     const filter = value.match(/^(All|Active|Queued|Paused|Completed|Errors) (\d+)$/);
@@ -541,12 +686,12 @@ function translateDynamic(value: string, language: AppLanguage): string {
     if (packageCount) return `${packageCount[1]} Paket(e)`;
     const linkCount = value.match(/^(\d+) link\(s\)$/);
     if (linkCount) return `${linkCount[1]} Link(s)`;
-    const exportSelected = value.match(/^Export selected (packages|files) \((\d+)\)$/);
-    if (exportSelected) return `Ausgewählte ${exportSelected[1] === "packages" ? "Pakete" : "Dateien"} exportieren (${exportSelected[2]})`;
-    const toggleAll = value.match(/^Toggle all (.+)$/);
-    if (toggleAll) return `Alle ${toggleAll[1]} umschalten`;
-    const removeSelected = value.match(/^Remove selected \((\d+)\)$/);
-    if (removeSelected) return `Ausgewählte entfernen (${removeSelected[1]})`;
+    const exportSelected = value.match(/^Export selected (packages|files) \(([\d.,]+)\)$/);
+    if (exportSelected) return `Ausgewählte ${exportSelected[1] === "packages" ? "Pakete" : "Dateien"} exportieren (${englishNumberToGerman(exportSelected[2])})`;
+    const toggleAll = value.match(/^Toggle all ([\d.,]+)$/);
+    if (toggleAll) return `Alle ${englishNumberToGerman(toggleAll[1])} umschalten`;
+    const removeSelected = value.match(/^Remove selected \(([\d.,]+)\)$/);
+    if (removeSelected) return `Ausgewählte entfernen (${englishNumberToGerman(removeSelected[1])})`;
     const copied = value.match(/^(.+) copied$/);
     if (copied) return `${copied[1]} kopiert`;
     const suffixes: Array<[RegExp, string]> = [

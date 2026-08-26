@@ -22,6 +22,7 @@ import {
   recordStatisticsBytes,
   recordStatisticsOutcome
 } from "../src/main/statistics-ledger";
+import { translateUiText } from "../src/renderer/i18n";
 
 const now = new Date(2026, 7, 10, 12, 0, 0, 0).getTime();
 
@@ -118,6 +119,32 @@ function expectUnavailable(metric: StatisticsMetric): void {
 }
 
 describe("statistics model", () => {
+  it("produces range messages that the shared localizer translates completely", () => {
+    const snapshot = createSnapshot();
+    snapshot.stats.statistics = {
+      version: 2,
+      startedAt: now,
+      days: [],
+      minutes: []
+    };
+
+    expect(translateUiText(buildStatisticsViewModel(snapshot, "last24", now).message, "en"))
+      .toBe("Last 24 hours: values since tracking began.");
+    expect(translateUiText(buildStatisticsViewModel(snapshot, "today", now).message, "en"))
+      .toBe("Today's values come from local statistics tracking.");
+    expect(translateUiText(buildStatisticsViewModel(snapshot, "all", now).message, "en"))
+      .toBe("Data volume and files come from the total counters; results and averages cover the period since statistics tracking began.");
+  });
+
+  it("uses singular grammar for one recorded statistics day in both languages", () => {
+    const snapshot = createSnapshot();
+    snapshot.stats.statistics = recordStatisticsBytes(createStatisticsLedger(now), "realdebrid", 1, now);
+    const message = buildStatisticsViewModel(snapshot, "week", now).message;
+
+    expect(message).toBe("Letzte sieben Tage: 1 erfasster Tag wird bis heute zusammengefasst.");
+    expect(translateUiText(message, "en")).toBe("Last seven days: 1 recorded day is summarized through today.");
+  });
+
   it("uses real snapshot session fields and excludes active or waiting downloads from the success denominator", () => {
     const snapshot = createSnapshot();
     snapshot.stats.totalDownloaded = 600;
@@ -213,6 +240,25 @@ describe("statistics model", () => {
     expect(model.providers.map((row) => [row.completed, row.failed])).toEqual([[0, 1], [1, 0]]);
   });
 
+  it("keeps recovered provider bytes available while marking unrecoverable daily details unavailable", () => {
+    const snapshot = createSnapshot();
+    let ledger = createStatisticsLedger(now);
+    ledger = recordStatisticsBytes(ledger, "realdebrid", 500, now);
+    ledger = recordStatisticsOutcome(ledger, "realdebrid", "completed", now);
+    ledger = recordStatisticsActiveInterval(ledger, now - 500, now);
+    ledger.providerBytesOnlyDays = ["2026-08-10"];
+    snapshot.stats.statistics = ledger;
+
+    const model = buildStatisticsViewModel(snapshot, "today", now);
+
+    expect(model.metrics.downloadedBytes).toMatchObject({ value: 500, available: true });
+    expectUnavailable(model.metrics.files);
+    expectUnavailable(model.metrics.successRate);
+    expectUnavailable(model.metrics.averageSpeedBps);
+    expectUnavailable(model.metrics.errors);
+    expect(model.providers.map((row) => [row.completed, row.failed])).toEqual([[null, null]]);
+  });
+
   it("shows rolling account traffic with unavailable day-scoped metrics", () => {
     const snapshot = createSnapshot();
     snapshot.stats.statistics = {
@@ -248,11 +294,43 @@ describe("statistics model", () => {
     expect(model.message).toContain("seit Beginn der Aufzeichnung");
   });
 
+  it("does not present incomplete rolling traffic as available after provider-only recovery", () => {
+    const snapshot = createSnapshot();
+    snapshot.stats.statistics = {
+      version: 2,
+      startedAt: now - (25 * 60 * 60 * 1_000),
+      minuteTrackingStartedAt: now - (25 * 60 * 60 * 1_000),
+      providerBytesOnlyDays: ["2026-08-10"],
+      days: [{
+        day: "2026-08-10",
+        downloadedBytes: 125,
+        measuredBytes: 0,
+        completedFiles: 0,
+        failedFiles: 0,
+        activeDownloadMs: 0,
+        providers: { realdebrid: { bytes: 125, completed: 0, failed: 0 } }
+      }],
+      minutes: []
+    };
+    snapshot.stats.rolling24Hours = {
+      from: now - (24 * 60 * 60 * 1_000),
+      to: now,
+      downloadedBytes: 0,
+      accounts: []
+    };
+
+    const model = buildStatisticsViewModel(snapshot, "last24", now);
+
+    expectUnavailable(model.metrics.downloadedBytes);
+    expect(model.providers).toEqual([]);
+  });
+
   it("shows a complete rolling description after 24 hours of statistics coverage", () => {
     const snapshot = createSnapshot();
     snapshot.stats.statistics = {
       version: 2,
       startedAt: now - (25 * 60 * 60 * 1_000),
+      minuteTrackingStartedAt: now - (25 * 60 * 60 * 1_000),
       days: [],
       minutes: []
     };
@@ -267,6 +345,21 @@ describe("statistics model", () => {
 
     expect(model.message).toContain("vergangenen 24 Stunden");
     expect(model.message).not.toContain("seit Beginn der Aufzeichnung");
+  });
+
+  it("does not infer minute coverage from an old ledger start during migration", () => {
+    const snapshot = createSnapshot();
+    snapshot.stats.statistics = {
+      version: 2,
+      startedAt: now - (25 * 60 * 60 * 1_000),
+      days: [],
+      minutes: []
+    };
+
+    const model = buildStatisticsViewModel(snapshot, "last24", now);
+
+    expect(model.message).toContain("seit Beginn der Aufzeichnung");
+    expect(model.message).not.toContain("vergangenen 24 Stunden");
   });
 
   it("treats a stale daily key as a genuine zero today without stale provider rows", () => {
@@ -392,6 +485,26 @@ describe("statistics model", () => {
 });
 
 describe("statistics view", () => {
+  it("formats provider outcome counts for the active locale pipeline", () => {
+    const model = {
+      ...buildStatisticsViewModel(createSnapshot(), "today", now),
+      providers: [{ id: "realdebrid", label: "Real-Debrid", bytes: 0, completed: 1_250, failed: 2_500 }]
+    };
+    const html = renderToStaticMarkup(<StatisticsContent actions={createActions()} chart={<div />} model={model} />);
+
+    expect(html).toContain("1.250 fertig · 2.500 Fehler");
+  });
+
+  it("formats the sidebar provider count for the active locale pipeline", () => {
+    const model = {
+      ...buildStatisticsViewModel(createSnapshot(), "today", now),
+      providers: Array.from({ length: 1_250 }, (_, index) => ({ id: String(index), label: String(index), bytes: 0, completed: 0, failed: 0 }))
+    };
+    const html = renderToStaticMarkup(<StatisticsSidebarStatus model={model} />);
+
+    expect(html).toContain("Provider: 1.250");
+  });
+
   it("keeps large statistic data volumes precise in gigabytes instead of rounding to terabytes", () => {
     const snapshot = createSnapshot();
     let ledger = createStatisticsLedger(now);

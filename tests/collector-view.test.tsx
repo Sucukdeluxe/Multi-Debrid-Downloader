@@ -8,8 +8,12 @@ import {
   mergeCollectorEnrichment,
   mergeCollectorPackages,
   removeCollectorLinks,
+  reconcileCollectorCollapsedPackageIdsWithPackages,
   reconcileCollectorCollapsedPackageIds,
+  reconcileCollectorSelectionAfterRemoval,
+  reconcileCollectorSelectionWithPackages,
   selectCollectorPackageLinks,
+  setCollectorVisibleSelection,
   type CollectorPackage
 } from "../src/renderer/views/collector/collector-model";
 import {
@@ -18,6 +22,7 @@ import {
   MemoizedCollectorContent,
   CollectorSidebar,
   CollectorSidebarStatus,
+  CollectorTableHeader,
   CollectorToolbar,
   CollectorView,
   collectorFileInteractionAttributes,
@@ -69,6 +74,7 @@ function createActions(overrides: Partial<CollectorViewActions> = {}): Collector
     onQueryChange: () => {},
     onLinkSelectionChange: () => {},
     onPackageSelectionChange: () => {},
+    onSetVisibleSelection: () => {},
     onPackageCollapseChange: () => {},
     onToggleAllPackages: () => {},
     onRemoveSelected: () => {},
@@ -97,6 +103,31 @@ const packages: CollectorPackage[] = [{
 }];
 
 describe("collector workspace model", () => {
+  it("prunes rolled-back selection so an identical link reimport is not ghost-selected", () => {
+    const afterRollback = reconcileCollectorSelectionWithPackages(new Set(["link-1", "link-4"]), [packages[1]]);
+    const afterReimport = buildCollectorWorkspaceViewModel(packages, "all", "", false, [...afterRollback], [], "", true);
+
+    expect(afterRollback).toEqual(new Set(["link-4"]));
+    expect(afterReimport.selectedIds).toEqual(["link-4"]);
+  });
+
+  it("prunes removed collapsed package ids so an identical package reimport stays expanded", () => {
+    const afterRemoval = reconcileCollectorCollapsedPackageIdsWithPackages(new Set(["package-sbs", "package-mixed"]), [packages[1]]);
+    const afterReimport = buildCollectorWorkspaceViewModel(packages, "all", "", false, [], [...afterRemoval], "", true);
+
+    expect(afterRemoval).toEqual(new Set(["package-mixed"]));
+    expect(afterReimport.packages.map((pkg) => [pkg.id, pkg.collapsed])).toEqual([
+      ["package-sbs", false],
+      ["package-mixed", true]
+    ]);
+  });
+
+  it("sets only visible link selection while preserving hidden ids", () => {
+    const selected = setCollectorVisibleSelection(new Set(["link-1", "hidden-link"]), ["link-1", "link-2", "link-4"], true);
+    expect(selected).toEqual(new Set(["link-1", "hidden-link", "link-2", "link-4"]));
+    expect(setCollectorVisibleSelection(selected, ["link-1", "link-2", "link-4"], false)).toEqual(new Set(["hidden-link"]));
+  });
+
   it("merges late enrichment by URL without duplicates and moves the link into its resolved package", () => {
     const initial: CollectorPackage[] = [{
       id: "pending",
@@ -126,6 +157,21 @@ describe("collector workspace model", () => {
       status: "ready",
       addedAt: 1_000
     })]);
+    expect(result.persistenceDelta).toEqual({
+      links: [{
+        url: "https://1fichier.com/?one11111",
+        previousPackageId: "pending",
+        previousLink: initial[0].links[0],
+        nextPackageId: "resolved",
+        nextLink: result.packages[0].links[0]
+      }],
+      packages: [{
+        package: { id: "resolved", name: "SBS14HD", nameSource: "inferred", addedAt: 1_000 },
+        linkCount: 1
+      }],
+      removedPackageIds: ["pending"],
+      packageCount: 1
+    });
   });
 
   it("deduplicates repeated incoming URLs while preserving distinct links", () => {
@@ -267,6 +313,15 @@ describe("collector workspace model", () => {
     ]);
   });
 
+  it("preserves hidden selections when visible selected links are removed", () => {
+    const next = reconcileCollectorSelectionAfterRemoval(
+      new Set(["link-1", "link-4"]),
+      new Set(["link-1"])
+    );
+
+    expect(next).toEqual(new Set(["link-4"]));
+  });
+
   it("derives aggregates, filters and search once for the view", () => {
     const model = buildCollectorWorkspaceViewModel(packages, "online", "part02", false, ["link-2"], ["package-mixed"], "", true);
 
@@ -279,6 +334,43 @@ describe("collector workspace model", () => {
       { id: "unknown", label: "Ungeprüft", count: 1 },
       { id: "offline", label: "Offline", count: 1 }
     ]);
+  });
+
+  it("limits selection and action scope to links visible through filter and search", () => {
+    const model = buildCollectorWorkspaceViewModel(
+      packages,
+      "online",
+      "part02",
+      false,
+      ["link-1", "link-2", "link-3"],
+      [],
+      "",
+      true
+    );
+
+    expect(model.visibleIds).toEqual(["link-2"]);
+    expect(model.selectedIds).toEqual(["link-2"]);
+    expect(model.selectedCount).toBe(1);
+    expect(model.packages[0].selectedCount).toBe(1);
+  });
+
+  it("keeps offline links selectable and removable but excludes them from transfers", () => {
+    const model = buildCollectorWorkspaceViewModel(
+      packages,
+      "all",
+      "",
+      false,
+      ["link-1", "link-2", "link-3", "link-4"],
+      [],
+      "",
+      true
+    );
+
+    expect(model.visibleIds).toEqual(["link-1", "link-2", "link-3", "link-4"]);
+    expect(model.selectedIds).toEqual(["link-1", "link-2", "link-3", "link-4"]);
+    expect(model.visibleTransferableIds).toEqual(["link-1", "link-2", "link-3"]);
+    expect(model.selectedTransferableIds).toEqual(["link-1", "link-2", "link-3"]);
+    expect(model.selectedCount).toBe(4);
   });
 
   it("keeps initially unknown links visible while background analysis runs", () => {
@@ -336,6 +428,111 @@ describe("collector disclosure virtualization", () => {
 });
 
 describe("CollectorView", () => {
+  it("derives header selection without iterating visible ids and forwards them unchanged", () => {
+    const visibleIds = new Proxy(["link-1", "link-2"], {
+      get(target, property, receiver) {
+        if (property === Symbol.iterator || property === "reduce") throw new Error("visible ids must not be iterated");
+        return Reflect.get(target, property, receiver);
+      }
+    });
+    const base = buildCollectorWorkspaceViewModel(packages, "all", "", false, [], [], "", true);
+    const model = { ...base, visibleIds, selectedIds: [], selectedCount: 1 };
+    const calls: Array<{ ids: string[]; selected: boolean }> = [];
+    let header: ReactElement | undefined;
+
+    expect(() => {
+      header = CollectorTableHeader({
+        actions: createActions({ onSetVisibleSelection: (ids, selected) => calls.push({ ids, selected }) }),
+        model,
+        scrollLeft: 0
+      });
+    }).not.toThrow();
+    if (!header) return;
+
+    const checkbox = findElement(header, (element) => element.type === "input");
+    checkbox.props.onChange({ target: { checked: true } });
+
+    expect(checkbox.props["aria-checked"]).toBe("mixed");
+    expect(checkbox.props.checked).toBe(false);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].ids).toBe(visibleIds);
+    expect(calls[0].selected).toBe(true);
+  });
+
+  it("routes every visible link including offline through the header checkbox", () => {
+    const calls: unknown[] = [];
+    const model = buildCollectorWorkspaceViewModel(packages, "all", "", false, ["link-1", "link-4"], [], "", true);
+
+    const header = CollectorTableHeader({
+      actions: createActions({ onSetVisibleSelection: (ids, selected) => calls.push([ids, selected]) }),
+      model,
+      scrollLeft: 0
+    });
+    const checkbox = findElement(header, (element) => element.type === "input");
+    const input = { indeterminate: false };
+
+    (checkbox as unknown as { ref: (element: typeof input) => void }).ref(input);
+    checkbox.props.onChange({ target: { checked: true } });
+
+    expect(checkbox.props["aria-label"]).toBe("Alle sichtbaren Links auswählen");
+    expect(checkbox.props["aria-checked"]).toBe("mixed");
+    expect(checkbox.props.checked).toBe(false);
+    expect(checkbox.props.disabled).toBe(false);
+    expect(input.indeterminate).toBe(true);
+    expect(calls).toEqual([[['link-1', 'link-2', 'link-3', 'link-4'], true]]);
+  });
+
+  it("checks or disables the header checkbox from visible selection state", () => {
+    const selectedHeader = CollectorTableHeader({
+      actions: createActions(),
+      model: buildCollectorWorkspaceViewModel(packages, "offline", "", false, ["link-4"], [], "", true),
+      scrollLeft: 19
+    });
+    const selectedCheckbox = findElement(selectedHeader, (element) => element.type === "input");
+    const emptyHeader = CollectorTableHeader({
+      actions: createActions(),
+      model: buildCollectorWorkspaceViewModel(packages, "online", "missing", false, [], [], "", true),
+      scrollLeft: 0
+    });
+    const emptyCheckbox = findElement(emptyHeader, (element) => element.type === "input");
+
+    expect(selectedCheckbox.props["aria-checked"]).toBe(true);
+    expect(selectedCheckbox.props.checked).toBe(true);
+    expect(selectedCheckbox.props.disabled).toBe(false);
+    expect(selectedHeader.props.style).toEqual({ transform: "translateX(-19px)" });
+    expect(emptyCheckbox.props["aria-checked"]).toBe(false);
+    expect(emptyCheckbox.props.checked).toBe(false);
+    expect(emptyCheckbox.props.disabled).toBe(true);
+  });
+
+  it("uses visible link counts and selection state for filtered package actions", () => {
+    const model = buildCollectorWorkspaceViewModel(packages, "online", "part02", false, ["link-2"], [], "", true);
+    const toolbar = CollectorToolbar({ actions: createActions(), model });
+    const content = renderToStaticMarkup(<CollectorContent actions={createActions()} model={model} />);
+
+    expect(findButton(toolbar, "Alle übergeben (1)").props.disabled).toBe(false);
+    expect(content).toMatch(/aria-checked="true" aria-label="Paket SBS14HD auswählen"/);
+    expect(content).not.toContain('aria-checked="mixed" aria-label="Paket SBS14HD auswählen"');
+  });
+
+  it("disables transfer actions for an offline selection while keeping removal enabled", () => {
+    const model = buildCollectorWorkspaceViewModel(packages, "offline", "", false, ["link-4"], [], "", true);
+    const toolbar = CollectorToolbar({ actions: createActions(), model });
+
+    expect(findButton(toolbar, "Auswahl übergeben (0)").props.disabled).toBe(true);
+    expect(findButton(toolbar, "Alle übergeben (0)").props.disabled).toBe(true);
+    expect(findButton(toolbar, "Auswahl entfernen").props.disabled).toBe(false);
+  });
+
+  it("counts only transferable links in transfer actions", () => {
+    const model = buildCollectorWorkspaceViewModel(packages, "all", "", false, ["link-1", "link-2", "link-3", "link-4"], [], "", true);
+    const toolbar = CollectorToolbar({ actions: createActions(), model });
+
+    expect(findButton(toolbar, "Auswahl übergeben (3)").props.disabled).toBe(false);
+    expect(findButton(toolbar, "Alle übergeben (3)").props.disabled).toBe(false);
+    expect(findButton(toolbar, "Auswahl entfernen").props.disabled).toBe(false);
+  });
+
   it("collapses newly imported packages while preserving existing disclosure state", () => {
     const incoming = [{ ...packages[0], id: "temporary-import-package" }];
     const collapsed = reconcileCollectorCollapsedPackageIds(new Set(["package-mixed"]), [packages[1]], packages, incoming, true);
@@ -431,8 +628,28 @@ describe("CollectorView", () => {
     expect(sidebarStatus).toContain('role="status"');
     expect(html).toContain("SBS14HD.part01.rar");
     expect(findButton(toolbar, "Auswahl übergeben (1)").props.disabled).toBe(false);
-    expect(findButton(toolbar, "Alle übergeben (4)").props.disabled).toBe(false);
+    expect(findButton(toolbar, "Alle übergeben (3)").props.disabled).toBe(false);
     expect(findButton(toolbar, "Auswahl entfernen").props.disabled).toBe(false);
+  });
+
+  it("formats collector sidebar and filter counters as German integers", () => {
+    const base = buildCollectorWorkspaceViewModel(packages, "all", "", false, [], [], "", true);
+    const model = {
+      ...base,
+      packageCount: 1_250,
+      totalCount: 3_180,
+      selectedCount: 1_000,
+      filters: base.filters.map((filter, index) => ({ ...filter, count: [3_180, 1_250, 1_000, 930][index] ?? 0 }))
+    };
+    const sidebar = renderToStaticMarkup(<CollectorSidebar actions={createActions()} model={model} />);
+    const status = renderToStaticMarkup(<CollectorSidebarStatus model={model} />);
+
+    for (const count of ["3.180", "1.250", "1.000", "930"]) expect(sidebar).toContain(`>${count}<`);
+    expect(status).toContain("Pakete: 1.250");
+    expect(status).toContain("Links: 3.180");
+    expect(status).toContain("Ausgewählt: 1.000");
+    expect(sidebar).not.toContain(">3180<");
+    expect(status).not.toContain("Links: 3180");
   });
 
   it("derives status exclusively from availability instead of filename readiness", () => {
@@ -505,7 +722,7 @@ describe("CollectorView", () => {
     });
 
     findButton(toolbar, "Auswahl übergeben (1)").props.onClick();
-    findButton(toolbar, "Alle übergeben (4)").props.onClick();
+    findButton(toolbar, "Alle übergeben (3)").props.onClick();
     expect(selected).toBe(1);
     expect(all).toBe(1);
   });

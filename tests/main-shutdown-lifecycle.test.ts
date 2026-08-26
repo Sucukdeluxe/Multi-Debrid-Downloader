@@ -48,6 +48,7 @@ import {
   type DownloadHealthSnapshot
 } from "../src/main/download-health-monitor";
 import { NotificationOutbox, type NotificationEvent } from "../src/main/notification-outbox";
+import { logger } from "../src/main/logger";
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve = () => {};
@@ -73,6 +74,61 @@ afterEach(() => {
 });
 
 describe("main shutdown lifecycle", () => {
+  it("returns a validated collector snapshot through synchronous IPC", async () => {
+    const main = await import("../src/main/main");
+    const state = { packages: [], collapsedPackageIds: [] };
+    const event = { returnValue: null as unknown };
+
+    main.getCollectorStateFromSyncIpc({ getCollectorState: () => state }, event);
+
+    expect(event.returnValue).toEqual(state);
+    expect(event.returnValue).not.toBe(state);
+  });
+
+  it("returns null instead of a malformed synchronous collector snapshot", async () => {
+    const main = await import("../src/main/main");
+    const warning = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const event = { returnValue: { packages: [], collapsedPackageIds: [] } as unknown };
+    try {
+      main.getCollectorStateFromSyncIpc({
+        getCollectorState: () => ({ packages: "invalid", collapsedPackageIds: [] }) as never
+      }, event);
+
+      expect(event.returnValue).toBeNull();
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining("Synchrones Laden"));
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it("returns success only after the synchronous collector save completes", async () => {
+    const main = await import("../src/main/main");
+    const state = { packages: [], collapsedPackageIds: [] };
+    const saveCollectorStateSync = vi.fn(() => state);
+    const event = { returnValue: false };
+
+    main.saveCollectorStateFromSyncIpc({ saveCollectorStateSync }, event, state);
+
+    expect(saveCollectorStateSync).toHaveBeenCalledWith(state);
+    expect(event.returnValue).toBe(true);
+  });
+
+  it("returns false and logs a synchronous collector write failure", async () => {
+    const main = await import("../src/main/main");
+    const warning = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const event = { returnValue: true };
+    try {
+      expect(() => main.saveCollectorStateFromSyncIpc({
+        saveCollectorStateSync: () => { throw new Error("collector locked"); }
+      }, event, { packages: [], collapsedPackageIds: [] })).not.toThrow();
+
+      expect(event.returnValue).toBe(false);
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining("collector locked"));
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it("continues the full shutdown when the collector state cannot be flushed", async () => {
     const controller = Object.create(AppController.prototype) as any;
     controller.runtimeStatsTimer = null;

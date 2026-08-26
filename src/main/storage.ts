@@ -5,7 +5,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { getDebridLinkApiKeyIds } from "../shared/debrid-link-keys";
 import { getMegaDebridAccountIds, mergeMegaDebridCredentialPools, parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
-import { AppSettings, ArchiveOperationMetric, AudioStripSummary, BandwidthScheduleEntry, DailyStartOutcome, DebridAccountStatus, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, FailurePhase, HistoryEntry, HistoryRetentionMode, LogStorageLocation, PackageEntry, PackagePriority, RemuxOperationMetric, SessionState } from "../shared/types";
+import { AppSettings, AppTheme, ArchiveOperationMetric, AudioStripSummary, BandwidthScheduleEntry, DailyStartOutcome, DebridAccountStatus, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, FailurePhase, HistoryEntry, HistoryRetentionMode, LogStorageLocation, PackageEntry, PackagePriority, RemuxOperationMetric, SessionState, ThemePreference } from "../shared/types";
 import { getProviderUsageDayKey } from "../shared/provider-daily-limits";
 import { getRealDebridAccountIds, normalizeRealDebridWebAccountIds, parseRealDebridApiAccounts, serializeRealDebridApiAccounts } from "../shared/real-debrid-accounts";
 import { defaultSettings } from "./constants";
@@ -34,7 +34,8 @@ const VALID_CLEANUP_MODES = new Set(["none", "trash", "delete"]);
 const VALID_CONFLICT_MODES = new Set(["overwrite", "skip", "rename", "ask"]);
 const VALID_FINISHED_POLICIES = new Set(["never", "immediate", "on_start", "package_done"]);
 const VALID_SPEED_MODES = new Set(["global", "per_download"]);
-const VALID_THEMES = new Set(["dark", "light"]);
+const VALID_THEMES = new Set<AppTheme>(["dark", "light"]);
+const VALID_THEME_PREFERENCES = new Set<ThemePreference>(["dark", "light", "system"]);
 const VALID_EXTRACT_CPU_PRIORITIES = new Set(["high", "middle", "low"]);
 const VALID_HISTORY_RETENTION_MODES = new Set<HistoryRetentionMode>(["never", "session", "permanent"]);
 const VALID_LOG_STORAGE_LOCATIONS = new Set<LogStorageLocation>(["appdata", "desktop"]);
@@ -424,6 +425,8 @@ function migrateUpdateRepo(raw: string, fallback: string): string {
 
 export function normalizeSettings(settings: AppSettings): AppSettings {
   const defaults = defaultSettings();
+  const theme = VALID_THEMES.has(settings.theme) ? settings.theme : defaults.theme;
+  const themePreference = VALID_THEME_PREFERENCES.has(settings.themePreference) ? settings.themePreference : theme;
   const directorySettings = migrateLegacyDefaultDirectories(settings, defaults);
   const legacySuccessMode = settings.notifyOnPackageCompleted === true ? "individual" : "digest";
   const notifyPackageSuccessMode = settings.notifyPackageSuccessMode === "individual" || settings.notifyPackageSuccessMode === "digest"
@@ -633,7 +636,8 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     totalDownloadedAllTime: typeof settings.totalDownloadedAllTime === "number" && settings.totalDownloadedAllTime >= 0 ? settings.totalDownloadedAllTime : defaults.totalDownloadedAllTime,
     totalCompletedFilesAllTime: typeof settings.totalCompletedFilesAllTime === "number" && settings.totalCompletedFilesAllTime >= 0 ? settings.totalCompletedFilesAllTime : defaults.totalCompletedFilesAllTime,
     totalRuntimeAllTimeMs: typeof settings.totalRuntimeAllTimeMs === "number" && settings.totalRuntimeAllTimeMs >= 0 ? settings.totalRuntimeAllTimeMs : defaults.totalRuntimeAllTimeMs,
-    theme: VALID_THEMES.has(settings.theme) ? settings.theme : defaults.theme,
+    theme,
+    themePreference,
     bandwidthSchedules: normalizeBandwidthSchedules(settings.bandwidthSchedules),
     columnOrder: normalizeColumnOrder(settings.columnOrder, settings.columnOrderVersion),
     columnOrderVersion: 3,
@@ -732,6 +736,38 @@ export function createStoragePaths(baseDir: string): StoragePaths {
     notificationOutboxFile: path.join(baseDir, "rd_notification_outbox.json"),
     notificationHealthFile: path.join(baseDir, "rd_notification_health.json"),
     collectorFile: path.join(baseDir, "rd_collector_state.json")
+  };
+}
+
+export function createFileRollback(filePaths: readonly string[]): () => void {
+  const snapshots = [...new Set(filePaths)].map((filePath) => ({
+    filePath,
+    payload: fs.existsSync(filePath) ? fs.readFileSync(filePath) : null
+  }));
+  return () => {
+    let firstError: unknown = null;
+    for (const snapshot of snapshots) {
+      try {
+        if (snapshot.payload === null) {
+          fs.rmSync(snapshot.filePath, { force: true });
+          continue;
+        }
+        fs.mkdirSync(path.dirname(snapshot.filePath), { recursive: true });
+        const tempPath = `${snapshot.filePath}.${process.pid}.${randomUUID()}.rollback.tmp`;
+        try {
+          fs.writeFileSync(tempPath, snapshot.payload);
+          syncRenameWithExdevFallback(tempPath, snapshot.filePath);
+        } catch (error) {
+          try { fs.rmSync(tempPath, { force: true }); } catch { }
+          throw error;
+        }
+      } catch (error) {
+        firstError ??= error;
+      }
+    }
+    if (firstError) {
+      throw firstError;
+    }
   };
 }
 
@@ -890,6 +926,9 @@ function readSettingsFile(filePath: string): LoadedSettingsFile | null {
       ...defaultSettings(),
       ...migrated,
       language: migratedLanguage,
+      themePreference: Object.prototype.hasOwnProperty.call(parsed, "themePreference")
+        ? migrated.themePreference
+        : VALID_THEMES.has(migrated.theme) ? migrated.theme : defaultSettings().themePreference,
       columnOrderVersion: parsed.columnOrderVersion
     } as AppSettings;
     if (!Object.prototype.hasOwnProperty.call(parsed, "megaDebridApiDisabledAccountIds")) {
@@ -1295,6 +1334,7 @@ export function saveSettings(paths: StoragePaths, settings: AppSettings): void {
 let asyncSettingsSaveRunning = false;
 let asyncSettingsSaveQueued: { paths: StoragePaths; settings: AppSettings; generation: number } | null = null;
 let syncSettingsSaveGeneration = 0;
+let activeSettingsSave: Promise<void> | null = null;
 
 async function writeSettingsPayload(paths: StoragePaths, settings: AppSettings, generation: number): Promise<void> {
   await fs.promises.mkdir(paths.baseDir, { recursive: true });
@@ -1315,30 +1355,12 @@ async function writeSettingsPayload(paths: StoragePaths, settings: AppSettings, 
     return;
   }
   try {
-    await fsp.rename(backupTempPath, `${paths.configFile}.bak`);
-  } catch (renameError: unknown) {
-    if (renameError && typeof renameError === "object" && "code" in renameError && (renameError as NodeJS.ErrnoException).code === "EXDEV") {
-      await fsp.copyFile(backupTempPath, `${paths.configFile}.bak`);
-      await fsp.rm(backupTempPath, { force: true }).catch(() => {});
-    } else {
-      await fsp.rm(backupTempPath, { force: true }).catch(() => {});
-      throw renameError;
-    }
-  }
-  try {
-    await fsp.rename(tempPath, paths.configFile);
-  } catch (renameError: unknown) {
-    if (renameError && typeof renameError === "object" && "code" in renameError && (renameError as NodeJS.ErrnoException).code === "EXDEV") {
-      if (generation < syncSettingsSaveGeneration) {
-        await fsp.rm(tempPath, { force: true }).catch(() => {});
-        return;
-      }
-      await fsp.copyFile(tempPath, paths.configFile);
-      await fsp.rm(tempPath, { force: true }).catch(() => {});
-    } else {
-      await fsp.rm(tempPath, { force: true }).catch(() => {});
-      throw renameError;
-    }
+    syncRenameWithExdevFallback(backupTempPath, `${paths.configFile}.bak`);
+    syncRenameWithExdevFallback(tempPath, paths.configFile);
+  } catch (error) {
+    try { fs.rmSync(backupTempPath, { force: true }); } catch { }
+    try { fs.rmSync(tempPath, { force: true }); } catch { }
+    throw error;
   }
 }
 
@@ -1348,23 +1370,30 @@ async function saveSettingsPayloadAsync(paths: StoragePaths, settings: AppSettin
     return;
   }
   asyncSettingsSaveRunning = true;
-  try {
-    await writeSettingsPayload(paths, settings, generation);
-  } catch (error) {
+  const operation = writeSettingsPayload(paths, settings, generation).catch((error) => {
     logger.error(`Async Settings-Save fehlgeschlagen: ${String(error)}`);
-  } finally {
+  }).finally(() => {
     asyncSettingsSaveRunning = false;
+    if (activeSettingsSave === operation) {
+      activeSettingsSave = null;
+    }
     if (asyncSettingsSaveQueued) {
       const queued = asyncSettingsSaveQueued;
       asyncSettingsSaveQueued = null;
       void saveSettingsPayloadAsync(queued.paths, queued.settings, queued.generation);
     }
-  }
+  });
+  activeSettingsSave = operation;
+  await operation;
 }
 
 export async function saveSettingsAsync(paths: StoragePaths, settings: AppSettings): Promise<void> {
+  const captured = captureSettings(settings);
+  if (activePersistenceBarrier) {
+    return blockSettingsSave(activePersistenceBarrier, paths, captured);
+  }
   const generation = syncSettingsSaveGeneration;
-  await saveSettingsPayloadAsync(paths, captureSettings(settings), generation);
+  await saveSettingsPayloadAsync(paths, captured, generation);
 }
 
 export function emptySession(): SessionState {
@@ -1506,11 +1535,12 @@ export function saveSession(paths: StoragePaths, session: SessionState): void {
 let asyncSaveRunning = false;
 let asyncSaveQueued: { paths: StoragePaths; payload: string; generation: number } | null = null;
 let syncSaveGeneration = 0;
+let activeSessionSave: Promise<void> | null = null;
 
 async function writeSessionPayload(paths: StoragePaths, payload: string, generation: number): Promise<void> {
   await fs.promises.mkdir(paths.baseDir, { recursive: true });
-  await fsp.copyFile(paths.sessionFile, sessionBackupPath(paths.sessionFile)).catch(() => {});
   const tempPath = sessionTempPath(paths.sessionFile, "async");
+  const backupTempPath = `${paths.sessionFile}.async.backup.tmp`;
   const handle = await fsp.open(tempPath, "w");
   try {
     await handle.writeFile(payload, "utf8");
@@ -1522,20 +1552,19 @@ async function writeSessionPayload(paths: StoragePaths, payload: string, generat
     await fsp.rm(tempPath, { force: true }).catch(() => {});
     return;
   }
-  try {
-    await fsp.rename(tempPath, paths.sessionFile);
-  } catch (renameError: unknown) {
-    if (renameError && typeof renameError === "object" && "code" in renameError && (renameError as NodeJS.ErrnoException).code === "EXDEV") {
-      if (generation < syncSaveGeneration) {
-        await fsp.rm(tempPath, { force: true }).catch(() => {});
-        return;
-      }
-      await fsp.copyFile(tempPath, paths.sessionFile);
-      await fsp.rm(tempPath, { force: true }).catch(() => {});
-    } else {
-      await fsp.rm(tempPath, { force: true }).catch(() => {});
-      throw renameError;
+  if (fs.existsSync(paths.sessionFile)) {
+    try {
+      fs.copyFileSync(paths.sessionFile, backupTempPath);
+      syncRenameWithExdevFallback(backupTempPath, sessionBackupPath(paths.sessionFile));
+    } catch {
+      try { fs.rmSync(backupTempPath, { force: true }); } catch { }
     }
+  }
+  try {
+    syncRenameWithExdevFallback(tempPath, paths.sessionFile);
+  } catch (error) {
+    try { fs.rmSync(tempPath, { force: true }); } catch { }
+    throw error;
   }
 }
 
@@ -1545,18 +1574,134 @@ async function saveSessionPayloadAsync(paths: StoragePaths, payload: string, gen
     return;
   }
   asyncSaveRunning = true;
-  try {
-    await writeSessionPayload(paths, payload, generation);
-  } catch (error) {
+  const operation = writeSessionPayload(paths, payload, generation).catch((error) => {
     logger.error(`Async Session-Save fehlgeschlagen: ${String(error)}`);
-  } finally {
+  }).finally(() => {
     asyncSaveRunning = false;
+    if (activeSessionSave === operation) {
+      activeSessionSave = null;
+    }
     if (asyncSaveQueued) {
       const queued = asyncSaveQueued;
       asyncSaveQueued = null;
       void saveSessionPayloadAsync(queued.paths, queued.payload, queued.generation);
     }
+  });
+  activeSessionSave = operation;
+  await operation;
+}
+
+interface BlockedSettingsSave {
+  paths: StoragePaths;
+  settings: AppSettings;
+  waiters: Array<{ resolve: () => void; reject: (error: unknown) => void }>;
+}
+
+interface BlockedSessionSave {
+  paths: StoragePaths;
+  payload: string;
+  waiters: Array<{ resolve: () => void; reject: (error: unknown) => void }>;
+}
+
+interface PersistenceBarrierState {
+  blockedSettings: BlockedSettingsSave | null;
+  blockedSession: BlockedSessionSave | null;
+  released: Promise<void>;
+  resolveReleased: () => void;
+}
+
+export interface PersistenceBarrier {
+  release: (options: { replayBlocked: boolean }) => Promise<void>;
+}
+
+let activePersistenceBarrier: PersistenceBarrierState | null = null;
+
+function blockSettingsSave(state: PersistenceBarrierState, paths: StoragePaths, settings: AppSettings): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const waiter = { resolve, reject };
+    if (state.blockedSettings) {
+      state.blockedSettings.paths = paths;
+      state.blockedSettings.settings = settings;
+      state.blockedSettings.waiters.push(waiter);
+    } else {
+      state.blockedSettings = { paths, settings, waiters: [waiter] };
+    }
+  });
+}
+
+function blockSessionSave(state: PersistenceBarrierState, paths: StoragePaths, payload: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const waiter = { resolve, reject };
+    if (state.blockedSession) {
+      state.blockedSession.paths = paths;
+      state.blockedSession.payload = payload;
+      state.blockedSession.waiters.push(waiter);
+    } else {
+      state.blockedSession = { paths, payload, waiters: [waiter] };
+    }
+  });
+}
+
+async function replayBlockedSaves(state: PersistenceBarrierState): Promise<void> {
+  while (state.blockedSettings || state.blockedSession) {
+    const blockedSettings = state.blockedSettings;
+    const blockedSession = state.blockedSession;
+    state.blockedSettings = null;
+    state.blockedSession = null;
+    try {
+      await Promise.all([
+        blockedSettings
+          ? saveSettingsPayloadAsync(blockedSettings.paths, blockedSettings.settings, syncSettingsSaveGeneration)
+          : Promise.resolve(),
+        blockedSession
+          ? saveSessionPayloadAsync(blockedSession.paths, blockedSession.payload, syncSaveGeneration)
+          : Promise.resolve()
+      ]);
+      blockedSettings?.waiters.forEach((waiter) => waiter.resolve());
+      blockedSession?.waiters.forEach((waiter) => waiter.resolve());
+    } catch (error) {
+      blockedSettings?.waiters.forEach((waiter) => waiter.reject(error));
+      blockedSession?.waiters.forEach((waiter) => waiter.reject(error));
+      throw error;
+    }
   }
+}
+
+export async function acquirePersistenceBarrier(): Promise<PersistenceBarrier> {
+  while (activePersistenceBarrier) {
+    await activePersistenceBarrier.released;
+  }
+  let resolveReleased = () => {};
+  const released = new Promise<void>((resolve) => { resolveReleased = resolve; });
+  const state: PersistenceBarrierState = {
+    blockedSettings: null,
+    blockedSession: null,
+    released,
+    resolveReleased
+  };
+  activePersistenceBarrier = state;
+  cancelPendingAsyncSaves();
+  await Promise.all([activeSettingsSave ?? Promise.resolve(), activeSessionSave ?? Promise.resolve()]);
+  let finished = false;
+  return {
+    release: async ({ replayBlocked }) => {
+      if (finished) return;
+      finished = true;
+      try {
+        if (replayBlocked) {
+          await replayBlockedSaves(state);
+        } else {
+          state.blockedSettings?.waiters.forEach((waiter) => waiter.resolve());
+          state.blockedSession?.waiters.forEach((waiter) => waiter.resolve());
+        }
+      } finally {
+        if (activePersistenceBarrier === state) {
+          activePersistenceBarrier = null;
+        }
+        state.resolveReleased();
+      }
+    }
+  };
 }
 
 export function cancelPendingAsyncSaves(): void {
@@ -1567,8 +1712,11 @@ export function cancelPendingAsyncSaves(): void {
 }
 
 export async function saveSessionAsync(paths: StoragePaths, session: SessionState): Promise<void> {
-  const generation = syncSaveGeneration;
   const payload = JSON.stringify({ ...session, updatedAt: Date.now() }, safeJsonReplacer);
+  if (activePersistenceBarrier) {
+    return blockSessionSave(activePersistenceBarrier, paths, payload);
+  }
+  const generation = syncSaveGeneration;
   await saveSessionPayloadAsync(paths, payload, generation);
 }
 
@@ -1647,39 +1795,103 @@ export function normalizeHistoryEntry(raw: unknown, index: number): HistoryEntry
   };
 }
 
-export function loadHistory(paths: StoragePaths, limits?: HistoryLimits): HistoryEntry[] {
-  ensureBaseDir(paths.baseDir);
-  if (!fs.existsSync(paths.historyFile)) {
-    return [];
-  }
-
+function readHistoryFile(filePath: string): HistoryEntry[] | null {
   try {
-    const raw = JSON.parse(fs.readFileSync(paths.historyFile, "utf8")) as unknown;
-    if (!Array.isArray(raw)) return [];
+    const raw = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+    if (!Array.isArray(raw)) return null;
 
     const entries: HistoryEntry[] = [];
     for (let i = 0; i < raw.length && entries.length < HISTORY_HARD_CAP; i++) {
       const normalized = normalizeHistoryEntry(raw[i], i);
       if (normalized) entries.push(normalized);
     }
-    return pruneHistoryEntries(entries, limits);
+    return entries;
   } catch {
-    return [];
+    return null;
   }
+}
+
+function writeHistoryPayload(filePath: string, payload: string): void {
+  const tempPath = `${filePath}.tmp`;
+  try {
+    fs.writeFileSync(tempPath, payload, "utf8");
+    syncRenameWithExdevFallback(tempPath, filePath);
+  } catch (error) {
+    try { fs.rmSync(tempPath, { force: true }); } catch { }
+    throw error;
+  }
+}
+
+export function loadHistory(paths: StoragePaths, limits?: HistoryLimits): HistoryEntry[] {
+  ensureBaseDir(paths.baseDir);
+  const backupFile = `${paths.historyFile}.bak`;
+  const primaryExists = fs.existsSync(paths.historyFile);
+  const backupExists = fs.existsSync(backupFile);
+  const primary = primaryExists ? readHistoryFile(paths.historyFile) : null;
+  if (primary) return pruneHistoryEntries(primary, limits);
+  const backup = backupExists ? readHistoryFile(backupFile) : null;
+  if (backup) {
+    try {
+      writeHistoryPayload(paths.historyFile, JSON.stringify(backup, safeJsonReplacer, 2));
+    } catch (error) {
+      logger.warn(`Verlauf konnte aus dem Backup gelesen, aber nicht repariert werden: ${String(error)}`);
+    }
+    return pruneHistoryEntries(backup, limits);
+  }
+  if (primaryExists || backupExists) {
+    throw new Error("Verlaufsspeicher ist beschädigt");
+  }
+  return [];
 }
 
 export function saveHistory(paths: StoragePaths, entries: HistoryEntry[], limits?: HistoryLimits): void {
   ensureBaseDir(paths.baseDir);
   const trimmed = pruneHistoryEntries(entries, limits);
   const payload = JSON.stringify(trimmed, safeJsonReplacer, 2);
-  const tempPath = `${paths.historyFile}.tmp`;
+  const previous = fs.existsSync(paths.historyFile) ? readHistoryFile(paths.historyFile) : null;
+  if (previous) {
+    writeHistoryPayload(`${paths.historyFile}.bak`, JSON.stringify(previous, safeJsonReplacer, 2));
+  }
+  writeHistoryPayload(paths.historyFile, payload);
+}
+
+function restoreHistoryPayload(filePath: string, payload: string | null): void {
+  if (payload === null) {
+    fs.rmSync(`${filePath}.tmp`, { force: true });
+    fs.rmSync(filePath, { force: true });
+    return;
+  }
+  writeHistoryPayload(filePath, payload);
+}
+
+export function createHistoryRollback(paths: StoragePaths): () => void {
+  ensureBaseDir(paths.baseDir);
+  const backupFile = `${paths.historyFile}.bak`;
+  const previousPrimary = fs.existsSync(paths.historyFile) ? fs.readFileSync(paths.historyFile, "utf8") : null;
+  const previousBackup = fs.existsSync(backupFile) ? fs.readFileSync(backupFile, "utf8") : null;
+  return () => {
+    restoreHistoryPayload(backupFile, previousBackup);
+    restoreHistoryPayload(paths.historyFile, previousPrimary);
+  };
+}
+
+export function replaceHistory(paths: StoragePaths, entries: HistoryEntry[], limits?: HistoryLimits): () => void {
+  ensureBaseDir(paths.baseDir);
+  const payload = JSON.stringify(pruneHistoryEntries(entries, limits), safeJsonReplacer, 2);
+  const backupFile = `${paths.historyFile}.bak`;
+  const rollback = createHistoryRollback(paths);
+  writeHistoryPayload(backupFile, payload);
   try {
-    fs.writeFileSync(tempPath, payload, "utf8");
-    syncRenameWithExdevFallback(tempPath, paths.historyFile);
+    writeHistoryPayload(paths.historyFile, payload);
   } catch (error) {
-    try { fs.rmSync(tempPath, { force: true }); } catch {  }
+    try {
+      rollback();
+    } catch (rollbackError) {
+      logger.error(`Verlauf-Backup konnte nach fehlgeschlagener Ersetzung nicht zurückgerollt werden: ${String(rollbackError)}`);
+    }
     throw error;
   }
+  return rollback;
 }
 
 export function addHistoryEntry(paths: StoragePaths, entry: HistoryEntry, limits?: HistoryLimits): HistoryEntry[] {
@@ -1726,10 +1938,7 @@ export function removeHistoryEntry(paths: StoragePaths, entryId: string, limits?
 
 export function clearHistory(paths: StoragePaths): void {
   ensureBaseDir(paths.baseDir);
-  if (fs.existsSync(paths.historyFile)) {
-    try {
-      fs.unlinkSync(paths.historyFile);
-    } catch {
-    }
+  for (const filePath of [`${paths.historyFile}.bak.tmp`, `${paths.historyFile}.tmp`, `${paths.historyFile}.bak`, paths.historyFile]) {
+    fs.rmSync(filePath, { force: true });
   }
 }

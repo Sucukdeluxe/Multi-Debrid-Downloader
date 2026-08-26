@@ -4,6 +4,57 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.74] - 2026-08-26
+
+### Package-based link collector
+
+- Restore the package-based collector with expandable packages, file metadata, exact sizes, hoster identity, progressive availability results, search, filtering, selection, removal, and explicit transfer to Downloads.
+- Keep DLC files dropped on the Downloads tab on the direct import path while reserving collector analysis for imports made inside the collector.
+- Persist packages, metadata, and collapsed state across restarts with primary/backup recovery, a synchronous shutdown handoff, and deterministic merging when the window closes before initial hydration finishes.
+- Collapse newly imported packages by default while preserving manual disclosure state across duplicate imports, metadata regrouping, and restarts.
+- Add visible select-all, mixed checkbox state, Ctrl+A, Escape, offline-link removal, queue-export JSON round trips, and complete German and English collector text.
+- Validate cumulative package, link, field-length, and 64 MiB persistence limits before mutating the interface, including metadata enrichment and late hydration.
+- Roll back the visible collector state after persistence failures, prune stale selection and disclosure state, and prevent rejected saves from being reported as successful.
+- Virtualize large package lists and disclosure transitions, cache stable regions, and reduce 20,000-link persistence updates to link-level deltas without rebuilding or serializing the complete collector.
+
+### Download queue and controls
+
+- Keep hidden extracted entries out of sidebar and queue totals without changing their package download size, completion count, or progress aggregates.
+- Distinguish a genuinely empty queue, a hidden-only queue, and an empty filter result, with matching guidance and correctly disabled disclosure actions.
+- Calculate remaining volume and ETA from the current run only, excluding unselected or disabled queue items while retaining explicit unknown-size handling.
+- Normalize stale provider filters, package lifecycle states, mixed extraction results, and locale-formatted sidebar counters.
+- Make toolbar and context-menu starts obey the same account, cooldown, busy, and action gates and report blocked or rejected starts instead of silently doing nothing.
+- Serialize pause and resume actions so rapid clicks produce one state transition and the renderer changes only after the main process confirms the result.
+- Add monotonic snapshot revisions so delayed initial snapshots, retries, full updates, and deltas cannot restore deleted rows or stale account and quota gates.
+- Split the header speed graph and numeric value into stable-width modules so changing one-, two-, or three-digit speeds no longer shifts the graph.
+
+### History and statistics
+
+- Paginate and lazily project history rows so a 100,000-entry history no longer rebuilds and formats the complete dataset every second.
+- Preserve selections across history pages, limit select-all and deselect-all to the current page, and keep context-menu actions from discarding selections on other pages.
+- Correct Last 7 Days to include all available data from today and the previous six calendar days without requiring a complete seven-day history.
+- Report the actual visible page count and clear stale rows, selection, expansion, and context state after a failed history load before performing a complete retry.
+- Recover readable history backups without failing startup, replace imported history atomically, and roll retention changes back if settings persistence fails.
+- Persist the start of rolling minute coverage so partial 24-hour datasets are described accurately rather than shown as complete.
+- Keep statistics resets consistent across ledger and settings writes, rebase manual provider-usage resets, and recover post-reset provider bytes without double counting.
+- Mark byte-only recovery days explicitly so unavailable file, error, speed, minute, and account details are not displayed as misleading zero values.
+
+### Settings, themes, and language
+
+- Store Light, Dark, and System as an authoritative theme preference in settings and backups while resolving System against the current Windows color scheme.
+- Prevent delayed initial loading from exposing editable default settings or empty statistics and add a visible retry state for snapshot failures.
+- Capture settings save intent before queued account operations so later edits remain unsaved instead of being overwritten by an older completed save.
+- Complete German and English localization for collector, download, history, statistics, theme, count, unit, duration, and mixed-status text.
+- Define the shared panel surface token for Dark, Light, and System themes and align standalone and shell sidebars consistently.
+
+### Persistence and recovery
+
+- Make full and settings-only backup imports transactional across settings, session, statistics, history, log storage, and remote diagnostics before changing runtime state.
+- Wait for remote diagnostics restart and restore the previous files, runtime settings, log configuration, and server state when restart fails.
+- Add a persistence barrier for imports and make asynchronous settings and session commits perform their final generation check and atomic rename without yielding, preventing older writes from overwriting sync saves, updates, or shutdown state.
+- Preserve the current live session during settings-only imports before releasing blocked persistence work.
+- Retry transient Windows rename failures in the Discord notification outbox for synchronous and asynchronous writes without preventing application startup.
+
 ## [2.0.73] - 2026-08-25
 
 ### Settings workflow

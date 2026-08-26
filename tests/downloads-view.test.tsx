@@ -11,6 +11,7 @@ import {
   classifyDownloadStatus,
   formatRemainingDownloadBytes,
   formatRemainingDownloadTooltip,
+  formatDownloadEta,
   getDownloadQueueTotalBytes,
   getDownloadQueueStatusMetrics,
   getRemainingDownloadBytes,
@@ -46,6 +47,7 @@ import {
   type DownloadsViewActions,
   type DownloadsViewModel
 } from "../src/renderer/views/downloads/DownloadsView";
+import * as downloadsViewModule from "../src/renderer/views/downloads/DownloadsView";
 import {
   DownloadsTableHeader,
   ItemRowContent,
@@ -206,13 +208,19 @@ function pkg(id: string, name: string, itemIds: string[]): PackageEntry {
 }
 
 describe("Download-Gesamtgröße", () => {
-  it("summiert bekannte Dateigrößen und verwendet geladene Bytes nur als Fallback", () => {
+  it("kennzeichnet fehlende Gesamtgrößen trotz geladener Untergrenze als unbekannt", () => {
     const items = [
       item("known", "package-a", "queued", { totalBytes: 4_000, downloadedBytes: 500 }),
       item("fallback", "package-a", "queued", { totalBytes: null, downloadedBytes: 750 })
     ];
 
-    expect(getDownloadQueueTotalBytes(items)).toBe(4_750);
+    expect(getDownloadQueueTotalBytes(items)).toEqual({ bytes: 4_750, unknownItems: 1 });
+  });
+
+  it("zählt auch vollständig unbekannte Gesamtgrößen ohne falsche exakte Null", () => {
+    expect(getDownloadQueueTotalBytes([
+      item("unknown", "package-a", "queued", { totalBytes: null, downloadedBytes: 0 })
+    ])).toEqual({ bytes: 0, unknownItems: 1 });
   });
 
   it("preserves completed package bytes and progress after immediate cleanup", () => {
@@ -230,6 +238,20 @@ describe("Download-Gesamtgröße", () => {
 
     expect(getPackageSizeProgress(row)).toEqual({ downloaded: 2_500, total: 3_000, value: 83 });
     expect(getPackageProgress(row)).toEqual(expect.objectContaining({ done: 2, total: 3, value: 83 }));
+  });
+});
+
+describe("Download-ETA", () => {
+  it("derives ETA from remaining bytes and current throughput before any file completes", () => {
+    expect(formatDownloadEta({ bytes: 600 * 1024 * 1024, unknownItems: 0 }, 10 * 1024 * 1024, true, false)).toBe("01:00");
+  });
+
+
+  it("keeps ETA unknown while paused, stopped, stalled, or missing file sizes", () => {
+    expect(formatDownloadEta({ bytes: 1_000, unknownItems: 0 }, 10, false, false)).toBe("--");
+    expect(formatDownloadEta({ bytes: 1_000, unknownItems: 0 }, 10, true, true)).toBe("--");
+    expect(formatDownloadEta({ bytes: 1_000, unknownItems: 0 }, 0, true, false)).toBe("--");
+    expect(formatDownloadEta({ bytes: 1_000, unknownItems: 1 }, 10, true, false)).toBe("--");
   });
 });
 
@@ -881,6 +903,92 @@ describe("downloads model", () => {
     expect(model.visibleItemIds).toEqual(["failed"]);
   });
 
+  it("uses package lifecycle status for counts and filters without counting children twice", () => {
+    const extractingPackage = { ...pkg("extracting-package", "Entpacken", ["extracting-a", "extracting-b"]), status: "extracting" } as PackageEntry;
+    const failedPackage = { ...pkg("failed-package", "Entpackfehler", ["extract-failed"]), status: "failed" } as PackageEntry;
+    const pausedPackage = { ...pkg("paused-package", "Pausiert", ["paused-item"]), status: "paused" } as PackageEntry;
+    const input = createInput({
+      packageOrder: [extractingPackage.id, failedPackage.id, pausedPackage.id],
+      packages: {
+        [extractingPackage.id]: extractingPackage,
+        [failedPackage.id]: failedPackage,
+        [pausedPackage.id]: pausedPackage
+      },
+      items: {
+        "extracting-a": item("extracting-a", extractingPackage.id, "completed"),
+        "extracting-b": item("extracting-b", extractingPackage.id, "completed"),
+        "extract-failed": item("extract-failed", failedPackage.id, "completed", { fullStatus: "Entpack-Fehler: CRC" }),
+        "paused-item": item("paused-item", pausedPackage.id, "queued")
+      }
+    });
+
+    const all = buildDownloadsViewModel(input);
+    const active = buildDownloadsViewModel({ ...input, filter: "active" });
+    const failed = buildDownloadsViewModel({ ...input, filter: "failed" });
+    const paused = buildDownloadsViewModel({ ...input, filter: "paused" });
+
+    expect(all.counts).toEqual({ all: 4, active: 2, queued: 0, paused: 1, completed: 0, failed: 1 });
+    expect(all.counts.active + all.counts.queued + all.counts.paused + all.counts.completed + all.counts.failed).toBe(all.counts.all);
+    expect(active.visibleItemIds).toEqual(["extracting-a", "extracting-b"]);
+    expect(failed.visibleItemIds).toEqual(["extract-failed"]);
+    expect(paused.visibleItemIds).toEqual(["paused-item"]);
+  });
+
+  it("preserves terminal children while unfinished children inherit failed or paused package state", () => {
+    const failedPackage = { ...pkg("mixed-failed", "Gemischter Fehler", ["failed-complete", "failed-pending"]), status: "failed" } as PackageEntry;
+    const pausedPackage = { ...pkg("mixed-paused", "Gemischt pausiert", ["paused-complete", "paused-pending"]), status: "paused" } as PackageEntry;
+    const input = createInput({
+      packageOrder: [failedPackage.id, pausedPackage.id],
+      packages: { [failedPackage.id]: failedPackage, [pausedPackage.id]: pausedPackage },
+      items: {
+        "failed-complete": item("failed-complete", failedPackage.id, "completed"),
+        "failed-pending": item("failed-pending", failedPackage.id, "queued"),
+        "paused-complete": item("paused-complete", pausedPackage.id, "completed"),
+        "paused-pending": item("paused-pending", pausedPackage.id, "queued")
+      }
+    });
+
+    const model = buildDownloadsViewModel(input);
+    expect(model.counts).toEqual({ all: 4, active: 0, queued: 0, paused: 1, completed: 2, failed: 1 });
+    expect(buildDownloadsViewModel({ ...input, filter: "completed" }).visibleItemIds).toEqual(["failed-complete", "paused-complete"]);
+    expect(buildDownloadsViewModel({ ...input, filter: "failed" }).visibleItemIds).toEqual(["failed-pending"]);
+    expect(buildDownloadsViewModel({ ...input, filter: "paused" }).visibleItemIds).toEqual(["paused-pending"]);
+  });
+
+  it("classifies Entpacken Error status variants as failures", () => {
+    const packageEntry = { ...pkg("extract-error-package", "Entpackfehler", ["extract-error-item"]), status: "queued" } as PackageEntry;
+    const input = createInput({
+      packageOrder: [packageEntry.id],
+      packages: { [packageEntry.id]: packageEntry },
+      items: {
+        "extract-error-item": item("extract-error-item", packageEntry.id, "completed", { fullStatus: "Entpacken - Error: CRC" })
+      }
+    });
+
+    const model = buildDownloadsViewModel(input);
+    expect(model.counts).toEqual({ all: 1, active: 0, queued: 0, paused: 0, completed: 0, failed: 1 });
+    expect(buildDownloadsViewModel({ ...input, filter: "failed" }).visibleItemIds).toEqual(["extract-error-item"]);
+  });
+
+  it("keeps cancelled, extracted, and queued siblings out of an active extraction bucket", () => {
+    const packageEntry = { ...pkg("extracting-mixed", "Gemischtes Entpacken", ["extracting-ready", "extracting-cancelled", "extracting-done", "extracting-queued"]), status: "extracting" } as PackageEntry;
+    const input = createInput({
+      packageOrder: [packageEntry.id],
+      packages: { [packageEntry.id]: packageEntry },
+      items: {
+        "extracting-ready": item("extracting-ready", packageEntry.id, "completed", { fullStatus: "Entpacken - 50%" }),
+        "extracting-cancelled": item("extracting-cancelled", packageEntry.id, "cancelled"),
+        "extracting-done": item("extracting-done", packageEntry.id, "completed", { fullStatus: "Entpackt" }),
+        "extracting-queued": item("extracting-queued", packageEntry.id, "queued")
+      }
+    });
+
+    expect(buildDownloadsViewModel(input).counts).toEqual({ all: 4, active: 1, queued: 1, paused: 0, completed: 1, failed: 0 });
+    expect(buildDownloadsViewModel({ ...input, filter: "active" }).visibleItemIds).toEqual(["extracting-ready"]);
+    expect(buildDownloadsViewModel({ ...input, filter: "queued" }).visibleItemIds).toEqual(["extracting-queued"]);
+    expect(buildDownloadsViewModel({ ...input, filter: "completed" }).visibleItemIds).toEqual(["extracting-done"]);
+  });
+
   it("filters by package name, file name, provider, status and extracted visibility", () => {
     const byPackage = buildDownloadsViewModel(createInput({ query: "aktive serie" }));
     const byFile = buildDownloadsViewModel(createInput({ query: "done.mkv" }));
@@ -898,7 +1006,7 @@ describe("downloads model", () => {
     expect(hiddenExtracted.visibleItemIds).not.toContain("done");
   });
 
-  it("removes hidden extracted downloads from every queue-wide model source", () => {
+  it("removes hidden extracted downloads from queue-wide visibility sources while preserving package aggregates", () => {
     const model = buildDownloadsViewModel(createInput({
       packageOrder: ["visible-package", "extracted-package"],
       packages: {
@@ -921,27 +1029,87 @@ describe("downloads model", () => {
     expect(model.filteredEmpty).toBe(false);
   });
 
-  it("treats a queue containing only hidden extracted downloads as empty", () => {
+  it("keeps hidden extracted children in package progress, size, and total counts", () => {
+    const input = createInput({
+      packageOrder: ["mixed-package"],
+      packages: { "mixed-package": pkg("mixed-package", "Gemischtes Paket", ["extracted-item", "queued-item"]) },
+      items: {
+        "extracted-item": item("extracted-item", "mixed-package", "completed", { downloadedBytes: 100, totalBytes: 100, progressPercent: 100, fullStatus: "Entpackt" }),
+        "queued-item": item("queued-item", "mixed-package", "queued", { downloadedBytes: 0, totalBytes: 100, progressPercent: 0, fullStatus: "Wartet" })
+      },
+      hideExtractedItems: true
+    });
+
+    const model = buildDownloadsViewModel(input);
+    const row = model.packageRows[0];
+
+    expect(row.items.map((entry) => entry.id)).toEqual(["queued-item"]);
+    expect(row.allItems.map((entry) => entry.id)).toEqual(["extracted-item", "queued-item"]);
+    expect(getPackageProgress(row)).toEqual({ done: 1, failed: 0, cancelled: 0, total: 2, value: 50 });
+    expect(getPackageSizeProgress(row)).toEqual({ downloaded: 100, total: 200, value: 50 });
+  });
+
+  it("resets a stale service filter when its last eligible provider disappears", () => {
     const model = buildDownloadsViewModel(createInput({
+      packageOrder: ["visible-package", "extracted-package"],
+      packages: {
+        "visible-package": pkg("visible-package", "Wartend", ["visible-item"]),
+        "extracted-package": pkg("extracted-package", "Entpackt", ["extracted-item"])
+      },
+      items: {
+        "visible-item": item("visible-item", "visible-package", "queued", { provider: "debridlink", providerLabel: "Debrid-Link" }),
+        "extracted-item": item("extracted-item", "extracted-package", "completed", { provider: "alldebrid", providerLabel: "AllDebrid", fullStatus: "Entpackt" })
+      },
+      providerFilter: "alldebrid",
+      hideExtractedItems: true
+    }));
+
+    expect(model.providerFilter).toBe("all");
+    expect(model.visibleItemIds).toEqual(["visible-item"]);
+    expect(model.filteredEmpty).toBe(false);
+  });
+
+  it("keeps a hidden-only source queue clearable while presenting no visible entries", () => {
+    const input = createInput({
       packageOrder: ["extracted-package"],
       packages: { "extracted-package": pkg("extracted-package", "Entpackt", ["extracted-item"]) },
       items: { "extracted-item": item("extracted-item", "extracted-package", "completed", { fullStatus: "Entpackt" }) },
       hideExtractedItems: true
-    }));
+    });
+    const model = buildDownloadsViewModel(input);
+    const runtimeModel = withRuntime(input);
+    const sidebar = renderToStaticMarkup(<DownloadsSidebar actions={createActions()} model={runtimeModel} />);
+    const content = renderToStaticMarkup(<DownloadsContent actions={createActions()} model={runtimeModel} />);
 
     expect(model.eligibleItems).toEqual([]);
     expect(model.eligiblePackageCount).toBe(0);
     expect(model.counts.all).toBe(0);
     expect(model.providerOptions).toEqual([]);
-    expect(model.empty).toBe(true);
-    expect(model.filteredEmpty).toBe(false);
+    expect(model.sourceEmpty).toBe(false);
+    expect(model.presentationEmpty).toBe(true);
+    expect(model.empty).toBe(false);
+    expect(model.filteredEmpty).toBe(true);
+    expect(sidebar).not.toMatch(/<button disabled="" type="button">Liste leeren<\/button>/);
+    expect(content).toContain("Entpackte Downloads sind ausgeblendet");
+    expect(content).toContain("Entpackte Einträge ausblenden");
+    expect(content).not.toContain("Passe Filter oder Suche an");
+    expect(content).not.toContain("Noch keine Downloads");
     expect(getDownloadQueueStatusMetrics(model.eligibleItems)).toEqual({
       packageCount: 0,
       pendingItemCount: 0,
-      totalBytes: 0,
+      total: { bytes: 0, unknownItems: 0 },
       remaining: { bytes: 0, unknownItems: 0 },
       hosterCount: 0
     });
+  });
+
+  it("distinguishes a genuinely empty source queue from presentation filtering", () => {
+    const model = buildDownloadsViewModel(createInput({ packageOrder: [], packages: {}, items: {} }));
+
+    expect(model.sourceEmpty).toBe(true);
+    expect(model.presentationEmpty).toBe(true);
+    expect(model.empty).toBe(true);
+    expect(model.filteredEmpty).toBe(false);
   });
 
   it("supports the genuine flat file mode without synthetic package rows", () => {
@@ -1098,6 +1266,18 @@ describe("downloads view", () => {
     expect(html.match(/aria-current="page"/g)).toHaveLength(1);
   });
 
+  it("formats download filter counters as German integers", () => {
+    const model = withRuntime(createInput(), {
+      counts: { all: 3_180, active: 1_250, queued: 1_000, paused: 900, completed: 30, failed: 0 }
+    });
+    const html = renderToStaticMarkup(<DownloadsSidebar actions={createActions()} model={model} />);
+
+    for (const count of ["3.180", "1.250", "1.000", "900", "30", "0"]) {
+      expect(html).toContain(`<b>${count}</b>`);
+    }
+    expect(html).not.toContain("<b>3180</b>");
+  });
+
   it("disables the service filter until more than one concrete service is available", () => {
     const none = renderToStaticMarkup(<DownloadsSidebar actions={createActions()} model={withRuntime(createInput(), { providerOptions: [] })} />);
     const one = renderToStaticMarkup(<DownloadsSidebar actions={createActions()} model={withRuntime(createInput(), { providerOptions: [{ id: "rapidgator", label: "RapidGator" }] })} />);
@@ -1154,6 +1334,231 @@ describe("downloads view", () => {
 
     expect(model.empty).toBe(true);
     expect(findButton(toolbar, "Alle ein-/ausklappen").props.disabled).toBe(true);
+  });
+
+  it("disables the global package disclosure action when every source row is hidden", () => {
+    const model = withRuntime(createInput({
+      packageOrder: ["extracted-package"],
+      packages: { "extracted-package": pkg("extracted-package", "Entpackt", ["extracted-item"]) },
+      items: { "extracted-item": item("extracted-item", "extracted-package", "completed", { fullStatus: "Entpackt" }) },
+      hideExtractedItems: true
+    }), { running: false });
+
+    expect(model.empty).toBe(false);
+    expect(model.presentationEmpty).toBe(true);
+    expect(findButton(DownloadsToolbar({ actions: createActions(), model }), "Alle ein-/ausklappen").props.disabled).toBe(true);
+  });
+
+  it("gates context start actions and reports blocked or rejected starts", async () => {
+    const DownloadContextStartActions = (downloadsViewModule as unknown as {
+      DownloadContextStartActions?: (props: {
+        actionBusy: boolean;
+        canStart: boolean;
+        onStartAll: () => void;
+        onStartSelected: () => void;
+        selectedLabel: string;
+        showSelected: boolean;
+      }) => ReactElement;
+    }).DownloadContextStartActions;
+    const runDownloadStartAction = (downloadsViewModule as unknown as {
+      runDownloadStartAction?: (
+        canStart: boolean,
+        action: () => Promise<void>,
+        onBlocked: () => void,
+        onError: (error: unknown) => void
+      ) => Promise<boolean>;
+    }).runDownloadStartAction;
+    const resumeDownloadSession = (downloadsViewModule as unknown as {
+      resumeDownloadSession?: (
+        canStart: boolean,
+        togglePause: () => Promise<boolean>,
+        applyPaused: (paused: boolean) => void,
+        onBlocked: () => void,
+        onError: (error: unknown) => void
+      ) => Promise<boolean>;
+    }).resumeDownloadSession;
+    const pauseDownloadSession = (downloadsViewModule as unknown as {
+      pauseDownloadSession?: (
+        togglePause: () => Promise<boolean>,
+        applyPaused: (paused: boolean) => void,
+        onError: (error: unknown) => void
+      ) => Promise<boolean>;
+    }).pauseDownloadSession;
+
+    expect(DownloadContextStartActions).toBeTypeOf("function");
+    expect(runDownloadStartAction).toBeTypeOf("function");
+    expect(resumeDownloadSession).toBeTypeOf("function");
+    expect(pauseDownloadSession).toBeTypeOf("function");
+    if (!DownloadContextStartActions || !runDownloadStartAction || !resumeDownloadSession || !pauseDownloadSession) return;
+
+    let allStarts = 0;
+    let selectedStarts = 0;
+    const blocked = DownloadContextStartActions({
+      actionBusy: false,
+      canStart: false,
+      onStartAll: () => { allStarts += 1; },
+      onStartSelected: () => { selectedStarts += 1; },
+      selectedLabel: "Ausgewählte Downloads starten (2)",
+      showSelected: true
+    });
+    const blockedButtons: ReactElement[] = [];
+    visitElements(blocked, (element) => { if (element.type === "button") blockedButtons.push(element); });
+
+    expect(blockedButtons).toHaveLength(2);
+    expect(blockedButtons.every((button) => button.props.disabled === true)).toBe(true);
+
+    const busy = DownloadContextStartActions({
+      actionBusy: true,
+      canStart: true,
+      onStartAll: () => { allStarts += 1; },
+      onStartSelected: () => { selectedStarts += 1; },
+      selectedLabel: "Ausgewählte Downloads starten (2)",
+      showSelected: true
+    });
+    const busyButtons: ReactElement[] = [];
+    visitElements(busy, (element) => { if (element.type === "button") busyButtons.push(element); });
+    expect(busyButtons.every((button) => button.props.disabled === true)).toBe(true);
+
+    const blockedNotice = vi.fn();
+    const rejectedNotice = vi.fn();
+    const action = vi.fn(async () => { throw new Error("Kein aktiver Download-Account verfügbar"); });
+
+    await expect(runDownloadStartAction(false, action, blockedNotice, rejectedNotice)).resolves.toBe(false);
+    expect(action).not.toHaveBeenCalled();
+    expect(blockedNotice).toHaveBeenCalledTimes(1);
+    expect(rejectedNotice).not.toHaveBeenCalled();
+
+    await expect(runDownloadStartAction(true, action, blockedNotice, rejectedNotice)).resolves.toBe(false);
+    expect(rejectedNotice).toHaveBeenCalledWith(expect.objectContaining({ message: "Kein aktiver Download-Account verfügbar" }));
+
+    const applyPaused = vi.fn();
+    await expect(resumeDownloadSession(
+      true,
+      async () => { throw new Error("Account fehlt"); },
+      applyPaused,
+      blockedNotice,
+      rejectedNotice
+    )).resolves.toBe(false);
+    expect(applyPaused).not.toHaveBeenCalled();
+
+    await expect(resumeDownloadSession(true, async () => false, applyPaused, blockedNotice, rejectedNotice)).resolves.toBe(true);
+    expect(applyPaused).toHaveBeenCalledWith(false);
+
+    applyPaused.mockClear();
+    await expect(pauseDownloadSession(
+      async () => { throw new Error("Pause fehlgeschlagen"); },
+      applyPaused,
+      rejectedNotice
+    )).resolves.toBe(false);
+    expect(applyPaused).not.toHaveBeenCalled();
+
+    await expect(pauseDownloadSession(async () => true, applyPaused, rejectedNotice)).resolves.toBe(true);
+    expect(applyPaused).toHaveBeenCalledWith(true);
+
+    const enabled = DownloadContextStartActions({
+      actionBusy: false,
+      canStart: true,
+      onStartAll: () => { allStarts += 1; },
+      onStartSelected: () => { selectedStarts += 1; },
+      selectedLabel: "Ausgewählte Downloads starten (2)",
+      showSelected: true
+    });
+    const enabledButtons: ReactElement[] = [];
+    visitElements(enabled, (element) => { if (element.type === "button") enabledButtons.push(element); });
+    enabledButtons[0].props.onClick();
+    enabledButtons[1].props.onClick();
+    expect(selectedStarts).toBe(1);
+    expect(allStarts).toBe(1);
+  });
+
+  it("runs resume through the shared single-flight gate", async () => {
+    const runResumeDownloadAction = (downloadsViewModule as unknown as {
+      runResumeDownloadAction?: (
+        runSingleFlight: (action: () => Promise<unknown>) => Promise<void>,
+        canStart: boolean,
+        togglePause: () => Promise<boolean>,
+        applyPaused: (paused: boolean) => void,
+        onBlocked: () => void,
+        onError: (error: unknown) => void
+      ) => Promise<void>;
+    }).runResumeDownloadAction;
+    expect(runResumeDownloadAction).toBeTypeOf("function");
+    if (!runResumeDownloadAction) return;
+
+    let busy = false;
+    const runSingleFlight = async (action: () => Promise<unknown>): Promise<void> => {
+      if (busy) return;
+      busy = true;
+      try {
+        await action();
+      } finally {
+        busy = false;
+      }
+    };
+    let release = (): void => {};
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    let paused = true;
+    let toggleCalls = 0;
+    const applied: boolean[] = [];
+    const togglePause = async (): Promise<boolean> => {
+      toggleCalls += 1;
+      await pending;
+      paused = !paused;
+      return paused;
+    };
+
+    const first = runResumeDownloadAction(runSingleFlight, true, togglePause, (value) => applied.push(value), () => {}, () => {});
+    const second = runResumeDownloadAction(runSingleFlight, true, togglePause, (value) => applied.push(value), () => {}, () => {});
+
+    expect(toggleCalls).toBe(1);
+    release();
+    await Promise.all([first, second]);
+    expect(paused).toBe(false);
+    expect(applied).toEqual([false]);
+  });
+
+  it("runs pause through the shared single-flight gate", async () => {
+    const runPauseDownloadAction = (downloadsViewModule as unknown as {
+      runPauseDownloadAction?: (
+        runSingleFlight: (action: () => Promise<unknown>) => Promise<void>,
+        togglePause: () => Promise<boolean>,
+        applyPaused: (paused: boolean) => void,
+        onError: (error: unknown) => void
+      ) => Promise<void>;
+    }).runPauseDownloadAction;
+    expect(runPauseDownloadAction).toBeTypeOf("function");
+    if (!runPauseDownloadAction) return;
+
+    let busy = false;
+    const runSingleFlight = async (action: () => Promise<unknown>): Promise<void> => {
+      if (busy) return;
+      busy = true;
+      try {
+        await action();
+      } finally {
+        busy = false;
+      }
+    };
+    let release = (): void => {};
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    let paused = false;
+    let toggleCalls = 0;
+    const applied: boolean[] = [];
+    const togglePause = async (): Promise<boolean> => {
+      toggleCalls += 1;
+      await pending;
+      paused = !paused;
+      return paused;
+    };
+
+    const first = runPauseDownloadAction(runSingleFlight, togglePause, (value) => applied.push(value), () => {});
+    const second = runPauseDownloadAction(runSingleFlight, togglePause, (value) => applied.push(value), () => {});
+
+    expect(toggleCalls).toBe(1);
+    release();
+    await Promise.all([first, second]);
+    expect(paused).toBe(true);
+    expect(applied).toEqual([true]);
   });
 
   it("renders the five dense markers exactly once and the empty marker only for a true empty queue", () => {
@@ -1259,7 +1664,7 @@ describe("downloads view", () => {
     expect(renderToStaticMarkup(toolbar)).not.toContain("Reconnect");
   });
 
-  it("blocks resume without a usable account and keeps pause independent from unrelated action busy state", () => {
+  it("blocks resume without a usable account and pause while another action is busy", () => {
     const pausedToolbar = DownloadsToolbar({
       actions: createActions(),
       model: withRuntime(createInput(), { paused: true, canStart: false, canPause: true })
@@ -1271,7 +1676,7 @@ describe("downloads view", () => {
 
     expect(findButton(pausedToolbar, "Start").props.disabled).toBe(true);
     expect(findButton(pausedToolbar, "Pause").props.disabled).toBe(true);
-    expect(findButton(busyToolbar, "Pause").props.disabled).toBe(false);
+    expect(findButton(busyToolbar, "Pause").props.disabled).toBe(true);
   });
 
   it("enables package movement only for a visible selected package row", () => {
@@ -1469,6 +1874,20 @@ describe("downloads view", () => {
 });
 
 describe("downloads App integration", () => {
+  it("keeps search input immediate while deferred text drives expensive filtering", () => {
+    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+
+    expect(source).toMatch(/buildDownloadsViewModel\(\{[\s\S]*?query: deferredDownloadSearch,/);
+    expect(source).toMatch(/const downloadsViewModel = useMemo<DownloadsViewModel>\(\(\) => \(\{\n\s*\.\.\.downloadsViewCore,\n\s*query: downloadSearch,/);
+  });
+
+  it("commits a normalized provider filter back to renderer state", () => {
+    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+
+    expect(source).toMatch(/if \(downloadsTabActive && downloadProviderFilter !== downloadsViewCore\.providerFilter\) \{\n\s*setDownloadProviderFilter\(downloadsViewCore\.providerFilter\);/);
+    expect(source).toContain("[downloadProviderFilter, downloadsTabActive, downloadsViewCore.providerFilter]");
+  });
+
   it("keeps the priority menu open when the selected priority is already active", () => {
     const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8").replaceAll("\r\n", "\n");
 

@@ -82,6 +82,97 @@ export interface DownloadsViewActions extends DownloadsTableActions {
   onShowAllPackages: () => void;
 }
 
+export interface DownloadContextStartActionsProps {
+  actionBusy: boolean;
+  canStart: boolean;
+  showSelected: boolean;
+  selectedLabel: string;
+  onStartSelected: () => void;
+  onStartAll: () => void;
+}
+
+export async function runDownloadStartAction(
+  canStart: boolean,
+  action: () => Promise<void>,
+  onBlocked: () => void,
+  onError: (error: unknown) => void
+): Promise<boolean> {
+  if (!canStart) {
+    onBlocked();
+    return false;
+  }
+  try {
+    await action();
+    return true;
+  } catch (error) {
+    onError(error);
+    return false;
+  }
+}
+
+export function resumeDownloadSession(
+  canStart: boolean,
+  togglePause: () => Promise<boolean>,
+  applyPaused: (paused: boolean) => void,
+  onBlocked: () => void,
+  onError: (error: unknown) => void
+): Promise<boolean> {
+  return runDownloadStartAction(canStart, async () => {
+    applyPaused(await togglePause());
+  }, onBlocked, onError);
+}
+
+export async function pauseDownloadSession(
+  togglePause: () => Promise<boolean>,
+  applyPaused: (paused: boolean) => void,
+  onError: (error: unknown) => void
+): Promise<boolean> {
+  try {
+    applyPaused(await togglePause());
+    return true;
+  } catch (error) {
+    onError(error);
+    return false;
+  }
+}
+
+export function runResumeDownloadAction(
+  runSingleFlight: (action: () => Promise<unknown>) => Promise<void>,
+  canStart: boolean,
+  togglePause: () => Promise<boolean>,
+  applyPaused: (paused: boolean) => void,
+  onBlocked: () => void,
+  onError: (error: unknown) => void
+): Promise<void> {
+  return runSingleFlight(() => resumeDownloadSession(canStart, togglePause, applyPaused, onBlocked, onError));
+}
+
+export function runPauseDownloadAction(
+  runSingleFlight: (action: () => Promise<unknown>) => Promise<void>,
+  togglePause: () => Promise<boolean>,
+  applyPaused: (paused: boolean) => void,
+  onError: (error: unknown) => void
+): Promise<void> {
+  return runSingleFlight(() => pauseDownloadSession(togglePause, applyPaused, onError));
+}
+
+export function DownloadContextStartActions({
+  actionBusy,
+  canStart,
+  showSelected,
+  selectedLabel,
+  onStartSelected,
+  onStartAll
+}: DownloadContextStartActionsProps): ReactElement {
+  const disabled = !canStart || actionBusy;
+  return (
+    <>
+      {showSelected ? <button className="ctx-menu-item" disabled={disabled} onClick={onStartSelected}>{selectedLabel}</button> : null}
+      <button className="ctx-menu-item" disabled={disabled} onClick={onStartAll}>Alle Downloads starten</button>
+    </>
+  );
+}
+
 const filters: Array<{ id: DownloadSidebarFilter; label: string }> = [
   { id: "all", label: "Alle" },
   { id: "active", label: "Aktiv" },
@@ -95,7 +186,7 @@ export function DownloadsSidebar({ actions, model }: { actions: DownloadsViewAct
   return (
     <aside className="downloads-sidebar" data-visual-region="downloads-sidebar">
       <SlidingSelection activeKey={model.filter} aria-label="Downloadfilter" as="nav" axis="vertical" className="downloads-filter-group">
-        {filters.map((filter) => <button aria-current={model.filter === filter.id ? "page" : undefined} className={model.filter === filter.id ? "is-active" : ""} data-sliding-selection-active={model.filter === filter.id} data-sliding-selection-item="true" key={filter.id} onClick={() => actions.onFilterChange(filter.id)} type="button"><span>{filter.label}</span><b>{model.counts[filter.id]}</b></button>)}
+        {filters.map((filter) => <button aria-current={model.filter === filter.id ? "page" : undefined} className={model.filter === filter.id ? "is-active" : ""} data-sliding-selection-active={model.filter === filter.id} data-sliding-selection-item="true" key={filter.id} onClick={() => actions.onFilterChange(filter.id)} type="button"><span>{filter.label}</span><b>{integerFormatter.format(model.counts[filter.id])}</b></button>)}
       </SlidingSelection>
       <label className="downloads-provider-filter"><span>Service</span><select aria-label="Service filtern" disabled={model.providerOptions.length <= 1} onChange={(event) => actions.onProviderFilterChange(event.target.value)} value={model.providerFilter}><option value="all">Alle Services</option>{model.providerOptions.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select></label>
       <label className="downloads-sidebar-search"><span>Downloads durchsuchen</span><input className="downloads-search-input" onChange={(event) => actions.onQueryChange(event.target.value)} placeholder="Paket, Datei oder Service" type="search" value={model.query} /></label>
@@ -133,7 +224,7 @@ export function DownloadsToolbar({ actions, model }: { actions: DownloadsViewAct
   return (
     <div className="downloads-toolbar" data-visual-region="downloads-toolbar">
       <button disabled={model.actionBusy || !model.canStart} onClick={actions.onStartDownloads} type="button">Start</button>
-      <button disabled={!model.canPause || model.paused} onClick={actions.onPauseDownloads} type="button">Pause</button>
+      <button disabled={model.actionBusy || !model.canPause || model.paused} onClick={actions.onPauseDownloads} type="button">Pause</button>
       <button disabled={!model.canStop || model.actionBusy} onClick={actions.onStopDownloads} type="button">Stop</button>
       {!model.scheduleActive ? <button aria-expanded={model.scheduleOpen} onClick={actions.onToggleSchedule} type="button">Zeitplan</button> : null}
       <span className={scheduleSlotClass}>
@@ -149,7 +240,7 @@ export function DownloadsToolbar({ actions, model }: { actions: DownloadsViewAct
       <button disabled={!onePackage} onClick={actions.onRenameSelection} type="button">Umbenennen</button>
       <button disabled={!hasSelection} onClick={actions.onRemoveSelection} type="button">Entfernen</button>
       <span aria-label="Paketdarstellung" className="downloads-toolbar-tail" role="group">
-        <button className="downloads-toolbar-toggle-all" disabled={model.empty} onClick={actions.onToggleAllPackages} type="button">Alle ein-/ausklappen</button>
+        <button className="downloads-toolbar-toggle-all" disabled={model.presentationEmpty} onClick={actions.onToggleAllPackages} type="button">Alle ein-/ausklappen</button>
       </span>
     </div>
   );
@@ -157,6 +248,7 @@ export function DownloadsToolbar({ actions, model }: { actions: DownloadsViewAct
 
 function tableState(model: DownloadsViewModel): ReactElement | null {
   if (model.empty) return <div className="downloads-empty-state" data-visual-region="downloads-empty-state" role="row"><div role="cell"><strong>Noch keine Downloads</strong><span>Füge Links hinzu, um den ersten Download zu starten.</span></div></div>;
+  if (model.presentationEmpty) return <div className="downloads-table-message" role="row"><div role="cell"><strong>Entpackte Downloads sind ausgeblendet</strong><span>Deaktiviere „Entpackte Einträge ausblenden“, um sie wieder anzuzeigen.</span></div></div>;
   if (model.filteredEmpty) return <div className="downloads-table-message" role="row"><div role="cell"><strong>Keine passenden Downloads</strong><span>Passe Filter oder Suche an.</span></div></div>;
   return null;
 }

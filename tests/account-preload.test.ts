@@ -134,16 +134,26 @@ describe("account preload contract", () => {
 
   it("loads and saves the persistent collector state through dedicated channels", async () => {
     const state = { packages: [], collapsedPackageIds: [] };
+    electron.sendSync.mockReturnValueOnce(state);
+    electron.sendSync.mockReturnValueOnce(true);
 
     await electron.api?.getCollectorState();
+    const syncState = (electron.api as ElectronApi & {
+      getCollectorStateSync: () => typeof state;
+    }).getCollectorStateSync();
     await electron.api?.saveCollectorState(state);
-    electron.api?.saveCollectorStateSync(state);
+    const savedSync = electron.api?.saveCollectorStateSync(state);
 
     expect(electron.invoke.mock.calls).toEqual([
       [IPC_CHANNELS.GET_COLLECTOR_STATE],
       [IPC_CHANNELS.SAVE_COLLECTOR_STATE, state]
     ]);
-    expect(electron.sendSync).toHaveBeenCalledWith(IPC_CHANNELS.SAVE_COLLECTOR_STATE_SYNC, state);
+    expect(syncState).toEqual(state);
+    expect(savedSync).toBe(true);
+    expect(electron.sendSync.mock.calls).toEqual([
+      [IPC_CHANNELS.GET_COLLECTOR_STATE_SYNC],
+      [IPC_CHANNELS.SAVE_COLLECTOR_STATE_SYNC, state]
+    ]);
   });
 
   it("resolves dropped files through Electron webUtils without IPC", () => {

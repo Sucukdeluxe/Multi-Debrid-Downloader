@@ -111,6 +111,7 @@ export function defaultSettings(): AppSettings {
     clipboardWatch: false,
     minimizeToTray: false,
     theme: "dark" as const,
+    themePreference: "dark" as const,
     logStorageLocation: "appdata",
     collapseNewPackages: true,
     animatePackageDisclosure: true,

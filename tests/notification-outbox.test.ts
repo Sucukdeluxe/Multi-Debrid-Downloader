@@ -7,6 +7,7 @@ import { NotificationEvent, NotificationOutbox } from "../src/main/notification-
 import { buildPackageNotificationEvent } from "../src/main/notification-events";
 import { buildNotifyRequest, sendNotification } from "../src/main/notify";
 import { finalizePackageResult } from "../src/main/package-telemetry";
+import { logger } from "../src/main/logger";
 import type { DownloadItem, PackageEntry, PackageResult, PackageTelemetry, RemuxOperationMetric } from "../src/shared/types";
 
 const tempDirs: string[] = [];
@@ -476,6 +477,30 @@ describe("NotificationOutbox", () => {
     }
   });
 
+  it.each(["EPERM", "EACCES", "EBUSY"])("retries a transient Windows rename error %s before succeeding", async (code) => {
+    const filePath = createOutboxFile();
+    const renameFile = fsp.rename.bind(fsp);
+    let renameAttempts = 0;
+    const rename = vi.spyOn(fsp, "rename").mockImplementation(async (oldPath, newPath) => {
+      renameAttempts += 1;
+      if (renameAttempts === 1) {
+        throw Object.assign(new Error(`temporary ${code}`), { code });
+      }
+      await renameFile(oldPath, newPath);
+    });
+    try {
+      const outbox = new NotificationOutbox({ filePath, send: async () => true, now: () => 1000 });
+
+      await outbox.enqueue(event(`transient-${code}`));
+
+      expect(renameAttempts).toBe(2);
+      expect(fs.existsSync(`${filePath}.tmp`)).toBe(false);
+      expect(persisted(filePath).events.map((queuedEvent) => queuedEvent.id)).toEqual([`transient-${code}`]);
+    } finally {
+      rename.mockRestore();
+    }
+  });
+
   it("persists a cleaned empty legacy file atomically during load", () => {
     const filePath = createOutboxFile();
     const rename = vi.spyOn(fs, "renameSync");
@@ -506,6 +531,103 @@ describe("NotificationOutbox", () => {
     expect(rename).toHaveBeenCalledWith(`${filePath}.tmp`, filePath);
     expect(fs.existsSync(`${filePath}.tmp`)).toBe(false);
     rename.mockRestore();
+  });
+
+  it.each(["EPERM", "EACCES", "EBUSY"])("retries transient Windows sync rename error %s while loading", (code) => {
+    const filePath = createOutboxFile();
+    fs.writeFileSync(filePath, JSON.stringify({
+      version: 1,
+      events: [event(`sync-${code}`)],
+      lastSuccessAt: 0,
+      lastFailureAt: 0
+    }), "utf8");
+    const renameFile = fs.renameSync.bind(fs);
+    let attempts = 0;
+    const rename = vi.spyOn(fs, "renameSync").mockImplementation((oldPath, newPath) => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw Object.assign(new Error(`temporary ${code}`), { code });
+      }
+      return renameFile(oldPath, newPath);
+    });
+    try {
+      const outbox = new NotificationOutbox({ filePath, send: async () => true, now: () => 1000 });
+
+      expect(attempts).toBe(2);
+      expect(outbox.getStatus().queued).toBe(1);
+      expect(persisted(filePath).events.map((queuedEvent) => queuedEvent.id)).toEqual([`sync-${code}`]);
+      expect(fs.existsSync(`${filePath}.tmp`)).toBe(false);
+    } finally {
+      rename.mockRestore();
+    }
+  });
+
+  it("continues loading and asynchronously recovers after bounded sync rename retries stay blocked", async () => {
+    vi.useFakeTimers();
+    const filePath = createOutboxFile();
+    const originalPayload = JSON.stringify({
+      version: 1,
+      events: [event("expired-sync-recovery", { expiresAt: 999 })],
+      lastSuccessAt: 0,
+      lastFailureAt: 0
+    });
+    fs.writeFileSync(filePath, originalPayload, "utf8");
+    let syncAttempts = 0;
+    const syncRename = vi.spyOn(fs, "renameSync").mockImplementation(() => {
+      syncAttempts += 1;
+      throw Object.assign(new Error("temporarily locked"), { code: "EBUSY" });
+    });
+    const renameFile = fsp.rename.bind(fsp);
+    let markRecovered = () => {};
+    const recovered = new Promise<void>((resolve) => { markRecovered = resolve; });
+    const asyncRename = vi.spyOn(fsp, "rename").mockImplementation(async (oldPath, newPath) => {
+      await renameFile(oldPath, newPath);
+      markRecovered();
+    });
+    try {
+      const outbox = new NotificationOutbox({ filePath, send: async () => true, now: () => 1000, autoDrain: true });
+
+      expect(syncAttempts).toBe(4);
+      expect(outbox.getStatus().queued).toBe(0);
+      expect(fs.readFileSync(filePath, "utf8")).toBe(originalPayload);
+      expect(fs.existsSync(`${filePath}.tmp`)).toBe(false);
+
+      syncRename.mockRestore();
+      await vi.advanceTimersByTimeAsync(1000);
+      await recovered;
+
+      expect(persisted(filePath).events).toEqual([]);
+      expect(fs.existsSync(`${filePath}.tmp`)).toBe(false);
+    } finally {
+      syncRename.mockRestore();
+      asyncRename.mockRestore();
+    }
+  });
+
+  it("reports a permanent sync persistence failure without replacing the loaded file", () => {
+    const filePath = createOutboxFile();
+    const originalPayload = JSON.stringify({
+      version: 1,
+      events: [event("permanent-sync-failure")],
+      lastSuccessAt: 0,
+      lastFailureAt: 0
+    });
+    fs.writeFileSync(filePath, originalPayload, "utf8");
+    const rename = vi.spyOn(fs, "renameSync").mockImplementation(() => {
+      throw Object.assign(new Error("disk unavailable"), { code: "ENOSPC" });
+    });
+    const errorLog = vi.spyOn(logger, "error").mockImplementation(() => {});
+    try {
+      const outbox = new NotificationOutbox({ filePath, send: async () => true, now: () => 1000 });
+
+      expect(outbox.getStatus().queued).toBe(1);
+      expect(fs.readFileSync(filePath, "utf8")).toBe(originalPayload);
+      expect(fs.existsSync(`${filePath}.tmp`)).toBe(false);
+      expect(errorLog).toHaveBeenCalledWith(expect.stringContaining("ENOSPC"));
+    } finally {
+      errorLog.mockRestore();
+      rename.mockRestore();
+    }
   });
 
   it("drops expired events before persisting or sending", async () => {

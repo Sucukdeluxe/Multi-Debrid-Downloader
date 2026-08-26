@@ -122,6 +122,7 @@ function createSettings(): AppSettings {
     clipboardWatch: true,
     minimizeToTray: false,
     theme: "dark",
+    themePreference: "dark",
     logStorageLocation: "appdata",
     collapseNewPackages: false,
     animatePackageDisclosure: true,

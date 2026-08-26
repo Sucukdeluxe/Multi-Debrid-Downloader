@@ -20,6 +20,20 @@ export function beginCollectorEnrichment(
   return snapshot;
 }
 
+export function pruneCollectorEnrichmentGenerations(
+  current: Map<string, number>,
+  packages: CollectorPackage[],
+  activeSnapshots: Iterable<ReadonlyMap<string, number>>
+): void {
+  const retainedUrls = new Set(packages.flatMap((pkg) => pkg.links.map((link) => collectorUrlKey(link.url))));
+  for (const snapshot of activeSnapshots) {
+    for (const url of snapshot.keys()) retainedUrls.add(url);
+  }
+  for (const url of current.keys()) {
+    if (!retainedUrls.has(url)) current.delete(url);
+  }
+}
+
 export function filterCurrentCollectorEnrichment(
   packages: CollectorPackage[],
   requested: CollectorEnrichmentGenerationSnapshot,

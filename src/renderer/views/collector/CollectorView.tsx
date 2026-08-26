@@ -14,6 +14,7 @@ import type {
 import "./collector.css";
 
 const useRendererLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+const integerFormatter = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 0 });
 
 export interface CollectorViewActions {
   onFilterChange: (filter: CollectorWorkspaceFilter) => void;
@@ -25,6 +26,7 @@ export interface CollectorViewActions {
   onQueryChange: (value: string) => void;
   onLinkSelectionChange: (linkId: string, selected: boolean) => void;
   onPackageSelectionChange: (packageId: string, selected: boolean) => void;
+  onSetVisibleSelection: (ids: string[], selected: boolean) => void;
   onPackageCollapseChange: (packageId: string) => void;
   onToggleAllPackages: () => void;
   onRemoveSelected: () => void;
@@ -55,9 +57,9 @@ function packageStatus(row: CollectorWorkspacePackageRow): string {
 }
 
 function packageAvailability(row: CollectorWorkspacePackageRow): string {
-  if (row.onlineCount === row.totalCount) return `${row.onlineCount}/${row.totalCount} online`;
+  if (row.onlineCount === row.totalCount) return `${integerFormatter.format(row.onlineCount)}/${integerFormatter.format(row.totalCount)} online`;
   if (row.offlineCount === row.totalCount) return "Offline";
-  if (row.onlineCount > 0) return `${row.onlineCount}/${row.totalCount} online`;
+  if (row.onlineCount > 0) return `${integerFormatter.format(row.onlineCount)}/${integerFormatter.format(row.totalCount)} online`;
   return "Ungeprüft";
 }
 
@@ -195,7 +197,7 @@ function CollectorHosterLabel({ hoster }: { hoster: ReturnType<typeof formatHost
 export function CollectorSidebar({ model, actions }: CollectorViewProps): ReactElement {
   return (
     <div aria-label="Linksammler-Filter" className="collector-sidebar" data-visual-region="collector-sidebar">
-      <div className="collector-sidebar-heading"><strong>Status</strong><span>{model.totalCount}</span></div>
+      <div className="collector-sidebar-heading"><strong>Status</strong><span>{integerFormatter.format(model.totalCount)}</span></div>
       <SlidingSelection activeKey={model.filter} axis="vertical" className="collector-sidebar-list">
         {model.filters.map((filter) => (
           <button
@@ -207,7 +209,7 @@ export function CollectorSidebar({ model, actions }: CollectorViewProps): ReactE
             onClick={() => actions.onFilterChange(filter.id)}
             type="button"
           >
-            <span>{filter.label}</span><span>{filter.count}</span>
+            <span>{filter.label}</span><span>{integerFormatter.format(filter.count)}</span>
           </button>
         ))}
       </SlidingSelection>
@@ -218,9 +220,9 @@ export function CollectorSidebar({ model, actions }: CollectorViewProps): ReactE
 export function CollectorSidebarStatus({ model }: { model: CollectorWorkspaceViewModel }): ReactElement {
   return (
     <>
-      <span>Pakete: {model.packageCount}</span>
-      <span>Links: {model.totalCount}</span>
-      <span>Ausgewählt: {model.selectedCount}</span>
+      <span>Pakete: {integerFormatter.format(model.packageCount)}</span>
+      <span>Links: {integerFormatter.format(model.totalCount)}</span>
+      <span>Ausgewählt: {integerFormatter.format(model.selectedCount)}</span>
       {model.analyzing ? (
         <span aria-live="polite" className="collector-sidebar-analysis" role="status"><span aria-hidden="true" />Analyse läuft im Hintergrund</span>
       ) : null}
@@ -237,8 +239,8 @@ export function CollectorToolbar({ model, actions }: CollectorViewProps): ReactE
         <button className="collector-action" onClick={actions.onImportFile} type="button">Datei importieren</button>
       </ToolbarGroup>
       <ToolbarGroup label="Downloads übergeben">
-        <button className="collector-action" disabled={model.selectedCount === 0} onClick={actions.onSubmitSelected} type="button">{`Auswahl übergeben (${model.selectedCount})`}</button>
-        <button className="collector-action" disabled={model.totalCount === 0} onClick={actions.onSubmitAll} type="button">{`Alle übergeben (${model.totalCount})`}</button>
+        <button className="collector-action" disabled={model.selectedTransferableIds.length === 0} onClick={actions.onSubmitSelected} type="button">{`Auswahl übergeben (${integerFormatter.format(model.selectedTransferableIds.length)})`}</button>
+        <button className="collector-action" disabled={model.visibleTransferableIds.length === 0} onClick={actions.onSubmitAll} type="button">{`Alle übergeben (${integerFormatter.format(model.visibleTransferableIds.length)})`}</button>
         <button className="collector-action collector-action-danger" disabled={model.selectedCount === 0} onClick={actions.onRemoveSelected} type="button">Auswahl entfernen</button>
       </ToolbarGroup>
       <ToolbarGroup className="collector-toolbar-tail" label="Suche und Paketdarstellung">
@@ -246,6 +248,32 @@ export function CollectorToolbar({ model, actions }: CollectorViewProps): ReactE
         <button className="collector-action" disabled={model.totalCount === 0} onClick={actions.onToggleAllPackages} type="button">Alle ein-/ausklappen</button>
       </ToolbarGroup>
     </Toolbar>
+  );
+}
+
+export function CollectorTableHeader({ model, actions, scrollLeft }: Pick<CollectorViewProps, "model" | "actions"> & { scrollLeft: number }): ReactElement {
+  const allVisibleSelected = model.visibleIds.length > 0 && model.selectedCount === model.visibleIds.length;
+  const partiallyVisibleSelected = model.selectedCount > 0 && !allVisibleSelected;
+  return (
+    <div aria-rowindex={1} className="collector-table-header-row" role="row" style={collectorHeaderScrollStyle(scrollLeft)}>
+      <span className="collector-column-select" role="columnheader">
+        <input
+          aria-checked={partiallyVisibleSelected ? "mixed" : allVisibleSelected}
+          aria-label="Alle sichtbaren Links auswählen"
+          checked={allVisibleSelected}
+          disabled={model.visibleIds.length === 0}
+          onChange={(event) => actions.onSetVisibleSelection(model.visibleIds, event.target.checked)}
+          ref={(node) => { if (node) node.indeterminate = partiallyVisibleSelected; }}
+          type="checkbox"
+        />
+      </span>
+      <span role="columnheader">Name</span>
+      <span role="columnheader">Größe</span>
+      <span role="columnheader">Hoster</span>
+      <span role="columnheader">Status</span>
+      <span role="columnheader">Verfügbarkeit</span>
+      <span role="columnheader">Hinzugefügt</span>
+    </div>
   );
 }
 
@@ -257,7 +285,7 @@ function CollectorPackageGroup({ row, model, actions, selected, focusIndexStart,
   selected: ReadonlySet<string>;
   rowIndexStart: number;
 }): ReactElement {
-  const allSelected = row.selectedCount === row.totalCount;
+  const allSelected = row.links.length > 0 && row.selectedCount === row.links.length;
   const partiallySelected = row.selectedCount > 0 && !allSelected;
   const animateItems = model.animationsEnabled && row.allLinks.length <= 64;
   const [renderItems, setRenderItems] = useState(!row.collapsed);
@@ -314,7 +342,7 @@ function CollectorPackageGroup({ row, model, actions, selected, focusIndexStart,
             type="button"
           >{row.collapsed ? "+" : "−"}</button>
           <strong title={row.name}>{row.name}</strong>
-          <small>{row.totalCount} Dateien</small>
+          <small>{integerFormatter.format(row.totalCount)} Dateien</small>
         </span>
         <span className="collector-size-cell" role="cell">{packageSize(row)}</span>
         <span className="collector-hoster-cell" role="cell">
@@ -426,15 +454,7 @@ export function CollectorContent({ model, actions }: CollectorViewProps): ReactE
     <section className="collector-content" aria-label="Gesammelte Downloadpakete">
       <DataTable aria-rowcount={logicalRowCount} className="collector-table" label="Gesammelte Downloadpakete">
         <DataTableHeader className="collector-table-header">
-            <div aria-rowindex={1} className="collector-table-header-row" role="row" style={collectorHeaderScrollStyle(viewport.scrollLeft)}>
-            <span aria-label="Auswahl" className="collector-column-select" role="columnheader" />
-            <span role="columnheader">Name</span>
-            <span role="columnheader">Größe</span>
-            <span role="columnheader">Hoster</span>
-            <span role="columnheader">Status</span>
-            <span role="columnheader">Verfügbarkeit</span>
-            <span role="columnheader">Hinzugefügt</span>
-          </div>
+          <CollectorTableHeader actions={actions} model={model} scrollLeft={viewport.scrollLeft} />
         </DataTableHeader>
         <DataTableBody
           className="collector-table-body"

@@ -19,6 +19,7 @@ export const IPC_CHANNELS = {
   ENRICH_COLLECTOR_PACKAGES: "collector:enrich-packages",
   COLLECTOR_ENRICHMENT_PROGRESS: "collector:enrichment-progress",
   GET_COLLECTOR_STATE: "collector:get-state",
+  GET_COLLECTOR_STATE_SYNC: "collector:get-state-sync",
   SAVE_COLLECTOR_STATE: "collector:save-state",
   SAVE_COLLECTOR_STATE_SYNC: "collector:save-state-sync",
   GET_START_CONFLICTS: "queue:get-start-conflicts",

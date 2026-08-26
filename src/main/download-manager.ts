@@ -90,8 +90,10 @@ import {
   loadStatisticsLedger,
   normalizeStatisticsLedger,
   projectStatisticsLedger,
+  rebaseStatisticsProviderSeedBaseline,
   saveStatisticsLedger,
-  seedStatisticsDayProviderBytes
+  seedStatisticsDayProviderBytes,
+  suppressStatisticsProviderSeedForDay
 } from "./statistics-ledger";
 import { finalizePackageResult, projectPackageFailureCategory } from "./package-telemetry";
 import type { NotificationEvent } from "./notification-outbox";
@@ -1912,6 +1914,7 @@ export class DownloadManager extends EventEmitter {
 
   private lastEmittedItemHashes = new Map<string, string>();
   private lastEmittedPackageHashes = new Map<string, string>();
+  private snapshotRevision = 0;
   private firstEmitDone = false;
   private lastFullEmitAt = 0;
   private static readonly FULL_RESYNC_INTERVAL_MS = 30000;
@@ -2788,6 +2791,19 @@ export class DownloadManager extends EventEmitter {
     const rate = doneItems > 0 && elapsed > 0 ? doneItems / elapsed : 0;
     const remaining = totalItems - doneItems;
     const eta = remaining > 0 && rate > 0 ? remaining / rate : -1;
+    let runRemainingBytes = 0;
+    let runRemainingUnknownItems = 0;
+    if (this.session.running) {
+      for (const itemId of this.runItemIds) {
+        const item = this.session.items[itemId];
+        if (!item || isFinishedStatus(item.status)) continue;
+        if (item.totalBytes && item.totalBytes > 0) {
+          runRemainingBytes += Math.max(0, item.totalBytes - Math.max(0, item.downloadedBytes));
+        } else {
+          runRemainingUnknownItems += 1;
+        }
+      }
+    }
 
     const reconnectMs = Math.max(0, this.session.reconnectUntil - now);
 
@@ -2805,6 +2821,7 @@ export class DownloadManager extends EventEmitter {
       : null;
 
     return {
+      snapshotRevision: ++this.snapshotRevision,
       rotationEvents: getRecentRotationEvents(40),
       accountRuntime: createAccountRuntimeEntries(rendererState.accounts, Object.values(snapshotSession.items), now),
       settings: rendererState.settings,
@@ -2828,7 +2845,9 @@ export class DownloadManager extends EventEmitter {
             out[pid] = Math.floor(bytes / SPEED_WINDOW_SECONDS);
           }
           return out;
-        })()
+        })(),
+      runRemainingBytes,
+      runRemainingUnknownItems
     };
   }
 
@@ -3056,18 +3075,71 @@ export class DownloadManager extends EventEmitter {
     this.emitState(true);
   }
 
-  public resetDownloadStats(): void {
-    this.settings.totalDownloadedAllTime = 0;
-    this.settings.totalCompletedFilesAllTime = 0;
-    this.settings.providerTotalUsageBytes = {};
-    this.settings.debridLinkApiKeyTotalUsageBytes = {};
-    this.statisticsLedger = createStatisticsLedger();
-    this.rollingAccountStatistics.reset(this.statisticsLedger);
+  public rebaseStatisticsProviderDailyUsage(provider: DebridProvider, providerUsageBytes: number): void {
+    const rebasedAt = nowMs();
+    const rebased = rebaseStatisticsProviderSeedBaseline(
+      this.statisticsLedger,
+      provider,
+      providerUsageBytes,
+      rebasedAt
+    );
+    saveStatisticsLedger(this.storagePaths.statisticsFile, rebased);
+    this.statisticsLedger = rebased;
+    this.rollingAccountStatistics.reset(rebased, rebasedAt);
     this.statisticsDirty = false;
     this.statisticsUrgent = false;
-    saveStatisticsLedger(this.storagePaths.statisticsFile, this.statisticsLedger);
-    this.lastSettingsPersistAt = nowMs();
-    saveSettings(this.storagePaths, this.settings);
+    this.invalidateStatsCache();
+    this.emitState(true);
+  }
+
+  public resetDownloadStats(): void {
+    const resetAt = nowMs();
+    const previousSettings = JSON.parse(JSON.stringify(this.settings)) as AppSettings;
+    const previousLedger = normalizeStatisticsLedger(this.statisticsLedger, resetAt);
+    const nextSettings = JSON.parse(JSON.stringify(previousSettings)) as AppSettings;
+    const currentUsageDay = getProviderUsageDayKey(resetAt);
+    if (nextSettings.providerDailyUsageDay !== currentUsageDay) {
+      nextSettings.providerDailyUsageDay = currentUsageDay;
+      nextSettings.providerDailyUsageBytes = {};
+      nextSettings.debridLinkApiKeyDailyUsageBytes = {};
+      nextSettings.megaDebridAccountDailyUsageBytes = {};
+      nextSettings.realDebridAccountDailyUsageBytes = {};
+    }
+    nextSettings.totalDownloadedAllTime = 0;
+    nextSettings.totalCompletedFilesAllTime = 0;
+    nextSettings.providerTotalUsageBytes = {};
+    nextSettings.debridLinkApiKeyTotalUsageBytes = {};
+    const nextLedger = suppressStatisticsProviderSeedForDay(
+      createStatisticsLedger(resetAt),
+      resetAt,
+      nextSettings.providerDailyUsageBytes
+    );
+    saveStatisticsLedger(this.storagePaths.statisticsFile, nextLedger);
+    try {
+      saveSettings(this.storagePaths, nextSettings);
+    } catch (error) {
+      const rollbackErrors: string[] = [];
+      try {
+        saveStatisticsLedger(this.storagePaths.statisticsFile, previousLedger);
+      } catch (rollbackError) {
+        rollbackErrors.push(`Statistik: ${compactErrorText(rollbackError)}`);
+      }
+      try {
+        saveSettings(this.storagePaths, previousSettings);
+      } catch (rollbackError) {
+        rollbackErrors.push(`Einstellungen: ${compactErrorText(rollbackError)}`);
+      }
+      if (rollbackErrors.length > 0) {
+        logger.error(`Statistik-Reset-Rollback fehlgeschlagen: ${rollbackErrors.join(" | ")}`);
+      }
+      throw error;
+    }
+    Object.assign(this.settings, nextSettings);
+    this.statisticsLedger = nextLedger;
+    this.rollingAccountStatistics.reset(nextLedger, resetAt);
+    this.statisticsDirty = false;
+    this.statisticsUrgent = false;
+    this.lastSettingsPersistAt = resetAt;
     this.invalidateStatsCache();
     this.emitState(true);
   }
@@ -7062,6 +7134,12 @@ export class DownloadManager extends EventEmitter {
       } catch (error) {
         this.statisticsDirty = true;
         logger.warn(`Statistik konnte nicht gespeichert werden: ${compactErrorText(error)}`);
+        try {
+          saveSettings(this.storagePaths, this.settings);
+          this.lastSettingsPersistAt = now;
+        } catch (settingsError) {
+          logger.warn(`Statistik-Fallback konnte nicht gespeichert werden: ${compactErrorText(settingsError)}`);
+        }
       }
     }
   }
