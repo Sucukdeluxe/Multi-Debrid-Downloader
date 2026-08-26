@@ -1,4 +1,4 @@
-import { memo, useEffect, useState, type ChangeEvent, type ReactElement } from "react";
+import { memo, useEffect, useState, type ChangeEvent, type CSSProperties, type ReactElement } from "react";
 import { formatDateTime, formatHosterLabel, humanSize } from "../../download-format";
 import { DataTable, DataTableBody, DataTableEmpty, DataTableHeader } from "../../ui/DataTable";
 import { Dialog } from "../../ui/Dialog";
@@ -79,6 +79,10 @@ function linkAvailability(availability: "online" | "offline" | "unknown"): strin
   if (availability === "online") return "Online";
   if (availability === "offline") return "Offline";
   return "Ungeprüft";
+}
+
+export function collectorPackageIntrinsicBlockSize(row: CollectorWorkspacePackageRow): number {
+  return 46 + (row.collapsed ? 0 : row.links.length * 40);
 }
 
 export function toggleAllCollectorPackageIds(
@@ -166,6 +170,10 @@ function CollectorPackageGroup({ row, model, actions, selected }: {
   const partiallySelected = row.selectedCount > 0 && !allSelected;
   const animateItems = model.animationsEnabled && row.allLinks.length <= 64;
   const [renderItems, setRenderItems] = useState(!row.collapsed);
+  const packageStyle: CSSProperties = {
+    containIntrinsicBlockSize: `auto ${collectorPackageIntrinsicBlockSize(row)}px`,
+    flex: "0 0 auto"
+  };
   useEffect(() => {
     if (!row.collapsed) {
       setRenderItems(true);
@@ -179,7 +187,7 @@ function CollectorPackageGroup({ row, model, actions, selected }: {
     return () => window.clearTimeout(timer);
   }, [animateItems, row.collapsed]);
   return (
-    <div className={`collector-package-group${row.collapsed ? " is-collapsed" : ""}${model.animationsEnabled ? " is-motion-enabled" : ""}`} role="rowgroup">
+    <div className={`collector-package-group${row.collapsed ? " is-collapsed" : ""}${model.animationsEnabled ? " is-motion-enabled" : ""}`} role="rowgroup" style={packageStyle}>
       <div className={`collector-package-row${row.selectedCount > 0 ? " is-selected" : ""}`} role="row">
         <span className="collector-column-select" role="cell">
           <input

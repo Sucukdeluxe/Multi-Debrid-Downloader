@@ -18,6 +18,7 @@ import {
   CollectorSidebar,
   CollectorToolbar,
   CollectorView,
+  collectorPackageIntrinsicBlockSize,
   toggleAllCollectorPackageIds,
   type CollectorViewActions
 } from "../src/renderer/views/collector/CollectorView";
@@ -286,6 +287,15 @@ describe("collector workspace model", () => {
 });
 
 describe("CollectorView", () => {
+  it("reserves the exact package height while content visibility skips offscreen rows", () => {
+    const expanded = buildCollectorWorkspaceViewModel([packages[0]], "all", "", false, [], [], "", true).packages[0];
+    const collapsed = { ...expanded, collapsed: true };
+
+    expect(collectorPackageIntrinsicBlockSize(expanded)).toBe(126);
+    expect(collectorPackageIntrinsicBlockSize(collapsed)).toBe(46);
+    expect(renderToStaticMarkup(<CollectorContent actions={createActions()} model={buildCollectorWorkspaceViewModel([packages[0]], "all", "", false, [], [], "", true)} />)).toContain("contain-intrinsic-block-size:auto 126px");
+  });
+
   it("renders expandable package and file rows with preview columns", () => {
     const html = renderToStaticMarkup(<CollectorView actions={createActions()} model={buildCollectorWorkspaceViewModel(packages, "all", "", false, [], [], "", true)} />);
 
