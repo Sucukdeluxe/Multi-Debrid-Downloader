@@ -18,10 +18,18 @@ import {
   CollectorSidebar,
   CollectorToolbar,
   CollectorView,
+  collectorFileInteractionAttributes,
   collectorPackageIntrinsicBlockSize,
   toggleAllCollectorPackageIds,
   type CollectorViewActions
 } from "../src/renderer/views/collector/CollectorView";
+import {
+  getCollectorDisclosurePinnedIds,
+  getCollectorDisclosureViewportIds,
+  getCollectorFocusPackageId,
+  mergeCollectorPinnedIds,
+  resolveCollectorTransitionPins
+} from "../src/renderer/views/collector/collector-disclosure";
 
 function visitElements(node: ReactNode, visit: (element: ReactElement) => void): void {
   if (Array.isArray(node)) {
@@ -286,6 +294,44 @@ describe("collector workspace model", () => {
   });
 });
 
+describe("collector disclosure virtualization", () => {
+  it("pins only previously visible packages whose collapsed state changes", () => {
+    const previousCollapsed = new Map([
+      ["package-1", false],
+      ["package-2", false],
+      ["package-3", false]
+    ]);
+    const nextRows = [
+      { id: "package-1", collapsed: true },
+      { id: "package-2", collapsed: true },
+      { id: "package-3", collapsed: true }
+    ];
+
+    expect(getCollectorDisclosurePinnedIds(["package-1", "package-2"], previousCollapsed, nextRows, true)).toEqual(["package-1", "package-2"]);
+    expect(getCollectorDisclosurePinnedIds(["package-1", "package-2"], previousCollapsed, nextRows, false)).toEqual([]);
+  });
+
+  it("retains transitioning and keyboard-focused packages across virtual window changes", () => {
+    expect(getCollectorDisclosureViewportIds([
+      { id: "visible", index: 1, pinned: false },
+      { id: "transitioning", index: 99, pinned: true }
+    ], 0, 3)).toEqual(["visible"]);
+    expect(mergeCollectorPinnedIds(["transitioning"], "focused")).toEqual(["transitioning", "focused"]);
+    expect(getCollectorFocusPackageId([
+      { id: "package-1", focusIndexStart: 0, focusCount: 4 },
+      { id: "package-2", focusIndexStart: 4, focusCount: 2 }
+    ], 4)).toBe("package-2");
+    expect(resolveCollectorTransitionPins(["transitioning"], ["new-visible-1", "new-visible-2"], 3)).toEqual(["transitioning", "new-visible-1", "new-visible-2"]);
+    expect(resolveCollectorTransitionPins(["transitioning"], ["new-visible-1", "new-visible-2"], 2)).toEqual(["new-visible-1", "new-visible-2"]);
+    expect(resolveCollectorTransitionPins([], Array.from({ length: 12 }, (_, index) => `package-${index}`))).toEqual(Array.from({ length: 8 }, (_, index) => `package-${index + 4}`));
+  });
+
+  it("removes collapsed transition files from logical focus and ARIA indexing", () => {
+    expect(collectorFileInteractionAttributes(2, 0, 0, false)).toEqual({ rowIndex: 3, focusIndex: 2, tabIndex: undefined });
+    expect(collectorFileInteractionAttributes(2, 0, 0, true)).toEqual({ rowIndex: undefined, focusIndex: undefined, tabIndex: -1 });
+  });
+});
+
 describe("CollectorView", () => {
   it("reserves the exact package height while content visibility skips offscreen rows", () => {
     const expanded = buildCollectorWorkspaceViewModel([packages[0]], "all", "", false, [], [], "", true).packages[0];
@@ -294,6 +340,47 @@ describe("CollectorView", () => {
     expect(collectorPackageIntrinsicBlockSize(expanded)).toBe(126);
     expect(collectorPackageIntrinsicBlockSize(collapsed)).toBe(46);
     expect(renderToStaticMarkup(<CollectorContent actions={createActions()} model={buildCollectorWorkspaceViewModel([packages[0]], "all", "", false, [], [], "", true)} />)).toContain("contain-intrinsic-block-size:auto 126px");
+  });
+
+  it("keeps expanded child rows bounded to the virtual viewport for large collectors", () => {
+    const manyPackages: CollectorPackage[] = Array.from({ length: 50 }, (_, index) => ({
+      ...packages[0],
+      id: `package-${index}`,
+      name: `Paket ${index}`,
+      links: packages[0].links.map((link, linkIndex) => ({
+        ...link,
+        id: `link-${index}-${linkIndex}`,
+        url: `https://example.test/${index}/${linkIndex}`
+      }))
+    }));
+
+    const html = renderToStaticMarkup(<CollectorContent actions={createActions()} model={buildCollectorWorkspaceViewModel(manyPackages, "all", "", false, [], [], "", true)} />);
+    const renderedFileRows = html.match(/class="collector-file-row/g)?.length ?? 0;
+
+    expect(html).toContain("collector-virtual-spacer");
+    expect(renderedFileRows).toBeGreaterThan(0);
+    expect(renderedFileRows).toBeLessThanOrEqual(20);
+  });
+
+  it("does not replay the disclosure animation when an expanded virtual package mounts", () => {
+    const html = renderToStaticMarkup(<CollectorContent actions={createActions()} model={buildCollectorWorkspaceViewModel([packages[0]], "all", "", false, [], [], "", true)} />);
+
+    expect(html).toContain("collector-package-items-frame");
+    expect(html).not.toContain("collector-package-items-frame is-animated");
+  });
+
+  it("exposes logical row counts and positions for virtualized assistive navigation", () => {
+    const html = renderToStaticMarkup(<CollectorContent actions={createActions()} model={buildCollectorWorkspaceViewModel([packages[0]], "all", "", false, [], [], "", true)} />);
+
+    expect(html).toContain('aria-rowcount="4"');
+    expect(html).toContain('aria-rowindex="1"');
+    expect(html).toContain('aria-rowindex="2"');
+    expect(html).toContain('aria-rowindex="3"');
+    expect(html).toContain('aria-rowindex="4"');
+    expect(html).toContain('data-collector-focus-index="0"');
+    expect(html).toContain('data-collector-focus-index="1"');
+    expect(html).toContain('data-collector-focus-index="2"');
+    expect(html).toContain('data-collector-focus-index="3"');
   });
 
   it("renders expandable package and file rows with preview columns", () => {
@@ -402,11 +489,14 @@ describe("CollectorView", () => {
     expect(commits).toBe(1);
   });
 
-  it("uses aligned responsive package grids and content visibility", () => {
+  it("uses aligned responsive package grids and positioned virtual rows", () => {
     const css = readFileSync(new URL("../src/renderer/views/collector/collector.css", import.meta.url), "utf8");
     expect(css).toMatch(/\.collector-table-header-row,\s*\.collector-package-row,\s*\.collector-file-row\s*\{[^}]*grid-template-columns:/s);
-    expect(css).toMatch(/\.collector-package-group\s*\{[^}]*content-visibility:\s*auto;/s);
+    expect(css).toMatch(/\.collector-virtual-package\s*\{[^}]*position:\s*absolute;[^}]*transform:\s*translateY/s);
     expect(css).toMatch(/@media \(max-width: 1120px\)[\s\S]*\.collector-toolbar\s*\{[^}]*flex-wrap:\s*wrap;/s);
+    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.collector-virtual-spacer\.is-motion-enabled \.collector-virtual-package\s*\{[^}]*transition-duration:\s*300ms, 300ms !important;/s);
+    expect(css).toMatch(/\.collector-package-items-frame\.is-expanding\s*\{[^}]*animation:\s*collector-items-expand/s);
+    expect(css).not.toMatch(/\.collector-package-items-frame\.is-animated\s*\{[^}]*animation:\s*collector-items-expand/s);
   });
 
   it("uses one consistent gap across collector toolbar groups", () => {

@@ -1,15 +1,19 @@
-import { memo, useEffect, useState, type ChangeEvent, type CSSProperties, type ReactElement } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type ReactElement } from "react";
 import { formatDateTime, formatHosterLabel, humanSize } from "../../download-format";
 import { DataTable, DataTableBody, DataTableEmpty, DataTableHeader } from "../../ui/DataTable";
 import { Dialog } from "../../ui/Dialog";
 import { SlidingSelection } from "../../ui/SlidingSelection";
 import { Toolbar, ToolbarGroup, ToolbarSearch } from "../../ui/Toolbar";
+import { calculateDownloadVirtualWindow, DOWNLOAD_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT } from "../downloads/download-virtualizer";
+import { getCollectorDisclosurePinnedIds, getCollectorDisclosureViewportIds, getCollectorFocusPackageId, mergeCollectorPinnedIds, resolveCollectorTransitionPins } from "./collector-disclosure";
 import type {
   CollectorWorkspaceFilter,
   CollectorWorkspacePackageRow,
   CollectorWorkspaceViewModel
 } from "./collector-model";
 import "./collector.css";
+
+const useRendererLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 export interface CollectorViewActions {
   onFilterChange: (filter: CollectorWorkspaceFilter) => void;
@@ -83,6 +87,71 @@ function linkAvailability(availability: "online" | "offline" | "unknown"): strin
 
 export function collectorPackageIntrinsicBlockSize(row: CollectorWorkspacePackageRow): number {
   return 46 + (row.collapsed ? 0 : row.links.length * 40);
+}
+
+export function collectorFileInteractionAttributes(
+  rowIndexStart: number,
+  focusIndexStart: number,
+  linkIndex: number,
+  collapsed: boolean
+): { rowIndex: number | undefined; focusIndex: number | undefined; tabIndex: number | undefined } {
+  return collapsed
+    ? { rowIndex: undefined, focusIndex: undefined, tabIndex: -1 }
+    : { rowIndex: rowIndexStart + linkIndex + 1, focusIndex: focusIndexStart + linkIndex + 2, tabIndex: undefined };
+}
+
+interface CollectorViewportState {
+  scrollTop: number;
+  viewportHeight: number;
+}
+
+interface CollectorVirtualPackage {
+  focusCount: number;
+  focusIndexStart: number;
+  id: string;
+  height: number;
+  rowIndex: number;
+  row: CollectorWorkspacePackageRow;
+}
+
+function useCollectorViewport(bodyRef: React.RefObject<HTMLDivElement>): CollectorViewportState {
+  const [viewport, setViewport] = useState<CollectorViewportState>({
+    scrollTop: 0,
+    viewportHeight: DOWNLOAD_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT
+  });
+  useEffect(() => {
+    const body = bodyRef.current;
+    if (!body) return;
+    let frame = 0;
+    const measure = (): void => {
+      frame = 0;
+      const next = {
+        scrollTop: body.scrollTop,
+        viewportHeight: body.clientHeight || DOWNLOAD_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT
+      };
+      setViewport((current) => current.scrollTop === next.scrollTop && current.viewportHeight === next.viewportHeight ? current : next);
+    };
+    const schedule = (): void => {
+      if (frame !== 0) return;
+      frame = window.requestAnimationFrame(measure);
+    };
+    measure();
+    body.addEventListener("scroll", schedule, { passive: true });
+    window.addEventListener("resize", schedule);
+    return () => {
+      body.removeEventListener("scroll", schedule);
+      window.removeEventListener("resize", schedule);
+      if (frame !== 0) window.cancelAnimationFrame(frame);
+    };
+  }, [bodyRef]);
+  return viewport;
+}
+
+function collectorVirtualPackageStyle(top: number, height: number): CSSProperties {
+  return {
+    "--collector-virtual-package-top": `${top}px`,
+    "--collector-virtual-package-height": `${height}px`
+  } as CSSProperties;
 }
 
 export function toggleAllCollectorPackageIds(
@@ -160,25 +229,39 @@ export function CollectorToolbar({ model, actions }: CollectorViewProps): ReactE
   );
 }
 
-function CollectorPackageGroup({ row, model, actions, selected }: {
+function CollectorPackageGroup({ row, model, actions, selected, focusIndexStart, rowIndexStart }: {
+  focusIndexStart: number;
   row: CollectorWorkspacePackageRow;
   model: CollectorWorkspaceViewModel;
   actions: CollectorViewActions;
   selected: ReadonlySet<string>;
+  rowIndexStart: number;
 }): ReactElement {
   const allSelected = row.selectedCount === row.totalCount;
   const partiallySelected = row.selectedCount > 0 && !allSelected;
   const animateItems = model.animationsEnabled && row.allLinks.length <= 64;
   const [renderItems, setRenderItems] = useState(!row.collapsed);
+  const [expanding, setExpanding] = useState(false);
+  const previousCollapsedRef = useRef(row.collapsed);
   const packageStyle: CSSProperties = {
     containIntrinsicBlockSize: `auto ${collectorPackageIntrinsicBlockSize(row)}px`,
     flex: "0 0 auto"
   };
   useEffect(() => {
+    const changed = previousCollapsedRef.current !== row.collapsed;
+    previousCollapsedRef.current = row.collapsed;
+    if (!changed) return;
     if (!row.collapsed) {
       setRenderItems(true);
-      return;
+      if (!animateItems) {
+        setExpanding(false);
+        return;
+      }
+      setExpanding(true);
+      const timer = window.setTimeout(() => setExpanding(false), 300);
+      return () => window.clearTimeout(timer);
     }
+    setExpanding(false);
     if (!animateItems) {
       setRenderItems(false);
       return;
@@ -186,14 +269,16 @@ function CollectorPackageGroup({ row, model, actions, selected }: {
     const timer = window.setTimeout(() => setRenderItems(false), 300);
     return () => window.clearTimeout(timer);
   }, [animateItems, row.collapsed]);
+  const animateDisclosure = animateItems && (row.collapsed || expanding);
   return (
     <div className={`collector-package-group${row.collapsed ? " is-collapsed" : ""}${model.animationsEnabled ? " is-motion-enabled" : ""}`} role="rowgroup" style={packageStyle}>
-      <div className={`collector-package-row${row.selectedCount > 0 ? " is-selected" : ""}`} role="row">
+      <div aria-rowindex={rowIndexStart} className={`collector-package-row${row.selectedCount > 0 ? " is-selected" : ""}`} role="row">
         <span className="collector-column-select" role="cell">
           <input
             aria-checked={partiallySelected ? "mixed" : allSelected}
             aria-label={`Paket ${row.name} auswählen`}
             checked={allSelected}
+            data-collector-focus-index={focusIndexStart}
             onChange={(event) => actions.onPackageSelectionChange(row.id, event.target.checked)}
             ref={(node) => { if (node) node.indeterminate = partiallySelected; }}
             type="checkbox"
@@ -204,6 +289,7 @@ function CollectorPackageGroup({ row, model, actions, selected }: {
             aria-expanded={!row.collapsed}
             aria-label={row.collapsed ? `${row.name} ausklappen` : `${row.name} einklappen`}
             className="collector-collapse-button"
+            data-collector-focus-index={focusIndexStart + 1}
             onClick={() => actions.onPackageCollapseChange(row.id)}
             type="button"
           >{row.collapsed ? "+" : "−"}</button>
@@ -219,14 +305,15 @@ function CollectorPackageGroup({ row, model, actions, selected }: {
         <span className="collector-added-cell" role="cell">{formatDateTime(row.addedAt)}</span>
       </div>
       {renderItems ? (
-        <div className={`collector-package-items-frame${row.collapsed ? " is-collapsed" : ""}${animateItems ? " is-animated" : ""}`}>
+        <div aria-hidden={row.collapsed ? true : undefined} className={`collector-package-items-frame${row.collapsed ? " is-collapsed" : ""}${animateDisclosure ? " is-animated" : ""}${expanding ? " is-expanding" : ""}`}>
           <div className="collector-package-items">
-            {row.links.map((link) => {
+            {row.links.map((link, linkIndex) => {
               const hoster = formatHosterLabel(link.hoster);
+              const interaction = collectorFileInteractionAttributes(rowIndexStart, focusIndexStart, linkIndex, row.collapsed);
               return (
-                <div className={`collector-file-row${selected.has(link.id) ? " is-selected" : ""}`} key={link.id} role="row">
+                <div aria-rowindex={interaction.rowIndex} className={`collector-file-row${selected.has(link.id) ? " is-selected" : ""}`} key={link.id} role="row">
                   <span className="collector-column-select" role="cell">
-                    <input aria-label={`${link.fileName} auswählen`} checked={selected.has(link.id)} onChange={(event) => actions.onLinkSelectionChange(link.id, event.target.checked)} type="checkbox" />
+                    <input aria-label={`${link.fileName} auswählen`} checked={selected.has(link.id)} data-collector-focus-index={interaction.focusIndex} onChange={(event) => actions.onLinkSelectionChange(link.id, event.target.checked)} tabIndex={interaction.tabIndex} type="checkbox" />
                   </span>
                   <span className="collector-name-cell is-file" role="cell" title={link.url}><span className={`collector-link-state is-${link.availability}`} />{link.fileName}</span>
                   <span className="collector-size-cell" role="cell">{link.fileSizeBytes === null ? "Unbekannt" : humanSize(link.fileSizeBytes)}</span>
@@ -246,11 +333,80 @@ function CollectorPackageGroup({ row, model, actions, selected }: {
 
 export function CollectorContent({ model, actions }: CollectorViewProps): ReactElement {
   const selected = new Set(model.selectedIds);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const viewport = useCollectorViewport(bodyRef);
+  const virtualPackages = useMemo<CollectorVirtualPackage[]>(() => {
+    let focusIndex = 0;
+    let rowIndex = 2;
+    return model.packages.map((row) => {
+      const focusCount = 2 + (row.collapsed ? 0 : row.links.length);
+      const entry = {
+        focusCount,
+        focusIndexStart: focusIndex,
+        id: row.id,
+        height: collectorPackageIntrinsicBlockSize(row),
+        rowIndex,
+        row
+      };
+      focusIndex += focusCount;
+      rowIndex += 1 + (row.collapsed ? 0 : row.links.length);
+      return entry;
+    });
+  }, [model.packages]);
+  const logicalRowCount = 1 + virtualPackages.reduce((count, entry) => count + 1 + (entry.row.collapsed ? 0 : entry.row.links.length), 0);
+  const logicalFocusCount = virtualPackages.reduce((count, entry) => count + entry.focusCount, 0);
+  const previousCollapsedRef = useRef(new Map(model.packages.map((row) => [row.id, row.collapsed])));
+  const previousVisibleIdsRef = useRef<string[]>([]);
+  const transitionTimerRef = useRef(0);
+  const [transitionPinnedIds, setTransitionPinnedIds] = useState<string[]>([]);
+  const [focusedPackageId, setFocusedPackageId] = useState<string | null>(null);
+  const [pendingFocusIndex, setPendingFocusIndex] = useState<number | null>(null);
+  const freshPinnedIds = getCollectorDisclosurePinnedIds(
+    previousVisibleIdsRef.current,
+    previousCollapsedRef.current,
+    model.packages,
+    model.animationsEnabled
+  );
+  const effectivePinnedIds = mergeCollectorPinnedIds(resolveCollectorTransitionPins(transitionPinnedIds, freshPinnedIds), focusedPackageId);
+  const stateOffset = (model.analyzing ? 38 : 0) + (model.error ? 38 : 0);
+  const virtualWindow = useMemo(() => calculateDownloadVirtualWindow(virtualPackages, {
+    scrollTop: Math.max(0, viewport.scrollTop - stateOffset),
+    viewportHeight: viewport.viewportHeight,
+    overscan: 2,
+    pinnedIds: effectivePinnedIds
+  }), [effectivePinnedIds.join("\u0000"), stateOffset, viewport.scrollTop, viewport.viewportHeight, virtualPackages]);
+  const collapsedById = new Map(model.packages.map((row) => [row.id, row.collapsed]));
+  const freshPinnedKey = freshPinnedIds.map((id) => `${id}:${collapsedById.get(id) ? 1 : 0}`).join("\u0000");
+  useRendererLayoutEffect(() => {
+    if (freshPinnedIds.length === 0) return;
+    setTransitionPinnedIds((current) => resolveCollectorTransitionPins(current, freshPinnedIds));
+    if (transitionTimerRef.current) window.clearTimeout(transitionTimerRef.current);
+    transitionTimerRef.current = window.setTimeout(() => {
+      transitionTimerRef.current = 0;
+      setTransitionPinnedIds([]);
+    }, 320);
+  }, [freshPinnedKey]);
+  useRendererLayoutEffect(() => {
+    previousCollapsedRef.current = new Map(model.packages.map((row) => [row.id, row.collapsed]));
+    previousVisibleIdsRef.current = getCollectorDisclosureViewportIds(virtualWindow.rows, virtualWindow.startIndex, virtualWindow.endIndex);
+  }, [model.packages, virtualWindow.rows]);
+  useRendererLayoutEffect(() => {
+    if (pendingFocusIndex === null) return;
+    const target = bodyRef.current?.querySelector<HTMLElement>(`[data-collector-focus-index="${pendingFocusIndex}"]`);
+    if (!target) return;
+    target.focus();
+    target.scrollIntoView({ block: "nearest" });
+    setPendingFocusIndex(null);
+  }, [pendingFocusIndex, virtualWindow.rows]);
+  useEffect(() => () => {
+    if (transitionTimerRef.current) window.clearTimeout(transitionTimerRef.current);
+  }, []);
+  const spacerStyle = { "--collector-virtual-total-height": `${virtualWindow.totalHeight}px` } as CSSProperties;
   return (
     <section className="collector-content" aria-label="Gesammelte Downloadpakete">
-      <DataTable className="collector-table" label="Gesammelte Downloadpakete">
+      <DataTable aria-rowcount={logicalRowCount} className="collector-table" label="Gesammelte Downloadpakete">
         <DataTableHeader className="collector-table-header">
-          <div className="collector-table-header-row" role="row">
+            <div aria-rowindex={1} className="collector-table-header-row" role="row">
             <span aria-label="Auswahl" className="collector-column-select" role="columnheader" />
             <span role="columnheader">Name</span>
             <span role="columnheader">Größe</span>
@@ -260,7 +416,23 @@ export function CollectorContent({ model, actions }: CollectorViewProps): ReactE
             <span role="columnheader">Hinzugefügt</span>
           </div>
         </DataTableHeader>
-        <DataTableBody className="collector-table-body" data-visual-region="collector-table-body">
+        <DataTableBody
+          className="collector-table-body"
+          data-visual-region="collector-table-body"
+          onKeyDownCapture={(event) => {
+            if (event.key !== "Tab") return;
+            const currentIndex = Number((event.target as HTMLElement).dataset.collectorFocusIndex);
+            if (!Number.isInteger(currentIndex)) return;
+            const nextIndex = currentIndex + (event.shiftKey ? -1 : 1);
+            if (nextIndex < 0 || nextIndex >= logicalFocusCount) return;
+            const packageId = getCollectorFocusPackageId(virtualPackages, nextIndex);
+            if (!packageId) return;
+            event.preventDefault();
+            setFocusedPackageId(packageId);
+            setPendingFocusIndex(nextIndex);
+          }}
+          ref={bodyRef}
+        >
           {model.analyzing ? <div aria-live="polite" className="collector-background-state" role="status"><span />Analyse läuft im Hintergrund</div> : null}
           {model.error ? <div aria-live="polite" className="collector-background-error" role="status">{model.error}</div> : null}
           {model.empty ? (
@@ -269,7 +441,26 @@ export function CollectorContent({ model, actions }: CollectorViewProps): ReactE
               description={model.query || model.filter !== "all" ? "Passe Suche oder Statusfilter an." : model.analyzing ? "Die ersten Links erscheinen sofort nach dem Import." : "Füge Links hinzu, um Pakete vor dem Download zu prüfen."}
               title={model.query || model.filter !== "all" ? "Keine passenden Links" : model.analyzing ? "Links werden vorbereitet" : "Noch keine Links"}
             />
-          ) : model.packages.map((row) => <CollectorPackageGroup actions={actions} key={row.id} model={model} row={row} selected={selected} />)}
+          ) : (
+            <div className={`collector-virtual-spacer${model.animationsEnabled ? " is-motion-enabled" : ""}`} style={spacerStyle}>
+              {virtualWindow.rows.map((entry) => (
+                <div
+                  className="collector-virtual-package"
+                  data-collector-package-id={entry.id}
+                  key={entry.id}
+                  onBlurCapture={(event) => {
+                    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                      setFocusedPackageId((current) => current === entry.id ? null : current);
+                    }
+                  }}
+                  onFocusCapture={() => setFocusedPackageId(entry.id)}
+                  style={collectorVirtualPackageStyle(entry.top, entry.height)}
+                >
+                  <CollectorPackageGroup actions={actions} focusIndexStart={entry.source.focusIndexStart} model={model} row={entry.source.row} rowIndexStart={entry.source.rowIndex} selected={selected} />
+                </div>
+              ))}
+            </div>
+          )}
         </DataTableBody>
       </DataTable>
     </section>

@@ -216,7 +216,28 @@
 }
 
 .collector-package-group {
-  content-visibility: auto;
+  height: 100%;
+}
+
+.collector-virtual-spacer {
+  flex: 0 0 var(--collector-virtual-total-height);
+  height: var(--collector-virtual-total-height);
+  min-width: 960px;
+  position: relative;
+}
+
+.collector-virtual-package {
+  height: var(--collector-virtual-package-height);
+  left: 0;
+  overflow: hidden;
+  position: absolute;
+  right: 0;
+  top: 0;
+  transform: translateY(var(--collector-virtual-package-top));
+}
+
+.collector-virtual-spacer.is-motion-enabled .collector-virtual-package {
+  transition: height 300ms cubic-bezier(0.2, 0.8, 0.2, 1), transform 300ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .collector-package-row {
@@ -250,8 +271,11 @@
 }
 
 .collector-package-items-frame.is-animated {
-  animation: collector-items-expand 300ms cubic-bezier(0.2, 0.8, 0.2, 1);
   transition: grid-template-rows 300ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 300ms ease;
+}
+
+.collector-package-items-frame.is-expanding {
+  animation: collector-items-expand 300ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .collector-package-items-frame.is-collapsed {
@@ -445,6 +469,18 @@
 @media (prefers-reduced-motion: reduce) {
   .collector-background-state span {
     animation: none;
+  }
+
+  .collector-virtual-spacer.is-motion-enabled .collector-virtual-package {
+    transition-duration: 300ms, 300ms !important;
+  }
+
+  .collector-package-items-frame.is-expanding {
+    animation-duration: 300ms !important;
+  }
+
+  .collector-package-items-frame.is-animated {
+    transition-duration: 300ms, 300ms !important;
   }
 }
 
