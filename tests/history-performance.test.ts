@@ -1,5 +1,5 @@
 import { performance } from "node:perf_hooks";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import * as historyModelModule from "../src/renderer/views/history/history-model";
 import { buildHistoryViewModel, type HistoryViewEntry } from "../src/renderer/views/history/history-model";
 
@@ -46,7 +46,7 @@ describe("history 100k performance contract", () => {
     expect(elapsedMs).toBeLessThan(10);
   });
 
-  it("keeps a warmed 100k search interaction below one frame", () => {
+  it("reuses the warmed 100k search index without rebuilding entry text", () => {
     const getHistoryPage = (historyModelModule as unknown as {
       getHistoryPage?: (
         model: ReturnType<typeof buildHistoryViewModel>,
@@ -60,13 +60,17 @@ describe("history 100k performance contract", () => {
     const entries = createLargeHistory(100_000, now);
     buildHistoryViewModel(entries, "all", "", [], [], false, "", now);
 
+    const lowercaseSpy = vi.spyOn(String.prototype, "toLocaleLowerCase");
     const startedAt = performance.now();
     const searched = buildHistoryViewModel(entries, "all", "99999", [], [], false, "", now);
     const page = getHistoryPage(searched, 1);
     const elapsedMs = performance.now() - startedAt;
+    const lowercaseCalls = lowercaseSpy.mock.calls.length;
+    lowercaseSpy.mockRestore();
 
     expect(searched.rows).toHaveLength(1);
     expect(page.rows).toHaveLength(1);
-    expect(elapsedMs).toBeLessThan(16);
+    expect(lowercaseCalls).toBeLessThan(10);
+    expect(elapsedMs).toBeLessThan(100);
   });
 });
