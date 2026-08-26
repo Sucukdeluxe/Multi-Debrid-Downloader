@@ -596,8 +596,8 @@ describe("bandwidth chart palette", () => {
   it("uses the spare zero-speed label space for a longer sparkline", () => {
     const css = readFileSync(new URL("../src/renderer/styles.css", import.meta.url), "utf8");
 
-    expect(css).toMatch(/\.speed-sparkline-canvas\s*\{[^}]*width:\s*140px;/s);
-    expect(css).toMatch(/\.speed-sparkline-value\s*\{[^}]*min-width:\s*42px;/s);
+    expect(css).toMatch(/\.speed-sparkline-canvas\s*\{[^}]*width:\s*150px;/s);
+    expect(css).toMatch(/\.speed-sparkline-value\s*\{[^}]*min-width:\s*32px;/s);
   });
 
   it("aligns the idle speed line to one physical pixel at every display scale", () => {
