@@ -16,9 +16,11 @@ import {
   CollectorInputDialog,
   MemoizedCollectorContent,
   CollectorSidebar,
+  CollectorSidebarStatus,
   CollectorToolbar,
   CollectorView,
   collectorFileInteractionAttributes,
+  collectorHeaderScrollStyle,
   collectorPackageIntrinsicBlockSize,
   toggleAllCollectorPackageIds,
   type CollectorViewActions
@@ -391,6 +393,7 @@ describe("CollectorView", () => {
     expect(html).toContain("SBS14HD.part01.rar");
     expect(html).toContain("SBS14HD.part02.rar");
     expect(html).toContain("2/2 online");
+    expect(html).toContain(">Online<");
     expect(html).toContain("aria-label=\"SBS14HD einklappen\"");
     expect(html).not.toContain("URL oder Rohzeile");
     expect(html).not.toContain(">Zeile<");
@@ -399,13 +402,48 @@ describe("CollectorView", () => {
   it("keeps rows and actions available during background analysis", () => {
     const model = buildCollectorWorkspaceViewModel(packages, "all", "", true, ["link-1"], [], "", true);
     const html = renderToStaticMarkup(<CollectorContent actions={createActions()} model={model} />);
+    const sidebarStatus = renderToStaticMarkup(<CollectorSidebarStatus model={model} />);
     const toolbar = CollectorToolbar({ actions: createActions(), model });
 
-    expect(html).toContain("Analyse läuft im Hintergrund");
+    expect(html).not.toContain("Analyse läuft im Hintergrund");
+    expect(sidebarStatus).toContain("Analyse läuft im Hintergrund");
+    expect(sidebarStatus).toContain('role="status"');
     expect(html).toContain("SBS14HD.part01.rar");
     expect(findButton(toolbar, "Auswahl übergeben (1)").props.disabled).toBe(false);
     expect(findButton(toolbar, "Alle übergeben (4)").props.disabled).toBe(false);
     expect(findButton(toolbar, "Auswahl entfernen").props.disabled).toBe(false);
+  });
+
+  it("derives status exclusively from availability instead of filename readiness", () => {
+    const unknownReady = [{
+      ...packages[0],
+      links: [{ ...packages[0].links[0], availability: "unknown" as const, status: "ready" as const }]
+    }];
+    const partial = [{
+      ...packages[0],
+      links: [
+        { ...packages[0].links[0], availability: "online" as const },
+        { ...packages[0].links[1], availability: "unknown" as const }
+      ]
+    }];
+    const offlineUnknown = [{
+      ...packages[0],
+      links: [
+        { ...packages[0].links[0], availability: "offline" as const },
+        { ...packages[0].links[1], availability: "unknown" as const }
+      ]
+    }];
+
+    const unknownHtml = renderToStaticMarkup(<CollectorContent actions={createActions()} model={buildCollectorWorkspaceViewModel(unknownReady, "all", "", false, [], [], "", true)} />);
+    const partialHtml = renderToStaticMarkup(<CollectorContent actions={createActions()} model={buildCollectorWorkspaceViewModel(partial, "all", "", false, [], [], "", true)} />);
+    const offlineUnknownHtml = renderToStaticMarkup(<CollectorContent actions={createActions()} model={buildCollectorWorkspaceViewModel(offlineUnknown, "all", "", false, [], [], "", true)} />);
+
+    expect(unknownHtml).not.toContain(">Bereit<");
+    expect(unknownHtml).toContain(">Ungeprüft<");
+    expect(partialHtml).toContain(">Teilweise online<");
+    expect(partialHtml).toContain("1/2 online");
+    expect(offlineUnknownHtml).not.toContain(">Teilweise online<");
+    expect(offlineUnknownHtml).toContain(">Ungeprüft<");
   });
 
   it("renders known hosters as icons with their full name as tooltip", () => {
@@ -497,6 +535,12 @@ describe("CollectorView", () => {
     expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.collector-virtual-spacer\.is-motion-enabled \.collector-virtual-package\s*\{[^}]*transition-duration:\s*300ms, 300ms !important;/s);
     expect(css).toMatch(/\.collector-package-items-frame\.is-expanding\s*\{[^}]*animation:\s*collector-items-expand/s);
     expect(css).not.toMatch(/\.collector-package-items-frame\.is-animated\s*\{[^}]*animation:\s*collector-items-expand/s);
+    expect(css).toMatch(/\.collector-table-header-row > span:nth-child\(2\)\s*\{[^}]*padding-left:\s*48px;/s);
+    expect(css).toMatch(/\.collector-name-cell\.is-file\s*\{[^}]*padding-left:\s*32px;/s);
+    expect(css).toMatch(/\.collector-table-header,\s*\.collector-table-body\s*\{[^}]*scrollbar-gutter:\s*stable;/s);
+    expect(css).toMatch(/\.collector-size-cell,\s*\.collector-hoster-cell,\s*\.collector-status-cell,\s*\.collector-availability-cell,\s*\.collector-added-cell\s*\{[^}]*text-align:\s*center;/s);
+    expect(css).toMatch(/\.collector-table-header-row > span:nth-child\(n\+3\)\s*\{[^}]*justify-content:\s*center;[^}]*text-align:\s*center;/s);
+    expect(collectorHeaderScrollStyle(37)).toEqual({ transform: "translateX(-37px)" });
   });
 
   it("uses one consistent gap across collector toolbar groups", () => {

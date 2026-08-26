@@ -28,6 +28,7 @@ export interface CollectorWorkspacePackageRow {
 
 export interface CollectorWorkspaceViewModel {
   packages: CollectorWorkspacePackageRow[];
+  packageCount: number;
   filters: CollectorWorkspaceFilterEntry[];
   filter: CollectorWorkspaceFilter;
   query: string;
@@ -276,6 +277,7 @@ export function buildCollectorWorkspaceViewModel(
 
   return {
     packages: rows,
+    packageCount: packages.length,
     filters: [
       { id: "all", label: "Alle", count: allLinks.length },
       { id: "online", label: "Online", count: availabilityCounts.online },

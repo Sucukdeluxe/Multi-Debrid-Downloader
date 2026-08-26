@@ -5,7 +5,9 @@ import type { ElectronApi } from "../src/shared/preload-api";
 const electron = vi.hoisted(() => ({
   api: undefined as ElectronApi | undefined,
   invoke: vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => undefined),
-  getPathForFile: vi.fn(() => "C:\\Imports\\dropped.dlc")
+  getPathForFile: vi.fn(() => "C:\\Imports\\dropped.dlc"),
+  on: vi.fn(),
+  removeListener: vi.fn()
 }));
 
 vi.mock("electron", () => ({
@@ -16,8 +18,8 @@ vi.mock("electron", () => ({
   },
   ipcRenderer: {
     invoke: electron.invoke,
-    on: vi.fn(),
-    removeListener: vi.fn(),
+    on: electron.on,
+    removeListener: electron.removeListener,
     send: vi.fn()
   },
   webUtils: { getPathForFile: electron.getPathForFile }
@@ -118,12 +120,12 @@ describe("account preload contract", () => {
 
     await electron.api?.prepareCollectorText(textRequest);
     await electron.api?.prepareCollectorContainers(["C:\\Imports\\sample.dlc"], 2345);
-    await electron.api?.enrichCollectorPackages({ packages });
+    await electron.api?.enrichCollectorPackages({ requestId: "request-preload", packages });
 
     expect(electron.invoke.mock.calls).toEqual([
       [IPC_CHANNELS.PREPARE_COLLECTOR_TEXT, textRequest],
       [IPC_CHANNELS.PREPARE_COLLECTOR_CONTAINERS, ["C:\\Imports\\sample.dlc"], 2345],
-      [IPC_CHANNELS.ENRICH_COLLECTOR_PACKAGES, { packages }]
+      [IPC_CHANNELS.ENRICH_COLLECTOR_PACKAGES, { requestId: "request-preload", packages }]
     ]);
   });
 
@@ -133,5 +135,18 @@ describe("account preload contract", () => {
     expect(electron.api?.getPathForDroppedFile(file)).toBe("C:\\Imports\\dropped.dlc");
     expect(electron.getPathForFile).toHaveBeenCalledWith(file);
     expect(electron.invoke).not.toHaveBeenCalled();
+  });
+
+  it("subscribes and unsubscribes collector enrichment progress", () => {
+    const callback = vi.fn();
+    const unsubscribe = electron.api?.onCollectorEnrichmentProgress(callback);
+    const listener = electron.on.mock.calls.find((call) => call[0] === IPC_CHANNELS.COLLECTOR_ENRICHMENT_PROGRESS)?.[1] as ((event: unknown, value: unknown) => void) | undefined;
+    const progress = { requestId: "request-progress", result: { packages: [], invalidCount: 0, duplicateCount: 0 } };
+
+    listener?.({}, progress);
+    unsubscribe?.();
+
+    expect(callback).toHaveBeenCalledWith(progress);
+    expect(electron.removeListener).toHaveBeenCalledWith(IPC_CHANNELS.COLLECTOR_ENRICHMENT_PROGRESS, listener);
   });
 });

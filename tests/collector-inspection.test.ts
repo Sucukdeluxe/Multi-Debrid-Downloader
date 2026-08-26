@@ -10,6 +10,7 @@ import {
   validateCollectorEnrichmentRequest,
   validateCollectorTextPreparationRequest
 } from "../src/shared/collector";
+import type { CollectorInspectionResult } from "../src/shared/collector";
 
 describe("collector preparation", () => {
   it("returns a stable package skeleton without requesting metadata", () => {
@@ -89,7 +90,7 @@ describe("collector enrichment", () => {
     const linkBefore = prepared.packages[0].links[0];
 
     const result = await enrichCollectorPackages(
-      { packages: prepared.packages },
+      { requestId: "request-one", packages: prepared.packages },
       defaultSettings(),
       {
         checkOneFichier: async () => new Map([[linkBefore.url, {
@@ -124,8 +125,8 @@ describe("collector enrichment", () => {
       return new Map();
     };
 
-    const firstRun = enrichCollectorPackages({ packages: first.packages }, defaultSettings(), { checkOneFichier });
-    const secondRun = enrichCollectorPackages({ packages: second.packages }, defaultSettings(), { checkOneFichier });
+    const firstRun = enrichCollectorPackages({ requestId: "request-first", packages: first.packages }, defaultSettings(), { checkOneFichier });
+    const secondRun = enrichCollectorPackages({ requestId: "request-second", packages: second.packages }, defaultSettings(), { checkOneFichier });
     await vi.waitFor(() => expect(started).toHaveLength(2));
     resolvers.forEach((resolve) => resolve());
     await Promise.all([firstRun, secondRun]);
@@ -136,9 +137,54 @@ describe("collector enrichment", () => {
     ]);
   });
 
+  it("reports finished RapidGator links before the complete enrichment resolves", async () => {
+    const prepared = prepareCollectorText({
+      rawText: [
+        "https://rapidgator.net/file/aaaaaaaa/one.bin.html",
+        "https://rapidgator.net/file/bbbbbbbb/two.bin.html"
+      ].join("\n"),
+      addedAt: 7_000
+    });
+    const resolvers = new Map<string, (value: { online: boolean; fileName: string; fileSizeBytes: number }) => void>();
+    const progress: CollectorInspectionResult[] = [];
+    let completed = false;
+    const run = enrichCollectorPackages(
+      { requestId: "request-progress", packages: prepared.packages },
+      defaultSettings(),
+      {
+        checkRapidgator: (url) => new Promise((resolve) => resolvers.set(url, resolve))
+      },
+      (result) => progress.push(result)
+    ).then((result) => {
+      completed = true;
+      return result;
+    });
+
+    await vi.waitFor(() => expect(resolvers.size).toBe(2));
+    resolvers.get("https://rapidgator.net/file/aaaaaaaa/one.bin.html")?.({
+      online: true,
+      fileName: "one.part01.rar",
+      fileSizeBytes: 100
+    });
+    await vi.waitFor(() => expect(progress.length).toBeGreaterThan(0));
+
+    expect(completed).toBe(false);
+    expect(progress.flatMap((entry) => entry.packages).flatMap((pkg) => pkg.links)).toEqual([
+      expect.objectContaining({ fileName: "one.part01.rar", fileSizeBytes: 100, availability: "online" })
+    ]);
+
+    resolvers.get("https://rapidgator.net/file/bbbbbbbb/two.bin.html")?.({
+      online: false,
+      fileName: "two.bin",
+      fileSizeBytes: 200
+    });
+    await run;
+  });
+
   it("rejects enrichment payloads that do not contain prepared absolute links", () => {
-    expect(() => validateCollectorEnrichmentRequest({ packages: [] })).toThrow(/ungültig/i);
+    expect(() => validateCollectorEnrichmentRequest({ requestId: "request-empty", packages: [] })).toThrow(/ungültig/i);
     expect(() => validateCollectorEnrichmentRequest({
+      requestId: "request-invalid",
       packages: [{
         id: "package",
         name: "Paket",

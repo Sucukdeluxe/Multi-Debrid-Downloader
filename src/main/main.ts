@@ -569,8 +569,13 @@ function registerIpcHandlers(): void {
     const request = validateCollectorContainerPreparationRequest({ filePaths, addedAt });
     return controller.prepareCollectorContainers(request.filePaths, request.addedAt);
   });
-  handleTrusted(IPC_CHANNELS.ENRICH_COLLECTOR_PACKAGES, (_event: IpcMainInvokeEvent, value: unknown) => {
-    return controller.enrichCollectorPackages(validateCollectorEnrichmentRequest(value));
+  handleTrusted(IPC_CHANNELS.ENRICH_COLLECTOR_PACKAGES, (event: IpcMainInvokeEvent, value: unknown) => {
+    const request = validateCollectorEnrichmentRequest(value);
+    return controller.enrichCollectorPackages(request, (result) => {
+      if (!event.sender.isDestroyed()) {
+        event.sender.send(IPC_CHANNELS.COLLECTOR_ENRICHMENT_PROGRESS, { requestId: request.requestId, result });
+      }
+    });
   });
   handleTrusted(IPC_CHANNELS.GET_START_CONFLICTS, () => controller.getStartConflicts());
   handleTrusted(IPC_CHANNELS.RESOLVE_START_CONFLICT, (_event: IpcMainInvokeEvent, packageId: string, policy: "keep" | "skip" | "overwrite") => {

@@ -17,6 +17,7 @@ export const IPC_CHANNELS = {
   PREPARE_COLLECTOR_TEXT: "collector:prepare-text",
   PREPARE_COLLECTOR_CONTAINERS: "collector:prepare-containers",
   ENRICH_COLLECTOR_PACKAGES: "collector:enrich-packages",
+  COLLECTOR_ENRICHMENT_PROGRESS: "collector:enrichment-progress",
   GET_START_CONFLICTS: "queue:get-start-conflicts",
   RESOLVE_START_CONFLICT: "queue:resolve-start-conflict",
   CLEAR_ALL: "queue:clear-all",

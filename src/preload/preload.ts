@@ -33,6 +33,7 @@ import {
 import type { RealDebridLoginRequest } from "../shared/preload-api";
 import type {
   CollectorEnrichmentRequest,
+  CollectorEnrichmentProgress,
   CollectorInspectionResult,
   CollectorTextPreparationRequest
 } from "../shared/collector";
@@ -62,6 +63,11 @@ const api: ElectronApi = {
     ipcRenderer.invoke(IPC_CHANNELS.PREPARE_COLLECTOR_CONTAINERS, filePaths, addedAt),
   enrichCollectorPackages: (request: CollectorEnrichmentRequest): Promise<CollectorInspectionResult> =>
     ipcRenderer.invoke(IPC_CHANNELS.ENRICH_COLLECTOR_PACKAGES, request),
+  onCollectorEnrichmentProgress: (callback: (progress: CollectorEnrichmentProgress) => void): (() => void) => {
+    const listener = (_event: unknown, progress: CollectorEnrichmentProgress): void => callback(progress);
+    ipcRenderer.on(IPC_CHANNELS.COLLECTOR_ENRICHMENT_PROGRESS, listener);
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.COLLECTOR_ENRICHMENT_PROGRESS, listener);
+  },
   getPathForDroppedFile: (file: File): string => webUtils.getPathForFile(file),
   getStartConflicts: (): Promise<StartConflictEntry[]> => ipcRenderer.invoke(IPC_CHANNELS.GET_START_CONFLICTS),
   resolveStartConflict: (packageId: string, policy: DuplicatePolicy): Promise<StartConflictResolutionResult> =>

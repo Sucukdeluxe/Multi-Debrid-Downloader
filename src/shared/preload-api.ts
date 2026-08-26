@@ -36,6 +36,7 @@ import type {
 import { isRealDebridWebAccountId } from "./real-debrid-accounts";
 import type {
   CollectorEnrichmentRequest,
+  CollectorEnrichmentProgress,
   CollectorInspectionResult,
   CollectorTextPreparationRequest
 } from "./collector";
@@ -87,6 +88,7 @@ export interface ElectronApi {
   prepareCollectorText: (request: CollectorTextPreparationRequest) => Promise<CollectorInspectionResult>;
   prepareCollectorContainers: (filePaths: string[], addedAt: number) => Promise<CollectorInspectionResult>;
   enrichCollectorPackages: (request: CollectorEnrichmentRequest) => Promise<CollectorInspectionResult>;
+  onCollectorEnrichmentProgress: (callback: (progress: CollectorEnrichmentProgress) => void) => () => void;
   getPathForDroppedFile: (file: File) => string;
   getStartConflicts: () => Promise<StartConflictEntry[]>;
   resolveStartConflict: (packageId: string, policy: DuplicatePolicy) => Promise<StartConflictResolutionResult>;

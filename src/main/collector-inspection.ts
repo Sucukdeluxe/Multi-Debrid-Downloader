@@ -27,8 +27,40 @@ export interface CollectorInspectionDependencies {
   checkDdownload?: typeof checkDdownloadOnline;
   checkOneFichier?: (links: string[]) => Promise<Map<string, OneFichierCheckResult>>;
   checkRapidgator?: typeof checkRapidgatorOnline;
-  resolveFilenames?: (links: string[]) => Promise<Map<string, string>>;
+  resolveFilenames?: (links: string[], onResolved?: (link: string, fileName: string) => void) => Promise<Map<string, string>>;
   importContainers?: typeof importDlcContainers;
+}
+
+function collectorProgressResult(packages: CollectorPackage[], urls: ReadonlySet<string>): CollectorInspectionResult {
+  const fragments = packages.flatMap((pkg) => {
+    const links = pkg.links.filter((link) => urls.has(link.url)).map((link) => ({ ...link }));
+    return links.length > 0 ? [{ ...pkg, links }] : [];
+  });
+  return { packages: regroupEnrichedPackages(fragments), invalidCount: 0, duplicateCount: 0 };
+}
+
+function createCollectorProgressEmitter(
+  packages: CollectorPackage[],
+  onProgress?: (result: CollectorInspectionResult) => void
+): { queue: (url: string) => void; flush: () => void } {
+  const pending = new Set<string>();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const flush = (): void => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+    if (!onProgress || pending.size === 0) return;
+    const urls = new Set(pending);
+    pending.clear();
+    onProgress(collectorProgressResult(packages, urls));
+  };
+  return {
+    queue: (url) => {
+      if (!onProgress) return;
+      pending.add(url);
+      if (!timer) timer = setTimeout(flush, 100);
+    },
+    flush
+  };
 }
 
 interface PreparedSourceLink {
@@ -177,7 +209,8 @@ function regroupEnrichedPackages(packages: CollectorPackage[]): CollectorPackage
 export async function enrichCollectorPackages(
   request: CollectorEnrichmentRequest,
   settings: AppSettings,
-  dependencies: CollectorInspectionDependencies = {}
+  dependencies: CollectorInspectionDependencies = {},
+  onProgress?: (result: CollectorInspectionResult) => void
 ): Promise<CollectorInspectionResult> {
   const packages = request.packages.map((pkg) => ({ ...pkg, links: pkg.links.map((link) => ({ ...link })) }));
   const linksByUrl = new Map(packages.flatMap((pkg) => pkg.links).map((link) => [link.url, link]));
@@ -195,9 +228,21 @@ export async function enrichCollectorPackages(
   const checkOneFichier = dependencies.checkOneFichier ?? checkOneFichierLinks;
   const checkRapidgator = dependencies.checkRapidgator ?? checkRapidgatorOnline;
   const checkDdownload = dependencies.checkDdownload ?? checkDdownloadOnline;
-  const resolveFilenames = dependencies.resolveFilenames ?? ((links) => new DebridService(settings).resolveFilenames(links));
+  const resolveFilenames = dependencies.resolveFilenames ?? ((links, onResolved) => new DebridService(settings).resolveFilenames(links, onResolved));
+  const progress = createCollectorProgressEmitter(packages, onProgress);
   const oneFichierPromise = oneFichierLinks.length > 0
-    ? checkOneFichier(oneFichierLinks).catch(() => new Map<string, OneFichierCheckResult>())
+    ? checkOneFichier(oneFichierLinks).then((results) => {
+      for (const [url, result] of results) {
+        const link = linksByUrl.get(url);
+        if (!link) continue;
+        link.availability = result.online ? "online" : "offline";
+        link.status = result.online ? (result.fileName ? "ready" : "unknown") : "offline";
+        if (result.fileName) link.fileName = sanitizeFilename(result.fileName);
+        if (result.fileSizeBytes !== null && result.fileSizeBytes >= 0) link.fileSizeBytes = result.fileSizeBytes;
+        progress.queue(url);
+      }
+      return results;
+    }).catch(() => new Map<string, OneFichierCheckResult>())
     : Promise.resolve(new Map<string, OneFichierCheckResult>());
   const rapidgatorPromise = runWithConcurrency(rapidgatorLinks, 8, async (url) => {
     const result = await checkRapidgator(url).catch(() => null);
@@ -207,6 +252,7 @@ export async function enrichCollectorPackages(
     link.status = result.online ? (result.fileName ? "ready" : "unknown") : "offline";
     if (result.fileName) link.fileName = sanitizeFilename(result.fileName);
     if (result.fileSizeBytes !== null && result.fileSizeBytes >= 0) link.fileSizeBytes = result.fileSizeBytes;
+    progress.queue(url);
   });
   const ddownloadPromise = runWithConcurrency(ddownloadLinks, 4, async (url) => {
     const result = await checkDdownload(url).catch(() => null);
@@ -216,9 +262,16 @@ export async function enrichCollectorPackages(
     link.status = result.online ? (result.fileName ? "ready" : "unknown") : "offline";
     if (result.fileName) link.fileName = sanitizeFilename(result.fileName);
     if (result.fileSizeBytes !== null && result.fileSizeBytes >= 0) link.fileSizeBytes = result.fileSizeBytes;
+    progress.queue(url);
   });
   const genericPromise = genericLinks.length > 0
-    ? resolveFilenames(genericLinks).catch(() => new Map<string, string>())
+    ? resolveFilenames(genericLinks, (url, fileName) => {
+      const link = linksByUrl.get(url);
+      if (!link || !fileName) return;
+      link.fileName = sanitizeFilename(fileName);
+      link.status = "ready";
+      progress.queue(url);
+    }).catch(() => new Map<string, string>())
     : Promise.resolve(new Map<string, string>());
   const [oneFichierResults, genericResults] = await Promise.all([
     oneFichierPromise,
@@ -226,20 +279,15 @@ export async function enrichCollectorPackages(
     rapidgatorPromise,
     ddownloadPromise
   ]).then(([oneFichier, generic]) => [oneFichier, generic] as const);
-  for (const [url, result] of oneFichierResults) {
-    const link = linksByUrl.get(url);
-    if (!link) continue;
-    link.availability = result.online ? "online" : "offline";
-    link.status = result.online ? (result.fileName ? "ready" : "unknown") : "offline";
-    if (result.fileName) link.fileName = sanitizeFilename(result.fileName);
-    if (result.fileSizeBytes !== null && result.fileSizeBytes >= 0) link.fileSizeBytes = result.fileSizeBytes;
-  }
+  void oneFichierResults;
   for (const [url, fileName] of genericResults) {
     const link = linksByUrl.get(url);
     if (!link || !fileName) continue;
     link.fileName = sanitizeFilename(fileName);
     link.status = "ready";
+    progress.queue(url);
   }
+  progress.flush();
   return { packages: regroupEnrichedPackages(packages), invalidCount: 0, duplicateCount: 0 };
 }
 

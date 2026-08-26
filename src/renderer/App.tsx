@@ -61,7 +61,7 @@ import { Dialog } from "./ui/Dialog";
 import { Icon } from "./ui/Icon";
 import { Toast } from "./ui/Toast";
 import { LinkAddressesDialog } from "./ui/LinkAddressesDialog";
-import { serializeCollectorPackages, type CollectorInspectionResult, type CollectorPackage } from "../shared/collector";
+import { serializeCollectorPackages, type CollectorEnrichmentProgress, type CollectorInspectionResult, type CollectorPackage } from "../shared/collector";
 import { routeDroppedDlcFiles } from "./collector-drop";
 import { beginCollectorEnrichment, filterCurrentCollectorEnrichment } from "./collector-enrichment";
 import {
@@ -77,6 +77,7 @@ import {
   CollectorInputDialog,
   MemoizedCollectorContent,
   CollectorSidebar,
+  CollectorSidebarStatus,
   CollectorToolbar,
   type CollectorViewActions
 } from "./views/collector/CollectorView";
@@ -1720,6 +1721,7 @@ export function App(): ReactElement {
   const [collectorInput, setCollectorInput] = useState<CollectorInputState | null>(null);
   const collectorPackagesRef = useRef<CollectorPackage[]>(collectorPackages);
   const collectorEnrichmentGenerationsRef = useRef(new Map<string, number>());
+  const collectorEnrichmentRequestsRef = useRef(new Map<string, ReturnType<typeof beginCollectorEnrichment>>());
   const importCollectorTextRef = useRef<(rawText: string) => Promise<void>>(() => Promise.resolve());
   const activeTabRef = useRef<Tab>(tab);
   const packageOrderRef = useRef<string[]>([]);
@@ -3608,8 +3610,10 @@ export function App(): ReactElement {
       return;
     }
     const generations = beginCollectorEnrichment(packages, collectorEnrichmentGenerationsRef.current);
+    const requestId = `collector-${Date.now().toString(36)}-${crypto.randomUUID()}`;
+    collectorEnrichmentRequestsRef.current.set(requestId, generations);
     setCollectorAnalyzingCount((current) => current + 1);
-    void window.rd.enrichCollectorPackages({ packages }).then((result) => {
+    void window.rd.enrichCollectorPackages({ requestId, packages }).then((result) => {
       mergeCollectorResult({
         ...result,
         packages: filterCurrentCollectorEnrichment(
@@ -3623,9 +3627,23 @@ export function App(): ReactElement {
         setCollectorError(`Metadatenprüfung fehlgeschlagen: ${String(error)}`);
       }
     }).finally(() => {
+      collectorEnrichmentRequestsRef.current.delete(requestId);
       setCollectorAnalyzingCount((current) => Math.max(0, current - 1));
     });
   };
+
+  useEffect(() => window.rd.onCollectorEnrichmentProgress((progress: CollectorEnrichmentProgress) => {
+    const generations = collectorEnrichmentRequestsRef.current.get(progress.requestId);
+    if (!generations) return;
+    mergeCollectorResult({
+      ...progress.result,
+      packages: filterCurrentCollectorEnrichment(
+        progress.result.packages,
+        generations,
+        collectorEnrichmentGenerationsRef.current
+      )
+    }, true);
+  }), []);
 
   const importCollectorText = async (rawText: string): Promise<void> => {
     if (!rawText.trim()) {
@@ -6245,11 +6263,7 @@ export function App(): ReactElement {
         sidebarStatus={tab === "downloads" ? (
           <DownloadsSidebarStatus model={downloadsViewModel} />
         ) : tab === "collector" ? (
-          <>
-            <span>Pakete: {collectorPackages.length}</span>
-            <span>Links: {collectorViewModel.totalCount}</span>
-            <span>Ausgewählt: {collectorViewModel.selectedCount}</span>
-          </>
+          <CollectorSidebarStatus model={collectorViewModel} />
         ) : tab === "history" ? (
           <>
             <span>Einträge: {historyViewModel.totalCount}</span>

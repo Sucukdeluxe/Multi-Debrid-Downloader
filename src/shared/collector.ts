@@ -32,7 +32,13 @@ export interface CollectorContainerPreparationRequest {
 }
 
 export interface CollectorEnrichmentRequest {
+  requestId: string;
   packages: CollectorPackage[];
+}
+
+export interface CollectorEnrichmentProgress {
+  requestId: string;
+  result: CollectorInspectionResult;
 }
 
 export interface CollectorInspectionResult {
@@ -127,7 +133,10 @@ export function validateCollectorEnrichmentRequest(value: unknown): CollectorEnr
     throw new Error("Linksammler-Anreicherung ist ungültig");
   }
   const raw = value as Record<string, unknown>;
-  if (Object.keys(raw).some((key) => key !== "packages")
+  if (Object.keys(raw).some((key) => key !== "requestId" && key !== "packages")
+    || typeof raw.requestId !== "string"
+    || raw.requestId.length === 0
+    || raw.requestId.length > 160
     || !Array.isArray(raw.packages)
     || raw.packages.length === 0
     || raw.packages.length > 2_000
@@ -135,7 +144,7 @@ export function validateCollectorEnrichmentRequest(value: unknown): CollectorEnr
     || raw.packages.reduce((sum, entry) => sum + (entry as CollectorPackage).links.length, 0) > 20_000) {
     throw new Error("Linksammler-Anreicherung ist ungültig");
   }
-  return { packages: structuredClone(raw.packages) as CollectorPackage[] };
+  return { requestId: raw.requestId, packages: structuredClone(raw.packages) as CollectorPackage[] };
 }
 
 function collectorMarkerValue(value: string): string {

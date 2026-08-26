@@ -1001,8 +1001,11 @@ export class AppController {
     return prepareCollectorContainers(filePaths, addedAt);
   }
 
-  public enrichCollectorPackages(request: CollectorEnrichmentRequest): Promise<CollectorInspectionResult> {
-    return enrichCollectorPackages(request, this.settings);
+  public enrichCollectorPackages(
+    request: CollectorEnrichmentRequest,
+    onProgress?: (result: CollectorInspectionResult) => void
+  ): Promise<CollectorInspectionResult> {
+    return enrichCollectorPackages(request, this.settings, {}, onProgress);
   }
 
   public async addContainers(filePaths: string[]): Promise<{ addedPackages: number; addedLinks: number }> {

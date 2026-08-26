@@ -48,10 +48,9 @@ export interface CollectorInputDialogProps {
 }
 
 function packageStatus(row: CollectorWorkspacePackageRow): string {
-  const ready = row.allLinks.reduce((count, link) => count + (link.status === "ready" ? 1 : 0), 0);
   if (row.offlineCount === row.totalCount) return "Offline";
-  if (ready === row.totalCount) return "Bereit";
-  if (ready > 0 || row.onlineCount > 0) return `${ready}/${row.totalCount} geprüft`;
+  if (row.onlineCount === row.totalCount) return "Online";
+  if (row.onlineCount > 0) return "Teilweise online";
   return "Ungeprüft";
 }
 
@@ -73,10 +72,11 @@ function availabilityClass(row: CollectorWorkspacePackageRow): string {
   return "unknown";
 }
 
-function linkStatus(status: "ready" | "offline" | "unknown"): string {
-  if (status === "ready") return "Bereit";
-  if (status === "offline") return "Offline";
-  return "Ungeprüft";
+function availabilityTone(online: number, offline: number, total: number): "online" | "offline" | "partial" | "unknown" {
+  if (online === total) return "online";
+  if (offline === total) return "offline";
+  if (online > 0) return "partial";
+  return "unknown";
 }
 
 function linkAvailability(availability: "online" | "offline" | "unknown"): string {
@@ -101,6 +101,7 @@ export function collectorFileInteractionAttributes(
 }
 
 interface CollectorViewportState {
+  scrollLeft: number;
   scrollTop: number;
   viewportHeight: number;
 }
@@ -116,6 +117,7 @@ interface CollectorVirtualPackage {
 
 function useCollectorViewport(bodyRef: React.RefObject<HTMLDivElement>): CollectorViewportState {
   const [viewport, setViewport] = useState<CollectorViewportState>({
+    scrollLeft: 0,
     scrollTop: 0,
     viewportHeight: DOWNLOAD_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT
   });
@@ -126,10 +128,11 @@ function useCollectorViewport(bodyRef: React.RefObject<HTMLDivElement>): Collect
     const measure = (): void => {
       frame = 0;
       const next = {
+        scrollLeft: body.scrollLeft,
         scrollTop: body.scrollTop,
         viewportHeight: body.clientHeight || DOWNLOAD_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT
       };
-      setViewport((current) => current.scrollTop === next.scrollTop && current.viewportHeight === next.viewportHeight ? current : next);
+      setViewport((current) => current.scrollLeft === next.scrollLeft && current.scrollTop === next.scrollTop && current.viewportHeight === next.viewportHeight ? current : next);
     };
     const schedule = (): void => {
       if (frame !== 0) return;
@@ -145,6 +148,10 @@ function useCollectorViewport(bodyRef: React.RefObject<HTMLDivElement>): Collect
     };
   }, [bodyRef]);
   return viewport;
+}
+
+export function collectorHeaderScrollStyle(scrollLeft: number): CSSProperties {
+  return { transform: `translateX(${-Math.max(0, scrollLeft)}px)` };
 }
 
 function collectorVirtualPackageStyle(top: number, height: number): CSSProperties {
@@ -205,6 +212,19 @@ export function CollectorSidebar({ model, actions }: CollectorViewProps): ReactE
         ))}
       </SlidingSelection>
     </div>
+  );
+}
+
+export function CollectorSidebarStatus({ model }: { model: CollectorWorkspaceViewModel }): ReactElement {
+  return (
+    <>
+      <span>Pakete: {model.packageCount}</span>
+      <span>Links: {model.totalCount}</span>
+      <span>Ausgewählt: {model.selectedCount}</span>
+      {model.analyzing ? (
+        <span aria-live="polite" className="collector-sidebar-analysis" role="status"><span aria-hidden="true" />Analyse läuft im Hintergrund</span>
+      ) : null}
+    </>
   );
 }
 
@@ -300,7 +320,7 @@ function CollectorPackageGroup({ row, model, actions, selected, focusIndexStart,
         <span className="collector-hoster-cell" role="cell">
           {row.hosters.map(formatHosterLabel).map((hoster) => <CollectorHosterLabel hoster={hoster} key={hoster.title} />)}
         </span>
-        <span className="collector-status-cell" role="cell">{packageStatus(row)}</span>
+        <span className={`collector-status-cell is-${availabilityTone(row.onlineCount, row.offlineCount, row.totalCount)}`} role="cell">{packageStatus(row)}</span>
         <span className={`collector-availability-cell is-${availabilityClass(row)}`} role="cell">{packageAvailability(row)}</span>
         <span className="collector-added-cell" role="cell">{formatDateTime(row.addedAt)}</span>
       </div>
@@ -318,7 +338,7 @@ function CollectorPackageGroup({ row, model, actions, selected, focusIndexStart,
                   <span className="collector-name-cell is-file" role="cell" title={link.url}><span className={`collector-link-state is-${link.availability}`} />{link.fileName}</span>
                   <span className="collector-size-cell" role="cell">{link.fileSizeBytes === null ? "Unbekannt" : humanSize(link.fileSizeBytes)}</span>
                   <span className="collector-hoster-cell" role="cell"><CollectorHosterLabel hoster={hoster} /></span>
-                  <span className="collector-status-cell" role="cell">{linkStatus(link.status)}</span>
+                  <span className={`collector-status-cell is-${link.availability}`} role="cell">{linkAvailability(link.availability)}</span>
                   <span className={`collector-availability-cell is-${link.availability}`} role="cell">{linkAvailability(link.availability)}</span>
                   <span className="collector-added-cell" role="cell">{formatDateTime(link.addedAt)}</span>
                 </div>
@@ -368,7 +388,7 @@ export function CollectorContent({ model, actions }: CollectorViewProps): ReactE
     model.animationsEnabled
   );
   const effectivePinnedIds = mergeCollectorPinnedIds(resolveCollectorTransitionPins(transitionPinnedIds, freshPinnedIds), focusedPackageId);
-  const stateOffset = (model.analyzing ? 38 : 0) + (model.error ? 38 : 0);
+  const stateOffset = model.error ? 38 : 0;
   const virtualWindow = useMemo(() => calculateDownloadVirtualWindow(virtualPackages, {
     scrollTop: Math.max(0, viewport.scrollTop - stateOffset),
     viewportHeight: viewport.viewportHeight,
@@ -406,7 +426,7 @@ export function CollectorContent({ model, actions }: CollectorViewProps): ReactE
     <section className="collector-content" aria-label="Gesammelte Downloadpakete">
       <DataTable aria-rowcount={logicalRowCount} className="collector-table" label="Gesammelte Downloadpakete">
         <DataTableHeader className="collector-table-header">
-            <div aria-rowindex={1} className="collector-table-header-row" role="row">
+            <div aria-rowindex={1} className="collector-table-header-row" role="row" style={collectorHeaderScrollStyle(viewport.scrollLeft)}>
             <span aria-label="Auswahl" className="collector-column-select" role="columnheader" />
             <span role="columnheader">Name</span>
             <span role="columnheader">Größe</span>
@@ -433,7 +453,6 @@ export function CollectorContent({ model, actions }: CollectorViewProps): ReactE
           }}
           ref={bodyRef}
         >
-          {model.analyzing ? <div aria-live="polite" className="collector-background-state" role="status"><span />Analyse läuft im Hintergrund</div> : null}
           {model.error ? <div aria-live="polite" className="collector-background-error" role="status">{model.error}</div> : null}
           {model.empty ? (
             <DataTableEmpty

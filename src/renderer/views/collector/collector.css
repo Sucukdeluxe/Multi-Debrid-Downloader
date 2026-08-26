@@ -141,7 +141,6 @@
   height: 100%;
 }
 
-.collector-background-state,
 .collector-background-error {
   align-items: center;
   backdrop-filter: blur(8px);
@@ -156,14 +155,15 @@
   padding: 0 11px;
 }
 
-.collector-background-state {
-  background: color-mix(in srgb, var(--ui-surface) 88%, transparent);
-  color: var(--ui-text-secondary);
+.collector-sidebar-analysis {
+  align-items: center;
+  display: flex;
+  gap: 6px;
 }
 
-.collector-background-state span {
+.collector-sidebar-analysis > span {
   animation: collector-analysis-pulse 1s ease-in-out infinite alternate;
-  background: var(--ui-primary);
+  background: var(--ui-success);
   border-radius: 50%;
   height: 7px;
   width: 7px;
@@ -184,6 +184,12 @@
 
 .collector-table-header {
   height: 41px;
+  overflow: hidden;
+}
+
+.collector-table-header,
+.collector-table-body {
+  scrollbar-gutter: stable;
 }
 
 .collector-table-header-row,
@@ -209,6 +215,25 @@
 .collector-file-row > span {
   min-width: 0;
   padding: 0 12px;
+}
+
+.collector-table-header-row > span:nth-child(2) {
+  padding-left: 48px;
+}
+
+.collector-table-header-row > span:nth-child(n+3) {
+  display: flex;
+  justify-content: center;
+  text-align: center;
+}
+
+.collector-size-cell,
+.collector-hoster-cell,
+.collector-status-cell,
+.collector-availability-cell,
+.collector-added-cell {
+  justify-content: center;
+  text-align: center;
 }
 
 .collector-table-body {
@@ -326,7 +351,7 @@
 
 .collector-name-cell.is-file {
   color: var(--ui-text);
-  padding-left: 36px;
+  padding-left: 32px;
 }
 
 .collector-collapse-button {
@@ -404,6 +429,18 @@
   color: var(--ui-text-muted);
 }
 
+.collector-status-cell.is-online {
+  color: var(--ui-success);
+}
+
+.collector-status-cell.is-offline {
+  color: var(--ui-danger);
+}
+
+.collector-status-cell.is-partial {
+  color: var(--ui-warning-text);
+}
+
 .collector-availability-cell {
   font-weight: 600;
   white-space: nowrap;
@@ -467,7 +504,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .collector-background-state span {
+  .collector-sidebar-analysis > span {
     animation: none;
   }
 
