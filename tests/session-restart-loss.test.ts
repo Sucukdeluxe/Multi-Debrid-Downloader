@@ -185,7 +185,7 @@ describe("session restart loss", () => {
     expect(Object.keys(loaded.items)).toEqual([]);
   });
 
-  it("recovers from the backup when the primary exists but is empty", () => {
+  it("keeps a valid empty primary authoritative over an older populated backup", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-loss-"));
     tempDirs.push(dir);
     const paths = createStoragePaths(dir);
@@ -194,7 +194,7 @@ describe("session restart loss", () => {
     fs.writeFileSync(`${paths.sessionFile}.bak`, JSON.stringify(sessionWith(["A", "B"])), "utf8");
 
     const loaded = loadSession(paths);
-    expect(Object.keys(loaded.packages).sort()).toEqual(["A", "B"]);
+    expect(Object.keys(loaded.packages)).toEqual([]);
   });
 
   it("does not let an in-flight/queued async settings save clobber a newer synchronous saveSettings", async () => {

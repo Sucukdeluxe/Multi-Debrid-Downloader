@@ -44,7 +44,7 @@ import { defaultSettings } from "../src/main/constants";
 import { configureCredentialProtector } from "../src/main/credential-protection";
 import { createRendererState } from "../src/main/renderer-state";
 import { getAuditLogPath, initAuditLog, logAuditEvent, shutdownAuditLog } from "../src/main/audit-log";
-import { startDebugServer, stopDebugServer } from "../src/main/debug-server";
+import { getDebugServerRuntimeStatus, restartDebugServer, startDebugServer, stopDebugServer, writeDebugServerConfig } from "../src/main/debug-server";
 import { ensureItemLog, initItemLogs, shutdownItemLogs } from "../src/main/item-log";
 import { configureLogger, getLogFilePath, logger } from "../src/main/logger";
 import { ensurePackageLog, initPackageLogs, shutdownPackageLogs } from "../src/main/package-log";
@@ -370,6 +370,60 @@ afterEach(() => {
 });
 
 describe("debug-server", () => {
+  it("keeps exactly one reachable server across concurrent restarts", async () => {
+    const fixture = await createFixture();
+    writeDebugServerConfig({ allowlist: ["203.0.113.5"] });
+
+    await Promise.all([restartDebugServer(), restartDebugServer()]);
+
+    expect(getDebugServerRuntimeStatus()).toEqual(expect.objectContaining({
+      running: true,
+      allowlistCount: 1
+    }));
+    const response = await authedFetch(`${fixture.baseUrl}/health`, fixture.token);
+    expect(response.ok).toBe(true);
+  });
+
+  it("does not reopen after stop races with queued restarts", async () => {
+    const fixture = await createFixture();
+    const restarts = Promise.all([restartDebugServer(), restartDebugServer()]);
+
+    stopDebugServer();
+    await restarts;
+
+    expect(getDebugServerRuntimeStatus().running).toBe(false);
+    await expect(fetch(`${fixture.baseUrl}/health`, {
+      signal: AbortSignal.timeout(1000)
+    })).rejects.toThrow();
+  });
+
+  it("settles the lifecycle queue when stopped during socket startup", async () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-debug-start-stop-"));
+    tempDirs.push(baseDir);
+    const port = await getFreePort();
+    fs.writeFileSync(path.join(baseDir, "debug_token.txt"), "debug-secret", "utf8");
+    fs.writeFileSync(path.join(baseDir, "debug_port.txt"), String(port), "utf8");
+    fs.writeFileSync(path.join(baseDir, "debug_host.txt"), "127.0.0.1", "utf8");
+    fs.writeFileSync(path.join(baseDir, "debug_allowlist.txt"), "", "utf8");
+
+    startDebugServer({} as DownloadManager, baseDir);
+    await Promise.resolve();
+    await Promise.resolve();
+    stopDebugServer();
+
+    const outcome = await Promise.race([
+      restartDebugServer().then(() => "settled"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("timeout"), 500))
+    ]);
+
+    expect(outcome).toBe("settled");
+    expect(getDebugServerRuntimeStatus().running).toBe(false);
+
+    startDebugServer({} as DownloadManager, baseDir);
+    await waitForReady(`http://127.0.0.1:${port}/health`);
+    expect(getDebugServerRuntimeStatus().running).toBe(true);
+  });
+
   it("serves the exact safe notification DTO in its endpoint and diagnostics", async () => {
     const fixture = await createFixture();
     const response = await authedFetch(`${fixture.baseUrl}/notifications`, fixture.token);

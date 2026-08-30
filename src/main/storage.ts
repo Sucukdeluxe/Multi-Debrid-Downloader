@@ -86,6 +86,20 @@ function normalizeSessionTargetPath(value: unknown, packageOutputDir: string): s
   return path.resolve(targetPath);
 }
 
+function normalizeSessionMetadataRenameTargetPath(value: unknown, packageOutputDir: string): string {
+  if (!path.isAbsolute(packageOutputDir)) {
+    return "";
+  }
+  const targetPath = normalizeSessionTargetPath(value, packageOutputDir);
+  if (!targetPath) {
+    return "";
+  }
+  const resolvedOutputDir = path.resolve(packageOutputDir);
+  const normalizedTargetPath = process.platform === "win32" ? targetPath.toLowerCase() : targetPath;
+  const normalizedOutputDir = process.platform === "win32" ? resolvedOutputDir.toLowerCase() : resolvedOutputDir;
+  return normalizedTargetPath === normalizedOutputDir ? "" : targetPath;
+}
+
 function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
   const num = Number(value);
   if (!Number.isFinite(num)) {
@@ -910,6 +924,13 @@ function migrateLegacyMegaEnableFlags(parsed: AppSettings): AppSettings {
   return { ...parsed, megaDebridApiEnabled: preferApi, megaDebridWebEnabled: !preferApi };
 }
 
+const PERSISTED_SETTINGS_KEYS = new Set(Object.keys(defaultSettings()));
+
+function isPersistedSettingsEnvelope(value: unknown): boolean {
+  const parsed = asRecord(value);
+  return Boolean(parsed && Object.keys(parsed).some((key) => PERSISTED_SETTINGS_KEYS.has(key)));
+}
+
 interface LoadedSettingsFile {
   settings: AppSettings;
   needsCredentialRewrite: boolean;
@@ -917,7 +938,12 @@ interface LoadedSettingsFile {
 
 function readSettingsFile(filePath: string): LoadedSettingsFile | null {
   try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as AppSettings;
+    const raw = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+    if (!isPersistedSettingsEnvelope(raw)) {
+      logger.error(`Settings-Datei beschädigt (Struktur ungültig): ${filePath}`);
+      return null;
+    }
+    const parsed = raw as AppSettings;
     const needsCredentialRewrite = needsPersistedSettingsRewrite(parsed);
     const restored = restorePersistedSettings(parsed);
     const migratedLanguage = (restored as Partial<AppSettings>).language === undefined ? "de" : restored.language;
@@ -1004,6 +1030,7 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
       progressPercent: clampNumber(item.progressPercent, 0, 0, 100),
       fileName: asText(item.fileName) || "download.bin",
       targetPath: asText(item.targetPath),
+      metadataRenameTargetPath: asText(item.metadataRenameTargetPath) || undefined,
       resumable: item.resumable === undefined ? true : Boolean(item.resumable),
       attempts: clampNumber(item.attempts, 0, 0, 10_000),
       lastError: asText(item.lastError),
@@ -1084,6 +1111,7 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
   }
 
   let droppedUnsafeTargetPathCount = 0;
+  let droppedUnsafeMetadataRenameTargetPathCount = 0;
   for (const item of Object.values(itemsById)) {
     const pkg = packagesById[item.packageId];
     if (!pkg) {
@@ -1094,9 +1122,22 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
       droppedUnsafeTargetPathCount += 1;
     }
     item.targetPath = safeTargetPath;
+    const metadataRenameTargetPath = asText(item.metadataRenameTargetPath);
+    const safeMetadataRenameTargetPath = normalizeSessionMetadataRenameTargetPath(metadataRenameTargetPath, pkg.outputDir);
+    if (metadataRenameTargetPath && !safeMetadataRenameTargetPath) {
+      droppedUnsafeMetadataRenameTargetPathCount += 1;
+    }
+    if (safeMetadataRenameTargetPath) {
+      item.metadataRenameTargetPath = safeMetadataRenameTargetPath;
+    } else {
+      delete item.metadataRenameTargetPath;
+    }
   }
   if (droppedUnsafeTargetPathCount > 0) {
     logger.warn(`normalizeLoadedSession: ${droppedUnsafeTargetPathCount} unsichere targetPath-Eintraege verworfen`);
+  }
+  if (droppedUnsafeMetadataRenameTargetPathCount > 0) {
+    logger.warn(`normalizeLoadedSession: ${droppedUnsafeMetadataRenameTargetPathCount} unsichere metadataRenameTargetPath-Einträge verworfen`);
   }
 
   for (const pkg of Object.values(packagesById)) {
@@ -1143,13 +1184,12 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
 
 export function loadSettings(paths: StoragePaths): AppSettings {
   ensureBaseDir(paths.baseDir);
-  if (!fs.existsSync(paths.configFile)) {
-    return defaultSettings();
-  }
-  const loaded = readSettingsFile(paths.configFile);
+  const primaryExists = fs.existsSync(paths.configFile);
+  const backupFile = `${paths.configFile}.bak`;
+  const backupExists = fs.existsSync(backupFile);
+  const loaded = primaryExists ? readSettingsFile(paths.configFile) : null;
   if (loaded) {
-    const backupFile = `${paths.configFile}.bak`;
-    const backupNeedsCredentialRewrite = fs.existsSync(backupFile)
+    const backupNeedsCredentialRewrite = backupExists
       ? needsSettingsFileCredentialRewrite(backupFile)
       : false;
     if (loaded.needsCredentialRewrite || backupNeedsCredentialRewrite) {
@@ -1158,15 +1198,18 @@ export function loadSettings(paths: StoragePaths): AppSettings {
     return loaded.settings;
   }
 
-  const backupFile = `${paths.configFile}.bak`;
-  const backupLoaded = fs.existsSync(backupFile) ? readSettingsFile(backupFile) : null;
+  const backupLoaded = backupExists ? readSettingsFile(backupFile) : null;
   if (backupLoaded) {
-    logger.warn("Konfiguration defekt, Backup-Datei wird verwendet");
+    logger.warn(primaryExists
+      ? "Konfiguration defekt, Backup-Datei wird verwendet"
+      : "Konfiguration fehlt, Backup-Datei wird verwendet");
     rewriteProtectedSettings(paths, backupLoaded.settings);
     return backupLoaded.settings;
   }
 
-  logger.error("Konfiguration konnte nicht geladen werden (auch Backup fehlgeschlagen)");
+  if (primaryExists || backupExists) {
+    logger.error("Konfiguration konnte nicht geladen werden (auch Backup fehlgeschlagen)");
+  }
   return defaultSettings();
 }
 
@@ -1282,6 +1325,16 @@ interface LoadedSessionFile {
   wasRunning: boolean;
 }
 
+function isPersistedSessionEnvelope(value: unknown): boolean {
+  const parsed = asRecord(value);
+  return Boolean(
+    parsed
+    && Array.isArray(parsed.packageOrder)
+    && asRecord(parsed.packages)
+    && asRecord(parsed.items)
+  );
+}
+
 function readSessionFile(filePath: string): LoadedSessionFile | null {
   let raw: string | null = null;
   const maxAttempts = 5;
@@ -1310,6 +1363,10 @@ function readSessionFile(filePath: string): LoadedSessionFile | null {
   }
   try {
     const parsed = JSON.parse(raw) as unknown;
+    if (!isPersistedSessionEnvelope(parsed)) {
+      logger.error(`Session-Datei beschädigt (Struktur ungültig): ${filePath}`);
+      return null;
+    }
     const normalized = normalizeLoadedSession(parsed);
     const wasRunning = normalized.running;
     const session = normalizeLoadedSessionTransientFields(normalized);
@@ -1331,8 +1388,19 @@ export function saveSettings(paths: StoragePaths, settings: AppSettings): void {
   writeSettingsFileAtomically(paths.configFile, payloads.primary);
 }
 
-let asyncSettingsSaveRunning = false;
-let asyncSettingsSaveQueued: { paths: StoragePaths; settings: AppSettings; generation: number } | null = null;
+interface AsyncSaveWaiter {
+  resolve: () => void;
+  reject: (error: unknown) => void;
+}
+
+interface QueuedSettingsSave {
+  paths: StoragePaths;
+  settings: AppSettings;
+  generation: number;
+  waiters: AsyncSaveWaiter[];
+}
+
+let asyncSettingsSaveQueued: QueuedSettingsSave | null = null;
 let syncSettingsSaveGeneration = 0;
 let activeSettingsSave: Promise<void> | null = null;
 
@@ -1364,27 +1432,52 @@ async function writeSettingsPayload(paths: StoragePaths, settings: AppSettings, 
   }
 }
 
-async function saveSettingsPayloadAsync(paths: StoragePaths, settings: AppSettings, generation: number): Promise<void> {
-  if (asyncSettingsSaveRunning) {
-    asyncSettingsSaveQueued = { paths, settings, generation };
+function startSettingsSaveDrain(): void {
+  if (activeSettingsSave) {
     return;
   }
-  asyncSettingsSaveRunning = true;
-  const operation = writeSettingsPayload(paths, settings, generation).catch((error) => {
-    logger.error(`Async Settings-Save fehlgeschlagen: ${String(error)}`);
-  }).finally(() => {
-    asyncSettingsSaveRunning = false;
+  let operation: Promise<void>;
+  operation = (async () => {
+    while (asyncSettingsSaveQueued) {
+      const current = asyncSettingsSaveQueued;
+      asyncSettingsSaveQueued = null;
+      try {
+        await writeSettingsPayload(current.paths, current.settings, current.generation);
+        current.waiters.forEach((waiter) => waiter.resolve());
+      } catch (error) {
+        current.waiters.forEach((waiter) => waiter.reject(error));
+        const pending = asyncSettingsSaveQueued as QueuedSettingsSave | null;
+        asyncSettingsSaveQueued = null;
+        pending?.waiters.forEach((waiter) => waiter.reject(error));
+        logger.error(`Async Settings-Save fehlgeschlagen: ${String(error)}`);
+        throw error;
+      }
+    }
+  })().finally(() => {
     if (activeSettingsSave === operation) {
       activeSettingsSave = null;
     }
     if (asyncSettingsSaveQueued) {
-      const queued = asyncSettingsSaveQueued;
-      asyncSettingsSaveQueued = null;
-      void saveSettingsPayloadAsync(queued.paths, queued.settings, queued.generation);
+      startSettingsSaveDrain();
     }
   });
   activeSettingsSave = operation;
-  await operation;
+  void operation.catch(() => {});
+}
+
+function saveSettingsPayloadAsync(paths: StoragePaths, settings: AppSettings, generation: number): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const waiter = { resolve, reject };
+    if (asyncSettingsSaveQueued) {
+      asyncSettingsSaveQueued.paths = paths;
+      asyncSettingsSaveQueued.settings = settings;
+      asyncSettingsSaveQueued.generation = generation;
+      asyncSettingsSaveQueued.waiters.push(waiter);
+    } else {
+      asyncSettingsSaveQueued = { paths, settings, generation, waiters: [waiter] };
+    }
+    startSettingsSaveDrain();
+  });
 }
 
 export async function saveSettingsAsync(paths: StoragePaths, settings: AppSettings): Promise<void> {
@@ -1446,23 +1539,6 @@ export function loadSessionWithStatus(paths: StoragePaths): SessionLoadResult {
   const primary = primaryExists ? readSessionFile(paths.sessionFile) : null;
 
   if (primary) {
-    const primaryPkgCount = Object.keys(primary.session.packages).length;
-    if (primaryPkgCount === 0 && backupExists) {
-      const backup = readSessionFile(backupFile);
-      if (backup) {
-        const backupPkgCount = Object.keys(backup.session.packages).length;
-        if (backupPkgCount > 0) {
-          logger.warn(`Session-Datei ist leer (0 Pakete), aber Backup hat ${backupPkgCount} Pakete — verwende Backup`);
-          try {
-            const payload = JSON.stringify({ ...backup.session, updatedAt: Date.now() }, safeJsonReplacer);
-            fs.writeFileSync(syncTempFile, payload, "utf8");
-            syncRenameWithExdevFallback(syncTempFile, paths.sessionFile);
-          } catch {
-          }
-          return { session: backup.session, status: "recovered-backup", wasRunning: backup.wasRunning };
-        }
-      }
-    }
     return { session: primary.session, status: "ok", wasRunning: primary.wasRunning };
   }
 
@@ -1532,8 +1608,14 @@ export function saveSession(paths: StoragePaths, session: SessionState): void {
   }
 }
 
-let asyncSaveRunning = false;
-let asyncSaveQueued: { paths: StoragePaths; payload: string; generation: number } | null = null;
+interface QueuedSessionSave {
+  paths: StoragePaths;
+  payload: string;
+  generation: number;
+  waiters: AsyncSaveWaiter[];
+}
+
+let asyncSaveQueued: QueuedSessionSave | null = null;
 let syncSaveGeneration = 0;
 let activeSessionSave: Promise<void> | null = null;
 
@@ -1568,27 +1650,52 @@ async function writeSessionPayload(paths: StoragePaths, payload: string, generat
   }
 }
 
-async function saveSessionPayloadAsync(paths: StoragePaths, payload: string, generation: number): Promise<void> {
-  if (asyncSaveRunning) {
-    asyncSaveQueued = { paths, payload, generation };
+function startSessionSaveDrain(): void {
+  if (activeSessionSave) {
     return;
   }
-  asyncSaveRunning = true;
-  const operation = writeSessionPayload(paths, payload, generation).catch((error) => {
-    logger.error(`Async Session-Save fehlgeschlagen: ${String(error)}`);
-  }).finally(() => {
-    asyncSaveRunning = false;
+  let operation: Promise<void>;
+  operation = (async () => {
+    while (asyncSaveQueued) {
+      const current = asyncSaveQueued;
+      asyncSaveQueued = null;
+      try {
+        await writeSessionPayload(current.paths, current.payload, current.generation);
+        current.waiters.forEach((waiter) => waiter.resolve());
+      } catch (error) {
+        current.waiters.forEach((waiter) => waiter.reject(error));
+        const pending = asyncSaveQueued as QueuedSessionSave | null;
+        asyncSaveQueued = null;
+        pending?.waiters.forEach((waiter) => waiter.reject(error));
+        logger.error(`Async Session-Save fehlgeschlagen: ${String(error)}`);
+        throw error;
+      }
+    }
+  })().finally(() => {
     if (activeSessionSave === operation) {
       activeSessionSave = null;
     }
     if (asyncSaveQueued) {
-      const queued = asyncSaveQueued;
-      asyncSaveQueued = null;
-      void saveSessionPayloadAsync(queued.paths, queued.payload, queued.generation);
+      startSessionSaveDrain();
     }
   });
   activeSessionSave = operation;
-  await operation;
+  void operation.catch(() => {});
+}
+
+function saveSessionPayloadAsync(paths: StoragePaths, payload: string, generation: number): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const waiter = { resolve, reject };
+    if (asyncSaveQueued) {
+      asyncSaveQueued.paths = paths;
+      asyncSaveQueued.payload = payload;
+      asyncSaveQueued.generation = generation;
+      asyncSaveQueued.waiters.push(waiter);
+    } else {
+      asyncSaveQueued = { paths, payload, generation, waiters: [waiter] };
+    }
+    startSessionSaveDrain();
+  });
 }
 
 interface BlockedSettingsSave {
@@ -1615,6 +1722,47 @@ export interface PersistenceBarrier {
 }
 
 let activePersistenceBarrier: PersistenceBarrierState | null = null;
+
+interface DetachedAsyncSaves {
+  settings: QueuedSettingsSave | null;
+  session: QueuedSessionSave | null;
+}
+
+function detachPendingAsyncSaves(): DetachedAsyncSaves {
+  const detached = {
+    settings: asyncSettingsSaveQueued,
+    session: asyncSaveQueued
+  };
+  asyncSettingsSaveQueued = null;
+  asyncSaveQueued = null;
+  return detached;
+}
+
+function rejectDetachedAsyncSaves(detached: DetachedAsyncSaves, error: unknown): void {
+  detached.settings?.waiters.forEach((waiter) => waiter.reject(error));
+  detached.session?.waiters.forEach((waiter) => waiter.reject(error));
+}
+
+function requeueDetachedAsyncSaves(detached: DetachedAsyncSaves): void {
+  if (detached.settings) {
+    detached.settings.generation = syncSettingsSaveGeneration;
+    if (asyncSettingsSaveQueued) {
+      asyncSettingsSaveQueued.waiters.unshift(...detached.settings.waiters);
+    } else {
+      asyncSettingsSaveQueued = detached.settings;
+    }
+    startSettingsSaveDrain();
+  }
+  if (detached.session) {
+    detached.session.generation = syncSaveGeneration;
+    if (asyncSaveQueued) {
+      asyncSaveQueued.waiters.unshift(...detached.session.waiters);
+    } else {
+      asyncSaveQueued = detached.session;
+    }
+    startSessionSaveDrain();
+  }
+}
 
 function blockSettingsSave(state: PersistenceBarrierState, paths: StoragePaths, settings: AppSettings): Promise<void> {
   return new Promise<void>((resolve, reject) => {
@@ -1643,28 +1791,61 @@ function blockSessionSave(state: PersistenceBarrierState, paths: StoragePaths, p
 }
 
 async function replayBlockedSaves(state: PersistenceBarrierState): Promise<void> {
+  let firstError: unknown;
+  let failed = false;
   while (state.blockedSettings || state.blockedSession) {
     const blockedSettings = state.blockedSettings;
     const blockedSession = state.blockedSession;
     state.blockedSettings = null;
     state.blockedSession = null;
-    try {
-      await Promise.all([
-        blockedSettings
-          ? saveSettingsPayloadAsync(blockedSettings.paths, blockedSettings.settings, syncSettingsSaveGeneration)
-          : Promise.resolve(),
-        blockedSession
-          ? saveSessionPayloadAsync(blockedSession.paths, blockedSession.payload, syncSaveGeneration)
-          : Promise.resolve()
-      ]);
-      blockedSettings?.waiters.forEach((waiter) => waiter.resolve());
-      blockedSession?.waiters.forEach((waiter) => waiter.resolve());
-    } catch (error) {
-      blockedSettings?.waiters.forEach((waiter) => waiter.reject(error));
-      blockedSession?.waiters.forEach((waiter) => waiter.reject(error));
-      throw error;
+    const [settingsResult, sessionResult] = await Promise.allSettled([
+      blockedSettings
+        ? saveSettingsPayloadAsync(blockedSettings.paths, blockedSettings.settings, syncSettingsSaveGeneration)
+        : Promise.resolve(),
+      blockedSession
+        ? saveSessionPayloadAsync(blockedSession.paths, blockedSession.payload, syncSaveGeneration)
+        : Promise.resolve()
+    ]);
+    if (blockedSettings) {
+      if (settingsResult.status === "fulfilled") {
+        blockedSettings.waiters.forEach((waiter) => waiter.resolve());
+      } else {
+        blockedSettings.waiters.forEach((waiter) => waiter.reject(settingsResult.reason));
+        if (!failed) {
+          firstError = settingsResult.reason;
+          failed = true;
+        }
+      }
+    }
+    if (blockedSession) {
+      if (sessionResult.status === "fulfilled") {
+        blockedSession.waiters.forEach((waiter) => waiter.resolve());
+      } else {
+        blockedSession.waiters.forEach((waiter) => waiter.reject(sessionResult.reason));
+        if (!failed) {
+          firstError = sessionResult.reason;
+          failed = true;
+        }
+      }
     }
   }
+  if (failed) {
+    throw firstError;
+  }
+}
+
+function rejectBlockedSaves(state: PersistenceBarrierState, error: unknown): void {
+  state.blockedSettings?.waiters.forEach((waiter) => waiter.reject(error));
+  state.blockedSession?.waiters.forEach((waiter) => waiter.reject(error));
+  state.blockedSettings = null;
+  state.blockedSession = null;
+}
+
+function resolveBlockedSaves(state: PersistenceBarrierState): void {
+  state.blockedSettings?.waiters.forEach((waiter) => waiter.resolve());
+  state.blockedSession?.waiters.forEach((waiter) => waiter.resolve());
+  state.blockedSettings = null;
+  state.blockedSession = null;
 }
 
 export async function acquirePersistenceBarrier(): Promise<PersistenceBarrier> {
@@ -1680,19 +1861,46 @@ export async function acquirePersistenceBarrier(): Promise<PersistenceBarrier> {
     resolveReleased
   };
   activePersistenceBarrier = state;
-  cancelPendingAsyncSaves();
-  await Promise.all([activeSettingsSave ?? Promise.resolve(), activeSessionSave ?? Promise.resolve()]);
+  const detachedSaves = detachPendingAsyncSaves();
+  const activeWriteResults = await Promise.allSettled([
+    activeSettingsSave ?? Promise.resolve(),
+    activeSessionSave ?? Promise.resolve()
+  ]);
+  const activeWriteFailure = activeWriteResults.find((result) => result.status === "rejected");
+  if (activeWriteFailure?.status === "rejected") {
+    rejectBlockedSaves(state, activeWriteFailure.reason);
+    if (activePersistenceBarrier === state) {
+      activePersistenceBarrier = null;
+    }
+    requeueDetachedAsyncSaves(detachedSaves);
+    state.resolveReleased();
+    throw activeWriteFailure.reason;
+  }
+  rejectDetachedAsyncSaves(detachedSaves, new Error("Persistenzbarriere hat ausstehenden Save verworfen"));
   let finished = false;
   return {
     release: async ({ replayBlocked }) => {
       if (finished) return;
       finished = true;
+      let replayError: unknown;
+      let replayFailed = false;
       try {
         if (replayBlocked) {
-          await replayBlockedSaves(state);
+          do {
+            try {
+              await replayBlockedSaves(state);
+            } catch (error) {
+              if (!replayFailed) {
+                replayError = error;
+                replayFailed = true;
+              }
+            }
+          } while (state.blockedSettings || state.blockedSession);
         } else {
-          state.blockedSettings?.waiters.forEach((waiter) => waiter.resolve());
-          state.blockedSession?.waiters.forEach((waiter) => waiter.resolve());
+          resolveBlockedSaves(state);
+        }
+        if (replayFailed) {
+          throw replayError;
         }
       } finally {
         if (activePersistenceBarrier === state) {
@@ -1705,10 +1913,11 @@ export async function acquirePersistenceBarrier(): Promise<PersistenceBarrier> {
 }
 
 export function cancelPendingAsyncSaves(): void {
-  asyncSaveQueued = null;
-  asyncSettingsSaveQueued = null;
-  syncSaveGeneration += 1;
   syncSettingsSaveGeneration += 1;
+  syncSaveGeneration += 1;
+  const detached = detachPendingAsyncSaves();
+  detached.session?.waiters.forEach((waiter) => waiter.resolve());
+  detached.settings?.waiters.forEach((waiter) => waiter.resolve());
 }
 
 export async function saveSessionAsync(paths: StoragePaths, session: SessionState): Promise<void> {

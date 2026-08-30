@@ -76,6 +76,9 @@ let runtimeBaseDir = "";
 let allowlist: string[] = [];
 let requestLimits = new Map<string, { startedAt: number; count: number }>();
 let notificationStatusProvider: (() => NotificationSupportPayload) | null = null;
+let serverLifecycleQueue: Promise<void> = Promise.resolve();
+let serverLifecycleGeneration = 0;
+let debugServerEnabled = false;
 
 export interface DebugServerRuntimeStatus {
   running: boolean;
@@ -1177,6 +1180,12 @@ function openServerSocket(): Promise<void> {
         resolve();
       }
     };
+    srv.once("close", () => {
+      if (server === srv) {
+        server = null;
+      }
+      settle();
+    });
     srv.on("error", (err: NodeJS.ErrnoException) => {
       if (err.code === "EADDRINUSE") {
         logger.warn(`Debug-Server: Port ${bindPort} belegt (EADDRINUSE) - Server nicht gestartet`);
@@ -1196,6 +1205,46 @@ function openServerSocket(): Promise<void> {
   });
 }
 
+function enqueueServerLifecycle(operation: () => Promise<void>): Promise<void> {
+  const pending = serverLifecycleQueue.then(operation, operation);
+  serverLifecycleQueue = pending.catch(() => undefined);
+  return pending;
+}
+
+function closeServerSocket(): Promise<void> {
+  const current = server;
+  if (!current) {
+    return Promise.resolve();
+  }
+  server = null;
+  return new Promise((resolve) => {
+    let settled = false;
+    let timeout: NodeJS.Timeout | null = null;
+    const done = (): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+      resolve();
+    };
+    try {
+      current.close(() => done());
+    } catch {
+      done();
+    }
+    try {
+      current.closeAllConnections?.();
+    } catch {
+    }
+    if (!settled) {
+      timeout = setTimeout(done, 1500);
+    }
+  });
+}
+
 export function startDebugServer(
   mgr: DownloadManager,
   baseDir: string,
@@ -1204,30 +1253,32 @@ export function startDebugServer(
   runtimeBaseDir = baseDir;
   manager = mgr;
   notificationStatusProvider = readCurrentNotificationStatus || null;
-  void openServerSocket();
+  debugServerEnabled = true;
+  const generation = ++serverLifecycleGeneration;
+  void enqueueServerLifecycle(async () => {
+    if (!debugServerEnabled || generation !== serverLifecycleGeneration) {
+      return;
+    }
+    await closeServerSocket();
+    if (!debugServerEnabled || generation !== serverLifecycleGeneration) {
+      return;
+    }
+    await openServerSocket();
+  });
 }
 
 export async function restartDebugServer(): Promise<DebugServerRuntimeStatus> {
-  const old = server;
-  if (old) {
-    server = null;
-    await new Promise<void>((resolve) => {
-      let settled = false;
-      const done = (): void => {
-        if (!settled) {
-          settled = true;
-          resolve();
-        }
-      };
-      old.close(() => done());
-      try {
-        old.closeAllConnections?.();
-      } catch {
-      }
-      setTimeout(done, 1500);
-    });
-  }
-  await openServerSocket();
+  const generation = serverLifecycleGeneration;
+  await enqueueServerLifecycle(async () => {
+    if (!debugServerEnabled || generation !== serverLifecycleGeneration) {
+      return;
+    }
+    await closeServerSocket();
+    if (!debugServerEnabled || generation !== serverLifecycleGeneration) {
+      return;
+    }
+    await openServerSocket();
+  });
   return getDebugServerRuntimeStatus();
 }
 
@@ -1273,15 +1324,21 @@ export function clearDebugToken(): void {
 }
 
 export function stopDebugServer(): void {
+  debugServerEnabled = false;
+  serverLifecycleGeneration += 1;
   notificationStatusProvider = null;
-  if (server) {
-    server.close();
+  const current = server;
+  server = null;
+  requestLimits = new Map();
+  if (current) {
     try {
-      server.closeAllConnections?.();
+      current.close();
     } catch {
     }
-    server = null;
-    requestLimits = new Map();
+    try {
+      current.closeAllConnections?.();
+    } catch {
+    }
     logger.info("Debug-Server gestoppt");
   }
 }

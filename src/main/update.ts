@@ -702,10 +702,134 @@ async function downloadFile(
   const tempPath = `${targetPath}.tmp`;
   const writeStream = fs.createWriteStream(tempPath);
   const reader = response.body.getReader();
-
+  let writeError: unknown = null;
   const idleMs = getBodyIdleTimeout();
+  const idleAbortController = new AbortController();
   let idleTimer: NodeJS.Timeout | null = null;
   let idleTimedOut = false;
+
+  const idleTimeoutError = (): Error => new Error(`Update Download Body Timeout nach ${Math.ceil(idleMs / 1000)}s`);
+
+  const onWriteError = (error: unknown): void => {
+    writeError = error;
+    void reader.cancel().catch(() => undefined);
+  };
+  const onWriteClose = (): void => {
+    writeStream.removeListener("error", onWriteError);
+  };
+  writeStream.on("error", onWriteError);
+  writeStream.once("close", onWriteClose);
+
+  const waitForDrain = async (): Promise<void> => {
+    if (writeError !== null) throw writeError;
+    if (idleTimedOut) throw idleTimeoutError();
+    if (shutdown?.aborted) throw new Error("aborted:update_shutdown");
+
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const cleanup = (): void => {
+        writeStream.removeListener("drain", onDrain);
+        writeStream.removeListener("error", onError);
+        idleAbortController.signal.removeEventListener("abort", onIdleTimeout);
+        shutdown?.removeEventListener("abort", onAbort);
+      };
+      const settle = (error?: unknown): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (error !== undefined) {
+          reject(error);
+        } else {
+          resolve();
+        }
+      };
+      const onDrain = (): void => settle();
+      const onError = (error: unknown): void => settle(error);
+      const onIdleTimeout = (): void => settle(idleTimeoutError());
+      const onAbort = (): void => settle(new Error("aborted:update_shutdown"));
+
+      writeStream.once("drain", onDrain);
+      writeStream.once("error", onError);
+      idleAbortController.signal.addEventListener("abort", onIdleTimeout, { once: true });
+      shutdown?.addEventListener("abort", onAbort, { once: true });
+
+      if (writeError !== null) {
+        settle(writeError);
+      } else if (idleTimedOut) {
+        onIdleTimeout();
+      } else if (shutdown?.aborted) {
+        onAbort();
+      }
+    });
+  };
+
+  const finishWriting = async (): Promise<void> => {
+    if (writeError !== null) throw writeError;
+    if (idleTimedOut) throw idleTimeoutError();
+    if (shutdown?.aborted) throw new Error("aborted:update_shutdown");
+
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let endSucceeded = false;
+      let closed = false;
+      const cleanup = (): void => {
+        writeStream.removeListener("error", onError);
+        writeStream.removeListener("close", onClose);
+        idleAbortController.signal.removeEventListener("abort", onIdleTimeout);
+        shutdown?.removeEventListener("abort", onAbort);
+      };
+      const settle = (error?: unknown): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (error !== undefined) {
+          reject(error);
+        } else {
+          resolve();
+        }
+      };
+      const onError = (error: unknown): void => settle(error);
+      const settleIfComplete = (): void => {
+        if (endSucceeded && closed) settle();
+      };
+      const onClose = (): void => {
+        closed = true;
+        if (writeError !== null) {
+          settle(writeError);
+          return;
+        }
+        settleIfComplete();
+      };
+      const onIdleTimeout = (): void => settle(idleTimeoutError());
+      const onAbort = (): void => settle(new Error("aborted:update_shutdown"));
+
+      writeStream.once("error", onError);
+      writeStream.once("close", onClose);
+      idleAbortController.signal.addEventListener("abort", onIdleTimeout, { once: true });
+      shutdown?.addEventListener("abort", onAbort, { once: true });
+
+      if (writeError !== null) {
+        settle(writeError);
+      } else if (idleTimedOut) {
+        onIdleTimeout();
+      } else if (shutdown?.aborted) {
+        onAbort();
+      } else {
+        try {
+          writeStream.end((error?: unknown) => {
+            if (error !== undefined && error !== null) {
+              settle(error);
+            } else {
+              endSucceeded = true;
+              settleIfComplete();
+            }
+          });
+        } catch (error) {
+          settle(error);
+        }
+      }
+    });
+  };
 
   const clearIdle = (): void => {
     if (idleTimer) {
@@ -719,7 +843,8 @@ async function downloadFile(
     if (idleMs > 0) {
       idleTimer = setTimeout(() => {
         idleTimedOut = true;
-        reader.cancel().catch(() => undefined);
+        idleAbortController.abort();
+        void reader.cancel().catch(() => undefined);
       }, idleMs);
     }
   };
@@ -728,39 +853,40 @@ async function downloadFile(
     resetIdle();
     for (;;) {
       if (shutdown?.aborted) {
-        await reader.cancel().catch(() => undefined);
+        void reader.cancel().catch(() => undefined);
         throw new Error("aborted:update_shutdown");
       }
       const { done, value } = await reader.read();
+      if (writeError !== null) throw writeError;
       if (done) break;
 
       const buf = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
       if (!writeStream.write(buf)) {
-        await new Promise<void>((resolve) => writeStream.once("drain", resolve));
+        await waitForDrain();
       }
+      if (writeError !== null) throw writeError;
       downloadedBytes += buf.byteLength;
       resetIdle();
       reportProgress(false);
     }
+
+    await finishWriting();
+    if (writeError !== null) throw writeError;
   } catch (error) {
     writeStream.destroy();
+    void reader.cancel().catch(() => undefined);
     await fs.promises.rm(tempPath, { force: true }).catch(() => {});
     if (idleTimedOut) {
-      throw new Error(`Update Download Body Timeout nach ${Math.ceil(idleMs / 1000)}s`);
+      throw idleTimeoutError();
     }
     throw error;
   } finally {
     clearIdle();
   }
 
-  await new Promise<void>((resolve, reject) => {
-    writeStream.end(() => resolve());
-    writeStream.on("error", reject);
-  });
-
   if (idleTimedOut) {
     await fs.promises.rm(tempPath, { force: true }).catch(() => {});
-    throw new Error(`Update Download Body Timeout nach ${Math.ceil(idleMs / 1000)}s`);
+    throw idleTimeoutError();
   }
 
   if (totalBytes && downloadedBytes !== totalBytes) {

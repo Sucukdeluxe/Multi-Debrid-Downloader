@@ -1961,6 +1961,66 @@ describe("settings storage", () => {
     expect(restoredPrimary.packages && "pkg-backup" in restoredPrimary.packages).toBe(true);
   });
 
+  it("keeps a valid intentionally empty primary session authoritative over its populated backup", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-empty-primary-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const populated = normalizeLoadedSession({
+      ...emptySession(),
+      packageOrder: ["pkg-old"],
+      packages: {
+        "pkg-old": {
+          id: "pkg-old",
+          name: "Old Package",
+          outputDir: path.join(dir, "out"),
+          extractDir: path.join(dir, "extract"),
+          status: "queued",
+          itemIds: []
+        }
+      }
+    });
+
+    saveSession(paths, populated);
+    saveSession(paths, emptySession());
+    const loaded = loadSessionWithStatus(paths);
+
+    expect(loaded.status).toBe("ok");
+    expect(loaded.session.packageOrder).toEqual([]);
+    expect(loaded.session.packages).toEqual({});
+  });
+
+  it.each([
+    ["empty object", {}],
+    ["null", null],
+    ["array", []]
+  ])("recovers the backup when the primary contains a JSON-valid invalid %s envelope", (_label, invalidPrimary) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-invalid-session-envelope-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const backup = normalizeLoadedSession({
+      ...emptySession(),
+      packageOrder: ["pkg-backup"],
+      packages: {
+        "pkg-backup": {
+          id: "pkg-backup",
+          name: "Backup Package",
+          outputDir: path.join(dir, "out"),
+          extractDir: path.join(dir, "extract"),
+          status: "queued",
+          itemIds: []
+        }
+      }
+    });
+    fs.writeFileSync(`${paths.sessionFile}.bak`, JSON.stringify(backup), "utf8");
+    fs.writeFileSync(paths.sessionFile, JSON.stringify(invalidPrimary), "utf8");
+
+    const loaded = loadSessionWithStatus(paths);
+
+    expect(loaded.status).toBe("recovered-backup");
+    expect(loaded.session.packageOrder).toEqual(["pkg-backup"]);
+    expect(Object.keys(loaded.session.packages)).toEqual(["pkg-backup"]);
+  });
+
   it("returns defaults when config file contains invalid JSON", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
     tempDirs.push(dir);
@@ -1993,6 +2053,68 @@ describe("settings storage", () => {
     const loaded = loadSettings(paths);
     expect(loaded.outputDir).toBe(backupSettings.outputDir);
     expect(loaded.packageName).toBe("from-backup");
+  });
+
+  it.each([
+    ["empty object", {}],
+    ["null", null],
+    ["array", []],
+    ["unrecognized object", { unrelated: true }]
+  ])("loads and repairs the backup when the primary config contains a JSON-valid invalid %s envelope", (_label, invalidPrimary) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-invalid-settings-envelope-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const backupSettings = {
+      ...defaultSettings(),
+      outputDir: path.join(dir, "backup-output"),
+      packageName: "from-valid-backup"
+    };
+    fs.writeFileSync(`${paths.configFile}.bak`, JSON.stringify(backupSettings), "utf8");
+    fs.writeFileSync(paths.configFile, JSON.stringify(invalidPrimary), "utf8");
+
+    const loaded = loadSettings(paths);
+
+    expect(loaded.outputDir).toBe(backupSettings.outputDir);
+    expect(loaded.packageName).toBe("from-valid-backup");
+    expect(loadSettings(paths).packageName).toBe("from-valid-backup");
+  });
+
+  it("keeps a sparse legacy primary config authoritative over its backup", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-sparse-settings-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const legacyOutputDir = path.join(dir, "legacy-output");
+    fs.writeFileSync(`${paths.configFile}.bak`, JSON.stringify({
+      ...defaultSettings(),
+      outputDir: path.join(dir, "backup-output"),
+      packageName: "from-backup"
+    }), "utf8");
+    fs.writeFileSync(paths.configFile, JSON.stringify({ outputDir: legacyOutputDir }), "utf8");
+
+    const loaded = loadSettings(paths);
+
+    expect(loaded.outputDir).toBe(legacyOutputDir);
+    expect(loaded.packageName).toBe("");
+  });
+
+  it("loads and repairs backup config when the primary config is missing", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-missing-config-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const settings = {
+      ...defaultSettings(),
+      outputDir: path.join(dir, "kept-output"),
+      packageName: "from-existing-backup"
+    };
+    saveSettings(paths, settings);
+    fs.rmSync(paths.configFile);
+
+    const loaded = loadSettings(paths);
+
+    expect(loaded.outputDir).toBe(settings.outputDir);
+    expect(loaded.packageName).toBe("from-existing-backup");
+    expect(loadSettings(paths).packageName).toBe("from-existing-backup");
+    expect(fs.existsSync(paths.configFile)).toBe(true);
   });
 
   it("sanitizes malformed persisted session structures", () => {
@@ -2104,6 +2226,102 @@ describe("settings storage", () => {
     expect(loaded.items["item-outside"]?.targetPath).toBe("");
   });
 
+  it("preserves a metadata rename journal inside the package output directory across save and load", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const outputDir = path.join(dir, "downloads", "journal");
+    const currentPath = path.join(outputDir, "opaque.bin");
+    const renameTargetPath = path.join(outputDir, "resolved-name.rar");
+    const session = emptySession();
+    session.packageOrder = ["pkg-journal"];
+    session.packages["pkg-journal"] = {
+      id: "pkg-journal",
+      name: "Journal Package",
+      outputDir,
+      extractDir: path.join(dir, "extract", "journal"),
+      status: "completed",
+      itemIds: ["item-journal"],
+      cancelled: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1
+    };
+    session.items["item-journal"] = {
+      id: "item-journal",
+      packageId: "pkg-journal",
+      url: "https://ddownload.com/journal123",
+      provider: null,
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 1024,
+      totalBytes: 1024,
+      progressPercent: 100,
+      fileName: "resolved-name.rar",
+      targetPath: currentPath,
+      metadataRenameTargetPath: renameTargetPath,
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Fertig",
+      createdAt: 1,
+      updatedAt: 1
+    };
+
+    saveSession(paths, session);
+
+    const loaded = loadSession(paths);
+    expect(loaded.items["item-journal"]?.metadataRenameTargetPath).toBe(path.resolve(renameTargetPath));
+  });
+
+  it("drops a metadata rename journal outside the package output directory", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const outputDir = path.join(dir, "downloads", "journal");
+    const session = emptySession();
+    session.packageOrder = ["pkg-journal"];
+    session.packages["pkg-journal"] = {
+      id: "pkg-journal",
+      name: "Journal Package",
+      outputDir,
+      extractDir: path.join(dir, "extract", "journal"),
+      status: "completed",
+      itemIds: ["item-journal"],
+      cancelled: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1
+    };
+    session.items["item-journal"] = {
+      id: "item-journal",
+      packageId: "pkg-journal",
+      url: "https://ddownload.com/journal123",
+      provider: null,
+      status: "completed",
+      retries: 0,
+      speedBps: 0,
+      downloadedBytes: 1024,
+      totalBytes: 1024,
+      progressPercent: 100,
+      fileName: "resolved-name.rar",
+      targetPath: path.join(outputDir, "opaque.bin"),
+      metadataRenameTargetPath: path.join(dir, "outside", "resolved-name.rar"),
+      resumable: true,
+      attempts: 1,
+      lastError: "",
+      fullStatus: "Fertig",
+      createdAt: 1,
+      updatedAt: 1
+    };
+
+    saveSession(paths, session);
+
+    const loaded = loadSession(paths);
+    expect(loaded.items["item-journal"]?.metadataRenameTargetPath).toBeUndefined();
+  });
+
   it("captures async session save payload before later mutations", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-"));
     tempDirs.push(dir);
@@ -2118,6 +2336,158 @@ describe("settings storage", () => {
 
     const persisted = JSON.parse(fs.readFileSync(paths.sessionFile, "utf8")) as { summaryText: string };
     expect(persisted.summaryText).toBe("before-mutation");
+  });
+
+  it("keeps a queued async settings save pending until its payload is persisted", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-settings-queue-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    saveSettings(paths, defaultSettings());
+    const writeFile = fs.promises.writeFile.bind(fs.promises);
+    let releaseFirstWrite = () => {};
+    let markFirstWriteStarted = () => {};
+    const firstWriteStarted = new Promise<void>((resolve) => { markFirstWriteStarted = resolve; });
+    const firstWriteRelease = new Promise<void>((resolve) => { releaseFirstWrite = resolve; });
+    let settingsTempWrites = 0;
+    vi.spyOn(fs.promises, "writeFile").mockImplementation(async (filePath, data, options) => {
+      await writeFile(filePath, data, options);
+      if (String(filePath) === `${paths.configFile}.settings.tmp` && settingsTempWrites++ === 0) {
+        markFirstWriteStarted();
+        await firstWriteRelease;
+      }
+    });
+
+    const first = saveSettingsAsync(paths, { ...defaultSettings(), packageName: "first" });
+    await firstWriteStarted;
+    let secondSettled = false;
+    const second = saveSettingsAsync(paths, { ...defaultSettings(), packageName: "second" })
+      .then(() => { secondSettled = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const settledWhileBlocked = secondSettled;
+
+    releaseFirstWrite();
+    await Promise.all([first, second]);
+    await vi.waitFor(() => expect(loadSettings(paths).packageName).toBe("second"));
+
+    expect(settledWhileBlocked).toBe(false);
+  });
+
+  it("keeps a queued async session save pending until its payload is persisted", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-session-queue-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const openFile = fs.promises.open.bind(fs.promises);
+    let releaseFirstWrite = () => {};
+    let markFirstWriteStarted = () => {};
+    const firstWriteStarted = new Promise<void>((resolve) => { markFirstWriteStarted = resolve; });
+    const firstWriteRelease = new Promise<void>((resolve) => { releaseFirstWrite = resolve; });
+    let sessionTempWrites = 0;
+    vi.spyOn(fs.promises, "open").mockImplementation(async (filePath, flags, mode) => {
+      const handle = await openFile(filePath, flags, mode);
+      if (String(filePath) === `${paths.sessionFile}.async.tmp`) {
+        const writeFile = handle.writeFile.bind(handle);
+        handle.writeFile = async (...args: Parameters<typeof handle.writeFile>) => {
+          const result = await writeFile(...args);
+          if (sessionTempWrites++ === 0) {
+            markFirstWriteStarted();
+            await firstWriteRelease;
+          }
+          return result;
+        };
+      }
+      return handle;
+    });
+
+    const first = saveSessionAsync(paths, { ...emptySession(), summaryText: "first" });
+    await firstWriteStarted;
+    let secondSettled = false;
+    const second = saveSessionAsync(paths, { ...emptySession(), summaryText: "second" })
+      .then(() => { secondSettled = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const settledWhileBlocked = secondSettled;
+
+    releaseFirstWrite();
+    await Promise.all([first, second]);
+    await vi.waitFor(() => expect(loadSession(paths).summaryText).toBe("second"));
+
+    expect(settledWhileBlocked).toBe(false);
+  });
+
+  it("drains a settings save queued in the completion tail", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-settings-tail-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const renameFile = fs.renameSync.bind(fs);
+    let secondSave: Promise<void> | null = null;
+    let markSecondSaveStarted = () => {};
+    const secondSaveStarted = new Promise<void>((resolve) => { markSecondSaveStarted = resolve; });
+    let scheduled = false;
+    vi.spyOn(fs, "renameSync").mockImplementation((source, destination) => {
+      const result = renameFile(source, destination);
+      if (!scheduled && String(destination) === paths.configFile) {
+        scheduled = true;
+        queueMicrotask(() => queueMicrotask(() => {
+          secondSave = saveSettingsAsync(paths, { ...defaultSettings(), packageName: "second" });
+          markSecondSaveStarted();
+        }));
+      }
+      return result;
+    });
+
+    const firstSave = saveSettingsAsync(paths, { ...defaultSettings(), packageName: "first" });
+    await secondSaveStarted;
+    await firstSave;
+    expect(secondSave).not.toBeNull();
+    await secondSave;
+
+    expect(loadSettings(paths).packageName).toBe("second");
+  });
+
+  it("drains a session save queued in the completion tail", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-session-tail-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const renameFile = fs.renameSync.bind(fs);
+    let secondSave: Promise<void> | null = null;
+    let markSecondSaveStarted = () => {};
+    const secondSaveStarted = new Promise<void>((resolve) => { markSecondSaveStarted = resolve; });
+    let scheduled = false;
+    vi.spyOn(fs, "renameSync").mockImplementation((source, destination) => {
+      const result = renameFile(source, destination);
+      if (!scheduled && String(destination) === paths.sessionFile) {
+        scheduled = true;
+        queueMicrotask(() => queueMicrotask(() => {
+          secondSave = saveSessionAsync(paths, { ...emptySession(), summaryText: "second" });
+          markSecondSaveStarted();
+        }));
+      }
+      return result;
+    });
+
+    const firstSave = saveSessionAsync(paths, { ...emptySession(), summaryText: "first" });
+    await secondSaveStarted;
+    await firstSave;
+    expect(secondSave).not.toBeNull();
+    await secondSave;
+
+    expect(loadSession(paths).summaryText).toBe("second");
+  });
+
+  it("rejects async settings and session saves when persistence fails", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-async-errors-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const settingsFailure = vi.spyOn(fs.promises, "writeFile")
+      .mockRejectedValueOnce(new Error("settings write failed"));
+
+    await expect(saveSettingsAsync(paths, defaultSettings())).rejects.toThrow("settings write failed");
+    settingsFailure.mockRestore();
+
+    const sessionFailure = vi.spyOn(fs.promises, "open")
+      .mockRejectedValueOnce(new Error("session write failed"));
+
+    await expect(saveSessionAsync(paths, emptySession())).rejects.toThrow("session write failed");
+    sessionFailure.mockRestore();
   });
 
   it("keeps newer synchronous settings and session saves when older async commits resume", async () => {
@@ -2260,6 +2630,8 @@ describe("settings storage", () => {
       releaseSessionWrite();
       const barrier = await barrierPromise;
       await Promise.all([oldSettingsSave, oldSessionSave]);
+      expect(loadSettings(paths).packageName).toBe("old-settings");
+      expect(loadSession(paths).summaryText).toBe("old-session");
 
       const blockedSettingsSave = saveSettingsAsync(paths, oldSettings);
       const blockedSessionSave = saveSessionAsync(paths, oldSession);
@@ -2291,6 +2663,229 @@ describe("settings storage", () => {
 
     expect(loadSettings(paths).packageName).toBe("replayed-settings");
     expect(loadSession(paths).summaryText).toBe("replayed-session");
+    const nextBarrier = await acquirePersistenceBarrier();
+    await nextBarrier.release({ replayBlocked: false });
+  });
+
+  it("cleans up a barrier acquisition after an active write fails", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-barrier-acquire-failure-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    let markWriteStarted = () => {};
+    const writeStarted = new Promise<void>((resolve) => { markWriteStarted = resolve; });
+    let rejectWrite = (_error: Error) => {};
+    const writeRelease = new Promise<void>((_resolve, reject) => { rejectWrite = reject; });
+    const writeFile = fs.promises.writeFile.bind(fs.promises);
+    vi.spyOn(fs.promises, "writeFile").mockImplementation((filePath, data, options) => {
+      if (String(filePath) === `${paths.configFile}.settings.tmp`) {
+        markWriteStarted();
+        return writeRelease;
+      }
+      return writeFile(filePath, data, options);
+    });
+
+    const activeSave = saveSettingsAsync(paths, { ...defaultSettings(), packageName: "failing" })
+      .then(() => "resolved", (error: unknown) => `rejected:${String((error as Error).message || error)}`);
+    await writeStarted;
+    const barrierAttempt = acquirePersistenceBarrier();
+    const blockedSave = saveSessionAsync(paths, { ...emptySession(), summaryText: "blocked" })
+      .then(() => "resolved", (error: unknown) => `rejected:${String((error as Error).message || error)}`);
+    rejectWrite(new Error("active write failed"));
+
+    await expect(barrierAttempt).rejects.toThrow("active write failed");
+    expect(await activeSave).toBe("rejected:active write failed");
+    expect(await Promise.race([
+      blockedSave,
+      new Promise<string>((resolve) => setTimeout(() => resolve("timeout"), 100))
+    ])).toBe("rejected:active write failed");
+    vi.restoreAllMocks();
+
+    await saveSettingsAsync(paths, { ...defaultSettings(), packageName: "after-failure" });
+    expect(loadSettings(paths).packageName).toBe("after-failure");
+    const nextBarrier = await acquirePersistenceBarrier();
+    await nextBarrier.release({ replayBlocked: false });
+  });
+
+  it("requeues a pending settings save when barrier acquisition fails", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-barrier-settings-requeue-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const writeFile = fs.promises.writeFile.bind(fs.promises);
+    let markWriteStarted = () => {};
+    const writeStarted = new Promise<void>((resolve) => { markWriteStarted = resolve; });
+    let rejectWrite = (_error: Error) => {};
+    const writeRelease = new Promise<void>((_resolve, reject) => { rejectWrite = reject; });
+    let settingsWrites = 0;
+    vi.spyOn(fs.promises, "writeFile").mockImplementation((filePath, data, options) => {
+      if (String(filePath) === `${paths.configFile}.settings.tmp` && settingsWrites++ === 0) {
+        markWriteStarted();
+        return writeRelease;
+      }
+      return writeFile(filePath, data, options);
+    });
+
+    const activeSave = saveSettingsAsync(paths, { ...defaultSettings(), packageName: "active" })
+      .then(() => "resolved", (error: unknown) => `rejected:${String((error as Error).message || error)}`);
+    await writeStarted;
+    let queuedSettled = false;
+    const queuedSave = saveSettingsAsync(paths, { ...defaultSettings(), packageName: "queued-latest" })
+      .then(() => "resolved", (error: unknown) => `rejected:${String((error as Error).message || error)}`)
+      .finally(() => { queuedSettled = true; });
+    const barrierAttempt = acquirePersistenceBarrier();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const settledBeforeFailure = queuedSettled;
+    rejectWrite(new Error("active settings write failed"));
+
+    await expect(barrierAttempt).rejects.toThrow("active settings write failed");
+    expect(await activeSave).toBe("rejected:active settings write failed");
+    expect(await queuedSave).toBe("resolved");
+    expect(settledBeforeFailure).toBe(false);
+    expect(loadSettings(paths).packageName).toBe("queued-latest");
+  });
+
+  it("requeues a pending session save when barrier acquisition fails", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-barrier-session-requeue-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const openFile = fs.promises.open.bind(fs.promises);
+    let markOpenStarted = () => {};
+    const openStarted = new Promise<void>((resolve) => { markOpenStarted = resolve; });
+    let rejectOpen = (_error: Error) => {};
+    const openRelease = new Promise<never>((_resolve, reject) => { rejectOpen = reject; });
+    let sessionOpens = 0;
+    vi.spyOn(fs.promises, "open").mockImplementation((filePath, flags, mode) => {
+      if (String(filePath) === `${paths.sessionFile}.async.tmp` && sessionOpens++ === 0) {
+        markOpenStarted();
+        return openRelease;
+      }
+      return openFile(filePath, flags, mode);
+    });
+
+    const activeSave = saveSessionAsync(paths, { ...emptySession(), summaryText: "active" })
+      .then(() => "resolved", (error: unknown) => `rejected:${String((error as Error).message || error)}`);
+    await openStarted;
+    let queuedSettled = false;
+    const queuedSave = saveSessionAsync(paths, { ...emptySession(), summaryText: "queued-latest" })
+      .then(() => "resolved", (error: unknown) => `rejected:${String((error as Error).message || error)}`)
+      .finally(() => { queuedSettled = true; });
+    const barrierAttempt = acquirePersistenceBarrier();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const settledBeforeFailure = queuedSettled;
+    rejectOpen(new Error("active session open failed"));
+
+    await expect(barrierAttempt).rejects.toThrow("active session open failed");
+    expect(await activeSave).toBe("rejected:active session open failed");
+    expect(await queuedSave).toBe("resolved");
+    expect(settledBeforeFailure).toBe(false);
+    expect(loadSession(paths).summaryText).toBe("queued-latest");
+  });
+
+  it("rejects pre-barrier queued saves when a successful import barrier discards them", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-barrier-explicit-discard-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    saveSettings(paths, defaultSettings());
+    saveSession(paths, emptySession());
+    const writeFile = fs.promises.writeFile.bind(fs.promises);
+    const openFile = fs.promises.open.bind(fs.promises);
+    let releaseSettingsWrite = () => {};
+    let releaseSessionWrite = () => {};
+    let markSettingsWriteStarted = () => {};
+    let markSessionWriteStarted = () => {};
+    const settingsWriteStarted = new Promise<void>((resolve) => { markSettingsWriteStarted = resolve; });
+    const sessionWriteStarted = new Promise<void>((resolve) => { markSessionWriteStarted = resolve; });
+    const settingsWriteRelease = new Promise<void>((resolve) => { releaseSettingsWrite = resolve; });
+    const sessionWriteRelease = new Promise<void>((resolve) => { releaseSessionWrite = resolve; });
+    vi.spyOn(fs.promises, "writeFile").mockImplementation(async (filePath, data, options) => {
+      await writeFile(filePath, data, options);
+      if (String(filePath) === `${paths.configFile}.settings.tmp`) {
+        markSettingsWriteStarted();
+        await settingsWriteRelease;
+      }
+    });
+    vi.spyOn(fs.promises, "open").mockImplementation(async (filePath, flags, mode) => {
+      const handle = await openFile(filePath, flags, mode);
+      if (String(filePath) === `${paths.sessionFile}.async.tmp`) {
+        const originalWrite = handle.writeFile.bind(handle);
+        handle.writeFile = async (...args: Parameters<typeof handle.writeFile>) => {
+          const result = await originalWrite(...args);
+          markSessionWriteStarted();
+          await sessionWriteRelease;
+          return result;
+        };
+      }
+      return handle;
+    });
+
+    const activeSettings = saveSettingsAsync(paths, { ...defaultSettings(), packageName: "active" });
+    const activeSession = saveSessionAsync(paths, { ...emptySession(), summaryText: "active" });
+    await Promise.all([settingsWriteStarted, sessionWriteStarted]);
+    const queuedSettings = saveSettingsAsync(paths, { ...defaultSettings(), packageName: "discarded" })
+      .then(() => "resolved", (error: unknown) => `rejected:${String((error as Error).message || error)}`);
+    const queuedSession = saveSessionAsync(paths, { ...emptySession(), summaryText: "discarded" })
+      .then(() => "resolved", (error: unknown) => `rejected:${String((error as Error).message || error)}`);
+    const barrierAttempt = acquirePersistenceBarrier();
+    releaseSettingsWrite();
+    releaseSessionWrite();
+    const barrier = await barrierAttempt;
+    await Promise.all([activeSettings, activeSession]);
+
+    expect(await queuedSettings).toMatch(/^rejected:.*barrier/i);
+    expect(await queuedSession).toMatch(/^rejected:.*barrier/i);
+    saveSettings(paths, { ...defaultSettings(), packageName: "imported" });
+    saveSession(paths, { ...emptySession(), summaryText: "imported" });
+    await barrier.release({ replayBlocked: false });
+    expect(loadSettings(paths).packageName).toBe("imported");
+    expect(loadSession(paths).summaryText).toBe("imported");
+  });
+
+  it("waits for every started replay write before releasing a failed barrier", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-store-barrier-replay-failure-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    const openFile = fs.promises.open.bind(fs.promises);
+    let markSessionWriteStarted = () => {};
+    const sessionWriteStarted = new Promise<void>((resolve) => { markSessionWriteStarted = resolve; });
+    let releaseSessionWrite = () => {};
+    const sessionWriteRelease = new Promise<void>((resolve) => { releaseSessionWrite = resolve; });
+    const writeFile = fs.promises.writeFile.bind(fs.promises);
+    vi.spyOn(fs.promises, "writeFile").mockImplementation((filePath, data, options) => {
+      if (String(filePath) === `${paths.configFile}.settings.tmp`) {
+        return Promise.reject(new Error("replay settings failed"));
+      }
+      return writeFile(filePath, data, options);
+    });
+    vi.spyOn(fs.promises, "open").mockImplementation(async (filePath, flags, mode) => {
+      const handle = await openFile(filePath, flags, mode);
+      if (String(filePath) === `${paths.sessionFile}.async.tmp`) {
+        const writeFile = handle.writeFile.bind(handle);
+        handle.writeFile = async (...args: Parameters<typeof handle.writeFile>) => {
+          const result = await writeFile(...args);
+          markSessionWriteStarted();
+          await sessionWriteRelease;
+          return result;
+        };
+      }
+      return handle;
+    });
+
+    const barrier = await acquirePersistenceBarrier();
+    const settingsSave = saveSettingsAsync(paths, { ...defaultSettings(), packageName: "replayed-settings" })
+      .then(() => "resolved", (error: unknown) => `rejected:${String((error as Error).message || error)}`);
+    const sessionSave = saveSessionAsync(paths, { ...emptySession(), summaryText: "replayed-session" })
+      .then(() => "resolved", (error: unknown) => `rejected:${String((error as Error).message || error)}`);
+    let releaseSettled = false;
+    const releaseResult = barrier.release({ replayBlocked: true })
+      .then(() => "resolved", (error: unknown) => `rejected:${String((error as Error).message || error)}`)
+      .finally(() => { releaseSettled = true; });
+    await sessionWriteStarted;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(releaseSettled).toBe(false);
+    releaseSessionWrite();
+    expect(await releaseResult).toBe("rejected:replay settings failed");
+    expect(await settingsSave).toBe("rejected:replay settings failed");
+    expect(await sessionSave).toBe("resolved");
     const nextBarrier = await acquirePersistenceBarrier();
     await nextBarrier.release({ replayBlocked: false });
   });

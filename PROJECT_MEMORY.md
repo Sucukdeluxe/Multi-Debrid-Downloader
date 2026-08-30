@@ -102,7 +102,14 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Das Hauptfenster ist unter Windows nun ausdrücklich Besitzer des App-Lebenszyklus: Nach einem natürlichen, vom Renderer bestätigten Schließen wird der kontrollierte Shutdown auch bei verbleibenden Providerfenstern gestartet. Der normale `beforeunload`-Pfad bleibt erhalten, damit noch nicht übertragene Linksammler-Änderungen synchron gesichert werden können.
 - `second-instance` und `activate` stellen ein vorhandenes Hauptfenster wieder her oder erzeugen ein fehlendes neu. Ein Start während eines bereits laufenden Shutdowns plant genau einen Relaunch nach dem Prozessende ein.
 - Der Shutdown besitzt einen äußeren 10-Sekunden-Wächter. Nach erfolgreichem Controller-Shutdown wird weiterhin normal mit `app.quit()` beendet; blockieren Renderer- oder Providerfenster diesen letzten Schritt, erzwingt ein separater 2-Sekunden-Wächter den Exit. `shutdownDaemon()` läuft im Graceful-Pfad erst nach `controller.shutdown()`.
-- Die Änderung ist nur auf dem Arbeitsbranch implementiert und getestet. Sie wurde weder veröffentlicht noch auf dem Server installiert; dafür ist eine neue ausdrückliche Release-/Deployment-Freigabe erforderlich.
+- Der Debug-Server serialisiert Start, Stop und Restart. Gleichzeitige Restarts können keinen unverwalteten Listener mehr hinterlassen, wartende Restarts können einen Stop nicht mehr überholen und ein Stop während des Socket-Starts löst die Lifecycle-Queue zuverlässig auf.
+- Settings- und Session-Recovery unterscheiden jetzt gültige leere Zustände von JSON-gültigen, aber unbrauchbaren Strukturen. Eine absichtlich leere Session bleibt maßgeblich; beschädigte Settings-/Session-Primärdateien fallen auf ein intaktes Backup zurück. Sparse historische Settings bleiben kompatibel, und eine fehlende Settings-Primärdatei wird aus dem Backup repariert.
+- Das sichere Crash-Journal für ausstehende Hoster-Metadaten-Umbenennungen bleibt über einen Neustart erhalten. Nur absolute echte Unterpfade des Paketausgabeordners werden übernommen; fremde, relative oder mit dem Ausgabeordner identische Pfade werden verworfen.
+- Asynchrone Settings- und Session-Saves lösen ihre Promises erst nach dem zugehörigen dauerhaften Schreibvorgang auf und propagieren Fehler. Coalescing, Drain-Ende, Importbarriere und Replay warten auch bei Fehlern auf alle gestarteten Writes; verlorene Wakeups, hängende Barrieren, still verworfene Saves und falsch erfolgreiche Waiter wurden mit Race-Regressionen abgedeckt.
+- Der Updater beendet Backpressure-, Shutdown- und Idle-Wartezustände auch bei Schreibfehlern zuverlässig. Er wartet vor dem Rename auf den tatsächlichen Dateistream-Close, propagiert späte Close-Fehler, hält die Fehlerabsicherung bis `close` aktiv und blockiert bei einem nie auflösenden Response-`cancel()` nicht mehr dauerhaft.
+- Die übergroßen Updater-Test-Fixtures wurden durch gleichwertige 128-KiB-MZ-Payloads ersetzt, damit Integritäts- und Fallback-Tests unter paralleler Last nicht an Vitests 5-Sekunden-Grenze flaken.
+- Die Entpacklogik und ihre Produktionspfade wurden nicht verändert.
+- Die Änderungen sind nur auf dem Arbeitsbranch implementiert und getestet. Sie wurden weder veröffentlicht noch auf dem Server installiert; dafür ist eine neue ausdrückliche Release-/Deployment-Freigabe erforderlich.
 
 ## Start-, Build- und Testbefehle
 
@@ -152,6 +159,10 @@ npm exec -- tsc --noEmit
 - Vollständiger Client-Lauf ohne den privilegierten Symlink-Metadatentest: 138 Testdateien erfolgreich, 1 JVM-Testdatei übersprungen; 2.609 Tests erfolgreich und 4 übersprungen. Ein unter paralleler Build-Last einmal auffälliger, fachfremder Ordner-Aufräumtest war anschließend dreimal isoliert und im vollständigen Wiederholungslauf erfolgreich.
 - `public-release-metadata.test.ts` separat: 22 von 24 erfolgreich. Die zwei übrigen Fälle scheitern weiterhin ausschließlich beim Anlegen ihrer Symlink-Fixtures mit Windows-`EPERM`, bevor die Produktassertion ausgeführt wird.
 - Nach dem Lifecycle-Fix erneut erfolgreich: TypeScript, vollständiger Main-/Renderer-Build, Self-Check und 16 von 16 Backup-API-Tests. Die bekannte Vite-Warnung zum rund 574 KiB großen Renderer-Chunk bleibt bestehen.
+- Gezielte finale Regressionen: Storage und Session-Restart 141 von 141, Updater 40 von 40 und Debug-Server 18 von 18 erfolgreich.
+- Finaler vollständiger Client-Lauf ohne den privilegierten Symlink-Metadatentest: 138 Testdateien erfolgreich, 1 JVM-Testdatei übersprungen; 2.640 Tests erfolgreich und 4 übersprungen.
+- Der erste vollständige Lauf dieser Änderung hatte bei 2.639 erfolgreichen Tests genau einen 5-Sekunden-Timeout in einer Updater-Testfixture mit der 88,5-MiB-Node-EXE. Nach dem Ersatz aller reinen MZ-Fixtures durch 128-KiB-Payloads war der vollständige Wiederholungslauf grün.
+- Nach allen finalen Korrekturen erneut erfolgreich: TypeScript, vollständiger Main-/Renderer-Build, Self-Check und 16 von 16 Backup-API-Tests. Die bekannte Vite-Warnung zum rund 574 KiB großen Renderer-Chunk bleibt bestehen.
 
 ## Bekannte Probleme und Risiken
 
@@ -165,11 +176,11 @@ npm exec -- tsc --noEmit
 - Der Renderer-Bundle-Chunk liegt über Vites 500-KiB-Warnschwelle.
 - Die Shutdown-Wächter können einen vollständig synchron blockierten Main-Thread nicht präemptieren. Im äußersten Fall beträgt die kombinierte Grenze knapp 12 Sekunden: bis zu 10 Sekunden Controller-Shutdown plus 2 Sekunden Quit-Bestätigung.
 - Beim erzwungenen Exit können letzte asynchrone Logzeilen oder Benachrichtigungen fehlen; die wesentlichen Queue-, Settings-, Statistik- und Collector-Daten werden zuvor synchron gesichert. Laufende externe Extraktions-/Remux-Prozesse bleiben ein separater späterer Härtungspunkt.
-- Der Start-/Beenden-Fix ist noch nicht veröffentlicht oder auf dem Server installiert. Bis zu einer ausdrücklich freigegebenen Auslieferung läuft dort weiterhin die bisherige Version.
+- Die aktuellen Lifecycle-, Debug-Server-, Persistenz- und Updater-Fixes sind noch nicht veröffentlicht oder auf dem Server installiert. Bis zu einer ausdrücklich freigegebenen Auslieferung läuft dort weiterhin die bisherige Version.
 
 ## Nächste sinnvolle Schritte
 
-1. Für eine Auslieferung des Start-/Beenden-Fixes zuerst Stand, Ziel, Tests und Rollback-Weg nennen und Saschas ausdrückliches Release-/Deployment-Go abwarten.
+1. Für eine Auslieferung der aktuellen Fehlerkorrekturen zuerst Stand, Ziel, Tests und Rollback-Weg nennen und Saschas ausdrückliches Release-/Deployment-Go abwarten.
 2. Nach einer freigegebenen Serverinstallation den Ablauf Real-Debrid-Web-Download, Hauptfenster schließen und unmittelbar neu starten am echten Zielsystem verifizieren; vor jedem Eingriff Prozessbaum und Logtail sichern.
 3. Sicherheitsabhängigkeiten in einem separaten Upgrade-Branch aktualisieren, Electron-/Vite-/Vitest-Major-Wechsel einzeln testen und danach den vollständigen Windows-Paketpfad prüfen.
 4. Eine nichtdestruktive Strategie zur Bereinigung der divergierenden `main`-Branches abstimmen; kein Force-Push ohne ausdrückliche Freigabe.

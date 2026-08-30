@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import crypto from "node:crypto";
+import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const { spawnMock, unrefMock, onceMock } = vi.hoisted(() => {
@@ -27,7 +28,7 @@ vi.mock("node:child_process", () => ({
   spawn: spawnMock
 }));
 
-import { buildInstallerLaunchArgs, checkGitHubUpdate, installLatestUpdate, isRemoteNewer, normalizeUpdateRepo, parseVersionParts } from "../src/main/update";
+import { abortActiveUpdateDownload, buildInstallerLaunchArgs, checkGitHubUpdate, installLatestUpdate, isRemoteNewer, normalizeUpdateRepo, parseVersionParts } from "../src/main/update";
 import { APP_VERSION } from "../src/main/constants";
 import { UpdateCheckResult, UpdateInstallProgress } from "../src/shared/types";
 
@@ -41,7 +42,14 @@ function sha512Hex(buffer: Buffer): string {
   return crypto.createHash("sha512").update(buffer).digest("hex");
 }
 
+function createExecutablePayload() {
+  const payload = Buffer.alloc(128 * 1024);
+  payload.write("MZ");
+  return payload;
+}
+
 afterEach(() => {
+  abortActiveUpdateDownload();
   globalThis.fetch = originalFetch;
   spawnMock.mockClear();
   unrefMock.mockClear();
@@ -50,6 +58,416 @@ afterEach(() => {
 });
 
 describe("update", () => {
+  it("settles a backpressured update write when the target stream errors", async () => {
+    class FailingWriteStream extends EventEmitter {
+      private markWriteStarted!: () => void;
+      readonly writeStarted = new Promise<void>((resolve) => {
+        this.markWriteStarted = resolve;
+      });
+
+      write(): boolean {
+        this.markWriteStarted();
+        return false;
+      }
+
+      end(callback?: () => void): this {
+        callback?.();
+        return this;
+      }
+
+      destroy(): this {
+        return this;
+      }
+    }
+
+    const stream = new FailingWriteStream();
+    vi.spyOn(fs, "createWriteStream").mockReturnValue(stream as unknown as ReturnType<typeof fs.createWriteStream>);
+    globalThis.fetch = (async (): Promise<Response> => new Response(Buffer.alloc(160 * 1024, 1), {
+      status: 200,
+      headers: { "Content-Length": String(160 * 1024) }
+    })) as typeof fetch;
+
+    const pending = installLatestUpdate("owner/repo", {
+      updateAvailable: true,
+      currentVersion: APP_VERSION,
+      latestVersion: "9.9.9",
+      latestTag: "",
+      releaseUrl: "https://example.invalid/release",
+      setupAssetUrl: "https://example.invalid/",
+      setupAssetName: "",
+      setupAssetDigest: `sha256:${"a".repeat(64)}`
+    });
+
+    await stream.writeStarted;
+    const writeError = Object.assign(new Error("disk full"), { code: "ENOSPC" });
+    stream.emit("error", writeError);
+    const timeout = Symbol("timeout");
+    const outcome = await Promise.race([
+      pending,
+      new Promise<typeof timeout>((resolve) => setTimeout(() => resolve(timeout), 100))
+    ]);
+
+    if (outcome === timeout) {
+      stream.emit("drain");
+      await pending;
+    }
+
+    expect(outcome).not.toBe(timeout);
+    expect(outcome).toEqual(expect.objectContaining({ started: false }));
+    expect((outcome as { message: string }).message).toMatch(/disk full|ENOSPC/i);
+
+    const next = await installLatestUpdate("owner/repo", {
+      updateAvailable: false,
+      currentVersion: APP_VERSION,
+      latestVersion: APP_VERSION,
+      latestTag: `v${APP_VERSION}`,
+      releaseUrl: "https://example.invalid/release"
+    });
+    expect(next.message).not.toBe("Update-Download läuft bereits");
+  });
+
+  it("settles shutdown abort while an update write waits for drain", async () => {
+    class BackpressuredWriteStream extends EventEmitter {
+      private markWriteStarted!: () => void;
+      private wasDestroyed = false;
+      readonly writeStarted = new Promise<void>((resolve) => {
+        this.markWriteStarted = resolve;
+      });
+
+      write(): boolean {
+        this.markWriteStarted();
+        return false;
+      }
+
+      end(callback?: () => void): this {
+        callback?.();
+        return this;
+      }
+
+      destroy(): this {
+        this.wasDestroyed = true;
+        return this;
+      }
+
+      emitLateDestroyError(error: Error): boolean {
+        if (!this.wasDestroyed) {
+          throw new Error("stream was not destroyed");
+        }
+        const handled = this.listenerCount("error") > 0;
+        if (handled) {
+          this.emit("error", error);
+        }
+        this.emit("close");
+        return handled;
+      }
+    }
+
+    const stream = new BackpressuredWriteStream();
+    vi.spyOn(fs, "createWriteStream").mockReturnValue(stream as unknown as ReturnType<typeof fs.createWriteStream>);
+    globalThis.fetch = (async (): Promise<Response> => new Response(Buffer.alloc(160 * 1024, 1), {
+      status: 200,
+      headers: { "Content-Length": String(160 * 1024) }
+    })) as typeof fetch;
+
+    const pending = installLatestUpdate("owner/repo", {
+      updateAvailable: true,
+      currentVersion: APP_VERSION,
+      latestVersion: "9.9.9",
+      latestTag: "",
+      releaseUrl: "https://example.invalid/release",
+      setupAssetUrl: "https://example.invalid/",
+      setupAssetName: "",
+      setupAssetDigest: `sha256:${"a".repeat(64)}`
+    });
+
+    await stream.writeStarted;
+    abortActiveUpdateDownload();
+    const timeout = Symbol("timeout");
+    const outcome = await Promise.race([
+      pending,
+      new Promise<typeof timeout>((resolve) => setTimeout(() => resolve(timeout), 100))
+    ]);
+
+    if (outcome === timeout) {
+      stream.emit("drain");
+      await pending;
+    }
+
+    expect(outcome).not.toBe(timeout);
+    expect(outcome).toEqual(expect.objectContaining({ started: false }));
+    expect((outcome as { message: string }).message).toMatch(/aborted:update_shutdown/i);
+    expect(stream.emitLateDestroyError(new Error("late destroy failure"))).toBe(true);
+    expect(stream.listenerCount("error")).toBe(0);
+
+    const next = await installLatestUpdate("owner/repo", {
+      updateAvailable: false,
+      currentVersion: APP_VERSION,
+      latestVersion: APP_VERSION,
+      latestTag: `v${APP_VERSION}`,
+      releaseUrl: "https://example.invalid/release"
+    });
+    expect(next.message).not.toBe("Update-Download läuft bereits");
+  });
+
+  it("does not wait for a stalled body cancellation during shutdown", async () => {
+    class BackpressuredWriteStream extends EventEmitter {
+      private markWriteStarted!: () => void;
+      private markDestroyed!: () => void;
+      readonly writeStarted = new Promise<void>((resolve) => {
+        this.markWriteStarted = resolve;
+      });
+      readonly destroyed = new Promise<void>((resolve) => {
+        this.markDestroyed = resolve;
+      });
+
+      write(): boolean {
+        this.markWriteStarted();
+        return false;
+      }
+
+      end(callback?: () => void): this {
+        callback?.();
+        return this;
+      }
+
+      destroy(): this {
+        this.markDestroyed();
+        this.emit("close");
+        return this;
+      }
+    }
+
+    const stream = new BackpressuredWriteStream();
+    const cancelState: { release?: () => void } = {};
+    let markCancellationRequested!: () => void;
+    const cancellationRequested = new Promise<void>((resolve) => {
+      markCancellationRequested = resolve;
+    });
+    const responseBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(160 * 1024));
+      },
+      cancel() {
+        markCancellationRequested();
+        return new Promise<void>((resolve) => {
+          cancelState.release = resolve;
+        });
+      }
+    });
+    vi.spyOn(fs, "createWriteStream").mockReturnValue(stream as unknown as ReturnType<typeof fs.createWriteStream>);
+    globalThis.fetch = (async (): Promise<Response> => new Response(responseBody, {
+      status: 200,
+      headers: { "Content-Length": String(160 * 1024) }
+    })) as typeof fetch;
+
+    const pending = installLatestUpdate("owner/repo", {
+      updateAvailable: true,
+      currentVersion: APP_VERSION,
+      latestVersion: "9.9.9",
+      latestTag: "",
+      releaseUrl: "https://example.invalid/release",
+      setupAssetUrl: "https://example.invalid/",
+      setupAssetName: "",
+      setupAssetDigest: `sha256:${"a".repeat(64)}`
+    });
+
+    await stream.writeStarted;
+    abortActiveUpdateDownload();
+    const timeout = Symbol("timeout");
+    const outcome = await Promise.race([
+      pending,
+      new Promise<typeof timeout>((resolve) => setTimeout(() => resolve(timeout), 100))
+    ]);
+    const cancellationOutcome = await Promise.race([
+      cancellationRequested.then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 100))
+    ]);
+
+    if (outcome === timeout) {
+      cancelState.release?.();
+      await pending;
+    }
+    cancelState.release?.();
+
+    expect(outcome).not.toBe(timeout);
+    expect(cancellationOutcome).toBe(true);
+    expect(outcome).toEqual(expect.objectContaining({ started: false }));
+    expect((outcome as { message: string }).message).toMatch(/aborted:update_shutdown/i);
+    await expect(stream.destroyed).resolves.toBeUndefined();
+  });
+
+  it("propagates the original write error from the end callback", async () => {
+    const finalWriteError = Object.assign(new Error("final disk failure"), { code: "EIO" });
+
+    class FinalizingWriteStream extends EventEmitter {
+      write(): boolean {
+        return true;
+      }
+
+      end(callback?: (error?: Error) => void): this {
+        callback?.(finalWriteError);
+        this.emit("error", finalWriteError);
+        this.emit("close");
+        return this;
+      }
+
+      destroy(): this {
+        this.emit("close");
+        return this;
+      }
+    }
+
+    const stream = new FinalizingWriteStream();
+    vi.spyOn(fs, "createWriteStream").mockReturnValue(stream as unknown as ReturnType<typeof fs.createWriteStream>);
+    globalThis.fetch = (async (): Promise<Response> => new Response(Buffer.alloc(160 * 1024, 1), {
+      status: 200,
+      headers: { "Content-Length": String(160 * 1024) }
+    })) as typeof fetch;
+
+    const outcome = await installLatestUpdate("owner/repo", {
+      updateAvailable: true,
+      currentVersion: APP_VERSION,
+      latestVersion: "9.9.9",
+      latestTag: "",
+      releaseUrl: "https://example.invalid/release",
+      setupAssetUrl: "https://example.invalid/",
+      setupAssetName: "",
+      setupAssetDigest: `sha256:${"a".repeat(64)}`
+    });
+
+    expect(outcome).toEqual(expect.objectContaining({ started: false }));
+    expect(outcome.message).toMatch(/final disk failure|EIO/i);
+  });
+
+  it("waits for close and propagates a late close error after a successful end callback", async () => {
+    const lateCloseError = Object.assign(new Error("late close failure EIO"), { code: "EIO" });
+
+    class LateCloseFailureStream extends EventEmitter {
+      private closed = false;
+
+      write(): boolean {
+        return true;
+      }
+
+      end(callback?: (error?: Error) => void): this {
+        callback?.();
+        this.emit("finish");
+        queueMicrotask(() => {
+          this.emit("error", lateCloseError);
+          this.closed = true;
+          this.emit("close");
+        });
+        return this;
+      }
+
+      destroy(): this {
+        if (!this.closed) {
+          this.closed = true;
+          this.emit("close");
+        }
+        return this;
+      }
+    }
+
+    const stream = new LateCloseFailureStream();
+    const renameSpy = vi.spyOn(fs.promises, "rename").mockRejectedValue(new Error("rename must not run"));
+    vi.spyOn(fs, "createWriteStream").mockReturnValue(stream as unknown as ReturnType<typeof fs.createWriteStream>);
+    globalThis.fetch = (async (): Promise<Response> => new Response(Buffer.alloc(160 * 1024, 1), {
+      status: 200,
+      headers: { "Content-Length": String(160 * 1024) }
+    })) as typeof fetch;
+
+    const outcome = await installLatestUpdate("owner/repo", {
+      updateAvailable: true,
+      currentVersion: APP_VERSION,
+      latestVersion: "9.9.9",
+      latestTag: "",
+      releaseUrl: "https://example.invalid/release",
+      setupAssetUrl: "https://example.invalid/",
+      setupAssetName: "",
+      setupAssetDigest: `sha256:${"a".repeat(64)}`
+    });
+
+    expect(outcome).toEqual(expect.objectContaining({ started: false }));
+    expect(outcome.message).toMatch(/late close failure|EIO/i);
+    expect(renameSpy).not.toHaveBeenCalled();
+    expect(stream.listenerCount("error")).toBe(0);
+  });
+
+  it("settles an idle timeout while an update write waits for drain", async () => {
+    const previousTimeout = process.env.RD_UPDATE_BODY_IDLE_TIMEOUT_MS;
+    process.env.RD_UPDATE_BODY_IDLE_TIMEOUT_MS = "1000";
+
+    class BackpressuredWriteStream extends EventEmitter {
+      private markWriteStarted!: () => void;
+      private markDestroyed!: () => void;
+      readonly writeStarted = new Promise<void>((resolve) => {
+        this.markWriteStarted = resolve;
+      });
+      readonly destroyed = new Promise<void>((resolve) => {
+        this.markDestroyed = resolve;
+      });
+
+      write(): boolean {
+        this.markWriteStarted();
+        return false;
+      }
+
+      end(callback?: () => void): this {
+        callback?.();
+        return this;
+      }
+
+      destroy(): this {
+        this.markDestroyed();
+        this.emit("close");
+        return this;
+      }
+    }
+
+    const stream = new BackpressuredWriteStream();
+    const externalErrorListener = (): void => undefined;
+    stream.on("error", externalErrorListener);
+    vi.spyOn(fs, "createWriteStream").mockReturnValue(stream as unknown as ReturnType<typeof fs.createWriteStream>);
+    globalThis.fetch = (async (): Promise<Response> => new Response(Buffer.alloc(160 * 1024, 1), {
+      status: 200,
+      headers: { "Content-Length": String(160 * 1024) }
+    })) as typeof fetch;
+
+    try {
+      const pending = installLatestUpdate("owner/repo", {
+        updateAvailable: true,
+        currentVersion: APP_VERSION,
+        latestVersion: "9.9.9",
+        latestTag: "",
+        releaseUrl: "https://example.invalid/release",
+        setupAssetUrl: "https://example.invalid/",
+        setupAssetName: "",
+        setupAssetDigest: `sha256:${"a".repeat(64)}`
+      });
+
+      await stream.writeStarted;
+      const timeout = Symbol("timeout");
+      const idleOutcome = await Promise.race([
+        stream.destroyed.then(() => "destroyed" as const),
+        new Promise<typeof timeout>((resolve) => setTimeout(() => resolve(timeout), 1600))
+      ]);
+      abortActiveUpdateDownload();
+      const outcome = await pending;
+
+      expect(idleOutcome).toBe("destroyed");
+      expect(outcome).toEqual(expect.objectContaining({ started: false }));
+      expect(stream.listenerCount("drain")).toBe(0);
+      expect(stream.listeners("error")).toEqual([externalErrorListener]);
+    } finally {
+      if (previousTimeout === undefined) {
+        delete process.env.RD_UPDATE_BODY_IDLE_TIMEOUT_MS;
+      } else {
+        process.env.RD_UPDATE_BODY_IDLE_TIMEOUT_MS = previousTimeout;
+      }
+    }
+  });
+
   it("always refreshes release metadata before installing instead of using the previous check result", () => {
     const controller = fs.readFileSync(new URL("../src/main/app-controller.ts", import.meta.url), "utf8");
     const install = controller.slice(controller.indexOf("public async installUpdate"), controller.indexOf("public addLinks"));
@@ -173,7 +591,7 @@ describe("update", () => {
   });
 
   it("falls back to alternate download URL when setup asset URL returns 404", async () => {
-    const executablePayload = fs.readFileSync(process.execPath);
+    const executablePayload = createExecutablePayload();
     const executableDigest = sha256Hex(executablePayload);
     const requestedUrls: string[] = [];
     globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
@@ -210,7 +628,7 @@ describe("update", () => {
   });
 
   it("skips draft tag payload and resolves setup asset from stable latest release", async () => {
-    const executablePayload = fs.readFileSync(process.execPath);
+    const executablePayload = createExecutablePayload();
     const requestedUrls: string[] = [];
 
     globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
@@ -351,7 +769,7 @@ describe("update", () => {
   }, 20000);
 
   it("blocks installer start when SHA256 digest mismatches", async () => {
-    const executablePayload = fs.readFileSync(process.execPath);
+    const executablePayload = createExecutablePayload();
     globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       if (url.includes("mismatch-setup.exe")) {
@@ -380,7 +798,7 @@ describe("update", () => {
   });
 
   it("blocks installer start when no digest can be resolved", async () => {
-    const executablePayload = fs.readFileSync(process.execPath);
+    const executablePayload = createExecutablePayload();
     globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       if (url.includes("unsigned-setup.exe")) {
@@ -409,7 +827,7 @@ describe("update", () => {
   });
 
   it("uses latest.yml SHA512 digest when API asset digest is missing", async () => {
-    const executablePayload = fs.readFileSync(process.execPath);
+    const executablePayload = createExecutablePayload();
     const digestSha512Hex = sha512Hex(executablePayload);
     const digestSha512Base64 = Buffer.from(digestSha512Hex, "hex").toString("base64");
     const requestedUrls: string[] = [];
@@ -480,7 +898,7 @@ describe("update", () => {
   });
 
   it("rejects installer when latest.yml SHA512 digest does not match", async () => {
-    const executablePayload = fs.readFileSync(process.execPath);
+    const executablePayload = createExecutablePayload();
     const wrongDigestBase64 = Buffer.alloc(64, 0x13).toString("base64");
 
     globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
@@ -547,7 +965,7 @@ describe("update", () => {
   });
 
   it("emits install progress events while downloading and launching update", async () => {
-    const executablePayload = fs.readFileSync(process.execPath);
+    const executablePayload = createExecutablePayload();
     const digest = sha256Hex(executablePayload);
 
     globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
@@ -595,7 +1013,7 @@ describe("update", () => {
   });
 
   it("keeps the application running when Windows rejects the installer process", async () => {
-    const executablePayload = fs.readFileSync(process.execPath);
+    const executablePayload = createExecutablePayload();
     const digest = sha256Hex(executablePayload);
     globalThis.fetch = (async (): Promise<Response> => new Response(executablePayload, {
       status: 200,
