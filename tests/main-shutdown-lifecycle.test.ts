@@ -302,7 +302,10 @@ describe("main shutdown lifecycle", () => {
       cleanup,
       shutdown: optionsShutdown,
       continueQuit,
-      onError
+      forceQuit: vi.fn(),
+      onError,
+      onTimeout: vi.fn(),
+      timeoutMs: main.APP_SHUTDOWN_TIMEOUT_MS
     });
     const first = { preventDefault: vi.fn() };
     const repeated = { preventDefault: vi.fn() };
@@ -332,15 +335,20 @@ describe("main shutdown lifecycle", () => {
     const scheduler = { end: vi.fn() };
     const timer = setTimeout(() => {}, 60_000);
     const shutdown = vi.fn(async () => undefined);
+    const continueQuit = vi.fn();
     const handler = main.createBeforeQuitHandler({
       cleanup: () => main.cleanupSchedulerLifecycle(scheduler, timer),
       shutdown,
-      continueQuit: vi.fn(),
-      onError: vi.fn()
+      continueQuit,
+      forceQuit: vi.fn(),
+      onError: vi.fn(),
+      onTimeout: vi.fn(),
+      timeoutMs: main.APP_SHUTDOWN_TIMEOUT_MS
     });
 
     handler({ preventDefault: vi.fn() });
     await vi.waitFor(() => expect(shutdown).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(continueQuit).toHaveBeenCalledTimes(1));
 
     expect(scheduler.end).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
@@ -348,6 +356,181 @@ describe("main shutdown lifecycle", () => {
     expect(electron.powerMonitor.removeListener).toHaveBeenCalledWith("resume", expect.any(Function));
     expect(scheduler.end.mock.invocationCallOrder[0]).toBeLessThan(shutdown.mock.invocationCallOrder[0]);
     expect(electron.powerMonitor.removeListener.mock.invocationCallOrder[1]).toBeLessThan(shutdown.mock.invocationCallOrder[0]);
+  });
+
+  it("forces process exit when shutdown never settles", async () => {
+    vi.useFakeTimers();
+    const main = await import("../src/main/main");
+    const continueQuit = vi.fn();
+    const forceQuit = vi.fn();
+    const onTimeout = vi.fn();
+    const handler = main.createBeforeQuitHandler({
+      cleanup: vi.fn(),
+      shutdown: () => new Promise<void>(() => {}),
+      continueQuit,
+      forceQuit,
+      onError: vi.fn(),
+      onTimeout,
+      timeoutMs: main.APP_SHUTDOWN_TIMEOUT_MS
+    });
+    const first = { preventDefault: vi.fn() };
+    const resumed = { preventDefault: vi.fn() };
+
+    handler(first);
+    await vi.advanceTimersByTimeAsync(main.APP_SHUTDOWN_TIMEOUT_MS - 1);
+    expect(forceQuit).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(onTimeout).toHaveBeenCalledTimes(1);
+    expect(forceQuit).toHaveBeenCalledTimes(1);
+    expect(continueQuit).not.toHaveBeenCalled();
+    handler(resumed);
+    expect(resumed.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it("requests a controlled quit after the main window closes while a hidden provider window remains", async () => {
+    const main = await import("../src/main/main");
+    const hiddenProviderWindow = { visible: false };
+    const remainingWindows = [hiddenProviderWindow];
+    let currentWindow: object | null = {};
+    const quit = vi.fn();
+    const handler = main.createMainWindowClosedHandler({
+      isCurrentWindow: () => currentWindow !== null,
+      clearCurrentWindow: () => { currentWindow = null; },
+      isShutdownStarted: () => false,
+      quit,
+      platform: "win32"
+    });
+
+    handler();
+
+    expect(remainingWindows).toEqual([hiddenProviderWindow]);
+    expect(currentWindow).toBeNull();
+    expect(quit).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows a normal close to reach the renderer beforeunload save", async () => {
+    const main = await import("../src/main/main");
+    const hide = vi.fn();
+    const event = { preventDefault: vi.fn() };
+    const handler = main.createMainWindowCloseHandler({
+      isShutdownStarted: () => false,
+      shouldMinimizeToTray: () => false,
+      hide
+    });
+
+    handler(event);
+
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(hide).not.toHaveBeenCalled();
+  });
+
+  it("keeps the normal minimize-to-tray close behavior", async () => {
+    const main = await import("../src/main/main");
+    const hide = vi.fn();
+    const event = { preventDefault: vi.fn() };
+    const handler = main.createMainWindowCloseHandler({
+      isShutdownStarted: () => false,
+      shouldMinimizeToTray: () => true,
+      hide
+    });
+
+    handler(event);
+
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
+    expect(hide).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let tray handling intercept a shutdown-owned window close", async () => {
+    const main = await import("../src/main/main");
+    const hide = vi.fn();
+    const event = { preventDefault: vi.fn() };
+    const handler = main.createMainWindowCloseHandler({
+      isShutdownStarted: () => true,
+      shouldMinimizeToTray: () => true,
+      hide
+    });
+
+    handler(event);
+
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(hide).not.toHaveBeenCalled();
+  });
+
+  it("forces exit when BrowserWindows veto the confirmed quit", async () => {
+    vi.useFakeTimers();
+    const main = await import("../src/main/main");
+    const requestQuit = vi.fn();
+    const forceQuit = vi.fn();
+    const onTimeout = vi.fn();
+    const handler = main.createConfirmedQuitHandler({
+      requestQuit,
+      forceQuit,
+      onQuit: vi.fn(),
+      onTimeout,
+      timeoutMs: main.APP_QUIT_CONFIRM_TIMEOUT_MS
+    });
+
+    handler();
+    await vi.advanceTimersByTimeAsync(main.APP_QUIT_CONFIRM_TIMEOUT_MS - 1);
+    expect(forceQuit).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(requestQuit).toHaveBeenCalledTimes(1);
+    expect(onTimeout).toHaveBeenCalledTimes(1);
+    expect(forceQuit).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels the forced exit after Electron confirms quit", async () => {
+    vi.useFakeTimers();
+    const main = await import("../src/main/main");
+    let confirmQuit = () => {};
+    const forceQuit = vi.fn();
+    const handler = main.createConfirmedQuitHandler({
+      requestQuit: vi.fn(),
+      forceQuit,
+      onQuit: (listener) => { confirmQuit = listener; },
+      onTimeout: vi.fn(),
+      timeoutMs: main.APP_QUIT_CONFIRM_TIMEOUT_MS
+    });
+
+    handler();
+    confirmQuit();
+    await vi.advanceTimersByTimeAsync(main.APP_QUIT_CONFIRM_TIMEOUT_MS);
+
+    expect(forceQuit).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("recreates a missing main window when a second instance starts", async () => {
+    const main = await import("../src/main/main");
+    const createdWindow = {
+      isDestroyed: vi.fn(() => false),
+      isMinimized: vi.fn(() => false),
+      restore: vi.fn(),
+      show: vi.fn(),
+      focus: vi.fn()
+    };
+    const create = vi.fn(() => createdWindow);
+    const bind = vi.fn();
+
+    const result = main.restoreOrCreateMainWindow(null, create, bind);
+
+    expect(result).toEqual({ window: createdWindow, created: true });
+    expect(bind).toHaveBeenCalledWith(createdWindow);
+    expect(createdWindow.show).toHaveBeenCalledTimes(1);
+    expect(createdWindow.focus).toHaveBeenCalledTimes(1);
+  });
+
+  it("schedules exactly one relaunch when starts arrive during shutdown", async () => {
+    const main = await import("../src/main/main");
+    const relaunch = vi.fn();
+    const schedule = main.createRelaunchScheduler(relaunch);
+
+    expect(schedule()).toBe(true);
+    expect(schedule()).toBe(false);
+    expect(schedule()).toBe(false);
+    expect(relaunch).toHaveBeenCalledTimes(1);
   });
 
   it("waits for a running health sample and persistently closes an alerted incident before shutdown returns", async () => {

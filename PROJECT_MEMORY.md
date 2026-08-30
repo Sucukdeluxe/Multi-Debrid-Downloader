@@ -96,6 +96,14 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Settings-Speichern, Theme-Autorität, vollständige DE/EN-Texte, Backup-Transaktionen, Notification-Outbox und Windows-Dateirennen wurden gehärtet.
 - Die letzten drei Commits des Release-Branches sind `bdcf9e3` (Collector-Persistenz und Download-Steuerung), `2ea494c` (v2.0.74 Reliability Release) und `c1e1095` (stabiler 100k-History-Performancevertrag).
 
+## Aktuelle unveröffentlichte Änderung
+
+- Ein Start-/Beenden-Fehler nach Real-Debrid-Web-Downloads wurde behoben. Der persistente unsichtbare Web-Generator blieb nach dem Schließen des Hauptfensters geöffnet, verhinderte dadurch `window-all-closed` und hielt den Single-Instance-Lock. Weitere Starts wurden als Zweitinstanz sofort beendet, während der alte `second-instance`-Handler ohne Hauptfenster nichts tat.
+- Das Hauptfenster ist unter Windows nun ausdrücklich Besitzer des App-Lebenszyklus: Nach einem natürlichen, vom Renderer bestätigten Schließen wird der kontrollierte Shutdown auch bei verbleibenden Providerfenstern gestartet. Der normale `beforeunload`-Pfad bleibt erhalten, damit noch nicht übertragene Linksammler-Änderungen synchron gesichert werden können.
+- `second-instance` und `activate` stellen ein vorhandenes Hauptfenster wieder her oder erzeugen ein fehlendes neu. Ein Start während eines bereits laufenden Shutdowns plant genau einen Relaunch nach dem Prozessende ein.
+- Der Shutdown besitzt einen äußeren 10-Sekunden-Wächter. Nach erfolgreichem Controller-Shutdown wird weiterhin normal mit `app.quit()` beendet; blockieren Renderer- oder Providerfenster diesen letzten Schritt, erzwingt ein separater 2-Sekunden-Wächter den Exit. `shutdownDaemon()` läuft im Graceful-Pfad erst nach `controller.shutdown()`.
+- Die Änderung ist nur auf dem Arbeitsbranch implementiert und getestet. Sie wurde weder veröffentlicht noch auf dem Server installiert; dafür ist eine neue ausdrückliche Release-/Deployment-Freigabe erforderlich.
+
 ## Start-, Build- und Testbefehle
 
 ```powershell
@@ -139,6 +147,11 @@ npm exec -- tsc --noEmit
 - Client-Suite ohne `tests/public-release-metadata.test.ts`: 138 Testdateien erfolgreich, 1 JVM-Testdatei übersprungen; 2.600 Tests erfolgreich und 4 übersprungen.
 - Vollständiger erster Client-Lauf: 2.621 Tests erfolgreich, 4 JVM-Extractor-Tests übersprungen; zwei Tests in `public-release-metadata.test.ts` scheiterten vor ihrer Assertion ausschließlich an fehlender Windows-Symlink-Berechtigung.
 - GitHub: keine offenen Issues, keine Pull Requests und keine Actions-Läufe vorhanden.
+- Lifecycle-Regressionen nach dem Start-/Beenden-Fix: 20 von 20 erfolgreich. Abgedeckt sind ein nie endender Shutdown, Fenster-Quit-Veto, Linksammler-`beforeunload`, Tray-Verhalten, fehlendes Hauptfenster, Zweitinstanz-Wiederherstellung und genau ein Relaunch während des Shutdowns.
+- Reale Windows-Electron-Prüfung mit isoliertem temporärem Profil: App gestartet, echtes AllDebrid-Providerfenster geöffnet, nur das Hauptfenster per `WM_CLOSE` geschlossen. Der gesamte Electron-Prozessbaum war trotz verbleibendem Providerfenster nach 271 ms beendet. Ein unmittelbarer Neustart mit demselben Profil erzeugte wieder ein Hauptfenster und ließ sich erneut vollständig beenden. Das temporäre Profil wurde danach entfernt.
+- Vollständiger Client-Lauf ohne den privilegierten Symlink-Metadatentest: 138 Testdateien erfolgreich, 1 JVM-Testdatei übersprungen; 2.609 Tests erfolgreich und 4 übersprungen. Ein unter paralleler Build-Last einmal auffälliger, fachfremder Ordner-Aufräumtest war anschließend dreimal isoliert und im vollständigen Wiederholungslauf erfolgreich.
+- `public-release-metadata.test.ts` separat: 22 von 24 erfolgreich. Die zwei übrigen Fälle scheitern weiterhin ausschließlich beim Anlegen ihrer Symlink-Fixtures mit Windows-`EPERM`, bevor die Produktassertion ausgeführt wird.
+- Nach dem Lifecycle-Fix erneut erfolgreich: TypeScript, vollständiger Main-/Renderer-Build, Self-Check und 16 von 16 Backup-API-Tests. Die bekannte Vite-Warnung zum rund 574 KiB großen Renderer-Chunk bleibt bestehen.
 
 ## Bekannte Probleme und Risiken
 
@@ -150,11 +163,14 @@ npm exec -- tsc --noEmit
 - Der Arbeitsordner enthält `&`; ohne PowerShell-7-Skriptshell können npm-`cmd`-Shims fehlschlagen.
 - Es gibt keine `.github`-Workflows und damit keine serverseitige CI-Absicherung im GitHub-Repository.
 - Der Renderer-Bundle-Chunk liegt über Vites 500-KiB-Warnschwelle.
+- Die Shutdown-Wächter können einen vollständig synchron blockierten Main-Thread nicht präemptieren. Im äußersten Fall beträgt die kombinierte Grenze knapp 12 Sekunden: bis zu 10 Sekunden Controller-Shutdown plus 2 Sekunden Quit-Bestätigung.
+- Beim erzwungenen Exit können letzte asynchrone Logzeilen oder Benachrichtigungen fehlen; die wesentlichen Queue-, Settings-, Statistik- und Collector-Daten werden zuvor synchron gesichert. Laufende externe Extraktions-/Remux-Prozesse bleiben ein separater späterer Härtungspunkt.
+- Der Start-/Beenden-Fix ist noch nicht veröffentlicht oder auf dem Server installiert. Bis zu einer ausdrücklich freigegebenen Auslieferung läuft dort weiterhin die bisherige Version.
 
 ## Nächste sinnvolle Schritte
 
-1. Für neue Änderungen auf `codex/v2.0.74-project-memory` oder einem davon abgeleiteten Feature-Branch bleiben.
-2. Sicherheitsabhängigkeiten in einem separaten Upgrade-Branch aktualisieren, Electron-/Vite-/Vitest-Major-Wechsel einzeln testen und danach den vollständigen Windows-Paketpfad prüfen.
-3. Eine nichtdestruktive Strategie zur Bereinigung der divergierenden `main`-Branches abstimmen; kein Force-Push ohne ausdrückliche Freigabe.
-4. Optional Developer Mode für lokale Symlink-Tests bereitstellen oder die Test-Fixtures plattformgerecht ohne privilegierte Symlinks gestalten.
-5. Vor jedem späteren Release Stand, Ziel, Tests und Rollback-Weg nennen und ein ausdrückliches Release-Go abwarten.
+1. Für eine Auslieferung des Start-/Beenden-Fixes zuerst Stand, Ziel, Tests und Rollback-Weg nennen und Saschas ausdrückliches Release-/Deployment-Go abwarten.
+2. Nach einer freigegebenen Serverinstallation den Ablauf Real-Debrid-Web-Download, Hauptfenster schließen und unmittelbar neu starten am echten Zielsystem verifizieren; vor jedem Eingriff Prozessbaum und Logtail sichern.
+3. Sicherheitsabhängigkeiten in einem separaten Upgrade-Branch aktualisieren, Electron-/Vite-/Vitest-Major-Wechsel einzeln testen und danach den vollständigen Windows-Paketpfad prüfen.
+4. Eine nichtdestruktive Strategie zur Bereinigung der divergierenden `main`-Branches abstimmen; kein Force-Push ohne ausdrückliche Freigabe.
+5. Optional Developer Mode für lokale Symlink-Tests bereitstellen oder die Test-Fixtures plattformgerecht ohne privilegierte Symlinks gestalten.

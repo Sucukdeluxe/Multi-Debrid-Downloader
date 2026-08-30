@@ -102,8 +102,12 @@ let scheduledStartTimer: ReturnType<typeof setTimeout> | null = null;
 let dailyStartScheduler: DailyStartScheduler | null = null;
 let lastClipboardText = "";
 let controller: AppController;
+let applicationStarted = false;
+let appShutdownStarted = false;
 let pendingBackupImport: Buffer | null = null;
 const CLIPBOARD_MAX_TEXT_CHARS = 50_000;
+export const APP_SHUTDOWN_TIMEOUT_MS = 10_000;
+export const APP_QUIT_CONFIRM_TIMEOUT_MS = 2_000;
 
 function reconcileDailyStart(source: string): void {
   void dailyStartScheduler?.reconcile().catch((error) => {
@@ -135,12 +139,37 @@ export interface BeforeQuitHandlerOptions {
   cleanup: () => void;
   shutdown: () => Promise<void>;
   continueQuit: () => void;
+  forceQuit: () => void;
   onError: (error: unknown) => void;
+  onTimeout: () => void;
+  timeoutMs: number;
 }
 
 export function createBeforeQuitHandler(options: BeforeQuitHandlerOptions): (event: { preventDefault: () => void }) => void {
   let shutdownStarted = false;
   let quitAllowed = false;
+  let shutdownTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const finish = (forced: boolean): void => {
+    if (quitAllowed) {
+      return;
+    }
+    quitAllowed = true;
+    if (shutdownTimer !== null) {
+      clearTimeout(shutdownTimer);
+      shutdownTimer = null;
+    }
+    if (forced) {
+      try {
+        options.onTimeout();
+      } finally {
+        options.forceQuit();
+      }
+    } else {
+      options.continueQuit();
+    }
+  };
+
   return (event) => {
     if (quitAllowed) {
       return;
@@ -150,6 +179,7 @@ export function createBeforeQuitHandler(options: BeforeQuitHandlerOptions): (eve
       return;
     }
     shutdownStarted = true;
+    shutdownTimer = setTimeout(() => finish(true), options.timeoutMs);
     let shutdown: Promise<void>;
     try {
       options.cleanup();
@@ -160,11 +190,128 @@ export function createBeforeQuitHandler(options: BeforeQuitHandlerOptions): (eve
     void shutdown.catch((error) => {
       options.onError(error);
     }).finally(() => {
-      quitAllowed = true;
-      options.continueQuit();
+      finish(false);
     });
   };
 }
+
+export interface MainWindowActivationTarget {
+  isDestroyed: () => boolean;
+  isMinimized: () => boolean;
+  restore: () => void;
+  show: () => void;
+  focus: () => void;
+}
+
+export function restoreOrCreateMainWindow<T extends MainWindowActivationTarget>(
+  currentWindow: T | null,
+  create: () => T,
+  bind: (window: T) => void
+): { window: T; created: boolean } {
+  let window = currentWindow;
+  let created = false;
+  if (!window || window.isDestroyed()) {
+    window = create();
+    bind(window);
+    created = true;
+  }
+  if (window.isMinimized()) {
+    window.restore();
+  }
+  window.show();
+  window.focus();
+  return { window, created };
+}
+
+export interface MainWindowClosedHandlerOptions {
+  isCurrentWindow: () => boolean;
+  clearCurrentWindow: () => void;
+  isShutdownStarted: () => boolean;
+  quit: () => void;
+  platform?: NodeJS.Platform;
+}
+
+export function createMainWindowClosedHandler(options: MainWindowClosedHandlerOptions): () => void {
+  return () => {
+    if (!options.isCurrentWindow()) {
+      return;
+    }
+    options.clearCurrentWindow();
+    if ((options.platform ?? process.platform) !== "darwin" && !options.isShutdownStarted()) {
+      options.quit();
+    }
+  };
+}
+
+export interface MainWindowCloseHandlerOptions {
+  isShutdownStarted: () => boolean;
+  shouldMinimizeToTray: () => boolean;
+  hide: () => void;
+}
+
+export function createMainWindowCloseHandler(options: MainWindowCloseHandlerOptions): (event: { preventDefault: () => void }) => void {
+  return (event) => {
+    if (options.isShutdownStarted()) {
+      return;
+    }
+    if (options.shouldMinimizeToTray()) {
+      event.preventDefault();
+      options.hide();
+    }
+  };
+}
+
+export interface ConfirmedQuitHandlerOptions {
+  requestQuit: () => void;
+  forceQuit: () => void;
+  onQuit: (listener: () => void) => void;
+  onTimeout: () => void;
+  timeoutMs: number;
+}
+
+export function createConfirmedQuitHandler(options: ConfirmedQuitHandlerOptions): () => void {
+  let requested = false;
+  return () => {
+    if (requested) {
+      return;
+    }
+    requested = true;
+    let completed = false;
+    const timer = setTimeout(() => {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      try {
+        options.onTimeout();
+      } finally {
+        options.forceQuit();
+      }
+    }, options.timeoutMs);
+    options.onQuit(() => {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      clearTimeout(timer);
+    });
+    options.requestQuit();
+  };
+}
+
+export function createRelaunchScheduler(relaunch: () => void): () => boolean {
+  let scheduled = false;
+  return () => {
+    if (scheduled) {
+      return false;
+    }
+    scheduled = true;
+    relaunch();
+    return true;
+  };
+}
+
+const scheduleApplicationRelaunch = createRelaunchScheduler(() => app.relaunch());
 
 function isDevMode(): boolean {
   return process.env.NODE_ENV === "development";
@@ -331,19 +478,27 @@ function allowRendererReload(): boolean {
 }
 
 function bindMainWindowLifecycle(window: BrowserWindow): void {
-  window.on("close", (event) => {
-    const settings = controller.getSettings();
-    if (settings.minimizeToTray && tray) {
-      event.preventDefault();
-      window.hide();
+  const requestQuit = (): void => {
+    if (appShutdownStarted) {
+      return;
     }
-  });
+    appShutdownStarted = true;
+    logger.info("Hauptfenster geschlossen – Anwendung wird beendet");
+    app.quit();
+  };
 
-  window.on("closed", () => {
-    if (mainWindow === window) {
-      mainWindow = null;
-    }
-  });
+  window.on("close", createMainWindowCloseHandler({
+    isShutdownStarted: () => appShutdownStarted,
+    shouldMinimizeToTray: () => controller.getSettings().minimizeToTray && tray !== null,
+    hide: () => window.hide()
+  }));
+
+  window.on("closed", createMainWindowClosedHandler({
+    isCurrentWindow: () => mainWindow === window,
+    clearCurrentWindow: () => { mainWindow = null; },
+    isShutdownStarted: () => appShutdownStarted,
+    quit: requestQuit
+  }));
 
   window.webContents.on("render-process-gone", (_event, details) => {
     logger.error(`Renderer-Prozess beendet: reason=${details.reason} exitCode=${details.exitCode ?? "?"}`);
@@ -806,7 +961,7 @@ function registerIpcHandlers(): void {
   handleTrusted(IPC_CHANNELS.RESET_DOWNLOAD_STATS, () => controller.resetDownloadStats());
 
   handleTrusted(IPC_CHANNELS.RESTART, () => {
-    app.relaunch();
+    scheduleApplicationRelaunch();
     app.quit();
   });
 
@@ -1051,7 +1206,7 @@ function registerIpcHandlers(): void {
     // the running queue.
     if (importResult.restored && importResult.relaunch) {
       setTimeout(() => {
-        app.relaunch();
+        scheduleApplicationRelaunch();
         app.quit();
       }, 1500);
     }
@@ -1116,13 +1271,20 @@ app.on("child-process-gone", (_event, details) => {
 });
 
 app.on("second-instance", () => {
-  if (mainWindow) {
-    if (mainWindow.isMinimized()) {
-      mainWindow.restore();
-    }
-    mainWindow.show();
-    mainWindow.focus();
+  if (!applicationStarted) {
+    return;
   }
+  if (appShutdownStarted) {
+    if (scheduleApplicationRelaunch()) {
+      logger.info("Zweite Instanz während des Beendens erkannt – Neustart wird eingeplant");
+    }
+    return;
+  }
+  const result = restoreOrCreateMainWindow(mainWindow, createWindow, bindMainWindowLifecycle);
+  mainWindow = result.window;
+  logger.info(result.created
+    ? "Zweite Instanz erkannt – Hauptfenster neu erstellt"
+    : "Zweite Instanz erkannt – Hauptfenster wiederhergestellt");
 });
 
 app.whenReady().then(() => {
@@ -1133,6 +1295,7 @@ app.whenReady().then(() => {
   registerIpcHandlers();
   mainWindow = createWindow();
   bindMainWindowLifecycle(mainWindow);
+  applicationStarted = true;
   updateClipboardWatcher();
   updateTray();
   // A scheduled start persists in the settings but its timer lived only in this
@@ -1146,10 +1309,11 @@ app.whenReady().then(() => {
   powerMonitor.on("resume", handlePowerResume);
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      mainWindow = createWindow();
-      bindMainWindowLifecycle(mainWindow);
+    if (!applicationStarted || appShutdownStarted) {
+      return;
     }
+    const result = restoreOrCreateMainWindow(mainWindow, createWindow, bindMainWindowLifecycle);
+    mainWindow = result.window;
   });
 }).catch((error) => {
   logger.error(`App-Start fehlgeschlagen: ${String(error?.stack || error)}`);
@@ -1164,22 +1328,47 @@ app.on("window-all-closed", () => {
   }
 });
 
+const confirmApplicationQuit = createConfirmedQuitHandler({
+  requestQuit: () => app.quit(),
+  forceQuit: () => {
+    shutdownDaemon();
+    app.exit(0);
+  },
+  onQuit: (listener) => app.once("quit", listener),
+  onTimeout: () => {
+    logger.error(`Fenster blockieren das Beenden seit ${APP_QUIT_CONFIRM_TIMEOUT_MS} ms – Prozess wird beendet`);
+  },
+  timeoutMs: APP_QUIT_CONFIRM_TIMEOUT_MS
+});
+
 app.on("before-quit", createBeforeQuitHandler({
   cleanup: () => {
+    appShutdownStarted = true;
     if (updateQuitTimer) { clearTimeout(updateQuitTimer); updateQuitTimer = null; }
     cleanupSchedulerLifecycle(dailyStartScheduler, scheduledStartTimer);
     scheduledStartTimer = null;
     stopClipboardWatcher();
     destroyTray();
-    shutdownDaemon();
   },
   shutdown: async () => {
-    if (controller) {
-      await controller.shutdown();
+    try {
+      if (controller) {
+        await controller.shutdown();
+      }
+    } finally {
+      shutdownDaemon();
     }
   },
-  continueQuit: () => app.quit(),
+  continueQuit: confirmApplicationQuit,
+  forceQuit: () => {
+    shutdownDaemon();
+    app.exit(0);
+  },
   onError: (error) => {
     logger.error(`Fehler beim Shutdown: ${String(error)}`);
-  }
+  },
+  onTimeout: () => {
+    logger.error(`Shutdown nach ${APP_SHUTDOWN_TIMEOUT_MS} ms erzwungen`);
+  },
+  timeoutMs: APP_SHUTDOWN_TIMEOUT_MS
 }));
