@@ -4,6 +4,21 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.81] - 2026-08-31
+
+### Account management
+
+- Select every currently visible row in Settings → Accounts → Overview with Ctrl+A while preserving native text-field selection and the existing shortcuts in Downloads, Link Collector, and History.
+- Explain whether Proxy-only account operations are blocked by a missing, unreadable, empty, or invalid proxy list, an unavailable fixed list entry, or a fixed proxy transport failure.
+- Keep ordinary provider HTTP responses and invalid credentials separate from Proxy-only configuration errors.
+
+### Encrypted online proxy-list backup
+
+- Include the configured proxy-list content inside the existing client-side AES-256-GCM encrypted MDD2 online-backup payload without exposing proxy credentials or the master key to the storage service.
+- Restore the list atomically to a managed local runtime file and roll back both file and settings if the import cannot be completed.
+- Keep older MDD2 backups importable and disable Proxy-only when they contain no portable proxy list instead of retaining an unusable path from another machine.
+- Preserve local backup path behavior and keep extraction, password, and post-processing logic unchanged.
+
 ## [2.0.80] - 2026-08-31
 
 ### Consistent live speed

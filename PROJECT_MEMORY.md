@@ -10,12 +10,12 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 
 - Verifiziert am: 31. August 2026, Europe/Berlin
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
-- Arbeitsbranch: `fix/account-select-all`
-- Quellbasis: `release/v2.0.80`
+- Arbeitsbranch: `release/v2.0.81`
+- Quellbasis: `fix/account-select-all`
 - Release-Tag: `v2.0.80`
-- Baseline-Commit: `1628f23023c93efcb222c63913f9d2508a9a5e6c`
+- Baseline-Commit: `486507d4b2f42e9b0ccad9f2a026919d590149a0`
 - Hotfix-Basis: `5cee459d0bcc5c19d8d6483948a036a43c9d91b1`
-- Paketversion: `2.0.80`
+- Paketversion: `2.0.81`
 - Letztes Release: `Multi-Debrid-Downloader v2.0.80`, veröffentlicht am 31. August 2026 auf GitHub und Forgejo
 - Runtime-Voraussetzung: Node.js `>=20`; lokal verifiziert mit Node.js `24.19.0` und npm `11.17.0`
 
@@ -163,7 +163,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Der Statistikpunkt „Fehler zurücksetzen“ verwendet dieselbe Fehlerklassifizierung und erfasst dadurch neben Downloadfehlern auch sichtbare Entpackfehler.
 - Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert. `v2.0.80` wurde nach ausdrücklicher Freigabe auf GitHub und Forgejo veröffentlicht; Installation und produktiver Neustart sind nicht Bestandteil des Releases.
 
-## Unveröffentlichte Änderungen nach v2.0.80
+## Änderungen in v2.0.81
 
 - `Strg+A` markiert unter Einstellungen → Accounts → Übersicht alle aktuell sichtbaren Accountzeilen. Die bestehende Mehrfachauswahl wird dabei vollständig durch die sichtbare Liste ersetzt.
 - Der Shortcut berücksichtigt den aktuellen Einstellungsbereich und den aktiven Account-Unterbereich über Live-Refs, damit der globale Tastaturhandler keinen veralteten Renderzustand verwendet.
@@ -172,7 +172,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Online-Sicherungen nehmen den exakten Inhalt einer konfigurierten Proxy-Liste in den bereits clientseitig AES-256-GCM-verschlüsselten MDD2-Datensatz auf. Der Online-Dienst erhält weiterhin ausschließlich den authentifiziert verschlüsselten Blob und keine Proxy-Zugangsdaten im Klartext.
 - Beim Import wird die Liste atomar in eine verwaltete Datei im Runtime-Verzeichnis geschrieben und der lokale Pfad darauf umgestellt. Ein Schreib- oder Settingsfehler stellt sowohl die vorherige Datei als auch die vorherigen Einstellungen wieder her.
 - Ältere Online-Sicherungen ohne eingebettete Liste bleiben importierbar. Enthalten sie einen fremden Proxy-Pfad beziehungsweise aktiviertes Proxy-only, wird Proxy-only beim Import sicher deaktiviert, statt alle Netzwerkanfragen mit einem nicht portablen Pfad zu blockieren. Lokale Backup-Importe behalten ihre bisherige Pfadsemantik.
-- Die Änderungen sind auf `fix/account-select-all` umgesetzt und für `v2.0.81` freigegeben, aber noch nicht veröffentlicht. Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert.
+- Die Änderungen sind auf `release/v2.0.81` versioniert und für die ausdrücklich freigegebene Veröffentlichung vorbereitet, aber noch nicht veröffentlicht. Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert.
 
 ## Start-, Build- und Testbefehle
 
@@ -292,7 +292,7 @@ npm exec -- tsc --noEmit
 - Der 32/40-Proxybereich und der synchrone Live-Takt von „Sitzung“ und „Verbleibend“ sind als `v2.0.78` veröffentlicht. Eine Serverinstallation oder ein produktiver Neustart wurde nicht vorgenommen.
 - Der Proxy-Readback- und Nullbereich-Hotfix ist als `v2.0.79` auf GitHub und Forgejo veröffentlicht, aber noch nicht auf einem produktiven System installiert oder gestartet.
 - Die einheitliche Geschwindigkeitsanzeige und die getrennten Paket-Reset-Optionen sind als `v2.0.80` auf GitHub und Forgejo veröffentlicht, aber noch nicht auf einem produktiven System installiert oder gestartet.
-- Die Account-Übersicht unterstützt `Strg+A`; Proxy-only-Accountfehler werden verständlich aufgelöst und Online-Sicherungen können die Proxy-Liste verschlüsselt portieren. Der Kandidat ist noch nicht veröffentlicht oder installiert.
+- Die Account-Übersicht unterstützt `Strg+A`; Proxy-only-Accountfehler werden verständlich aufgelöst und Online-Sicherungen können die Proxy-Liste verschlüsselt portieren. `release/v2.0.81` ist für die freigegebene Veröffentlichung vorbereitet, aber noch nicht veröffentlicht oder installiert.
 
 ## Nächste sinnvolle Schritte
 
