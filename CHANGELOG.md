@@ -4,6 +4,10 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+### Proxy limit tuning
+
+- Increase the default global proxy connection budget for new settings from 20 to 32 and raise the configurable maximum from 32 to 40 while retaining fair sharing and adaptive 429/503 backoff.
+
 ## [2.0.77] - 2026-08-31
 
 ### Proxy throughput and fairness

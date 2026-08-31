@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { Transform } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
-import { downloadWithProxySegments, parseProxyList, selectFixedProxy } from "../src/main/proxy-segmented-download";
+import { downloadWithProxySegments, normalizeProxyConnectionLimit, parseProxyList, selectFixedProxy } from "../src/main/proxy-segmented-download";
 
 interface RunningServer {
   port: number;
@@ -128,6 +128,13 @@ async function createTempDirectory(): Promise<string> {
 }
 
 describe("proxy segmented download", () => {
+  it("uses 32 connections by default and clamps the configurable maximum to 40", () => {
+    expect(normalizeProxyConnectionLimit(0)).toBe(32);
+    expect(normalizeProxyConnectionLimit(40)).toBe(40);
+    expect(normalizeProxyConnectionLimit(999)).toBe(40);
+    expect(normalizeProxyConnectionLimit(1)).toBe(2);
+  });
+
   it("accepts authenticated premium proxy list formats without exposing entries", () => {
     const secret = "private-password";
     const count = parseProxyList([

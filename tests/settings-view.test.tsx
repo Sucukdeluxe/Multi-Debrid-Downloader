@@ -683,7 +683,7 @@ describe("settings views", () => {
       label: "Proxy-Verbindungen insgesamt",
       value: "16",
       min: 2,
-      max: 32,
+      max: 40,
       help: expect.stringContaining("zusammen höchstens 16 Segmentverbindungen")
     }));
   });

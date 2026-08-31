@@ -12,6 +12,8 @@ const DEFAULT_MIN_SEGMENT_BYTES = 8 * 1024 * 1024;
 const DEFAULT_MAX_CHUNK_BYTES = 16 * 1024 * 1024;
 const DEFAULT_CHUNKS_PER_CONNECTION = 8;
 const DEFAULT_PROXY_ATTEMPTS = 3;
+const DEFAULT_CONNECTION_LIMIT = 32;
+const MAX_CONNECTION_LIMIT = 40;
 const PROXY_PROBE_END = 1;
 const MAX_REDIRECTS = 5;
 const MAX_SEGMENTS = 4_096;
@@ -86,6 +88,11 @@ export type ProxyFallbackReason =
 
 const proxyFileCache = new Map<string, CachedProxyFile>();
 
+export function normalizeProxyConnectionLimit(value: number, fallback = DEFAULT_CONNECTION_LIMIT): number {
+  const candidate = Number.isFinite(value) && value !== 0 ? value : fallback;
+  return Math.max(2, Math.min(MAX_CONNECTION_LIMIT, Math.floor(candidate)));
+}
+
 function proxyEndpointKey(proxy: ProxyEndpoint): string {
   return `${proxy.url}\0${proxy.authorization}`;
 }
@@ -124,8 +131,8 @@ interface ProxyPerformance {
 }
 
 class SharedProxyCoordinator {
-  private configuredConnectionLimit = 16;
-  private adaptiveConnectionLimit = 16;
+  private configuredConnectionLimit = DEFAULT_CONNECTION_LIMIT;
+  private adaptiveConnectionLimit = DEFAULT_CONNECTION_LIMIT;
   private activeConnections = 0;
   private readonly activeProxies = new Set<string>();
   private readonly activeConnectionsByGroup = new Map<string, number>();
@@ -139,7 +146,7 @@ class SharedProxyCoordinator {
   private successfulTransfersSinceThrottle = 0;
 
   public setConnectionLimit(limit: number): void {
-    const normalized = Math.max(2, Math.min(32, Math.floor(limit || 16)));
+    const normalized = normalizeProxyConnectionLimit(limit);
     if (normalized !== this.configuredConnectionLimit) {
       this.configuredConnectionLimit = normalized;
       this.adaptiveConnectionLimit = normalized;
@@ -842,8 +849,8 @@ export async function downloadWithProxySegments(options: ProxySegmentedDownloadO
     return { status: "fallback", reason: "no_valid_proxies" };
   }
   const poolKey = path.resolve(proxyPath);
-  const requestedConnections = Math.max(2, Math.min(32, Math.floor(options.connections || 16)));
-  const totalConnectionLimit = Math.max(2, Math.min(32, Math.floor(options.totalConnectionLimit ?? requestedConnections)));
+  const requestedConnections = normalizeProxyConnectionLimit(options.connections);
+  const totalConnectionLimit = normalizeProxyConnectionLimit(options.totalConnectionLimit ?? requestedConnections, requestedConnections);
   sharedProxyCoordinator.setConnectionLimit(totalConnectionLimit);
   const reservedProxyIndex = Math.max(0, Math.floor(options.reservedProxyIndex || 0));
   const reservedProxy = reservedProxyIndex > 0 ? loaded.proxies[reservedProxyIndex - 1] : null;

@@ -606,15 +606,15 @@ describe("settings storage", () => {
     expect(normalized.proxyDownloadEnabled).toBe(true);
     expect(normalized.proxyListPath).toBe("C:\\proxies.txt");
     expect(normalized.proxyApiProxyIndex).toBe(100000);
-    expect(normalized.proxyConnectionsPerDownload).toBe(32);
+    expect(normalized.proxyConnectionsPerDownload).toBe(40);
     expect(normalized.outputDir).toBe(defaultSettings().outputDir);
     expect(normalized.extractDir).toBe(defaultSettings().extractDir);
     expect(normalized.mkvLibraryDir).toBe(defaultSettings().mkvLibraryDir);
     expect(normalized.updateRepo).toBe(defaultSettings().updateRepo);
   });
 
-  it("uses 20 total proxy connections as the default for new settings", () => {
-    expect(defaultSettings().proxyConnectionsPerDownload).toBe(20);
+  it("uses 32 total proxy connections as the default for new settings", () => {
+    expect(defaultSettings().proxyConnectionsPerDownload).toBe(32);
   });
 
   it("migrates the previous private update repository to the public release repository", () => {

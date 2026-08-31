@@ -10,10 +10,10 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 
 - Verifiziert am: 31. August 2026, Europe/Berlin
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
-- Arbeitsbranch: `release/v2.0.77`
+- Arbeitsbranch: `tune/proxy-limit-40`
 - Quellbasis: `release/v2.0.76`
 - Release-Tag: `v2.0.77`
-- Baseline-Commit: `61e10034ba4f75c6f7cbe25b5639d52a18d90e37`
+- Baseline-Commit: `eb68db88d08739f5f4ff23bf5b1133a132c2d8db`
 - Paketversion: `2.0.77`
 - Letztes Release: `Multi-Debrid-Downloader v2.0.77`, veröffentlicht am 31. August 2026 auf GitHub und Forgejo
 - Runtime-Voraussetzung: Node.js `>=20`; lokal verifiziert mit Node.js `24.19.0` und npm `11.17.0`
@@ -138,6 +138,12 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Der Paketfortschritt verwendet bei bekannten Größen dieselben heruntergeladenen und gesamten Bytes wie die Größenanzeige. Dadurch stimmen Prozentwert und `heruntergeladen / gesamt` auch bei unterschiedlich großen Dateien überein. Wenn Größen vollständig fehlen, bleibt die bisherige dateibasierte Berechnung als Rückfall erhalten.
 - Die Entpacklogik und ihre Produktionspfade wurden nicht verändert. Eine Serverinstallation oder ein produktiver Neustart ist nicht Bestandteil dieses Releases.
 
+## Unveröffentlichte Anpassung nach v2.0.77
+
+- Der Standardwert für neue beziehungsweise noch nicht gesetzte Konfigurationen steigt von 20 auf 32 globale Proxy-Verbindungen. Bereits gespeicherte Benutzerwerte bleiben erhalten.
+- Das einstellbare Maximum steigt von 32 auf 40 globale Proxy-Verbindungen. Faire Aufteilung, Proxy-Bewertung, Cooldowns und adaptives 429/503-Backoff gelten unverändert auch oberhalb von 32.
+- Die Entpacklogik und ihre Produktionspfade wurden nicht verändert. Diese Anpassung ist noch nicht veröffentlicht, installiert oder produktiv neu gestartet.
+
 ## Start-, Build- und Testbefehle
 
 ```powershell
@@ -169,6 +175,9 @@ npm exec -- tsc --noEmit
 
 ## Verifizierungen vom 31. August 2026
 
+- Unveröffentlichte 32/40-Limitanpassung: Proxy-Scheduler, Storage, Einstellungen, Renderer-Projektion und visuelle Fixtures 229 von 229 Tests erfolgreich. Die Main-Normalisierung deckt Standard 32, Minimum 2, Maximum 40 und Werte oberhalb des Maximums direkt ab.
+- Vollständiger Client-Lauf nach der 32/40-Anpassung ohne die zwei lokal nicht ausführbaren Symlink-Fixtures: 140 Testdateien erfolgreich, 1 JVM-Testdatei übersprungen; 2.658 Tests erfolgreich und 4 übersprungen. Die übrigen 22 Public-Release-Metadatentests liefen separat erfolgreich. Alle 84 Entpacktests sind unverändert grün.
+- Nach der 32/40-Anpassung erfolgreich: TypeScript, vollständiger Main-/Renderer-Build, Self-Check und 16 von 16 Backup-API-Tests. Die bekannte Vite-Warnung zum rund 576 KiB großen Renderer-Chunk bleibt bestehen.
 - Proxy-Scheduler-Regressionen für `v2.0.77`: 11 von 11 erfolgreich. Abgedeckt sind 32 rollierend vergebene Chunks, deutlich häufigere Chunk-Übernahme durch den schnellen von zwei unterschiedlich verzögerten Proxys, zwei überlappende Downloads mit je höchstens der Hälfte eines gemeinsamen Viererlimits, Ausschluss des festen API-Proxys, Ersatz ausgefallener Proxys, exakte Dateiinhalte und Fortschrittsrückrechnung sowie eine erfolgreiche Fortsetzung nach transientem Origin-HTTP-503 mit Reduktion neuer paralleler Requests von 6 auf höchstens 4.
 - Paketfortschritt, Einstellungen und Proxy-Scheduler gezielt: 232 von 232 Tests erfolgreich. Ein Paket mit 2,25 von 18,60 Größeneinheiten zeigt nun 12 Prozent statt einer dateibasierten Abweichung.
 - Storage einschließlich neuem Standardwert 20: 126 von 126 Tests erfolgreich.
@@ -234,7 +243,7 @@ npm exec -- tsc --noEmit
 
 ## Nächste sinnvolle Schritte
 
-1. Nach separater Installationsfreigabe `v2.0.77` mit Gesamtlimit 20 und zwei echten parallelen Real-Debrid-Dateien prüfen. Erfolgsquote, HTTP-Status, Chunk-Wechsel, Zusatzverkehr, Festplattenlast und Netto-MB/s beobachten, bevor das Maximum von 24 erwogen wird.
+1. Die unveröffentlichte Anpassung auf Standard 32 und Maximum 40 erst nach separater Release-Freigabe paketieren. Danach mit zwei echten parallelen Real-Debrid-Dateien zunächst 32 und anschließend optional 40 prüfen sowie 429/503, Zusatzverkehr, Festplattenlast und Netto-MB/s beobachten.
 2. Nach einer getrennt freigegebenen Serverinstallation den Ablauf Real-Debrid-Web-Download, Hauptfenster schließen und unmittelbar neu starten am echten Zielsystem verifizieren; vor jedem Eingriff Prozessbaum und Logtail sichern.
 3. Sicherheitsabhängigkeiten in einem separaten Upgrade-Branch aktualisieren, Electron-/Vite-/Vitest-Major-Wechsel einzeln testen und danach den vollständigen Windows-Paketpfad prüfen.
 4. Eine nichtdestruktive Strategie zur Bereinigung der divergierenden `main`-Branches abstimmen; kein Force-Push ohne ausdrückliche Freigabe.
