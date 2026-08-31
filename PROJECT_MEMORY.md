@@ -33,6 +33,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Beide bestehenden Repositories sind laut Anbieter-API derzeit öffentlich. Die Sichtbarkeit wurde bei der Einarbeitung nicht verändert.
 - Der Arbeitsstand wird nach zusammengehörigen Änderungen zu beiden Remotes gepusht und anschließend über die Commit-IDs beider Remote-Branches verifiziert.
 - Pushen ist kein Release. Release, Deployment, Veröffentlichung und produktive Neustarts benötigen immer eine aktuelle ausdrückliche Freigabe.
+- Release-Changelogs werden plattformspezifisch gepflegt: auf GitHub immer auf Englisch, auf Forgejo unter `git.24-music.de` immer auf Deutsch. Tag, Titel, Assets und technische Inhalte bleiben für denselben Versionsstand gleichwertig.
 
 ## Architektur
 
