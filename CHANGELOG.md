@@ -4,6 +4,8 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.77] - 2026-08-31
+
 ### Proxy throughput and fairness
 
 - Replace one long range per connection with a rolling queue of smaller chunks so fast proxies continue working instead of waiting for the slowest tail segment.

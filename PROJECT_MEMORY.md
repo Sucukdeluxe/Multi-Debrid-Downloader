@@ -10,12 +10,12 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 
 - Verifiziert am: 31. August 2026, Europe/Berlin
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
-- Arbeitsbranch: `optimize/proxy-scheduler-v2.0.77`
+- Arbeitsbranch: `release/v2.0.77`
 - Quellbasis: `release/v2.0.76`
-- Release-Tag: `v2.0.76`
-- Baseline-Commit: `ecfc630e1e68c4067f3a019e68d38abb07d92a14`
-- Paketversion: `2.0.76`
-- Letztes Release: `Multi-Debrid-Downloader v2.0.76`, veröffentlicht am 31. August 2026 auf GitHub und Forgejo
+- Release-Tag: `v2.0.77`
+- Baseline-Commit: `61e10034ba4f75c6f7cbe25b5639d52a18d90e37`
+- Paketversion: `2.0.77`
+- Letztes Release: `Multi-Debrid-Downloader v2.0.77`, veröffentlicht am 31. August 2026 auf GitHub und Forgejo
 - Runtime-Voraussetzung: Node.js `>=20`; lokal verifiziert mit Node.js `24.19.0` und npm `11.17.0`
 
 `main` ist derzeit keine verlässliche Arbeitsbasis:
@@ -23,7 +23,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - GitHub `main` steht auf `4d5161b` (`v2.0.35`) und ist gegenüber `release/v2.0.74` mit 7 zu 136 Commits auseinanderentwickelt.
 - Forgejo `main` steht auf `a8c4dcc` (`v1.7.232`) und ist noch deutlich älter.
 - GitHub und Forgejo zeigen für `release/v2.0.74` beide exakt auf `c1e1095`.
-- Neue Arbeit muss bis zu einer ausdrücklich geplanten Branch-Bereinigung von `release/v2.0.76` beziehungsweise einem davon abgeleiteten Arbeitsbranch ausgehen. Der aktuelle Optimierungsstand ist noch nicht veröffentlicht.
+- Neue Arbeit muss bis zu einer ausdrücklich geplanten Branch-Bereinigung von `release/v2.0.77` beziehungsweise einem davon abgeleiteten Arbeitsbranch ausgehen.
 
 ## Remotes
 
@@ -67,7 +67,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Provider-Reihenfolge, Hoster-Overrides, Kontostatus, Tageslimits, Cooldowns und optionale Fallbacks bestimmen das Routing.
 - Real-Debrid und Debrid-Link unterstützen Kontopools; Auswahl und Rotation berücksichtigen Aktivität, Fairness, Limits und Fehlerklassen.
 - Item-Pipeline: Vorprüfung und Recovery, Provider-Auswahl, Unrestrict mit Timeout, sichere Zielpfadreservierung, Speicherplatzreservierung, HTTP-Download mit Range-Resume, optionale Integritätsprüfung, Abschluss und Paket-Postprocessing.
-- Der optionale Proxy-only-Modus leitet sämtliche Main-Prozess-API-, Link-Auflösungs- und normalen Download-Requests über einen fest ausgewählten authentifizierten HTTP-CONNECT-Proxy. Electron-Web-Logins und deren Session-Fetches erhalten denselben festen Proxy. Neue Dateien ab 8 MiB können zusätzlich über exakte HTTP-Range-Chunks parallel über die Proxy-Liste geladen werden. Seit `v2.0.76` ist der eingestellte Wert ein gemeinsames Prozesslimit für alle gleichzeitigen Segmentdownloads, und der feste API-Proxy bleibt aus dem Segmentpool heraus. Der unveröffentlichte Arbeitsstand verteilt dieses Limit fair, vergibt kleine Chunks rollierend und bewertet Proxys nach gemessener Leistung und Fehlern.
+- Der optionale Proxy-only-Modus leitet sämtliche Main-Prozess-API-, Link-Auflösungs- und normalen Download-Requests über einen fest ausgewählten authentifizierten HTTP-CONNECT-Proxy. Electron-Web-Logins und deren Session-Fetches erhalten denselben festen Proxy. Neue Dateien ab 8 MiB können zusätzlich über exakte HTTP-Range-Chunks parallel über die Proxy-Liste geladen werden. Seit `v2.0.76` ist der eingestellte Wert ein gemeinsames Prozesslimit für alle gleichzeitigen Segmentdownloads, und der feste API-Proxy bleibt aus dem Segmentpool heraus. Seit `v2.0.77` wird dieses Limit fair verteilt, werden kleine Chunks rollierend vergeben und Proxys nach gemessener Leistung und Fehlern bewertet.
 - Download-Retries unterscheiden Netzwerk-, Range-, Hoster-, Provider-, Konto-, Quota-, Disk- und permanente Linkfehler. Stop, Pause, Shutdown und Neustart besitzen getrennte Park- und Abbruchpfade.
 - Die Queue priorisiert hoch vor normal vor niedrig, beachtet globale und providerbezogene Parallelitätsgrenzen und schützt sich mit Scheduler-Generation, Heartbeat und Stall-Watchdogs gegen veraltete Tasks.
 
@@ -128,7 +128,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - HTTP-Antworten des eigentlichen Downloadservers werden getrennt von Proxy-Verbindungsfehlern erfasst. Insbesondere erscheint ein über einen erreichbaren Proxy empfangener HTTP 503 mit `originHttpStatus=503` im Item-Log und nicht mehr irreführend als „Proxys nicht erreichbar“.
 - Die Entpacklogik und ihre Produktionspfade wurden nicht verändert. Eine Serverinstallation oder ein produktiver Neustart ist nicht Bestandteil dieses Releases.
 
-## Unveröffentlichte Änderungen für v2.0.77
+## Änderungen in v2.0.77
 
 - Der globale Proxy-Scheduler registriert jeden laufenden Segmentdownload als eigene Gruppe und berechnet den fairen Anteil bei jeder Vergabe neu. Bei einem Gesamtlimit von 20 erhalten zwei aktive Dateien höchstens je 10 gleichzeitige Verbindungen, vier Dateien höchstens je 5. Sobald eine Datei endet, steht ihr Anteil den verbleibenden Dateien wieder zur Verfügung.
 - Dateien werden nicht mehr in genau einen langen Bereich pro Verbindung geteilt. Eine gemeinsame rollierende Warteschlange erzeugt typischerweise 8 bis 16 MiB große Chunks; schnelle Proxys übernehmen dadurch fortlaufend weitere Bereiche, während ein langsamer Proxy nur seinen aktuellen Chunk verzögert. Die Chunk-Anzahl bleibt bei sehr großen Dateien begrenzt.
@@ -136,7 +136,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Origin-Antworten HTTP 429 und 503 senken das effektive Prozesslimit mit Entprellung um jeweils zwei Verbindungen. Nach ausreichend vielen stabilen Chunk-Erfolgen wird die Kapazität schrittweise bis zum konfigurierten Wert wiederhergestellt.
 - Der Standardwert für neue oder noch nicht gesetzte Konfigurationen ist 20 Gesamtverbindungen. Bereits gespeicherte Werte bleiben unverändert; erlaubt sind weiterhin 2 bis 32.
 - Der Paketfortschritt verwendet bei bekannten Größen dieselben heruntergeladenen und gesamten Bytes wie die Größenanzeige. Dadurch stimmen Prozentwert und `heruntergeladen / gesamt` auch bei unterschiedlich großen Dateien überein. Wenn Größen vollständig fehlen, bleibt die bisherige dateibasierte Berechnung als Rückfall erhalten.
-- Die Entpacklogik und ihre Produktionspfade wurden nicht verändert. Der Arbeitsstand wurde noch nicht veröffentlicht, installiert oder produktiv neu gestartet.
+- Die Entpacklogik und ihre Produktionspfade wurden nicht verändert. Eine Serverinstallation oder ein produktiver Neustart ist nicht Bestandteil dieses Releases.
 
 ## Start-, Build- und Testbefehle
 
@@ -169,11 +169,13 @@ npm exec -- tsc --noEmit
 
 ## Verifizierungen vom 31. August 2026
 
-- Proxy-Scheduler-Regressionen für den unveröffentlichten `v2.0.77`-Stand: 11 von 11 erfolgreich. Abgedeckt sind 32 rollierend vergebene Chunks, deutlich häufigere Chunk-Übernahme durch den schnellen von zwei unterschiedlich verzögerten Proxys, zwei überlappende Downloads mit je höchstens der Hälfte eines gemeinsamen Viererlimits, Ausschluss des festen API-Proxys, Ersatz ausgefallener Proxys, exakte Dateiinhalte und Fortschrittsrückrechnung sowie eine erfolgreiche Fortsetzung nach transientem Origin-HTTP-503 mit Reduktion neuer paralleler Requests von 6 auf höchstens 4.
+- Proxy-Scheduler-Regressionen für `v2.0.77`: 11 von 11 erfolgreich. Abgedeckt sind 32 rollierend vergebene Chunks, deutlich häufigere Chunk-Übernahme durch den schnellen von zwei unterschiedlich verzögerten Proxys, zwei überlappende Downloads mit je höchstens der Hälfte eines gemeinsamen Viererlimits, Ausschluss des festen API-Proxys, Ersatz ausgefallener Proxys, exakte Dateiinhalte und Fortschrittsrückrechnung sowie eine erfolgreiche Fortsetzung nach transientem Origin-HTTP-503 mit Reduktion neuer paralleler Requests von 6 auf höchstens 4.
 - Paketfortschritt, Einstellungen und Proxy-Scheduler gezielt: 232 von 232 Tests erfolgreich. Ein Paket mit 2,25 von 18,60 Größeneinheiten zeigt nun 12 Prozent statt einer dateibasierten Abweichung.
 - Storage einschließlich neuem Standardwert 20: 126 von 126 Tests erfolgreich.
 - Finaler vollständiger Client-Lauf ohne die zwei lokal nicht ausführbaren Symlink-Fixtures: 140 Testdateien erfolgreich, 1 JVM-Testdatei übersprungen; 2.656 Tests erfolgreich und 4 übersprungen. Die übrigen 22 Public-Release-Metadatentests liefen separat erfolgreich; nur die zwei Windows-Symlink-Fixtures wurden übersprungen. Alle 84 Entpacktests sind unverändert grün.
-- Für den unveröffentlichten Optimierungsstand erfolgreich: TypeScript, vollständiger Main-/Renderer-Build, Self-Check und 16 von 16 Backup-API-Tests. Die bekannte Vite-Warnung zum rund 576 KiB großen Renderer-Chunk bleibt bestehen.
+- Für `v2.0.77` erfolgreich: TypeScript, vollständiger Main-/Renderer-Build, Self-Check und 16 von 16 Backup-API-Tests. Die bekannte Vite-Warnung zum rund 576 KiB großen Renderer-Chunk bleibt bestehen.
+- Release-Build `v2.0.77`: Installer und Portable-Datei wurden aus dem versionierten Quellstand neu erzeugt. Die Release-Prüfung bestätigte Paket- und Bundle-Version, Update-Metadaten, Artefaktnamen, SHA-512, Icon, Lizenzdateien sowie den entpackten Inhalt beider EXE-Archive.
+- SHA-256 des `v2.0.77`-Setups: `3519234aa07a43f24873175ca50fcd23480fd2f2c10a32813727f54f8e7363c0`; SHA-256 der Portable-Datei: `b1129d2441fec1a5c23eea4a967ff319f33e5e9e25b304da81163a21a154ab9b`.
 - Proxy-Parser gegen die bereitgestellte externe Liste geprüft: 1.000 von 1.000 Einträgen gültig; dabei wurden weder Proxy-Verbindungen aufgebaut noch Listeneinträge ausgegeben.
 - Proxy-Segmenttests für `v2.0.76`: 9 von 9 erfolgreich. Abgedeckt sind die feste Auswahl nach gültigem 1-basiertem Listeneintrag, vier parallele authentifizierte CONNECT-Proxys mit exakten Byte-Bereichen und identischem Dateiergebnis, Ersatz eines abgelehnten Segment-Proxys, zwei gleichzeitige Dateien unter einem gemeinsamen Verbindungslimit ohne gleichzeitige Doppelvergabe und ohne Nutzung des reservierten API-Proxys, getrennte HTTP-503-Diagnose aus Probe und Segment, sauberer Einzel-Proxy-Fallback ohne Restdatei bei ignoriertem Range-Header sowie Abbruch mit Fortschritts-Rückrechnung und Temp-Bereinigung.
 - Vollständiger Client-Lauf nach dem Proxy-Hotfix ohne den unter Windows nicht ausführbaren Symlink-Metadatentest: 140 Testdateien erfolgreich, 1 JVM-Testdatei übersprungen; 2.653 Tests erfolgreich und 4 übersprungen. Darin sind alle 84 bestehenden Entpacktests unverändert grün.
@@ -220,7 +222,7 @@ npm exec -- tsc --noEmit
 - Windows ohne Developer Mode beziehungsweise passende Berechtigung kann die zwei Symlink-basierten Public-Release-Metadaten-Tests nicht ausführen.
 - Proxy-Bündelung garantiert keine lineare Addition der Einzelgeschwindigkeiten. Ergebnis und Stabilität hängen unter anderem von Proxy-Latenz, Proxy-Bandbreite, Provider-/CDN-IP-Bindung, Range-Unterstützung, Zielserver-Limits, Dateigröße und lokaler Schreibgeschwindigkeit ab. Nach einem späten Segmentfehler kann vor dem festen Einzel-Proxy-Fallback zusätzlicher Providerverkehr angefallen sein.
 - Der feste API-Proxy wird absichtlich nicht automatisch rotiert, damit API- und Login-Sitzungen eine stabile Ausgangs-IP behalten. Bei Ausfall muss ein anderer gültiger Listeneintrag ausgewählt werden; bis dahin schlägt Proxy-only geschlossen fehl.
-- Die bereitgestellte Proxy-Liste wurde mit dem ausdrücklich bereitgestellten Real-Debrid-Testlink erfolgreich real geprüft. Die Messung gilt nur für diesen Link, diesen Zeitpunkt und einen parallelen Download. Der neue rollierende Scheduler ist mit lokalen End-to-End-Servern verifiziert; ein echter Mehrdatei-Test gegen Real-Debrid benötigt eine separat freigegebene Veröffentlichung und Installation des unveröffentlichten Stands.
+- Die bereitgestellte Proxy-Liste wurde mit dem ausdrücklich bereitgestellten Real-Debrid-Testlink erfolgreich real geprüft. Die Messung gilt nur für diesen Link, diesen Zeitpunkt und einen parallelen Download. Der neue rollierende Scheduler ist mit lokalen End-to-End-Servern verifiziert; ein echter Mehrdatei-Test gegen Real-Debrid benötigt eine separat freigegebene Installation von `v2.0.77`.
 - Der Arbeitsordner enthält `&`; ohne PowerShell-7-Skriptshell können npm-`cmd`-Shims fehlschlagen.
 - Es gibt keine `.github`-Workflows und damit keine serverseitige CI-Absicherung im GitHub-Repository.
 - Der Renderer-Bundle-Chunk liegt über Vites 500-KiB-Warnschwelle.
@@ -228,10 +230,11 @@ npm exec -- tsc --noEmit
 - Beim erzwungenen Exit können letzte asynchrone Logzeilen oder Benachrichtigungen fehlen; die wesentlichen Queue-, Settings-, Statistik- und Collector-Daten werden zuvor synchron gesichert. Laufende externe Extraktions-/Remux-Prozesse bleiben ein separater späterer Härtungspunkt.
 - Lifecycle-, Debug-Server-, Persistenz-, Updater- und Proxy-only-Änderungen sind als `v2.0.75` veröffentlicht. Eine davon getrennte Installation oder ein produktiver Neustart auf einem Server wurde nicht vorgenommen.
 - Der Proxy-Gesamtlimit-Hotfix ist als `v2.0.76` veröffentlicht. Eine Serverinstallation oder ein produktiver Neustart wurde nicht vorgenommen.
+- Der faire rollierende Proxy-Scheduler und der bytebasierte Paketfortschritt sind als `v2.0.77` veröffentlicht. Eine Serverinstallation oder ein produktiver Neustart wurde nicht vorgenommen.
 
 ## Nächste sinnvolle Schritte
 
-1. Nach separater Release- und Installationsfreigabe den unveröffentlichten Optimierungsstand mit Gesamtlimit 20 und zwei echten parallelen Real-Debrid-Dateien prüfen. Erfolgsquote, HTTP-Status, Chunk-Wechsel, Zusatzverkehr, Festplattenlast und Netto-MB/s beobachten, bevor das Maximum von 24 erwogen wird.
+1. Nach separater Installationsfreigabe `v2.0.77` mit Gesamtlimit 20 und zwei echten parallelen Real-Debrid-Dateien prüfen. Erfolgsquote, HTTP-Status, Chunk-Wechsel, Zusatzverkehr, Festplattenlast und Netto-MB/s beobachten, bevor das Maximum von 24 erwogen wird.
 2. Nach einer getrennt freigegebenen Serverinstallation den Ablauf Real-Debrid-Web-Download, Hauptfenster schließen und unmittelbar neu starten am echten Zielsystem verifizieren; vor jedem Eingriff Prozessbaum und Logtail sichern.
 3. Sicherheitsabhängigkeiten in einem separaten Upgrade-Branch aktualisieren, Electron-/Vite-/Vitest-Major-Wechsel einzeln testen und danach den vollständigen Windows-Paketpfad prüfen.
 4. Eine nichtdestruktive Strategie zur Bereinigung der divergierenden `main`-Branches abstimmen; kein Force-Push ohne ausdrückliche Freigabe.
