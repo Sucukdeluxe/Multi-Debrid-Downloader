@@ -4,6 +4,8 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.78] - 2026-08-31
+
 ### Download presentation
 
 - Keep the sidebar session byte counter on the same live snapshot cadence as the remaining byte counter even when large-queue statistics are cached.

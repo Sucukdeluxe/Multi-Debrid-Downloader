@@ -10,11 +10,11 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 
 - Verifiziert am: 31. August 2026, Europe/Berlin
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
-- Arbeitsbranch: `tune/proxy-limit-40`
-- Quellbasis: `release/v2.0.76`
+- Arbeitsbranch: `release/v2.0.78`
+- Quellbasis: `release/v2.0.77`
 - Release-Tag: `v2.0.77`
-- Baseline-Commit: `eb68db88d08739f5f4ff23bf5b1133a132c2d8db`
-- Paketversion: `2.0.77`
+- Baseline-Commit: `1580a160da2e623fe78b8b1b13cea89d98a8ab57`
+- Paketversion: `2.0.78`
 - Letztes Release: `Multi-Debrid-Downloader v2.0.77`, veröffentlicht am 31. August 2026 auf GitHub und Forgejo
 - Runtime-Voraussetzung: Node.js `>=20`; lokal verifiziert mit Node.js `24.19.0` und npm `11.17.0`
 
@@ -138,11 +138,12 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Der Paketfortschritt verwendet bei bekannten Größen dieselben heruntergeladenen und gesamten Bytes wie die Größenanzeige. Dadurch stimmen Prozentwert und `heruntergeladen / gesamt` auch bei unterschiedlich großen Dateien überein. Wenn Größen vollständig fehlen, bleibt die bisherige dateibasierte Berechnung als Rückfall erhalten.
 - Die Entpacklogik und ihre Produktionspfade wurden nicht verändert. Eine Serverinstallation oder ein produktiver Neustart ist nicht Bestandteil dieses Releases.
 
-## Unveröffentlichte Anpassung nach v2.0.77
+## Änderungen in v2.0.78
 
 - Der Standardwert für neue beziehungsweise noch nicht gesetzte Konfigurationen steigt von 20 auf 32 globale Proxy-Verbindungen. Bereits gespeicherte Benutzerwerte bleiben erhalten.
 - Das einstellbare Maximum steigt von 32 auf 40 globale Proxy-Verbindungen. Faire Aufteilung, Proxy-Bewertung, Cooldowns und adaptives 429/503-Backoff gelten unverändert auch oberhalb von 32.
-- Die Entpacklogik und ihre Produktionspfade wurden nicht verändert. Diese Anpassung ist noch nicht veröffentlicht, installiert oder produktiv neu gestartet.
+- „Sitzung“ erhält den kumulativen Bytezähler bei großen laufenden Queues nun in jedem 750-Millisekunden-Live-Snapshot und aktualisiert sich damit genauso häufig wie „Verbleibend“. Der 1,5-Sekunden-Cache bleibt für die übrigen aufwendigeren Statistikdaten erhalten.
+- Die Entpacklogik und ihre Produktionspfade wurden nicht verändert. Diese Anpassungen sind für die ausdrücklich freigegebene Veröffentlichung vorbereitet; eine Installation oder ein produktiver Neustart ist nicht Bestandteil des Releases.
 
 ## Start-, Build- und Testbefehle
 
