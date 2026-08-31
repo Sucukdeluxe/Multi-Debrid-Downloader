@@ -10,12 +10,12 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 
 - Verifiziert am: 31. August 2026, Europe/Berlin
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
-- Arbeitsbranch: `hotfix/proxy-segment-readback-v2.0.79`
+- Arbeitsbranch: `release/v2.0.79`
 - Quellbasis: `release/v2.0.78`
 - Release-Tag: `v2.0.78`
-- Baseline-Commit: `48c3677296f54d389f0982fc79edf2788a6d1191`
+- Baseline-Commit: `39d1961c92a8651d908714b1e2ee0efcee6a462e`
 - Hotfix-Basis: `5cee459d0bcc5c19d8d6483948a036a43c9d91b1`
-- Paketversion: `2.0.78`
+- Paketversion: `2.0.79`
 - Letztes Release: `Multi-Debrid-Downloader v2.0.78`, veröffentlicht am 31. August 2026 auf GitHub und Forgejo
 - Runtime-Voraussetzung: Node.js `>=20`; lokal verifiziert mit Node.js `24.19.0` und npm `11.17.0`
 
@@ -146,14 +146,14 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - „Sitzung“ erhält den kumulativen Bytezähler bei großen laufenden Queues nun in jedem 750-Millisekunden-Live-Snapshot und aktualisiert sich damit genauso häufig wie „Verbleibend“. Der 1,5-Sekunden-Cache bleibt für die übrigen aufwendigeren Statistikdaten erhalten.
 - Die Entpacklogik und ihre Produktionspfade wurden nicht verändert. `v2.0.78` wurde nach ausdrücklicher Freigabe auf GitHub und Forgejo veröffentlicht; eine Installation oder ein produktiver Neustart ist nicht Bestandteil des Releases.
 
-## Unveröffentlichter Proxy-Integritäts-Hotfix
+## Änderungen in v2.0.79
 
 - Drei unabhängig bereitgestellte Kopien von `p2p-libr7-S02E05.rar` wurden binär verglichen. JDownloader und der manuelle Real-Debrid-Browserdownload waren bei exakt 910.536.950 Byte SHA-256-identisch (`be0bd334a63d92611acae349effb0e23a4cf4bdd00feb2fad9f3d0edb11e36e9`) und ließen sich mit UnRAR fehlerfrei testen. Die MDD-Kopie hatte dieselbe Größe, aber SHA-256 `7a763e774ba8068d4a756a69c72ae72bbc18d649c3cb7a5c7dc2b1d6a6436a1e` und einen CRC-Fehler.
 - In der MDD-Kopie war ausschließlich der Bereich Byte 346.951.680 bis 346.955.311 durchgehend null. Die 3.632-Byte-Lücke lag innerhalb des 42. 8-MiB-Chunks; Segmentgrenzen und Endgröße waren korrekt. Damit ist ein still beschädigter Proxy-Segmentdownload nachgewiesen, nicht ein Fehler des Quellarchivs oder Extractors.
 - Jeder fertig geschriebene Proxy-Chunk wird nun direkt vom Datenträger zurückgelesen und sein SHA-256-Digest mit den tatsächlich empfangenen Bytes verglichen. Bei einer Abweichung wird der Fortschritt des Versuchs zurückgerechnet, der Proxy abgewertet und der vollständige Chunk über einen anderen Proxy neu geladen.
 - Nullfolgen ab 1.024 Byte werden zusätzlich stichprobenartig über einen anderen, gleichzeitig exklusiv reservierten Proxy erneut angefordert. Weicht die unabhängige Range-Antwort ab, wird ebenfalls der vollständige Chunk verworfen und neu geladen. Bestätigt die Gegenprobe echte Nullbytes, wird der Chunk normal akzeptiert.
 - Item-Logs melden den Grund `readback_mismatch` beziehungsweise `zero_run_mismatch` mit Range- und Chunkgrenzen. Die bisher irreführende Meldung „Integritätsprüfung bestanden“ bei fehlender `.sfv`-, `.md5`- oder `.sha1`-Prüfsumme wurde in „Integritätsprüfung nicht ausgeführt“ mit Begründung geändert.
-- Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert. Der Hotfix ist noch nicht veröffentlicht; Release, Installation und produktiver Neustart benötigen eine neue ausdrückliche Freigabe.
+- Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert. Der Hotfix ist für die ausdrücklich freigegebene Veröffentlichung vorbereitet; Installation und produktiver Neustart sind nicht Bestandteil des Releases.
 
 ## Start-, Build- und Testbefehle
 
@@ -260,11 +260,11 @@ npm exec -- tsc --noEmit
 - Der Proxy-Gesamtlimit-Hotfix ist als `v2.0.76` veröffentlicht. Eine Serverinstallation oder ein produktiver Neustart wurde nicht vorgenommen.
 - Der faire rollierende Proxy-Scheduler und der bytebasierte Paketfortschritt sind als `v2.0.77` veröffentlicht. Eine Serverinstallation oder ein produktiver Neustart wurde nicht vorgenommen.
 - Der 32/40-Proxybereich und der synchrone Live-Takt von „Sitzung“ und „Verbleibend“ sind als `v2.0.78` veröffentlicht. Eine Serverinstallation oder ein produktiver Neustart wurde nicht vorgenommen.
-- Der Proxy-Readback- und Nullbereich-Hotfix ist auf `hotfix/proxy-segment-readback-v2.0.79` vorbereitet, aber noch nicht veröffentlicht oder auf einem produktiven System installiert.
+- Der Proxy-Readback- und Nullbereich-Hotfix ist auf `release/v2.0.79` für die ausdrücklich freigegebene Veröffentlichung vorbereitet, aber noch nicht auf einem produktiven System installiert.
 
 ## Nächste sinnvolle Schritte
 
-1. Nach einer ausdrücklichen Release-Freigabe den Proxy-Integritäts-Hotfix als nächste Version vorbereiten, paketieren und veröffentlichen; anschließend auf dem Zielserver denselben problematischen Download erneut durchführen und Item-Log, SHA-256 sowie `UnRAR t` prüfen.
+1. Nach Veröffentlichung und einer getrennt freigegebenen Serverinstallation denselben problematischen Download erneut durchführen und Item-Log, SHA-256 sowie `UnRAR t` prüfen.
 2. Nach einer getrennt freigegebenen Serverinstallation den Ablauf Real-Debrid-Web-Download, Hauptfenster schließen und unmittelbar neu starten am echten Zielsystem verifizieren; vor jedem Eingriff Prozessbaum und Logtail sichern.
 3. Sicherheitsabhängigkeiten in einem separaten Upgrade-Branch aktualisieren, Electron-/Vite-/Vitest-Major-Wechsel einzeln testen und danach den vollständigen Windows-Paketpfad prüfen.
 4. Eine nichtdestruktive Strategie zur Bereinigung der divergierenden `main`-Branches abstimmen; kein Force-Push ohne ausdrückliche Freigabe.
