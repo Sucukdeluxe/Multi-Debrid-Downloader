@@ -4,6 +4,8 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.76] - 2026-08-31
+
 ### Proxy concurrency hotfix
 
 - Treat the configured proxy connection count as one process-wide segment connection budget shared by all simultaneous downloads instead of multiplying it per file.
