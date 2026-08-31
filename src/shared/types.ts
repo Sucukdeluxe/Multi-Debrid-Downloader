@@ -139,7 +139,13 @@ export interface DailyStartSettings {
   dailyStartLastOutcome: DailyStartOutcome;
 }
 
-export interface AppSettings extends DailyStartSettings {
+export interface ProxyDownloadSettings {
+  proxyDownloadEnabled: boolean;
+  proxyListPath: string;
+  proxyConnectionsPerDownload: number;
+}
+
+export interface AppSettings extends DailyStartSettings, ProxyDownloadSettings {
   language: AppLanguage;
   token: string;
   realDebridUseWebLogin: boolean;
@@ -291,7 +297,7 @@ export interface RendererAccount {
   status: DebridAccountStatus | null;
 }
 
-export interface RendererSettings extends DailyStartSettings {
+export interface RendererSettings extends DailyStartSettings, ProxyDownloadSettings {
   language: AppLanguage;
   realDebridUseWebLogin: boolean;
   realDebridDisabledAccountIds: string[];

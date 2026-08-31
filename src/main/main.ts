@@ -945,6 +945,17 @@ function registerIpcHandlers(): void {
     const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
     return result.canceled ? null : result.filePaths[0] || null;
   });
+  handleTrusted(IPC_CHANNELS.PICK_PROXY_LIST, async () => {
+    const options = {
+      properties: ["openFile"] as Array<"openFile">,
+      filters: [
+        { name: "Proxy-Listen", extensions: ["txt", "list"] },
+        { name: "Alle Dateien", extensions: ["*"] }
+      ]
+    };
+    const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+    return result.canceled ? null : result.filePaths[0] || null;
+  });
   handleTrusted(IPC_CHANNELS.PICK_CONTAINERS, async () => {
     const options = {
       properties: ["openFile", "multiSelections"] as Array<"openFile" | "multiSelections">,

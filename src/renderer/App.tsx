@@ -953,6 +953,7 @@ const emptySnapshot = (): UiSnapshot => ({
     removeSamplesAfterExtract: false, enableIntegrityCheck: true, autoResumeOnStart: true,
     autoReconnect: false, reconnectWaitSeconds: 45, completedCleanupPolicy: "never",
     maxParallel: 4, maxParallelExtract: 2, extractCpuPriority: "high", retryLimit: 0, speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
+    proxyDownloadEnabled: false, proxyListPath: "", proxyConnectionsPerDownload: 16,
     updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, minimizeToTray: false,
     theme: "dark", themePreference: "dark", logStorageLocation: "appdata", collapseNewPackages: true, animatePackageDisclosure: true, historyRetentionMode: "permanent", historyMaxEntries: 500, historyMaxAgeDays: 0, autoSortPackagesByProgress: false, autoSkipExtracted: false, hideExtractedItems: true, confirmDeleteSelection: true, backupIncludeDownloads: false, backupIncludeRemoteDiagnostics: false,
     notifyMention: "", notifyOnPackageCompleted: false, notifyOnPackageFailed: false, notifyOnRunFinished: false,
@@ -6064,7 +6065,8 @@ export function App(): ReactElement {
         historyMaxEntries: [50, 100000, 500],
         historyMaxAgeDays: [0, 3650, 0],
         maxParallelExtract: [1, 8, 2],
-        reconnectWaitSeconds: [10, 600, 45]
+        reconnectWaitSeconds: [10, 600, 45],
+        proxyConnectionsPerDownload: [2, 32, 16]
       };
       const bounds = numericLimits[fieldId as keyof RendererSettingsDraft];
       if (bounds) {
@@ -6125,6 +6127,13 @@ export function App(): ReactElement {
       if (fieldId === "logStorageDirectory") {
         void performQuickAction(async () => {
           await window.rd.openLogDirectory();
+        });
+        return;
+      }
+      if (fieldId === "proxyListPath") {
+        void performQuickAction(async () => {
+          const selectedPath = await window.rd.pickProxyList();
+          if (selectedPath) setText("proxyListPath", selectedPath);
         });
         return;
       }

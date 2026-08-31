@@ -422,6 +422,40 @@ export function buildSettingsFormViewModel({
             { id: "reconnectWaitSeconds", kind: "number", label: "Wartezeit vor neuem Versuch (Sek.)", value: String(settings.reconnectWaitSeconds), min: 10, max: 600 }
           ]
         },
+        {
+          id: "speed-proxy",
+          title: "Proxy-Download",
+          description: "Teilt neue Downloads in Byte-Bereiche und lädt sie parallel über verschiedene HTTP-Proxys. Falls der Server keine Bereiche unterstützt oder die Proxys ausfallen, läuft der bestehende Direktdownload weiter.",
+          fields: [
+            {
+              id: "proxyDownloadEnabled",
+              kind: "switch",
+              label: "Proxy-Download aktivieren",
+              value: settings.proxyDownloadEnabled,
+              help: "Gilt für neue Dateien ab 8 MiB. Ein aktives Geschwindigkeitslimit verwendet weiterhin den Direktdownload."
+            },
+            {
+              id: "proxyListPath",
+              kind: "path",
+              label: "Proxy-Liste",
+              value: settings.proxyListPath,
+              placeholder: "Textdatei mit einem Proxy pro Zeile",
+              actionLabel: "Datei wählen",
+              disabled: !settings.proxyDownloadEnabled,
+              help: "Unterstützt unter anderem Benutzer:Passwort@Host:Port. Zugangsdaten werden nicht protokolliert."
+            },
+            {
+              id: "proxyConnectionsPerDownload",
+              kind: "number",
+              label: "Verbindungen pro Download",
+              value: String(settings.proxyConnectionsPerDownload),
+              min: 2,
+              max: 32,
+              disabled: !settings.proxyDownloadEnabled,
+              help: `Bei ${settings.maxParallel} gleichzeitigen Downloads sind bis zu ${settings.maxParallel * settings.proxyConnectionsPerDownload} Proxy-Verbindungen möglich.`
+            }
+          ]
+        },
         ...scheduleGroups,
         {
           id: "speed-schedule-add",

@@ -114,6 +114,7 @@ export interface ElectronApi {
   toggleClipboard: () => Promise<boolean>;
   writeClipboardText: (text: string) => Promise<boolean>;
   pickFolder: () => Promise<string | null>;
+  pickProxyList: () => Promise<string | null>;
   pickContainers: () => Promise<string[]>;
   getSessionStats: () => Promise<SessionStats>;
   resetSessionStats: () => Promise<void>;

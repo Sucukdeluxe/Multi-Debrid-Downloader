@@ -168,6 +168,7 @@ export function createVisualElectronApi(
     },
     writeClipboardText: async () => true,
     pickFolder: async () => "C:\\Visual\\Selected",
+    pickProxyList: async () => "C:\\Visual\\proxy-list.txt",
     pickContainers: async () => ["C:\\Visual\\Containers\\visual.dlc"],
     getSessionStats: async () => ({
       bandwidth: {

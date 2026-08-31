@@ -67,6 +67,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Provider-Reihenfolge, Hoster-Overrides, Kontostatus, Tageslimits, Cooldowns und optionale Fallbacks bestimmen das Routing.
 - Real-Debrid und Debrid-Link unterstützen Kontopools; Auswahl und Rotation berücksichtigen Aktivität, Fairness, Limits und Fehlerklassen.
 - Item-Pipeline: Vorprüfung und Recovery, Provider-Auswahl, Unrestrict mit Timeout, sichere Zielpfadreservierung, Speicherplatzreservierung, HTTP-Download mit Range-Resume, optionale Integritätsprüfung, Abschluss und Paket-Postprocessing.
+- Optionaler Proxy-Segmentdownload teilt neue Dateien ab 8 MiB in 2 bis 32 exakte HTTP-Range-Bereiche und lädt sie parallel über verschiedene authentifizierte HTTP-CONNECT-Proxys. Bestehende Teil-Dateien und aktive Geschwindigkeitslimits bleiben beim bisherigen Direktdownload; bei fehlender Range-Unterstützung, ungültiger Liste oder Proxy-/Segmentfehlern wird automatisch auf diesen Pfad zurückgefallen.
 - Download-Retries unterscheiden Netzwerk-, Range-, Hoster-, Provider-, Konto-, Quota-, Disk- und permanente Linkfehler. Stop, Pause, Shutdown und Neustart besitzen getrennte Park- und Abbruchpfade.
 - Die Queue priorisiert hoch vor normal vor niedrig, beachtet globale und providerbezogene Parallelitätsgrenzen und schützt sich mit Scheduler-Generation, Heartbeat und Stall-Watchdogs gegen veraltete Tasks.
 
@@ -98,6 +99,11 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 
 ## Aktuelle unveröffentlichte Änderung
 
+- Unter „Geschwindigkeit“ kann der Proxy-Segmentdownload aktiviert, eine externe Proxy-Textdatei ausgewählt und die Zahl der Verbindungen pro Download zwischen 2 und 32 festgelegt werden. Bei fünf parallelen Downloads und 16 Segmenten sind damit bis zu 80 Proxy-Verbindungen möglich; `maxParallel` bleibt die vorhandene globale Downloadgrenze.
+- Unterstützt werden insbesondere `Benutzer:Passwort@Host:Port`, Proxy-URLs, `Host:Port` und `Host:Port:Benutzer:Passwort`. Die Liste wird nur im Main-Prozess gelesen und anhand von Dateigröße und Änderungszeit gecacht. Proxy-Zugangsdaten werden nicht protokolliert, nicht an den Renderer übertragen und nicht in Git übernommen; lediglich der lokale Listenpfad ist eine normale Einstellung.
+- Jeder Proxy-Download prüft zuerst `Range: bytes=0-1`, übernimmt die autoritative HTTP-Gesamtgröße, reserviert eine zielnahe temporäre Datei und schreibt jedes Segment positionsgenau. Die Zwei-Byte-Probe umgeht ein reproduziertes Real-Debrid-Verhalten, bei dem nur `bytes=0-0` trotz 206-Header die gesamte Datei streamt. Segmente versuchen bei Verbindungs-, Authentifizierungs-, Timeout- oder Range-Fehlern andere Proxys. Erst nach vollständiger Größenprüfung und `datasync` wird die Datei atomar zum Ziel umbenannt.
+- Abbruch und Segmentfehler beenden alle zugehörigen Tunnel, entfernen die temporäre Datei und rechnen nur eindeutigen Segmentfortschritt zurück. Tatsächlich empfangener Providerverkehr bleibt für Statistik und Geschwindigkeitsmessung erhalten. Ein fehlgeschlagener Proxy-Versuch startet anschließend den unveränderten Direktdownload neu.
+- Der bestehende Range-Resume-Pfad für Teil-Dateien wurde nicht ersetzt. Ein aktives Geschwindigkeitslimit überspringt die Proxy-Segmentierung, damit das konfigurierte Limit nicht umgangen wird.
 - Ein Start-/Beenden-Fehler nach Real-Debrid-Web-Downloads wurde behoben. Der persistente unsichtbare Web-Generator blieb nach dem Schließen des Hauptfensters geöffnet, verhinderte dadurch `window-all-closed` und hielt den Single-Instance-Lock. Weitere Starts wurden als Zweitinstanz sofort beendet, während der alte `second-instance`-Handler ohne Hauptfenster nichts tat.
 - Das Hauptfenster ist unter Windows nun ausdrücklich Besitzer des App-Lebenszyklus: Nach einem natürlichen, vom Renderer bestätigten Schließen wird der kontrollierte Shutdown auch bei verbleibenden Providerfenstern gestartet. Der normale `beforeunload`-Pfad bleibt erhalten, damit noch nicht übertragene Linksammler-Änderungen synchron gesichert werden können.
 - `second-instance` und `activate` stellen ein vorhandenes Hauptfenster wieder her oder erzeugen ein fehlendes neu. Ein Start während eines bereits laufenden Shutdowns plant genau einen Relaunch nach dem Prozessende ein.
@@ -142,6 +148,14 @@ npm exec -- tsc --noEmit
 
 ## Verifizierungen vom 31. August 2026
 
+- Proxy-Parser gegen die bereitgestellte externe Liste geprüft: 1.000 von 1.000 Einträgen gültig; dabei wurden weder Proxy-Verbindungen aufgebaut noch Listeneinträge ausgegeben.
+- Proxy-Segmenttests: 5 von 5 erfolgreich. Abgedeckt sind vier parallele authentifizierte CONNECT-Proxys mit exakten Byte-Bereichen und identischem Dateiergebnis, Ersatz eines abgelehnten Proxys, Direkt-Fallback ohne Restdatei bei ignoriertem Range-Header sowie Abbruch mit Fortschritts-Rückrechnung und Temp-Bereinigung.
+- Reale Proxy-Prüfung mit einer 930.376.313 Byte großen Real-Debrid-RAR-Datei: 16 Verbindungen, vollständiger Segmenttransfer in rund 11,7 Sekunden mit 76,09 MiB/s mittlerem Nutzdurchsatz und zwischenzeitlich rund 94 MiB/s; Gesamtlauf einschließlich `datasync` und SHA-256 dauerte 13,19 Sekunden. Der zusätzliche Prüfverkehr betrug exakt 2 Byte.
+- Die reale Testdatei besitzt SHA-256 `f60f70a03cc49f544aab97d66254cb39801d7bbad827d1db935ef8b25c8b544f`, eine gültige RAR-Signatur und ein fehlerfrei lesbares Inhaltsverzeichnis. 32 verteilte 64-Byte-Stichproben an Anfang und Ende aller 16 Segmente stimmten mit frischen Range-Antworten über 32 verschiedene Listeneinträge überein.
+- Settings-/Storage-Regressionen decken Aktivierung, Pfad, Wertebereich 2 bis 32, Dateiauswahl und die Darstellung von 80 möglichen Tunneln bei 5 × 16 ab.
+- Vollständiger Client-Lauf nach der Proxy-Änderung: 139 Testdateien erfolgreich, 1 JVM-Testdatei übersprungen; 2.668 Tests erfolgreich und 4 übersprungen. Nur die zwei bekannten Symlink-Fixtures in `public-release-metadata.test.ts` scheiterten vor ihrer Produktassertion mit Windows-`EPERM`.
+- Finaler Wiederholungslauf ohne die zwei privilegierten Symlink-Fixtures: 139 Testdateien erfolgreich, 1 JVM-Testdatei übersprungen; 2.646 Tests erfolgreich und 4 übersprungen.
+- Nach der Proxy-Änderung erfolgreich: TypeScript, Main-Build, Renderer-Build und Self-Check. Die bekannte Vite-Warnung zum nun rund 575 KiB großen Renderer-Chunk bleibt bestehen.
 - Root-Installation mit `npm ci`: erfolgreich.
 - Backup-API-Installation mit `npm ci --prefix services/backup-api`: erfolgreich.
 - TypeScript mit `npm exec -- tsc --noEmit`: erfolgreich.
@@ -171,6 +185,8 @@ npm exec -- tsc --noEmit
 - `npm audit` meldet aktuell 36 Treffer: 2 niedrig, 5 mittel, 25 hoch und 4 kritisch. Direkte Treffer betreffen unter anderem Electron 31.7.7, Vite 6.4.1, Vitest 2.1.9, concurrently 9.2.1 und electron-builder 25.1.8. Ein Upgrade braucht einen eigenen getesteten Migrationsschritt; kein automatisches `npm audit fix` ausführen.
 - Der separate Backup-API-Baum hat aktuell 0 Audit-Treffer.
 - Windows ohne Developer Mode beziehungsweise passende Berechtigung kann die zwei Symlink-basierten Public-Release-Metadaten-Tests nicht ausführen.
+- Proxy-Bündelung garantiert keine lineare Addition der Einzelgeschwindigkeiten. Ergebnis und Stabilität hängen unter anderem von Proxy-Latenz, Proxy-Bandbreite, Provider-/CDN-IP-Bindung, Range-Unterstützung, Zielserver-Limits, Dateigröße und lokaler Schreibgeschwindigkeit ab. Nach einem späten Segmentfehler kann vor dem Direkt-Fallback zusätzlicher Providerverkehr angefallen sein.
+- Die bereitgestellte Proxy-Liste wurde mit dem ausdrücklich bereitgestellten Real-Debrid-Testlink erfolgreich real geprüft. Die Messung gilt nur für diesen Link, diesen Zeitpunkt und einen parallelen Download; daraus folgt noch keine Garantie für fünf gleichzeitige Downloads, andere CDN-Knoten oder dauerhafte Proxy-Leistung.
 - Der Arbeitsordner enthält `&`; ohne PowerShell-7-Skriptshell können npm-`cmd`-Shims fehlschlagen.
 - Es gibt keine `.github`-Workflows und damit keine serverseitige CI-Absicherung im GitHub-Repository.
 - Der Renderer-Bundle-Chunk liegt über Vites 500-KiB-Warnschwelle.
@@ -181,7 +197,8 @@ npm exec -- tsc --noEmit
 ## Nächste sinnvolle Schritte
 
 1. Für eine Auslieferung der aktuellen Fehlerkorrekturen zuerst Stand, Ziel, Tests und Rollback-Weg nennen und Saschas ausdrückliches Release-/Deployment-Go abwarten.
-2. Nach einer freigegebenen Serverinstallation den Ablauf Real-Debrid-Web-Download, Hauptfenster schließen und unmittelbar neu starten am echten Zielsystem verifizieren; vor jedem Eingriff Prozessbaum und Logtail sichern.
-3. Sicherheitsabhängigkeiten in einem separaten Upgrade-Branch aktualisieren, Electron-/Vite-/Vitest-Major-Wechsel einzeln testen und danach den vollständigen Windows-Paketpfad prüfen.
-4. Eine nichtdestruktive Strategie zur Bereinigung der divergierenden `main`-Branches abstimmen; kein Force-Push ohne ausdrückliche Freigabe.
-5. Optional Developer Mode für lokale Symlink-Tests bereitstellen oder die Test-Fixtures plattformgerecht ohne privilegierte Symlinks gestalten.
+2. Vor einer Auslieferung den Proxy-Modus mit einer unkritischen großen Testdatei zunächst bei 2 bis 4, danach bei 16 Verbindungen messen und dabei Erfolgsquote, Zusatzverkehr, Zielserver-Kompatibilität, Festplattenlast sowie Netto-MB/s vergleichen. Erst anschließend `maxParallel` auf 5 erhöhen.
+3. Nach einer freigegebenen Serverinstallation den Ablauf Real-Debrid-Web-Download, Hauptfenster schließen und unmittelbar neu starten am echten Zielsystem verifizieren; vor jedem Eingriff Prozessbaum und Logtail sichern.
+4. Sicherheitsabhängigkeiten in einem separaten Upgrade-Branch aktualisieren, Electron-/Vite-/Vitest-Major-Wechsel einzeln testen und danach den vollständigen Windows-Paketpfad prüfen.
+5. Eine nichtdestruktive Strategie zur Bereinigung der divergierenden `main`-Branches abstimmen; kein Force-Push ohne ausdrückliche Freigabe.
+6. Optional Developer Mode für lokale Symlink-Tests bereitstellen oder die Test-Fixtures plattformgerecht ohne privilegierte Symlinks gestalten.

@@ -582,6 +582,9 @@ describe("settings storage", () => {
       retryLimit: 999,
       reconnectWaitSeconds: 9999,
       speedLimitKbps: -1,
+      proxyDownloadEnabled: true,
+      proxyListPath: "  C:\\proxies.txt  ",
+      proxyConnectionsPerDownload: 999,
       outputDir: "   ",
       extractDir: "   ",
       mkvLibraryDir: "   ",
@@ -599,6 +602,9 @@ describe("settings storage", () => {
     expect(normalized.retryLimit).toBe(99);
     expect(normalized.reconnectWaitSeconds).toBe(600);
     expect(normalized.speedLimitKbps).toBe(0);
+    expect(normalized.proxyDownloadEnabled).toBe(true);
+    expect(normalized.proxyListPath).toBe("C:\\proxies.txt");
+    expect(normalized.proxyConnectionsPerDownload).toBe(32);
     expect(normalized.outputDir).toBe(defaultSettings().outputDir);
     expect(normalized.extractDir).toBe(defaultSettings().extractDir);
     expect(normalized.mkvLibraryDir).toBe(defaultSettings().mkvLibraryDir);
@@ -631,6 +637,9 @@ describe("settings storage", () => {
         retryLimit: "-3",
         reconnectWaitSeconds: "1",
         speedLimitMode: "not-valid",
+        proxyDownloadEnabled: 1,
+        proxyListPath: " C:\\proxy-list.txt ",
+        proxyConnectionsPerDownload: "1",
         updateRepo: "",
         autoSortPackagesByProgress: false
       }),
@@ -644,6 +653,9 @@ describe("settings storage", () => {
     expect(loaded.retryLimit).toBe(0);
     expect(loaded.reconnectWaitSeconds).toBe(10);
     expect(loaded.speedLimitMode).toBe("global");
+    expect(loaded.proxyDownloadEnabled).toBe(true);
+    expect(loaded.proxyListPath).toBe("C:\\proxy-list.txt");
+    expect(loaded.proxyConnectionsPerDownload).toBe(2);
     expect(loaded.updateRepo).toBe(defaultSettings().updateRepo);
     expect(loaded.autoSortPackagesByProgress).toBe(false);
   });

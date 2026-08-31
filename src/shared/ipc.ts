@@ -39,6 +39,7 @@ export const IPC_CHANNELS = {
   EXPORT_QUEUE: "queue:export",
   IMPORT_QUEUE: "queue:import",
   PICK_FOLDER: "dialog:pick-folder",
+  PICK_PROXY_LIST: "dialog:pick-proxy-list",
   PICK_CONTAINERS: "dialog:pick-containers",
   STATE_UPDATE: "state:update",
   CLIPBOARD_DETECTED: "clipboard:detected",

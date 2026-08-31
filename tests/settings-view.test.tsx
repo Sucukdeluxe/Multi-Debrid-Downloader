@@ -642,6 +642,43 @@ describe("settings views", () => {
     });
   });
 
+  it("projects proxy segmentation controls with safe defaults and connection totals", () => {
+    const form = buildSettingsFormViewModel({
+      settings: {
+        ...createRendererSettings({
+          ...defaultSettings(),
+          maxParallel: 5,
+          proxyDownloadEnabled: true,
+          proxyListPath: "C:\\proxy-list.txt",
+          proxyConnectionsPerDownload: 16
+        }),
+        archivePasswordList: "",
+        notifyUrl: ""
+      },
+      section: "speed",
+      speedLimitInput: "0",
+      scheduleSpeedInputs: {}
+    });
+    const proxyGroup = form.groups.find((group) => group.id === "speed-proxy");
+
+    expect(proxyGroup?.fields.map((field) => field.id)).toEqual([
+      "proxyDownloadEnabled",
+      "proxyListPath",
+      "proxyConnectionsPerDownload"
+    ]);
+    expect(proxyGroup?.fields.find((field) => field.id === "proxyListPath")).toEqual(expect.objectContaining({
+      value: "C:\\proxy-list.txt",
+      actionLabel: "Datei wählen",
+      disabled: false
+    }));
+    expect(proxyGroup?.fields.find((field) => field.id === "proxyConnectionsPerDownload")).toEqual(expect.objectContaining({
+      value: "16",
+      min: 2,
+      max: 32,
+      help: expect.stringContaining("80 Proxy-Verbindungen")
+    }));
+  });
+
   it("projects every notification control in the required order with exact bounds", () => {
     const form = buildSettingsFormViewModel({
       settings: {

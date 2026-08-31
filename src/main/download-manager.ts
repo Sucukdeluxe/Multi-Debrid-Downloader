@@ -62,6 +62,7 @@ function releaseTlsSkip(): void {
 }
 import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 import { planDownloadCompletion, reconcileFinalizedSize, validateDownloadedFileCompletion } from "./download-completion";
+import { downloadWithProxySegments, type ProxyFallbackReason } from "./proxy-segmented-download";
 import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkDdownloadOnline, checkOneFichierLinks, checkRapidgatorOnline, fetchAllDebridHostInfo, filenameFromDdownloadUrlPath, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, isDdownloadLink, isOneFichierLink, isRealDebridAccountBlockedForStart, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown, type DdownloadCheckResult, type OneFichierCheckResult } from "./debrid";
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo, type ExtractProgressUpdate } from "./extractor";
 import { validateFileAgainstManifest } from "./integrity";
@@ -10918,6 +10919,7 @@ export class DownloadManager extends EventEmitter {
     let lastError = "";
     let effectiveTargetPath = targetPath;
     let resumeRewindBytesNextAttempt = 0;
+    let proxyAttempted = false;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       let existingBytes = 0;
       try {
@@ -10994,6 +10996,122 @@ export class DownloadManager extends EventEmitter {
           throw new Error(`aborted:${active.abortReason}`);
         }
         await sleep(250);
+      }
+
+      if (!proxyAttempted && attempt === 1 && existingBytes === 0 && this.settings.proxyDownloadEnabled) {
+        proxyAttempted = true;
+        if (this.settings.speedLimitEnabled) {
+          logAttemptEvent("INFO", "Proxy-Segmentierung wegen aktivem Geschwindigkeitslimit übersprungen", {
+            attempt
+          });
+        } else {
+          const proxyReasonLabels: Record<ProxyFallbackReason, string> = {
+            proxy_file_unavailable: "Proxy-Liste nicht verfügbar",
+            no_valid_proxies: "Keine gültigen Proxys in der Liste",
+            range_unsupported: "Server unterstützt keine Byte-Bereiche",
+            file_too_small: "Datei ist für mehrere Segmente zu klein",
+            proxy_unavailable: "Proxys nicht erreichbar",
+            segment_failed: "Proxy-Segmente konnten nicht vollständig geladen werden"
+          };
+          let proxyWindowBytes = 0;
+          let proxyWindowStartedAt = nowMs();
+          let lastProxyUiEmitAt = 0;
+          item.fullStatus = `Proxy-Download startet (${this.settings.proxyConnectionsPerDownload} Verbindungen)`;
+          item.updatedAt = nowMs();
+          this.emitState();
+          logAttemptEvent("INFO", "Proxy-Segmentdownload startet", {
+            attempt,
+            connections: this.settings.proxyConnectionsPerDownload,
+            proxyListConfigured: Boolean(this.settings.proxyListPath)
+          });
+          const proxyResult = await downloadWithProxySegments({
+            directUrl,
+            targetPath: effectiveTargetPath,
+            proxyListPath: this.settings.proxyListPath,
+            connections: this.settings.proxyConnectionsPerDownload,
+            signal: active.abortController.signal,
+            skipTlsVerify,
+            waitWhilePaused: async () => {
+              while (this.session.paused && this.session.running && !active.abortController.signal.aborted) {
+                item.status = "paused";
+                item.fullStatus = "Pausiert";
+                item.updatedAt = nowMs();
+                this.emitState();
+                await sleep(120);
+              }
+              if (active.abortController.signal.aborted) {
+                throw new Error(`aborted:${active.abortReason}`);
+              }
+            },
+            onTrafficBytes: (bytes) => {
+              proxyWindowBytes += bytes;
+              this.recordProviderDownloadedBytes(
+                item.provider,
+                bytes,
+                item.providerAccountId,
+                item.providerAccountLabel
+              );
+              this.recordSpeed(bytes, item.packageId);
+            },
+            onProgress: (deltaBytes, downloadedBytes, totalBytes) => {
+              this.session.totalDownloadedBytes = Math.max(0, this.session.totalDownloadedBytes + deltaBytes);
+              this.sessionDownloadedBytes = Math.max(0, this.sessionDownloadedBytes + deltaBytes);
+              this.settings.totalDownloadedAllTime = Math.max(0, Number(this.settings.totalDownloadedAllTime || 0) + deltaBytes);
+              this.itemContributedBytes.set(
+                active.itemId,
+                Math.max(0, (this.itemContributedBytes.get(active.itemId) || 0) + deltaBytes)
+              );
+              const nowTick = nowMs();
+              const elapsed = Math.max((nowTick - proxyWindowStartedAt) / 1000, 0.2);
+              item.status = this.session.paused ? "paused" : "downloading";
+              item.downloadedBytes = downloadedBytes;
+              item.totalBytes = totalBytes;
+              item.progressPercent = Math.max(0, Math.min(100, Math.floor((downloadedBytes / totalBytes) * 100)));
+              item.speedBps = this.session.paused ? 0 : Math.max(0, Math.floor(proxyWindowBytes / elapsed));
+              item.fullStatus = this.session.paused
+                ? "Pausiert"
+                : `Proxy-Download läuft (${this.settings.proxyConnectionsPerDownload} Verbindungen)`;
+              if (elapsed >= 0.5) {
+                proxyWindowStartedAt = nowTick;
+                proxyWindowBytes = 0;
+              }
+              if (nowTick - lastProxyUiEmitAt >= DOWNLOAD_LIVE_UPDATE_INTERVAL_MS || deltaBytes < 0) {
+                item.updatedAt = nowTick;
+                this.emitState();
+                lastProxyUiEmitAt = nowTick;
+              }
+            }
+          });
+          if (proxyResult.status === "completed") {
+            active.resumable = true;
+            item.status = "downloading";
+            item.downloadedBytes = proxyResult.totalBytes;
+            item.totalBytes = proxyResult.totalBytes;
+            item.progressPercent = 100;
+            item.speedBps = 0;
+            item.fullStatus = "Finalisierend...";
+            item.updatedAt = nowMs();
+            this.emitState();
+            logAttemptEvent("INFO", "Proxy-Segmentdownload abgeschlossen", {
+              attempt,
+              connections: proxyResult.connections,
+              totalBytes: proxyResult.totalBytes,
+              targetPath: effectiveTargetPath
+            });
+            return { resumable: true };
+          }
+          item.status = "downloading";
+          item.downloadedBytes = 0;
+          item.progressPercent = 0;
+          item.speedBps = 0;
+          item.fullStatus = "Direktdownload wird gestartet";
+          item.updatedAt = nowMs();
+          this.emitState();
+          logAttemptEvent("WARN", "Proxy-Segmentdownload nicht verwendet, Direktdownload folgt", {
+            attempt,
+            reason: proxyReasonLabels[proxyResult.reason]
+          });
+        }
       }
 
       let response: Response;
