@@ -2855,7 +2855,10 @@ export class DownloadManager extends EventEmitter {
   public getStats(now = nowMs()): DownloadStats {
     const itemCount = this.itemCount;
     if (this.statsCache && this.session.running && itemCount >= 500 && now - this.statsCacheAt < 1500) {
-      return this.statsCache;
+      return {
+        ...this.statsCache,
+        totalDownloaded: this.sessionDownloadedBytes
+      };
     }
 
     this.resetSessionTotalsIfQueueEmpty();

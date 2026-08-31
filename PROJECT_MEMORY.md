@@ -175,6 +175,8 @@ npm exec -- tsc --noEmit
 
 ## Verifizierungen vom 31. August 2026
 
+- Unveröffentlichter Sidebar-Live-Takt-Fix: Bei laufenden Queues ab 500 Einträgen bleibt der Sitzungs-Bytezähler trotz des 1,5-Sekunden-Statistik-Caches in jedem 750-Millisekunden-Live-Snapshot aktuell. Die Bedeutung des kumulativen Sitzungszählers bleibt unverändert. Der vollständige Download-Manager-Lauf war mit 263 von 263 Tests erfolgreich.
+- Vollständiger Client-Lauf nach dem Live-Takt-Fix: 2.658 Tests erfolgreich und 4 optionale JVM-Tests übersprungen; genau ein unveränderter Entpacktest überschritt unter paralleler Gesamtlast einmal sein 5-Sekunden-Limit. Der unmittelbar folgende isolierte Lauf aller 84 Entpacktests war vollständig grün. TypeScript, Main-/Renderer-Build, Self-Check und 16 von 16 Backup-API-Tests waren ebenfalls erfolgreich; die bekannte Vite-Warnung zum rund 576 KiB großen Renderer-Chunk bleibt bestehen.
 - Unveröffentlichte 32/40-Limitanpassung: Proxy-Scheduler, Storage, Einstellungen, Renderer-Projektion und visuelle Fixtures 229 von 229 Tests erfolgreich. Die Main-Normalisierung deckt Standard 32, Minimum 2, Maximum 40 und Werte oberhalb des Maximums direkt ab.
 - Vollständiger Client-Lauf nach der 32/40-Anpassung ohne die zwei lokal nicht ausführbaren Symlink-Fixtures: 140 Testdateien erfolgreich, 1 JVM-Testdatei übersprungen; 2.658 Tests erfolgreich und 4 übersprungen. Die übrigen 22 Public-Release-Metadatentests liefen separat erfolgreich. Alle 84 Entpacktests sind unverändert grün.
 - Nach der 32/40-Anpassung erfolgreich: TypeScript, vollständiger Main-/Renderer-Build, Self-Check und 16 von 16 Backup-API-Tests. Die bekannte Vite-Warnung zum rund 576 KiB großen Renderer-Chunk bleibt bestehen.

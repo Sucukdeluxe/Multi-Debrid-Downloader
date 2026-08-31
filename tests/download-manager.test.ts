@@ -84,6 +84,25 @@ describe("download live update cadence", () => {
       vi.useRealTimers();
     }
   });
+
+  it("keeps the session byte counter live while large-queue statistics are cached", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-live-session-bytes-"));
+    tempDirs.push(root);
+    const session = emptySession();
+    session.running = true;
+    const manager = new DownloadManager(defaultSettings(), session, createStoragePaths(path.join(root, "state")));
+    const internal = manager as unknown as {
+      itemCount: number;
+      sessionDownloadedBytes: number;
+    };
+
+    internal.itemCount = 500;
+    internal.sessionDownloadedBytes = 8 * 1024 * 1024;
+    expect(manager.getSnapshot().stats.totalDownloaded).toBe(8 * 1024 * 1024);
+
+    internal.sessionDownloadedBytes = 16 * 1024 * 1024;
+    expect(manager.getSnapshot().stats.totalDownloaded).toBe(16 * 1024 * 1024);
+  });
 });
 
 describe("snapshot revision", () => {
