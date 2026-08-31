@@ -186,6 +186,8 @@ npm exec -- tsc --noEmit
 
 ## Verifizierungen vom 31. August 2026
 
+- Release-Build `v2.0.79`: Installer und Portable-Datei wurden aus dem versionierten Release-Vorbereitungsstand neu erzeugt. Die Release-Prüfung bestätigte Paket- und Bundle-Version, Update-Metadaten, Artefaktnamen, Dateigröße und SHA-512 des Installers, Icon, Lizenzdateien sowie den entpackten Inhalt beider EXE-Archive. Von den 24 Public-Release-Metadatentests waren 22 erfolgreich; nur die zwei unter Windows ohne Symlink-Berechtigung nicht ausführbaren Fixtures endeten vor ihrer Produktassertion mit `EPERM`.
+- SHA-256 des `v2.0.79`-Setups: `eccfe029f32aaf198c0597fdbb7874540ead39737616879baf1a17bebdf13450`; SHA-256 der Portable-Datei: `2f32b825e03a36ae842f2aa2b9a73c420657d812046c23bf4cbacf6a63ae2333`.
 - Unveröffentlichter Proxy-Integritäts-Hotfix: 15 von 15 Proxy-Segmenttests und 9 von 9 Manifest-Integritätstests erfolgreich. Die neuen End-to-End-Regressionen beweisen vollständiges Neuladen nach einer abweichenden 2-KiB-Nullantwort, Akzeptanz einer unabhängig bestätigten legitimen Nullfolge und Erkennung einer nach dem Netzwerkempfang in die Temp-Datei injizierten 1-KiB-Abweichung durch den Readback-Digest.
 - Vollständiger Client-Lauf des Hotfixes: 140 Testdateien erfolgreich, 1 optionale JVM-Testdatei übersprungen; 2.685 Tests erfolgreich und 4 übersprungen. Nur die zwei bekannten Symlink-Fixtures scheiterten vor ihrer Produktassertion mit Windows-`EPERM`.
 - Nach dem Hotfix erfolgreich: TypeScript, Main-Build, Renderer-Build, Node-Self-Check und 16 von 16 Backup-API-Tests. Die bekannte Vite-Warnung zum rund 576 KiB großen Renderer-Chunk bleibt bestehen.
