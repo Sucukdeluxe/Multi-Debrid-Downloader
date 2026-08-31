@@ -295,6 +295,17 @@ describe("desktop shell", () => {
     expect(menu).not.toContain("ctx-menu-active");
   });
 
+  it("offers separate package reset actions for errors and the complete package", () => {
+    const source = readFileSync(new URL("../src/renderer/App.tsx", import.meta.url), "utf8");
+    const menu = source.slice(source.indexOf('ariaLabel="Downloadaktionen"'), source.indexOf('ariaLabel="Priorität"'));
+
+    expect(menu).toContain("Nur fehlerhafte Dateien zurücksetzen");
+    expect(menu).toContain("Gesamtes Paket zurücksetzen");
+    expect(menu).toContain("getPackageErrorItemIds");
+    expect(menu).toContain("window.rd.resetItems(errorItemIds)");
+    expect(menu).toContain("window.rd.resetPackage(id)");
+  });
+
   it("styles checked columns with a green mark and normal text", () => {
     const shellCss = readFileSync(new URL("../src/renderer/shell/shell.css", import.meta.url), "utf8");
 

@@ -185,7 +185,10 @@ describe("renderer localization", () => {
   it.each([
     ["Entpackte Downloads sind ausgeblendet", "Extracted downloads are hidden"],
     ["Deaktiviere „Entpackte Einträge ausblenden“, um sie wieder anzuzeigen.", "Disable “Hide extracted entries” to show them again."],
-    ["Downloads können derzeit nicht gestartet werden", "Downloads cannot be started right now"]
+    ["Downloads können derzeit nicht gestartet werden", "Downloads cannot be started right now"],
+    ["Nur fehlerhafte Dateien zurücksetzen", "Reset failed files only"],
+    ["Gesamtes Paket zurücksetzen", "Reset entire package"],
+    ["Ausgewählte Pakete vollständig zurücksetzen", "Reset selected packages completely"]
   ])("translates download state text %s in both directions", (german, english) => {
     expect(translateUiText(german, "en")).toBe(english);
     expect(translateUiText(english, "de")).toBe(german);

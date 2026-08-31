@@ -193,13 +193,31 @@ function matchesQuery(value: string | undefined, query: string): boolean {
   return Boolean(value?.toLocaleLowerCase("de-DE").includes(query));
 }
 
-function isExtractFailure(item: DownloadItem): boolean {
+export function isDownloadItemError(item: DownloadItem): boolean {
   const status = item.fullStatus.trim();
-  return /^(?:Entpack(?:-|\s*)Fehler\b|Entpacken\b.*(?:\bFehler\b|\bError\b|fehlgeschlagen)|Extraction\b.*(?:\bError\b|failed))/i.test(status);
+  return item.status === "failed"
+    || /^(?:Entpack(?:-|\s*)Fehler\b|Entpacken\b.*(?:\bFehler\b|\bError\b|fehlgeschlagen)|Extraction\b.*(?:\bError\b|failed))/i.test(status);
+}
+
+export function getPackageErrorItemIds(
+  packageIds: readonly string[],
+  packages: Record<string, PackageEntry>,
+  items: Record<string, DownloadItem>
+): string[] {
+  const errorItemIds = new Set<string>();
+  for (const packageId of packageIds) {
+    const pkg = packages[packageId];
+    if (!pkg) continue;
+    for (const itemId of pkg.itemIds) {
+      const item = items[itemId];
+      if (item && isDownloadItemError(item)) errorItemIds.add(itemId);
+    }
+  }
+  return [...errorItemIds];
 }
 
 function classifyDownloadItem(item: DownloadItem, pkg: PackageEntry): DownloadSidebarFilter {
-  if (item.status === "failed" || isExtractFailure(item)) return "failed";
+  if (isDownloadItemError(item)) return "failed";
   if (item.status === "cancelled") return "all";
   if (isExtracted(item)) return "completed";
   if ((pkg.status === "extracting" || pkg.status === "integrity_check") && item.status === "completed") return "active";

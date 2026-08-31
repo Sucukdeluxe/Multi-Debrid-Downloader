@@ -155,6 +155,14 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Item-Logs melden den Grund `readback_mismatch` beziehungsweise `zero_run_mismatch` mit Range- und Chunkgrenzen. Die bisher irreführende Meldung „Integritätsprüfung bestanden“ bei fehlender `.sfv`-, `.md5`- oder `.sha1`-Prüfsumme wurde in „Integritätsprüfung nicht ausgeführt“ mit Begründung geändert.
 - Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert. `v2.0.79` wurde nach ausdrücklicher Freigabe auf GitHub und Forgejo veröffentlicht; Installation und produktiver Neustart sind nicht Bestandteil des Releases.
 
+## Noch unveröffentlicht nach v2.0.79
+
+- Datei-, Paket-, Kopfzeilen- und Seitenleisten-Geschwindigkeit verwenden nun dieselbe rollierende Ein-Sekunden-Trafficbasis. Dafür werden die bereits für den globalen und paketbezogenen Durchsatz erfassten Bytes zusätzlich pro Item aggregiert; die bisherige kurzzeitige 0,5-Sekunden-Proxyspitze kann nicht mehr als widersprüchlicher Dateiwert stehen bleiben.
+- Die Geschwindigkeitsprojektion verändert keine internen Session-Items. Nur tatsächlich abweichende Snapshot-Items werden kopiert, damit Restmengen-Benachrichtigungen und große Queues ihren bisherigen Laufzeitzustand beziehungsweise ihre Snapshot-Kosten behalten.
+- Das Kontextmenü eines Oberpakets trennt jetzt „Nur fehlerhafte Dateien zurücksetzen“ von „Gesamtes Paket zurücksetzen“. Der selektive Weg erfasst fehlgeschlagene Downloads und als Entpackfehler markierte Items, verwendet den vorhandenen Item-Reset und lässt erfolgreiche beziehungsweise bereits entpackte Dateien unverändert.
+- Der Statistikpunkt „Fehler zurücksetzen“ verwendet dieselbe Fehlerklassifizierung und erfasst dadurch neben Downloadfehlern auch sichtbare Entpackfehler.
+- Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert. Dieser Stand wurde noch nicht als neue Version veröffentlicht und nicht auf einem produktiven System installiert oder gestartet.
+
 ## Start-, Build- und Testbefehle
 
 ```powershell
@@ -186,6 +194,8 @@ npm exec -- tsc --noEmit
 
 ## Verifizierungen vom 31. August 2026
 
+- Noch unveröffentlichter Anzeige-/Reset-Fix nach `v2.0.79`: 265 von 265 Download-Manager-Tests sowie 372 von 372 Downloadansichts-/Übersetzungstests erfolgreich. Der vollständige Clientlauf erreichte 2.690 erfolgreiche und 4 übersprungene Tests; zusätzlich zu den zwei bekannten Windows-Symlink-Fixtures deckte er eine Snapshot-Seitenwirkung auf. Nach deren Korrektur bestanden die 10 betroffenen Geschwindigkeits-, Restmengen-, Reset-, Shell- und Übersetzungsregressionen vollständig. Der neue Dateisystemtest bestätigt zusätzlich, dass der selektive Paket-Reset erfolgreiche Dateien erhält und nur die beiden ausgewählten Fehlerdateien entfernt und neu einreiht.
+- Nach dem Anzeige-/Reset-Fix erfolgreich: TypeScript, Main-Build, Renderer-Build, Node-Self-Check und 16 von 16 Backup-API-Tests. Die bekannte Vite-Warnung zum rund 577 KiB großen Renderer-Chunk bleibt bestehen.
 - Veröffentlichung `v2.0.79`: Der annotierte Tag zeigt auf beiden Git-Remotes exakt auf `04e5ab71d2e77e68256c77b6d0fff48fa86188e8`. GitHub und Forgejo veröffentlichen denselben stabilen Release mit denselben sechs Assets. Alle zwölf erneut heruntergeladenen Dateien stimmen jeweils in Größe und SHA-256 exakt mit den lokalen Originalen überein; GitHub führt `v2.0.79` als Latest Release.
 - Release-Build `v2.0.79`: Installer und Portable-Datei wurden aus dem versionierten Release-Vorbereitungsstand neu erzeugt. Die Release-Prüfung bestätigte Paket- und Bundle-Version, Update-Metadaten, Artefaktnamen, Dateigröße und SHA-512 des Installers, Icon, Lizenzdateien sowie den entpackten Inhalt beider EXE-Archive. Von den 24 Public-Release-Metadatentests waren 22 erfolgreich; nur die zwei unter Windows ohne Symlink-Berechtigung nicht ausführbaren Fixtures endeten vor ihrer Produktassertion mit `EPERM`.
 - SHA-256 des `v2.0.79`-Setups: `eccfe029f32aaf198c0597fdbb7874540ead39737616879baf1a17bebdf13450`; SHA-256 der Portable-Datei: `2f32b825e03a36ae842f2aa2b9a73c420657d812046c23bf4cbacf6a63ae2333`.
@@ -264,10 +274,11 @@ npm exec -- tsc --noEmit
 - Der faire rollierende Proxy-Scheduler und der bytebasierte Paketfortschritt sind als `v2.0.77` veröffentlicht. Eine Serverinstallation oder ein produktiver Neustart wurde nicht vorgenommen.
 - Der 32/40-Proxybereich und der synchrone Live-Takt von „Sitzung“ und „Verbleibend“ sind als `v2.0.78` veröffentlicht. Eine Serverinstallation oder ein produktiver Neustart wurde nicht vorgenommen.
 - Der Proxy-Readback- und Nullbereich-Hotfix ist als `v2.0.79` auf GitHub und Forgejo veröffentlicht, aber noch nicht auf einem produktiven System installiert oder gestartet.
+- Die einheitliche Geschwindigkeitsanzeige und die getrennten Paket-Reset-Optionen sind noch unveröffentlicht. Für eine neue Version, Installation oder einen produktiven Neustart ist eine aktuelle ausdrückliche Freigabe erforderlich.
 
 ## Nächste sinnvolle Schritte
 
-1. Nach Veröffentlichung und einer getrennt freigegebenen Serverinstallation denselben problematischen Download erneut durchführen und Item-Log, SHA-256 sowie `UnRAR t` prüfen.
+1. Nach ausdrücklicher Release-Freigabe die unveröffentlichte Geschwindigkeits-/Reset-Korrektur versionieren, bauen, veröffentlichen und erst nach getrennt freigegebener Serverinstallation am echten Queue-Fall prüfen.
 2. Nach einer getrennt freigegebenen Serverinstallation den Ablauf Real-Debrid-Web-Download, Hauptfenster schließen und unmittelbar neu starten am echten Zielsystem verifizieren; vor jedem Eingriff Prozessbaum und Logtail sichern.
 3. Sicherheitsabhängigkeiten in einem separaten Upgrade-Branch aktualisieren, Electron-/Vite-/Vitest-Major-Wechsel einzeln testen und danach den vollständigen Windows-Paketpfad prüfen.
 4. Eine nichtdestruktive Strategie zur Bereinigung der divergierenden `main`-Branches abstimmen; kein Force-Push ohne ausdrückliche Freigabe.

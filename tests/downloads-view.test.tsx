@@ -17,6 +17,8 @@ import {
   getRemainingDownloadBytes,
   getPendingDownloadItemCount,
   getDownloadSpeedBps,
+  getPackageErrorItemIds,
+  isDownloadItemError,
   buildDownloadLogicalRows,
   type DownloadSidebarFilter,
   type DownloadsModelInput
@@ -886,6 +888,21 @@ describe("downloads model", () => {
   it("uses the package telemetry as the single live speed source", () => {
     expect(getDownloadSpeedBps({ a: 45_000_000, b: 30_400_000, idle: 0 })).toBe(75_400_000);
     expect(getDownloadSpeedBps({ stale: -1, invalid: Number.NaN })).toBe(0);
+  });
+
+  it("selects only failed downloads and extraction errors for a package error reset", () => {
+    const packageEntry = pkg("package-a", "Reset", ["successful", "download-error", "extract-error"]);
+    const items = {
+      successful: item("successful", packageEntry.id, "completed", { fullStatus: "Entpackt" }),
+      "download-error": item("download-error", packageEntry.id, "failed", { fullStatus: "Fehlgeschlagen nach 3 Versuchen" }),
+      "extract-error": item("extract-error", packageEntry.id, "completed", { fullStatus: "Entpack-Fehler: CRCERROR" })
+    };
+
+    expect(isDownloadItemError(items.successful)).toBe(false);
+    expect(getPackageErrorItemIds([packageEntry.id], { [packageEntry.id]: packageEntry }, items)).toEqual([
+      "download-error",
+      "extract-error"
+    ]);
   });
 
   it("exports the sidebar filter contract used by the downloads shell", () => {

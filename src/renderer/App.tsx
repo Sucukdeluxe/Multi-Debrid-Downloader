@@ -111,7 +111,7 @@ import {
   StatisticsSidebarStatus,
   type StatisticsViewActions
 } from "./views/statistics/StatisticsView";
-import { buildDownloadsViewModel, formatDownloadEta, formatRemainingDownloadBytes, formatRemainingDownloadTooltip, getDownloadQueueStatusMetrics, getDownloadSpeedBps, type DownloadDisplayMode, type DownloadSidebarFilter } from "./views/downloads/downloads-model";
+import { buildDownloadsViewModel, formatDownloadEta, formatRemainingDownloadBytes, formatRemainingDownloadTooltip, getDownloadQueueStatusMetrics, getDownloadSpeedBps, getPackageErrorItemIds, isDownloadItemError, type DownloadDisplayMode, type DownloadSidebarFilter } from "./views/downloads/downloads-model";
 import { downloadColumnDefinitions, type DownloadSortColumn } from "./views/downloads/DownloadsTable";
 import { DeleteConfirmationDialog } from "./views/downloads/DeleteConfirmationDialog";
 import { beginDownloadColumnDrag, clearDownloadColumnDrag, commitDownloadColumnDrag, createDownloadColumnOrderPersistence, DOWNLOAD_COLUMN_MOVE_DURATION_MS, updateDownloadColumnDrag, type DownloadColumnDragSession, type DownloadColumnOrderPersistence } from "./views/downloads/column-drag";
@@ -5684,7 +5684,7 @@ export function App(): ReactElement {
     },
     onResetErrors: () => {
       const failedIds = Object.values(snapshot.session.items)
-        .filter((item) => item.status === "failed")
+        .filter(isDownloadItemError)
         .map((item) => item.id);
       if (failedIds.length === 0) {
         return;
@@ -7119,12 +7119,21 @@ export function App(): ReactElement {
               else { executeDeleteSelection(ids); }
             }}>Ausgewählte Dateien entfernen ({selectedItemIds.length})</button>
           )}
-          {hasPackages && !contextMenu.itemId && (
-            <button className="ctx-menu-item" onClick={() => {
-              for (const id of selectedPackageIds) void window.rd.resetPackage(id).catch(() => {});
-              setContextMenu(null);
-            }}>Zurücksetzen{multi ? ` (${selectedPackageIds.length})` : ""}</button>
-          )}
+          {hasPackages && !contextMenu.itemId && (() => {
+            const errorItemIds = getPackageErrorItemIds(selectedPackageIds, snapshot.session.packages, snapshot.session.items);
+            return (
+              <>
+                <button className="ctx-menu-item" disabled={errorItemIds.length === 0} onClick={() => {
+                  if (errorItemIds.length > 0) void window.rd.resetItems(errorItemIds).catch(() => {});
+                  setContextMenu(null);
+                }}>Nur fehlerhafte Dateien zurücksetzen</button>
+                <button className="ctx-menu-item" onClick={() => {
+                  for (const id of selectedPackageIds) void window.rd.resetPackage(id).catch(() => {});
+                  setContextMenu(null);
+                }}>{multi ? "Ausgewählte Pakete vollständig zurücksetzen" : "Gesamtes Paket zurücksetzen"}</button>
+              </>
+            );
+          })()}
           {contextMenu.itemId && (
             <button className="ctx-menu-item" onClick={() => {
               const itemIds = multi ? selectedItemIds : [contextMenu.itemId!];

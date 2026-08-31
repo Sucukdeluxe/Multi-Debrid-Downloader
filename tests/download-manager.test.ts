@@ -49,6 +49,33 @@ describe("runWithLimitedConcurrency", () => {
 });
 
 describe("download live update cadence", () => {
+  it("uses the same rolling traffic window for item and package speed", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-speed-window-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager(
+      defaultSettings(),
+      emptySession(),
+      createStoragePaths(path.join(root, "state"))
+    );
+    manager.addPackages([{ name: "speed", links: ["https://dummy/speed.bin"] }]);
+    const initial = manager.getSnapshot();
+    const packageId = initial.session.packageOrder[0];
+    const itemId = initial.session.packages[packageId].itemIds[0];
+    const internal = manager as any;
+    internal.session.running = true;
+    internal.session.paused = false;
+    internal.session.packages[packageId].status = "downloading";
+    internal.session.items[itemId].status = "downloading";
+    internal.session.items[itemId].speedBps = 47_870_000;
+
+    internal.recordSpeed(18_550_000, packageId, itemId);
+
+    const snapshot = manager.getSnapshot();
+    expect(snapshot.packageSpeedBps[packageId]).toBe(18_550_000);
+    expect(snapshot.session.items[itemId].speedBps).toBe(snapshot.packageSpeedBps[packageId]);
+    expect(internal.session.items[itemId].speedBps).toBe(47_870_000);
+  });
+
   it.each([69, 661, 2_470])("emits a running queue snapshot no sooner than 750 ms for %i items", async (itemCount) => {
     vi.useFakeTimers();
     try {
@@ -8855,6 +8882,76 @@ describe("download manager", () => {
     const packageSnapshot = manager.getSnapshot().session;
     for (const itemId of itemIds) {
       expect(packageSnapshot.items[itemId].onlineStatus).toBe("online");
+    }
+  });
+
+  it("resets only selected package errors and preserves successful downloaded files", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-selective-package-reset-"));
+    tempDirs.push(root);
+    const session = emptySession();
+    const packageId = "selective-reset-package";
+    const outputDir = path.join(root, "downloads", "selective-reset");
+    const createdAt = Date.now();
+    const itemIds = ["successful", "download-error", "extract-error"];
+    fs.mkdirSync(outputDir, { recursive: true });
+    session.packageOrder = [packageId];
+    session.packages[packageId] = {
+      id: packageId,
+      name: "selective-reset",
+      outputDir,
+      extractDir: path.join(root, "extract", "selective-reset"),
+      status: "failed",
+      itemIds,
+      cancelled: false,
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt
+    };
+    for (const itemId of itemIds) {
+      const targetPath = path.join(outputDir, `${itemId}.rar`);
+      fs.writeFileSync(targetPath, itemId);
+      session.items[itemId] = {
+        id: itemId,
+        packageId,
+        url: `https://dummy/${itemId}`,
+        provider: "realdebrid",
+        status: itemId === "download-error" ? "failed" : "completed",
+        retries: 0,
+        speedBps: 0,
+        downloadedBytes: itemId.length,
+        totalBytes: itemId.length,
+        progressPercent: 100,
+        fileName: `${itemId}.rar`,
+        targetPath,
+        resumable: true,
+        attempts: 1,
+        lastError: itemId === "successful" ? "" : "Fehler",
+        fullStatus: itemId === "successful" ? "Entpackt" : itemId === "extract-error" ? "Entpack-Fehler: CRCERROR" : "Fehlgeschlagen",
+        createdAt,
+        updatedAt: createdAt
+      };
+    }
+    const manager = new DownloadManager(
+      defaultSettings(),
+      session,
+      createStoragePaths(path.join(root, "state"))
+    );
+
+    await manager.resetItems(["download-error", "extract-error"]);
+
+    const snapshot = manager.getSnapshot().session;
+    expect(snapshot.items.successful.status).toBe("completed");
+    expect(snapshot.items.successful.targetPath).toBe(path.join(outputDir, "successful.rar"));
+    expect(fs.existsSync(snapshot.items.successful.targetPath)).toBe(true);
+    for (const itemId of ["download-error", "extract-error"]) {
+      expect(snapshot.items[itemId]).toEqual(expect.objectContaining({
+        status: "queued",
+        downloadedBytes: 0,
+        totalBytes: null,
+        targetPath: "",
+        fullStatus: "Wartet"
+      }));
+      expect(fs.existsSync(path.join(outputDir, `${itemId}.rar`))).toBe(false);
     }
   });
 

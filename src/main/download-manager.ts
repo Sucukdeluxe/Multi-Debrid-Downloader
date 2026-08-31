@@ -1874,7 +1874,7 @@ export class DownloadManager extends EventEmitter {
 
   private persistTimer: NodeJS.Timeout | null = null;
 
-  private speedEvents: Array<{ at: number; bytes: number; pid: string }> = [];
+  private speedEvents: Array<{ at: number; bytes: number; pid: string; itemId: string }> = [];
 
   private summary: DownloadSummary | null = null;
 
@@ -1884,6 +1884,8 @@ export class DownloadManager extends EventEmitter {
   private lastStateEmitAt = 0;
 
   private speedBytesLastWindow = 0;
+
+  private speedBytesPerItem = new Map<string, number>();
 
   private sessionDownloadedBytes = 0;
   private sessionCompletedFiles = 0;
@@ -2809,6 +2811,14 @@ export class DownloadManager extends EventEmitter {
     const reconnectMs = Math.max(0, this.session.reconnectUntil - now);
 
     const snapshotSession = cloneSession(this.session);
+    for (const [itemId, item] of Object.entries(snapshotSession.items)) {
+      const speedBps = this.session.running && !paused && item.status === "downloading"
+        ? Math.floor((this.speedBytesPerItem.get(item.id) ?? 0) / SPEED_WINDOW_SECONDS)
+        : 0;
+      if (item.speedBps !== speedBps) {
+        snapshotSession.items[itemId] = { ...item, speedBps };
+      }
+    }
     let rendererState: ReturnType<typeof createRendererState>;
     if (this.settingsSnapshotCache && now - this.settingsSnapshotCacheAt < 400) {
       rendererState = this.settingsSnapshotCache;
@@ -2967,6 +2977,7 @@ export class DownloadManager extends EventEmitter {
       this.speedEvents = [];
       this.speedBytesLastWindow = 0;
       this.speedBytesPerPackage.clear();
+      this.speedBytesPerItem.clear();
       this.speedEventsHead = 0;
       changed = true;
     }
@@ -3073,6 +3084,7 @@ export class DownloadManager extends EventEmitter {
     this.speedEventsHead = 0;
     this.speedBytesLastWindow = 0;
     this.speedBytesPerPackage.clear();
+    this.speedBytesPerItem.clear();
     this.summary = null;
     this.invalidateStatsCache();
     this.persistSoon();
@@ -3393,6 +3405,7 @@ export class DownloadManager extends EventEmitter {
     this.speedEventsHead = 0;
     this.speedBytesLastWindow = 0;
     this.speedBytesPerPackage.clear();
+    this.speedBytesPerItem.clear();
     this.packagePostProcessTasks.clear();
     this.packagePostProcessAbortControllers.clear();
     this.packageDeferredPostProcessAbortControllers.clear();
@@ -6342,6 +6355,7 @@ export class DownloadManager extends EventEmitter {
     this.speedEvents = [];
     this.speedBytesLastWindow = 0;
     this.speedBytesPerPackage.clear();
+    this.speedBytesPerItem.clear();
     this.speedEventsHead = 0;
     this.lastGlobalProgressBytes = 0;
     this.lastGlobalProgressAt = nowMs();
@@ -6455,6 +6469,7 @@ export class DownloadManager extends EventEmitter {
     this.speedEvents = [];
     this.speedBytesLastWindow = 0;
     this.speedBytesPerPackage.clear();
+    this.speedBytesPerItem.clear();
     this.speedEventsHead = 0;
     this.lastGlobalProgressBytes = 0;
     this.lastGlobalProgressAt = nowMs();
@@ -6572,6 +6587,7 @@ export class DownloadManager extends EventEmitter {
       this.speedEvents = [];
       this.speedBytesLastWindow = 0;
       this.speedBytesPerPackage.clear();
+      this.speedBytesPerItem.clear();
       this.speedEventsHead = 0;
       this.lastGlobalProgressBytes = 0;
       this.lastGlobalProgressAt = nowMs();
@@ -6613,6 +6629,7 @@ export class DownloadManager extends EventEmitter {
     this.speedEvents = [];
     this.speedBytesLastWindow = 0;
     this.speedBytesPerPackage.clear();
+    this.speedBytesPerItem.clear();
     this.speedEventsHead = 0;
     this.lastGlobalProgressBytes = 0;
     this.lastGlobalProgressAt = nowMs();
@@ -6655,6 +6672,7 @@ export class DownloadManager extends EventEmitter {
     this.speedEvents = [];
     this.speedBytesLastWindow = 0;
     this.speedBytesPerPackage.clear();
+    this.speedBytesPerItem.clear();
     this.speedEventsHead = 0;
     if (!keepExtraction) {
       this.abortPostProcessing("stop");
@@ -6777,6 +6795,7 @@ export class DownloadManager extends EventEmitter {
     this.speedEvents = [];
     this.speedBytesLastWindow = 0;
     this.speedBytesPerPackage.clear();
+    this.speedBytesPerItem.clear();
     this.speedEventsHead = 0;
     this.runItemIds.clear();
     this.runPackageIds.clear();
@@ -6818,6 +6837,7 @@ export class DownloadManager extends EventEmitter {
       this.speedEvents = [];
       this.speedBytesLastWindow = 0;
       this.speedBytesPerPackage.clear();
+      this.speedBytesPerItem.clear();
       this.speedEventsHead = 0;
     }
 
@@ -7209,6 +7229,9 @@ export class DownloadManager extends EventEmitter {
       const pkgBytes = (this.speedBytesPerPackage.get(ev.pid) ?? 0) - ev.bytes;
       if (pkgBytes <= 0) this.speedBytesPerPackage.delete(ev.pid);
       else this.speedBytesPerPackage.set(ev.pid, pkgBytes);
+      const itemBytes = (this.speedBytesPerItem.get(ev.itemId) ?? 0) - ev.bytes;
+      if (itemBytes <= 0) this.speedBytesPerItem.delete(ev.itemId);
+      else this.speedBytesPerItem.set(ev.itemId, itemBytes);
       this.speedEventsHead += 1;
     }
     if (this.speedEventsHead > 200) {
@@ -7219,7 +7242,7 @@ export class DownloadManager extends EventEmitter {
 
   private lastSpeedPruneAt = 0;
 
-  private recordSpeed(bytes: number, packageId: string = ""): void {
+  private recordSpeed(bytes: number, packageId: string = "", itemId: string = ""): void {
     const now = nowMs();
     if (!Number.isFinite(bytes) || bytes <= 0) {
       return;
@@ -7231,13 +7254,14 @@ export class DownloadManager extends EventEmitter {
     }
     const bucket = now - (now % 120);
     const last = this.speedEvents[this.speedEvents.length - 1];
-    if (last && last.at === bucket && last.pid === packageId) {
+    if (last && last.at === bucket && last.pid === packageId && last.itemId === itemId) {
       last.bytes += bytes;
     } else {
-      this.speedEvents.push({ at: bucket, bytes, pid: packageId });
+      this.speedEvents.push({ at: bucket, bytes, pid: packageId, itemId });
     }
     this.speedBytesLastWindow += bytes;
     this.speedBytesPerPackage.set(packageId, (this.speedBytesPerPackage.get(packageId) ?? 0) + bytes);
+    this.speedBytesPerItem.set(itemId, (this.speedBytesPerItem.get(itemId) ?? 0) + bytes);
     if (now - this.lastSpeedPruneAt >= 1500) {
       this.pruneSpeedEvents(now);
       this.lastSpeedPruneAt = now;
@@ -11024,8 +11048,6 @@ export class DownloadManager extends EventEmitter {
             origin_http_error: "Downloadserver hat die Segmentanfrage abgelehnt",
             segment_failed: "Proxy-Segmente konnten nicht vollständig geladen werden"
           };
-          let proxyWindowBytes = 0;
-          let proxyWindowStartedAt = nowMs();
           let lastProxyUiEmitAt = 0;
           item.fullStatus = `Proxy-Download startet (Gesamtlimit ${this.settings.proxyConnectionsPerDownload})`;
           item.updatedAt = nowMs();
@@ -11058,14 +11080,13 @@ export class DownloadManager extends EventEmitter {
               }
             },
             onTrafficBytes: (bytes) => {
-              proxyWindowBytes += bytes;
               this.recordProviderDownloadedBytes(
                 item.provider,
                 bytes,
                 item.providerAccountId,
                 item.providerAccountLabel
               );
-              this.recordSpeed(bytes, item.packageId);
+              this.recordSpeed(bytes, item.packageId, active.itemId);
             },
             onProgress: (deltaBytes, downloadedBytes, totalBytes) => {
               this.session.totalDownloadedBytes = Math.max(0, this.session.totalDownloadedBytes + deltaBytes);
@@ -11076,19 +11097,16 @@ export class DownloadManager extends EventEmitter {
                 Math.max(0, (this.itemContributedBytes.get(active.itemId) || 0) + deltaBytes)
               );
               const nowTick = nowMs();
-              const elapsed = Math.max((nowTick - proxyWindowStartedAt) / 1000, 0.2);
               item.status = this.session.paused ? "paused" : "downloading";
               item.downloadedBytes = downloadedBytes;
               item.totalBytes = totalBytes;
               item.progressPercent = Math.max(0, Math.min(100, Math.floor((downloadedBytes / totalBytes) * 100)));
-              item.speedBps = this.session.paused ? 0 : Math.max(0, Math.floor(proxyWindowBytes / elapsed));
+              item.speedBps = this.session.paused
+                ? 0
+                : Math.floor((this.speedBytesPerItem.get(active.itemId) ?? 0) / SPEED_WINDOW_SECONDS);
               item.fullStatus = this.session.paused
                 ? "Pausiert"
                 : `Proxy-Download läuft (Gesamtlimit ${this.settings.proxyConnectionsPerDownload})`;
-              if (elapsed >= 0.5) {
-                proxyWindowStartedAt = nowTick;
-                proxyWindowBytes = 0;
-              }
               if (nowTick - lastProxyUiEmitAt >= DOWNLOAD_LIVE_UPDATE_INTERVAL_MS || deltaBytes < 0) {
                 item.updatedAt = nowTick;
                 this.emitState();
@@ -11751,7 +11769,7 @@ export class DownloadManager extends EventEmitter {
                 item.providerAccountLabel
               );
               this.itemContributedBytes.set(active.itemId, (this.itemContributedBytes.get(active.itemId) || 0) + buffer.length);
-              this.recordSpeed(buffer.length, item.packageId);
+              this.recordSpeed(buffer.length, item.packageId, active.itemId);
               throughputWindowBytes += buffer.length;
 
               if (completionPlan.canFinishEarly && completionPlan.expectedTotal && written >= completionPlan.expectedTotal) {
@@ -14630,6 +14648,7 @@ export class DownloadManager extends EventEmitter {
     this.speedEventsHead = 0;
     this.speedBytesLastWindow = 0;
     this.speedBytesPerPackage.clear();
+    this.speedBytesPerItem.clear();
     this.resetGlobalSpeedLimitState();
     this.nonResumableActive = 0;
     this.lastGlobalProgressBytes = this.session.totalDownloadedBytes;
