@@ -10,7 +10,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 
 - Verifiziert am: 31. August 2026, Europe/Berlin
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
-- Arbeitsbranch: `release/v2.0.75`
+- Arbeitsbranch: `hotfix/proxy-global-budget`
 - Quellbasis: `release/v2.0.74`
 - Release-Tag: `v2.0.75`
 - Baseline-Commit: `c1e1095231ab72d71dfa9af5a3e5d2dce691d0cb`
@@ -23,7 +23,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - GitHub `main` steht auf `4d5161b` (`v2.0.35`) und ist gegenüber `release/v2.0.74` mit 7 zu 136 Commits auseinanderentwickelt.
 - Forgejo `main` steht auf `a8c4dcc` (`v1.7.232`) und ist noch deutlich älter.
 - GitHub und Forgejo zeigen für `release/v2.0.74` beide exakt auf `c1e1095`.
-- Neue Arbeit muss bis zu einer ausdrücklich geplanten Branch-Bereinigung von `release/v2.0.75` beziehungsweise einem davon abgeleiteten Arbeitsbranch ausgehen.
+- Neue Arbeit muss bis zu einer ausdrücklich geplanten Branch-Bereinigung von `release/v2.0.75` beziehungsweise einem davon abgeleiteten Arbeitsbranch ausgehen. Der aktuelle unveröffentlichte Hotfix basiert direkt auf `release/v2.0.75`.
 
 ## Remotes
 
@@ -67,7 +67,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Provider-Reihenfolge, Hoster-Overrides, Kontostatus, Tageslimits, Cooldowns und optionale Fallbacks bestimmen das Routing.
 - Real-Debrid und Debrid-Link unterstützen Kontopools; Auswahl und Rotation berücksichtigen Aktivität, Fairness, Limits und Fehlerklassen.
 - Item-Pipeline: Vorprüfung und Recovery, Provider-Auswahl, Unrestrict mit Timeout, sichere Zielpfadreservierung, Speicherplatzreservierung, HTTP-Download mit Range-Resume, optionale Integritätsprüfung, Abschluss und Paket-Postprocessing.
-- Der optionale Proxy-only-Modus leitet sämtliche Main-Prozess-API-, Link-Auflösungs- und normalen Download-Requests über einen fest ausgewählten authentifizierten HTTP-CONNECT-Proxy. Electron-Web-Logins und deren Session-Fetches erhalten denselben festen Proxy. Neue Dateien ab 8 MiB können zusätzlich in 2 bis 32 exakten HTTP-Range-Bereichen parallel über die gesamte Proxy-Liste geladen werden.
+- Der optionale Proxy-only-Modus leitet sämtliche Main-Prozess-API-, Link-Auflösungs- und normalen Download-Requests über einen fest ausgewählten authentifizierten HTTP-CONNECT-Proxy. Electron-Web-Logins und deren Session-Fetches erhalten denselben festen Proxy. Neue Dateien ab 8 MiB können zusätzlich in 2 bis 32 exakten HTTP-Range-Bereichen parallel über die Proxy-Liste geladen werden. Der unveröffentlichte Hotfix behandelt diesen Wert als gemeinsames Prozesslimit für alle gleichzeitigen Segmentdownloads und hält den festen API-Proxy aus dem Segmentpool heraus.
 - Download-Retries unterscheiden Netzwerk-, Range-, Hoster-, Provider-, Konto-, Quota-, Disk- und permanente Linkfehler. Stop, Pause, Shutdown und Neustart besitzen getrennte Park- und Abbruchpfade.
 - Die Queue priorisiert hoch vor normal vor niedrig, beachtet globale und providerbezogene Parallelitätsgrenzen und schützt sich mit Scheduler-Generation, Heartbeat und Stall-Watchdogs gegen veraltete Tasks.
 
@@ -120,6 +120,14 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Die Entpacklogik und ihre Produktionspfade wurden nicht verändert.
 - `v2.0.75` wurde nach ausdrücklicher Freigabe als GitHub-Update veröffentlicht und als Branch sowie annotierter Tag zu GitHub und Forgejo gespiegelt. Ein produktiver Serverdienst wurde dafür weder installiert noch neu gestartet.
 
+## Unveröffentlichter Proxy-Hotfix nach v2.0.75
+
+- Der bisherige Wert „Verbindungen pro Download“ wurde bei jedem parallelen Download vollständig neu angewendet. Vier Dateien mit dem Wert 16 konnten deshalb bis zu 64 Segmenttunnel öffnen. Der Wert ist nun ein gemeinsames Gesamtlimit für alle gleichzeitig laufenden Segmentdownloads; bestehende Einstellungen mit 16 werden ohne Migration als höchstens 16 parallele Segmentverbindungen insgesamt verwendet.
+- Segment-Proxys werden prozessweit koordiniert. Derselbe Listeneintrag wird nicht gleichzeitig an mehrere Segmente oder Dateien vergeben, und der fest ausgewählte API-Proxy bleibt exklusiv für API-, Login-, Link- und Einzel-Proxy-Verkehr reserviert.
+- Range-Proben und Segmentanfragen teilen dasselbe Verbindungslimit. Wartende Dateien erhalten frei werdende Slots, statt das Limit durch zusätzliche Proben oder einen eigenen lokalen Proxy-Pool zu überschreiten.
+- HTTP-Antworten des eigentlichen Downloadservers werden getrennt von Proxy-Verbindungsfehlern erfasst. Insbesondere erscheint ein über einen erreichbaren Proxy empfangener HTTP 503 mit `originHttpStatus=503` im Item-Log und nicht mehr irreführend als „Proxys nicht erreichbar“.
+- Die Entpacklogik und ihre Produktionspfade wurden nicht verändert. Der Hotfix ist noch nicht veröffentlicht, installiert oder auf einem Server gestartet.
+
 ## Start-, Build- und Testbefehle
 
 ```powershell
@@ -152,7 +160,9 @@ npm exec -- tsc --noEmit
 ## Verifizierungen vom 31. August 2026
 
 - Proxy-Parser gegen die bereitgestellte externe Liste geprüft: 1.000 von 1.000 Einträgen gültig; dabei wurden weder Proxy-Verbindungen aufgebaut noch Listeneinträge ausgegeben.
-- Proxy-Segmenttests: 6 von 6 erfolgreich. Abgedeckt sind die feste Auswahl nach gültigem 1-basiertem Listeneintrag, vier parallele authentifizierte CONNECT-Proxys mit exakten Byte-Bereichen und identischem Dateiergebnis, Ersatz eines abgelehnten Segment-Proxys, sauberer Einzel-Proxy-Fallback ohne Restdatei bei ignoriertem Range-Header sowie Abbruch mit Fortschritts-Rückrechnung und Temp-Bereinigung.
+- Proxy-Segmenttests nach dem unveröffentlichten Hotfix: 9 von 9 erfolgreich. Abgedeckt sind die feste Auswahl nach gültigem 1-basiertem Listeneintrag, vier parallele authentifizierte CONNECT-Proxys mit exakten Byte-Bereichen und identischem Dateiergebnis, Ersatz eines abgelehnten Segment-Proxys, zwei gleichzeitige Dateien unter einem gemeinsamen Verbindungslimit ohne gleichzeitige Doppelvergabe und ohne Nutzung des reservierten API-Proxys, getrennte HTTP-503-Diagnose aus Probe und Segment, sauberer Einzel-Proxy-Fallback ohne Restdatei bei ignoriertem Range-Header sowie Abbruch mit Fortschritts-Rückrechnung und Temp-Bereinigung.
+- Vollständiger Client-Lauf nach dem Proxy-Hotfix ohne den unter Windows nicht ausführbaren Symlink-Metadatentest: 140 Testdateien erfolgreich, 1 JVM-Testdatei übersprungen; 2.653 Tests erfolgreich und 4 übersprungen. Darin sind alle 84 bestehenden Entpacktests unverändert grün.
+- Nach dem Proxy-Hotfix erfolgreich: TypeScript, vollständiger Main-/Renderer-Build, Self-Check und 16 von 16 Backup-API-Tests. Die bekannte Vite-Warnung zum rund 576 KiB großen Renderer-Chunk bleibt bestehen.
 - Proxy-only-Routingtests: 3 von 3 erfolgreich. Ein normaler globaler API-`fetch` verwendete ausschließlich den ausgewählten zweiten authentifizierten CONNECT-Proxy; der erste Proxy blieb unbenutzt. Bei fehlender Liste wurde die Zieladresse nicht kontaktiert. Electron-Regeln enthielten keine Zugangsdaten, während die Authentifizierung nur für exakt passenden Proxy-Host und -Port bereitgestellt wurde.
 - Reale Proxy-Prüfung mit einer 930.376.313 Byte großen Real-Debrid-RAR-Datei: 16 Verbindungen, vollständiger Segmenttransfer in rund 11,7 Sekunden mit 76,09 MiB/s mittlerem Nutzdurchsatz und zwischenzeitlich rund 94 MiB/s; Gesamtlauf einschließlich `datasync` und SHA-256 dauerte 13,19 Sekunden. Der zusätzliche Prüfverkehr betrug exakt 2 Byte.
 - Die reale Testdatei besitzt SHA-256 `f60f70a03cc49f544aab97d66254cb39801d7bbad827d1db935ef8b25c8b544f`, eine gültige RAR-Signatur und ein fehlerfrei lesbares Inhaltsverzeichnis. 32 verteilte 64-Byte-Stichproben an Anfang und Ende aller 16 Segmente stimmten mit frischen Range-Antworten über 32 verschiedene Listeneinträge überein.
@@ -193,7 +203,7 @@ npm exec -- tsc --noEmit
 - Windows ohne Developer Mode beziehungsweise passende Berechtigung kann die zwei Symlink-basierten Public-Release-Metadaten-Tests nicht ausführen.
 - Proxy-Bündelung garantiert keine lineare Addition der Einzelgeschwindigkeiten. Ergebnis und Stabilität hängen unter anderem von Proxy-Latenz, Proxy-Bandbreite, Provider-/CDN-IP-Bindung, Range-Unterstützung, Zielserver-Limits, Dateigröße und lokaler Schreibgeschwindigkeit ab. Nach einem späten Segmentfehler kann vor dem festen Einzel-Proxy-Fallback zusätzlicher Providerverkehr angefallen sein.
 - Der feste API-Proxy wird absichtlich nicht automatisch rotiert, damit API- und Login-Sitzungen eine stabile Ausgangs-IP behalten. Bei Ausfall muss ein anderer gültiger Listeneintrag ausgewählt werden; bis dahin schlägt Proxy-only geschlossen fehl.
-- Die bereitgestellte Proxy-Liste wurde mit dem ausdrücklich bereitgestellten Real-Debrid-Testlink erfolgreich real geprüft. Die Messung gilt nur für diesen Link, diesen Zeitpunkt und einen parallelen Download; daraus folgt noch keine Garantie für fünf gleichzeitige Downloads, andere CDN-Knoten oder dauerhafte Proxy-Leistung.
+- Die bereitgestellte Proxy-Liste wurde mit dem ausdrücklich bereitgestellten Real-Debrid-Testlink erfolgreich real geprüft. Die Messung gilt nur für diesen Link, diesen Zeitpunkt und einen parallelen Download. Das gemeinsame Limit ist mit zwei gleichzeitigen lokalen End-to-End-Downloads verifiziert; ein erneuter Mehrdatei-Test gegen Real-Debrid benötigt weiterhin eine veröffentlichte und installierte Hotfix-Version.
 - Der Arbeitsordner enthält `&`; ohne PowerShell-7-Skriptshell können npm-`cmd`-Shims fehlschlagen.
 - Es gibt keine `.github`-Workflows und damit keine serverseitige CI-Absicherung im GitHub-Repository.
 - Der Renderer-Bundle-Chunk liegt über Vites 500-KiB-Warnschwelle.
@@ -203,7 +213,7 @@ npm exec -- tsc --noEmit
 
 ## Nächste sinnvolle Schritte
 
-1. Das veröffentlichte Proxy-only-Update zunächst mit einem festen API-Proxy und 2 bis 4 Segmentverbindungen beobachten; danach bei Bedarf auf 16 erhöhen und Erfolgsquote, Zusatzverkehr, Zielserver-Kompatibilität, Festplattenlast sowie Netto-MB/s vergleichen. Erst anschließend `maxParallel` auf 5 erhöhen.
+1. Den unveröffentlichten Proxy-Hotfix nach ausdrücklicher Release-Freigabe paketieren und anschließend mit Gesamtlimit 16 sowie `maxParallel=2` gegen zwei echte Real-Debrid-Dateien prüfen. Erfolgsquote, HTTP-Status, Zusatzverkehr, Festplattenlast und Netto-MB/s beobachten, bevor mehr gleichzeitige Dateien zugelassen werden.
 2. Nach einer getrennt freigegebenen Serverinstallation den Ablauf Real-Debrid-Web-Download, Hauptfenster schließen und unmittelbar neu starten am echten Zielsystem verifizieren; vor jedem Eingriff Prozessbaum und Logtail sichern.
 3. Sicherheitsabhängigkeiten in einem separaten Upgrade-Branch aktualisieren, Electron-/Vite-/Vitest-Major-Wechsel einzeln testen und danach den vollständigen Windows-Paketpfad prüfen.
 4. Eine nichtdestruktive Strategie zur Bereinigung der divergierenden `main`-Branches abstimmen; kein Force-Push ohne ausdrückliche Freigabe.

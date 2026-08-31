@@ -68,7 +68,11 @@ async function createRangeServer(content: Buffer, supportsRanges = true): Promis
   return { ...running, ranges };
 }
 
-async function createConnectProxy(username: string, password: string, acceptedConnections: { value: number }): Promise<RunningServer> {
+async function createConnectProxy(
+  username: string,
+  password: string,
+  acceptedConnections: { value: number; active?: number; maxActive?: number }
+): Promise<RunningServer> {
   const server = http.createServer();
   server.on("connect", (request, clientSocket, head) => {
     const expectedAuth = `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
@@ -79,6 +83,16 @@ async function createConnectProxy(username: string, password: string, acceptedCo
     const target = new URL(`http://${request.url}`);
     const upstream = net.connect(Number(target.port), target.hostname, () => {
       acceptedConnections.value += 1;
+      acceptedConnections.active = (acceptedConnections.active || 0) + 1;
+      acceptedConnections.maxActive = Math.max(acceptedConnections.maxActive || 0, acceptedConnections.active);
+      let released = false;
+      const release = (): void => {
+        if (released) return;
+        released = true;
+        acceptedConnections.active = Math.max(0, (acceptedConnections.active || 0) - 1);
+      };
+      upstream.once("close", release);
+      clientSocket.once("close", release);
       clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
       if (head.length > 0) upstream.write(head);
       clientSocket.pipe(upstream);
@@ -202,6 +216,143 @@ describe("proxy segmented download", () => {
     expect(result.status).toBe("completed");
     expect(await fs.promises.readFile(targetFile)).toEqual(content);
     expect(counters.some((counter) => counter.value > 0)).toBe(true);
+  });
+
+  it("shares one connection budget across concurrent downloads and reserves the fixed API proxy", async () => {
+    const content = Buffer.allocUnsafe(128 * 1024);
+    for (let index = 0; index < content.length; index += 1) content[index] = index % 239;
+    let activeRequests = 0;
+    let maxActiveRequests = 0;
+    const server = http.createServer((request, response) => {
+      const match = /^bytes=(\d+)-(\d+)$/.exec(String(request.headers.range || ""));
+      if (!match) {
+        response.writeHead(416);
+        response.end();
+        return;
+      }
+      const start = Number(match[1]);
+      const end = Math.min(Number(match[2]), content.length - 1);
+      const body = content.subarray(start, end + 1);
+      activeRequests += 1;
+      maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
+      let finished = false;
+      const finish = (): void => {
+        if (finished) return;
+        finished = true;
+        activeRequests = Math.max(0, activeRequests - 1);
+      };
+      response.once("close", finish);
+      response.writeHead(206, {
+        "Content-Range": `bytes ${start}-${end}/${content.length}`,
+        "Content-Length": body.length
+      });
+      if (start === 0 && end === 1) {
+        response.end(body);
+      } else {
+        setTimeout(() => response.end(body), 60);
+      }
+    });
+    const targetServer = await listen(server);
+    const counters = Array.from({ length: 9 }, () => ({ value: 0, active: 0, maxActive: 0 }));
+    const proxies = await Promise.all(counters.map((counter, index) => createConnectProxy(`shared${index}`, `pass${index}`, counter)));
+    const directory = await createTempDirectory();
+    const proxyFile = path.join(directory, "shared-proxies.txt");
+    const firstTarget = path.join(directory, "first.bin");
+    const secondTarget = path.join(directory, "second.bin");
+    await fs.promises.writeFile(
+      proxyFile,
+      proxies.map((proxy, index) => `shared${index}:pass${index}@127.0.0.1:${proxy.port}`).join("\n")
+    );
+    const commonOptions = {
+      directUrl: `http://127.0.0.1:${targetServer.port}/shared.bin`,
+      proxyListPath: proxyFile,
+      connections: 4,
+      totalConnectionLimit: 4,
+      reservedProxyIndex: 1,
+      minSegmentBytes: 1,
+      signal: new AbortController().signal
+    };
+
+    const [firstResult, secondResult] = await Promise.all([
+      downloadWithProxySegments({ ...commonOptions, targetPath: firstTarget }),
+      downloadWithProxySegments({ ...commonOptions, targetPath: secondTarget })
+    ]);
+
+    expect(firstResult.status).toBe("completed");
+    expect(secondResult.status).toBe("completed");
+    expect(await fs.promises.readFile(firstTarget)).toEqual(content);
+    expect(await fs.promises.readFile(secondTarget)).toEqual(content);
+    expect(maxActiveRequests).toBeLessThanOrEqual(4);
+    expect(counters[0].value).toBe(0);
+    expect(counters.every((counter) => counter.maxActive <= 1)).toBe(true);
+  });
+
+  it("reports an origin HTTP status instead of marking reachable proxies unavailable", async () => {
+    const server = http.createServer((_request, response) => {
+      response.writeHead(503, { "Content-Type": "text/plain", "Content-Length": 19 });
+      response.end("Service Unavailable");
+    });
+    const targetServer = await listen(server);
+    const counters = Array.from({ length: 3 }, () => ({ value: 0 }));
+    const proxies = await Promise.all(counters.map((counter, index) => createConnectProxy(`status${index}`, `pass${index}`, counter)));
+    const directory = await createTempDirectory();
+    const proxyFile = path.join(directory, "status-proxies.txt");
+    await fs.promises.writeFile(
+      proxyFile,
+      proxies.map((proxy, index) => `status${index}:pass${index}@127.0.0.1:${proxy.port}`).join("\n")
+    );
+
+    const result = await downloadWithProxySegments({
+      directUrl: `http://127.0.0.1:${targetServer.port}/unavailable.bin`,
+      targetPath: path.join(directory, "unavailable.bin"),
+      proxyListPath: proxyFile,
+      connections: 2,
+      signal: new AbortController().signal,
+      minSegmentBytes: 1
+    });
+
+    expect(result).toEqual({ status: "fallback", reason: "origin_http_error", httpStatus: 503 });
+    expect(counters.every((counter) => counter.value > 0)).toBe(true);
+  });
+
+  it("preserves an origin HTTP status from failed segment requests and removes temporary data", async () => {
+    const content = Buffer.alloc(64 * 1024, 11);
+    const server = http.createServer((request, response) => {
+      const rangeHeader = String(request.headers.range || "");
+      if (rangeHeader === "bytes=0-1") {
+        response.writeHead(206, {
+          "Content-Range": `bytes 0-1/${content.length}`,
+          "Content-Length": 2
+        });
+        response.end(content.subarray(0, 2));
+        return;
+      }
+      response.writeHead(503, { "Content-Type": "text/plain", "Content-Length": 19 });
+      response.end("Service Unavailable");
+    });
+    const targetServer = await listen(server);
+    const counters = Array.from({ length: 4 }, () => ({ value: 0 }));
+    const proxies = await Promise.all(counters.map((counter, index) => createConnectProxy(`segment${index}`, `pass${index}`, counter)));
+    const directory = await createTempDirectory();
+    const proxyFile = path.join(directory, "segment-status-proxies.txt");
+    const targetFile = path.join(directory, "segment-status.bin");
+    await fs.promises.writeFile(
+      proxyFile,
+      proxies.map((proxy, index) => `segment${index}:pass${index}@127.0.0.1:${proxy.port}`).join("\n")
+    );
+
+    const result = await downloadWithProxySegments({
+      directUrl: `http://127.0.0.1:${targetServer.port}/segment-status.bin`,
+      targetPath: targetFile,
+      proxyListPath: proxyFile,
+      connections: 2,
+      signal: new AbortController().signal,
+      minSegmentBytes: 1
+    });
+
+    expect(result).toEqual({ status: "fallback", reason: "origin_http_error", httpStatus: 503 });
+    expect(fs.existsSync(targetFile)).toBe(false);
+    expect((await fs.promises.readdir(directory)).filter((name) => name.includes(".proxy-")).length).toBe(0);
   });
 
   it("falls back cleanly when the origin ignores byte ranges", async () => {

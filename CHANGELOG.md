@@ -4,6 +4,12 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+### Proxy concurrency hotfix
+
+- Treat the configured proxy connection count as one process-wide segment connection budget shared by all simultaneous downloads instead of multiplying it per file.
+- Coordinate proxy leases across downloads, prevent concurrent reuse of the same list entry, and reserve the fixed API proxy from segment traffic.
+- Preserve HTTP status codes returned by the download origin so reachable proxies receiving responses such as HTTP 503 are no longer reported as unavailable proxies.
+
 ## [2.0.75] - 2026-08-31
 
 ### Proxy-only networking

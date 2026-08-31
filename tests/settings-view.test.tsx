@@ -680,10 +680,11 @@ describe("settings views", () => {
       disabled: false
     }));
     expect(proxyGroup?.fields.find((field) => field.id === "proxyConnectionsPerDownload")).toEqual(expect.objectContaining({
+      label: "Proxy-Verbindungen insgesamt",
       value: "16",
       min: 2,
       max: 32,
-      help: expect.stringContaining("80 parallele Segmentverbindungen")
+      help: expect.stringContaining("zusammen höchstens 16 Segmentverbindungen")
     }));
   });
 

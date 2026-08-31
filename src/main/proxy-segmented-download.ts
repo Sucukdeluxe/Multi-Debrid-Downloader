@@ -53,6 +53,8 @@ export interface ProxySegmentedDownloadOptions {
   targetPath: string;
   proxyListPath: string;
   connections: number;
+  totalConnectionLimit?: number;
+  reservedProxyIndex?: number;
   signal: AbortSignal;
   skipTlsVerify?: boolean;
   minSegmentBytes?: number;
@@ -66,17 +68,166 @@ export interface ProxySegmentedDownloadOptions {
 
 export type ProxySegmentedDownloadResult =
   | { status: "completed"; totalBytes: number; connections: number }
-  | { status: "fallback"; reason: ProxyFallbackReason };
+  | { status: "fallback"; reason: ProxyFallbackReason; httpStatus?: number };
 
 export type ProxyFallbackReason =
   | "proxy_file_unavailable"
   | "no_valid_proxies"
   | "range_unsupported"
   | "file_too_small"
+  | "not_enough_proxies"
   | "proxy_unavailable"
+  | "origin_http_error"
   | "segment_failed";
 
 const proxyFileCache = new Map<string, CachedProxyFile>();
+
+function proxyEndpointKey(proxy: ProxyEndpoint): string {
+  return `${proxy.url}\0${proxy.authorization}`;
+}
+
+class OriginHttpError extends Error {
+  public constructor(public readonly statusCode: number) {
+    super(`origin_http_${statusCode}`);
+  }
+}
+
+interface ProxyLease {
+  proxy: ProxyEndpoint;
+  release: (succeeded: boolean) => void;
+}
+
+interface ProxyLeaseWaiter {
+  poolKey: string;
+  proxies: ProxyEndpoint[];
+  excluded: ReadonlySet<string>;
+  signal: AbortSignal;
+  resolve: (lease: ProxyLease | null) => void;
+  reject: (error: Error) => void;
+}
+
+class SharedProxyCoordinator {
+  private connectionLimit = 16;
+  private activeConnections = 0;
+  private readonly activeProxies = new Set<string>();
+  private readonly cooldownUntil = new Map<string, number>();
+  private readonly cursors = new Map<string, number>();
+  private readonly waiters: ProxyLeaseWaiter[] = [];
+
+  public setConnectionLimit(limit: number): void {
+    this.connectionLimit = Math.max(2, Math.min(32, Math.floor(limit || 16)));
+    this.drain();
+  }
+
+  public acquire(
+    poolKey: string,
+    proxies: ProxyEndpoint[],
+    excluded: ReadonlySet<string>,
+    signal: AbortSignal
+  ): Promise<ProxyLease | null> {
+    if (signal.aborted) {
+      return Promise.reject(abortError());
+    }
+    if (!proxies.some((proxy) => !excluded.has(proxyEndpointKey(proxy)))) {
+      return Promise.resolve(null);
+    }
+    return new Promise<ProxyLease | null>((resolve, reject) => {
+      const waiter: ProxyLeaseWaiter = { poolKey, proxies, excluded, signal, resolve, reject };
+      const onAbort = (): void => {
+        const index = this.waiters.indexOf(waiter);
+        if (index >= 0) {
+          this.waiters.splice(index, 1);
+          reject(abortError());
+        }
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      const resolveWithoutListener = waiter.resolve;
+      const rejectWithoutListener = waiter.reject;
+      waiter.resolve = (lease) => {
+        signal.removeEventListener("abort", onAbort);
+        resolveWithoutListener(lease);
+      };
+      waiter.reject = (error) => {
+        signal.removeEventListener("abort", onAbort);
+        rejectWithoutListener(error);
+      };
+      this.waiters.push(waiter);
+      this.drain();
+    });
+  }
+
+  private selectProxy(waiter: ProxyLeaseWaiter): ProxyEndpoint | null {
+    if (this.activeConnections >= this.connectionLimit) {
+      return null;
+    }
+    const now = Date.now();
+    const start = (this.cursors.get(waiter.poolKey) || 0) % waiter.proxies.length;
+    const select = (allowCooldown: boolean): ProxyEndpoint | null => {
+      for (let offset = 0; offset < waiter.proxies.length; offset += 1) {
+        const index = (start + offset) % waiter.proxies.length;
+        const proxy = waiter.proxies[index];
+        const key = proxyEndpointKey(proxy);
+        if (waiter.excluded.has(key)
+          || this.activeProxies.has(key)
+          || (!allowCooldown && (this.cooldownUntil.get(key) || 0) > now)) {
+          continue;
+        }
+        this.cursors.set(waiter.poolKey, (index + 1) % waiter.proxies.length);
+        return proxy;
+      }
+      return null;
+    };
+    return select(false) || select(true);
+  }
+
+  private createLease(proxy: ProxyEndpoint): ProxyLease {
+    const key = proxyEndpointKey(proxy);
+    this.activeConnections += 1;
+    this.activeProxies.add(key);
+    let released = false;
+    return {
+      proxy,
+      release: (succeeded) => {
+        if (released) return;
+        released = true;
+        this.activeConnections = Math.max(0, this.activeConnections - 1);
+        this.activeProxies.delete(key);
+        if (succeeded) {
+          this.cooldownUntil.delete(key);
+        } else {
+          this.cooldownUntil.set(key, Date.now() + 30_000);
+        }
+        this.drain();
+      }
+    };
+  }
+
+  private drain(): void {
+    let granted = true;
+    while (granted && this.activeConnections < this.connectionLimit) {
+      granted = false;
+      for (let index = 0; index < this.waiters.length; index += 1) {
+        const waiter = this.waiters[index];
+        if (waiter.signal.aborted) {
+          this.waiters.splice(index, 1);
+          waiter.reject(abortError());
+          granted = true;
+          break;
+        }
+        const proxy = this.selectProxy(waiter);
+        if (!proxy) {
+          continue;
+        }
+        this.waiters.splice(index, 1);
+        waiter.resolve(this.createLease(proxy));
+        granted = true;
+        break;
+      }
+    }
+  }
+}
+
+const sharedProxyCoordinator = new SharedProxyCoordinator();
 
 function parseProxyLine(rawLine: string, id: number): ProxyEndpoint | null {
   const value = rawLine.trim();
@@ -360,6 +511,7 @@ async function consumeProbe(response: IncomingMessage, expectedBytes: number, on
 
 async function probeRangeSupport(
   target: URL,
+  poolKey: string,
   proxies: ProxyEndpoint[],
   signal: AbortSignal,
   options: Required<Pick<ProxySegmentedDownloadOptions, "skipTlsVerify" | "connectTimeoutMs" | "idleTimeoutMs" | "proxyAttempts">>,
@@ -368,14 +520,21 @@ async function probeRangeSupport(
   { status: "ok"; totalBytes: number }
   | { status: "unsupported" }
   | { status: "unavailable" }
+  | { status: "origin_error"; httpStatus: number }
 > {
   const attempts = Math.min(proxies.length, options.proxyAttempts);
+  const excluded = new Set<string>();
+  let lastHttpStatus = 0;
   for (let index = 0; index < attempts; index += 1) {
     let opened: RangeResponse | null = null;
+    let lease: ProxyLease | null = null;
     try {
+      lease = await sharedProxyCoordinator.acquire(poolKey, proxies, excluded, signal);
+      if (!lease) break;
+      excluded.add(proxyEndpointKey(lease.proxy));
       opened = await openRangeResponse(
         target,
-        proxies[Math.floor((index * proxies.length) / attempts)],
+        lease.proxy,
         0,
         PROXY_PROBE_END,
         signal,
@@ -384,8 +543,19 @@ async function probeRangeSupport(
         options.idleTimeoutMs
       );
       const status = opened.response.statusCode || 0;
+      if (status >= 400) {
+        lastHttpStatus = status;
+        opened.dispose();
+        opened = null;
+        lease.release(true);
+        lease = null;
+        continue;
+      }
       if (status === 200) {
         opened.dispose();
+        opened = null;
+        lease.release(true);
+        lease = null;
         return { status: "unsupported" };
       }
       const range = parseContentRange(opened.response.headers["content-range"]);
@@ -398,22 +568,37 @@ async function probeRangeSupport(
         || range.end !== expectedEnd
         || (contentLength > 0 && contentLength !== expectedBytes)) {
         opened.dispose();
+        opened = null;
+        lease.release(false);
+        lease = null;
         continue;
       }
       const received = await consumeProbe(opened.response, expectedBytes, onTrafficBytes);
       opened.dispose();
+      opened = null;
       if (received === expectedBytes) {
+        lease.release(true);
+        lease = null;
         return { status: "ok", totalBytes: range.total };
       }
     } catch (error) {
       opened?.dispose();
+      opened = null;
+      lease?.release(false);
+      lease = null;
       if (signal.aborted) {
         throw abortError();
       }
       if (isDiskError(error)) {
         throw error;
       }
+    } finally {
+      opened?.dispose();
+      lease?.release(false);
     }
+  }
+  if (lastHttpStatus > 0) {
+    return { status: "origin_error", httpStatus: lastHttpStatus };
   }
   return { status: "unavailable" };
 }
@@ -428,43 +613,6 @@ function buildSegments(totalBytes: number, count: number): Segment[] {
     start += size;
     return segment;
   });
-}
-
-class ProxyPool {
-  private cursor = 0;
-  private active = new Set<number>();
-  private cooldownUntil = new Map<number, number>();
-
-  public constructor(private readonly proxies: ProxyEndpoint[]) {}
-
-  public acquire(excluded: ReadonlySet<number>): ProxyEndpoint | null {
-    const now = Date.now();
-    const select = (allowActive: boolean, allowCooldown: boolean): ProxyEndpoint | null => {
-      for (let offset = 0; offset < this.proxies.length; offset += 1) {
-        const index = (this.cursor + offset) % this.proxies.length;
-        const proxy = this.proxies[index];
-        if (excluded.has(proxy.id)
-          || (!allowActive && this.active.has(proxy.id))
-          || (!allowCooldown && (this.cooldownUntil.get(proxy.id) || 0) > now)) {
-          continue;
-        }
-        this.cursor = (index + 1) % this.proxies.length;
-        this.active.add(proxy.id);
-        return proxy;
-      }
-      return null;
-    };
-    return select(false, false) || select(false, true) || select(true, true);
-  }
-
-  public release(proxy: ProxyEndpoint, succeeded: boolean): void {
-    this.active.delete(proxy.id);
-    if (succeeded) {
-      this.cooldownUntil.delete(proxy.id);
-    } else {
-      this.cooldownUntil.set(proxy.id, Date.now() + 30_000);
-    }
-  }
 }
 
 async function writeBufferAt(handle: fs.promises.FileHandle, buffer: Buffer, position: number): Promise<void> {
@@ -500,10 +648,15 @@ async function downloadSegmentOnce(
     options.idleTimeoutMs
   );
   const response = opened.response;
+  const status = response.statusCode || 0;
+  if (status >= 400) {
+    opened.dispose();
+    throw new OriginHttpError(status);
+  }
   const expectedBytes = segment.end - segment.start + 1;
   const range = parseContentRange(response.headers["content-range"]);
   const contentLength = Number(response.headers["content-length"] || 0);
-  if ((response.statusCode || 0) !== 206
+  if (status !== 206
     || !range
     || range.start !== segment.start
     || range.end !== segment.end
@@ -562,6 +715,16 @@ export async function downloadWithProxySegments(options: ProxySegmentedDownloadO
   if (loaded.status === "empty") {
     return { status: "fallback", reason: "no_valid_proxies" };
   }
+  const poolKey = path.resolve(proxyPath);
+  const requestedConnections = Math.max(2, Math.min(32, Math.floor(options.connections || 16)));
+  const totalConnectionLimit = Math.max(2, Math.min(32, Math.floor(options.totalConnectionLimit ?? requestedConnections)));
+  sharedProxyCoordinator.setConnectionLimit(totalConnectionLimit);
+  const reservedProxyIndex = Math.max(0, Math.floor(options.reservedProxyIndex || 0));
+  const reservedProxy = reservedProxyIndex > 0 ? loaded.proxies[reservedProxyIndex - 1] : null;
+  const reservedProxyKey = reservedProxy ? proxyEndpointKey(reservedProxy) : "";
+  const segmentProxies = reservedProxyKey
+    ? loaded.proxies.filter((proxy) => proxyEndpointKey(proxy) !== reservedProxyKey)
+    : loaded.proxies;
 
   let target: URL;
   try {
@@ -579,19 +742,24 @@ export async function downloadWithProxySegments(options: ProxySegmentedDownloadO
     idleTimeoutMs: Math.max(2_000, Math.floor(options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS)),
     proxyAttempts: Math.max(1, Math.min(10, Math.floor(options.proxyAttempts ?? DEFAULT_PROXY_ATTEMPTS)))
   };
-  const probe = await probeRangeSupport(target, loaded.proxies, options.signal, normalized, options.onTrafficBytes);
+  const probe = await probeRangeSupport(target, poolKey, segmentProxies, options.signal, normalized, options.onTrafficBytes);
   if (probe.status === "unsupported") {
     return { status: "fallback", reason: "range_unsupported" };
   }
   if (probe.status === "unavailable") {
     return { status: "fallback", reason: "proxy_unavailable" };
   }
+  if (probe.status === "origin_error") {
+    return { status: "fallback", reason: "origin_http_error", httpStatus: probe.httpStatus };
+  }
 
-  const requestedConnections = Math.max(2, Math.min(32, Math.floor(options.connections || 16)));
   const minSegmentBytes = Math.max(1, Math.floor(options.minSegmentBytes ?? DEFAULT_MIN_SEGMENT_BYTES));
-  const connections = Math.min(requestedConnections, loaded.proxies.length, Math.floor(probe.totalBytes / minSegmentBytes));
+  const connections = Math.min(requestedConnections, segmentProxies.length, Math.floor(probe.totalBytes / minSegmentBytes));
   if (connections < 2) {
-    return { status: "fallback", reason: "file_too_small" };
+    return {
+      status: "fallback",
+      reason: segmentProxies.length < 2 ? "not_enough_proxies" : "file_too_small"
+    };
   }
 
   await fs.promises.mkdir(path.dirname(options.targetPath), { recursive: true });
@@ -627,31 +795,30 @@ export async function downloadWithProxySegments(options: ProxySegmentedDownloadO
     }
 
     const segments = buildSegments(probe.totalBytes, connections);
-    const pool = new ProxyPool(loaded.proxies);
     const segmentController = new AbortController();
     const cascadeAbort = (): void => segmentController.abort("parent_abort");
     options.signal.addEventListener("abort", cascadeAbort, { once: true });
     const signal = AbortSignal.any([options.signal, segmentController.signal]);
 
     const tasks = segments.map(async (segment) => {
-      const excluded = new Set<number>();
+      const excluded = new Set<string>();
       let lastError: unknown = null;
       for (let attempt = 0; attempt < normalized.proxyAttempts; attempt += 1) {
         if (signal.aborted) {
           throw abortError();
         }
-        const proxy = pool.acquire(excluded);
-        if (!proxy) {
+        const lease = await sharedProxyCoordinator.acquire(poolKey, segmentProxies, excluded, signal);
+        if (!lease) {
           break;
         }
-        excluded.add(proxy.id);
+        excluded.add(proxyEndpointKey(lease.proxy));
         let attemptProgress = 0;
         try {
           const bytes = await downloadSegmentOnce(
             target,
             tempPath,
             segment,
-            proxy,
+            lease.proxy,
             signal,
             normalized,
             {
@@ -665,10 +832,10 @@ export async function downloadWithProxySegments(options: ProxySegmentedDownloadO
             probe.totalBytes,
             () => committedProgress
           );
-          pool.release(proxy, true);
+          lease.release(true);
           return bytes;
         } catch (error) {
-          pool.release(proxy, false);
+          lease.release(error instanceof OriginHttpError);
           if (attemptProgress > 0) {
             updateProgress(-attemptProgress, committedProgress - attemptProgress, probe.totalBytes);
           }
@@ -694,6 +861,16 @@ export async function downloadWithProxySegments(options: ProxySegmentedDownloadO
       }
       if (isDiskError(failed.reason)) {
         throw failed.reason;
+      }
+      const originFailure = settled.find((result): result is PromiseRejectedResult => (
+        result.status === "rejected" && result.reason instanceof OriginHttpError
+      ));
+      if (originFailure) {
+        return {
+          status: "fallback",
+          reason: "origin_http_error",
+          httpStatus: (originFailure.reason as OriginHttpError).statusCode
+        };
       }
       return { status: "fallback", reason: "segment_failed" };
     }

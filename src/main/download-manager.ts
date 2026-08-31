@@ -11010,18 +11010,20 @@ export class DownloadManager extends EventEmitter {
             no_valid_proxies: "Keine gültigen Proxys in der Liste",
             range_unsupported: "Server unterstützt keine Byte-Bereiche",
             file_too_small: "Datei ist für mehrere Segmente zu klein",
+            not_enough_proxies: "Zu wenige Proxys neben dem reservierten API-Proxy",
             proxy_unavailable: "Proxys nicht erreichbar",
+            origin_http_error: "Downloadserver hat die Segmentanfrage abgelehnt",
             segment_failed: "Proxy-Segmente konnten nicht vollständig geladen werden"
           };
           let proxyWindowBytes = 0;
           let proxyWindowStartedAt = nowMs();
           let lastProxyUiEmitAt = 0;
-          item.fullStatus = `Proxy-Download startet (${this.settings.proxyConnectionsPerDownload} Verbindungen)`;
+          item.fullStatus = `Proxy-Download startet (Gesamtlimit ${this.settings.proxyConnectionsPerDownload})`;
           item.updatedAt = nowMs();
           this.emitState();
           logAttemptEvent("INFO", "Proxy-Segmentdownload startet", {
             attempt,
-            connections: this.settings.proxyConnectionsPerDownload,
+            totalConnectionLimit: this.settings.proxyConnectionsPerDownload,
             proxyListConfigured: Boolean(this.settings.proxyListPath)
           });
           const proxyResult = await downloadWithProxySegments({
@@ -11029,6 +11031,8 @@ export class DownloadManager extends EventEmitter {
             targetPath: effectiveTargetPath,
             proxyListPath: this.settings.proxyListPath,
             connections: this.settings.proxyConnectionsPerDownload,
+            totalConnectionLimit: this.settings.proxyConnectionsPerDownload,
+            reservedProxyIndex: this.settings.proxyApiProxyIndex,
             signal: active.abortController.signal,
             skipTlsVerify,
             waitWhilePaused: async () => {
@@ -11070,7 +11074,7 @@ export class DownloadManager extends EventEmitter {
               item.speedBps = this.session.paused ? 0 : Math.max(0, Math.floor(proxyWindowBytes / elapsed));
               item.fullStatus = this.session.paused
                 ? "Pausiert"
-                : `Proxy-Download läuft (${this.settings.proxyConnectionsPerDownload} Verbindungen)`;
+                : `Proxy-Download läuft (Gesamtlimit ${this.settings.proxyConnectionsPerDownload})`;
               if (elapsed >= 0.5) {
                 proxyWindowStartedAt = nowTick;
                 proxyWindowBytes = 0;
@@ -11109,7 +11113,8 @@ export class DownloadManager extends EventEmitter {
           this.emitState();
           logAttemptEvent("WARN", "Proxy-Segmentdownload nicht verwendet, fester Einzel-Proxy folgt", {
             attempt,
-            reason: proxyReasonLabels[proxyResult.reason]
+            reason: proxyReasonLabels[proxyResult.reason],
+            ...(proxyResult.httpStatus ? { originHttpStatus: proxyResult.httpStatus } : {})
           });
         }
       }
