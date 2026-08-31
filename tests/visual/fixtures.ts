@@ -120,7 +120,7 @@ function createSettings(): AppSettings {
     proxyDownloadEnabled: false,
     proxyListPath: "",
     proxyApiProxyIndex: 1,
-    proxyConnectionsPerDownload: 16,
+    proxyConnectionsPerDownload: 20,
     updateRepo: "Sucukdeluxe/Multi-Debrid-Downloader",
     autoUpdateCheck: true,
     clipboardWatch: true,

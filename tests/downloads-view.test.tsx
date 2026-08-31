@@ -239,6 +239,29 @@ describe("Download-Gesamtgröße", () => {
     expect(getPackageSizeProgress(row)).toEqual({ downloaded: 2_500, total: 3_000, value: 83 });
     expect(getPackageProgress(row)).toEqual(expect.objectContaining({ done: 2, total: 3, value: 83 }));
   });
+
+  it("uses downloaded bytes instead of equally weighting differently sized files", () => {
+    const completed = item("completed", "package-a", "completed", {
+      downloadedBytes: 2_000,
+      totalBytes: 2_000,
+      progressPercent: 100
+    });
+    const active = item("active", "package-a", "downloading", {
+      downloadedBytes: 250,
+      totalBytes: 1_000,
+      progressPercent: 25
+    });
+    const queued = item("queued", "package-a", "queued", {
+      downloadedBytes: 0,
+      totalBytes: 15_600,
+      progressPercent: 0
+    });
+    const packageEntry = pkg("package-a", "Serie", ["completed", "active", "queued"]);
+    const row = { package: packageEntry, items: [completed, active, queued], allItems: [completed, active, queued], collapsed: true };
+
+    expect(getPackageSizeProgress(row)).toEqual({ downloaded: 2_250, total: 18_600, value: 12 });
+    expect(getPackageProgress(row)).toEqual(expect.objectContaining({ done: 1, total: 3, value: 12 }));
+  });
 });
 
 describe("Download-ETA", () => {

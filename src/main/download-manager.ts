@@ -11032,6 +11032,7 @@ export class DownloadManager extends EventEmitter {
             proxyListPath: this.settings.proxyListPath,
             connections: this.settings.proxyConnectionsPerDownload,
             totalConnectionLimit: this.settings.proxyConnectionsPerDownload,
+            downloadId: active.itemId,
             reservedProxyIndex: this.settings.proxyApiProxyIndex,
             signal: active.abortController.signal,
             skipTlsVerify,

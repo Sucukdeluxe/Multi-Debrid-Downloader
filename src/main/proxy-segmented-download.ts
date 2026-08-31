@@ -8,10 +8,13 @@ import { HttpsProxyAgent } from "https-proxy-agent";
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 const DEFAULT_IDLE_TIMEOUT_MS = 45_000;
-const DEFAULT_MIN_SEGMENT_BYTES = 4 * 1024 * 1024;
+const DEFAULT_MIN_SEGMENT_BYTES = 8 * 1024 * 1024;
+const DEFAULT_MAX_CHUNK_BYTES = 16 * 1024 * 1024;
+const DEFAULT_CHUNKS_PER_CONNECTION = 8;
 const DEFAULT_PROXY_ATTEMPTS = 3;
 const PROXY_PROBE_END = 1;
 const MAX_REDIRECTS = 5;
+const MAX_SEGMENTS = 4_096;
 const MAX_PROXY_FILE_BYTES = 8 * 1024 * 1024;
 const DISK_ERROR_CODES = new Set(["ENOSPC", "EDQUOT", "EACCES", "EPERM", "EROFS", "EIO", "ENODEV"]);
 
@@ -54,6 +57,7 @@ export interface ProxySegmentedDownloadOptions {
   proxyListPath: string;
   connections: number;
   totalConnectionLimit?: number;
+  downloadId?: string;
   reservedProxyIndex?: number;
   signal: AbortSignal;
   skipTlsVerify?: boolean;
@@ -92,13 +96,20 @@ class OriginHttpError extends Error {
   }
 }
 
+interface ProxyLeaseOutcome {
+  succeeded: boolean;
+  transferredBytes?: number;
+  durationMs?: number;
+}
+
 interface ProxyLease {
   proxy: ProxyEndpoint;
-  release: (succeeded: boolean) => void;
+  release: (outcome: ProxyLeaseOutcome) => void;
 }
 
 interface ProxyLeaseWaiter {
   poolKey: string;
+  groupId: string;
   proxies: ProxyEndpoint[];
   excluded: ReadonlySet<string>;
   signal: AbortSignal;
@@ -106,21 +117,70 @@ interface ProxyLeaseWaiter {
   reject: (error: Error) => void;
 }
 
+interface ProxyPerformance {
+  ewmaBytesPerSecond: number;
+  failures: number;
+  samples: number;
+}
+
 class SharedProxyCoordinator {
-  private connectionLimit = 16;
+  private configuredConnectionLimit = 16;
+  private adaptiveConnectionLimit = 16;
   private activeConnections = 0;
   private readonly activeProxies = new Set<string>();
+  private readonly activeConnectionsByGroup = new Map<string, number>();
+  private readonly registeredGroups = new Map<string, number>();
   private readonly cooldownUntil = new Map<string, number>();
   private readonly cursors = new Map<string, number>();
+  private readonly performance = new Map<string, ProxyPerformance>();
   private readonly waiters: ProxyLeaseWaiter[] = [];
+  private acquisitionCount = 0;
+  private lastThrottleAt = 0;
+  private successfulTransfersSinceThrottle = 0;
 
   public setConnectionLimit(limit: number): void {
-    this.connectionLimit = Math.max(2, Math.min(32, Math.floor(limit || 16)));
+    const normalized = Math.max(2, Math.min(32, Math.floor(limit || 16)));
+    if (normalized !== this.configuredConnectionLimit) {
+      this.configuredConnectionLimit = normalized;
+      this.adaptiveConnectionLimit = normalized;
+      this.lastThrottleAt = 0;
+      this.successfulTransfersSinceThrottle = 0;
+    } else {
+      this.adaptiveConnectionLimit = Math.min(this.adaptiveConnectionLimit, normalized);
+    }
+    this.drain();
+  }
+
+  public registerGroup(groupId: string): () => void {
+    this.registeredGroups.set(groupId, (this.registeredGroups.get(groupId) || 0) + 1);
+    this.drain();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const remaining = Math.max(0, (this.registeredGroups.get(groupId) || 1) - 1);
+      if (remaining > 0) {
+        this.registeredGroups.set(groupId, remaining);
+      } else {
+        this.registeredGroups.delete(groupId);
+      }
+      this.drain();
+    };
+  }
+
+  public reportOriginStatus(statusCode: number): void {
+    if (statusCode !== 429 && statusCode !== 503) return;
+    const now = Date.now();
+    if (now - this.lastThrottleAt < 1_500) return;
+    this.lastThrottleAt = now;
+    this.successfulTransfersSinceThrottle = 0;
+    this.adaptiveConnectionLimit = Math.max(2, this.adaptiveConnectionLimit - 2);
     this.drain();
   }
 
   public acquire(
     poolKey: string,
+    groupId: string,
     proxies: ProxyEndpoint[],
     excluded: ReadonlySet<string>,
     signal: AbortSignal
@@ -132,7 +192,7 @@ class SharedProxyCoordinator {
       return Promise.resolve(null);
     }
     return new Promise<ProxyLease | null>((resolve, reject) => {
-      const waiter: ProxyLeaseWaiter = { poolKey, proxies, excluded, signal, resolve, reject };
+      const waiter: ProxyLeaseWaiter = { poolKey, groupId, proxies, excluded, signal, resolve, reject };
       const onAbort = (): void => {
         const index = this.waiters.indexOf(waiter);
         if (index >= 0) {
@@ -157,12 +217,18 @@ class SharedProxyCoordinator {
   }
 
   private selectProxy(waiter: ProxyLeaseWaiter): ProxyEndpoint | null {
-    if (this.activeConnections >= this.connectionLimit) {
+    if (this.activeConnections >= this.adaptiveConnectionLimit) {
+      return null;
+    }
+    const groupCount = Math.max(1, this.registeredGroups.size);
+    const groupLimit = Math.max(1, Math.ceil(this.adaptiveConnectionLimit / groupCount));
+    if ((this.activeConnectionsByGroup.get(waiter.groupId) || 0) >= groupLimit) {
       return null;
     }
     const now = Date.now();
     const start = (this.cursors.get(waiter.poolKey) || 0) % waiter.proxies.length;
     const select = (allowCooldown: boolean): ProxyEndpoint | null => {
+      const candidates: Array<{ proxy: ProxyEndpoint; index: number; key: string }> = [];
       for (let offset = 0; offset < waiter.proxies.length; offset += 1) {
         const index = (start + offset) % waiter.proxies.length;
         const proxy = waiter.proxies[index];
@@ -172,39 +238,93 @@ class SharedProxyCoordinator {
           || (!allowCooldown && (this.cooldownUntil.get(key) || 0) > now)) {
           continue;
         }
-        this.cursors.set(waiter.poolKey, (index + 1) % waiter.proxies.length);
-        return proxy;
+        candidates.push({ proxy, index, key });
       }
-      return null;
+      if (candidates.length === 0) return null;
+      this.acquisitionCount += 1;
+      const unknown = candidates.filter((candidate) => !this.performance.has(candidate.key));
+      const exploreUnknown = unknown.length > 0 && (unknown.length === candidates.length || this.acquisitionCount % 8 === 0);
+      let selected = exploreUnknown ? unknown[0] : candidates[0];
+      if (!exploreUnknown) {
+        let selectedScore = Number.NEGATIVE_INFINITY;
+        for (const candidate of candidates) {
+          const metric = this.performance.get(candidate.key);
+          const score = metric
+            ? (metric.ewmaBytesPerSecond / (1 + metric.failures)) - (metric.failures * 1024 * 1024)
+            : 0;
+          if (score > selectedScore) {
+            selected = candidate;
+            selectedScore = score;
+          }
+        }
+      }
+      this.cursors.set(waiter.poolKey, (selected.index + 1) % waiter.proxies.length);
+      return selected.proxy;
     };
-    return select(false) || select(true);
+    const available = select(false);
+    if (available) return available;
+    const poolHasActiveProxy = waiter.proxies.some((proxy) => this.activeProxies.has(proxyEndpointKey(proxy)));
+    return poolHasActiveProxy ? null : select(true);
   }
 
-  private createLease(proxy: ProxyEndpoint): ProxyLease {
+  private createLease(proxy: ProxyEndpoint, groupId: string): ProxyLease {
     const key = proxyEndpointKey(proxy);
     this.activeConnections += 1;
     this.activeProxies.add(key);
+    this.activeConnectionsByGroup.set(groupId, (this.activeConnectionsByGroup.get(groupId) || 0) + 1);
     let released = false;
     return {
       proxy,
-      release: (succeeded) => {
+      release: (outcome) => {
         if (released) return;
         released = true;
         this.activeConnections = Math.max(0, this.activeConnections - 1);
         this.activeProxies.delete(key);
-        if (succeeded) {
+        const groupConnections = Math.max(0, (this.activeConnectionsByGroup.get(groupId) || 1) - 1);
+        if (groupConnections > 0) {
+          this.activeConnectionsByGroup.set(groupId, groupConnections);
+        } else {
+          this.activeConnectionsByGroup.delete(groupId);
+        }
+        if (outcome.succeeded) {
           this.cooldownUntil.delete(key);
+          if ((outcome.transferredBytes || 0) > 0 && (outcome.durationMs || 0) > 0) {
+            const sample = ((outcome.transferredBytes || 0) * 1_000) / Math.max(1, outcome.durationMs || 1);
+            const previous = this.performance.get(key);
+            this.performance.set(key, {
+              ewmaBytesPerSecond: previous && previous.samples > 0
+                ? (previous.ewmaBytesPerSecond * 0.7) + (sample * 0.3)
+                : sample,
+              failures: Math.max(0, (previous?.failures || 0) - 1),
+              samples: (previous?.samples || 0) + 1
+            });
+            this.restoreAdaptiveCapacity();
+          }
         } else {
           this.cooldownUntil.set(key, Date.now() + 30_000);
+          const previous = this.performance.get(key);
+          this.performance.set(key, {
+            ewmaBytesPerSecond: (previous?.ewmaBytesPerSecond || 0) * 0.5,
+            failures: (previous?.failures || 0) + 1,
+            samples: previous?.samples || 0
+          });
         }
         this.drain();
       }
     };
   }
 
+  private restoreAdaptiveCapacity(): void {
+    if (this.adaptiveConnectionLimit >= this.configuredConnectionLimit) return;
+    this.successfulTransfersSinceThrottle += 1;
+    if (Date.now() - this.lastThrottleAt < 5_000 || this.successfulTransfersSinceThrottle < 24) return;
+    this.adaptiveConnectionLimit = Math.min(this.configuredConnectionLimit, this.adaptiveConnectionLimit + 1);
+    this.successfulTransfersSinceThrottle = 0;
+  }
+
   private drain(): void {
     let granted = true;
-    while (granted && this.activeConnections < this.connectionLimit) {
+    while (granted && this.activeConnections < this.adaptiveConnectionLimit) {
       granted = false;
       for (let index = 0; index < this.waiters.length; index += 1) {
         const waiter = this.waiters[index];
@@ -219,7 +339,7 @@ class SharedProxyCoordinator {
           continue;
         }
         this.waiters.splice(index, 1);
-        waiter.resolve(this.createLease(proxy));
+        waiter.resolve(this.createLease(proxy, waiter.groupId));
         granted = true;
         break;
       }
@@ -512,6 +632,7 @@ async function consumeProbe(response: IncomingMessage, expectedBytes: number, on
 async function probeRangeSupport(
   target: URL,
   poolKey: string,
+  groupId: string,
   proxies: ProxyEndpoint[],
   signal: AbortSignal,
   options: Required<Pick<ProxySegmentedDownloadOptions, "skipTlsVerify" | "connectTimeoutMs" | "idleTimeoutMs" | "proxyAttempts">>,
@@ -529,7 +650,7 @@ async function probeRangeSupport(
     let opened: RangeResponse | null = null;
     let lease: ProxyLease | null = null;
     try {
-      lease = await sharedProxyCoordinator.acquire(poolKey, proxies, excluded, signal);
+      lease = await sharedProxyCoordinator.acquire(poolKey, groupId, proxies, excluded, signal);
       if (!lease) break;
       excluded.add(proxyEndpointKey(lease.proxy));
       opened = await openRangeResponse(
@@ -547,14 +668,14 @@ async function probeRangeSupport(
         lastHttpStatus = status;
         opened.dispose();
         opened = null;
-        lease.release(true);
+        lease.release({ succeeded: true });
         lease = null;
         continue;
       }
       if (status === 200) {
         opened.dispose();
         opened = null;
-        lease.release(true);
+        lease.release({ succeeded: true });
         lease = null;
         return { status: "unsupported" };
       }
@@ -569,7 +690,7 @@ async function probeRangeSupport(
         || (contentLength > 0 && contentLength !== expectedBytes)) {
         opened.dispose();
         opened = null;
-        lease.release(false);
+        lease.release({ succeeded: false });
         lease = null;
         continue;
       }
@@ -577,14 +698,14 @@ async function probeRangeSupport(
       opened.dispose();
       opened = null;
       if (received === expectedBytes) {
-        lease.release(true);
+        lease.release({ succeeded: true });
         lease = null;
         return { status: "ok", totalBytes: range.total };
       }
     } catch (error) {
       opened?.dispose();
       opened = null;
-      lease?.release(false);
+      lease?.release({ succeeded: signal.aborted });
       lease = null;
       if (signal.aborted) {
         throw abortError();
@@ -594,23 +715,28 @@ async function probeRangeSupport(
       }
     } finally {
       opened?.dispose();
-      lease?.release(false);
+      lease?.release({ succeeded: false });
     }
   }
   if (lastHttpStatus > 0) {
+    sharedProxyCoordinator.reportOriginStatus(lastHttpStatus);
     return { status: "origin_error", httpStatus: lastHttpStatus };
   }
   return { status: "unavailable" };
 }
 
-function buildSegments(totalBytes: number, count: number): Segment[] {
-  const baseSize = Math.floor(totalBytes / count);
-  const remainder = totalBytes % count;
+function buildSegments(totalBytes: number, connections: number, minSegmentBytes: number): Segment[] {
+  const preferredChunkBytes = Math.max(
+    minSegmentBytes,
+    Math.min(DEFAULT_MAX_CHUNK_BYTES, Math.ceil(totalBytes / Math.max(1, connections * DEFAULT_CHUNKS_PER_CONNECTION)))
+  );
+  const chunkBytes = Math.max(preferredChunkBytes, Math.ceil(totalBytes / MAX_SEGMENTS));
+  const count = Math.ceil(totalBytes / chunkBytes);
   let start = 0;
   return Array.from({ length: count }, (_, index) => {
-    const size = baseSize + (index < remainder ? 1 : 0);
-    const segment = { index, start, end: start + size - 1 };
-    start += size;
+    const end = Math.min(totalBytes - 1, start + chunkBytes - 1);
+    const segment = { index, start, end };
+    start = end + 1;
     return segment;
   });
 }
@@ -736,13 +862,16 @@ export async function downloadWithProxySegments(options: ProxySegmentedDownloadO
     return { status: "fallback", reason: "proxy_unavailable" };
   }
 
+  const groupId = String(options.downloadId || options.targetPath || randomUUID());
+  const unregisterGroup = sharedProxyCoordinator.registerGroup(groupId);
+  try {
   const normalized = {
     skipTlsVerify: Boolean(options.skipTlsVerify),
     connectTimeoutMs: Math.max(1_000, Math.floor(options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS)),
     idleTimeoutMs: Math.max(2_000, Math.floor(options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS)),
     proxyAttempts: Math.max(1, Math.min(10, Math.floor(options.proxyAttempts ?? DEFAULT_PROXY_ATTEMPTS)))
   };
-  const probe = await probeRangeSupport(target, poolKey, segmentProxies, options.signal, normalized, options.onTrafficBytes);
+  const probe = await probeRangeSupport(target, poolKey, groupId, segmentProxies, options.signal, normalized, options.onTrafficBytes);
   if (probe.status === "unsupported") {
     return { status: "fallback", reason: "range_unsupported" };
   }
@@ -794,25 +923,26 @@ export async function downloadWithProxySegments(options: ProxySegmentedDownloadO
       await initialHandle.close();
     }
 
-    const segments = buildSegments(probe.totalBytes, connections);
+    const segments = buildSegments(probe.totalBytes, connections, minSegmentBytes);
     const segmentController = new AbortController();
     const cascadeAbort = (): void => segmentController.abort("parent_abort");
     options.signal.addEventListener("abort", cascadeAbort, { once: true });
     const signal = AbortSignal.any([options.signal, segmentController.signal]);
 
-    const tasks = segments.map(async (segment) => {
+    const downloadSegment = async (segment: Segment): Promise<number> => {
       const excluded = new Set<string>();
       let lastError: unknown = null;
       for (let attempt = 0; attempt < normalized.proxyAttempts; attempt += 1) {
         if (signal.aborted) {
           throw abortError();
         }
-        const lease = await sharedProxyCoordinator.acquire(poolKey, segmentProxies, excluded, signal);
+        const lease = await sharedProxyCoordinator.acquire(poolKey, groupId, segmentProxies, excluded, signal);
         if (!lease) {
           break;
         }
         excluded.add(proxyEndpointKey(lease.proxy));
         let attemptProgress = 0;
+        const startedAt = Date.now();
         try {
           const bytes = await downloadSegmentOnce(
             target,
@@ -832,10 +962,18 @@ export async function downloadWithProxySegments(options: ProxySegmentedDownloadO
             probe.totalBytes,
             () => committedProgress
           );
-          lease.release(true);
+          lease.release({
+            succeeded: true,
+            transferredBytes: bytes,
+            durationMs: Math.max(1, Date.now() - startedAt)
+          });
           return bytes;
         } catch (error) {
-          lease.release(error instanceof OriginHttpError);
+          const originError = error instanceof OriginHttpError;
+          lease.release({ succeeded: originError || signal.aborted });
+          if (originError) {
+            sharedProxyCoordinator.reportOriginStatus(error.statusCode);
+          }
           if (attemptProgress > 0) {
             updateProgress(-attemptProgress, committedProgress - attemptProgress, probe.totalBytes);
           }
@@ -846,6 +984,19 @@ export async function downloadWithProxySegments(options: ProxySegmentedDownloadO
         }
       }
       throw lastError || new Error("proxy_segment_failed");
+    };
+
+    let nextSegmentIndex = 0;
+    const tasks = Array.from({ length: Math.min(connections, segments.length) }, async () => {
+      let downloadedBytes = 0;
+      while (!signal.aborted) {
+        const segmentIndex = nextSegmentIndex;
+        nextSegmentIndex += 1;
+        const segment = segments[segmentIndex];
+        if (!segment) break;
+        downloadedBytes += await downloadSegment(segment);
+      }
+      return downloadedBytes;
     });
 
     const guardedTasks = tasks.map((task) => task.catch((error) => {
@@ -906,5 +1057,8 @@ export async function downloadWithProxySegments(options: ProxySegmentedDownloadO
     if (committedProgress > 0 && tempCreated) {
       updateProgress(-committedProgress, 0, probe.totalBytes);
     }
+  }
+  } finally {
+    unregisterGroup();
   }
 }

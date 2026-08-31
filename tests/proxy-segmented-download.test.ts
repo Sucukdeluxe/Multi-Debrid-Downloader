@@ -3,6 +3,7 @@ import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { Transform } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { downloadWithProxySegments, parseProxyList, selectFixedProxy } from "../src/main/proxy-segmented-download";
 
@@ -71,7 +72,8 @@ async function createRangeServer(content: Buffer, supportsRanges = true): Promis
 async function createConnectProxy(
   username: string,
   password: string,
-  acceptedConnections: { value: number; active?: number; maxActive?: number }
+  acceptedConnections: { value: number; active?: number; maxActive?: number },
+  responseDelayMs = 0
 ): Promise<RunningServer> {
   const server = http.createServer();
   server.on("connect", (request, clientSocket, head) => {
@@ -96,7 +98,16 @@ async function createConnectProxy(
       clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
       if (head.length > 0) upstream.write(head);
       clientSocket.pipe(upstream);
-      upstream.pipe(clientSocket);
+      if (responseDelayMs > 0) {
+        const delayed = new Transform({
+          transform(chunk, _encoding, callback) {
+            setTimeout(() => callback(null, chunk), responseDelayMs);
+          }
+        });
+        upstream.pipe(delayed).pipe(clientSocket);
+      } else {
+        upstream.pipe(clientSocket);
+      }
     });
     upstream.once("error", () => clientSocket.destroy());
     clientSocket.once("error", () => upstream.destroy());
@@ -184,7 +195,7 @@ describe("proxy segmented download", () => {
     expect(await fs.promises.readFile(targetFile)).toEqual(content);
     expect(proxyCounters.every((counter) => counter.value > 0)).toBe(true);
     expect(targetServer.ranges).toContain("bytes=0-1");
-    expect(new Set(targetServer.ranges.filter((range) => range !== "bytes=0-1")).size).toBe(4);
+    expect(new Set(targetServer.ranges.filter((range) => range !== "bytes=0-1")).size).toBe(32);
     expect(progress.at(-1)).toBe(content.length);
     expect(trafficBytes).toBe(content.length + 2);
     expect((await fs.promises.readdir(directory)).filter((name) => name.includes(".proxy-")).length).toBe(0);
@@ -218,11 +229,46 @@ describe("proxy segmented download", () => {
     expect(counters.some((counter) => counter.value > 0)).toBe(true);
   });
 
+  it("lets fast proxies take over additional rolling chunks", async () => {
+    const content = Buffer.allocUnsafe(512 * 1024);
+    for (let index = 0; index < content.length; index += 1) content[index] = index % 233;
+    const targetServer = await createRangeServer(content);
+    const fastCounter = { value: 0 };
+    const slowCounter = { value: 0 };
+    const fastProxy = await createConnectProxy("fast", "secret", fastCounter);
+    const slowProxy = await createConnectProxy("slow", "secret", slowCounter, 40);
+    const directory = await createTempDirectory();
+    const proxyFile = path.join(directory, "speed-proxies.txt");
+    const targetFile = path.join(directory, "rolling.bin");
+    await fs.promises.writeFile(proxyFile, [
+      `fast:secret@127.0.0.1:${fastProxy.port}`,
+      `slow:secret@127.0.0.1:${slowProxy.port}`
+    ].join("\n"));
+
+    const result = await downloadWithProxySegments({
+      directUrl: `http://127.0.0.1:${targetServer.port}/rolling.bin`,
+      targetPath: targetFile,
+      proxyListPath: proxyFile,
+      connections: 2,
+      totalConnectionLimit: 2,
+      signal: new AbortController().signal,
+      minSegmentBytes: 1
+    });
+
+    expect(result.status).toBe("completed");
+    expect(await fs.promises.readFile(targetFile)).toEqual(content);
+    expect(fastCounter.value).toBeGreaterThan(slowCounter.value * 2);
+    expect(new Set(targetServer.ranges.filter((range) => range !== "bytes=0-1")).size).toBe(16);
+  });
+
   it("shares one connection budget across concurrent downloads and reserves the fixed API proxy", async () => {
     const content = Buffer.allocUnsafe(128 * 1024);
     for (let index = 0; index < content.length; index += 1) content[index] = index % 239;
     let activeRequests = 0;
     let maxActiveRequests = 0;
+    const activeByDownload = new Map<string, number>();
+    const maxActiveByDownload = new Map<string, number>();
+    let downloadsOverlapped = false;
     const server = http.createServer((request, response) => {
       const match = /^bytes=(\d+)-(\d+)$/.exec(String(request.headers.range || ""));
       if (!match) {
@@ -233,13 +279,18 @@ describe("proxy segmented download", () => {
       const start = Number(match[1]);
       const end = Math.min(Number(match[2]), content.length - 1);
       const body = content.subarray(start, end + 1);
+      const downloadKey = new URL(request.url || "/", "http://localhost").searchParams.get("download") || "unknown";
       activeRequests += 1;
+      activeByDownload.set(downloadKey, (activeByDownload.get(downloadKey) || 0) + 1);
+      maxActiveByDownload.set(downloadKey, Math.max(maxActiveByDownload.get(downloadKey) || 0, activeByDownload.get(downloadKey) || 0));
+      downloadsOverlapped ||= (activeByDownload.get("first") || 0) > 0 && (activeByDownload.get("second") || 0) > 0;
       maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
       let finished = false;
       const finish = (): void => {
         if (finished) return;
         finished = true;
         activeRequests = Math.max(0, activeRequests - 1);
+        activeByDownload.set(downloadKey, Math.max(0, (activeByDownload.get(downloadKey) || 1) - 1));
       };
       response.once("close", finish);
       response.writeHead(206, {
@@ -264,7 +315,6 @@ describe("proxy segmented download", () => {
       proxies.map((proxy, index) => `shared${index}:pass${index}@127.0.0.1:${proxy.port}`).join("\n")
     );
     const commonOptions = {
-      directUrl: `http://127.0.0.1:${targetServer.port}/shared.bin`,
       proxyListPath: proxyFile,
       connections: 4,
       totalConnectionLimit: 4,
@@ -274,8 +324,8 @@ describe("proxy segmented download", () => {
     };
 
     const [firstResult, secondResult] = await Promise.all([
-      downloadWithProxySegments({ ...commonOptions, targetPath: firstTarget }),
-      downloadWithProxySegments({ ...commonOptions, targetPath: secondTarget })
+      downloadWithProxySegments({ ...commonOptions, directUrl: `http://127.0.0.1:${targetServer.port}/shared.bin?download=first`, targetPath: firstTarget }),
+      downloadWithProxySegments({ ...commonOptions, directUrl: `http://127.0.0.1:${targetServer.port}/shared.bin?download=second`, targetPath: secondTarget })
     ]);
 
     expect(firstResult.status).toBe("completed");
@@ -283,8 +333,89 @@ describe("proxy segmented download", () => {
     expect(await fs.promises.readFile(firstTarget)).toEqual(content);
     expect(await fs.promises.readFile(secondTarget)).toEqual(content);
     expect(maxActiveRequests).toBeLessThanOrEqual(4);
+    expect(maxActiveByDownload.get("first")).toBeLessThanOrEqual(2);
+    expect(maxActiveByDownload.get("second")).toBeLessThanOrEqual(2);
+    expect(downloadsOverlapped).toBe(true);
     expect(counters[0].value).toBe(0);
     expect(counters.every((counter) => counter.maxActive <= 1)).toBe(true);
+  });
+
+  it("reduces new parallel range requests after a transient origin 503", async () => {
+    const content = Buffer.allocUnsafe(192 * 1024);
+    for (let index = 0; index < content.length; index += 1) content[index] = index % 227;
+    let activeRequests = 0;
+    let initialRequests = 0;
+    let maxActiveAfter503 = 0;
+    const server = http.createServer((request, response) => {
+      const rangeHeader = String(request.headers.range || "");
+      const match = /^bytes=(\d+)-(\d+)$/.exec(rangeHeader);
+      if (!match) {
+        response.writeHead(416);
+        response.end();
+        return;
+      }
+      const start = Number(match[1]);
+      const end = Math.min(Number(match[2]), content.length - 1);
+      const body = content.subarray(start, end + 1);
+      if (rangeHeader === "bytes=0-1") {
+        response.writeHead(206, {
+          "Content-Range": `bytes 0-1/${content.length}`,
+          "Content-Length": 2
+        });
+        response.end(body);
+        return;
+      }
+      initialRequests += 1;
+      activeRequests += 1;
+      if (initialRequests > 6) {
+        maxActiveAfter503 = Math.max(maxActiveAfter503, activeRequests);
+      }
+      let finished = false;
+      const finish = (): void => {
+        if (finished) return;
+        finished = true;
+        activeRequests = Math.max(0, activeRequests - 1);
+      };
+      response.once("close", finish);
+      if (initialRequests === 6) {
+        response.writeHead(503, { "Content-Length": 0 });
+        response.end();
+        return;
+      }
+      const delayMs = initialRequests < 6 ? 80 : 5;
+      setTimeout(() => {
+        response.writeHead(206, {
+          "Content-Range": `bytes ${start}-${end}/${content.length}`,
+          "Content-Length": body.length
+        });
+        response.end(body);
+      }, delayMs);
+    });
+    const targetServer = await listen(server);
+    const counters = Array.from({ length: 6 }, () => ({ value: 0 }));
+    const proxies = await Promise.all(counters.map((counter, index) => createConnectProxy(`adaptive${index}`, `pass${index}`, counter)));
+    const directory = await createTempDirectory();
+    const proxyFile = path.join(directory, "adaptive-proxies.txt");
+    const targetFile = path.join(directory, "adaptive.bin");
+    await fs.promises.writeFile(
+      proxyFile,
+      proxies.map((proxy, index) => `adaptive${index}:pass${index}@127.0.0.1:${proxy.port}`).join("\n")
+    );
+
+    const result = await downloadWithProxySegments({
+      directUrl: `http://127.0.0.1:${targetServer.port}/adaptive.bin`,
+      targetPath: targetFile,
+      proxyListPath: proxyFile,
+      connections: 6,
+      totalConnectionLimit: 6,
+      signal: new AbortController().signal,
+      minSegmentBytes: 1
+    });
+
+    expect(result.status).toBe("completed");
+    expect(await fs.promises.readFile(targetFile)).toEqual(content);
+    expect(initialRequests).toBeGreaterThan(6);
+    expect(maxActiveAfter503).toBeLessThanOrEqual(4);
   });
 
   it("reports an origin HTTP status instead of marking reachable proxies unavailable", async () => {

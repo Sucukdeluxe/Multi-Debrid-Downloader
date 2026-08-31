@@ -362,7 +362,11 @@ export function getPackageProgress(row: DownloadPackageRow): { done: number; fai
   const allDownloaded = done + failed + cancelled >= total;
   const allExtracted = extracted >= total;
   const useExtractSplit = extracting || row.package.status === "extracting" || (allDownloaded && !allExtracted && done > 0 && extracted > 0 && failed === 0 && cancelled === 0);
-  const downloadProgress = Math.min(useExtractSplit ? 50 : 100, Math.floor(((done + activeProgress) / total) * (useExtractSplit ? 50 : 100)));
+  const sizeProgress = getPackageSizeProgress(row);
+  const downloadRatio = sizeProgress.total > 0
+    ? Math.max(0, Math.min(1, sizeProgress.downloaded / sizeProgress.total))
+    : Math.max(0, Math.min(1, (done + activeProgress) / total));
+  const downloadProgress = Math.min(useExtractSplit ? 50 : 100, Math.floor(downloadRatio * (useExtractSplit ? 50 : 100)));
   const extractionProgress = Math.min(50, Math.floor(((extracted + extractingProgress) / total) * 50));
   const value = Math.min(100, useExtractSplit ? downloadProgress + extractionProgress : downloadProgress);
   return { done, failed, cancelled, total, value };

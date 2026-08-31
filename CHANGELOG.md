@@ -4,6 +4,19 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+### Proxy throughput and fairness
+
+- Replace one long range per connection with a rolling queue of smaller chunks so fast proxies continue working instead of waiting for the slowest tail segment.
+- Split the process-wide connection budget dynamically and fairly between active segmented downloads; a total of 20 becomes 10/10 for two files and 5 each for four files, then returns freed capacity immediately.
+- Rank proxies by measured throughput and failures, periodically explore unused entries, cool down failed entries, and keep the fixed API proxy reserved.
+- Reduce the effective global connection budget in steps of two after origin HTTP 429 or 503 responses and restore capacity gradually after stable successful transfers.
+- Use 20 as the default global proxy connection budget for new settings while preserving existing saved values and the 2-to-32 range.
+
+### Download presentation
+
+- Calculate package progress from downloaded and total bytes when sizes are known so the percentage matches the package size meter for differently sized files.
+- Keep the existing extraction progress split and all extraction behavior unchanged.
+
 ## [2.0.76] - 2026-08-31
 
 ### Proxy concurrency hotfix

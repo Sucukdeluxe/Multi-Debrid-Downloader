@@ -613,6 +613,10 @@ describe("settings storage", () => {
     expect(normalized.updateRepo).toBe(defaultSettings().updateRepo);
   });
 
+  it("uses 20 total proxy connections as the default for new settings", () => {
+    expect(defaultSettings().proxyConnectionsPerDownload).toBe(20);
+  });
+
   it("migrates the previous private update repository to the public release repository", () => {
     for (const updateRepo of [
       "legacy-owner/real-debrid-downloader",

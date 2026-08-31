@@ -109,7 +109,7 @@ export function defaultSettings(): AppSettings {
     proxyDownloadEnabled: false,
     proxyListPath: "",
     proxyApiProxyIndex: 1,
-    proxyConnectionsPerDownload: 16,
+    proxyConnectionsPerDownload: 20,
     updateRepo: DEFAULT_UPDATE_REPO,
     autoUpdateCheck: true,
     clipboardWatch: false,
