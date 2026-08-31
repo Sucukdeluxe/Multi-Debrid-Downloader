@@ -12,11 +12,11 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
 - Arbeitsbranch: `release/v2.0.80`
 - Quellbasis: `release/v2.0.79`
-- Release-Tag: `v2.0.79`
-- Baseline-Commit: `f14d16689832d6d650165afe1ae01326acdc059d`
+- Release-Tag: `v2.0.80`
+- Baseline-Commit: `1628f23023c93efcb222c63913f9d2508a9a5e6c`
 - Hotfix-Basis: `5cee459d0bcc5c19d8d6483948a036a43c9d91b1`
 - Paketversion: `2.0.80`
-- Letztes Release: `Multi-Debrid-Downloader v2.0.79`, veröffentlicht am 31. August 2026 auf GitHub und Forgejo
+- Letztes Release: `Multi-Debrid-Downloader v2.0.80`, veröffentlicht am 31. August 2026 auf GitHub und Forgejo
 - Runtime-Voraussetzung: Node.js `>=20`; lokal verifiziert mit Node.js `24.19.0` und npm `11.17.0`
 
 `main` ist derzeit keine verlässliche Arbeitsbasis:
@@ -161,7 +161,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Die Geschwindigkeitsprojektion verändert keine internen Session-Items. Nur tatsächlich abweichende Snapshot-Items werden kopiert, damit Restmengen-Benachrichtigungen und große Queues ihren bisherigen Laufzeitzustand beziehungsweise ihre Snapshot-Kosten behalten.
 - Das Kontextmenü eines Oberpakets trennt jetzt „Nur fehlerhafte Dateien zurücksetzen“ von „Gesamtes Paket zurücksetzen“. Der selektive Weg erfasst fehlgeschlagene Downloads und als Entpackfehler markierte Items, verwendet den vorhandenen Item-Reset und lässt erfolgreiche beziehungsweise bereits entpackte Dateien unverändert.
 - Der Statistikpunkt „Fehler zurücksetzen“ verwendet dieselbe Fehlerklassifizierung und erfasst dadurch neben Downloadfehlern auch sichtbare Entpackfehler.
-- Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert. `v2.0.80` ist für die ausdrücklich freigegebene Veröffentlichung vorbereitet; Installation und produktiver Neustart sind nicht Bestandteil des Releases.
+- Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert. `v2.0.80` wurde nach ausdrücklicher Freigabe auf GitHub und Forgejo veröffentlicht; Installation und produktiver Neustart sind nicht Bestandteil des Releases.
 
 ## Start-, Build- und Testbefehle
 
@@ -194,6 +194,7 @@ npm exec -- tsc --noEmit
 
 ## Verifizierungen vom 31. August 2026
 
+- Veröffentlichung `v2.0.80`: Der annotierte Tag zeigt auf beiden Git-Remotes exakt auf `1628f23023c93efcb222c63913f9d2508a9a5e6c`. GitHub und Forgejo veröffentlichen denselben stabilen Release mit denselben sechs Assets. Alle zwölf erneut heruntergeladenen Dateien stimmen jeweils in Größe und SHA-256 exakt mit den lokalen Originalen überein; GitHub führt `v2.0.80` als Latest Release.
 - Release-Build `v2.0.80`: Installer und Portable-Datei wurden aus dem versionierten Release-Vorbereitungsstand neu erzeugt. Die Release-Prüfung bestätigte Paket- und Bundle-Version, Update-Metadaten, Artefaktnamen, Dateigröße und SHA-512 des Installers, Icon, Lizenzdateien sowie den entpackten Inhalt beider EXE-Archive. Von den 24 Public-Release-Metadatentests waren 22 erfolgreich; nur die zwei unter Windows ohne Symlink-Berechtigung nicht ausführbaren Fixtures endeten vor ihrer Produktassertion mit `EPERM`.
 - SHA-256 des `v2.0.80`-Setups: `a841d4b52962d52e335fd7f8c2f1fcda0b4f642a66a0101db15665326f6d332a`; SHA-256 der Portable-Datei: `1a5bd12c13e33b620c83958ef7d7e376d028cee32a6f8eb5ff123216bbd01012`.
 - Anzeige-/Reset-Fix für `v2.0.80`: 265 von 265 Download-Manager-Tests sowie 372 von 372 Downloadansichts-/Übersetzungstests erfolgreich. Der vollständige Clientlauf erreichte 2.690 erfolgreiche und 4 übersprungene Tests; zusätzlich zu den zwei bekannten Windows-Symlink-Fixtures deckte er eine Snapshot-Seitenwirkung auf. Nach deren Korrektur bestanden die 10 betroffenen Geschwindigkeits-, Restmengen-, Reset-, Shell- und Übersetzungsregressionen vollständig. Der neue Dateisystemtest bestätigt zusätzlich, dass der selektive Paket-Reset erfolgreiche Dateien erhält und nur die beiden ausgewählten Fehlerdateien entfernt und neu einreiht.
@@ -276,11 +277,11 @@ npm exec -- tsc --noEmit
 - Der faire rollierende Proxy-Scheduler und der bytebasierte Paketfortschritt sind als `v2.0.77` veröffentlicht. Eine Serverinstallation oder ein produktiver Neustart wurde nicht vorgenommen.
 - Der 32/40-Proxybereich und der synchrone Live-Takt von „Sitzung“ und „Verbleibend“ sind als `v2.0.78` veröffentlicht. Eine Serverinstallation oder ein produktiver Neustart wurde nicht vorgenommen.
 - Der Proxy-Readback- und Nullbereich-Hotfix ist als `v2.0.79` auf GitHub und Forgejo veröffentlicht, aber noch nicht auf einem produktiven System installiert oder gestartet.
-- Die einheitliche Geschwindigkeitsanzeige und die getrennten Paket-Reset-Optionen sind auf `release/v2.0.80` für die ausdrücklich freigegebene Veröffentlichung vorbereitet. Installation und produktiver Neustart bleiben getrennt freigabepflichtig.
+- Die einheitliche Geschwindigkeitsanzeige und die getrennten Paket-Reset-Optionen sind als `v2.0.80` auf GitHub und Forgejo veröffentlicht, aber noch nicht auf einem produktiven System installiert oder gestartet.
 
 ## Nächste sinnvolle Schritte
 
-1. Nach Veröffentlichung und einer getrennt freigegebenen Serverinstallation die einheitliche Geschwindigkeitsanzeige und den selektiven Paket-Reset am echten Queue-Fall prüfen.
+1. Nach einer getrennt freigegebenen Serverinstallation die einheitliche Geschwindigkeitsanzeige und den selektiven Paket-Reset am echten Queue-Fall prüfen.
 2. Nach einer getrennt freigegebenen Serverinstallation den Ablauf Real-Debrid-Web-Download, Hauptfenster schließen und unmittelbar neu starten am echten Zielsystem verifizieren; vor jedem Eingriff Prozessbaum und Logtail sichern.
 3. Sicherheitsabhängigkeiten in einem separaten Upgrade-Branch aktualisieren, Electron-/Vite-/Vitest-Major-Wechsel einzeln testen und danach den vollständigen Windows-Paketpfad prüfen.
 4. Eine nichtdestruktive Strategie zur Bereinigung der divergierenden `main`-Branches abstimmen; kein Force-Push ohne ausdrückliche Freigabe.
