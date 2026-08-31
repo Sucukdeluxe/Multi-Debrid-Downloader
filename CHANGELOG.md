@@ -4,6 +4,19 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.80] - 2026-08-31
+
+### Consistent live speed
+
+- Use the same rolling one-second traffic window for file rows, package rows, the header, and the download sidebar.
+- Keep proxy segment bursts from leaving a stale short-window file speed that disagrees with the actual aggregate traffic.
+
+### Selective package reset
+
+- Split package reset into an error-only action and an explicit complete-package reset.
+- Reset failed downloads and extraction-error items without deleting successful or already extracted files.
+- Keep extraction, password, and post-processing behavior unchanged.
+
 ## [2.0.79] - 2026-08-31
 
 ### Proxy segment integrity hotfix

@@ -10,12 +10,12 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 
 - Verifiziert am: 31. August 2026, Europe/Berlin
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
-- Arbeitsbranch: `release/v2.0.79`
-- Quellbasis: `release/v2.0.78`
+- Arbeitsbranch: `release/v2.0.80`
+- Quellbasis: `release/v2.0.79`
 - Release-Tag: `v2.0.79`
-- Baseline-Commit: `04e5ab71d2e77e68256c77b6d0fff48fa86188e8`
+- Baseline-Commit: `f14d16689832d6d650165afe1ae01326acdc059d`
 - Hotfix-Basis: `5cee459d0bcc5c19d8d6483948a036a43c9d91b1`
-- Paketversion: `2.0.79`
+- Paketversion: `2.0.80`
 - Letztes Release: `Multi-Debrid-Downloader v2.0.79`, veröffentlicht am 31. August 2026 auf GitHub und Forgejo
 - Runtime-Voraussetzung: Node.js `>=20`; lokal verifiziert mit Node.js `24.19.0` und npm `11.17.0`
 
@@ -24,7 +24,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - GitHub `main` steht auf `4d5161b` (`v2.0.35`) und ist gegenüber `release/v2.0.74` mit 7 zu 136 Commits auseinanderentwickelt.
 - Forgejo `main` steht auf `a8c4dcc` (`v1.7.232`) und ist noch deutlich älter.
 - GitHub und Forgejo zeigen für `release/v2.0.74` beide exakt auf `c1e1095`.
-- Neue Arbeit muss bis zu einer ausdrücklich geplanten Branch-Bereinigung von `release/v2.0.79` beziehungsweise einem davon abgeleiteten Arbeitsbranch ausgehen.
+- Neue Arbeit muss bis zu einer ausdrücklich geplanten Branch-Bereinigung von `release/v2.0.80` beziehungsweise einem davon abgeleiteten Arbeitsbranch ausgehen.
 
 ## Remotes
 
@@ -155,13 +155,13 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Item-Logs melden den Grund `readback_mismatch` beziehungsweise `zero_run_mismatch` mit Range- und Chunkgrenzen. Die bisher irreführende Meldung „Integritätsprüfung bestanden“ bei fehlender `.sfv`-, `.md5`- oder `.sha1`-Prüfsumme wurde in „Integritätsprüfung nicht ausgeführt“ mit Begründung geändert.
 - Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert. `v2.0.79` wurde nach ausdrücklicher Freigabe auf GitHub und Forgejo veröffentlicht; Installation und produktiver Neustart sind nicht Bestandteil des Releases.
 
-## Noch unveröffentlicht nach v2.0.79
+## Änderungen in v2.0.80
 
 - Datei-, Paket-, Kopfzeilen- und Seitenleisten-Geschwindigkeit verwenden nun dieselbe rollierende Ein-Sekunden-Trafficbasis. Dafür werden die bereits für den globalen und paketbezogenen Durchsatz erfassten Bytes zusätzlich pro Item aggregiert; die bisherige kurzzeitige 0,5-Sekunden-Proxyspitze kann nicht mehr als widersprüchlicher Dateiwert stehen bleiben.
 - Die Geschwindigkeitsprojektion verändert keine internen Session-Items. Nur tatsächlich abweichende Snapshot-Items werden kopiert, damit Restmengen-Benachrichtigungen und große Queues ihren bisherigen Laufzeitzustand beziehungsweise ihre Snapshot-Kosten behalten.
 - Das Kontextmenü eines Oberpakets trennt jetzt „Nur fehlerhafte Dateien zurücksetzen“ von „Gesamtes Paket zurücksetzen“. Der selektive Weg erfasst fehlgeschlagene Downloads und als Entpackfehler markierte Items, verwendet den vorhandenen Item-Reset und lässt erfolgreiche beziehungsweise bereits entpackte Dateien unverändert.
 - Der Statistikpunkt „Fehler zurücksetzen“ verwendet dieselbe Fehlerklassifizierung und erfasst dadurch neben Downloadfehlern auch sichtbare Entpackfehler.
-- Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert. Dieser Stand wurde noch nicht als neue Version veröffentlicht und nicht auf einem produktiven System installiert oder gestartet.
+- Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert. `v2.0.80` ist für die ausdrücklich freigegebene Veröffentlichung vorbereitet; Installation und produktiver Neustart sind nicht Bestandteil des Releases.
 
 ## Start-, Build- und Testbefehle
 
@@ -274,11 +274,11 @@ npm exec -- tsc --noEmit
 - Der faire rollierende Proxy-Scheduler und der bytebasierte Paketfortschritt sind als `v2.0.77` veröffentlicht. Eine Serverinstallation oder ein produktiver Neustart wurde nicht vorgenommen.
 - Der 32/40-Proxybereich und der synchrone Live-Takt von „Sitzung“ und „Verbleibend“ sind als `v2.0.78` veröffentlicht. Eine Serverinstallation oder ein produktiver Neustart wurde nicht vorgenommen.
 - Der Proxy-Readback- und Nullbereich-Hotfix ist als `v2.0.79` auf GitHub und Forgejo veröffentlicht, aber noch nicht auf einem produktiven System installiert oder gestartet.
-- Die einheitliche Geschwindigkeitsanzeige und die getrennten Paket-Reset-Optionen sind noch unveröffentlicht. Für eine neue Version, Installation oder einen produktiven Neustart ist eine aktuelle ausdrückliche Freigabe erforderlich.
+- Die einheitliche Geschwindigkeitsanzeige und die getrennten Paket-Reset-Optionen sind auf `release/v2.0.80` für die ausdrücklich freigegebene Veröffentlichung vorbereitet. Installation und produktiver Neustart bleiben getrennt freigabepflichtig.
 
 ## Nächste sinnvolle Schritte
 
-1. Nach ausdrücklicher Release-Freigabe die unveröffentlichte Geschwindigkeits-/Reset-Korrektur versionieren, bauen, veröffentlichen und erst nach getrennt freigegebener Serverinstallation am echten Queue-Fall prüfen.
+1. Nach Veröffentlichung und einer getrennt freigegebenen Serverinstallation die einheitliche Geschwindigkeitsanzeige und den selektiven Paket-Reset am echten Queue-Fall prüfen.
 2. Nach einer getrennt freigegebenen Serverinstallation den Ablauf Real-Debrid-Web-Download, Hauptfenster schließen und unmittelbar neu starten am echten Zielsystem verifizieren; vor jedem Eingriff Prozessbaum und Logtail sichern.
 3. Sicherheitsabhängigkeiten in einem separaten Upgrade-Branch aktualisieren, Electron-/Vite-/Vitest-Major-Wechsel einzeln testen und danach den vollständigen Windows-Paketpfad prüfen.
 4. Eine nichtdestruktive Strategie zur Bereinigung der divergierenden `main`-Branches abstimmen; kein Force-Push ohne ausdrückliche Freigabe.
