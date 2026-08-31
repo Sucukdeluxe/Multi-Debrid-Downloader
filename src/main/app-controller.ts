@@ -81,6 +81,7 @@ import { CollectorStore } from "./collector-store";
 import type { CollectorPersistenceState } from "../shared/collector";
 import type { DebugSetupCheckResult, SupportTraceConfig } from "../shared/types";
 import { createOnlineBackup, downloadOnlineBackup, uploadOnlineBackup } from "./online-backup";
+import { captureOnlineProxyList, getManagedOnlineProxyListPath, writeImportedOnlineProxyList } from "./online-proxy-list";
 import { overlayLiveUsageCounters } from "./settings-live-overlay";
 import { getLegacyDesktopLogDirectory, migrateLogDirectories, prepareLogDirectory, resolveLogDirectory } from "./log-storage";
 import { normalizeStatisticsLedger, saveStatisticsLedger } from "./statistics-ledger";
@@ -88,7 +89,8 @@ import { NotificationOutbox } from "./notification-outbox";
 import { sendNotification } from "./notify";
 import { DownloadHealthMonitor } from "./download-health-monitor";
 import { shouldDeferAutoResumeToDailyStart } from "./daily-start-scheduler";
-import { configureNetworkProxy, shutdownNetworkProxy } from "./network-proxy";
+import { configureNetworkProxy, getNetworkProxyState, shutdownNetworkProxy } from "./network-proxy";
+import { createProxyOnlyAccountError, resolveProxyOnlyAccountErrorCode } from "./proxy-account-errors";
 
 function sanitizeSettingsPatch(partial: Partial<AppSettings>): Partial<AppSettings> {
   const entries = Object.entries(partial || {}).filter(([, value]) => value !== undefined);
@@ -512,6 +514,16 @@ export class AppController {
     logTraceEvent(level, "audit", message, fields);
   }
 
+  private assertProxyOnlyAccountSetup(): void {
+    const code = resolveProxyOnlyAccountErrorCode(this.settings, getNetworkProxyState());
+    if (code) throw createProxyOnlyAccountError(code);
+  }
+
+  private throwProxyOnlyAccountFailure(failureText: string): void {
+    const code = resolveProxyOnlyAccountErrorCode(this.settings, getNetworkProxyState(), failureText);
+    if (code) throw createProxyOnlyAccountError(code);
+  }
+
   public setTraceEnabled(enabled: boolean, note = "", durationMs?: number): SupportTraceConfig {
     const next = setTraceEnabled(enabled, note, durationMs);
     this.audit("INFO", enabled ? "Support-Trace aktiviert" : "Support-Trace deaktiviert", { note });
@@ -545,7 +557,7 @@ export class AppController {
       : normalizeSettings({ ...restoredSettings, logStorageLocation: this.settings.logStorageLocation });
   }
 
-  private createBackupImportRollback(includeDownloads: boolean): () => void {
+  private createBackupImportRollback(includeDownloads: boolean, additionalFiles: readonly string[] = []): () => void {
     const baseDir = this.storagePaths.baseDir;
     const files = [
       this.storagePaths.configFile,
@@ -554,7 +566,8 @@ export class AppController {
       `${this.storagePaths.configFile}.bak.tmp`,
       path.join(baseDir, "debug_host.txt"),
       path.join(baseDir, "debug_port.txt"),
-      path.join(baseDir, "debug_allowlist.txt")
+      path.join(baseDir, "debug_allowlist.txt"),
+      ...additionalFiles
     ];
     if (includeDownloads) {
       files.push(
@@ -570,7 +583,7 @@ export class AppController {
         `${this.storagePaths.statisticsFile}.tmp`
       );
     }
-    return createFileRollback(files);
+    return createFileRollback([...new Set(files)]);
   }
 
   private rollbackImportPersistence(rollback: () => void, context: string): void {
@@ -589,7 +602,12 @@ export class AppController {
     }
   }
 
-  private async applySettingsOnlyBackup(importedSettings: AppSettings, remoteDiagnostics?: unknown, restoreRemoteDiagnostics = false): Promise<void> {
+  private async applySettingsOnlyBackup(
+    importedSettings: AppSettings,
+    remoteDiagnostics?: unknown,
+    restoreRemoteDiagnostics = false,
+    onlineProxyListContent?: string | null
+  ): Promise<{ proxyListRestored: boolean; proxyOnlyDisabled: boolean }> {
     const barrier = await acquirePersistenceBarrier();
     const previousSettings = this.settings;
     let restoredSettings: AppSettings | null = null;
@@ -597,10 +615,32 @@ export class AppController {
     let remoteRestore: ReturnType<typeof resolveRemoteDiagnosticsRestore> = null;
     let logStorageChanged = false;
     let runtimeApplied = false;
+    let proxyListRestored = false;
+    let proxyOnlyDisabled = false;
     try {
       restoredSettings = this.prepareImportedLogStorage(normalizeSettings(importedSettings));
+      if (typeof onlineProxyListContent === "string") {
+        restoredSettings = normalizeSettings({
+          ...restoredSettings,
+          proxyListPath: getManagedOnlineProxyListPath(this.storagePaths.baseDir)
+        });
+      } else if (onlineProxyListContent === null) {
+        proxyOnlyDisabled = restoredSettings.proxyDownloadEnabled || Boolean(restoredSettings.proxyListPath.trim());
+        restoredSettings = normalizeSettings({
+          ...restoredSettings,
+          proxyDownloadEnabled: false,
+          proxyListPath: ""
+        });
+      }
       this.overlayLiveUsageCounters(restoredSettings);
-      rollback = this.createBackupImportRollback(false);
+      const managedProxyListPath = typeof onlineProxyListContent === "string"
+        ? getManagedOnlineProxyListPath(this.storagePaths.baseDir)
+        : null;
+      rollback = this.createBackupImportRollback(false, managedProxyListPath ? [managedProxyListPath] : []);
+      if (typeof onlineProxyListContent === "string") {
+        writeImportedOnlineProxyList(this.storagePaths.baseDir, onlineProxyListContent);
+        proxyListRestored = true;
+      }
       saveSettings(this.storagePaths, restoredSettings);
       remoteRestore = restoreRemoteDiagnostics
         ? this.persistRemoteDiagnosticsFromBackup(remoteDiagnostics)
@@ -651,6 +691,7 @@ export class AppController {
       throw error;
     }
     this.auditRemoteDiagnosticsRestore(remoteRestore, restoreRemoteDiagnostics);
+    return { proxyListRestored, proxyOnlyDisabled };
   }
 
   public updateSettings(partial: Partial<AppSettings>): AppSettings {
@@ -720,6 +761,9 @@ export class AppController {
     const applied = applyAccountCommand(this.settings, command);
     let checkedStatus: DebridAccountStatus | null = null;
     const redactions = collectAccountStatusRedactionValues(applied.settings, command);
+    if (command.action !== "delete" && ["megadebrid-api", "megadebrid-web", "debridlink-api", "realdebrid-api", "deepbrid-api"].includes(command.kind)) {
+      this.assertProxyOnlyAccountSetup();
+    }
     if (command.action !== "delete" && applied.response.accountId && (command.kind === "megadebrid-api" || command.kind === "megadebrid-web")) {
       const mode = command.kind === "megadebrid-web" ? "web" : "api";
       const account = getMegaDebridAccountsForMode(applied.settings, mode).find((entry) => entry.id === applied.response.accountId);
@@ -743,6 +787,7 @@ export class AppController {
       checkedStatus = sanitizeDebridAccountStatus(checkedStatus, redactions);
     }
     if (checkedStatus && !checkedStatus.valid) {
+      this.throwProxyOnlyAccountFailure(checkedStatus.message || "");
       throw new Error(checkedStatus.message || "Zugangsdaten ungültig");
     }
     this.updateSettings(applied.settings);
@@ -766,6 +811,7 @@ export class AppController {
   }
 
   public async checkAccountCredentials(input: AccountCredentialCheckInput): Promise<DebridAccountStatus> {
+    this.assertProxyOnlyAccountSetup();
     const redactions = collectAccountStatusRedactionValues(this.settings, input);
     if (input.kind === "deepbrid-api") {
       const key = input.secret?.trim() || this.settings.deepbridApiKey.trim();
@@ -774,6 +820,7 @@ export class AppController {
       if (!input.secret && input.accountId === "svc-deepbrid" && this.settings.deepbridApiKey.trim()) {
         this.manager.applyDebridAccountStatuses([status]);
       }
+      if (!status.valid) this.throwProxyOnlyAccountFailure(status.message || "");
       return status;
     }
     if (input.kind === "realdebrid-api" || input.kind === "realdebrid-web") {
@@ -802,6 +849,7 @@ export class AppController {
       if (!input.secret && getRealDebridAccounts(this.settings).some((entry) => entry.id === status.accountId)) {
         this.manager.applyDebridAccountStatuses([status]);
       }
+      if (!status.valid) this.throwProxyOnlyAccountFailure(status.message || "");
       return status;
     }
     if (input.kind === "megadebrid-api" || input.kind === "megadebrid-web") {
@@ -814,6 +862,7 @@ export class AppController {
       if (!input.secret && getMegaDebridAccountsForMode(this.settings, mode).some((entry) => entry.id === status.accountId)) {
         this.manager.applyDebridAccountStatuses([status]);
       }
+      if (!status.valid) this.throwProxyOnlyAccountFailure(status.message || "");
       return status;
     }
     const key = input.secret?.trim()
@@ -824,6 +873,7 @@ export class AppController {
     if (!input.secret && parseDebridLinkApiKeys(this.settings.debridLinkApiKeys).some((entry) => entry.id === status.accountId)) {
       this.manager.applyDebridAccountStatuses([status]);
     }
+    if (!status.valid) this.throwProxyOnlyAccountFailure(status.message || "");
     return status;
   }
 
@@ -965,6 +1015,7 @@ export class AppController {
   }
 
   public async openRealDebridLoginWindow(request: RealDebridLoginRequest): Promise<void> {
+    this.assertProxyOnlyAccountSetup();
     const accountId = String(request.accountId || "").trim();
     if (!isRealDebridWebAccountId(accountId)) {
       throw new Error("Account-Payload ist ungültig");
@@ -1061,6 +1112,7 @@ export class AppController {
   }
 
   public async openAllDebridLoginWindow(): Promise<void> {
+    this.assertProxyOnlyAccountSetup();
     this.audit("INFO", "AllDebrid Login-Fenster geöffnet");
     await this.allDebridWebFallback.openLoginWindow();
   }
@@ -1090,6 +1142,7 @@ export class AppController {
   }
 
   public async checkDebridAccounts(scope: AccountCheckScope = "active"): Promise<DebridAccountStatus[]> {
+    this.assertProxyOnlyAccountSetup();
     const checkedStatuses = sanitizeDebridAccountStatuses(
       await checkAllDebridAccounts(
         this.settings,
@@ -1100,6 +1153,12 @@ export class AppController {
       collectAccountStatusRedactionValues(this.settings)
     );
     const statuses = retainConfiguredRealDebridStatuses(this.settings, checkedStatuses);
+    const proxyFailure = statuses.find((status) => !status.valid && resolveProxyOnlyAccountErrorCode(
+      this.settings,
+      getNetworkProxyState(),
+      status.message || ""
+    ));
+    if (proxyFailure) this.throwProxyOnlyAccountFailure(proxyFailure.message || "");
     this.manager.applyDebridAccountStatuses(statuses);
     this.audit("INFO", "Debrid-Accounts geprueft", {
       total: statuses.length,
@@ -1357,20 +1416,28 @@ export class AppController {
   }
 
   public async exportOnlineBackup(): Promise<{ key: string }> {
-    const created = createOnlineBackup({ ...this.settings }, APP_VERSION);
+    const proxyListContent = captureOnlineProxyList(this.settings);
+    const created = createOnlineBackup({ ...this.settings }, APP_VERSION, undefined, proxyListContent);
     await uploadOnlineBackup(created.record, ONLINE_BACKUP_API_URL);
-    this.audit("INFO", "Online-Sicherung erstellt", { kind: "settings-only" });
+    this.audit("INFO", "Online-Sicherung erstellt", { kind: "settings-only", proxyListIncluded: proxyListContent !== undefined });
     return { key: created.key };
   }
 
   public async importOnlineBackup(key: string): Promise<{ restored: boolean; relaunch: false; message: string }> {
     const payload = await downloadOnlineBackup(key, ONLINE_BACKUP_API_URL);
-    await this.applySettingsOnlyBackup(payload.settings);
+    const result = await this.applySettingsOnlyBackup(payload.settings, undefined, false, payload.proxyList?.content ?? null);
     this.audit("INFO", "Online-Sicherung importiert", {
       kind: "settings-only",
+      proxyListRestored: result.proxyListRestored,
+      proxyOnlyDisabled: result.proxyOnlyDisabled,
       accountSummary: buildAccountSummary(this.settings)
     });
-    return { restored: true, relaunch: false, message: "Einstellungen aus Online-Sicherung wiederhergestellt" };
+    const message = result.proxyListRestored
+      ? "Einstellungen und Proxy-Liste aus Online-Sicherung wiederhergestellt"
+      : result.proxyOnlyDisabled
+        ? "Einstellungen wiederhergestellt; Proxy-only wurde deaktiviert, weil die Online-Sicherung keine Proxy-Liste enthält"
+        : "Einstellungen aus Online-Sicherung wiederhergestellt";
+    return { restored: true, relaunch: false, message };
   }
 
   public async exportSupportBundle(): Promise<{ buffer: Buffer; defaultFileName: string }> {

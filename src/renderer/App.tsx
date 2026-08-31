@@ -40,8 +40,8 @@ import {
   getProviderUsageDayKey
 } from "../shared/provider-daily-limits";
 import { preservePackageOrderForDisplay, sortPackageOrderByName } from "./package-order";
-import { pruneSelection, releaseAccountSelectionFocus, resolveEscapeSelectionScope, shouldClearDownloadSelection } from "./selection";
-import { buildConfiguredProviderOrder, createAccountToggleQueue, enqueueAccountToggleIntent, filterAccountDialogOptions, getAccountDialogSelectableOptions, getAvailableAccountOptions, mergeAccountToggleSettings, pruneAccountRowSelections, resolveAccountStatusState, resolveAccountToggleIntentEnabled, resolveAccountUsername, resolveVisibleAccountKind, sortAccountServices, updateAccountRowSelection, type AccountToggleTarget } from "./account-ui";
+import { pruneSelection, releaseAccountSelectionFocus, resolveEscapeSelectionScope, resolveSelectAllSelectionScope, shouldClearDownloadSelection } from "./selection";
+import { buildConfiguredProviderOrder, createAccountToggleQueue, enqueueAccountToggleIntent, filterAccountDialogOptions, formatAccountOperationError, getAccountDialogSelectableOptions, getAvailableAccountOptions, mergeAccountToggleSettings, pruneAccountRowSelections, resolveAccountStatusState, resolveAccountToggleIntentEnabled, resolveAccountUsername, resolveVisibleAccountKind, sortAccountServices, updateAccountRowSelection, type AccountToggleTarget } from "./account-ui";
 import { buildAccountDeleteCommand, buildAccountReplaceCommand, buildAccountSecretRequest, createAccountEditState, validateAccountEdit } from "./account-edit";
 import type { AccountEditState, AccountEditTarget, AccountKind, AccountService, SingleAccountKind } from "./account-edit";
 import { ACCOUNT_SERVICE_ICONS } from "./account-service-icons";
@@ -1920,6 +1920,11 @@ export function App(): ReactElement {
   const [settingsSubTab, setSettingsSubTab] = useState<SettingsSection>("allgemein");
   const [accountManagementTab, setAccountManagementTab] = useState<"overview" | "rules" | "runtime">("overview");
   const [selectedAccountRowKeys, setSelectedAccountRowKeys] = useState<Set<string>>(() => new Set());
+  const settingsSubTabRef = useRef(settingsSubTab);
+  const accountManagementTabRef = useRef(accountManagementTab);
+  const visibleAccountRowKeysRef = useRef<string[]>([]);
+  settingsSubTabRef.current = settingsSubTab;
+  accountManagementTabRef.current = accountManagementTab;
   const [openSubmenu, setOpenSubmenu] = useState<string | null>(null);
   const [startConflictPrompt, setStartConflictPrompt] = useState<StartConflictPromptState | null>(null);
   const startConflictResolverRef = useRef<((result: { policy: Extract<DuplicatePolicy, "skip" | "overwrite">; applyToAll: boolean } | null) => void) | null>(null);
@@ -3120,7 +3125,7 @@ export function App(): ReactElement {
       await window.rd.openRealDebridLogin();
       showToast("Real-Debrid Login-Fenster geöffnet", 2200);
     }, (error) => {
-      showToast(`Real-Debrid Login fehlgeschlagen: ${String(error)}`, 2800);
+      showToast(formatAccountOperationError("Real-Debrid Login fehlgeschlagen", error), 3200);
     });
   };
 
@@ -3130,7 +3135,7 @@ export function App(): ReactElement {
       await window.rd.openAllDebridLogin();
       showToast("AllDebrid Login-Fenster geöffnet", 2200);
     }, (error) => {
-      showToast(`AllDebrid Login fehlgeschlagen: ${String(error)}`, 2800);
+      showToast(formatAccountOperationError("AllDebrid Login fehlgeschlagen", error), 3200);
     });
   };
 
@@ -3232,7 +3237,7 @@ export function App(): ReactElement {
         showToast(`${label}: ${valid}/${statuses.length} Login gültig, ${premium} mit Premium.`, 3600);
       }
     } catch (error) {
-      showToast(`Account-Check fehlgeschlagen: ${String(error)}`, 3600);
+      showToast(formatAccountOperationError("Account-Check fehlgeschlagen", error), 3600);
     } finally {
       setAccountCheckBusy(false);
     }
@@ -3312,7 +3317,7 @@ export function App(): ReactElement {
         }
       });
     }, (error) => {
-      showToast(`Account konnte nicht gespeichert werden: ${String(error)}`, 3200);
+      showToast(formatAccountOperationError("Account konnte nicht gespeichert werden", error), 3600);
     });
   };
 
@@ -3358,7 +3363,7 @@ export function App(): ReactElement {
         void checkAccounts("active");
       });
     }, (error) => {
-      showToast(`Account konnte nicht gespeichert werden: ${String(error)}`, 3200);
+      showToast(formatAccountOperationError("Account konnte nicht gespeichert werden", error), 3600);
     });
   };
 
@@ -3427,7 +3432,7 @@ export function App(): ReactElement {
       pendingAccountTogglesRef.current = settledPending;
       setPendingAccountToggles(settledPending);
       if (result.status === "failed") {
-        showToast(`${subject}: Umschalten fehlgeschlagen: ${String(result.error)}`, 3200);
+        showToast(formatAccountOperationError(`${subject}: Umschalten fehlgeschlagen`, result.error), 3600);
         return;
       }
       showToast(`${subject} ${requestedEnabled ? "aktiviert" : "deaktiviert"}`, 2200);
@@ -3442,7 +3447,7 @@ export function App(): ReactElement {
     await performQuickAction(async () => {
       await runAccountQuickAction(meta.action, row.accountId);
     }, (error) => {
-      showToast(`${row.entry.serviceLabel}: Aktion fehlgeschlagen: ${String(error)}`, 3200);
+      showToast(formatAccountOperationError(`${row.entry.serviceLabel}: Aktion fehlgeschlagen`, error), 3600);
     });
   };
 
@@ -3518,7 +3523,7 @@ export function App(): ReactElement {
       void performQuickAction(async () => {
         const status = await window.rd.checkAccountCredentials({ kind, accountId });
         showToast(status.valid ? "Account erfolgreich geprüft" : status.message || "Zugangsdaten ungültig", 2600);
-      }, (error) => showToast(`Prüfung fehlgeschlagen: ${String(error)}`, 3200));
+      }, (error) => showToast(formatAccountOperationError("Prüfung fehlgeschlagen", error), 3600));
       return;
     }
     if (row.checkable) {
@@ -5235,19 +5240,24 @@ export function App(): ReactElement {
           return;
         }
         if (!e.shiftKey && e.key.toLowerCase() === "a") {
-          if (inInput) return;
-          if (tabRef.current === "downloads") {
-            e.preventDefault();
-            // Select exactly the VISIBLE rows (packages + their items), honouring
-            // the active search / collapse / hide-extracted filters — selecting
-            // the unfiltered package map would let a later delete hit hidden ones.
+          const inputType = target.tagName === "INPUT" ? (target as HTMLInputElement).type : "";
+          const selectionScope = resolveSelectAllSelectionScope(
+            tabRef.current,
+            settingsSubTabRef.current,
+            accountManagementTabRef.current,
+            target.tagName,
+            inputType
+          );
+          if (!selectionScope) return;
+          e.preventDefault();
+          if (selectionScope === "downloads") {
             setSelectedIds(new Set(visibleOrderIdsRef.current));
-          } else if (tabRef.current === "collector") {
-            e.preventDefault();
+          } else if (selectionScope === "collector") {
             setSelectedCollectorLinkIds((current) => setCollectorVisibleSelection(current, collectorVisibleIdsRef.current, true));
-          } else if (tabRef.current === "history") {
-            e.preventDefault();
+          } else if (selectionScope === "history") {
             setSelectedHistoryIds((current) => selectHistoryPageFromShortcut(current, historyVisibleIdsRef.current));
+          } else {
+            setSelectedAccountRowKeys(new Set(visibleAccountRowKeysRef.current));
           }
           return;
         }
@@ -5768,6 +5778,9 @@ export function App(): ReactElement {
   const visibleAccountRows = useMemo(() => accountStatusSort === "none"
     ? projectedAccountRows
     : sortAccountRows(projectedAccountRows, accountStatusSort), [accountStatusSort, projectedAccountRows]);
+  visibleAccountRowKeysRef.current = visibleAccountRows
+    .map((row) => accountRowBindings.get(row.id)?.rowKey)
+    .filter((rowKey): rowKey is string => Boolean(rowKey));
   const accountRuntimeModel = useMemo<AccountWorkspaceViewModel["runtime"]>(() => {
     const runtimeEntries = snapshot.accountRuntime || [];
     const runtimeByAccountId = new Map(runtimeEntries.map((entry) => [`${entry.provider}:${entry.accountId}`, entry]));
@@ -6311,7 +6324,7 @@ export function App(): ReactElement {
       } else {
         showToast("Für diesen Dienst ist keine direkte Statusprüfung verfügbar.", 2800);
       }
-    }, (error) => showToast(`Prüfung fehlgeschlagen: ${String(error)}`, 3200));
+    }, (error) => showToast(formatAccountOperationError("Prüfung fehlgeschlagen", error), 3600));
   };
   const accountEditDialogView = accountEditDialog && accountEditOption ? (
     <AccountEditDialog
@@ -6807,8 +6820,8 @@ export function App(): ReactElement {
           >
             <p>
               {onlineBackupDialog.mode === "export"
-                ? "Dieser Schlüssel stellt deine Einstellungen inklusive gespeicherter Zugangsdaten wieder her. Bewahre ihn wie ein Passwort auf."
-                : "Füge den vollständigen MDD2-Schlüssel ein. Die aktuellen Einstellungen werden durch die gespeicherte Version ersetzt."}
+                ? "Dieser Schlüssel stellt deine Einstellungen inklusive gespeicherter Zugangsdaten und hinterlegter Proxy-Liste wieder her. Bewahre ihn wie ein Passwort auf."
+                : "Füge den vollständigen MDD2-Schlüssel ein. Einstellungen und eine enthaltene Proxy-Liste werden durch die gespeicherte Version ersetzt."}
             </p>
             {onlineBackupDialog.mode === "export" && onlineBackupDialog.busy && <div className="online-backup-status">Online-Sicherung wird verschlüsselt und gespeichert …</div>}
             {onlineBackupDialog.mode === "export" && onlineBackupDialog.key && (

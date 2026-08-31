@@ -7,6 +7,8 @@ import { defaultSettings } from "../src/main/constants";
 import { configureCredentialProtector } from "../src/main/credential-protection";
 import { prepareDailyStartSettingsPatch } from "../src/main/daily-start-scheduler";
 import { logger } from "../src/main/logger";
+import { getManagedOnlineProxyListPath } from "../src/main/online-proxy-list";
+import { configureNetworkProxy } from "../src/main/network-proxy";
 import { createStatisticsLedger, loadStatisticsLedger, saveStatisticsLedger } from "../src/main/statistics-ledger";
 import { createStoragePaths, emptySession, loadHistory, loadSession, loadSettings, saveHistory, saveSession, saveSettings } from "../src/main/storage";
 import type { CollectorPersistenceState } from "../src/shared/collector";
@@ -202,6 +204,7 @@ afterEach(async () => {
   debugStorage.configError = null;
   debugStorage.restartCalls = 0;
   debugStorage.restartErrors = [];
+  configureNetworkProxy(defaultSettings());
   vi.restoreAllMocks();
   for (const dir of tempDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -431,7 +434,101 @@ describe("AppController full backup history restore", () => {
   });
 });
 
+describe("AppController Proxy-only account validation", () => {
+  it("rejects account checks before network access when no proxy list is configured", async () => {
+    const controller = createController({
+      ...defaultSettings(),
+      proxyDownloadEnabled: true,
+      proxyListPath: ""
+    }) as any;
+    controller.applyNetworkProxyConfiguration();
+
+    await expect(controller.checkAccountCredentials({
+      kind: "realdebrid-api",
+      secret: "test-token"
+    })).rejects.toThrow("proxy_only_account:proxy_list_missing");
+  });
+});
+
 describe("AppController settings-only backup transactions", () => {
+  it("restores an online proxy list to a managed local path", async () => {
+    const currentSettings = { ...defaultSettings(), outputDir: "C:\\Current" };
+    const importedSettings = {
+      ...currentSettings,
+      outputDir: "C:\\Imported",
+      proxyDownloadEnabled: true,
+      proxyListPath: "C:\\OtherServer\\proxy.txt",
+      proxyApiProxyIndex: 1
+    };
+    const controller = createController(currentSettings) as any;
+    controller.applyNetworkProxyConfiguration = vi.fn();
+    const content = "proxy-user:proxy-secret@192.0.2.10:8080\n";
+
+    const result = await controller.applySettingsOnlyBackup(importedSettings, undefined, false, content);
+    const managedPath = getManagedOnlineProxyListPath(controller.storagePaths.baseDir);
+
+    expect(result).toEqual({ proxyListRestored: true, proxyOnlyDisabled: false });
+    expect(fs.readFileSync(managedPath, "utf8")).toBe(content);
+    expect(controller.getSettings().proxyDownloadEnabled).toBe(true);
+    expect(controller.getSettings().proxyListPath).toBe(managedPath);
+    expect(loadSettings(controller.storagePaths).proxyListPath).toBe(managedPath);
+  });
+
+  it("disables Proxy-only when an older online backup has no embedded proxy list", async () => {
+    const currentSettings = { ...defaultSettings(), outputDir: "C:\\Current" };
+    const importedSettings = {
+      ...currentSettings,
+      outputDir: "C:\\Imported",
+      proxyDownloadEnabled: true,
+      proxyListPath: "C:\\OtherServer\\proxy.txt"
+    };
+    const controller = createController(currentSettings) as any;
+    controller.applyNetworkProxyConfiguration = vi.fn();
+
+    const result = await controller.applySettingsOnlyBackup(importedSettings, undefined, false, null);
+
+    expect(result).toEqual({ proxyListRestored: false, proxyOnlyDisabled: true });
+    expect(controller.getSettings().proxyDownloadEnabled).toBe(false);
+    expect(controller.getSettings().proxyListPath).toBe("");
+  });
+
+  it("restores the previous managed proxy file when online settings persistence fails", async () => {
+    const currentSettings = { ...defaultSettings(), outputDir: "C:\\Current" };
+    const importedSettings = { ...currentSettings, outputDir: "C:\\Imported", proxyDownloadEnabled: true };
+    const controller = createController(currentSettings) as any;
+    controller.applyNetworkProxyConfiguration = vi.fn();
+    const managedPath = getManagedOnlineProxyListPath(controller.storagePaths.baseDir);
+    fs.writeFileSync(managedPath, "192.0.2.1:8080\n", "utf8");
+    bootStorage.settingsSaveError = new Error("online settings locked");
+
+    await expect(controller.applySettingsOnlyBackup(
+      importedSettings,
+      undefined,
+      false,
+      "198.51.100.1:3128\n"
+    )).rejects.toThrow("online settings locked");
+
+    expect(fs.readFileSync(managedPath, "utf8")).toBe("192.0.2.1:8080\n");
+    expect(controller.getSettings().outputDir).toBe("C:\\Current");
+  });
+
+  it("preserves local-backup proxy paths when no online proxy-list mode is supplied", async () => {
+    const currentSettings = { ...defaultSettings(), outputDir: "C:\\Current" };
+    const importedSettings = {
+      ...currentSettings,
+      outputDir: "C:\\Imported",
+      proxyDownloadEnabled: true,
+      proxyListPath: "C:\\LocalBackup\\proxy.txt"
+    };
+    const controller = createController(currentSettings) as any;
+    controller.applyNetworkProxyConfiguration = vi.fn();
+
+    await controller.applySettingsOnlyBackup(importedSettings);
+
+    expect(controller.getSettings().proxyDownloadEnabled).toBe(true);
+    expect(controller.getSettings().proxyListPath).toBe("C:\\LocalBackup\\proxy.txt");
+  });
+
   it("applies runtime settings before releasing the successful import barrier", async () => {
     const currentSettings = { ...defaultSettings(), outputDir: "C:\\Current" };
     const importedSettings = { ...currentSettings, outputDir: "C:\\Imported" };

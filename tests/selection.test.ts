@@ -95,3 +95,32 @@ describe("global Escape selection routing", () => {
     expect(api.releaseAccountSelectionFocus?.(null)).toBe(false);
   });
 });
+
+describe("global Ctrl+A selection routing", () => {
+  it("routes the account overview to account selection and preserves text editing", () => {
+    const api = selection as typeof selection & {
+      resolveSelectAllSelectionScope?: (
+        view: string,
+        settingsSection: string,
+        accountPanel: string,
+        tagName: string,
+        inputType?: string
+      ) => string | null;
+    };
+
+    expect(api.resolveSelectAllSelectionScope).toBeTypeOf("function");
+    expect(api.resolveSelectAllSelectionScope?.("settings", "accounts", "overview", "BODY")).toBe("accounts");
+    expect(api.resolveSelectAllSelectionScope?.("settings", "accounts", "overview", "INPUT", "checkbox")).toBe("accounts");
+    expect(api.resolveSelectAllSelectionScope?.("settings", "accounts", "rules", "BODY")).toBeNull();
+    expect(api.resolveSelectAllSelectionScope?.("settings", "accounts", "runtime", "BODY")).toBeNull();
+    expect(api.resolveSelectAllSelectionScope?.("settings", "accounts", "overview", "INPUT", "text")).toBeNull();
+    expect(api.resolveSelectAllSelectionScope?.("settings", "accounts", "overview", "TEXTAREA")).toBeNull();
+  });
+
+  it("preserves the existing shortcut scopes outside account management", () => {
+    expect(selection.resolveSelectAllSelectionScope("downloads", "allgemein", "overview", "BODY")).toBe("downloads");
+    expect(selection.resolveSelectAllSelectionScope("collector", "allgemein", "overview", "BODY")).toBe("collector");
+    expect(selection.resolveSelectAllSelectionScope("history", "allgemein", "overview", "BODY")).toBe("history");
+    expect(selection.resolveSelectAllSelectionScope("downloads", "allgemein", "overview", "INPUT", "checkbox")).toBeNull();
+  });
+});

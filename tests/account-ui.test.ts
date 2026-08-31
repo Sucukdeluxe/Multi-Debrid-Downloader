@@ -7,6 +7,7 @@ import {
   createAccountToggleQueue,
   enqueueAccountToggleIntent,
   filterAccountDialogOptions,
+  formatAccountOperationError,
   getAvailableAccountOptions,
   getAccountDialogSelectableOptions,
   isAccountRowSelectionKey,
@@ -30,6 +31,24 @@ describe("account mode filter", () => {
   it("shows Web-Login options for the Web filter", () => {
     expect(matchesAccountModeFilter({ modeLabel: "Web-Login" }, "web")).toBe(true);
     expect(matchesAccountModeFilter({ modeLabel: "API" }, "web")).toBe(false);
+  });
+});
+
+describe("account operation errors", () => {
+  it("replaces wrapped IPC proxy markers with actionable messages", () => {
+    expect(formatAccountOperationError(
+      "Account konnte nicht gespeichert werden",
+      new Error("Error invoking remote method: proxy_only_account:proxy_list_missing")
+    )).toBe("Account konnte nicht gespeichert werden: Proxy-only ist aktiviert, aber es ist keine Proxy-Liste hinterlegt. Hinterlege sie unter Einstellungen → Geschwindigkeit.");
+    expect(formatAccountOperationError(
+      "Prüfung fehlgeschlagen",
+      "proxy_only_account:proxy_unreachable"
+    )).toContain("feste API-Proxy ist nicht erreichbar");
+  });
+
+  it("preserves non-proxy account failures", () => {
+    expect(formatAccountOperationError("Prüfung fehlgeschlagen", new Error("Ungültiger API-Key")))
+      .toBe("Prüfung fehlgeschlagen: Error: Ungültiger API-Key");
   });
 });
 

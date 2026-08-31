@@ -13,6 +13,25 @@ export function shouldClearDownloadSelectionOnEscape(tagName: string, inputType 
   return ["checkbox", "radio", "button"].includes(inputType.toLowerCase());
 }
 
+export function resolveSelectAllSelectionScope(
+  view: string,
+  settingsSection: string,
+  accountPanel: string,
+  tagName: string,
+  inputType = ""
+): "downloads" | "collector" | "history" | "accounts" | null {
+  const normalizedTag = tagName.toUpperCase();
+  if (view === "settings" && settingsSection === "accounts" && accountPanel === "overview") {
+    if (normalizedTag === "TEXTAREA") return null;
+    if (normalizedTag === "INPUT" && !["checkbox", "radio", "button"].includes(inputType.toLowerCase())) return null;
+    return "accounts";
+  }
+  if (normalizedTag === "INPUT" || normalizedTag === "TEXTAREA") {
+    return null;
+  }
+  return view === "downloads" || view === "collector" || view === "history" ? view : null;
+}
+
 export function resolveEscapeSelectionScope(
   view: string,
   settingsSection: string,

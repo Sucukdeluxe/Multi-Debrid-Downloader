@@ -10,8 +10,8 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 
 - Verifiziert am: 31. August 2026, Europe/Berlin
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
-- Arbeitsbranch: `release/v2.0.80`
-- Quellbasis: `release/v2.0.79`
+- Arbeitsbranch: `fix/account-select-all`
+- Quellbasis: `release/v2.0.80`
 - Release-Tag: `v2.0.80`
 - Baseline-Commit: `1628f23023c93efcb222c63913f9d2508a9a5e6c`
 - Hotfix-Basis: `5cee459d0bcc5c19d8d6483948a036a43c9d91b1`
@@ -52,7 +52,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Zugangsdaten bleiben im Main-Prozess und werden für Renderer-Snapshots projiziert beziehungsweise redigiert.
 - Der Updater lädt ausschließlich GitHub-Release-Assets, prüft EXE-Form und SHA-256/SHA-512 und verweigert standardmäßig Assets ohne gültigen Digest.
 - Lokale Voll-Backups verwenden scrypt und AES-256-GCM mit authentifiziertem Header; Legacy-MDD1 kann weiterhin gelesen werden.
-- Online-Sicherungen sind `settings-only`, clientseitig mit AES-256-GCM verschlüsselt und durch einen zufälligen `MDD2-`-Schlüssel geschützt. Der Server erhält weder Master-Key noch Löschgeheimnis im Klartext.
+- Online-Sicherungen sind `settings-only`, clientseitig mit AES-256-GCM verschlüsselt und durch einen zufälligen `MDD2-`-Schlüssel geschützt. Eine konfigurierte Proxy-Liste wird innerhalb desselben verschlüsselten Nutzdatenblocks gesichert; der Server erhält weder Einstellungen, Proxy-Zugangsdaten, Master-Key noch Löschgeheimnis im Klartext.
 
 ### Zustands- und Persistenzmodell
 
@@ -163,6 +163,17 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Der Statistikpunkt „Fehler zurücksetzen“ verwendet dieselbe Fehlerklassifizierung und erfasst dadurch neben Downloadfehlern auch sichtbare Entpackfehler.
 - Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert. `v2.0.80` wurde nach ausdrücklicher Freigabe auf GitHub und Forgejo veröffentlicht; Installation und produktiver Neustart sind nicht Bestandteil des Releases.
 
+## Unveröffentlichte Änderungen nach v2.0.80
+
+- `Strg+A` markiert unter Einstellungen → Accounts → Übersicht alle aktuell sichtbaren Accountzeilen. Die bestehende Mehrfachauswahl wird dabei vollständig durch die sichtbare Liste ersetzt.
+- Der Shortcut berücksichtigt den aktuellen Einstellungsbereich und den aktiven Account-Unterbereich über Live-Refs, damit der globale Tastaturhandler keinen veralteten Renderzustand verwendet.
+- Fokussierte Account-Schalter erlauben den Shortcut; Textfelder und Textbereiche behalten ihr natives „Alles markieren“. Downloads, Linksammler und Verlauf behalten ihre bisherigen `Strg+A`-Bereiche.
+- Account-Anlage, Einzel-/Sammelprüfung und Web-Login melden bei aktivem Proxy-only jetzt gezielt, ob keine Proxy-Liste hinterlegt ist, die Datei nicht lesbar beziehungsweise leer/ungültig ist, der feste 1-basierte Listeneintrag fehlt oder der aktive Proxy die Netzwerkverbindung nicht herstellen kann. Normale HTTP- und Zugangsdatenfehler bleiben davon getrennt.
+- Online-Sicherungen nehmen den exakten Inhalt einer konfigurierten Proxy-Liste in den bereits clientseitig AES-256-GCM-verschlüsselten MDD2-Datensatz auf. Der Online-Dienst erhält weiterhin ausschließlich den authentifiziert verschlüsselten Blob und keine Proxy-Zugangsdaten im Klartext.
+- Beim Import wird die Liste atomar in eine verwaltete Datei im Runtime-Verzeichnis geschrieben und der lokale Pfad darauf umgestellt. Ein Schreib- oder Settingsfehler stellt sowohl die vorherige Datei als auch die vorherigen Einstellungen wieder her.
+- Ältere Online-Sicherungen ohne eingebettete Liste bleiben importierbar. Enthalten sie einen fremden Proxy-Pfad beziehungsweise aktiviertes Proxy-only, wird Proxy-only beim Import sicher deaktiviert, statt alle Netzwerkanfragen mit einem nicht portablen Pfad zu blockieren. Lokale Backup-Importe behalten ihre bisherige Pfadsemantik.
+- Die Änderungen sind auf `fix/account-select-all` umgesetzt und für `v2.0.81` freigegeben, aber noch nicht veröffentlicht. Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert.
+
 ## Start-, Build- und Testbefehle
 
 ```powershell
@@ -194,6 +205,9 @@ npm exec -- tsc --noEmit
 
 ## Verifizierungen vom 31. August 2026
 
+- Kandidat für `v2.0.81`: 382 von 382 fokussierte Account-, Proxy-, Online-Backup-, Import-Transaktions-, Auswahl-, Übersetzungs- und Einstellungsansichtstests erfolgreich. Die Tests beweisen insbesondere, dass Proxy-Zugangsdaten nicht im Server-Record stehen, der verschlüsselte Roundtrip den exakten Listeninhalt erhält, ein fehlgeschlagener Import die vorherige verwaltete Liste wiederherstellt und alte Online-Sicherungen Proxy-only ohne eingebettete Liste deaktivieren.
+- Vollständiger Clientlauf des Kandidaten: 142 Testdateien erfolgreich, 1 optionale JVM-Testdatei übersprungen; 2.718 Tests erfolgreich und 4 übersprungen. Nur die zwei bekannten Windows-Symlink-Fixtures endeten mangels Berechtigung vor ihrer Produktassertion mit `EPERM`. Zusätzlich erfolgreich: TypeScript, Main-Build, Renderer-Build, Node-Self-Check und 16 von 16 Backup-API-Tests. Die bekannte Vite-Warnung betrifft nun den rund 580 KiB großen Renderer-Chunk.
+- Account-`Strg+A` nach `v2.0.80`: 358 von 358 Auswahl-, Account-, Einstellungs-, Download-, Linksammler- und Verlaufstests erfolgreich. TypeScript und der Produktions-Renderer-Build sind ebenfalls erfolgreich; die bekannte Vite-Warnung zum rund 577 KiB großen Renderer-Chunk bleibt bestehen.
 - Veröffentlichung `v2.0.80`: Der annotierte Tag zeigt auf beiden Git-Remotes exakt auf `1628f23023c93efcb222c63913f9d2508a9a5e6c`. GitHub und Forgejo veröffentlichen denselben stabilen Release mit denselben sechs Assets. Alle zwölf erneut heruntergeladenen Dateien stimmen jeweils in Größe und SHA-256 exakt mit den lokalen Originalen überein; GitHub führt `v2.0.80` als Latest Release.
 - Release-Build `v2.0.80`: Installer und Portable-Datei wurden aus dem versionierten Release-Vorbereitungsstand neu erzeugt. Die Release-Prüfung bestätigte Paket- und Bundle-Version, Update-Metadaten, Artefaktnamen, Dateigröße und SHA-512 des Installers, Icon, Lizenzdateien sowie den entpackten Inhalt beider EXE-Archive. Von den 24 Public-Release-Metadatentests waren 22 erfolgreich; nur die zwei unter Windows ohne Symlink-Berechtigung nicht ausführbaren Fixtures endeten vor ihrer Produktassertion mit `EPERM`.
 - SHA-256 des `v2.0.80`-Setups: `a841d4b52962d52e335fd7f8c2f1fcda0b4f642a66a0101db15665326f6d332a`; SHA-256 der Portable-Datei: `1a5bd12c13e33b620c83958ef7d7e376d028cee32a6f8eb5ff123216bbd01012`.
@@ -278,11 +292,14 @@ npm exec -- tsc --noEmit
 - Der 32/40-Proxybereich und der synchrone Live-Takt von „Sitzung“ und „Verbleibend“ sind als `v2.0.78` veröffentlicht. Eine Serverinstallation oder ein produktiver Neustart wurde nicht vorgenommen.
 - Der Proxy-Readback- und Nullbereich-Hotfix ist als `v2.0.79` auf GitHub und Forgejo veröffentlicht, aber noch nicht auf einem produktiven System installiert oder gestartet.
 - Die einheitliche Geschwindigkeitsanzeige und die getrennten Paket-Reset-Optionen sind als `v2.0.80` auf GitHub und Forgejo veröffentlicht, aber noch nicht auf einem produktiven System installiert oder gestartet.
+- Die Account-Übersicht unterstützt `Strg+A`; Proxy-only-Accountfehler werden verständlich aufgelöst und Online-Sicherungen können die Proxy-Liste verschlüsselt portieren. Der Kandidat ist noch nicht veröffentlicht oder installiert.
 
 ## Nächste sinnvolle Schritte
 
-1. Nach einer getrennt freigegebenen Serverinstallation die einheitliche Geschwindigkeitsanzeige und den selektiven Paket-Reset am echten Queue-Fall prüfen.
-2. Nach einer getrennt freigegebenen Serverinstallation den Ablauf Real-Debrid-Web-Download, Hauptfenster schließen und unmittelbar neu starten am echten Zielsystem verifizieren; vor jedem Eingriff Prozessbaum und Logtail sichern.
-3. Sicherheitsabhängigkeiten in einem separaten Upgrade-Branch aktualisieren, Electron-/Vite-/Vitest-Major-Wechsel einzeln testen und danach den vollständigen Windows-Paketpfad prüfen.
-4. Eine nichtdestruktive Strategie zur Bereinigung der divergierenden `main`-Branches abstimmen; kein Force-Push ohne ausdrückliche Freigabe.
-5. Optional Developer Mode für lokale Symlink-Tests bereitstellen oder die Test-Fixtures plattformgerecht ohne privilegierte Symlinks gestalten.
+1. Den vollständig geprüften und freigegebenen Kandidaten als `v2.0.81` bauen, auf GitHub und Forgejo veröffentlichen und die Assets beider Plattformen gegeneinander verifizieren.
+2. Nach einer getrennt freigegebenen Serverinstallation die Account-Fehlerführung, den verschlüsselten Proxy-Listen-Import und `Strg+A` am echten Zielsystem prüfen.
+3. Nach einer getrennt freigegebenen Serverinstallation die einheitliche Geschwindigkeitsanzeige und den selektiven Paket-Reset am echten Queue-Fall prüfen.
+4. Nach einer getrennt freigegebenen Serverinstallation den Ablauf Real-Debrid-Web-Download, Hauptfenster schließen und unmittelbar neu starten am echten Zielsystem verifizieren; vor jedem Eingriff Prozessbaum und Logtail sichern.
+5. Sicherheitsabhängigkeiten in einem separaten Upgrade-Branch aktualisieren, Electron-/Vite-/Vitest-Major-Wechsel einzeln testen und danach den vollständigen Windows-Paketpfad prüfen.
+6. Eine nichtdestruktive Strategie zur Bereinigung der divergierenden `main`-Branches abstimmen; kein Force-Push ohne ausdrückliche Freigabe.
+7. Optional Developer Mode für lokale Symlink-Tests bereitstellen oder die Test-Fixtures plattformgerecht ohne privilegierte Symlinks gestalten.

@@ -41,15 +41,19 @@ describe("online backup key", () => {
   });
 
   it("never places credentials or the decryption secret in the server record", () => {
-    const created = createOnlineBackup(settings(), "2.0.0", "2026-08-07T00:00:00.000Z");
+    const proxyList = "proxy-user:proxy-secret@192.0.2.10:8080\n";
+    const created = createOnlineBackup(settings(), "2.0.0", "2026-08-07T00:00:00.000Z", proxyList);
     const serialized = JSON.stringify(created.record);
     const parsed = parseOnlineBackupKey(created.key);
 
     expect(serialized).not.toContain("rd-secret-token");
     expect(serialized).not.toContain("fixture-deepbrid-online-key-6jK8");
     expect(serialized).not.toContain("backup-password");
+    expect(serialized).not.toContain("proxy-user");
+    expect(serialized).not.toContain("proxy-secret");
     expect(serialized).not.toContain(parsed.masterKey.toString("base64url"));
     expect(Object.keys(created.record).sort()).toEqual(["blob", "deleteVerifier", "id"]);
+    expect(restoreOnlineBackup(created.key, created.record.blob).proxyList).toEqual({ version: 1, content: proxyList });
   });
 
   it("rejects corrupted keys and encrypted payloads before returning settings", () => {
@@ -67,6 +71,7 @@ describe("online backup key", () => {
     const oversized = { ...settings(), archivePasswordList: "x".repeat(600_000) };
 
     expect(() => createOnlineBackup(oversized, "2.0.0")).toThrow(/zu groß/i);
+    expect(() => createOnlineBackup(settings(), "2.0.0", undefined, "invalid proxy line\n")).toThrow(/keine gültigen/i);
   });
 });
 

@@ -1167,6 +1167,15 @@ describe("account workspace", () => {
     expect(html).toContain("− Entfernen (3)");
   });
 
+  it("selects every visible account row from the global Ctrl+A shortcut", () => {
+    const shortcutBlock = sourceBlock(appSource, "if (!e.shiftKey && e.key.toLowerCase() === \"a\")", "return;\n        }");
+
+    expect(shortcutBlock).toContain("resolveSelectAllSelectionScope");
+    expect(shortcutBlock).toContain("settingsSubTabRef.current");
+    expect(shortcutBlock).toContain("accountManagementTabRef.current");
+    expect(shortcutBlock).toContain("setSelectedAccountRowKeys(new Set(visibleAccountRowKeysRef.current))");
+  });
+
   it("removes the redundant global account activation switch", () => {
     const legacyActions = { ...workspaceActions(), onSetAllEnabled: () => {} } as AccountWorkspaceActions;
     const legacyModel = { ...workspaceModel(), allEnabled: true } as AccountWorkspaceViewModel;
