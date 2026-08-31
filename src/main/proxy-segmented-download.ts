@@ -15,10 +15,14 @@ const MAX_REDIRECTS = 5;
 const MAX_PROXY_FILE_BYTES = 8 * 1024 * 1024;
 const DISK_ERROR_CODES = new Set(["ENOSPC", "EDQUOT", "EACCES", "EPERM", "EROFS", "EIO", "ENODEV"]);
 
-interface ProxyEndpoint {
+export interface ProxyEndpoint {
   id: number;
   url: string;
   authorization: string;
+  username: string;
+  password: string;
+  hostname: string;
+  port: number;
 }
 
 interface CachedProxyFile {
@@ -110,9 +114,11 @@ function parseProxyLine(rawLine: string, id: number): ProxyEndpoint | null {
       return null;
     }
     let authorization = "";
+    let username = "";
+    let password = "";
     if (parsed.username || parsed.password) {
-      const username = decodeURIComponent(parsed.username);
-      const password = decodeURIComponent(parsed.password);
+      username = decodeURIComponent(parsed.username);
+      password = decodeURIComponent(parsed.password);
       authorization = `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
       parsed.username = "";
       parsed.password = "";
@@ -120,7 +126,15 @@ function parseProxyLine(rawLine: string, id: number): ProxyEndpoint | null {
     parsed.pathname = "";
     parsed.search = "";
     parsed.hash = "";
-    return { id, url: parsed.toString(), authorization };
+    return {
+      id,
+      url: parsed.toString(),
+      authorization,
+      username,
+      password,
+      hostname: parsed.hostname,
+      port
+    };
   } catch {
     return null;
   }
@@ -131,6 +145,45 @@ export function parseProxyList(content: string): number {
     .replace(/^\uFEFF/, "")
     .split(/\r?\n/)
     .reduce((count, line, index) => count + (parseProxyLine(line, index) ? 1 : 0), 0);
+}
+
+function parseUniqueProxyEndpoints(content: string): ProxyEndpoint[] {
+  const seen = new Set<string>();
+  return content
+    .replace(/^\uFEFF/, "")
+    .split(/\r?\n/)
+    .map((line, index) => parseProxyLine(line, index))
+    .filter((proxy): proxy is ProxyEndpoint => {
+      if (!proxy) return false;
+      const key = `${proxy.url}\0${proxy.authorization}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+export type FixedProxySelection =
+  | { status: "ok"; proxy: ProxyEndpoint; selectedIndex: number; proxyCount: number }
+  | { status: "proxy_file_unavailable" | "no_valid_proxies" | "proxy_index_unavailable" };
+
+export function selectFixedProxy(proxyListPath: string, requestedIndex: number): FixedProxySelection {
+  const filePath = String(proxyListPath || "").trim();
+  if (!filePath) return { status: "proxy_file_unavailable" };
+  try {
+    const normalizedPath = path.resolve(filePath);
+    const stat = fs.statSync(normalizedPath);
+    if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_PROXY_FILE_BYTES) {
+      return { status: stat.size <= 0 ? "no_valid_proxies" : "proxy_file_unavailable" };
+    }
+    const proxies = parseUniqueProxyEndpoints(fs.readFileSync(normalizedPath, "utf8"));
+    if (proxies.length === 0) return { status: "no_valid_proxies" };
+    const selectedIndex = Math.max(1, Math.floor(requestedIndex || 1));
+    const proxy = proxies[selectedIndex - 1];
+    if (!proxy) return { status: "proxy_index_unavailable" };
+    return { status: "ok", proxy, selectedIndex, proxyCount: proxies.length };
+  } catch {
+    return { status: "proxy_file_unavailable" };
+  }
 }
 
 async function loadProxyFile(filePath: string): Promise<
@@ -151,18 +204,7 @@ async function loadProxyFile(filePath: string): Promise<
         : { status: "empty" };
     }
     const content = await fs.promises.readFile(normalizedPath, "utf8");
-    const seen = new Set<string>();
-    const proxies = content
-      .replace(/^\uFEFF/, "")
-      .split(/\r?\n/)
-      .map((line, index) => parseProxyLine(line, index))
-      .filter((proxy): proxy is ProxyEndpoint => {
-        if (!proxy) return false;
-        const key = `${proxy.url}\0${proxy.authorization}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
+    const proxies = parseUniqueProxyEndpoints(content);
     proxyFileCache.set(normalizedPath, { mtimeMs: stat.mtimeMs, size: stat.size, proxies });
     return proxies.length > 0 ? { status: "ok", proxies } : { status: "empty" };
   } catch {

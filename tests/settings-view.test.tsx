@@ -650,6 +650,7 @@ describe("settings views", () => {
           maxParallel: 5,
           proxyDownloadEnabled: true,
           proxyListPath: "C:\\proxy-list.txt",
+          proxyApiProxyIndex: 7,
           proxyConnectionsPerDownload: 16
         }),
         archivePasswordList: "",
@@ -664,6 +665,7 @@ describe("settings views", () => {
     expect(proxyGroup?.fields.map((field) => field.id)).toEqual([
       "proxyDownloadEnabled",
       "proxyListPath",
+      "proxyApiProxyIndex",
       "proxyConnectionsPerDownload"
     ]);
     expect(proxyGroup?.fields.find((field) => field.id === "proxyListPath")).toEqual(expect.objectContaining({
@@ -671,11 +673,17 @@ describe("settings views", () => {
       actionLabel: "Datei wählen",
       disabled: false
     }));
+    expect(proxyGroup?.fields.find((field) => field.id === "proxyApiProxyIndex")).toEqual(expect.objectContaining({
+      value: "7",
+      min: 1,
+      max: 100000,
+      disabled: false
+    }));
     expect(proxyGroup?.fields.find((field) => field.id === "proxyConnectionsPerDownload")).toEqual(expect.objectContaining({
       value: "16",
       min: 2,
       max: 32,
-      help: expect.stringContaining("80 Proxy-Verbindungen")
+      help: expect.stringContaining("80 parallele Segmentverbindungen")
     }));
   });
 

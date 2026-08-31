@@ -108,6 +108,7 @@ export function defaultSettings(): AppSettings {
     speedLimitMode: "global",
     proxyDownloadEnabled: false,
     proxyListPath: "",
+    proxyApiProxyIndex: 1,
     proxyConnectionsPerDownload: 16,
     updateRepo: DEFAULT_UPDATE_REPO,
     autoUpdateCheck: true,

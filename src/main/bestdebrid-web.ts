@@ -3,6 +3,7 @@ import { session, type Session } from "electron";
 import { UnrestrictedLink } from "./realdebrid";
 import { filenameFromUrl, sleep } from "./utils";
 import { logger } from "./logger";
+import { configureElectronProxySession } from "./network-proxy";
 
 const BESTDEBRID_BASE_URL = "https://bestdebrid.com";
 const BESTDEBRID_DOWNLOADER_URL = `${BESTDEBRID_BASE_URL}/en/downloader/`;
@@ -179,6 +180,7 @@ export class BestDebridWebFallback {
     }
 
     const currentSession = session.fromPartition(this.getPartition());
+    await configureElectronProxySession(currentSession);
     await this.clearPartitionState(currentSession);
 
     for (const cookie of bestDebridCookies) {
@@ -246,6 +248,7 @@ export class BestDebridWebFallback {
   private async generate(link: string, signal?: AbortSignal): Promise<{ kind: "success"; value: UnrestrictedLink } | { kind: "login_required" }> {
     throwIfAborted(signal);
     const currentSession = session.fromPartition(this.getPartition());
+    await configureElectronProxySession(currentSession);
     const response = await currentSession.fetch(BESTDEBRID_GENERATE_URL, {
       method: "POST",
       headers: {

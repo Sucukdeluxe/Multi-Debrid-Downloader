@@ -424,15 +424,15 @@ export function buildSettingsFormViewModel({
         },
         {
           id: "speed-proxy",
-          title: "Proxy-Download",
-          description: "Teilt neue Downloads in Byte-Bereiche und lädt sie parallel über verschiedene HTTP-Proxys. Falls der Server keine Bereiche unterstützt oder die Proxys ausfallen, läuft der bestehende Direktdownload weiter.",
+          title: "Proxy-only",
+          description: "Leitet API-, Login- und Link-Anfragen über einen festen HTTP-Proxy. Downloads verwenden zusätzlich mehrere Proxys parallel. Bei aktivem Modus gibt es keinen direkten Rückfall über deine echte Verbindung.",
           fields: [
             {
               id: "proxyDownloadEnabled",
               kind: "switch",
-              label: "Proxy-Download aktivieren",
+              label: "Proxy-only aktivieren",
               value: settings.proxyDownloadEnabled,
-              help: "Gilt für neue Dateien ab 8 MiB. Ein aktives Geschwindigkeitslimit verwendet weiterhin den Direktdownload."
+              help: "Ist der feste API-Proxy nicht erreichbar oder ungültig, schlagen Netzwerkanfragen geschlossen fehl. Es wird nie ungefragt direkt verbunden."
             },
             {
               id: "proxyListPath",
@@ -445,6 +445,16 @@ export function buildSettingsFormViewModel({
               help: "Unterstützt unter anderem Benutzer:Passwort@Host:Port. Zugangsdaten werden nicht protokolliert."
             },
             {
+              id: "proxyApiProxyIndex",
+              kind: "number",
+              label: "Fester API-Proxy (gültiger Listeneintrag)",
+              value: String(settings.proxyApiProxyIndex),
+              min: 1,
+              max: 100000,
+              disabled: !settings.proxyDownloadEnabled,
+              help: "Dieser 1-basierte Eintrag bleibt für API, Login und Link-Auflösung fest. Ist er offline, wird nicht automatisch ein anderer Proxy oder die direkte Verbindung verwendet."
+            },
+            {
               id: "proxyConnectionsPerDownload",
               kind: "number",
               label: "Verbindungen pro Download",
@@ -452,7 +462,7 @@ export function buildSettingsFormViewModel({
               min: 2,
               max: 32,
               disabled: !settings.proxyDownloadEnabled,
-              help: `Bei ${settings.maxParallel} gleichzeitigen Downloads sind bis zu ${settings.maxParallel * settings.proxyConnectionsPerDownload} Proxy-Verbindungen möglich.`
+              help: `Bei ${settings.maxParallel} gleichzeitigen Downloads sind bis zu ${settings.maxParallel * settings.proxyConnectionsPerDownload} parallele Segmentverbindungen möglich. Kleine Dateien, Teil-Downloads und aktive Geschwindigkeitslimits laufen über den festen API-Proxy.`
             }
           ]
         },

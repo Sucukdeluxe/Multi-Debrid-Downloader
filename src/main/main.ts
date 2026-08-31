@@ -32,6 +32,7 @@ import {
   validateCollectorPersistenceState,
   validateCollectorTextPreparationRequest
 } from "../shared/collector";
+import { getProxyAuthentication } from "./network-proxy";
 
 forceDarkNativeTheme(nativeTheme);
 
@@ -1270,6 +1271,13 @@ function formatRendererErrorReport(rawReport: unknown): string {
   }
   return parts.join(" ");
 }
+
+app.on("login", (event, _webContents, _requestDetails, authInfo, callback) => {
+  const credentials = getProxyAuthentication(authInfo);
+  if (!credentials) return;
+  event.preventDefault();
+  callback(credentials.username, credentials.password);
+});
 
 app.on("child-process-gone", (_event, details) => {
   const killed = details.reason !== "clean-exit" && details.reason !== "killed";

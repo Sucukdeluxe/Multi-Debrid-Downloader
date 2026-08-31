@@ -480,6 +480,7 @@ describe("realdebrid-web", () => {
       "persist:realdebrid-web-rdw_second"
     ]);
 
+    mockFromPartition.mockClear();
     await first.clearSessions();
 
     expect(mockFromPartition).toHaveBeenCalledWith("persist:realdebrid-web-rdw_first");
@@ -691,6 +692,7 @@ describe("realdebrid-web", () => {
 
     await controller.openRealDebridLoginWindow({ accountId: "rdw_close_auth", create: true, dailyLimitBytes: 123_456 });
     await vi.waitFor(() => expect(mockExecuteJavaScript).toHaveBeenCalledTimes(1));
+    mockFromPartition.mockClear();
     mockBrowserWindows[0]?.close();
     resolveClosingToken("close-time-token");
     await vi.waitFor(() => expect(controller.settings.realDebridWebAccountIds).toEqual(["rdw_close_auth"]));

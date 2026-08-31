@@ -142,6 +142,7 @@ export interface DailyStartSettings {
 export interface ProxyDownloadSettings {
   proxyDownloadEnabled: boolean;
   proxyListPath: string;
+  proxyApiProxyIndex: number;
   proxyConnectionsPerDownload: number;
 }
 

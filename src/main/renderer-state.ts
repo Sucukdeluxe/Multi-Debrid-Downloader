@@ -206,6 +206,7 @@ export function createRendererSettings(settings: AppSettings): RendererSettings 
     speedLimitMode: settings.speedLimitMode,
     proxyDownloadEnabled: settings.proxyDownloadEnabled,
     proxyListPath: settings.proxyListPath,
+    proxyApiProxyIndex: settings.proxyApiProxyIndex,
     proxyConnectionsPerDownload: settings.proxyConnectionsPerDownload,
     updateRepo: settings.updateRepo,
     autoUpdateCheck: settings.autoUpdateCheck,

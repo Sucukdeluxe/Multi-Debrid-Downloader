@@ -88,6 +88,7 @@ import { NotificationOutbox } from "./notification-outbox";
 import { sendNotification } from "./notify";
 import { DownloadHealthMonitor } from "./download-health-monitor";
 import { shouldDeferAutoResumeToDailyStart } from "./daily-start-scheduler";
+import { configureNetworkProxy, shutdownNetworkProxy } from "./network-proxy";
 
 function sanitizeSettingsPatch(partial: Partial<AppSettings>): Partial<AppSettings> {
   const entries = Object.entries(partial || {}).filter(([, value]) => value !== undefined);
@@ -168,6 +169,7 @@ export class AppController {
         this.logDirectory
       );
     }
+    this.applyNetworkProxyConfiguration();
     this.initializeLogStorage();
     this.runHistoryLifecycleCleanup("Start", () => resetHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode));
     const loadResult = loadSessionWithStatus(this.storagePaths);
@@ -613,6 +615,7 @@ export class AppController {
       this.overlayLiveUsageCounters(restoredSettings);
       saveSettings(this.storagePaths, restoredSettings);
       this.settings = restoredSettings;
+      this.applyNetworkProxyConfiguration();
       runtimeApplied = true;
       this.manager.setSettings(this.settings, { settingsOnlyImport: true });
       this.manager.persistNowSync();
@@ -622,6 +625,7 @@ export class AppController {
         this.rollbackImportPersistence(rollback, "fehlgeschlagenem Settings-Import");
       }
       this.settings = previousSettings;
+      this.applyNetworkProxyConfiguration();
       if (runtimeApplied) {
         try {
           this.manager.setSettings(previousSettings, { settingsOnlyImport: true });
@@ -688,6 +692,7 @@ export class AppController {
       throw error;
     }
     this.settings = nextSettings;
+    this.applyNetworkProxyConfiguration();
     this.manager.setSettings(this.settings);
     this.audit("INFO", "Einstellungen aktualisiert", {
       changedKeys: Object.keys(sanitizedPatch),
@@ -1492,6 +1497,7 @@ export class AppController {
       this.manager.skipShutdownPersist = true;
       this.manager.blockAllPersistence = true;
       this.settings = restoredSettings;
+      this.applyNetworkProxyConfiguration();
       runtimeApplied = true;
       this.manager.setSettings(this.settings);
       this.manager.stop();
@@ -1505,6 +1511,7 @@ export class AppController {
       this.manager.skipShutdownPersist = previousSkipShutdownPersist;
       this.manager.blockAllPersistence = previousBlockAllPersistence;
       this.settings = previousSettings;
+      this.applyNetworkProxyConfiguration();
       if (runtimeApplied) {
         try {
           this.manager.setSettings(previousSettings, { settingsOnlyImport: true });
@@ -1617,6 +1624,7 @@ export class AppController {
     this.pendingRealDebridWebAccountIds.clear();
     this.allDebridWebFallback.dispose();
     this.bestDebridWebFallback.dispose();
+    await shutdownNetworkProxy();
     if (this.settings.historyRetentionMode === "session") {
       this.runHistoryLifecycleCleanup("Beenden", () => clearHistory(this.storagePaths));
     }
@@ -1627,6 +1635,15 @@ export class AppController {
     shutdownConversionLog();
     shutdownAuditLog();
     logger.info("App beendet");
+  }
+
+  private applyNetworkProxyConfiguration(): void {
+    const state = configureNetworkProxy(this.settings);
+    if (state.status === "active") {
+      logger.info(`Proxy-only aktiv: fester API-Proxy ${state.selectedIndex}/${state.proxyCount}`);
+    } else if (state.status === "blocked") {
+      logger.warn(`Proxy-only blockiert Netzwerkanfragen: ${state.reason}`);
+    }
   }
 
   private async waitForShutdownTask(task: Promise<unknown>, deadlineAt: number): Promise<void> {

@@ -584,6 +584,7 @@ describe("settings storage", () => {
       speedLimitKbps: -1,
       proxyDownloadEnabled: true,
       proxyListPath: "  C:\\proxies.txt  ",
+      proxyApiProxyIndex: 999999,
       proxyConnectionsPerDownload: 999,
       outputDir: "   ",
       extractDir: "   ",
@@ -604,6 +605,7 @@ describe("settings storage", () => {
     expect(normalized.speedLimitKbps).toBe(0);
     expect(normalized.proxyDownloadEnabled).toBe(true);
     expect(normalized.proxyListPath).toBe("C:\\proxies.txt");
+    expect(normalized.proxyApiProxyIndex).toBe(100000);
     expect(normalized.proxyConnectionsPerDownload).toBe(32);
     expect(normalized.outputDir).toBe(defaultSettings().outputDir);
     expect(normalized.extractDir).toBe(defaultSettings().extractDir);
@@ -639,6 +641,7 @@ describe("settings storage", () => {
         speedLimitMode: "not-valid",
         proxyDownloadEnabled: 1,
         proxyListPath: " C:\\proxy-list.txt ",
+        proxyApiProxyIndex: "0",
         proxyConnectionsPerDownload: "1",
         updateRepo: "",
         autoSortPackagesByProgress: false
@@ -655,6 +658,7 @@ describe("settings storage", () => {
     expect(loaded.speedLimitMode).toBe("global");
     expect(loaded.proxyDownloadEnabled).toBe(true);
     expect(loaded.proxyListPath).toBe("C:\\proxy-list.txt");
+    expect(loaded.proxyApiProxyIndex).toBe(1);
     expect(loaded.proxyConnectionsPerDownload).toBe(2);
     expect(loaded.updateRepo).toBe(defaultSettings().updateRepo);
     expect(loaded.autoSortPackagesByProgress).toBe(false);

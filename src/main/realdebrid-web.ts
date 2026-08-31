@@ -4,6 +4,7 @@ import { sleep } from "./utils";
 import { API_BASE_URL, REQUEST_RETRIES } from "./constants";
 import { applyRemoteLoginSecurity, createRemoteLoginWebPreferences, REALDEBRID_LOGIN_HOSTS } from "./browser-security";
 import { buildRealDebridWebGenerationScript, normalizeRealDebridWebGenerationResult } from "./realdebrid-web-page";
+import { configureElectronProxySession } from "./network-proxy";
 
 const RD_BASE_URL = "https://real-debrid.com";
 const RD_LOGIN_URL = RD_BASE_URL;
@@ -368,6 +369,7 @@ export class RealDebridWebFallback {
 
   private async ensureLoginWindow(): Promise<BrowserWindow> {
     const partition = this.getPartition();
+    await configureElectronProxySession(session.fromPartition(partition));
     const existing = this.loginWindow;
     if (existing && !existing.isDestroyed() && this.loginWindowPartition === partition) {
       return existing;
@@ -431,6 +433,7 @@ export class RealDebridWebFallback {
     this.throwIfDisposed();
     throwIfAborted(signal);
     const partition = this.getPartition();
+    await configureElectronProxySession(session.fromPartition(partition));
     const existing = this.generatorWindow;
     if (existing && !existing.isDestroyed() && this.generatorWindowPartition === partition) {
       return existing;
@@ -604,6 +607,7 @@ export class RealDebridWebFallback {
     }
 
     const currentSession = session.fromPartition(this.getPartition());
+    await configureElectronProxySession(currentSession);
     const response = await currentSession.fetch(RD_APITOKEN_URL, {
       headers: {
         Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",

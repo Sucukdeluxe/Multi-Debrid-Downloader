@@ -4,7 +4,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { downloadWithProxySegments, parseProxyList } from "../src/main/proxy-segmented-download";
+import { downloadWithProxySegments, parseProxyList, selectFixedProxy } from "../src/main/proxy-segmented-download";
 
 interface RunningServer {
   port: number;
@@ -115,6 +115,27 @@ describe("proxy segmented download", () => {
 
     expect(count).toBe(3);
     expect(String(count)).not.toContain(secret);
+  });
+
+  it("selects one fixed valid proxy by its 1-based list index", async () => {
+    const directory = await createTempDirectory();
+    const proxyFile = path.join(directory, "fixed-proxies.txt");
+    await fs.promises.writeFile(proxyFile, [
+      "invalid",
+      "first:secret-one@127.0.0.1:8080",
+      "second:secret-two@127.0.0.1:9090"
+    ].join("\n"));
+
+    const selected = selectFixedProxy(proxyFile, 2);
+
+    expect(selected.status).toBe("ok");
+    if (selected.status !== "ok") throw new Error("Proxy wurde nicht ausgewählt");
+    expect(selected.selectedIndex).toBe(2);
+    expect(selected.proxyCount).toBe(2);
+    expect(selected.proxy.url).toBe("http://127.0.0.1:9090/");
+    expect(selected.proxy.username).toBe("second");
+    expect(selected.proxy.password).toBe("secret-two");
+    expect(selected.proxy.url).not.toContain("secret-two");
   });
 
   it("downloads exact byte segments through different authenticated proxies", async () => {

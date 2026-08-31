@@ -11001,7 +11001,7 @@ export class DownloadManager extends EventEmitter {
       if (!proxyAttempted && attempt === 1 && existingBytes === 0 && this.settings.proxyDownloadEnabled) {
         proxyAttempted = true;
         if (this.settings.speedLimitEnabled) {
-          logAttemptEvent("INFO", "Proxy-Segmentierung wegen aktivem Geschwindigkeitslimit übersprungen", {
+          logAttemptEvent("INFO", "Proxy-Segmentierung wegen aktivem Geschwindigkeitslimit übersprungen; fester Proxy wird verwendet", {
             attempt
           });
         } else {
@@ -11104,10 +11104,10 @@ export class DownloadManager extends EventEmitter {
           item.downloadedBytes = 0;
           item.progressPercent = 0;
           item.speedBps = 0;
-          item.fullStatus = "Direktdownload wird gestartet";
+          item.fullStatus = "Einzel-Proxy-Download wird gestartet";
           item.updatedAt = nowMs();
           this.emitState();
-          logAttemptEvent("WARN", "Proxy-Segmentdownload nicht verwendet, Direktdownload folgt", {
+          logAttemptEvent("WARN", "Proxy-Segmentdownload nicht verwendet, fester Einzel-Proxy folgt", {
             attempt,
             reason: proxyReasonLabels[proxyResult.reason]
           });
