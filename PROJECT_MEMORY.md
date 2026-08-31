@@ -16,7 +16,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Baseline-Commit: `d58cfba817bd73d015c3c295e593082becc3211f`
 - Hotfix-Basis: `5cee459d0bcc5c19d8d6483948a036a43c9d91b1`
 - Paketversion: `2.0.82`
-- Letztes Release: `Multi-Debrid-Downloader v2.0.81`, veröffentlicht am 31. August 2026 auf GitHub; die Forgejo-Veröffentlichung wird zusammen mit `v2.0.82` nachgeholt
+- Letztes Release: `Multi-Debrid-Downloader v2.0.82`, veröffentlicht am 1. September 2026 auf GitHub und Forgejo
 - Runtime-Voraussetzung: Node.js `>=20`; lokal verifiziert mit Node.js `24.19.0` und npm `11.17.0`
 
 `main` ist derzeit keine verlässliche Arbeitsbasis:
@@ -173,7 +173,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Online-Sicherungen nehmen den exakten Inhalt einer konfigurierten Proxy-Liste in den bereits clientseitig AES-256-GCM-verschlüsselten MDD2-Datensatz auf. Der Online-Dienst erhält weiterhin ausschließlich den authentifiziert verschlüsselten Blob und keine Proxy-Zugangsdaten im Klartext.
 - Beim Import wird die Liste atomar in eine verwaltete Datei im Runtime-Verzeichnis geschrieben und der lokale Pfad darauf umgestellt. Ein Schreib- oder Settingsfehler stellt sowohl die vorherige Datei als auch die vorherigen Einstellungen wieder her.
 - Ältere Online-Sicherungen ohne eingebettete Liste bleiben importierbar. Enthalten sie einen fremden Proxy-Pfad beziehungsweise aktiviertes Proxy-only, wird Proxy-only beim Import sicher deaktiviert, statt alle Netzwerkanfragen mit einem nicht portablen Pfad zu blockieren. Lokale Backup-Importe behalten ihre bisherige Pfadsemantik.
-- Die Änderungen sind als `v2.0.81` auf GitHub veröffentlicht; die Forgejo-Veröffentlichung steht noch aus. Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert.
+- Die Änderungen sind als `v2.0.81` auf GitHub und Forgejo veröffentlicht. Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert.
 
 ## Änderungen in v2.0.82
 
@@ -220,6 +220,9 @@ npm exec -- tsc --noEmit
 - TypeScript, Main-Build, Renderer-Build und Node-Self-Check sind erfolgreich. Die bekannte Vite-Warnung betrifft den rund 581 KiB großen Renderer-Chunk.
 - Release-Build `v2.0.82`: Installer und Portable-Datei wurden aus dem versionierten Release-Vorbereitungsstand erzeugt. Die Release-Prüfung bestätigte Paket- und Bundle-Version, Update-Metadaten, Artefaktnamen, Dateigröße und SHA-512 des Installers, Icon, Lizenzdateien sowie den entpackten Inhalt beider EXE-Archive.
 - SHA-256 des `v2.0.82`-Setups: `90b869745344e1a3bd8407ea698fb4693b5f7fc8546ce98c258c27bff39d54ed`; SHA-256 der Portable-Datei: `798982e323dd4152e6ebebe2f7ad34454004e489d7e1f716172f7246add2f77b`.
+- Veröffentlichung `v2.0.82`: Der annotierte Tag zeigt auf GitHub und Forgejo exakt auf `8613afbb0998d84b26d57318bba4ab97cd974c96`. Beide stabilen Releases besitzen dieselben sechs benannten Assets; GitHub verwendet den englischen und Forgejo den deutschen Release-Text. Größen und SHA-256 der sechs GitHub-Assets stimmen mit den lokalen Originalen überein. Alle sechs Forgejo-Assets wurden erneut heruntergeladen und stimmen ebenfalls exakt mit den erwarteten SHA-256-Werten überein.
+- Forgejo-Veröffentlichung `v2.0.81`: Das nachgeholte stabile Release besitzt den deutschen Text und dieselben sechs Assets wie GitHub. Alle sechs Forgejo-Dateien wurden erneut heruntergeladen; Größe und SHA-256 stimmen mit den bereits für GitHub verifizierten Originalen überein.
+- Die öffentlichen Forgejo-Beschreibungen von `v2.0.75`, `v2.0.76` und `v2.0.77` wurden auf Deutsch aktualisiert und anschließend auf ihren Tag-Seiten geprüft. GitHub bleibt für die entsprechenden Release-Changelogs englisch.
 
 ## Verifizierungen vom 31. August 2026
 
@@ -312,16 +315,15 @@ npm exec -- tsc --noEmit
 - Der 32/40-Proxybereich und der synchrone Live-Takt von „Sitzung“ und „Verbleibend“ sind als `v2.0.78` veröffentlicht. Eine Serverinstallation oder ein produktiver Neustart wurde nicht vorgenommen.
 - Der Proxy-Readback- und Nullbereich-Hotfix ist als `v2.0.79` auf GitHub und Forgejo veröffentlicht, aber noch nicht auf einem produktiven System installiert oder gestartet.
 - Die einheitliche Geschwindigkeitsanzeige und die getrennten Paket-Reset-Optionen sind als `v2.0.80` auf GitHub und Forgejo veröffentlicht, aber noch nicht auf einem produktiven System installiert oder gestartet.
-- Die Account-Übersicht unterstützt `Strg+A`; Proxy-only-Accountfehler werden verständlich aufgelöst und Online-Sicherungen können die Proxy-Liste verschlüsselt portieren. `v2.0.81` ist auf GitHub veröffentlicht; die Forgejo-Veröffentlichung steht noch aus. Eine produktive Installation oder ein Neustart wurde nicht vorgenommen.
-- Die optionale Arbeitsordner-Erstellung, der neue Kategoriename und die feinere TiB-Restanzeige sind als `v2.0.82` vollständig getestet und zur ausdrücklich freigegebenen Veröffentlichung vorbereitet. Eine produktive Installation oder ein Neustart ist nicht Bestandteil des Releases.
+- Die Account-Übersicht unterstützt `Strg+A`; Proxy-only-Accountfehler werden verständlich aufgelöst und Online-Sicherungen können die Proxy-Liste verschlüsselt portieren. `v2.0.81` ist auf GitHub und Forgejo veröffentlicht. Eine produktive Installation oder ein Neustart wurde nicht vorgenommen.
+- Die optionale Arbeitsordner-Erstellung, der neue Kategoriename und die feinere TiB-Restanzeige sind als `v2.0.82` auf GitHub und Forgejo veröffentlicht. Eine produktive Installation oder ein Neustart ist nicht Bestandteil des Releases.
 
 ## Nächste sinnvolle Schritte
 
-1. Den vollständig geprüften und freigegebenen Kandidaten als `v2.0.82` bauen, auf GitHub und Forgejo veröffentlichen und die Assets beider Plattformen gegeneinander verifizieren; dabei die ausstehende Forgejo-Veröffentlichung von `v2.0.81` nachholen.
-2. Nach einer getrennt freigegebenen Serverinstallation die neue Arbeitsordner-Option und die feinere Restanzeige mit der großen echten Queue prüfen.
-3. Nach einer getrennt freigegebenen Serverinstallation die Account-Fehlerführung, den verschlüsselten Proxy-Listen-Import und `Strg+A` am echten Zielsystem prüfen.
-4. Nach einer getrennt freigegebenen Serverinstallation die einheitliche Geschwindigkeitsanzeige und den selektiven Paket-Reset am echten Queue-Fall prüfen.
-5. Nach einer getrennt freigegebenen Serverinstallation den Ablauf Real-Debrid-Web-Download, Hauptfenster schließen und unmittelbar neu starten am echten Zielsystem verifizieren; vor jedem Eingriff Prozessbaum und Logtail sichern.
-6. Sicherheitsabhängigkeiten in einem separaten Upgrade-Branch aktualisieren, Electron-/Vite-/Vitest-Major-Wechsel einzeln testen und danach den vollständigen Windows-Paketpfad prüfen.
-7. Eine nichtdestruktive Strategie zur Bereinigung der divergierenden `main`-Branches abstimmen; kein Force-Push ohne ausdrückliche Freigabe.
-8. Optional Developer Mode für lokale Symlink-Tests bereitstellen oder die Test-Fixtures plattformgerecht ohne privilegierte Symlinks gestalten.
+1. Nach einer getrennt freigegebenen Serverinstallation die neue Arbeitsordner-Option und die feinere Restanzeige mit der großen echten Queue prüfen.
+2. Nach einer getrennt freigegebenen Serverinstallation die Account-Fehlerführung, den verschlüsselten Proxy-Listen-Import und `Strg+A` am echten Zielsystem prüfen.
+3. Nach einer getrennt freigegebenen Serverinstallation die einheitliche Geschwindigkeitsanzeige und den selektiven Paket-Reset am echten Queue-Fall prüfen.
+4. Nach einer getrennt freigegebenen Serverinstallation den Ablauf Real-Debrid-Web-Download, Hauptfenster schließen und unmittelbar neu starten am echten Zielsystem verifizieren; vor jedem Eingriff Prozessbaum und Logtail sichern.
+5. Sicherheitsabhängigkeiten in einem separaten Upgrade-Branch aktualisieren, Electron-/Vite-/Vitest-Major-Wechsel einzeln testen und danach den vollständigen Windows-Paketpfad prüfen.
+6. Eine nichtdestruktive Strategie zur Bereinigung der divergierenden `main`-Branches abstimmen; kein Force-Push ohne ausdrückliche Freigabe.
+7. Optional Developer Mode für lokale Symlink-Tests bereitstellen oder die Test-Fixtures plattformgerecht ohne privilegierte Symlinks gestalten.
