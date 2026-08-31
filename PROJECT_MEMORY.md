@@ -12,11 +12,11 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
 - Arbeitsbranch: `release/v2.0.79`
 - Quellbasis: `release/v2.0.78`
-- Release-Tag: `v2.0.78`
-- Baseline-Commit: `39d1961c92a8651d908714b1e2ee0efcee6a462e`
+- Release-Tag: `v2.0.79`
+- Baseline-Commit: `04e5ab71d2e77e68256c77b6d0fff48fa86188e8`
 - Hotfix-Basis: `5cee459d0bcc5c19d8d6483948a036a43c9d91b1`
 - Paketversion: `2.0.79`
-- Letztes Release: `Multi-Debrid-Downloader v2.0.78`, veröffentlicht am 31. August 2026 auf GitHub und Forgejo
+- Letztes Release: `Multi-Debrid-Downloader v2.0.79`, veröffentlicht am 31. August 2026 auf GitHub und Forgejo
 - Runtime-Voraussetzung: Node.js `>=20`; lokal verifiziert mit Node.js `24.19.0` und npm `11.17.0`
 
 `main` ist derzeit keine verlässliche Arbeitsbasis:
@@ -24,7 +24,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - GitHub `main` steht auf `4d5161b` (`v2.0.35`) und ist gegenüber `release/v2.0.74` mit 7 zu 136 Commits auseinanderentwickelt.
 - Forgejo `main` steht auf `a8c4dcc` (`v1.7.232`) und ist noch deutlich älter.
 - GitHub und Forgejo zeigen für `release/v2.0.74` beide exakt auf `c1e1095`.
-- Neue Arbeit muss bis zu einer ausdrücklich geplanten Branch-Bereinigung von `release/v2.0.78` beziehungsweise einem davon abgeleiteten Arbeitsbranch ausgehen.
+- Neue Arbeit muss bis zu einer ausdrücklich geplanten Branch-Bereinigung von `release/v2.0.79` beziehungsweise einem davon abgeleiteten Arbeitsbranch ausgehen.
 
 ## Remotes
 
@@ -153,7 +153,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Jeder fertig geschriebene Proxy-Chunk wird nun direkt vom Datenträger zurückgelesen und sein SHA-256-Digest mit den tatsächlich empfangenen Bytes verglichen. Bei einer Abweichung wird der Fortschritt des Versuchs zurückgerechnet, der Proxy abgewertet und der vollständige Chunk über einen anderen Proxy neu geladen.
 - Nullfolgen ab 1.024 Byte werden zusätzlich stichprobenartig über einen anderen, gleichzeitig exklusiv reservierten Proxy erneut angefordert. Weicht die unabhängige Range-Antwort ab, wird ebenfalls der vollständige Chunk verworfen und neu geladen. Bestätigt die Gegenprobe echte Nullbytes, wird der Chunk normal akzeptiert.
 - Item-Logs melden den Grund `readback_mismatch` beziehungsweise `zero_run_mismatch` mit Range- und Chunkgrenzen. Die bisher irreführende Meldung „Integritätsprüfung bestanden“ bei fehlender `.sfv`-, `.md5`- oder `.sha1`-Prüfsumme wurde in „Integritätsprüfung nicht ausgeführt“ mit Begründung geändert.
-- Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert. Der Hotfix ist für die ausdrücklich freigegebene Veröffentlichung vorbereitet; Installation und produktiver Neustart sind nicht Bestandteil des Releases.
+- Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert. `v2.0.79` wurde nach ausdrücklicher Freigabe auf GitHub und Forgejo veröffentlicht; Installation und produktiver Neustart sind nicht Bestandteil des Releases.
 
 ## Start-, Build- und Testbefehle
 
@@ -186,9 +186,10 @@ npm exec -- tsc --noEmit
 
 ## Verifizierungen vom 31. August 2026
 
+- Veröffentlichung `v2.0.79`: Der annotierte Tag zeigt auf beiden Git-Remotes exakt auf `04e5ab71d2e77e68256c77b6d0fff48fa86188e8`. GitHub und Forgejo veröffentlichen denselben stabilen Release mit denselben sechs Assets. Alle zwölf erneut heruntergeladenen Dateien stimmen jeweils in Größe und SHA-256 exakt mit den lokalen Originalen überein; GitHub führt `v2.0.79` als Latest Release.
 - Release-Build `v2.0.79`: Installer und Portable-Datei wurden aus dem versionierten Release-Vorbereitungsstand neu erzeugt. Die Release-Prüfung bestätigte Paket- und Bundle-Version, Update-Metadaten, Artefaktnamen, Dateigröße und SHA-512 des Installers, Icon, Lizenzdateien sowie den entpackten Inhalt beider EXE-Archive. Von den 24 Public-Release-Metadatentests waren 22 erfolgreich; nur die zwei unter Windows ohne Symlink-Berechtigung nicht ausführbaren Fixtures endeten vor ihrer Produktassertion mit `EPERM`.
 - SHA-256 des `v2.0.79`-Setups: `eccfe029f32aaf198c0597fdbb7874540ead39737616879baf1a17bebdf13450`; SHA-256 der Portable-Datei: `2f32b825e03a36ae842f2aa2b9a73c420657d812046c23bf4cbacf6a63ae2333`.
-- Unveröffentlichter Proxy-Integritäts-Hotfix: 15 von 15 Proxy-Segmenttests und 9 von 9 Manifest-Integritätstests erfolgreich. Die neuen End-to-End-Regressionen beweisen vollständiges Neuladen nach einer abweichenden 2-KiB-Nullantwort, Akzeptanz einer unabhängig bestätigten legitimen Nullfolge und Erkennung einer nach dem Netzwerkempfang in die Temp-Datei injizierten 1-KiB-Abweichung durch den Readback-Digest.
+- Proxy-Integritäts-Hotfix für `v2.0.79`: 15 von 15 Proxy-Segmenttests und 9 von 9 Manifest-Integritätstests erfolgreich. Die neuen End-to-End-Regressionen beweisen vollständiges Neuladen nach einer abweichenden 2-KiB-Nullantwort, Akzeptanz einer unabhängig bestätigten legitimen Nullfolge und Erkennung einer nach dem Netzwerkempfang in die Temp-Datei injizierten 1-KiB-Abweichung durch den Readback-Digest.
 - Vollständiger Client-Lauf des Hotfixes: 140 Testdateien erfolgreich, 1 optionale JVM-Testdatei übersprungen; 2.685 Tests erfolgreich und 4 übersprungen. Nur die zwei bekannten Symlink-Fixtures scheiterten vor ihrer Produktassertion mit Windows-`EPERM`.
 - Nach dem Hotfix erfolgreich: TypeScript, Main-Build, Renderer-Build, Node-Self-Check und 16 von 16 Backup-API-Tests. Die bekannte Vite-Warnung zum rund 576 KiB großen Renderer-Chunk bleibt bestehen.
 - Veröffentlichung `v2.0.78`: Der annotierte Tag und beide Release-Branches zeigen bei GitHub und Forgejo exakt auf `48c3677296f54d389f0982fc79edf2788a6d1191`. Beide öffentlichen Releases enthalten dieselben sechs Assets; alle zwölf erneut heruntergeladenen Dateien stimmen in Größe und SHA-256 exakt mit den lokalen Originalen überein. GitHub führt `v2.0.78` als Latest Release.
@@ -262,7 +263,7 @@ npm exec -- tsc --noEmit
 - Der Proxy-Gesamtlimit-Hotfix ist als `v2.0.76` veröffentlicht. Eine Serverinstallation oder ein produktiver Neustart wurde nicht vorgenommen.
 - Der faire rollierende Proxy-Scheduler und der bytebasierte Paketfortschritt sind als `v2.0.77` veröffentlicht. Eine Serverinstallation oder ein produktiver Neustart wurde nicht vorgenommen.
 - Der 32/40-Proxybereich und der synchrone Live-Takt von „Sitzung“ und „Verbleibend“ sind als `v2.0.78` veröffentlicht. Eine Serverinstallation oder ein produktiver Neustart wurde nicht vorgenommen.
-- Der Proxy-Readback- und Nullbereich-Hotfix ist auf `release/v2.0.79` für die ausdrücklich freigegebene Veröffentlichung vorbereitet, aber noch nicht auf einem produktiven System installiert.
+- Der Proxy-Readback- und Nullbereich-Hotfix ist als `v2.0.79` auf GitHub und Forgejo veröffentlicht, aber noch nicht auf einem produktiven System installiert oder gestartet.
 
 ## Nächste sinnvolle Schritte
 
