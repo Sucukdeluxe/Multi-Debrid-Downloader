@@ -12,7 +12,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
 - Arbeitsbranch: `release/v2.0.82`
 - Quellbasis: `release/v2.0.81`
-- Release-Tag: `v2.0.81`
+- Release-Tag: `v2.0.82`
 - Baseline-Commit: `d58cfba817bd73d015c3c295e593082becc3211f`
 - Hotfix-Basis: `5cee459d0bcc5c19d8d6483948a036a43c9d91b1`
 - Paketversion: `2.0.82`
@@ -217,6 +217,9 @@ npm exec -- tsc --noEmit
 - Kandidat für `v2.0.82`: TypeScript-Prüfung und 616 fokussierte Ordner-, Storage-, Renderer-, Einstellungs-, Übersetzungs-, Account- und Downloadansichtstests erfolgreich. Die Ordnerregressionen bestätigen den ausgeschalteten Standard, selektive Zielerstellung, den Erhalt vorhandener Dateien und die Fehlerisolation zwischen Zielen.
 - Vollständiger Clientlauf: 143 Testdateien erfolgreich, 1 optionale JVM-Testdatei übersprungen; 2.725 Tests erfolgreich und 4 übersprungen. Nur die zwei bekannten Windows-Symlink-Fixtures endeten mangels Berechtigung vor ihrer Produktassertion mit `EPERM`. Die unveränderten 265 Download-Manager- und 84 Entpacktests sind vollständig grün.
 - Backup-API: 16 von 16 Tests erfolgreich.
+- TypeScript, Main-Build, Renderer-Build und Node-Self-Check sind erfolgreich. Die bekannte Vite-Warnung betrifft den rund 581 KiB großen Renderer-Chunk.
+- Release-Build `v2.0.82`: Installer und Portable-Datei wurden aus dem versionierten Release-Vorbereitungsstand erzeugt. Die Release-Prüfung bestätigte Paket- und Bundle-Version, Update-Metadaten, Artefaktnamen, Dateigröße und SHA-512 des Installers, Icon, Lizenzdateien sowie den entpackten Inhalt beider EXE-Archive.
+- SHA-256 des `v2.0.82`-Setups: `90b869745344e1a3bd8407ea698fb4693b5f7fc8546ce98c258c27bff39d54ed`; SHA-256 der Portable-Datei: `798982e323dd4152e6ebebe2f7ad34454004e489d7e1f716172f7246add2f77b`.
 
 ## Verifizierungen vom 31. August 2026
 
