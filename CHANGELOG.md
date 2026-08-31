@@ -4,6 +4,29 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.75] - 2026-08-31
+
+### Proxy-only networking
+
+- Add a fail-closed Proxy-only mode that routes API calls, account checks, link resolution, notifications, updates, web logins, and single-connection downloads through one fixed authenticated HTTP proxy selected by its valid list index.
+- Keep the fixed API proxy stable instead of silently rotating or falling back to the direct connection when it is unavailable.
+- Add parallel proxy-segment downloads for new files of at least 8 MiB with 2 to 32 exact HTTP range connections per download, authenticated proxy-list formats, per-segment proxy replacement, precise progress accounting, and atomic completion.
+- Preserve the existing resume, speed-limit, retry, integrity, extraction, and post-processing paths while ensuring their network fallback remains on the fixed proxy whenever Proxy-only is enabled.
+- Apply the fixed proxy to Electron provider sessions and provide credentials only for the exact matching proxy authentication challenge without exposing them to the renderer or logs.
+
+### Lifecycle and diagnostics reliability
+
+- Finish application shutdown when hidden provider windows remain after the main window closes, retain the synchronous collector handoff, and restore or recreate the main window for second-instance and activation events.
+- Add bounded shutdown and quit watchdogs while keeping daemon cleanup after the controller shutdown path.
+- Serialize debug-server start, stop, and restart operations so concurrent lifecycle requests cannot leave unmanaged listeners or reopen after shutdown.
+
+### Persistence and updater hardening
+
+- Distinguish valid empty storage from malformed settings and sessions, recover usable backups, and retain compatibility with sparse historical settings.
+- Keep pending hoster-metadata rename journals restart-safe and reject paths outside the exact package output directory.
+- Make asynchronous settings and session writes settle only after durable completion, propagate failures, and close coalescing, persistence-barrier, and replay races.
+- Harden update downloads around backpressure, idle timeouts, response cancellation, stream close ordering, late write failures, and atomic rename completion.
+
 ## [2.0.74] - 2026-08-26
 
 ### Package-based link collector

@@ -10,12 +10,12 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 
 - Verifiziert am: 31. August 2026, Europe/Berlin
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
-- Arbeitsbranch: `codex/v2.0.74-project-memory`
+- Arbeitsbranch: `release/v2.0.75`
 - Quellbasis: `release/v2.0.74`
-- Release-Tag: `v2.0.74`
+- Release-Tag: `v2.0.75`
 - Baseline-Commit: `c1e1095231ab72d71dfa9af5a3e5d2dce691d0cb`
-- Paketversion: `2.0.74`
-- Letztes GitHub-Release: `Multi-Debrid-Downloader v2.0.74`, veröffentlicht am 26. August 2026
+- Paketversion: `2.0.75`
+- Letztes GitHub-Release: `Multi-Debrid-Downloader v2.0.75`, veröffentlicht am 31. August 2026
 - Runtime-Voraussetzung: Node.js `>=20`; lokal verifiziert mit Node.js `24.19.0` und npm `11.17.0`
 
 `main` ist derzeit keine verlässliche Arbeitsbasis:
@@ -23,7 +23,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - GitHub `main` steht auf `4d5161b` (`v2.0.35`) und ist gegenüber `release/v2.0.74` mit 7 zu 136 Commits auseinanderentwickelt.
 - Forgejo `main` steht auf `a8c4dcc` (`v1.7.232`) und ist noch deutlich älter.
 - GitHub und Forgejo zeigen für `release/v2.0.74` beide exakt auf `c1e1095`.
-- Neue Arbeit muss bis zu einer ausdrücklich geplanten Branch-Bereinigung von `release/v2.0.74` beziehungsweise diesem Arbeitsbranch ausgehen.
+- Neue Arbeit muss bis zu einer ausdrücklich geplanten Branch-Bereinigung von `release/v2.0.75` beziehungsweise einem davon abgeleiteten Arbeitsbranch ausgehen.
 
 ## Remotes
 
@@ -97,7 +97,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Settings-Speichern, Theme-Autorität, vollständige DE/EN-Texte, Backup-Transaktionen, Notification-Outbox und Windows-Dateirennen wurden gehärtet.
 - Die letzten drei Commits des Release-Branches sind `bdcf9e3` (Collector-Persistenz und Download-Steuerung), `2ea494c` (v2.0.74 Reliability Release) und `c1e1095` (stabiler 100k-History-Performancevertrag).
 
-## Aktuelle unveröffentlichte Änderung
+## Änderungen in v2.0.75
 
 - Unter „Geschwindigkeit“ kann Proxy-only aktiviert, eine externe Proxy-Textdatei ausgewählt, ein fester API-Proxy über den 1-basierten gültigen Listeneintrag festgelegt und die Zahl der Segmentverbindungen pro Download zwischen 2 und 32 gewählt werden. Bei fünf parallelen Downloads und 16 Segmenten sind damit bis zu 80 Segmentverbindungen möglich; `maxParallel` bleibt die vorhandene globale Downloadgrenze.
 - Der feste Proxy übernimmt API-Aufrufe, Account-Prüfungen, Updates, Benachrichtigungen, Link-Auflösung, Web-Logins und alle Einzel-Proxy-Downloads. Ist die Liste nicht lesbar, leer oder der ausgewählte Eintrag nicht vorhanden, blockiert ein Fail-closed-Dispatcher sämtliche globalen Requests. Ist der feste Proxy offline, schlägt die Anfrage fehl; er wird nicht automatisch ersetzt und es gibt bei aktivem Modus keinen direkten Rückfall über die echte Verbindung.
@@ -118,7 +118,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Der Updater beendet Backpressure-, Shutdown- und Idle-Wartezustände auch bei Schreibfehlern zuverlässig. Er wartet vor dem Rename auf den tatsächlichen Dateistream-Close, propagiert späte Close-Fehler, hält die Fehlerabsicherung bis `close` aktiv und blockiert bei einem nie auflösenden Response-`cancel()` nicht mehr dauerhaft.
 - Die übergroßen Updater-Test-Fixtures wurden durch gleichwertige 128-KiB-MZ-Payloads ersetzt, damit Integritäts- und Fallback-Tests unter paralleler Last nicht an Vitests 5-Sekunden-Grenze flaken.
 - Die Entpacklogik und ihre Produktionspfade wurden nicht verändert.
-- Die Änderungen sind nur auf dem Arbeitsbranch implementiert und getestet. Sie wurden weder veröffentlicht noch auf dem Server installiert; dafür ist eine neue ausdrückliche Release-/Deployment-Freigabe erforderlich.
+- `v2.0.75` wurde nach ausdrücklicher Freigabe als GitHub-Update veröffentlicht und als Branch sowie annotierter Tag zu GitHub und Forgejo gespiegelt. Ein produktiver Serverdienst wurde dafür weder installiert noch neu gestartet.
 
 ## Start-, Build- und Testbefehle
 
@@ -181,6 +181,8 @@ npm exec -- tsc --noEmit
 - Finaler vollständiger Client-Lauf ohne den privilegierten Symlink-Metadatentest: 138 Testdateien erfolgreich, 1 JVM-Testdatei übersprungen; 2.640 Tests erfolgreich und 4 übersprungen.
 - Der erste vollständige Lauf dieser Änderung hatte bei 2.639 erfolgreichen Tests genau einen 5-Sekunden-Timeout in einer Updater-Testfixture mit der 88,5-MiB-Node-EXE. Nach dem Ersatz aller reinen MZ-Fixtures durch 128-KiB-Payloads war der vollständige Wiederholungslauf grün.
 - Nach allen finalen Korrekturen erneut erfolgreich: TypeScript, vollständiger Main-/Renderer-Build, Self-Check und 16 von 16 Backup-API-Tests. Die bekannte Vite-Warnung zum rund 574 KiB großen Renderer-Chunk bleibt bestehen.
+- Release-Build `v2.0.75`: Installer und Portable-Datei wurden aus dem versionierten Quellstand neu erzeugt. Die Release-Prüfung bestätigte Paket- und Bundle-Version, Update-Metadaten, Artefaktnamen, SHA-512, Icon, Lizenzdateien sowie den entpackten Inhalt beider EXE-Archive.
+- SHA-256 des Setups: `586082f296d1c73cc1d1e022ae5a30c3ee821c701844532bccc7895e08040510`; SHA-256 der Portable-Datei: `44f09546b99e68048da444a207be5da470397fff420f3f231696fe3733e074a9`.
 
 ## Bekannte Probleme und Risiken
 
@@ -197,13 +199,12 @@ npm exec -- tsc --noEmit
 - Der Renderer-Bundle-Chunk liegt über Vites 500-KiB-Warnschwelle.
 - Die Shutdown-Wächter können einen vollständig synchron blockierten Main-Thread nicht präemptieren. Im äußersten Fall beträgt die kombinierte Grenze knapp 12 Sekunden: bis zu 10 Sekunden Controller-Shutdown plus 2 Sekunden Quit-Bestätigung.
 - Beim erzwungenen Exit können letzte asynchrone Logzeilen oder Benachrichtigungen fehlen; die wesentlichen Queue-, Settings-, Statistik- und Collector-Daten werden zuvor synchron gesichert. Laufende externe Extraktions-/Remux-Prozesse bleiben ein separater späterer Härtungspunkt.
-- Die aktuellen Lifecycle-, Debug-Server-, Persistenz- und Updater-Fixes sind noch nicht veröffentlicht oder auf dem Server installiert. Bis zu einer ausdrücklich freigegebenen Auslieferung läuft dort weiterhin die bisherige Version.
+- Lifecycle-, Debug-Server-, Persistenz-, Updater- und Proxy-only-Änderungen sind als `v2.0.75` veröffentlicht. Eine davon getrennte Installation oder ein produktiver Neustart auf einem Server wurde nicht vorgenommen.
 
 ## Nächste sinnvolle Schritte
 
-1. Für eine Auslieferung der aktuellen Fehlerkorrekturen zuerst Stand, Ziel, Tests und Rollback-Weg nennen und Saschas ausdrückliches Release-/Deployment-Go abwarten.
-2. Vor einer Auslieferung den Proxy-Modus mit einer unkritischen großen Testdatei zunächst bei 2 bis 4, danach bei 16 Verbindungen messen und dabei Erfolgsquote, Zusatzverkehr, Zielserver-Kompatibilität, Festplattenlast sowie Netto-MB/s vergleichen. Erst anschließend `maxParallel` auf 5 erhöhen.
-3. Nach einer freigegebenen Serverinstallation den Ablauf Real-Debrid-Web-Download, Hauptfenster schließen und unmittelbar neu starten am echten Zielsystem verifizieren; vor jedem Eingriff Prozessbaum und Logtail sichern.
-4. Sicherheitsabhängigkeiten in einem separaten Upgrade-Branch aktualisieren, Electron-/Vite-/Vitest-Major-Wechsel einzeln testen und danach den vollständigen Windows-Paketpfad prüfen.
-5. Eine nichtdestruktive Strategie zur Bereinigung der divergierenden `main`-Branches abstimmen; kein Force-Push ohne ausdrückliche Freigabe.
-6. Optional Developer Mode für lokale Symlink-Tests bereitstellen oder die Test-Fixtures plattformgerecht ohne privilegierte Symlinks gestalten.
+1. Das veröffentlichte Proxy-only-Update zunächst mit einem festen API-Proxy und 2 bis 4 Segmentverbindungen beobachten; danach bei Bedarf auf 16 erhöhen und Erfolgsquote, Zusatzverkehr, Zielserver-Kompatibilität, Festplattenlast sowie Netto-MB/s vergleichen. Erst anschließend `maxParallel` auf 5 erhöhen.
+2. Nach einer getrennt freigegebenen Serverinstallation den Ablauf Real-Debrid-Web-Download, Hauptfenster schließen und unmittelbar neu starten am echten Zielsystem verifizieren; vor jedem Eingriff Prozessbaum und Logtail sichern.
+3. Sicherheitsabhängigkeiten in einem separaten Upgrade-Branch aktualisieren, Electron-/Vite-/Vitest-Major-Wechsel einzeln testen und danach den vollständigen Windows-Paketpfad prüfen.
+4. Eine nichtdestruktive Strategie zur Bereinigung der divergierenden `main`-Branches abstimmen; kein Force-Push ohne ausdrückliche Freigabe.
+5. Optional Developer Mode für lokale Symlink-Tests bereitstellen oder die Test-Fixtures plattformgerecht ohne privilegierte Symlinks gestalten.
