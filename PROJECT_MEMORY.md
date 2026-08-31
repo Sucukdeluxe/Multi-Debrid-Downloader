@@ -12,10 +12,10 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
 - Arbeitsbranch: `release/v2.0.78`
 - Quellbasis: `release/v2.0.77`
-- Release-Tag: `v2.0.77`
-- Baseline-Commit: `1580a160da2e623fe78b8b1b13cea89d98a8ab57`
+- Release-Tag: `v2.0.78`
+- Baseline-Commit: `48c3677296f54d389f0982fc79edf2788a6d1191`
 - Paketversion: `2.0.78`
-- Letztes Release: `Multi-Debrid-Downloader v2.0.77`, veröffentlicht am 31. August 2026 auf GitHub und Forgejo
+- Letztes Release: `Multi-Debrid-Downloader v2.0.78`, veröffentlicht am 31. August 2026 auf GitHub und Forgejo
 - Runtime-Voraussetzung: Node.js `>=20`; lokal verifiziert mit Node.js `24.19.0` und npm `11.17.0`
 
 `main` ist derzeit keine verlässliche Arbeitsbasis:
@@ -23,7 +23,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - GitHub `main` steht auf `4d5161b` (`v2.0.35`) und ist gegenüber `release/v2.0.74` mit 7 zu 136 Commits auseinanderentwickelt.
 - Forgejo `main` steht auf `a8c4dcc` (`v1.7.232`) und ist noch deutlich älter.
 - GitHub und Forgejo zeigen für `release/v2.0.74` beide exakt auf `c1e1095`.
-- Neue Arbeit muss bis zu einer ausdrücklich geplanten Branch-Bereinigung von `release/v2.0.77` beziehungsweise einem davon abgeleiteten Arbeitsbranch ausgehen.
+- Neue Arbeit muss bis zu einer ausdrücklich geplanten Branch-Bereinigung von `release/v2.0.78` beziehungsweise einem davon abgeleiteten Arbeitsbranch ausgehen.
 
 ## Remotes
 
@@ -143,7 +143,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Der Standardwert für neue beziehungsweise noch nicht gesetzte Konfigurationen steigt von 20 auf 32 globale Proxy-Verbindungen. Bereits gespeicherte Benutzerwerte bleiben erhalten.
 - Das einstellbare Maximum steigt von 32 auf 40 globale Proxy-Verbindungen. Faire Aufteilung, Proxy-Bewertung, Cooldowns und adaptives 429/503-Backoff gelten unverändert auch oberhalb von 32.
 - „Sitzung“ erhält den kumulativen Bytezähler bei großen laufenden Queues nun in jedem 750-Millisekunden-Live-Snapshot und aktualisiert sich damit genauso häufig wie „Verbleibend“. Der 1,5-Sekunden-Cache bleibt für die übrigen aufwendigeren Statistikdaten erhalten.
-- Die Entpacklogik und ihre Produktionspfade wurden nicht verändert. Diese Anpassungen sind für die ausdrücklich freigegebene Veröffentlichung vorbereitet; eine Installation oder ein produktiver Neustart ist nicht Bestandteil des Releases.
+- Die Entpacklogik und ihre Produktionspfade wurden nicht verändert. `v2.0.78` wurde nach ausdrücklicher Freigabe auf GitHub und Forgejo veröffentlicht; eine Installation oder ein produktiver Neustart ist nicht Bestandteil des Releases.
 
 ## Start-, Build- und Testbefehle
 
@@ -176,6 +176,7 @@ npm exec -- tsc --noEmit
 
 ## Verifizierungen vom 31. August 2026
 
+- Veröffentlichung `v2.0.78`: Der annotierte Tag und beide Release-Branches zeigen bei GitHub und Forgejo exakt auf `48c3677296f54d389f0982fc79edf2788a6d1191`. Beide öffentlichen Releases enthalten dieselben sechs Assets; alle zwölf erneut heruntergeladenen Dateien stimmen in Größe und SHA-256 exakt mit den lokalen Originalen überein. GitHub führt `v2.0.78` als Latest Release.
 - Release-Build `v2.0.78`: Installer und Portable-Datei wurden aus dem versionierten Quellstand neu erzeugt. Die Release-Prüfung bestätigte Paket- und Bundle-Version, Update-Metadaten, Artefaktnamen, SHA-512, Icon, Lizenzdateien sowie den entpackten Inhalt beider EXE-Archive. Von den 24 Public-Release-Metadatentests waren 22 erfolgreich; nur die zwei unter Windows ohne Symlink-Berechtigung nicht ausführbaren Fixtures endeten vor ihrer Produktassertion mit `EPERM`.
 - SHA-256 des `v2.0.78`-Setups: `caaef1ce83d533cf3095353f729b8ecedecb0adc6d9a372d4cfd5249551767a3`; SHA-256 der Portable-Datei: `92e12f210ac3160a4967fa5de491092dff932025293e20984a3ec9744e9d6f32`.
 - Sidebar-Live-Takt-Fix für `v2.0.78`: Bei laufenden Queues ab 500 Einträgen bleibt der Sitzungs-Bytezähler trotz des 1,5-Sekunden-Statistik-Caches in jedem 750-Millisekunden-Live-Snapshot aktuell. Die Bedeutung des kumulativen Sitzungszählers bleibt unverändert. Der vollständige Download-Manager-Lauf war mit 263 von 263 Tests erfolgreich.
@@ -245,10 +246,11 @@ npm exec -- tsc --noEmit
 - Lifecycle-, Debug-Server-, Persistenz-, Updater- und Proxy-only-Änderungen sind als `v2.0.75` veröffentlicht. Eine davon getrennte Installation oder ein produktiver Neustart auf einem Server wurde nicht vorgenommen.
 - Der Proxy-Gesamtlimit-Hotfix ist als `v2.0.76` veröffentlicht. Eine Serverinstallation oder ein produktiver Neustart wurde nicht vorgenommen.
 - Der faire rollierende Proxy-Scheduler und der bytebasierte Paketfortschritt sind als `v2.0.77` veröffentlicht. Eine Serverinstallation oder ein produktiver Neustart wurde nicht vorgenommen.
+- Der 32/40-Proxybereich und der synchrone Live-Takt von „Sitzung“ und „Verbleibend“ sind als `v2.0.78` veröffentlicht. Eine Serverinstallation oder ein produktiver Neustart wurde nicht vorgenommen.
 
 ## Nächste sinnvolle Schritte
 
-1. Die unveröffentlichte Anpassung auf Standard 32 und Maximum 40 erst nach separater Release-Freigabe paketieren. Danach mit zwei echten parallelen Real-Debrid-Dateien zunächst 32 und anschließend optional 40 prüfen sowie 429/503, Zusatzverkehr, Festplattenlast und Netto-MB/s beobachten.
+1. Nach einer getrennt freigegebenen Installation `v2.0.78` mit zwei echten parallelen Real-Debrid-Dateien zunächst bei 32 und anschließend optional bei 40 prüfen sowie 429/503, Zusatzverkehr, Festplattenlast, Netto-MB/s und den gemeinsamen Live-Takt von „Sitzung“ und „Verbleibend“ beobachten.
 2. Nach einer getrennt freigegebenen Serverinstallation den Ablauf Real-Debrid-Web-Download, Hauptfenster schließen und unmittelbar neu starten am echten Zielsystem verifizieren; vor jedem Eingriff Prozessbaum und Logtail sichern.
 3. Sicherheitsabhängigkeiten in einem separaten Upgrade-Branch aktualisieren, Electron-/Vite-/Vitest-Major-Wechsel einzeln testen und danach den vollständigen Windows-Paketpfad prüfen.
 4. Eine nichtdestruktive Strategie zur Bereinigung der divergierenden `main`-Branches abstimmen; kein Force-Push ohne ausdrückliche Freigabe.
