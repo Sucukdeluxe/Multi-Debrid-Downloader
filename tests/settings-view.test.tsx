@@ -391,7 +391,7 @@ describe("settings model", () => {
       { id: "allgemein", label: "Allgemein" },
       { id: "accounts", label: "Accounts" },
       { id: "extract", label: "Entpacken" },
-      { id: "speed", label: "Geschwindigkeit" },
+      { id: "speed", label: "Geschwindigkeit & Proxy" },
       { id: "cleanup", label: "Bereinigung" },
       { id: "updates", label: "Updates" }
     ]);
@@ -642,6 +642,23 @@ describe("settings views", () => {
     });
   });
 
+  it("offers the disabled-by-default startup work-directory switch", () => {
+    const form = buildSettingsFormViewModel({
+      settings: { ...createRendererSettings(defaultSettings()), archivePasswordList: "", notifyUrl: "" },
+      section: "allgemein",
+      speedLimitInput: "0",
+      scheduleSpeedInputs: {}
+    });
+    const field = form.groups.flatMap((group) => group.fields)
+      .find((entry) => entry.id === "createWorkDirectoriesOnStartup");
+
+    expect(field).toEqual(expect.objectContaining({
+      kind: "switch",
+      label: "Fehlende Arbeitsordner beim Start anlegen",
+      value: false
+    }));
+  });
+
   it("projects proxy segmentation controls with safe defaults and connection totals", () => {
     const form = buildSettingsFormViewModel({
       settings: {
@@ -833,7 +850,7 @@ describe("settings views", () => {
     const html = renderToStaticMarkup(<SettingsSidebar actions={viewActions()} model={viewModel()} />);
     expect(count(html, "data-visual-region=\"settings-sidebar\"")).toBe(1);
     for (const section of SETTINGS_SECTIONS) {
-      expect(html).toContain(section.label);
+      expect(html).toContain(section.label.replace(/&/g, "&amp;"));
     }
     expect(html).toContain("aria-current=\"page\"");
   });

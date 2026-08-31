@@ -281,8 +281,11 @@ describe("Download-ETA", () => {
 });
 
 describe("verbleibendes Downloadvolumen", () => {
-  it("shows a fourth TB decimal so fast downloads stay visibly responsive", () => {
-    expect(formatRemainingDownloadBytes({ bytes: Math.round(1.125 * 1024 ** 4), unknownItems: 0 })).toBe("1.1250 TB");
+  it("uses TB precision that changes on every normal large-queue live tick", () => {
+    const before = Math.round(1.125 * 1024 ** 4);
+    const after = before - 40 * 1024 ** 2;
+    expect(formatRemainingDownloadBytes({ bytes: before, unknownItems: 0 })).toBe("1.12500 TB");
+    expect(formatRemainingDownloadBytes({ bytes: after, unknownItems: 0 })).toBe("1.12496 TB");
   });
 
   it("summiert nur offene bekannte Restbytes und klemmt überladene Fortschritte bei null", () => {

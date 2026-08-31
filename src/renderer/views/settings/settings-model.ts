@@ -10,7 +10,7 @@ export const SETTINGS_SECTIONS: readonly { id: SettingsSection; label: string }[
   { id: "allgemein", label: "Allgemein" },
   { id: "accounts", label: "Accounts" },
   { id: "extract", label: "Entpacken" },
-  { id: "speed", label: "Geschwindigkeit" },
+  { id: "speed", label: "Geschwindigkeit & Proxy" },
   { id: "cleanup", label: "Bereinigung" },
   { id: "updates", label: "Updates" }
 ];
@@ -392,8 +392,8 @@ export function buildSettingsFormViewModel({
       };
     });
     return {
-      title: "Geschwindigkeit",
-      description: "Tempo, Wiederverbindung und zeitgesteuerte Bandbreitenregeln.",
+      title: "Geschwindigkeit & Proxy",
+      description: "Tempo, Proxy, Wiederverbindung und zeitgesteuerte Bandbreitenregeln.",
       groups: [
         {
           id: "speed-limit",
@@ -583,6 +583,13 @@ export function buildSettingsFormViewModel({
         title: "Speicherort",
         fields: [
           { id: "outputDir", kind: "path", label: "Download-Ordner", value: settings.outputDir, actionLabel: "Wählen", help: "Zielordner für heruntergeladene Dateien." },
+          {
+            id: "createWorkDirectoriesOnStartup",
+            kind: "switch",
+            label: "Fehlende Arbeitsordner beim Start anlegen",
+            value: settings.createWorkDirectoriesOnStartup,
+            help: "Erstellt den Download-Ordner sowie bei aktiver Funktion den Entpack- und Videosammelordner neu. Vorhandene Ordner und Inhalte bleiben unverändert."
+          },
           { id: "packageName", kind: "text", label: "Paketname (optional)", value: settings.packageName },
           {
             id: "logStorageLocation",

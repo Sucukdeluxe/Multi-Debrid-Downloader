@@ -587,6 +587,9 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     providerTertiary: normalizeFallbackProvider(settings.providerTertiary, megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled),
     autoProviderFallback: Boolean(settings.autoProviderFallback),
     outputDir: normalizeAbsoluteDir(directorySettings.outputDir, defaults.outputDir),
+    createWorkDirectoriesOnStartup: settings.createWorkDirectoriesOnStartup !== undefined
+      ? Boolean(settings.createWorkDirectoriesOnStartup)
+      : defaults.createWorkDirectoriesOnStartup,
     packageName: asText(settings.packageName),
     autoExtract: Boolean(settings.autoExtract),
     autoRename4sf4sj: Boolean(settings.autoRename4sf4sj),

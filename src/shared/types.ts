@@ -184,6 +184,7 @@ export interface AppSettings extends DailyStartSettings, ProxyDownloadSettings {
   providerTertiary: DebridFallbackProvider;
   autoProviderFallback: boolean;
   outputDir: string;
+  createWorkDirectoriesOnStartup: boolean;
   packageName: string;
   autoExtract: boolean;
   autoRename4sf4sj: boolean;
@@ -319,6 +320,7 @@ export interface RendererSettings extends DailyStartSettings, ProxyDownloadSetti
   providerTertiary: DebridFallbackProvider;
   autoProviderFallback: boolean;
   outputDir: string;
+  createWorkDirectoriesOnStartup: boolean;
   packageName: string;
   autoExtract: boolean;
   autoRename4sf4sj: boolean;

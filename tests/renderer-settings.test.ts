@@ -4,6 +4,15 @@ import { createRendererSettings } from "../src/main/renderer-state";
 import { validateRendererSettingsUpdate } from "../src/main/renderer-settings";
 
 describe("renderer settings validation", () => {
+  it("projects and validates startup work-directory creation", () => {
+    const current = { ...defaultSettings(), createWorkDirectoriesOnStartup: true };
+    const projected = createRendererSettings(current);
+
+    expect(projected.createWorkDirectoriesOnStartup).toBe(true);
+    expect(validateRendererSettingsUpdate({ createWorkDirectoriesOnStartup: false }, current))
+      .toEqual({ createWorkDirectoriesOnStartup: false });
+  });
+
   it("projects and validates the semantic theme preference independently from the resolved palette", () => {
     const current = { ...defaultSettings(), theme: "dark" as const, themePreference: "system" as const };
     const projected = createRendererSettings(current);

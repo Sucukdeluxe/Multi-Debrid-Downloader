@@ -18,6 +18,8 @@ describe("renderer localization", () => {
     expect(translateUiText("Passwort/Zugang", "en")).toBe("Password/access");
     expect(translateUiText("Animationen", "en")).toBe("Animations");
     expect(translateUiText("Animations", "de")).toBe("Animationen");
+    expect(translateUiText("Geschwindigkeit & Proxy", "en")).toBe("Speed & Proxy");
+    expect(translateUiText("Fehlende Arbeitsordner beim Start anlegen", "en")).toBe("Create missing work folders on startup");
   });
 
   it.each([
@@ -29,11 +31,11 @@ describe("renderer localization", () => {
   });
 
   it.each([
-    ["Proxy-only ist aktiviert, aber es ist keine Proxy-Liste hinterlegt. Hinterlege sie unter Einstellungen → Geschwindigkeit.", "Proxy-only is enabled, but no proxy list is configured. Add one under Settings → Speed."],
-    ["Proxy-only ist aktiviert, aber die hinterlegte Proxy-Liste kann nicht gelesen werden. Prüfe die Datei unter Einstellungen → Geschwindigkeit.", "Proxy-only is enabled, but the configured proxy list cannot be read. Check the file under Settings → Speed."],
+    ["Proxy-only ist aktiviert, aber es ist keine Proxy-Liste hinterlegt. Hinterlege sie unter Einstellungen → Geschwindigkeit & Proxy.", "Proxy-only is enabled, but no proxy list is configured. Add one under Settings → Speed & Proxy."],
+    ["Proxy-only ist aktiviert, aber die hinterlegte Proxy-Liste kann nicht gelesen werden. Prüfe die Datei unter Einstellungen → Geschwindigkeit & Proxy.", "Proxy-only is enabled, but the configured proxy list cannot be read. Check the file under Settings → Speed & Proxy."],
     ["Proxy-only ist aktiviert, aber die hinterlegte Proxy-Liste ist leer oder enthält keine gültigen HTTP-Proxys.", "Proxy-only is enabled, but the configured proxy list is empty or contains no valid HTTP proxies."],
-    ["Proxy-only ist aktiviert, aber der feste API-Proxy ist in der Liste nicht verfügbar. Prüfe den Listeneintrag unter Einstellungen → Geschwindigkeit.", "Proxy-only is enabled, but the fixed API proxy is not available in the list. Check the list entry under Settings → Speed."],
-    ["Proxy-only ist aktiviert, aber der feste API-Proxy ist nicht erreichbar oder lehnt die Verbindung ab. Prüfe den Proxy unter Einstellungen → Geschwindigkeit.", "Proxy-only is enabled, but the fixed API proxy is unreachable or refuses the connection. Check the proxy under Settings → Speed."]
+    ["Proxy-only ist aktiviert, aber der feste API-Proxy ist in der Liste nicht verfügbar. Prüfe den Listeneintrag unter Einstellungen → Geschwindigkeit & Proxy.", "Proxy-only is enabled, but the fixed API proxy is not available in the list. Check the list entry under Settings → Speed & Proxy."],
+    ["Proxy-only ist aktiviert, aber der feste API-Proxy ist nicht erreichbar oder lehnt die Verbindung ab. Prüfe den Proxy unter Einstellungen → Geschwindigkeit & Proxy.", "Proxy-only is enabled, but the fixed API proxy is unreachable or refuses the connection. Check the proxy under Settings → Speed & Proxy."]
   ])("translates Proxy-only account guidance %s", (german, english) => {
     expect(translateUiText(german, "en")).toBe(english);
     expect(translateUiText(english, "de")).toBe(german);

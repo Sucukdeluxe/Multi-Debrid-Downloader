@@ -306,6 +306,18 @@ describe("settings storage", () => {
     expect(normalizeSettings({ ...defaultSettings(), language: "fr" as "en" }).language).toBe("en");
   });
 
+  it("keeps startup work-directory creation opt-in and persists an explicit enable", () => {
+    const legacy = { ...defaultSettings() } as Partial<AppSettings>;
+    delete legacy.createWorkDirectoriesOnStartup;
+
+    expect(defaultSettings().createWorkDirectoriesOnStartup).toBe(false);
+    expect(normalizeSettings(legacy as AppSettings).createWorkDirectoriesOnStartup).toBe(false);
+    expect(normalizeSettings({
+      ...defaultSettings(),
+      createWorkDirectoriesOnStartup: true
+    }).createWorkDirectoriesOnStartup).toBe(true);
+  });
+
   it("migrates a legacy shared Mega-Debrid pool into only the preferred mode", () => {
     const legacy = { ...defaultSettings() } as Partial<AppSettings>;
     legacy.megaCredentials = "legacy@example.test:legacy-pass";

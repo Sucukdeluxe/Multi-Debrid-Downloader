@@ -4,6 +4,20 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.82] - 2026-09-01
+
+### Startup work folders
+
+- Add a disabled-by-default General setting that recreates a missing download folder when the application starts.
+- Also recreate the configured extraction and video-library folders when their corresponding features are enabled.
+- Preserve every existing directory and file, and report an unavailable target without blocking the remaining startup folders or the application launch.
+
+### Settings and large queues
+
+- Rename the Speed settings category to Speed & Proxy so Proxy-only configuration is easier to locate.
+- Increase the visible precision of remaining sizes above one TiB so the Remaining counter visibly keeps pace with Session on very large queues while retaining the shared 750 ms snapshot cadence.
+- Keep download, extraction, password, and post-processing behavior unchanged.
+
 ## [2.0.81] - 2026-08-31
 
 ### Account management

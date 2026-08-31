@@ -39,7 +39,7 @@ describe("account operation errors", () => {
     expect(formatAccountOperationError(
       "Account konnte nicht gespeichert werden",
       new Error("Error invoking remote method: proxy_only_account:proxy_list_missing")
-    )).toBe("Account konnte nicht gespeichert werden: Proxy-only ist aktiviert, aber es ist keine Proxy-Liste hinterlegt. Hinterlege sie unter Einstellungen → Geschwindigkeit.");
+    )).toBe("Account konnte nicht gespeichert werden: Proxy-only ist aktiviert, aber es ist keine Proxy-Liste hinterlegt. Hinterlege sie unter Einstellungen → Geschwindigkeit & Proxy.");
     expect(formatAccountOperationError(
       "Prüfung fehlgeschlagen",
       "proxy_only_account:proxy_unreachable"

@@ -88,6 +88,7 @@ import { normalizeStatisticsLedger, saveStatisticsLedger } from "./statistics-le
 import { NotificationOutbox } from "./notification-outbox";
 import { sendNotification } from "./notify";
 import { DownloadHealthMonitor } from "./download-health-monitor";
+import { ensureStartupWorkDirectories } from "./startup-work-directories";
 import { shouldDeferAutoResumeToDailyStart } from "./daily-start-scheduler";
 import { configureNetworkProxy, getNetworkProxyState, shutdownNetworkProxy } from "./network-proxy";
 import { createProxyOnlyAccountError, resolveProxyOnlyAccountErrorCode } from "./proxy-account-errors";
@@ -173,6 +174,13 @@ export class AppController {
     }
     this.applyNetworkProxyConfiguration();
     this.initializeLogStorage();
+    const workDirectories = ensureStartupWorkDirectories(this.settings);
+    if (workDirectories.created.length > 0) {
+      logger.info(`Arbeitsordner beim Start angelegt: ${workDirectories.created.map((entry) => entry.kind).join(", ")}`);
+    }
+    for (const failure of workDirectories.failures) {
+      logger.warn(`Arbeitsordner konnte beim Start nicht angelegt werden (${failure.kind}): ${failure.error}`);
+    }
     this.runHistoryLifecycleCleanup("Start", () => resetHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode));
     const loadResult = loadSessionWithStatus(this.storagePaths);
     const session = loadResult.session;

@@ -81,6 +81,7 @@ export function defaultSettings(): AppSettings {
     providerTertiary: "bestdebrid",
     autoProviderFallback: true,
     outputDir: baseDir,
+    createWorkDirectoriesOnStartup: false,
     packageName: "",
     autoExtract: true,
     autoRename4sf4sj: false,

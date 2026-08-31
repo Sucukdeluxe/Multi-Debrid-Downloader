@@ -946,7 +946,7 @@ const emptySnapshot = (): UiSnapshot => ({
     debridLinkDisabledKeyIds: [],
     archivePasswordListConfigured: false, notifyUrlConfigured: false,
     rememberToken: true, configuredProviders: [], providerOrder: [], providerPrimary: "realdebrid", providerSecondary: "none",
-    providerTertiary: "none", autoProviderFallback: true, outputDir: "", packageName: "",
+    providerTertiary: "none", autoProviderFallback: true, outputDir: "", createWorkDirectoriesOnStartup: false, packageName: "",
     autoExtract: true, autoRename4sf4sj: false, keepGermanAudioOnly: false, germanAudioMode: "tag", extractDir: "", createExtractSubfolder: true, hybridExtract: true,
     collectMkvToLibrary: false, mkvLibraryDir: "",
     cleanupMode: "none", extractConflictMode: "overwrite", removeLinkFilesAfterExtract: false,

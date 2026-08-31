@@ -179,6 +179,7 @@ export function createRendererSettings(settings: AppSettings): RendererSettings 
     providerTertiary: settings.providerTertiary,
     autoProviderFallback: settings.autoProviderFallback,
     outputDir: settings.outputDir,
+    createWorkDirectoriesOnStartup: settings.createWorkDirectoriesOnStartup,
     packageName: settings.packageName,
     autoExtract: settings.autoExtract,
     autoRename4sf4sj: settings.autoRename4sf4sj,

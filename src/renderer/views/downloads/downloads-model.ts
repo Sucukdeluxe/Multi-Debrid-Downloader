@@ -149,7 +149,7 @@ export function getDownloadQueueStatusMetrics(items: readonly DownloadItem[]): {
 
 export function formatRemainingDownloadBytes(summary: { bytes: number; unknownItems: number }): string {
   const value = summary.bytes >= 1024 ** 4
-    ? `${(summary.bytes / 1024 ** 4).toFixed(4)} TB`
+    ? `${(summary.bytes / 1024 ** 4).toFixed(5)} TB`
     : humanSize(summary.bytes);
   if (summary.unknownItems <= 0) return value;
   return summary.bytes > 0 ? `≥ ${value}` : "Unbekannt";

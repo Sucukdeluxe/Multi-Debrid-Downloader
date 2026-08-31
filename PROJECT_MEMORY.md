@@ -8,15 +8,15 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 
 ## Zuletzt verifizierter Stand
 
-- Verifiziert am: 31. August 2026, Europe/Berlin
+- Verifiziert am: 1. September 2026, Europe/Berlin
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
-- Arbeitsbranch: `release/v2.0.81`
-- Quellbasis: `fix/account-select-all`
-- Release-Tag: `v2.0.80`
-- Baseline-Commit: `486507d4b2f42e9b0ccad9f2a026919d590149a0`
+- Arbeitsbranch: `release/v2.0.82`
+- Quellbasis: `release/v2.0.81`
+- Release-Tag: `v2.0.81`
+- Baseline-Commit: `d58cfba817bd73d015c3c295e593082becc3211f`
 - Hotfix-Basis: `5cee459d0bcc5c19d8d6483948a036a43c9d91b1`
-- Paketversion: `2.0.81`
-- Letztes Release: `Multi-Debrid-Downloader v2.0.80`, veröffentlicht am 31. August 2026 auf GitHub und Forgejo
+- Paketversion: `2.0.82`
+- Letztes Release: `Multi-Debrid-Downloader v2.0.81`, veröffentlicht am 31. August 2026 auf GitHub; die Forgejo-Veröffentlichung wird zusammen mit `v2.0.82` nachgeholt
 - Runtime-Voraussetzung: Node.js `>=20`; lokal verifiziert mit Node.js `24.19.0` und npm `11.17.0`
 
 `main` ist derzeit keine verlässliche Arbeitsbasis:
@@ -173,7 +173,15 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Online-Sicherungen nehmen den exakten Inhalt einer konfigurierten Proxy-Liste in den bereits clientseitig AES-256-GCM-verschlüsselten MDD2-Datensatz auf. Der Online-Dienst erhält weiterhin ausschließlich den authentifiziert verschlüsselten Blob und keine Proxy-Zugangsdaten im Klartext.
 - Beim Import wird die Liste atomar in eine verwaltete Datei im Runtime-Verzeichnis geschrieben und der lokale Pfad darauf umgestellt. Ein Schreib- oder Settingsfehler stellt sowohl die vorherige Datei als auch die vorherigen Einstellungen wieder her.
 - Ältere Online-Sicherungen ohne eingebettete Liste bleiben importierbar. Enthalten sie einen fremden Proxy-Pfad beziehungsweise aktiviertes Proxy-only, wird Proxy-only beim Import sicher deaktiviert, statt alle Netzwerkanfragen mit einem nicht portablen Pfad zu blockieren. Lokale Backup-Importe behalten ihre bisherige Pfadsemantik.
-- Die Änderungen sind auf `release/v2.0.81` versioniert und für die ausdrücklich freigegebene Veröffentlichung vorbereitet, aber noch nicht veröffentlicht. Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert.
+- Die Änderungen sind als `v2.0.81` auf GitHub veröffentlicht; die Forgejo-Veröffentlichung steht noch aus. Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert.
+
+## Änderungen in v2.0.82
+
+- Unter „Allgemein“ gibt es die standardmäßig ausgeschaltete Option „Fehlende Arbeitsordner beim Start anlegen“. Sie legt beim Programmstart einen fehlenden Download-Ordner an und berücksichtigt den Entpack- beziehungsweise Videosammelordner nur, wenn die jeweilige Funktion aktiviert ist.
+- Vorhandene Ordner und Inhalte bleiben unberührt. Fehler eines einzelnen Ziels, etwa ein nicht erreichbares Netzlaufwerk, eine Datei am Zielpfad oder fehlende Berechtigung, werden protokolliert und blockieren weder weitere Ordner noch den Programmstart.
+- Der Einstellungsbereich „Geschwindigkeit“ heißt nun „Geschwindigkeit & Proxy“; zugehörige Proxy-only-Hinweise und die englische Oberfläche verweisen ebenfalls auf den neuen Namen.
+- „Sitzung“ und „Verbleibend“ stammen weiterhin aus demselben 750-Millisekunden-Snapshot. Bei Restmengen ab einem TiB wurde die sichtbare TB-Präzision von vier auf fünf Nachkommastellen erhöht: Ein Anzeigeschritt sinkt dadurch von rund 105 MiB auf rund 10,5 MiB und bleibt auch bei großen Queues sichtbar im gleichen Takt.
+- Download-, Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert.
 
 ## Start-, Build- und Testbefehle
 
@@ -203,6 +211,12 @@ npm exec -- tsc --noEmit
 ```
 
 `npm run release:win` baut Release-Artefakte und darf nur nach ausdrücklicher Release-Freigabe ausgeführt werden.
+
+## Verifizierungen vom 1. September 2026
+
+- Kandidat für `v2.0.82`: TypeScript-Prüfung und 616 fokussierte Ordner-, Storage-, Renderer-, Einstellungs-, Übersetzungs-, Account- und Downloadansichtstests erfolgreich. Die Ordnerregressionen bestätigen den ausgeschalteten Standard, selektive Zielerstellung, den Erhalt vorhandener Dateien und die Fehlerisolation zwischen Zielen.
+- Vollständiger Clientlauf: 143 Testdateien erfolgreich, 1 optionale JVM-Testdatei übersprungen; 2.725 Tests erfolgreich und 4 übersprungen. Nur die zwei bekannten Windows-Symlink-Fixtures endeten mangels Berechtigung vor ihrer Produktassertion mit `EPERM`. Die unveränderten 265 Download-Manager- und 84 Entpacktests sind vollständig grün.
+- Backup-API: 16 von 16 Tests erfolgreich.
 
 ## Verifizierungen vom 31. August 2026
 
@@ -295,14 +309,16 @@ npm exec -- tsc --noEmit
 - Der 32/40-Proxybereich und der synchrone Live-Takt von „Sitzung“ und „Verbleibend“ sind als `v2.0.78` veröffentlicht. Eine Serverinstallation oder ein produktiver Neustart wurde nicht vorgenommen.
 - Der Proxy-Readback- und Nullbereich-Hotfix ist als `v2.0.79` auf GitHub und Forgejo veröffentlicht, aber noch nicht auf einem produktiven System installiert oder gestartet.
 - Die einheitliche Geschwindigkeitsanzeige und die getrennten Paket-Reset-Optionen sind als `v2.0.80` auf GitHub und Forgejo veröffentlicht, aber noch nicht auf einem produktiven System installiert oder gestartet.
-- Die Account-Übersicht unterstützt `Strg+A`; Proxy-only-Accountfehler werden verständlich aufgelöst und Online-Sicherungen können die Proxy-Liste verschlüsselt portieren. `release/v2.0.81` ist für die freigegebene Veröffentlichung vorbereitet, aber noch nicht veröffentlicht oder installiert.
+- Die Account-Übersicht unterstützt `Strg+A`; Proxy-only-Accountfehler werden verständlich aufgelöst und Online-Sicherungen können die Proxy-Liste verschlüsselt portieren. `v2.0.81` ist auf GitHub veröffentlicht; die Forgejo-Veröffentlichung steht noch aus. Eine produktive Installation oder ein Neustart wurde nicht vorgenommen.
+- Die optionale Arbeitsordner-Erstellung, der neue Kategoriename und die feinere TiB-Restanzeige sind als `v2.0.82` vollständig getestet und zur ausdrücklich freigegebenen Veröffentlichung vorbereitet. Eine produktive Installation oder ein Neustart ist nicht Bestandteil des Releases.
 
 ## Nächste sinnvolle Schritte
 
-1. Den vollständig geprüften und freigegebenen Kandidaten als `v2.0.81` bauen, auf GitHub und Forgejo veröffentlichen und die Assets beider Plattformen gegeneinander verifizieren.
-2. Nach einer getrennt freigegebenen Serverinstallation die Account-Fehlerführung, den verschlüsselten Proxy-Listen-Import und `Strg+A` am echten Zielsystem prüfen.
-3. Nach einer getrennt freigegebenen Serverinstallation die einheitliche Geschwindigkeitsanzeige und den selektiven Paket-Reset am echten Queue-Fall prüfen.
-4. Nach einer getrennt freigegebenen Serverinstallation den Ablauf Real-Debrid-Web-Download, Hauptfenster schließen und unmittelbar neu starten am echten Zielsystem verifizieren; vor jedem Eingriff Prozessbaum und Logtail sichern.
-5. Sicherheitsabhängigkeiten in einem separaten Upgrade-Branch aktualisieren, Electron-/Vite-/Vitest-Major-Wechsel einzeln testen und danach den vollständigen Windows-Paketpfad prüfen.
-6. Eine nichtdestruktive Strategie zur Bereinigung der divergierenden `main`-Branches abstimmen; kein Force-Push ohne ausdrückliche Freigabe.
-7. Optional Developer Mode für lokale Symlink-Tests bereitstellen oder die Test-Fixtures plattformgerecht ohne privilegierte Symlinks gestalten.
+1. Den vollständig geprüften und freigegebenen Kandidaten als `v2.0.82` bauen, auf GitHub und Forgejo veröffentlichen und die Assets beider Plattformen gegeneinander verifizieren; dabei die ausstehende Forgejo-Veröffentlichung von `v2.0.81` nachholen.
+2. Nach einer getrennt freigegebenen Serverinstallation die neue Arbeitsordner-Option und die feinere Restanzeige mit der großen echten Queue prüfen.
+3. Nach einer getrennt freigegebenen Serverinstallation die Account-Fehlerführung, den verschlüsselten Proxy-Listen-Import und `Strg+A` am echten Zielsystem prüfen.
+4. Nach einer getrennt freigegebenen Serverinstallation die einheitliche Geschwindigkeitsanzeige und den selektiven Paket-Reset am echten Queue-Fall prüfen.
+5. Nach einer getrennt freigegebenen Serverinstallation den Ablauf Real-Debrid-Web-Download, Hauptfenster schließen und unmittelbar neu starten am echten Zielsystem verifizieren; vor jedem Eingriff Prozessbaum und Logtail sichern.
+6. Sicherheitsabhängigkeiten in einem separaten Upgrade-Branch aktualisieren, Electron-/Vite-/Vitest-Major-Wechsel einzeln testen und danach den vollständigen Windows-Paketpfad prüfen.
+7. Eine nichtdestruktive Strategie zur Bereinigung der divergierenden `main`-Branches abstimmen; kein Force-Push ohne ausdrückliche Freigabe.
+8. Optional Developer Mode für lokale Symlink-Tests bereitstellen oder die Test-Fixtures plattformgerecht ohne privilegierte Symlinks gestalten.

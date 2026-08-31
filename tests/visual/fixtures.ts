@@ -92,6 +92,7 @@ function createSettings(): AppSettings {
     providerTertiary: "bestdebrid",
     autoProviderFallback: true,
     outputDir: "C:\\Visual\\Downloads",
+    createWorkDirectoriesOnStartup: false,
     packageName: "",
     autoExtract: true,
     autoRename4sf4sj: true,
