@@ -10263,11 +10263,17 @@ export class DownloadManager extends EventEmitter {
               }
               throw new Error(`Integritätsprüfung fehlgeschlagen (${validation.message})`);
             }
-            // Symmetry: a passed check was previously silent in the item log, so a
-            // reader could not tell whether integrity ran and passed vs was skipped.
-            this.logPackageForItem(item, "INFO", "Integritätsprüfung bestanden", {
-              elapsedMs: integrityElapsedMs
-            });
+            if (validation.checked) {
+              this.logPackageForItem(item, "INFO", "Integritätsprüfung bestanden", {
+                result: validation.message,
+                elapsedMs: integrityElapsedMs
+              });
+            } else {
+              this.logPackageForItem(item, "INFO", "Integritätsprüfung nicht ausgeführt", {
+                reason: validation.message,
+                elapsedMs: integrityElapsedMs
+              });
+            }
           }
 
           if (active.abortController.signal.aborted) {
@@ -11088,6 +11094,15 @@ export class DownloadManager extends EventEmitter {
                 this.emitState();
                 lastProxyUiEmitAt = nowTick;
               }
+            },
+            onValidationRetry: (event) => {
+              logAttemptEvent("WARN", "Proxy-Segmentprüfung fehlgeschlagen, Segment wird neu geladen", {
+                reason: event.reason,
+                rangeStart: event.rangeStart,
+                rangeEnd: event.rangeEnd,
+                segmentStart: event.segmentStart,
+                segmentEnd: event.segmentEnd
+              });
             }
           });
           if (proxyResult.status === "completed") {

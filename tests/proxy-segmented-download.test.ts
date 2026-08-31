@@ -4,7 +4,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { Transform } from "node:stream";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { downloadWithProxySegments, normalizeProxyConnectionLimit, parseProxyList, selectFixedProxy } from "../src/main/proxy-segmented-download";
 
 interface RunningServer {
@@ -15,6 +15,7 @@ interface RunningServer {
 const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   while (cleanups.length > 0) {
     await cleanups.pop()?.();
   }
@@ -234,6 +235,155 @@ describe("proxy segmented download", () => {
     expect(result.status).toBe("completed");
     expect(await fs.promises.readFile(targetFile)).toEqual(content);
     expect(counters.some((counter) => counter.value > 0)).toBe(true);
+  });
+
+  it("reloads a segment when another proxy disproves a suspicious zero-filled range", async () => {
+    const content = Buffer.alloc(64 * 1024, 7);
+    const ranges: string[] = [];
+    let corruptedResponseSent = false;
+    const server = http.createServer((request, response) => {
+      const rangeHeader = String(request.headers.range || "");
+      ranges.push(rangeHeader);
+      const match = /^bytes=(\d+)-(\d+)$/.exec(rangeHeader);
+      if (!match) {
+        response.writeHead(416);
+        response.end();
+        return;
+      }
+      const start = Number(match[1]);
+      const end = Math.min(Number(match[2]), content.length - 1);
+      let body = content.subarray(start, end + 1);
+      if (!corruptedResponseSent && rangeHeader === "bytes=0-4095") {
+        body = Buffer.from(body);
+        body.fill(0, 0, 2048);
+        corruptedResponseSent = true;
+      }
+      response.writeHead(206, {
+        "Content-Range": `bytes ${start}-${end}/${content.length}`,
+        "Content-Length": body.length
+      });
+      response.end(body);
+    });
+    const targetServer = await listen(server);
+    const counters = Array.from({ length: 3 }, () => ({ value: 0 }));
+    const proxies = await Promise.all(counters.map((counter, index) => createConnectProxy(`zero${index}`, `pass${index}`, counter)));
+    const directory = await createTempDirectory();
+    const proxyFile = path.join(directory, "zero-retry-proxies.txt");
+    const targetFile = path.join(directory, "zero-retry.bin");
+    await fs.promises.writeFile(
+      proxyFile,
+      proxies.map((proxy, index) => `zero${index}:pass${index}@127.0.0.1:${proxy.port}`).join("\n")
+    );
+    const validationRetries: string[] = [];
+
+    const result = await downloadWithProxySegments({
+      directUrl: `http://127.0.0.1:${targetServer.port}/zero-retry.bin`,
+      targetPath: targetFile,
+      proxyListPath: proxyFile,
+      connections: 2,
+      totalConnectionLimit: 2,
+      signal: new AbortController().signal,
+      minSegmentBytes: 1,
+      onValidationRetry: (event) => validationRetries.push(event.reason)
+    });
+
+    expect(result.status).toBe("completed");
+    expect(await fs.promises.readFile(targetFile)).toEqual(content);
+    expect(validationRetries).toContain("zero_run_mismatch");
+    expect(ranges.filter((range) => range === "bytes=0-4095")).toHaveLength(2);
+    expect(ranges).toContain("bytes=0-1023");
+  });
+
+  it("accepts a legitimate zero-filled range after another proxy confirms it", async () => {
+    const content = Buffer.alloc(64 * 1024, 9);
+    content.fill(0, 8192, 10_240);
+    const targetServer = await createRangeServer(content);
+    const counters = Array.from({ length: 3 }, () => ({ value: 0 }));
+    const proxies = await Promise.all(counters.map((counter, index) => createConnectProxy(`legit${index}`, `pass${index}`, counter)));
+    const directory = await createTempDirectory();
+    const proxyFile = path.join(directory, "legitimate-zero-proxies.txt");
+    const targetFile = path.join(directory, "legitimate-zero.bin");
+    await fs.promises.writeFile(
+      proxyFile,
+      proxies.map((proxy, index) => `legit${index}:pass${index}@127.0.0.1:${proxy.port}`).join("\n")
+    );
+    const validationRetries: string[] = [];
+
+    const result = await downloadWithProxySegments({
+      directUrl: `http://127.0.0.1:${targetServer.port}/legitimate-zero.bin`,
+      targetPath: targetFile,
+      proxyListPath: proxyFile,
+      connections: 2,
+      totalConnectionLimit: 2,
+      signal: new AbortController().signal,
+      minSegmentBytes: 1,
+      onValidationRetry: (event) => validationRetries.push(event.reason)
+    });
+
+    expect(result.status).toBe("completed");
+    expect(await fs.promises.readFile(targetFile)).toEqual(content);
+    expect(validationRetries).toEqual([]);
+    expect(targetServer.ranges).toContain("bytes=8192-9215");
+  });
+
+  it("reloads a segment when the bytes read back from disk differ from the received bytes", async () => {
+    const content = Buffer.alloc(64 * 1024, 13);
+    const targetServer = await createRangeServer(content);
+    const counters = Array.from({ length: 3 }, () => ({ value: 0 }));
+    const proxies = await Promise.all(counters.map((counter, index) => createConnectProxy(`readback${index}`, `pass${index}`, counter)));
+    const directory = await createTempDirectory();
+    const proxyFile = path.join(directory, "readback-proxies.txt");
+    const targetFile = path.join(directory, "readback.bin");
+    await fs.promises.writeFile(
+      proxyFile,
+      proxies.map((proxy, index) => `readback${index}:pass${index}@127.0.0.1:${proxy.port}`).join("\n")
+    );
+
+    const originalOpen = fs.promises.open.bind(fs.promises);
+    let corruptionInjected = false;
+    vi.spyOn(fs.promises, "open").mockImplementation((async (
+      file: fs.PathLike,
+      flags: fs.OpenMode,
+      mode?: fs.Mode
+    ) => {
+      const handle = await originalOpen(file, flags, mode);
+      if (!corruptionInjected && flags === "r+" && String(file).includes(".proxy-")) {
+        const originalWrite = handle.write.bind(handle) as (...args: unknown[]) => Promise<unknown>;
+        const originalClose = handle.close.bind(handle);
+        let firstPosition: number | null = null;
+        handle.write = (async (...args: unknown[]) => {
+          if (firstPosition === null && typeof args[3] === "number") {
+            firstPosition = args[3];
+          }
+          return originalWrite(...args);
+        }) as typeof handle.write;
+        handle.close = (async () => {
+          if (!corruptionInjected && firstPosition !== null) {
+            corruptionInjected = true;
+            await originalWrite(Buffer.alloc(1024), 0, 1024, firstPosition);
+          }
+          await originalClose();
+        }) as typeof handle.close;
+      }
+      return handle;
+    }) as typeof fs.promises.open);
+    const validationRetries: string[] = [];
+
+    const result = await downloadWithProxySegments({
+      directUrl: `http://127.0.0.1:${targetServer.port}/readback.bin`,
+      targetPath: targetFile,
+      proxyListPath: proxyFile,
+      connections: 2,
+      totalConnectionLimit: 2,
+      signal: new AbortController().signal,
+      minSegmentBytes: 1,
+      onValidationRetry: (event) => validationRetries.push(event.reason)
+    });
+
+    expect(result.status).toBe("completed");
+    expect(corruptionInjected).toBe(true);
+    expect(await fs.promises.readFile(targetFile)).toEqual(content);
+    expect(validationRetries).toContain("readback_mismatch");
   });
 
   it("lets fast proxies take over additional rolling chunks", async () => {

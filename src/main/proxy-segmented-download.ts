@@ -2,7 +2,7 @@ import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { HttpsProxyAgent } from "https-proxy-agent";
 
@@ -18,6 +18,10 @@ const PROXY_PROBE_END = 1;
 const MAX_REDIRECTS = 5;
 const MAX_SEGMENTS = 4_096;
 const MAX_PROXY_FILE_BYTES = 8 * 1024 * 1024;
+const SEGMENT_READBACK_BUFFER_BYTES = 256 * 1024;
+const SUSPICIOUS_ZERO_RUN_BYTES = 1024;
+const MAX_ZERO_RUN_VERIFICATIONS_PER_SEGMENT = 4;
+const ZERO_RUN_SENTINEL = Buffer.alloc(SUSPICIOUS_ZERO_RUN_BYTES);
 const DISK_ERROR_CODES = new Set(["ENOSPC", "EDQUOT", "EACCES", "EPERM", "EROFS", "EIO", "ENODEV"]);
 
 export interface ProxyEndpoint {
@@ -53,6 +57,19 @@ interface Segment {
   end: number;
 }
 
+interface SegmentDownloadOutcome {
+  bytes: number;
+  suspiciousZeroRanges: Segment[];
+}
+
+export interface ProxySegmentValidationRetry {
+  reason: "readback_mismatch" | "zero_run_mismatch";
+  rangeStart: number;
+  rangeEnd: number;
+  segmentStart: number;
+  segmentEnd: number;
+}
+
 export interface ProxySegmentedDownloadOptions {
   directUrl: string;
   targetPath: string;
@@ -70,6 +87,7 @@ export interface ProxySegmentedDownloadOptions {
   waitWhilePaused?: () => Promise<void>;
   onTrafficBytes?: (bytes: number) => void;
   onProgress?: (deltaBytes: number, downloadedBytes: number, totalBytes: number) => void;
+  onValidationRetry?: (event: ProxySegmentValidationRetry) => void;
 }
 
 export type ProxySegmentedDownloadResult =
@@ -100,6 +118,17 @@ function proxyEndpointKey(proxy: ProxyEndpoint): string {
 class OriginHttpError extends Error {
   public constructor(public readonly statusCode: number) {
     super(`origin_http_${statusCode}`);
+  }
+}
+
+class SegmentValidationError extends Error {
+  public constructor(
+    public readonly reason: ProxySegmentValidationRetry["reason"],
+    public readonly rangeStart: number,
+    public readonly rangeEnd: number,
+    public readonly segment: Segment
+  ) {
+    super(`proxy_segment_${reason}`);
   }
 }
 
@@ -182,6 +211,18 @@ class SharedProxyCoordinator {
     this.lastThrottleAt = now;
     this.successfulTransfersSinceThrottle = 0;
     this.adaptiveConnectionLimit = Math.max(2, this.adaptiveConnectionLimit - 2);
+    this.drain();
+  }
+
+  public reportContentMismatch(proxy: ProxyEndpoint): void {
+    const key = proxyEndpointKey(proxy);
+    const previous = this.performance.get(key);
+    this.cooldownUntil.set(key, Date.now() + 30_000);
+    this.performance.set(key, {
+      ewmaBytesPerSecond: (previous?.ewmaBytesPerSecond || 0) * 0.5,
+      failures: (previous?.failures || 0) + 1,
+      samples: previous?.samples || 0
+    });
     this.drain();
   }
 
@@ -759,6 +800,149 @@ async function writeBufferAt(handle: fs.promises.FileHandle, buffer: Buffer, pos
   }
 }
 
+function appendSuspiciousZeroRange(ranges: Segment[], start: number): void {
+  if (ranges.length >= MAX_ZERO_RUN_VERIFICATIONS_PER_SEGMENT) {
+    return;
+  }
+  const candidate = {
+    index: ranges.length,
+    start,
+    end: start + SUSPICIOUS_ZERO_RUN_BYTES - 1
+  };
+  const previous = ranges[ranges.length - 1];
+  if (previous && candidate.start <= previous.end + 1) {
+    return;
+  }
+  ranges.push(candidate);
+}
+
+function collectSuspiciousZeroRanges(
+  chunk: Buffer,
+  chunkStart: number,
+  previousTrailingZeros: number,
+  ranges: Segment[]
+): number {
+  let leadingZeros = 0;
+  while (leadingZeros < chunk.length && chunk[leadingZeros] === 0) {
+    leadingZeros += 1;
+  }
+  if (previousTrailingZeros + leadingZeros >= SUSPICIOUS_ZERO_RUN_BYTES) {
+    appendSuspiciousZeroRange(ranges, chunkStart - previousTrailingZeros);
+  }
+
+  let searchAt = 0;
+  while (ranges.length < MAX_ZERO_RUN_VERIFICATIONS_PER_SEGMENT) {
+    const foundAt = chunk.indexOf(ZERO_RUN_SENTINEL, searchAt);
+    if (foundAt < 0) {
+      break;
+    }
+    appendSuspiciousZeroRange(ranges, chunkStart + foundAt);
+    searchAt = foundAt + SUSPICIOUS_ZERO_RUN_BYTES;
+  }
+
+  let trailingZeros = 0;
+  for (let index = chunk.length - 1; index >= 0 && chunk[index] === 0; index -= 1) {
+    trailingZeros += 1;
+    if (trailingZeros >= SUSPICIOUS_ZERO_RUN_BYTES - 1) {
+      break;
+    }
+  }
+  return trailingZeros;
+}
+
+async function hashFileRange(
+  filePath: string,
+  start: number,
+  length: number,
+  signal: AbortSignal
+): Promise<Buffer> {
+  const handle = await fs.promises.open(filePath, "r");
+  const hash = createHash("sha256");
+  const buffer = Buffer.allocUnsafe(Math.min(SEGMENT_READBACK_BUFFER_BYTES, Math.max(1, length)));
+  let position = start;
+  let remaining = length;
+  try {
+    while (remaining > 0) {
+      if (signal.aborted) {
+        throw abortError();
+      }
+      const requested = Math.min(buffer.length, remaining);
+      const { bytesRead } = await handle.read(buffer, 0, requested, position);
+      if (bytesRead <= 0) {
+        throw new Error("proxy_segment_readback_underflow");
+      }
+      hash.update(buffer.subarray(0, bytesRead));
+      position += bytesRead;
+      remaining -= bytesRead;
+    }
+    return hash.digest();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readRangeOnce(
+  target: URL,
+  proxy: ProxyEndpoint,
+  range: Segment,
+  totalBytes: number,
+  signal: AbortSignal,
+  options: Required<Pick<ProxySegmentedDownloadOptions, "skipTlsVerify" | "connectTimeoutMs" | "idleTimeoutMs">>,
+  onTrafficBytes?: (bytes: number) => void
+): Promise<Buffer> {
+  const opened = await openRangeResponse(
+    target,
+    proxy,
+    range.start,
+    range.end,
+    signal,
+    options.skipTlsVerify,
+    options.connectTimeoutMs,
+    options.idleTimeoutMs
+  );
+  const response = opened.response;
+  const status = response.statusCode || 0;
+  if (status >= 400) {
+    opened.dispose();
+    throw new OriginHttpError(status);
+  }
+  const expectedBytes = range.end - range.start + 1;
+  const contentRange = parseContentRange(response.headers["content-range"]);
+  const contentLength = Number(response.headers["content-length"] || 0);
+  if (status !== 206
+    || !contentRange
+    || contentRange.start !== range.start
+    || contentRange.end !== range.end
+    || contentRange.total !== totalBytes
+    || (contentLength > 0 && contentLength !== expectedBytes)) {
+    opened.dispose();
+    throw new Error("proxy_verification_range_mismatch");
+  }
+
+  const chunks: Buffer[] = [];
+  let received = 0;
+  try {
+    for await (const rawChunk of response) {
+      if (signal.aborted) {
+        throw abortError();
+      }
+      const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk);
+      onTrafficBytes?.(chunk.length);
+      received += chunk.length;
+      if (received > expectedBytes) {
+        throw new Error("proxy_verification_range_overflow");
+      }
+      chunks.push(chunk);
+    }
+    if (received !== expectedBytes) {
+      throw new Error("proxy_verification_range_underflow");
+    }
+    return Buffer.concat(chunks, received);
+  } finally {
+    opened.dispose();
+  }
+}
+
 async function downloadSegmentOnce(
   target: URL,
   tempPath: string,
@@ -769,7 +953,7 @@ async function downloadSegmentOnce(
   callbacks: Pick<ProxySegmentedDownloadOptions, "waitWhilePaused" | "onTrafficBytes" | "onProgress">,
   totalBytes: number,
   currentProgress: () => number
-): Promise<number> {
+): Promise<SegmentDownloadOutcome> {
   const opened = await openRangeResponse(
     target,
     proxy,
@@ -807,6 +991,9 @@ async function downloadSegmentOnce(
     throw error;
   }
   let received = 0;
+  const receivedHash = createHash("sha256");
+  const suspiciousZeroRanges: Segment[] = [];
+  let trailingZeros = 0;
   try {
     for await (const rawChunk of response) {
       if (signal.aborted) {
@@ -823,17 +1010,29 @@ async function downloadSegmentOnce(
         response.setTimeout(options.idleTimeoutMs);
       }
       await writeBufferAt(handle, chunk, segment.start + received);
+      receivedHash.update(chunk);
+      trailingZeros = collectSuspiciousZeroRanges(
+        chunk,
+        segment.start + received,
+        trailingZeros,
+        suspiciousZeroRanges
+      );
       received += chunk.length;
       callbacks.onProgress?.(chunk.length, currentProgress() + chunk.length, totalBytes);
     }
     if (received !== expectedBytes) {
       throw new Error("proxy_segment_underflow");
     }
-    return received;
   } finally {
     opened.dispose();
     await handle.close();
   }
+  const writtenHash = await hashFileRange(tempPath, segment.start, expectedBytes, signal);
+  const networkHash = receivedHash.digest();
+  if (!timingSafeEqual(networkHash, writtenHash)) {
+    throw new SegmentValidationError("readback_mismatch", segment.start, segment.end, segment);
+  }
+  return { bytes: received, suspiciousZeroRanges };
 }
 
 export async function downloadWithProxySegments(options: ProxySegmentedDownloadOptions): Promise<ProxySegmentedDownloadResult> {
@@ -943,19 +1142,20 @@ export async function downloadWithProxySegments(options: ProxySegmentedDownloadO
         if (signal.aborted) {
           throw abortError();
         }
-        const lease = await sharedProxyCoordinator.acquire(poolKey, groupId, segmentProxies, excluded, signal);
+        let lease = await sharedProxyCoordinator.acquire(poolKey, groupId, segmentProxies, excluded, signal);
         if (!lease) {
           break;
         }
-        excluded.add(proxyEndpointKey(lease.proxy));
+        const primaryProxy = lease.proxy;
+        excluded.add(proxyEndpointKey(primaryProxy));
         let attemptProgress = 0;
         const startedAt = Date.now();
         try {
-          const bytes = await downloadSegmentOnce(
+          const outcome = await downloadSegmentOnce(
             target,
             tempPath,
             segment,
-            lease.proxy,
+            primaryProxy,
             signal,
             normalized,
             {
@@ -971,13 +1171,60 @@ export async function downloadWithProxySegments(options: ProxySegmentedDownloadO
           );
           lease.release({
             succeeded: true,
-            transferredBytes: bytes,
+            transferredBytes: outcome.bytes,
             durationMs: Math.max(1, Date.now() - startedAt)
           });
-          return bytes;
+          lease = null;
+
+          if (outcome.suspiciousZeroRanges.length > 0) {
+            lease = await sharedProxyCoordinator.acquire(poolKey, groupId, segmentProxies, excluded, signal);
+            if (!lease) {
+              throw new Error("proxy_zero_run_verification_unavailable");
+            }
+            const verificationStartedAt = Date.now();
+            let verificationBytes = 0;
+            for (const suspiciousRange of outcome.suspiciousZeroRanges) {
+              const verification = await readRangeOnce(
+                target,
+                lease.proxy,
+                suspiciousRange,
+                probe.totalBytes,
+                signal,
+                normalized,
+                (bytes) => {
+                  verificationBytes += bytes;
+                  options.onTrafficBytes?.(bytes);
+                }
+              );
+              if (!timingSafeEqual(verification, ZERO_RUN_SENTINEL)) {
+                lease.release({
+                  succeeded: true,
+                  transferredBytes: verificationBytes,
+                  durationMs: Math.max(1, Date.now() - verificationStartedAt)
+                });
+                lease = null;
+                sharedProxyCoordinator.reportContentMismatch(primaryProxy);
+                throw new SegmentValidationError(
+                  "zero_run_mismatch",
+                  suspiciousRange.start,
+                  suspiciousRange.end,
+                  segment
+                );
+              }
+            }
+            lease.release({
+              succeeded: true,
+              transferredBytes: verificationBytes,
+              durationMs: Math.max(1, Date.now() - verificationStartedAt)
+            });
+            lease = null;
+          }
+
+          return outcome.bytes;
         } catch (error) {
           const originError = error instanceof OriginHttpError;
-          lease.release({ succeeded: originError || signal.aborted });
+          lease?.release({ succeeded: originError || signal.aborted });
+          lease = null;
           if (originError) {
             sharedProxyCoordinator.reportOriginStatus(error.statusCode);
           }
@@ -986,6 +1233,18 @@ export async function downloadWithProxySegments(options: ProxySegmentedDownloadO
           }
           if (options.signal.aborted || isDiskError(error)) {
             throw error;
+          }
+          if (error instanceof SegmentValidationError) {
+            try {
+              options.onValidationRetry?.({
+                reason: error.reason,
+                rangeStart: error.rangeStart,
+                rangeEnd: error.rangeEnd,
+                segmentStart: error.segment.start,
+                segmentEnd: error.segment.end
+              });
+            } catch {
+            }
           }
           lastError = error;
         }

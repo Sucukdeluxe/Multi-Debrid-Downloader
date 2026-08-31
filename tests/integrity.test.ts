@@ -28,6 +28,18 @@ describe("integrity", () => {
     fs.writeFileSync(path.join(dir, "hash.md5"), "5d41402abc4b2a76b9719d911017c592 movie.bin\n");
     const result = await validateFileAgainstManifest(filePath, dir);
     expect(result.ok).toBe(true);
+    expect(result.checked).toBe(true);
+  });
+
+  it("reports when no checksum was actually available", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-int-"));
+    tempDirs.push(dir);
+    const filePath = path.join(dir, "movie.bin");
+    fs.writeFileSync(filePath, Buffer.from("hello"));
+
+    const result = await validateFileAgainstManifest(filePath, dir);
+
+    expect(result).toEqual({ ok: true, checked: false, message: "Kein Hash verfügbar" });
   });
 
   it("skips manifest files larger than 5MB", () => {
@@ -78,6 +90,7 @@ describe("integrity", () => {
 
     const result = await validateFileAgainstManifest(filePath, dir);
     expect(result.ok).toBe(true);
+    expect(result.checked).toBe(true);
     expect(result.message).toContain("MD5");
   });
 

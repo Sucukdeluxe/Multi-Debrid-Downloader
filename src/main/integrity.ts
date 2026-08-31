@@ -139,21 +139,24 @@ async function hashFile(filePath: string, algorithm: "crc32" | "md5" | "sha1"): 
   });
 }
 
-export async function validateFileAgainstManifest(filePath: string, packageDir: string): Promise<{ ok: boolean; message: string }> {
+export async function validateFileAgainstManifest(
+  filePath: string,
+  packageDir: string
+): Promise<{ ok: boolean; checked: boolean; message: string }> {
   const manifest = readHashManifest(packageDir);
   if (manifest.size === 0) {
-    return { ok: true, message: "Kein Hash verfügbar" };
+    return { ok: true, checked: false, message: "Kein Hash verfügbar" };
   }
   const keyByBaseName = normalizeManifestKey(path.basename(filePath));
   const keyByRelativePath = normalizeManifestKey(path.relative(packageDir, filePath));
   const entry = manifest.get(keyByRelativePath) || manifest.get(keyByBaseName);
   if (!entry) {
-    return { ok: true, message: "Kein Hash für Datei" };
+    return { ok: true, checked: false, message: "Kein Hash für Datei" };
   }
 
   const actual = await hashFile(filePath, entry.algorithm);
   if (actual === entry.digest.toLowerCase()) {
-    return { ok: true, message: `${entry.algorithm.toUpperCase()} ok` };
+    return { ok: true, checked: true, message: `${entry.algorithm.toUpperCase()} ok` };
   }
-  return { ok: false, message: `${entry.algorithm.toUpperCase()} mismatch` };
+  return { ok: false, checked: true, message: `${entry.algorithm.toUpperCase()} mismatch` };
 }

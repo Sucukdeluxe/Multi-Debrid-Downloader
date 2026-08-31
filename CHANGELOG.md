@@ -4,6 +4,13 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+### Proxy segment integrity hotfix
+
+- Read every completed proxy segment back from disk and compare its SHA-256 digest with the bytes received before accepting the segment.
+- Verify suspicious zero-filled ranges through a different proxy and reload the complete segment when the independent response differs.
+- Distinguish an actual manifest checksum pass from an integrity check skipped because no checksum was available.
+- Keep extraction and password handling unchanged.
+
 ## [2.0.78] - 2026-08-31
 
 ### Download presentation
