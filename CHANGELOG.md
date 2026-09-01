@@ -4,6 +4,8 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.84] - 2026-09-01
+
 ### Work folders
 
 - Create missing configured work folders immediately when the enabled startup-folder setting is saved, without requiring an application restart.
