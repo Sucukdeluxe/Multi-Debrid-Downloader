@@ -12,11 +12,11 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
 - Arbeitsbranch: `release/v2.0.84`
 - Quellbasis: `release/v2.0.83`
-- Release-Tag: `v2.0.84` (Kandidat)
+- Release-Tag: `v2.0.84`
 - Baseline-Commit: `f3f2f60ece9322bfaddeb8f47d07830bb8fe273a`
 - Hotfix-Basis: `f3f2f60ece9322bfaddeb8f47d07830bb8fe273a`
 - Paketversion: `2.0.84`
-- Letztes Release: `Multi-Debrid-Downloader v2.0.83`, veröffentlicht am 1. September 2026 auf GitHub und Forgejo
+- Letztes Release: `Multi-Debrid-Downloader v2.0.84`, veröffentlicht am 1. September 2026 auf GitHub und Forgejo
 - Runtime-Voraussetzung: Node.js `>=20`; lokal verifiziert mit Node.js `24.19.0` und npm `11.17.0`
 
 `main` ist derzeit keine verlässliche Arbeitsbasis:
@@ -238,6 +238,7 @@ npm exec -- tsc --noEmit
 - Für den `v2.0.84`-Kandidaten sind TypeScript, Main-Build, Renderer-Produktionsbuild, Node-Self-Check und alle 16 Backup-API-Tests erfolgreich. Die bekannte Vite-Warnung betrifft den rund 581 KiB großen Renderer-Chunk.
 - Release-Build `v2.0.84`: Installer und Portable-Datei wurden aus dem versionierten Release-Vorbereitungsstand erzeugt. Die Release-Prüfung bestätigte Paket- und Bundle-Version, Update-Metadaten, Artefaktnamen, Installergröße und SHA-512, Icon, Lizenzdateien sowie den entpackten Inhalt beider EXE-Archive. Das Source-Archiv enthält Paketversion `2.0.84`; alle Einträge in `SHA256SUMS.txt` stimmen mit den lokalen Originalen überein.
 - SHA-256 des `v2.0.84`-Setups: `729c806c3c869c7f03762dcf25703ff1163b1a7e91dd8236248f7f2275edd856`; SHA-256 der Portable-Datei: `228ea64b0dc575854342ba96eabab81006d21e1fc3fc9b6cdd60b5664da408bc`.
+- Veröffentlichung `v2.0.84`: Der annotierte Tag zeigt auf GitHub und Forgejo exakt auf `29c1697b46f354cffa96de95379b7e66bb818cce`. GitHub führt `v2.0.84` als neuesten stabilen Release mit exakt dem englischen Release-Text; Forgejo veröffentlicht denselben stabilen Versionsstand mit exakt dem deutschen Text. Beide Plattformen besitzen dieselben sechs benannten Assets. Alle zwölf veröffentlichten Dateien wurden erneut heruntergeladen; Dateigröße und SHA-256 stimmen auf beiden Plattformen exakt mit den lokalen Originalen überein.
 - Unveröffentlichte Sofortanlage der Arbeitsordner: 344 von 344 fokussierten AppController-, Ordner-, Einstellungsansichts- und Übersetzungstests erfolgreich. Abgedeckt sind die unmittelbare Anlage aller aktivierten Ziele beim Speichern, ein erneuter unveränderter Speichervorgang bei bereits aktiver Option und das Ausbleiben der Ordneranlage, wenn die Einstellungen nicht persistiert werden können. TypeScript, Main-Build, Renderer-Produktionsbuild und Node-Self-Check sind erfolgreich; die bekannte Vite-Warnung betrifft den rund 581 KiB großen Renderer-Chunk.
 - Vollständiger Clientlauf nach der Sofortanlage: 143 Testdateien erfolgreich, 1 optionale JVM-Testdatei übersprungen; 2.728 Tests erfolgreich und 4 übersprungen. Ausschließlich die zwei bekannten Windows-Symlink-Fixtures scheiterten mangels Berechtigung vor ihrer Produktassertion mit `EPERM`. Alle 265 Download-Manager- und 84 Extractor-Tests sind weiterhin vollständig grün.
 - Kandidat für `v2.0.83`: 392 von 392 fokussierten Download-Manager- und Storage-Tests erfolgreich. Die neuen Regressionen beweisen den einmaligen Neudownload bei CRC trotz gültiger RAR-Signatur, den persistenten Schutz vor einem zweiten automatischen Neudownload, die unveränderte Passwortfehler-Abgrenzung sowie das Löschen des Schutzes beim manuellen Reset.
@@ -350,7 +351,7 @@ npm exec -- tsc --noEmit
 - Die Account-Übersicht unterstützt `Strg+A`; Proxy-only-Accountfehler werden verständlich aufgelöst und Online-Sicherungen können die Proxy-Liste verschlüsselt portieren. `v2.0.81` ist auf GitHub und Forgejo veröffentlicht. Eine produktive Installation oder ein Neustart wurde nicht vorgenommen.
 - Die optionale Arbeitsordner-Erstellung, der neue Kategoriename und die feinere TiB-Restanzeige sind als `v2.0.82` auf GitHub und Forgejo veröffentlicht. Eine produktive Installation oder ein Neustart ist nicht Bestandteil des Releases.
 - Die einmalige CRC-Neudownload-Wiederherstellung ist als `v2.0.83` auf GitHub und Forgejo veröffentlicht. Entpack-, Passwort- und Extractor-Fallbacklogik blieben unverändert; eine produktive Installation oder ein Neustart ist nicht Bestandteil des Releases.
-- Die unmittelbare Arbeitsordner-Anlage beim Speichern und der Proxybereich mit Standard 32 sowie Maximum 80 sind als `v2.0.84` vorbereitet und vollständig verifiziert, aber noch nicht veröffentlicht.
+- Die unmittelbare Arbeitsordner-Anlage beim Speichern und der Proxybereich mit Standard 32 sowie Maximum 80 sind als `v2.0.84` auf GitHub und Forgejo veröffentlicht. Eine produktive Installation oder ein Neustart ist nicht Bestandteil des Releases.
 
 ## Nächste sinnvolle Schritte
 
