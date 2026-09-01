@@ -16,7 +16,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Baseline-Commit: `f3f2f60ece9322bfaddeb8f47d07830bb8fe273a`
 - Hotfix-Basis: `f3f2f60ece9322bfaddeb8f47d07830bb8fe273a`
 - Paketversion: `2.0.83`
-- Letztes Release: `Multi-Debrid-Downloader v2.0.82`, veröffentlicht am 1. September 2026 auf GitHub und Forgejo
+- Letztes Release: `Multi-Debrid-Downloader v2.0.83`, veröffentlicht am 1. September 2026 auf GitHub und Forgejo
 - Runtime-Voraussetzung: Node.js `>=20`; lokal verifiziert mit Node.js `24.19.0` und npm `11.17.0`
 
 `main` ist derzeit keine verlässliche Arbeitsbasis:
@@ -24,7 +24,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - GitHub `main` steht auf `4d5161b` (`v2.0.35`) und ist gegenüber `release/v2.0.74` mit 7 zu 136 Commits auseinanderentwickelt.
 - Forgejo `main` steht auf `a8c4dcc` (`v1.7.232`) und ist noch deutlich älter.
 - GitHub und Forgejo zeigen für `release/v2.0.74` beide exakt auf `c1e1095`.
-- Neue Arbeit muss bis zu einer ausdrücklich geplanten Branch-Bereinigung von `release/v2.0.80` beziehungsweise einem davon abgeleiteten Arbeitsbranch ausgehen.
+- Neue Arbeit muss bis zu einer ausdrücklich geplanten Branch-Bereinigung von `release/v2.0.83` beziehungsweise einem davon abgeleiteten Arbeitsbranch ausgehen.
 
 ## Remotes
 
@@ -34,6 +34,8 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Der Arbeitsstand wird nach zusammengehörigen Änderungen zu beiden Remotes gepusht und anschließend über die Commit-IDs beider Remote-Branches verifiziert.
 - Pushen ist kein Release. Release, Deployment, Veröffentlichung und produktive Neustarts benötigen immer eine aktuelle ausdrückliche Freigabe.
 - Release-Changelogs werden plattformspezifisch gepflegt: auf GitHub immer auf Englisch, auf Forgejo unter `git.24-music.de` immer auf Deutsch. Tag, Titel, Assets und technische Inhalte bleiben für denselben Versionsstand gleichwertig.
+- Forgejo-Releases werden bei verfügbarem Serverzugang über die offizielle Forgejo-API veröffentlicht, weil das Webformular in einer Uploadrunde nur fünf Anhänge annimmt. Forgejo läuft auf dem verwalteten Server im Container `forgejo-forgejo-1`; das dafür vorgesehene API-Token liegt ausschließlich serverseitig unter `/opt/forgejo/release-api-token`, gehört `root:root`, besitzt Modus `0600` und nur den Scope `write:repository`. Der Tokenwert darf nie ausgegeben, lokal gespeichert oder committed werden.
+- Der verifizierte Forgejo-Ablauf lautet: sechs lokale Assets und den deutschen Release-Text in ein versionsbezogenes Verzeichnis unter `/tmp` übertragen, dort vor der Veröffentlichung die lokalen SHA-256-Werte erneut bestätigen, den stabilen Release per `POST /api/v1/repos/Administrator/Multi-Debrid-Downloader/releases` erzeugen und jedes Asset einzeln per `POST .../releases/{id}/assets?name=...` hochladen. Danach Tag, Titel, deutscher Text, Stable-Status, Assetliste und Update-Metadaten über die öffentliche API prüfen, alle sechs Assets erneut herunterladen und Größe sowie SHA-256 gegen die Originale vergleichen. Das temporäre Serververzeichnis wird erst nach erfolgreicher Verifizierung entfernt; direkte Datenbankänderungen und ein Forgejo-Neustart gehören nicht zu diesem Ablauf.
 
 ## Architektur
 
@@ -228,6 +230,7 @@ npm exec -- tsc --noEmit
 - TypeScript-Prüfung, Main-Build, Renderer-Produktionsbuild, Node-Self-Check und alle 16 Backup-API-Tests sind erfolgreich. Die bekannte Vite-Warnung betrifft weiterhin den rund 581 KiB großen Renderer-Chunk.
 - Release-Build `v2.0.83`: Installer und Portable-Datei wurden aus dem versionierten Release-Vorbereitungsstand erzeugt. Die Release-Prüfung bestätigte Paket- und Bundle-Version, Update-Metadaten, Artefaktnamen, Dateigröße und SHA-512 des Installers, Icon, Lizenzdateien sowie den entpackten Inhalt beider EXE-Archive.
 - SHA-256 des `v2.0.83`-Setups: `ab3bf10ce9a42244a30bc48f40a15646aacebe6e63b69c520da7e4f2fd59fedd`; SHA-256 der Portable-Datei: `93883c8a047f3352f642ac76fd9e68f2da1096692e2c5937d99788ff8ae8ba7e`.
+- Veröffentlichung `v2.0.83`: Der annotierte Tag und beide Release-Branches zeigen auf GitHub und Forgejo exakt auf `6460dab50e188139ffd806cd94f5b0ae102d2ac0`. GitHub führt `v2.0.83` als neuesten stabilen Release mit englischem Text; Forgejo veröffentlicht denselben stabilen Versionsstand mit deutschem Text. Beide Plattformen besitzen dieselben sechs benannten Assets. Alle sechs Forgejo-Assets wurden über die öffentliche Downloadadresse erneut geladen; Dateigröße und SHA-256 stimmen exakt mit den lokalen Originalen und den auf GitHub veröffentlichten Digests überein. `latest.yml` nennt Version `2.0.83`, Installergröße `90.665.593` Bytes und den erneut bestätigten SHA-512-Wert des Setups.
 - Kandidat für `v2.0.82`: TypeScript-Prüfung und 616 fokussierte Ordner-, Storage-, Renderer-, Einstellungs-, Übersetzungs-, Account- und Downloadansichtstests erfolgreich. Die Ordnerregressionen bestätigen den ausgeschalteten Standard, selektive Zielerstellung, den Erhalt vorhandener Dateien und die Fehlerisolation zwischen Zielen.
 - Vollständiger Clientlauf: 143 Testdateien erfolgreich, 1 optionale JVM-Testdatei übersprungen; 2.725 Tests erfolgreich und 4 übersprungen. Nur die zwei bekannten Windows-Symlink-Fixtures endeten mangels Berechtigung vor ihrer Produktassertion mit `EPERM`. Die unveränderten 265 Download-Manager- und 84 Entpacktests sind vollständig grün.
 - Backup-API: 16 von 16 Tests erfolgreich.
@@ -331,13 +334,15 @@ npm exec -- tsc --noEmit
 - Die einheitliche Geschwindigkeitsanzeige und die getrennten Paket-Reset-Optionen sind als `v2.0.80` auf GitHub und Forgejo veröffentlicht, aber noch nicht auf einem produktiven System installiert oder gestartet.
 - Die Account-Übersicht unterstützt `Strg+A`; Proxy-only-Accountfehler werden verständlich aufgelöst und Online-Sicherungen können die Proxy-Liste verschlüsselt portieren. `v2.0.81` ist auf GitHub und Forgejo veröffentlicht. Eine produktive Installation oder ein Neustart wurde nicht vorgenommen.
 - Die optionale Arbeitsordner-Erstellung, der neue Kategoriename und die feinere TiB-Restanzeige sind als `v2.0.82` auf GitHub und Forgejo veröffentlicht. Eine produktive Installation oder ein Neustart ist nicht Bestandteil des Releases.
+- Die einmalige CRC-Neudownload-Wiederherstellung ist als `v2.0.83` auf GitHub und Forgejo veröffentlicht. Entpack-, Passwort- und Extractor-Fallbacklogik blieben unverändert; eine produktive Installation oder ein Neustart ist nicht Bestandteil des Releases.
 
 ## Nächste sinnvolle Schritte
 
-1. Nach einer getrennt freigegebenen Serverinstallation die neue Arbeitsordner-Option und die feinere Restanzeige mit der großen echten Queue prüfen.
-2. Nach einer getrennt freigegebenen Serverinstallation die Account-Fehlerführung, den verschlüsselten Proxy-Listen-Import und `Strg+A` am echten Zielsystem prüfen.
-3. Nach einer getrennt freigegebenen Serverinstallation die einheitliche Geschwindigkeitsanzeige und den selektiven Paket-Reset am echten Queue-Fall prüfen.
-4. Nach einer getrennt freigegebenen Serverinstallation den Ablauf Real-Debrid-Web-Download, Hauptfenster schließen und unmittelbar neu starten am echten Zielsystem verifizieren; vor jedem Eingriff Prozessbaum und Logtail sichern.
-5. Sicherheitsabhängigkeiten in einem separaten Upgrade-Branch aktualisieren, Electron-/Vite-/Vitest-Major-Wechsel einzeln testen und danach den vollständigen Windows-Paketpfad prüfen.
-6. Eine nichtdestruktive Strategie zur Bereinigung der divergierenden `main`-Branches abstimmen; kein Force-Push ohne ausdrückliche Freigabe.
-7. Optional Developer Mode für lokale Symlink-Tests bereitstellen oder die Test-Fixtures plattformgerecht ohne privilegierte Symlinks gestalten.
+1. Nach einer getrennt freigegebenen Installation von `v2.0.83` einen echten CRC-Fall über „Entpack-Fehler zurücksetzen“ prüfen und bestätigen, dass genau ein frischer Download erfolgt und ein zweiter identischer Upstream-Fehler sichtbar bleibt.
+2. Nach einer getrennt freigegebenen Serverinstallation die neue Arbeitsordner-Option und die feinere Restanzeige mit der großen echten Queue prüfen.
+3. Nach einer getrennt freigegebenen Serverinstallation die Account-Fehlerführung, den verschlüsselten Proxy-Listen-Import und `Strg+A` am echten Zielsystem prüfen.
+4. Nach einer getrennt freigegebenen Serverinstallation die einheitliche Geschwindigkeitsanzeige und den selektiven Paket-Reset am echten Queue-Fall prüfen.
+5. Nach einer getrennt freigegebenen Serverinstallation den Ablauf Real-Debrid-Web-Download, Hauptfenster schließen und unmittelbar neu starten am echten Zielsystem verifizieren; vor jedem Eingriff Prozessbaum und Logtail sichern.
+6. Sicherheitsabhängigkeiten in einem separaten Upgrade-Branch aktualisieren, Electron-/Vite-/Vitest-Major-Wechsel einzeln testen und danach den vollständigen Windows-Paketpfad prüfen.
+7. Eine nichtdestruktive Strategie zur Bereinigung der divergierenden `main`-Branches abstimmen; kein Force-Push ohne ausdrückliche Freigabe.
+8. Optional Developer Mode für lokale Symlink-Tests bereitstellen oder die Test-Fixtures plattformgerecht ohne privilegierte Symlinks gestalten.
