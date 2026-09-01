@@ -493,6 +493,7 @@ export interface DownloadItem {
   metadataRenameTargetPath?: string;
   resumable: boolean;
   attempts: number;
+  archiveRecoveryRedownloads?: number;
   lastError: string;
   fullStatus: string;
   createdAt: number;

@@ -138,6 +138,7 @@ describe("settings storage", () => {
           status: "completed",
           fileName: "deepbrid.bin",
           targetPath: path.join(outputDir, "deepbrid.bin"),
+          archiveRecoveryRedownloads: 99,
           createdAt: 1,
           updatedAt: 2
         }
@@ -151,6 +152,7 @@ describe("settings storage", () => {
     }, 0);
 
     expect(session.items["item-deepbrid"]?.provider).toBe("deepbrid");
+    expect(session.items["item-deepbrid"]?.archiveRecoveryRedownloads).toBe(1);
     expect(session.packages["pkg-deepbrid"]?.cleanedProviders).toEqual(["deepbrid"]);
     expect(history?.provider).toBe("deepbrid");
   });

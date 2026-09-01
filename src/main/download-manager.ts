@@ -3704,6 +3704,7 @@ export class DownloadManager extends EventEmitter {
         item.progressPercent = 0;
         item.resumable = true;
         item.attempts = 0;
+        delete item.archiveRecoveryRedownloads;
         item.lastError = "";
         item.fullStatus = "Wartet";
         item.provider = null;
@@ -6068,6 +6069,7 @@ export class DownloadManager extends EventEmitter {
       item.speedBps = 0;
       item.attempts = 0;
       item.retries = 0;
+      delete item.archiveRecoveryRedownloads;
       item.lastError = "";
       item.resumable = true;
       item.targetPath = "";
@@ -6150,6 +6152,7 @@ export class DownloadManager extends EventEmitter {
       item.speedBps = 0;
       item.attempts = 0;
       item.retries = 0;
+      delete item.archiveRecoveryRedownloads;
       item.lastError = "";
       item.resumable = true;
       item.targetPath = "";
@@ -7821,42 +7824,64 @@ export class DownloadManager extends EventEmitter {
 
     const inspectedArchiveItems = archiveItems
       .map((item) => ({ item, state: inspectPackageItemDiskState(pkg, item) }));
+    const recoveryRedownloads = Math.max(
+      0,
+      ...archiveItems.map((item) => Math.max(0, Math.floor(Number(item.archiveRecoveryRedownloads) || 0)))
+    );
+    if (recoveryRedownloads >= 1) {
+      logger.warn(
+        `Auto-Recovery (${scope}): ${failure.archiveName} nicht erneut heruntergeladen - ` +
+        `automatischer Archiv-Neudownload bereits versucht`
+      );
+      return 0;
+    }
+
     const corruptArchiveItems = inspectedArchiveItems
       .filter(({ state }) => state.reason !== "ok");
 
     if (corruptArchiveItems.length === 0) {
-      const firstPart = inspectedArchiveItems.find(({ state }) => state.diskPath);
-      let hasValidSignature = false;
-      if (firstPart?.state.diskPath) {
-        try {
-          const fd = fs.openSync(firstPart.state.diskPath, "r");
-          try {
-            const header = Buffer.alloc(8);
-            fs.readSync(fd, header, 0, 8, 0);
-            hasValidSignature =
-              (header[0] === 0x52 && header[1] === 0x61 && header[2] === 0x72 && header[3] === 0x21 && header[4] === 0x1a && header[5] === 0x07) ||
-              (header[0] === 0x37 && header[1] === 0x7a && header[2] === 0xbc && header[3] === 0xaf) ||
-              (header[0] === 0x50 && header[1] === 0x4b && header[2] === 0x03 && header[3] === 0x04);
-          } finally {
-            fs.closeSync(fd);
-          }
-        } catch {  }
-      }
-
-      if (hasValidSignature) {
+      if (failure.category === "crc_error") {
         logger.warn(
-          `Auto-Recovery (${scope}): ${failure.archiveName} uebersprungen - ` +
-          `Dateien haben korrekte Groesse und gueltige Archiv-Signatur, ` +
-          `wahrscheinlicher Passwort-/Extractor-Fall statt defektem Download`
+          `Auto-Recovery (${scope}): ${failure.archiveName} meldet CRC-Fehler trotz korrekter Größe und Archiv-Signatur, ` +
+          `erzwinge einmaligen Neu-Download aller ${archiveItems.length} Parts`
         );
-        return 0;
+        corruptArchiveItems.push(...inspectedArchiveItems);
       }
 
-      logger.warn(
-        `Auto-Recovery (${scope}): ${failure.archiveName} - Dateien korrekte Groesse aber ungueltige Archiv-Signatur, ` +
-        `erzwinge Re-Download aller ${archiveItems.length} Parts`
-      );
-      corruptArchiveItems.push(...inspectedArchiveItems);
+      if (failure.category !== "crc_error") {
+        const firstPart = inspectedArchiveItems.find(({ state }) => state.diskPath);
+        let hasValidSignature = false;
+        if (firstPart?.state.diskPath) {
+          try {
+            const fd = fs.openSync(firstPart.state.diskPath, "r");
+            try {
+              const header = Buffer.alloc(8);
+              fs.readSync(fd, header, 0, 8, 0);
+              hasValidSignature =
+                (header[0] === 0x52 && header[1] === 0x61 && header[2] === 0x72 && header[3] === 0x21 && header[4] === 0x1a && header[5] === 0x07) ||
+                (header[0] === 0x37 && header[1] === 0x7a && header[2] === 0xbc && header[3] === 0xaf) ||
+                (header[0] === 0x50 && header[1] === 0x4b && header[2] === 0x03 && header[3] === 0x04);
+            } finally {
+              fs.closeSync(fd);
+            }
+          } catch {  }
+        }
+
+        if (hasValidSignature) {
+          logger.warn(
+            `Auto-Recovery (${scope}): ${failure.archiveName} übersprungen - ` +
+            `Dateien haben korrekte Größe und gültige Archiv-Signatur, ` +
+            `wahrscheinlicher Passwort-/Extractor-Fall statt defektem Download`
+          );
+          return 0;
+        }
+
+        logger.warn(
+          `Auto-Recovery (${scope}): ${failure.archiveName} - Dateien korrekte Größe aber ungültige Archiv-Signatur, ` +
+          `erzwinge Neu-Download aller ${archiveItems.length} Parts`
+        );
+        corruptArchiveItems.push(...inspectedArchiveItems);
+      }
     }
 
     const queuedAt = nowMs();
@@ -7875,9 +7900,15 @@ export class DownloadManager extends EventEmitter {
       item.targetPath = "";
       item.status = "queued";
       item.attempts = 0;
+      item.archiveRecoveryRedownloads = recoveryRedownloads + 1;
       item.downloadedBytes = 0;
+      item.totalBytes = null;
       item.progressPercent = 0;
       item.speedBps = 0;
+      item.provider = null;
+      item.providerLabel = undefined;
+      item.providerAccountId = undefined;
+      item.providerAccountLabel = undefined;
       item.lastError = failure.errorText;
       item.fullStatus = reason;
       item.updatedAt = queuedAt;

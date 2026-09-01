@@ -1040,6 +1040,9 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
       metadataRenameTargetPath: asText(item.metadataRenameTargetPath) || undefined,
       resumable: item.resumable === undefined ? true : Boolean(item.resumable),
       attempts: clampNumber(item.attempts, 0, 0, 10_000),
+      archiveRecoveryRedownloads: item.archiveRecoveryRedownloads === undefined
+        ? undefined
+        : clampNumber(item.archiveRecoveryRedownloads, 0, 0, 1),
       lastError: asText(item.lastError),
       fullStatus: asText(item.fullStatus),
       onlineStatus: VALID_ONLINE_STATUSES.has(onlineStatusRaw) ? onlineStatusRaw as "online" | "offline" | "checking" : undefined,

@@ -10,12 +10,12 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 
 - Verifiziert am: 1. September 2026, Europe/Berlin
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
-- Arbeitsbranch: `release/v2.0.82`
-- Quellbasis: `release/v2.0.81`
+- Arbeitsbranch: `release/v2.0.83`
+- Quellbasis: `release/v2.0.82`
 - Release-Tag: `v2.0.82`
-- Baseline-Commit: `d58cfba817bd73d015c3c295e593082becc3211f`
-- Hotfix-Basis: `5cee459d0bcc5c19d8d6483948a036a43c9d91b1`
-- Paketversion: `2.0.82`
+- Baseline-Commit: `f3f2f60ece9322bfaddeb8f47d07830bb8fe273a`
+- Hotfix-Basis: `f3f2f60ece9322bfaddeb8f47d07830bb8fe273a`
+- Paketversion: `2.0.83`
 - Letztes Release: `Multi-Debrid-Downloader v2.0.82`, veröffentlicht am 1. September 2026 auf GitHub und Forgejo
 - Runtime-Voraussetzung: Node.js `>=20`; lokal verifiziert mit Node.js `24.19.0` und npm `11.17.0`
 
@@ -183,6 +183,15 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - „Sitzung“ und „Verbleibend“ stammen weiterhin aus demselben 750-Millisekunden-Snapshot. Bei Restmengen ab einem TiB wurde die sichtbare TB-Präzision von vier auf fünf Nachkommastellen erhöht: Ein Anzeigeschritt sinkt dadurch von rund 105 MiB auf rund 10,5 MiB und bleibt auch bei großen Queues sichtbar im gleichen Takt.
 - Download-, Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert.
 
+## Änderungen in v2.0.83
+
+- Die bereitgestellte intakte RAR-Datei und die MDD-Datei besitzen beide exakt 808.969.900 Byte, aber unterschiedliche SHA-256-Werte. UnRAR bestätigt ausschließlich in der MDD-Datei einen Prüfsummenfehler; 8.197 Bytes unterscheiden sich in einem kompakten Bereich ab Byte 106.576.
+- Eine direkte Range-Anfrage ohne MDD und ohne Proxy an den von Real-Debrid erzeugten Direktlink lieferte exakt die fehlerhaften Bytes der MDD-Datei. Damit sind Proxy-Segmentierung, lokaler Schreibpfad und Extractor als Erzeuger dieses konkreten Schadens ausgeschlossen; der aktive Real-Debrid-Direktlink selbst lieferte beschädigten Inhalt.
+- Der bisherige Recovery-Guard setzte Dateien mit korrekter Größe und gültigem RAR-Kopf trotz eines durch beide Extractor-Pfade bestätigten CRC-Fehlers nicht neu in die Queue. Eine gültige Signatur schützt jedoch nur den Archivkopf und erkennt beschädigte Nutzdaten nicht.
+- Ein entsprechend bestätigter CRC-Fehler verwirft nun alle betroffenen Archivteile, setzt Größe und Providerbindung zurück und fordert genau einen vollständigen Neudownload über einen frisch erzeugten Direktlink an.
+- Der Einmal-Schutz wird pro Item in der Session gespeichert und überlebt einen Programmneustart. Liefert der Upstream erneut einen CRC-Fehler, bleibt der zweite Fehler sichtbar, statt eine Endlosschleife zu erzeugen. Ein manueller Item- oder Paket-Reset löscht den Schutz und erlaubt einen neuen bewussten Versuch.
+- Echte Passwortfehler bei Dateien mit korrekter Größe und gültiger Archivsignatur lösen weiterhin keinen unnötigen Neudownload aus. Die Entpack-, Passwort- und Fallbacklogik selbst wurde nicht verändert.
+
 ## Start-, Build- und Testbefehle
 
 ```powershell
@@ -214,6 +223,9 @@ npm exec -- tsc --noEmit
 
 ## Verifizierungen vom 1. September 2026
 
+- Kandidat für `v2.0.83`: 392 von 392 fokussierten Download-Manager- und Storage-Tests erfolgreich. Die neuen Regressionen beweisen den einmaligen Neudownload bei CRC trotz gültiger RAR-Signatur, den persistenten Schutz vor einem zweiten automatischen Neudownload, die unveränderte Passwortfehler-Abgrenzung sowie das Löschen des Schutzes beim manuellen Reset.
+- Vollständiger Clientlauf des Kandidaten: 143 Testdateien erfolgreich, 1 optionale JVM-Testdatei übersprungen; 2.725 Tests erfolgreich und 4 übersprungen. Nur die zwei bekannten Windows-Symlink-Fixtures endeten mangels Berechtigung vor ihrer Produktassertion mit `EPERM`. Alle 265 Download-Manager- und 84 Extractor-Tests sind vollständig grün.
+- TypeScript-Prüfung, Main-Build, Renderer-Produktionsbuild, Node-Self-Check und alle 16 Backup-API-Tests sind erfolgreich. Die bekannte Vite-Warnung betrifft weiterhin den rund 581 KiB großen Renderer-Chunk.
 - Kandidat für `v2.0.82`: TypeScript-Prüfung und 616 fokussierte Ordner-, Storage-, Renderer-, Einstellungs-, Übersetzungs-, Account- und Downloadansichtstests erfolgreich. Die Ordnerregressionen bestätigen den ausgeschalteten Standard, selektive Zielerstellung, den Erhalt vorhandener Dateien und die Fehlerisolation zwischen Zielen.
 - Vollständiger Clientlauf: 143 Testdateien erfolgreich, 1 optionale JVM-Testdatei übersprungen; 2.725 Tests erfolgreich und 4 übersprungen. Nur die zwei bekannten Windows-Symlink-Fixtures endeten mangels Berechtigung vor ihrer Produktassertion mit `EPERM`. Die unveränderten 265 Download-Manager- und 84 Entpacktests sind vollständig grün.
 - Backup-API: 16 von 16 Tests erfolgreich.

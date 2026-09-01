@@ -6513,7 +6513,7 @@ describe("download manager", () => {
     expect(fs.existsSync(path.join(outputDir, archiveNames[1]!))).toBe(false);
   });
 
-  it("does not requeue archive parts on CRC error when file has valid RAR signature (wrong password)", () => {
+  it("requeues archive parts once on CRC error even when size and RAR signature are valid", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-"));
     tempDirs.push(root);
 
@@ -6594,12 +6594,71 @@ describe("download manager", () => {
       "hybrid"
     );
 
-    expect(changed).toBe(0);
+    expect(changed).toBe(2);
     for (const itemId of itemIds) {
       const item = session.items[itemId]!;
-      expect(item.status).toBe("completed");
-      expect(item.targetPath).toContain(".rar");
-      expect(item.downloadedBytes).toBe(archiveSize);
+      expect(item.status).toBe("queued");
+      expect(item.targetPath).toBe("");
+      expect(item.downloadedBytes).toBe(0);
+      expect(item.totalBytes).toBeNull();
+      expect(item.archiveRecoveryRedownloads).toBe(1);
+      expect(item.provider).toBeNull();
+    }
+
+    for (const [index, archiveName] of archiveNames.entries()) {
+      const targetPath = path.join(outputDir, archiveName);
+      const content = Buffer.alloc(archiveSize, 0);
+      Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00]).copy(content);
+      fs.writeFileSync(targetPath, content);
+      const item = session.items[itemIds[index]!]!;
+      item.status = "completed";
+      item.targetPath = targetPath;
+      item.downloadedBytes = archiveSize;
+      item.totalBytes = archiveSize;
+      item.progressPercent = 100;
+      item.provider = "realdebrid";
+    }
+
+    const repeatedChanged = (manager as any).autoRecoverArchiveCrcFailure(
+      session.packages[packageId],
+      itemIds.map((itemId) => session.items[itemId]!),
+      {
+        archiveName: "show.s01e01.part1.rar",
+        errorText: "Checksum error after redownload",
+        category: "crc_error",
+        suggestRedownload: true,
+        jvmFailureReason: "7z-Fehler: CRCERROR"
+      },
+      "full"
+    );
+
+    expect(repeatedChanged).toBe(0);
+    for (const [index, itemId] of itemIds.entries()) {
+      expect(session.items[itemId]?.status).toBe("completed");
+      expect(session.items[itemId]?.archiveRecoveryRedownloads).toBe(1);
+      expect(fs.existsSync(path.join(outputDir, archiveNames[index]!))).toBe(true);
+    }
+
+    for (const itemId of itemIds) {
+      delete session.items[itemId]?.archiveRecoveryRedownloads;
+    }
+    const wrongPasswordChanged = (manager as any).autoRecoverArchiveCrcFailure(
+      session.packages[packageId],
+      itemIds.map((itemId) => session.items[itemId]!),
+      {
+        archiveName: "show.s01e01.part1.rar",
+        errorText: "Wrong password",
+        category: "wrong_password",
+        suggestRedownload: true,
+        jvmFailureReason: "Can not open encrypted archive"
+      },
+      "full"
+    );
+
+    expect(wrongPasswordChanged).toBe(0);
+    for (const itemId of itemIds) {
+      expect(session.items[itemId]?.status).toBe("completed");
+      expect(session.items[itemId]?.archiveRecoveryRedownloads).toBeUndefined();
     }
   });
 
@@ -8840,6 +8899,7 @@ describe("download manager", () => {
         targetPath: path.join(root, "downloads", "reset-extraction", `${itemId}.part1.rar`),
         resumable: true,
         attempts: 1,
+        archiveRecoveryRedownloads: 1,
         lastError: "Unerwartetes Dateiende",
         fullStatus: `Entpack-Fehler [${itemId}.part1.rar]: Unerwartetes Dateiende`,
         onlineStatus: "online",
@@ -8876,6 +8936,7 @@ describe("download manager", () => {
         fullStatus: "Wartet",
         onlineStatus: "online"
       }));
+      expect(snapshot.items[itemId].archiveRecoveryRedownloads).toBeUndefined();
     }
 
     await manager.resetPackage(packageId);

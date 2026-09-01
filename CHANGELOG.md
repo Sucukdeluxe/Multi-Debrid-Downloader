@@ -4,6 +4,16 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.83] - 2026-09-01
+
+### Bounded CRC recovery
+
+- Treat an extractor-confirmed CRC failure as a damaged download even when the file size and archive signature are valid.
+- Discard every affected archive part, clear the previous provider assignment, and request a fresh direct link for one clean automatic redownload.
+- Persist the one-redownload limit across application restarts so an upstream service repeatedly returning the same damaged content cannot create an endless download loop.
+- Clear the recovery limit on a manual item or package reset while continuing to leave valid signed archives untouched for wrong-password failures.
+- Keep extraction, password discovery, and extractor fallback behavior unchanged.
+
 ## [2.0.82] - 2026-09-01
 
 ### Startup work folders
