@@ -588,7 +588,7 @@ export function buildSettingsFormViewModel({
             kind: "switch",
             label: "Fehlende Arbeitsordner beim Start anlegen",
             value: settings.createWorkDirectoriesOnStartup,
-            help: "Erstellt den Download-Ordner sowie bei aktiver Funktion den Entpack- und Videosammelordner neu. Vorhandene Ordner und Inhalte bleiben unverändert."
+            help: "Erstellt fehlende Download-, Entpack- und Videosammelordner sofort beim Speichern sowie bei jedem Programmstart. Optionale Ordner werden nur bei aktiver Funktion angelegt; vorhandene Inhalte bleiben unverändert."
           },
           { id: "packageName", kind: "text", label: "Paketname (optional)", value: settings.packageName },
           {

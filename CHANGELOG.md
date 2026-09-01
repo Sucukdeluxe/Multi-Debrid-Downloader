@@ -4,6 +4,11 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+### Work folders
+
+- Create missing configured work folders immediately when the enabled startup-folder setting is saved, without requiring an application restart.
+- Preserve existing contents and continue isolating an unavailable target from the remaining configured folders.
+
 ## [2.0.83] - 2026-09-01
 
 ### Bounded CRC recovery

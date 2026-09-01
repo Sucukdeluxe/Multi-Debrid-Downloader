@@ -735,6 +735,67 @@ describe("AppController history retention updates", () => {
   });
 });
 
+describe("AppController work directory settings updates", () => {
+  it("creates all enabled missing work directories immediately after saving the option", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mdd-controller-work-dirs-"));
+    tempDirs.push(root);
+    const outputDir = path.join(root, "downloads");
+    const extractDir = path.join(root, "extracted");
+    const mkvLibraryDir = path.join(root, "videos");
+    const controller = createController({
+      ...defaultSettings(),
+      outputDir,
+      extractDir,
+      mkvLibraryDir,
+      autoExtract: true,
+      collectMkvToLibrary: true,
+      createWorkDirectoriesOnStartup: false
+    });
+
+    controller.updateSettings({ createWorkDirectoriesOnStartup: true });
+
+    expect(fs.statSync(outputDir).isDirectory()).toBe(true);
+    expect(fs.statSync(extractDir).isDirectory()).toBe(true);
+    expect(fs.statSync(mkvLibraryDir).isDirectory()).toBe(true);
+  });
+
+  it("recreates a missing directory when enabled work-directory settings are saved unchanged", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mdd-controller-work-dirs-"));
+    tempDirs.push(root);
+    const outputDir = path.join(root, "downloads");
+    const controller = createController({
+      ...defaultSettings(),
+      outputDir,
+      autoExtract: false,
+      collectMkvToLibrary: false,
+      createWorkDirectoriesOnStartup: true
+    });
+
+    controller.updateSettings({ createWorkDirectoriesOnStartup: true });
+
+    expect(fs.statSync(outputDir).isDirectory()).toBe(true);
+    expect((controller as any).manager.setSettings).not.toHaveBeenCalled();
+  });
+
+  it("does not create directories when the settings cannot be persisted", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mdd-controller-work-dirs-"));
+    tempDirs.push(root);
+    const outputDir = path.join(root, "downloads");
+    const controller = createController({
+      ...defaultSettings(),
+      outputDir,
+      createWorkDirectoriesOnStartup: false
+    });
+    bootStorage.settingsSaveError = new Error("settings work directories locked");
+
+    expect(() => controller.updateSettings({ createWorkDirectoriesOnStartup: true }))
+      .toThrow("settings work directories locked");
+
+    expect(fs.existsSync(outputDir)).toBe(false);
+    expect(controller.getSettings().createWorkDirectoriesOnStartup).toBe(false);
+  });
+});
+
 describe("AppController provider quota reset statistics", () => {
   it("persists quota settings before rebasing statistics and applying runtime settings", () => {
     const settings = {

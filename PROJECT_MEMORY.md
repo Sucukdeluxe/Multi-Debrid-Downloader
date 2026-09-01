@@ -10,8 +10,8 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 
 - Verifiziert am: 1. September 2026, Europe/Berlin
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
-- Arbeitsbranch: `release/v2.0.83`
-- Quellbasis: `release/v2.0.82`
+- Arbeitsbranch: `fix/work-directories-on-save`
+- Quellbasis: `release/v2.0.83`
 - Release-Tag: `v2.0.83`
 - Baseline-Commit: `f3f2f60ece9322bfaddeb8f47d07830bb8fe273a`
 - Hotfix-Basis: `f3f2f60ece9322bfaddeb8f47d07830bb8fe273a`
@@ -194,6 +194,12 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Der Einmal-Schutz wird pro Item in der Session gespeichert und überlebt einen Programmneustart. Liefert der Upstream erneut einen CRC-Fehler, bleibt der zweite Fehler sichtbar, statt eine Endlosschleife zu erzeugen. Ein manueller Item- oder Paket-Reset löscht den Schutz und erlaubt einen neuen bewussten Versuch.
 - Echte Passwortfehler bei Dateien mit korrekter Größe und gültiger Archivsignatur lösen weiterhin keinen unnötigen Neudownload aus. Die Entpack-, Passwort- und Fallbacklogik selbst wurde nicht verändert.
 
+## Unveröffentlichte Änderungen
+
+- Ist „Fehlende Arbeitsordner beim Start anlegen“ aktiviert, werden fehlende konfigurierte Arbeitsordner nun bereits unmittelbar beim Speichern angelegt; ein Neustart ist dafür nicht mehr erforderlich.
+- Derselbe bestehende Ordnerpfad bleibt für Programmstart und Speichern zuständig. Optionale Ziele, vorhandene Inhalte und die Fehlerisolation zwischen mehreren Zielpfaden behalten ihr bisheriges Verhalten.
+- Download-, Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert.
+
 ## Start-, Build- und Testbefehle
 
 ```powershell
@@ -225,6 +231,8 @@ npm exec -- tsc --noEmit
 
 ## Verifizierungen vom 1. September 2026
 
+- Unveröffentlichte Sofortanlage der Arbeitsordner: 344 von 344 fokussierten AppController-, Ordner-, Einstellungsansichts- und Übersetzungstests erfolgreich. Abgedeckt sind die unmittelbare Anlage aller aktivierten Ziele beim Speichern, ein erneuter unveränderter Speichervorgang bei bereits aktiver Option und das Ausbleiben der Ordneranlage, wenn die Einstellungen nicht persistiert werden können. TypeScript, Main-Build, Renderer-Produktionsbuild und Node-Self-Check sind erfolgreich; die bekannte Vite-Warnung betrifft den rund 581 KiB großen Renderer-Chunk.
+- Vollständiger Clientlauf nach der Sofortanlage: 143 Testdateien erfolgreich, 1 optionale JVM-Testdatei übersprungen; 2.728 Tests erfolgreich und 4 übersprungen. Ausschließlich die zwei bekannten Windows-Symlink-Fixtures scheiterten mangels Berechtigung vor ihrer Produktassertion mit `EPERM`. Alle 265 Download-Manager- und 84 Extractor-Tests sind weiterhin vollständig grün.
 - Kandidat für `v2.0.83`: 392 von 392 fokussierten Download-Manager- und Storage-Tests erfolgreich. Die neuen Regressionen beweisen den einmaligen Neudownload bei CRC trotz gültiger RAR-Signatur, den persistenten Schutz vor einem zweiten automatischen Neudownload, die unveränderte Passwortfehler-Abgrenzung sowie das Löschen des Schutzes beim manuellen Reset.
 - Vollständiger Clientlauf des Kandidaten: 143 Testdateien erfolgreich, 1 optionale JVM-Testdatei übersprungen; 2.725 Tests erfolgreich und 4 übersprungen. Nur die zwei bekannten Windows-Symlink-Fixtures endeten mangels Berechtigung vor ihrer Produktassertion mit `EPERM`. Alle 265 Download-Manager- und 84 Extractor-Tests sind vollständig grün.
 - TypeScript-Prüfung, Main-Build, Renderer-Produktionsbuild, Node-Self-Check und alle 16 Backup-API-Tests sind erfolgreich. Die bekannte Vite-Warnung betrifft weiterhin den rund 581 KiB großen Renderer-Chunk.
@@ -335,6 +343,7 @@ npm exec -- tsc --noEmit
 - Die Account-Übersicht unterstützt `Strg+A`; Proxy-only-Accountfehler werden verständlich aufgelöst und Online-Sicherungen können die Proxy-Liste verschlüsselt portieren. `v2.0.81` ist auf GitHub und Forgejo veröffentlicht. Eine produktive Installation oder ein Neustart wurde nicht vorgenommen.
 - Die optionale Arbeitsordner-Erstellung, der neue Kategoriename und die feinere TiB-Restanzeige sind als `v2.0.82` auf GitHub und Forgejo veröffentlicht. Eine produktive Installation oder ein Neustart ist nicht Bestandteil des Releases.
 - Die einmalige CRC-Neudownload-Wiederherstellung ist als `v2.0.83` auf GitHub und Forgejo veröffentlicht. Entpack-, Passwort- und Extractor-Fallbacklogik blieben unverändert; eine produktive Installation oder ein Neustart ist nicht Bestandteil des Releases.
+- Die unmittelbare Arbeitsordner-Anlage beim Speichern ist auf `fix/work-directories-on-save` implementiert und verifiziert, aber noch nicht veröffentlicht.
 
 ## Nächste sinnvolle Schritte
 

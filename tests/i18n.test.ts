@@ -20,6 +20,8 @@ describe("renderer localization", () => {
     expect(translateUiText("Animations", "de")).toBe("Animationen");
     expect(translateUiText("Geschwindigkeit & Proxy", "en")).toBe("Speed & Proxy");
     expect(translateUiText("Fehlende Arbeitsordner beim Start anlegen", "en")).toBe("Create missing work folders on startup");
+    expect(translateUiText("Erstellt fehlende Download-, Entpack- und Videosammelordner sofort beim Speichern sowie bei jedem Programmstart. Optionale Ordner werden nur bei aktiver Funktion angelegt; vorhandene Inhalte bleiben unverändert.", "en"))
+      .toBe("Creates missing download, extraction, and video library folders immediately when settings are saved and on every application start. Optional folders are created only when their feature is enabled; existing contents remain unchanged.");
   });
 
   it.each([

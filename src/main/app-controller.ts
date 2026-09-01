@@ -102,6 +102,19 @@ function settingsFingerprint(settings: AppSettings): string {
   return JSON.stringify(normalizeSettings(settings));
 }
 
+const WORK_DIRECTORY_SETTING_KEYS = new Set<keyof AppSettings>([
+  "createWorkDirectoriesOnStartup",
+  "outputDir",
+  "autoExtract",
+  "extractDir",
+  "collectMkvToLibrary",
+  "mkvLibraryDir"
+]);
+
+function touchesWorkDirectorySettings(partial: Partial<AppSettings>): boolean {
+  return Object.keys(partial).some((key) => WORK_DIRECTORY_SETTING_KEYS.has(key as keyof AppSettings));
+}
+
 type PendingRealDebridWebAccount = {
   generation: number;
   dailyLimitBytes: number;
@@ -174,13 +187,7 @@ export class AppController {
     }
     this.applyNetworkProxyConfiguration();
     this.initializeLogStorage();
-    const workDirectories = ensureStartupWorkDirectories(this.settings);
-    if (workDirectories.created.length > 0) {
-      logger.info(`Arbeitsordner beim Start angelegt: ${workDirectories.created.map((entry) => entry.kind).join(", ")}`);
-    }
-    for (const failure of workDirectories.failures) {
-      logger.warn(`Arbeitsordner konnte beim Start nicht angelegt werden (${failure.kind}): ${failure.error}`);
-    }
+    this.ensureConfiguredWorkDirectories(this.settings, "beim Start");
     this.runHistoryLifecycleCleanup("Start", () => resetHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode));
     const loadResult = loadSessionWithStatus(this.storagePaths);
     const session = loadResult.session;
@@ -702,15 +709,29 @@ export class AppController {
     return { proxyListRestored, proxyOnlyDisabled };
   }
 
+  private ensureConfiguredWorkDirectories(settings: AppSettings, trigger: "beim Start" | "nach dem Speichern"): void {
+    const workDirectories = ensureStartupWorkDirectories(settings);
+    if (workDirectories.created.length > 0) {
+      logger.info(`Arbeitsordner ${trigger} angelegt: ${workDirectories.created.map((entry) => entry.kind).join(", ")}`);
+    }
+    for (const failure of workDirectories.failures) {
+      logger.warn(`Arbeitsordner konnte ${trigger} nicht angelegt werden (${failure.kind}): ${failure.error}`);
+    }
+  }
+
   public updateSettings(partial: Partial<AppSettings>): AppSettings {
     const sanitizedPatch = sanitizeSettingsPatch(partial);
     const previousSettings = this.settings;
+    const ensureWorkDirectoriesAfterSave = touchesWorkDirectorySettings(sanitizedPatch);
     let nextSettings = normalizeSettings({
       ...previousSettings,
       ...sanitizedPatch
     });
 
     if (settingsFingerprint(nextSettings) === settingsFingerprint(previousSettings)) {
+      if (ensureWorkDirectoriesAfterSave) {
+        this.ensureConfiguredWorkDirectories(previousSettings, "nach dem Speichern");
+      }
       return previousSettings;
     }
 
@@ -743,6 +764,9 @@ export class AppController {
     this.settings = nextSettings;
     this.applyNetworkProxyConfiguration();
     this.manager.setSettings(this.settings);
+    if (ensureWorkDirectoriesAfterSave) {
+      this.ensureConfiguredWorkDirectories(this.settings, "nach dem Speichern");
+    }
     this.audit("INFO", "Einstellungen aktualisiert", {
       changedKeys: Object.keys(sanitizedPatch),
       accountChanges: diffAccountSummary(previousSettings, this.settings)

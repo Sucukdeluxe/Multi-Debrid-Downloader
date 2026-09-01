@@ -655,7 +655,8 @@ describe("settings views", () => {
     expect(field).toEqual(expect.objectContaining({
       kind: "switch",
       label: "Fehlende Arbeitsordner beim Start anlegen",
-      value: false
+      value: false,
+      help: "Erstellt fehlende Download-, Entpack- und Videosammelordner sofort beim Speichern sowie bei jedem Programmstart. Optionale Ordner werden nur bei aktiver Funktion angelegt; vorhandene Inhalte bleiben unverändert."
     }));
   });
 
