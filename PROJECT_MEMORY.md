@@ -12,7 +12,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
 - Arbeitsbranch: `release/v2.0.83`
 - Quellbasis: `release/v2.0.82`
-- Release-Tag: `v2.0.82`
+- Release-Tag: `v2.0.83`
 - Baseline-Commit: `f3f2f60ece9322bfaddeb8f47d07830bb8fe273a`
 - Hotfix-Basis: `f3f2f60ece9322bfaddeb8f47d07830bb8fe273a`
 - Paketversion: `2.0.83`
@@ -226,6 +226,8 @@ npm exec -- tsc --noEmit
 - Kandidat für `v2.0.83`: 392 von 392 fokussierten Download-Manager- und Storage-Tests erfolgreich. Die neuen Regressionen beweisen den einmaligen Neudownload bei CRC trotz gültiger RAR-Signatur, den persistenten Schutz vor einem zweiten automatischen Neudownload, die unveränderte Passwortfehler-Abgrenzung sowie das Löschen des Schutzes beim manuellen Reset.
 - Vollständiger Clientlauf des Kandidaten: 143 Testdateien erfolgreich, 1 optionale JVM-Testdatei übersprungen; 2.725 Tests erfolgreich und 4 übersprungen. Nur die zwei bekannten Windows-Symlink-Fixtures endeten mangels Berechtigung vor ihrer Produktassertion mit `EPERM`. Alle 265 Download-Manager- und 84 Extractor-Tests sind vollständig grün.
 - TypeScript-Prüfung, Main-Build, Renderer-Produktionsbuild, Node-Self-Check und alle 16 Backup-API-Tests sind erfolgreich. Die bekannte Vite-Warnung betrifft weiterhin den rund 581 KiB großen Renderer-Chunk.
+- Release-Build `v2.0.83`: Installer und Portable-Datei wurden aus dem versionierten Release-Vorbereitungsstand erzeugt. Die Release-Prüfung bestätigte Paket- und Bundle-Version, Update-Metadaten, Artefaktnamen, Dateigröße und SHA-512 des Installers, Icon, Lizenzdateien sowie den entpackten Inhalt beider EXE-Archive.
+- SHA-256 des `v2.0.83`-Setups: `ab3bf10ce9a42244a30bc48f40a15646aacebe6e63b69c520da7e4f2fd59fedd`; SHA-256 der Portable-Datei: `93883c8a047f3352f642ac76fd9e68f2da1096692e2c5937d99788ff8ae8ba7e`.
 - Kandidat für `v2.0.82`: TypeScript-Prüfung und 616 fokussierte Ordner-, Storage-, Renderer-, Einstellungs-, Übersetzungs-, Account- und Downloadansichtstests erfolgreich. Die Ordnerregressionen bestätigen den ausgeschalteten Standard, selektive Zielerstellung, den Erhalt vorhandener Dateien und die Fehlerisolation zwischen Zielen.
 - Vollständiger Clientlauf: 143 Testdateien erfolgreich, 1 optionale JVM-Testdatei übersprungen; 2.725 Tests erfolgreich und 4 übersprungen. Nur die zwei bekannten Windows-Symlink-Fixtures endeten mangels Berechtigung vor ihrer Produktassertion mit `EPERM`. Die unveränderten 265 Download-Manager- und 84 Entpacktests sind vollständig grün.
 - Backup-API: 16 von 16 Tests erfolgreich.
