@@ -460,9 +460,9 @@ export function buildSettingsFormViewModel({
               label: "Proxy-Verbindungen insgesamt",
               value: String(settings.proxyConnectionsPerDownload),
               min: 2,
-              max: 40,
+              max: 80,
               disabled: !settings.proxyDownloadEnabled,
-              help: `Dieses Gesamtlimit wird fair zwischen allen gleichzeitigen Segmentdownloads geteilt. Bei ${settings.maxParallel} aktiven Downloads laufen zusammen höchstens ${settings.proxyConnectionsPerDownload} Segmentverbindungen; 32 ist der Standardwert, 40 das Maximum. Langsame und ausgefallene Proxys werden automatisch zurückgestuft. Kleine Dateien, Teil-Downloads und aktive Geschwindigkeitslimits laufen über den festen API-Proxy.`
+              help: `Dieses Gesamtlimit wird fair zwischen allen gleichzeitigen Segmentdownloads geteilt. Bei ${settings.maxParallel} aktiven Downloads laufen zusammen höchstens ${settings.proxyConnectionsPerDownload} Segmentverbindungen; 32 ist der Standardwert, 80 das Maximum. Langsame und ausgefallene Proxys werden automatisch zurückgestuft. Kleine Dateien, Teil-Downloads und aktive Geschwindigkeitslimits laufen über den festen API-Proxy.`
             }
           ]
         },

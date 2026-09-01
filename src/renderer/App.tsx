@@ -6080,7 +6080,7 @@ export function App(): ReactElement {
         maxParallelExtract: [1, 8, 2],
         reconnectWaitSeconds: [10, 600, 45],
         proxyApiProxyIndex: [1, 100000, 1],
-        proxyConnectionsPerDownload: [2, 40, 32]
+        proxyConnectionsPerDownload: [2, 80, 32]
       };
       const bounds = numericLimits[fieldId as keyof RendererSettingsDraft];
       if (bounds) {

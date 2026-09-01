@@ -198,6 +198,8 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 
 - Ist „Fehlende Arbeitsordner beim Start anlegen“ aktiviert, werden fehlende konfigurierte Arbeitsordner nun bereits unmittelbar beim Speichern angelegt; ein Neustart ist dafür nicht mehr erforderlich.
 - Derselbe bestehende Ordnerpfad bleibt für Programmstart und Speichern zuständig. Optionale Ziele, vorhandene Inhalte und die Fehlerisolation zwischen mehreren Zielpfaden behalten ihr bisheriges Verhalten.
+- Das einstellbare globale Proxy-Segmentlimit steigt von 40 auf 80 Verbindungen. Der Standardwert für neue und bisher nicht gesetzte Konfigurationen bleibt 32; vorhandene Werte bleiben erhalten und werden erst oberhalb von 80 begrenzt.
+- Faire Verteilung zwischen gleichzeitigen Downloads, Proxy-Bewertung, Cooldowns und adaptives 429/503-Backoff bleiben unverändert.
 - Download-, Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert.
 
 ## Start-, Build- und Testbefehle
@@ -231,6 +233,7 @@ npm exec -- tsc --noEmit
 
 ## Verifizierungen vom 1. September 2026
 
+- Unveröffentlichte 32/80-Limitanpassung: 256 von 256 fokussierten Proxy-Segment-, Storage-, AppController-, Arbeitsordner- und Einstellungsansichtstests erfolgreich. Die Grenzwerttests bestätigen Minimum 2, Standard 32, Maximum 80 und die Begrenzung höherer Werte auf 80. TypeScript ist erfolgreich.
 - Unveröffentlichte Sofortanlage der Arbeitsordner: 344 von 344 fokussierten AppController-, Ordner-, Einstellungsansichts- und Übersetzungstests erfolgreich. Abgedeckt sind die unmittelbare Anlage aller aktivierten Ziele beim Speichern, ein erneuter unveränderter Speichervorgang bei bereits aktiver Option und das Ausbleiben der Ordneranlage, wenn die Einstellungen nicht persistiert werden können. TypeScript, Main-Build, Renderer-Produktionsbuild und Node-Self-Check sind erfolgreich; die bekannte Vite-Warnung betrifft den rund 581 KiB großen Renderer-Chunk.
 - Vollständiger Clientlauf nach der Sofortanlage: 143 Testdateien erfolgreich, 1 optionale JVM-Testdatei übersprungen; 2.728 Tests erfolgreich und 4 übersprungen. Ausschließlich die zwei bekannten Windows-Symlink-Fixtures scheiterten mangels Berechtigung vor ihrer Produktassertion mit `EPERM`. Alle 265 Download-Manager- und 84 Extractor-Tests sind weiterhin vollständig grün.
 - Kandidat für `v2.0.83`: 392 von 392 fokussierten Download-Manager- und Storage-Tests erfolgreich. Die neuen Regressionen beweisen den einmaligen Neudownload bei CRC trotz gültiger RAR-Signatur, den persistenten Schutz vor einem zweiten automatischen Neudownload, die unveränderte Passwortfehler-Abgrenzung sowie das Löschen des Schutzes beim manuellen Reset.
@@ -343,7 +346,7 @@ npm exec -- tsc --noEmit
 - Die Account-Übersicht unterstützt `Strg+A`; Proxy-only-Accountfehler werden verständlich aufgelöst und Online-Sicherungen können die Proxy-Liste verschlüsselt portieren. `v2.0.81` ist auf GitHub und Forgejo veröffentlicht. Eine produktive Installation oder ein Neustart wurde nicht vorgenommen.
 - Die optionale Arbeitsordner-Erstellung, der neue Kategoriename und die feinere TiB-Restanzeige sind als `v2.0.82` auf GitHub und Forgejo veröffentlicht. Eine produktive Installation oder ein Neustart ist nicht Bestandteil des Releases.
 - Die einmalige CRC-Neudownload-Wiederherstellung ist als `v2.0.83` auf GitHub und Forgejo veröffentlicht. Entpack-, Passwort- und Extractor-Fallbacklogik blieben unverändert; eine produktive Installation oder ein Neustart ist nicht Bestandteil des Releases.
-- Die unmittelbare Arbeitsordner-Anlage beim Speichern ist auf `fix/work-directories-on-save` implementiert und verifiziert, aber noch nicht veröffentlicht.
+- Die unmittelbare Arbeitsordner-Anlage beim Speichern und der Proxybereich mit Standard 32 sowie Maximum 80 sind auf `fix/work-directories-on-save` implementiert und fokussiert verifiziert, aber noch nicht veröffentlicht.
 
 ## Nächste sinnvolle Schritte
 

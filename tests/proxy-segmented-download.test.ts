@@ -129,10 +129,10 @@ async function createTempDirectory(): Promise<string> {
 }
 
 describe("proxy segmented download", () => {
-  it("uses 32 connections by default and clamps the configurable maximum to 40", () => {
+  it("uses 32 connections by default and clamps the configurable maximum to 80", () => {
     expect(normalizeProxyConnectionLimit(0)).toBe(32);
-    expect(normalizeProxyConnectionLimit(40)).toBe(40);
-    expect(normalizeProxyConnectionLimit(999)).toBe(40);
+    expect(normalizeProxyConnectionLimit(80)).toBe(80);
+    expect(normalizeProxyConnectionLimit(999)).toBe(80);
     expect(normalizeProxyConnectionLimit(1)).toBe(2);
   });
 

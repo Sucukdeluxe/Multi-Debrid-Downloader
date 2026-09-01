@@ -9,6 +9,11 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 - Create missing configured work folders immediately when the enabled startup-folder setting is saved, without requiring an application restart.
 - Preserve existing contents and continue isolating an unavailable target from the remaining configured folders.
 
+### Proxy connection range
+
+- Raise the configurable global proxy-segment connection maximum from 40 to 80 for high-capacity testing while keeping 32 as the default for new settings.
+- Keep the existing fair cross-download budget, proxy scoring, cooldowns, and adaptive 429/503 backoff unchanged.
+
 ## [2.0.83] - 2026-09-01
 
 ### Bounded CRC recovery

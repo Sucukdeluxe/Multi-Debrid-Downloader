@@ -620,7 +620,7 @@ describe("settings storage", () => {
     expect(normalized.proxyDownloadEnabled).toBe(true);
     expect(normalized.proxyListPath).toBe("C:\\proxies.txt");
     expect(normalized.proxyApiProxyIndex).toBe(100000);
-    expect(normalized.proxyConnectionsPerDownload).toBe(40);
+    expect(normalized.proxyConnectionsPerDownload).toBe(80);
     expect(normalized.outputDir).toBe(defaultSettings().outputDir);
     expect(normalized.extractDir).toBe(defaultSettings().extractDir);
     expect(normalized.mkvLibraryDir).toBe(defaultSettings().mkvLibraryDir);
