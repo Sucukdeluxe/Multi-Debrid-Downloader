@@ -10,12 +10,12 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 
 - Verifiziert am: 2. September 2026, Europe/Berlin
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
-- Arbeitsbranch: `fix/background-availability-refresh`
+- Arbeitsbranch: `release/v2.0.86`
 - Quellbasis: `release/v2.0.85`
-- Release-Tag: `v2.0.85`
-- Baseline-Commit: `309d7bc04201f12524f22aa791569cbf1c99ebf3`
-- Hotfix-Basis: `309d7bc04201f12524f22aa791569cbf1c99ebf3`
-- Paketversion: `2.0.85`
+- Release-Tag: `v2.0.86` (Kandidat)
+- Baseline-Commit: `fd71caa341979fbc43307040b662131a8de5f9b1`
+- Hotfix-Basis: `fd71caa341979fbc43307040b662131a8de5f9b1`
+- Paketversion: `2.0.86`
 - Letztes Release: `Multi-Debrid-Downloader v2.0.85`, veröffentlicht am 2. September 2026 auf GitHub und Forgejo
 - Runtime-Voraussetzung: Node.js `>=20`; lokal verifiziert mit Node.js `24.19.0` und npm `11.17.0`
 
@@ -33,6 +33,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Beide bestehenden Repositories sind laut Anbieter-API derzeit öffentlich. Die Sichtbarkeit wurde bei der Einarbeitung nicht verändert.
 - Der Arbeitsstand wird nach zusammengehörigen Änderungen zu beiden Remotes gepusht und anschließend über die Commit-IDs beider Remote-Branches verifiziert.
 - Pushen ist kein Release. Release, Deployment, Veröffentlichung und produktive Neustarts benötigen immer eine aktuelle ausdrückliche Freigabe.
+- Sascha hat Releases für verifizierte Änderungen bis einschließlich 3. September 2026, Europe/Berlin, ausdrücklich ohne weitere Einzelfreigabe autorisiert. Diese zeitlich begrenzte Freigabe verfällt automatisch mit Ablauf des Datums und umfasst keine produktive Installation oder keinen Serverneustart.
 - Release-Changelogs werden plattformspezifisch gepflegt: auf GitHub immer auf Englisch, auf Forgejo unter `git.24-music.de` immer auf Deutsch. Tag, Titel, Assets und technische Inhalte bleiben für denselben Versionsstand gleichwertig.
 - Forgejo-Releases werden bei verfügbarem Serverzugang über die offizielle Forgejo-API veröffentlicht, weil das Webformular in einer Uploadrunde nur fünf Anhänge annimmt. Forgejo läuft auf dem verwalteten Server im Container `forgejo-forgejo-1`; das dafür vorgesehene API-Token liegt ausschließlich serverseitig unter `/opt/forgejo/release-api-token`, gehört `root:root`, besitzt Modus `0600` und nur den Scope `write:repository`. Der Tokenwert darf nie ausgegeben, lokal gespeichert oder committed werden.
 - Der verifizierte Forgejo-Ablauf lautet: sechs lokale Assets und den deutschen Release-Text in ein versionsbezogenes Verzeichnis unter `/tmp` übertragen, dort vor der Veröffentlichung die lokalen SHA-256-Werte erneut bestätigen, den stabilen Release per `POST /api/v1/repos/Administrator/Multi-Debrid-Downloader/releases` erzeugen und jedes Asset einzeln per `POST .../releases/{id}/assets?name=...` hochladen. Danach Tag, Titel, deutscher Text, Stable-Status, Assetliste und Update-Metadaten über die öffentliche API prüfen, alle sechs Assets erneut herunterladen und Größe sowie SHA-256 gegen die Originale vergleichen. Das temporäre Serververzeichnis wird erst nach erfolgreicher Verifizierung entfernt; direkte Datenbankänderungen und ein Forgejo-Neustart gehören nicht zu diesem Ablauf.
@@ -210,7 +211,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Verspätete Verfügbarkeitsantworten können einen bereits endgültig als offline markierten Eintrag nicht wieder auf online setzen. Die neue Nachprüfung wird pro Item gedrosselt, sodass mehrdeutige Providerfehler den Hoster nicht in einer schnellen Endlosschleife abfragen.
 - Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert; die vorhandene Dateinamen-Zuordnung für Mehrteilarchive wird ausschließlich für die Auswahl noch offener Download-Items wiederverwendet.
 
-## Unveröffentlichte Änderungen nach v2.0.85
+## Änderungen in v2.0.86
 
 - Zuvor als online bestätigte, weiterhin wartende Rapidgator-, DDownload- und 1Fichier-Links werden nun auch ohne Druck auf „Start“ gedrosselt im Hintergrund nachgeprüft. Der erste Durchlauf beginnt zehn Sekunden nach dem Programmstart; weitere Durchläufe folgen frühestens alle 30 Sekunden.
 - Ein Verfügbarkeitsstand gilt nach 30 Minuten als veraltet. Pro Durchlauf werden die 40 am längsten nicht geprüften Links in Warteschlangenreihenfolge berücksichtigt und höchstens vier Hoster-Anfragen parallel ausgeführt. Damit werden auch große Warteschlangen schrittweise vollständig geprüft, ohne den Hoster mit Tausenden gleichzeitigen Requests zu belasten.
@@ -382,11 +383,12 @@ npm run test:backup-api
 
 ## Nächste sinnvolle Schritte
 
-1. Nach einer getrennt freigegebenen Installation von `v2.0.83` einen echten CRC-Fall über „Entpack-Fehler zurücksetzen“ prüfen und bestätigen, dass genau ein frischer Download erfolgt und ein zweiter identischer Upstream-Fehler sichtbar bleibt.
-2. Nach einer getrennt freigegebenen Serverinstallation die neue Arbeitsordner-Option und die feinere Restanzeige mit der großen echten Queue prüfen.
-3. Nach einer getrennt freigegebenen Serverinstallation die Account-Fehlerführung, den verschlüsselten Proxy-Listen-Import und `Strg+A` am echten Zielsystem prüfen.
-4. Nach einer getrennt freigegebenen Serverinstallation die einheitliche Geschwindigkeitsanzeige und den selektiven Paket-Reset am echten Queue-Fall prüfen.
-5. Nach einer getrennt freigegebenen Serverinstallation den Ablauf Real-Debrid-Web-Download, Hauptfenster schließen und unmittelbar neu starten am echten Zielsystem verifizieren; vor jedem Eingriff Prozessbaum und Logtail sichern.
-6. Sicherheitsabhängigkeiten in einem separaten Upgrade-Branch aktualisieren, Electron-/Vite-/Vitest-Major-Wechsel einzeln testen und danach den vollständigen Windows-Paketpfad prüfen.
-7. Eine nichtdestruktive Strategie zur Bereinigung der divergierenden `main`-Branches abstimmen; kein Force-Push ohne ausdrückliche Freigabe.
-8. Optional Developer Mode für lokale Symlink-Tests bereitstellen oder die Test-Fixtures plattformgerecht ohne privilegierte Symlinks gestalten.
+1. Nach einer getrennt freigegebenen Installation von `v2.0.86` die schrittweise Hintergrundprüfung und kompakte Paketverfügbarkeit mit der echten großen Queue beobachten.
+2. Nach einer getrennt freigegebenen Installation von `v2.0.83` einen echten CRC-Fall über „Entpack-Fehler zurücksetzen“ prüfen und bestätigen, dass genau ein frischer Download erfolgt und ein zweiter identischer Upstream-Fehler sichtbar bleibt.
+3. Nach einer getrennt freigegebenen Serverinstallation die neue Arbeitsordner-Option und die feinere Restanzeige mit der großen echten Queue prüfen.
+4. Nach einer getrennt freigegebenen Serverinstallation die Account-Fehlerführung, den verschlüsselten Proxy-Listen-Import und `Strg+A` am echten Zielsystem prüfen.
+5. Nach einer getrennt freigegebenen Serverinstallation die einheitliche Geschwindigkeitsanzeige und den selektiven Paket-Reset am echten Queue-Fall prüfen.
+6. Nach einer getrennt freigegebenen Serverinstallation den Ablauf Real-Debrid-Web-Download, Hauptfenster schließen und unmittelbar neu starten am echten Zielsystem verifizieren; vor jedem Eingriff Prozessbaum und Logtail sichern.
+7. Sicherheitsabhängigkeiten in einem separaten Upgrade-Branch aktualisieren, Electron-/Vite-/Vitest-Major-Wechsel einzeln testen und danach den vollständigen Windows-Paketpfad prüfen.
+8. Eine nichtdestruktive Strategie zur Bereinigung der divergierenden `main`-Branches abstimmen; kein Force-Push ohne ausdrückliche Freigabe.
+9. Optional Developer Mode für lokale Symlink-Tests bereitstellen oder die Test-Fixtures plattformgerecht ohne privilegierte Symlinks gestalten.

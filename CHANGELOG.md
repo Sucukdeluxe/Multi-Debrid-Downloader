@@ -4,6 +4,20 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.86] - 2026-09-02
+
+### Background availability refresh
+
+- Recheck stale queued Rapidgator, DDownload, and 1Fichier links in the background without requiring the download run to start.
+- Start after ten seconds, process the 40 oldest checks per pass with at most four concurrent hoster requests, and treat a result as stale after 30 minutes.
+- Apply the configured archive or package skip scope only after a definitive offline result while preserving the previous online state after proxy, timeout, rate-limit, or ambiguous server failures.
+- Persist availability check times, restore in-progress markers during shutdown, and keep idle background checks out of download-run outcomes.
+
+### Package availability display
+
+- Show package availability as a compact count such as `0/8 online` without a separate leading state symbol.
+- Keep item availability, extraction, password, and post-processing behavior unchanged.
+
 ## [2.0.85] - 2026-09-02
 
 ### Offline source detection
