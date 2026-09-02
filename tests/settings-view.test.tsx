@@ -660,6 +660,29 @@ describe("settings views", () => {
     }));
   });
 
+  it("offers archive-set and whole-package handling for links that go offline", () => {
+    const form = buildSettingsFormViewModel({
+      settings: { ...createRendererSettings(defaultSettings()), archivePasswordList: "", notifyUrl: "" },
+      section: "allgemein",
+      speedLimitInput: "0",
+      scheduleSpeedInputs: {}
+    });
+    const field = form.groups.flatMap((group) => group.fields)
+      .find((entry) => entry.id === "offlineSkipScope");
+
+    expect(field).toEqual({
+      id: "offlineSkipScope",
+      kind: "select",
+      label: "Wenn ein Quelllink offline geht",
+      value: "archive",
+      options: [
+        { value: "archive", label: "Betroffenen Archivsatz überspringen" },
+        { value: "package", label: "Gesamtes Paket überspringen" }
+      ],
+      help: "Beim Archivsatz werden alle noch offenen Teile desselben Mehrteil-Archivs übersprungen. Bereits abgeschlossene Downloads bleiben erhalten."
+    });
+  });
+
   it("projects proxy segmentation controls with safe defaults and connection totals", () => {
     const form = buildSettingsFormViewModel({
       settings: {

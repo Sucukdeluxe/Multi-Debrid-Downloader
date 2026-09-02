@@ -6,7 +6,7 @@ import crypto from "node:crypto";
 import { EventEmitter, once } from "node:events";
 import AdmZip from "adm-zip";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DownloadManager, buildAutoRenameBaseNameFromFoldersWithOptions, extractArchiveNameFromExtractorLogMessage, getAuthoritativeRealDebridTotal, getDiskWriteWaitReason, resolveArchiveItemsFromList, resolveUnrestrictTimeoutBudgetMs, runWithLimitedConcurrency } from "../src/main/download-manager";
+import { DownloadManager, buildAutoRenameBaseNameFromFoldersWithOptions, extractArchiveNameFromExtractorLogMessage, getAuthoritativeRealDebridTotal, getDiskWriteWaitReason, resolveArchiveItemsFromList, resolveOfflineArchiveItemsFromList, resolveUnrestrictTimeoutBudgetMs, runWithLimitedConcurrency } from "../src/main/download-manager";
 import { planDownloadCompletion, validateDownloadedFileCompletion } from "../src/main/download-completion";
 import { DiskReservationCoordinator } from "../src/main/disk-space";
 import { defaultSettings } from "../src/main/constants";
@@ -1157,6 +1157,34 @@ describe("resolveArchiveItemsFromList", () => {
   });
 });
 
+describe("resolveOfflineArchiveItemsFromList", () => {
+  it.each([
+    "show.s01e26.part2.rar",
+    "legacy.s01e26.r01",
+    "split.s01e26.zip.002",
+    "seven.s01e26.7z.003",
+    "generic.s01e26.002"
+  ])("resolves every related archive part when the unavailable link is %s", (archiveName) => {
+    const stem = archiveName
+      .replace(/\.part\d+\.rar$/i, "")
+      .replace(/\.r\d+$/i, "")
+      .replace(/\.(zip|7z)\.\d+$/i, "")
+      .replace(/\.\d{3}$/i, "");
+    const fileNames = archiveName.includes(".part")
+      ? [`${stem}.part1.rar`, `${stem}.part2.rar`, `${stem}.part3.rar`]
+      : archiveName.includes(".r01")
+        ? [`${stem}.rar`, `${stem}.r00`, `${stem}.r01`]
+        : archiveName.includes(".zip.")
+          ? [`${stem}.zip.001`, `${stem}.zip.002`, `${stem}.zip.003`]
+          : archiveName.includes(".7z.")
+            ? [`${stem}.7z.001`, `${stem}.7z.002`, `${stem}.7z.003`]
+            : [`${stem}.001`, `${stem}.002`, `${stem}.003`];
+    const items = fileNames.map((fileName, index) => ({ id: String(index + 1), fileName })) as DownloadItem[];
+
+    expect(resolveOfflineArchiveItemsFromList(archiveName, items).map((item) => item.fileName)).toEqual(fileNames);
+  });
+});
+
 describe("download completion planning", () => {
   it("does not allow early finish on provider metadata alone", () => {
     expect(planDownloadCompletion({
@@ -1326,6 +1354,184 @@ describe("download manager", () => {
     expect(item.status).toBe("downloading");
     expect(item.fullStatus).toBe("Download läuft");
     expect(item.onlineStatus).toBe("online");
+  });
+
+  it("does not let a stale availability response overwrite a terminal offline result", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-dm-stale-availability-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(root, "state")));
+    manager.addPackages([{ name: "availability", links: ["https://example.com/file.bin"] }]);
+    const internal = manager as any;
+    const item = Object.values(internal.session.items)[0] as DownloadItem;
+    item.status = "failed";
+    item.fullStatus = "Offline";
+    item.onlineStatus = "offline";
+
+    internal.applyRapidgatorCheckResult(item, { online: true, fileName: "file.bin", fileSizeBytes: 16 });
+
+    expect(item.status).toBe("failed");
+    expect(item.onlineStatus).toBe("offline");
+    expect(item.fullStatus).toBe("Offline");
+  });
+
+  it("marks a previously online RapidGator link offline and skips its multipart archive after an ambiguous unrestrict failure", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-offline-recheck-"));
+    tempDirs.push(root);
+    const links = [
+      "https://rapidgator.net/file/22222222222222222222222222222222/show.s01e02.part2.rar.html",
+      "https://rapidgator.net/file/11111111111111111111111111111111/show.s01e02.part1.rar.html",
+      "https://rapidgator.net/file/33333333333333333333333333333333/show.s01e02.part3.rar.html",
+      "https://rapidgator.net/file/44444444444444444444444444444444/show.s01e03.part1.rar.html"
+    ];
+    const sourceChecks = new Map<string, number>();
+    const unrestrictLinks: string[] = [];
+
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("api.real-debrid.com/rest/1.0/unrestrict/link")) {
+        const sourceLink = String((init?.body as URLSearchParams)?.get("link") || "");
+        unrestrictLinks.push(sourceLink);
+        if (sourceLink === links[0]) {
+          return new Response(JSON.stringify({ error: "unknown_error", error_code: 99 }), {
+            status: 400,
+            headers: { "Content-Type": "application/json" }
+          });
+        }
+        return new Response(JSON.stringify({
+          download: `https://direct.example/${path.basename(new URL(sourceLink).pathname).replace(/\.html$/i, "")}`,
+          filename: path.basename(new URL(sourceLink).pathname).replace(/\.html$/i, ""),
+          filesize: 16
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (links.includes(url)) {
+        const count = (sourceChecks.get(url) || 0) + 1;
+        sourceChecks.set(url, count);
+        if (url === links[0] && count > 1) {
+          return new Response("File not found", { status: 404 });
+        }
+        const fileName = path.basename(new URL(url).pathname).replace(/\.html$/i, "");
+        return new Response(`<html><title>${fileName}</title><div>File size: <strong>16 B</strong></div></html>`, {
+          status: 200,
+          headers: { "Content-Type": "text/html" }
+        });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as typeof fetch;
+
+    const manager = new DownloadManager({
+      ...defaultSettings(),
+      token: "rd-token",
+      outputDir: path.join(root, "downloads"),
+      extractDir: path.join(root, "extract"),
+      maxParallel: 1,
+      autoExtract: false,
+      enableIntegrityCheck: false,
+      offlineSkipScope: "archive"
+    }, emptySession(), createStoragePaths(path.join(root, "state")));
+    manager.addPackages([{ name: "show-season", links }]);
+    await waitFor(() => Object.values(manager.getSnapshot().session.items).every((item) => item.onlineStatus === "online"), 5_000);
+
+    (manager as any).downloadToFile = async (active: { itemId: string }, _url: string, targetPath: string) => {
+      const item = (manager as any).session.items[active.itemId] as DownloadItem;
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.writeFileSync(targetPath, Buffer.alloc(16, 7));
+      item.downloadedBytes = 16;
+      item.totalBytes = 16;
+      item.progressPercent = 100;
+      return { resumable: true };
+    };
+
+    await manager.start();
+    await waitFor(() => !manager.getSnapshot().session.running, 10_000);
+
+    const items = Object.values(manager.getSnapshot().session.items);
+    const byName = new Map(items.map((item) => [item.fileName, item]));
+    expect(byName.get("show.s01e02.part2.rar")).toMatchObject({ status: "failed", onlineStatus: "offline", fullStatus: "Offline" });
+    expect(byName.get("show.s01e02.part1.rar")).toMatchObject({ status: "cancelled", fullStatus: "Übersprungen (Archivteil offline)" });
+    expect(byName.get("show.s01e02.part3.rar")).toMatchObject({ status: "cancelled", fullStatus: "Übersprungen (Archivteil offline)" });
+    expect(byName.get("show.s01e03.part1.rar")).toMatchObject({ status: "completed", onlineStatus: "online" });
+    expect(sourceChecks.get(links[0])).toBe(2);
+    expect(unrestrictLinks).toEqual([links[0], links[3]]);
+  });
+
+  it("uses a permanent Real-Debrid file_unavailable response without a redundant hoster recheck", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-offline-provider-"));
+    tempDirs.push(root);
+    const link = "https://rapidgator.net/file/55555555555555555555555555555555/missing.mkv.html";
+    let sourceChecks = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === link) {
+        sourceChecks += 1;
+        return new Response("<html><title>missing.mkv</title><div>File size: <strong>16 B</strong></div></html>", {
+          status: 200,
+          headers: { "Content-Type": "text/html" }
+        });
+      }
+      if (url.includes("api.real-debrid.com/rest/1.0/unrestrict/link")) {
+        return new Response(JSON.stringify({ error: "file_unavailable", error_code: 22 }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as typeof fetch;
+
+    const manager = new DownloadManager({
+      ...defaultSettings(),
+      token: "rd-token",
+      outputDir: path.join(root, "downloads"),
+      extractDir: path.join(root, "extract"),
+      autoExtract: false
+    }, emptySession(), createStoragePaths(path.join(root, "state")));
+    manager.addPackages([{ name: "missing", links: [link] }]);
+    await waitFor(() => Object.values(manager.getSnapshot().session.items)[0]?.onlineStatus === "online", 5_000);
+
+    await manager.start();
+    await waitFor(() => !manager.getSnapshot().session.running, 10_000);
+
+    expect(Object.values(manager.getSnapshot().session.items)[0]).toMatchObject({
+      status: "failed",
+      onlineStatus: "offline",
+      fullStatus: "Offline"
+    });
+    expect(sourceChecks).toBe(1);
+  });
+
+  it("skips every unfinished item but keeps completed downloads when the offline scope is the whole package", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-offline-package-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager({
+      ...defaultSettings(),
+      offlineSkipScope: "package",
+      outputDir: path.join(root, "downloads"),
+      extractDir: path.join(root, "extract")
+    }, emptySession(), createStoragePaths(path.join(root, "state")));
+    manager.addPackages([{ name: "package", links: [
+      "https://example.test/offline.part2.rar",
+      "https://example.test/pending.part1.rar",
+      "https://example.test/completed.mkv"
+    ] }]);
+    const internal = manager as any;
+    const items = Object.values(internal.session.items) as DownloadItem[];
+    items[0].status = "validating";
+    items[0].onlineStatus = "online";
+    items[1].status = "downloading";
+    const relatedAbortController = new AbortController();
+    const relatedActive = { abortReason: "none", abortController: relatedAbortController };
+    internal.activeTasks.set(items[1].id, relatedActive);
+    items[2].status = "completed";
+    items[2].downloadedBytes = 16;
+    items[2].totalBytes = 16;
+    items[2].progressPercent = 100;
+
+    internal.markItemOfflineAndSkipRelated(internal.session.packages[items[0].packageId], items[0], "file_unavailable", "provider");
+
+    expect(items[0]).toMatchObject({ status: "failed", onlineStatus: "offline" });
+    expect(items[1]).toMatchObject({ status: "cancelled", fullStatus: "Übersprungen (Paket enthält Offline-Link)" });
+    expect(relatedActive.abortReason).toBe("offline_skip");
+    expect(relatedAbortController.signal.aborted).toBe(true);
+    expect(items[2]).toMatchObject({ status: "completed", downloadedBytes: 16 });
   });
 
   it("applies an imported settings snapshot without touching queued items or filesystem workflows", () => {

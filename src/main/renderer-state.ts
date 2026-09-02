@@ -202,6 +202,7 @@ export function createRendererSettings(settings: AppSettings): RendererSettings 
     maxParallel: settings.maxParallel,
     maxParallelExtract: settings.maxParallelExtract,
     retryLimit: settings.retryLimit,
+    offlineSkipScope: settings.offlineSkipScope,
     speedLimitEnabled: settings.speedLimitEnabled,
     speedLimitKbps: settings.speedLimitKbps,
     speedLimitMode: settings.speedLimitMode,

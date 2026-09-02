@@ -952,7 +952,7 @@ const emptySnapshot = (): UiSnapshot => ({
     cleanupMode: "none", extractConflictMode: "overwrite", removeLinkFilesAfterExtract: false,
     removeSamplesAfterExtract: false, enableIntegrityCheck: true, autoResumeOnStart: true,
     autoReconnect: false, reconnectWaitSeconds: 45, completedCleanupPolicy: "never",
-    maxParallel: 4, maxParallelExtract: 2, extractCpuPriority: "high", retryLimit: 0, speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
+    maxParallel: 4, maxParallelExtract: 2, extractCpuPriority: "high", retryLimit: 0, offlineSkipScope: "archive", speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
     proxyDownloadEnabled: false, proxyListPath: "", proxyApiProxyIndex: 1, proxyConnectionsPerDownload: 32,
     updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, minimizeToTray: false,
     theme: "dark", themePreference: "dark", logStorageLocation: "appdata", collapseNewPackages: true, animatePackageDisclosure: true, historyRetentionMode: "permanent", historyMaxEntries: 500, historyMaxAgeDays: 0, autoSortPackagesByProgress: false, autoSkipExtracted: false, hideExtractedItems: true, confirmDeleteSelection: true, backupIncludeDownloads: false, backupIncludeRemoteDiagnostics: false,

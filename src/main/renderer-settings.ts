@@ -97,6 +97,9 @@ export function validateRendererSettingsUpdate(value: unknown, current: AppSetti
     if (key === "themePreference" && entry !== "light" && entry !== "dark" && entry !== "system") {
       invalid();
     }
+    if (key === "offlineSkipScope" && entry !== "archive" && entry !== "package") {
+      invalid();
+    }
     if (key === "dailyStartMinuteOfDay" && (!Number.isInteger(entry) || (entry as number) < 0 || (entry as number) > 1_439)) {
       invalid();
     }

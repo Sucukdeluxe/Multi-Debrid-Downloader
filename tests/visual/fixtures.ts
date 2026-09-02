@@ -115,6 +115,7 @@ function createSettings(): AppSettings {
     maxParallel: 4,
     maxParallelExtract: 2,
     retryLimit: 3,
+    offlineSkipScope: "archive",
     speedLimitEnabled: false,
     speedLimitKbps: 0,
     speedLimitMode: "global",

@@ -611,6 +611,17 @@ export function buildSettingsFormViewModel({
         fields: [
           { id: "maxParallel", kind: "number", label: "Max. gleichzeitige Downloads", value: String(settings.maxParallel), min: 1, max: 50 },
           { id: "retryLimit", kind: "number", label: "Automatische Wiederholungen", value: String(settings.retryLimit), min: 0, max: 99 },
+          {
+            id: "offlineSkipScope",
+            kind: "select",
+            label: "Wenn ein Quelllink offline geht",
+            value: settings.offlineSkipScope,
+            options: [
+              { value: "archive", label: "Betroffenen Archivsatz überspringen" },
+              { value: "package", label: "Gesamtes Paket überspringen" }
+            ],
+            help: "Beim Archivsatz werden alle noch offenen Teile desselben Mehrteil-Archivs übersprungen. Bereits abgeschlossene Downloads bleiben erhalten."
+          },
           { id: "autoResumeOnStart", kind: "switch", label: "Beim Start automatisch fortsetzen", value: settings.autoResumeOnStart },
           { id: "clipboardWatch", kind: "switch", label: "Zwischenablage überwachen", value: settings.clipboardWatch }
         ]

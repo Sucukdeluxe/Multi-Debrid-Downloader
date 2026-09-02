@@ -591,6 +591,7 @@ describe("settings storage", () => {
       cleanupMode: "broken" as unknown as AppSettings["cleanupMode"],
       extractConflictMode: "broken" as unknown as AppSettings["extractConflictMode"],
       completedCleanupPolicy: "broken" as unknown as AppSettings["completedCleanupPolicy"],
+      offlineSkipScope: "broken" as unknown as AppSettings["offlineSkipScope"],
       speedLimitMode: "broken" as unknown as AppSettings["speedLimitMode"],
       maxParallel: 0,
       retryLimit: 999,
@@ -612,6 +613,7 @@ describe("settings storage", () => {
     expect(normalized.cleanupMode).toBe("none");
     expect(normalized.extractConflictMode).toBe("overwrite");
     expect(normalized.completedCleanupPolicy).toBe("never");
+    expect(normalized.offlineSkipScope).toBe("archive");
     expect(normalized.speedLimitMode).toBe("global");
     expect(normalized.maxParallel).toBe(1);
     expect(normalized.retryLimit).toBe(99);
@@ -629,6 +631,11 @@ describe("settings storage", () => {
 
   it("uses 32 total proxy connections as the default for new settings", () => {
     expect(defaultSettings().proxyConnectionsPerDownload).toBe(32);
+  });
+
+  it("uses archive-set skipping by default and preserves an explicit whole-package choice", () => {
+    expect(defaultSettings().offlineSkipScope).toBe("archive");
+    expect(normalizeSettings({ ...defaultSettings(), offlineSkipScope: "package" }).offlineSkipScope).toBe("package");
   });
 
   it("migrates the previous private update repository to the public release repository", () => {

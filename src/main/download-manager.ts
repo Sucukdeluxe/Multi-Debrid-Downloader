@@ -116,7 +116,7 @@ type ActiveTask = {
   itemId: string;
   packageId: string;
   abortController: AbortController;
-  abortReason: "stop" | "cancel" | "reconnect" | "package_toggle" | "stall" | "shutdown" | "reset" | "none";
+  abortReason: "stop" | "cancel" | "reconnect" | "package_toggle" | "stall" | "shutdown" | "reset" | "offline_skip" | "none";
   resumable: boolean;
   nonResumableCounted: boolean;
   freshRetryUsed?: boolean;
@@ -724,10 +724,14 @@ export function getAuthoritativeRealDebridTotal(
 
 function isPermanentLinkError(errorText: string): boolean {
   const text = String(errorText || "").toLowerCase();
-  return text.includes("permanent ungültig")
+  return text.includes("source_link_offline:")
+    || text.includes("permanent ungültig")
+    || /(?:^|[^a-z0-9_])(?:file_unavailable|invalid_link|bad_link)(?:$|[^a-z0-9_])/.test(text)
+    || /(?:^|[^a-z0-9_])file[ -]+unavailable(?:$|[^a-z0-9_])/.test(text)
     || /file.?not.?found/.test(text)
-    || /file.?unavailable/.test(text)
     || /link.?is.?dead/.test(text)
+    || text.includes("datei nicht gefunden")
+    || text.includes("datei nicht mehr verfügbar")
     || text.includes("file has been removed")
     || text.includes("file has been deleted")
     || text.includes("file is no longer available")
@@ -835,7 +839,10 @@ function isProviderBusyUnrestrictError(errorText: string): boolean {
 }
 
 function isHosterUnavailableError(errorText: string): boolean {
-  return String(errorText || "").toLowerCase().includes("hosternotavailable");
+  const text = String(errorText || "").toLowerCase();
+  return text.includes("hosternotavailable")
+    || /hoster[ _-]?(?:temporarily[ _-]?)?unavailable/.test(text)
+    || /hoster[ _-]?(?:maintenance|not[ _-]?supported)/.test(text);
 }
 
 function isTemporaryUnrestrictError(errorText: string): boolean {
@@ -856,6 +863,20 @@ function isTemporaryUnrestrictError(errorText: string): boolean {
     || text.includes("gateway timeout")
     || text.includes("cloudflare")
     || text.includes("worker error");
+}
+
+function isRapidgatorSourceLink(link: string): boolean {
+  try {
+    const hostname = new URL(link).hostname.toLowerCase();
+    return hostname === "rapidgator.net"
+      || hostname.endsWith(".rapidgator.net")
+      || hostname === "rg.to"
+      || hostname.endsWith(".rg.to")
+      || hostname === "rapidgator.asia"
+      || hostname.endsWith(".rapidgator.asia");
+  } catch {
+    return false;
+  }
 }
 
 export function classifyProviderUnrestrictBackoff(errorText: string): "busy" | "temporary" | null {
@@ -1719,6 +1740,56 @@ export function resolveArchiveItemsFromList(archiveName: string, items: Download
   return [];
 }
 
+export function resolveOfflineArchiveItemsFromList(archiveName: string, items: DownloadItem[]): DownloadItem[] {
+  const normalizeArchiveMatchName = (value: string): string =>
+    stripDuplicateSuffixBeforeExtension(path.basename(String(value || "")));
+  const entryLower = normalizeArchiveMatchName(archiveName).toLowerCase();
+  const itemBaseName = (item: DownloadItem): string =>
+    normalizeArchiveMatchName(item.targetPath || item.fileName || "");
+
+  let pattern: RegExp | null = null;
+  const multipartMatch = entryLower.match(/^(.*)\.part0*\d+\.rar$/);
+  if (multipartMatch) {
+    const prefix = multipartMatch[1].replace(REGEX_ESCAPE_RE, "\\$&");
+    pattern = new RegExp(`^${prefix}\\.part\\d+\\.rar$`, "i");
+  }
+  if (!pattern) {
+    const rarMatch = entryLower.match(/^(.*)\.r(?:ar|\d{2,3})$/);
+    if (rarMatch) {
+      const stem = rarMatch[1].replace(REGEX_ESCAPE_RE, "\\$&");
+      pattern = new RegExp(`^${stem}\\.r(ar|\\d{2,3})$`, "i");
+    }
+  }
+  if (!pattern) {
+    const zipSplitMatch = entryLower.match(/^(.*)\.zip\.\d+$/);
+    if (zipSplitMatch) {
+      const stem = zipSplitMatch[1].replace(REGEX_ESCAPE_RE, "\\$&");
+      pattern = new RegExp(`^${stem}\\.zip(\\.\\d+)?$`, "i");
+    }
+  }
+  if (!pattern) {
+    const sevenSplitMatch = entryLower.match(/^(.*)\.7z\.\d+$/);
+    if (sevenSplitMatch) {
+      const stem = sevenSplitMatch[1].replace(REGEX_ESCAPE_RE, "\\$&");
+      pattern = new RegExp(`^${stem}\\.7z(\\.\\d+)?$`, "i");
+    }
+  }
+  if (!pattern && /^(.*)\.\d{3}$/.test(entryLower) && !/\.(zip|7z)\.\d{3}$/.test(entryLower)) {
+    const genericSplitMatch = entryLower.match(/^(.*)\.\d{3}$/);
+    if (genericSplitMatch) {
+      const stem = genericSplitMatch[1].replace(REGEX_ESCAPE_RE, "\\$&");
+      pattern = new RegExp(`^${stem}\\.\\d{3}$`, "i");
+    }
+  }
+
+  if (pattern) {
+    const matched = items.filter((item) => pattern!.test(itemBaseName(item)));
+    if (matched.length > 0) return matched;
+  }
+
+  return items.filter((item) => itemBaseName(item).toLowerCase() === entryLower);
+}
+
 function stripDuplicateSuffixBeforeExtension(fileName: string): string {
   return String(fileName || "").replace(/ \(\d+\)(?=\.[^.]+$)/, "");
 }
@@ -2031,6 +2102,8 @@ export class DownloadManager extends EventEmitter {
   private lastGlobalProgressAt = 0;
 
   private retryAfterByItem = new Map<string, number>();
+
+  private sourceAvailabilityRecheckAt = new Map<string, number>();
 
   private packageDiskRetryAfterByPackage = new Map<string, number>();
 
@@ -3222,6 +3295,7 @@ export class DownloadManager extends EventEmitter {
       this.itemCount = Math.max(0, this.itemCount - 1);
     }
     this.retryAfterByItem.delete(itemId);
+    this.sourceAvailabilityRecheckAt.delete(itemId);
     this.retryStateByItem.delete(itemId);
     this.dropItemContribution(itemId);
     if (!hasActiveTask) {
@@ -3395,6 +3469,7 @@ export class DownloadManager extends EventEmitter {
       this.successDigestTimer = null;
     }
     this.retryAfterByItem.clear();
+    this.sourceAvailabilityRecheckAt.clear();
     this.providerStartReservations.clear();
     this.pacedStartReservationByItem.clear();
     this.retryStateByItem.clear();
@@ -3635,6 +3710,7 @@ export class DownloadManager extends EventEmitter {
         this.runOutcomes.delete(itemId);
 
         this.retryAfterByItem.delete(itemId);
+        this.sourceAvailabilityRecheckAt.delete(itemId);
         this.retryStateByItem.delete(itemId);
       }
 
@@ -3881,6 +3957,9 @@ export class DownloadManager extends EventEmitter {
       return;
     }
     if (item.status !== "queued") {
+      if (item.status === "failed" && item.onlineStatus === "offline") {
+        return;
+      }
       item.onlineStatus = result.online ? "online" : "offline";
       item.updatedAt = nowMs();
       return;
@@ -3908,6 +3987,116 @@ export class DownloadManager extends EventEmitter {
       item.onlineStatus = "online";
       item.updatedAt = nowMs();
     }
+  }
+
+  private async confirmSourceOfflineAfterFailure(
+    item: DownloadItem,
+    errorText: string,
+    signal: AbortSignal
+  ): Promise<"provider" | "hoster" | null> {
+    if (isPermanentLinkError(errorText)) {
+      return "provider";
+    }
+    if (item.onlineStatus === "offline") {
+      return "hoster";
+    }
+    if (item.status !== "validating" || item.onlineStatus === "checking") {
+      return null;
+    }
+    const supported = isRapidgatorSourceLink(item.url) || isDdownloadLink(item.url) || isOneFichierLink(item.url);
+    if (!supported) {
+      return null;
+    }
+    const checkedAt = nowMs();
+    const previousCheckAt = this.sourceAvailabilityRecheckAt.get(item.id) || 0;
+    if (checkedAt - previousCheckAt < 30_000) {
+      return null;
+    }
+    this.sourceAvailabilityRecheckAt.set(item.id, checkedAt);
+
+    try {
+      const checkSignal = AbortSignal.any([signal, AbortSignal.timeout(15_000)]);
+      if (isRapidgatorSourceLink(item.url)) {
+        const result = await checkRapidgatorOnline(item.url, checkSignal);
+        return result && !result.online ? "hoster" : null;
+      }
+      if (isDdownloadLink(item.url)) {
+        const result = await checkDdownloadOnline(item.url, checkSignal);
+        return result && !result.online ? "hoster" : null;
+      }
+      const results = await checkOneFichierLinks([item.url], checkSignal);
+      const result = results.get(item.url);
+      return result && !result.online ? "hoster" : null;
+    } catch (error) {
+      if (signal.aborted) {
+        throw error;
+      }
+      logger.warn(`Quelllink-Nachprüfung fehlgeschlagen: item=${item.fileName || item.id}, error=${compactErrorText(error)}`);
+      return null;
+    }
+  }
+
+  private markItemOfflineAndSkipRelated(
+    pkg: PackageEntry,
+    item: DownloadItem,
+    errorText: string,
+    confirmedBy: "provider" | "hoster"
+  ): void {
+    const cleanError = errorText
+      .replace(/^Error:\s*/i, "")
+      .replace(/^source_link_offline:(?:provider|hoster):/i, "")
+      .trim();
+    item.status = "failed";
+    item.onlineStatus = "offline";
+    item.lastError = cleanError || "Quelllink ist nicht mehr verfügbar";
+    item.fullStatus = "Offline";
+    item.speedBps = 0;
+    item.updatedAt = nowMs();
+    this.retryAfterByItem.delete(item.id);
+    this.retryStateByItem.delete(item.id);
+    this.sourceAvailabilityRecheckAt.delete(item.id);
+    this.recordRunOutcome(item.id, "failed");
+
+    const packageItems = pkg.itemIds
+      .map((itemId) => this.session.items[itemId])
+      .filter(Boolean) as DownloadItem[];
+    const scopeItems = this.settings.offlineSkipScope === "package"
+      ? packageItems
+      : resolveOfflineArchiveItemsFromList(item.fileName, packageItems);
+    const skippedItems: DownloadItem[] = [];
+    for (const related of scopeItems) {
+      if (related.id === item.id || isFinishedStatus(related.status)) {
+        continue;
+      }
+      const relatedActive = this.activeTasks.get(related.id);
+      if (relatedActive) {
+        relatedActive.abortReason = "offline_skip";
+        relatedActive.abortController.abort("offline_skip");
+      }
+      related.status = "cancelled";
+      related.fullStatus = this.settings.offlineSkipScope === "package"
+        ? "Übersprungen (Paket enthält Offline-Link)"
+        : "Übersprungen (Archivteil offline)";
+      related.lastError = `Übersprungen, weil ${item.fileName} offline ist`;
+      related.speedBps = 0;
+      related.updatedAt = nowMs();
+      this.retryAfterByItem.delete(related.id);
+      this.retryStateByItem.delete(related.id);
+      this.sourceAvailabilityRecheckAt.delete(related.id);
+      if (!relatedActive) {
+        this.releaseTargetPath(related.id);
+      }
+      this.recordRunOutcome(related.id, "cancelled");
+      skippedItems.push(related);
+    }
+
+    this.logPackageForItem(item, "WARN", "Quelllink während des Downloads offline geworden", {
+      confirmedBy,
+      offlineSkipScope: this.settings.offlineSkipScope,
+      skippedItems: skippedItems.length,
+      skippedNames: skippedItems.map((entry) => entry.fileName).join(" | ")
+    });
+    this.refreshPackageStatus(pkg);
   }
 
   private async checkDdownloadItems(itemIds: string[]): Promise<void> {
@@ -3946,6 +4135,9 @@ export class DownloadManager extends EventEmitter {
   private applyDdownloadCheckResult(item: DownloadItem, result: DdownloadCheckResult | null): void {
     if (!result) {
       if (item.onlineStatus === "checking") item.onlineStatus = undefined;
+      return;
+    }
+    if (item.status === "failed" && item.onlineStatus === "offline") {
       return;
     }
     if (!result.online) {
@@ -4007,6 +4199,9 @@ export class DownloadManager extends EventEmitter {
   private applyOneFichierCheckResult(item: DownloadItem, result: OneFichierCheckResult | null): void {
     if (!result) {
       if (item.onlineStatus === "checking") item.onlineStatus = undefined;
+      return;
+    }
+    if (item.status === "failed" && item.onlineStatus === "offline") {
       return;
     }
     if (!result.online) {
@@ -6060,6 +6255,7 @@ export class DownloadManager extends EventEmitter {
       this.runOutcomes.delete(itemId);
       this.runItemIds.delete(itemId);
       this.retryAfterByItem.delete(itemId);
+      this.sourceAvailabilityRecheckAt.delete(itemId);
       this.retryStateByItem.delete(itemId);
 
       item.status = "queued";
@@ -6143,6 +6339,7 @@ export class DownloadManager extends EventEmitter {
       this.dropItemContribution(itemId);
       this.runOutcomes.delete(itemId);
       this.retryAfterByItem.delete(itemId);
+      this.sourceAvailabilityRecheckAt.delete(itemId);
       this.retryStateByItem.delete(itemId);
 
       item.status = "queued";
@@ -6242,6 +6439,7 @@ export class DownloadManager extends EventEmitter {
       item.speedBps = 0;
       item.updatedAt = nowMs();
       this.retryAfterByItem.delete(itemId);
+      this.sourceAvailabilityRecheckAt.delete(itemId);
       this.retryStateByItem.delete(itemId);
       this.releaseTargetPath(itemId);
       this.recordRunOutcome(itemId, "cancelled");
@@ -8844,6 +9042,7 @@ export class DownloadManager extends EventEmitter {
     this.abortPackagePostProcessing(packageId, "package_removed");
     for (const itemId of itemIds) {
       this.retryAfterByItem.delete(itemId);
+      this.sourceAvailabilityRecheckAt.delete(itemId);
       this.retryStateByItem.delete(itemId);
       this.releaseTargetPath(itemId);
       this.dropItemContribution(itemId);
@@ -10151,6 +10350,10 @@ export class DownloadManager extends EventEmitter {
             throw new Error(`Unrestrict Timeout nach ${Math.ceil(unrestrictTimeoutMs / 1000)}s`);
           }
           const errText = compactErrorText(unrestrictError);
+          const offlineConfirmation = await this.confirmSourceOfflineAfterFailure(item, errText, active.abortController.signal);
+          if (offlineConfirmation) {
+            throw new Error(`source_link_offline:${offlineConfirmation}:${errText}`);
+          }
           if (isProviderUnrestrictFailure(errText) && !isHosterUnavailableError(errText)) {
             this.recordProviderFailure(cooldownProvider);
             const backoffKind = classifyProviderUnrestrictBackoff(errText);
@@ -10483,6 +10686,19 @@ export class DownloadManager extends EventEmitter {
           });
         } else if (reason === "reset") {
           this.retryStateByItem.delete(item.id);
+        } else if (reason === "offline_skip") {
+          this.logPackageForItem(item, "WARN", "Download wegen Offline-Link im Zusammenhang übersprungen", {
+            reason
+          });
+          item.status = "cancelled";
+          item.speedBps = 0;
+          if (!/Übersprungen/.test(item.fullStatus || "")) {
+            item.fullStatus = "Übersprungen (Offline-Link im Zusammenhang)";
+          }
+          item.updatedAt = nowMs();
+          this.retryAfterByItem.delete(item.id);
+          this.retryStateByItem.delete(item.id);
+          this.recordRunOutcome(item.id, "cancelled");
         } else if (reason === "package_toggle") {
           this.logPackageForItem(item, "WARN", "Download wegen Paket-Toggle pausiert", {
             reason
@@ -10695,15 +10911,8 @@ export class DownloadManager extends EventEmitter {
 
           if (isPermanentLinkError(errorText)) {
             logger.error(`Link permanent ungültig: item=${item.fileName || item.id}, error=${errorText}, link=${item.url.slice(0, 80)}`);
-            item.status = "failed";
-            this.recordRunOutcome(item.id, "failed");
-            item.lastError = errorText;
-            item.fullStatus = `Link ungültig: ${errorText}`;
-            item.speedBps = 0;
-            item.updatedAt = nowMs();
-            this.retryStateByItem.delete(item.id);
-            const failPkgDead = this.session.packages[item.packageId];
-            if (failPkgDead) this.refreshPackageStatus(failPkgDead);
+            const confirmedBy = /source_link_offline:hoster:/i.test(errorText) ? "hoster" : "provider";
+            this.markItemOfflineAndSkipRelated(pkg, item, errorText, confirmedBy);
             this.persistSoon();
             this.emitState();
             return;

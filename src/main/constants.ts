@@ -104,6 +104,7 @@ export function defaultSettings(): AppSettings {
     maxParallel: 4,
     maxParallelExtract: 2,
     retryLimit: 0,
+    offlineSkipScope: "archive" as const,
     speedLimitEnabled: false,
     speedLimitKbps: 0,
     speedLimitMode: "global",

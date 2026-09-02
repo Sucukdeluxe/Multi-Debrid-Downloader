@@ -13,6 +13,14 @@ describe("renderer settings validation", () => {
       .toEqual({ createWorkDirectoriesOnStartup: false });
   });
 
+  it("projects and validates both offline skip scopes", () => {
+    const current = { ...defaultSettings(), offlineSkipScope: "archive" as const };
+
+    expect(createRendererSettings(current).offlineSkipScope).toBe("archive");
+    expect(validateRendererSettingsUpdate({ offlineSkipScope: "package" }, current)).toEqual({ offlineSkipScope: "package" });
+    expect(() => validateRendererSettingsUpdate({ offlineSkipScope: "item" }, current)).toThrow("Settings-Payload ist ungültig");
+  });
+
   it("projects and validates the semantic theme preference independently from the resolved palette", () => {
     const current = { ...defaultSettings(), theme: "dark" as const, themePreference: "system" as const };
     const projected = createRendererSettings(current);

@@ -14,6 +14,7 @@ export type CleanupMode = "none" | "trash" | "delete";
 export type ConflictMode = "overwrite" | "skip" | "rename" | "ask";
 export type SpeedMode = "global" | "per_download";
 export type FinishedCleanupPolicy = "never" | "immediate" | "on_start" | "package_done";
+export type OfflineSkipScope = "archive" | "package";
 export type DebridProvider =
   | "realdebrid"
   | "megadebrid"
@@ -207,6 +208,7 @@ export interface AppSettings extends DailyStartSettings, ProxyDownloadSettings {
   maxParallel: number;
   maxParallelExtract: number;
   retryLimit: number;
+  offlineSkipScope: OfflineSkipScope;
   speedLimitEnabled: boolean;
   speedLimitKbps: number;
   speedLimitMode: SpeedMode;
@@ -343,6 +345,7 @@ export interface RendererSettings extends DailyStartSettings, ProxyDownloadSetti
   maxParallel: number;
   maxParallelExtract: number;
   retryLimit: number;
+  offlineSkipScope: OfflineSkipScope;
   speedLimitEnabled: boolean;
   speedLimitKbps: number;
   speedLimitMode: SpeedMode;
