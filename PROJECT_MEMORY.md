@@ -10,12 +10,12 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 
 - Verifiziert am: 2. September 2026, Europe/Berlin
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
-- Arbeitsbranch: `release/v2.0.84`
-- Quellbasis: `release/v2.0.83`
-- Release-Tag: `v2.0.84`
-- Baseline-Commit: `cd0464d658c94e56047028863bba2f88c312256a`
-- Hotfix-Basis: `cd0464d658c94e56047028863bba2f88c312256a`
-- Paketversion: `2.0.84`
+- Arbeitsbranch: `release/v2.0.85`
+- Quellbasis: `release/v2.0.84`
+- Release-Tag: `v2.0.85` (Kandidat)
+- Baseline-Commit: `ad75469854e5ae3b0cb8a75a2776308fdc4d22e5`
+- Hotfix-Basis: `ad75469854e5ae3b0cb8a75a2776308fdc4d22e5`
+- Paketversion: `2.0.85`
 - Letztes Release: `Multi-Debrid-Downloader v2.0.84`, veröffentlicht am 1. September 2026 auf GitHub und Forgejo
 - Runtime-Voraussetzung: Node.js `>=20`; lokal verifiziert mit Node.js `24.19.0` und npm `11.17.0`
 
@@ -202,7 +202,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Faire Verteilung zwischen gleichzeitigen Downloads, Proxy-Bewertung, Cooldowns und adaptives 429/503-Backoff bleiben unverändert.
 - Download-, Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert.
 
-## Unveröffentlichte Änderungen nach v2.0.84
+## Änderungen in v2.0.85
 
 - Permanente Providerfehler wie Real-Debrids `file_unavailable` markieren den ursprünglichen Quelllink nun unmittelbar als offline. Bei mehrdeutigen Unrestrict- oder Kontopoolfehlern wird ein zuvor als online erkannter Rapidgator-, DDownload- oder 1Fichier-Link einmal direkt beim Hoster nachgeprüft; nur ein bestätigtes Offline-Ergebnis beendet ihn dauerhaft.
 - Unter „Allgemein“ bestimmt „Wenn ein Quelllink offline geht“, ob nur der betroffene Mehrteil-Archivsatz oder das gesamte MDD-Paket übersprungen wird. Standard ist der Archivsatz. Die Zuordnung funktioniert auch dann, wenn Part 2 oder ein späterer RAR-, ZIP-, 7z- oder generischer Split-Part ausfällt.
@@ -241,7 +241,7 @@ npm exec -- tsc --noEmit
 
 ## Verifizierungen bis 2. September 2026
 
-- Unveröffentlichter Offline-Link-Fix: zwei vollständige Download-Manager-Läufe mit jeweils 274 von 274 erfolgreichen Tests. Die neuen Regressionen bestätigen den Wechsel eines zuvor online gemeldeten Rapidgator-Links auf offline, die direkte Behandlung von Real-Debrid-`file_unavailable`, den Schutz vor verspäteten Online-Antworten, die Gruppierung von `partN.rar`, `.rar`/`.rNN`, `.zip.NNN`, `.7z.NNN` und `.NNN` von jedem Split-Part aus sowie beide Überspring-Bereiche einschließlich Abbruch aktiver Geschwister und Erhalt fertiger Downloads. Nach der strikten Trennung von Download- und Entpacker-Gruppierung liefen die 9 betroffenen Regressionen und alle 84 Extractor-Tests erneut erfolgreich. Ein zusätzlicher vollständiger Lauf hatte ausschließlich im fachfremden Fake-Timer-Test für den globalen Speed-Limiter einen 10.000-Timer-Abbruch; dieser Test war in den beiden vorherigen Komplettläufen und direkt danach isoliert erfolgreich.
+- Kandidat für `v2.0.85`: zwei vollständige Download-Manager-Läufe mit jeweils 274 von 274 erfolgreichen Tests. Die neuen Regressionen bestätigen den Wechsel eines zuvor online gemeldeten Rapidgator-Links auf offline, die direkte Behandlung von Real-Debrid-`file_unavailable`, den Schutz vor verspäteten Online-Antworten, die Gruppierung von `partN.rar`, `.rar`/`.rNN`, `.zip.NNN`, `.7z.NNN` und `.NNN` von jedem Split-Part aus sowie beide Überspring-Bereiche einschließlich Abbruch aktiver Geschwister und Erhalt fertiger Downloads. Nach der strikten Trennung von Download- und Entpacker-Gruppierung liefen die 9 betroffenen Regressionen und alle 84 Extractor-Tests erneut erfolgreich. Ein zusätzlicher vollständiger Lauf hatte ausschließlich im fachfremden Fake-Timer-Test für den globalen Speed-Limiter einen 10.000-Timer-Abbruch; dieser Test war in den beiden vorherigen Komplettläufen und direkt danach isoliert erfolgreich.
 - Vollständiger Clientlauf ohne die lokal nicht ausführbaren Symlink-Fixtures: 143 Testdateien erfolgreich, 1 optionale JVM-Testdatei übersprungen; 2.718 Tests erfolgreich und 4 übersprungen. Alle 84 unveränderten Extractor-Tests sind grün. Die Public-Release-Metadatendatei lief separat mit 22 von 24 erfolgreichen Tests; die zwei übrigen Fälle endeten unverändert bereits beim Anlegen ihrer Windows-Symlinks mit `EPERM`.
 - Nach dem Offline-Link-Fix erfolgreich: TypeScript, Main-Build, Renderer-Produktionsbuild, Node-Self-Check und alle 16 Backup-API-Tests. Die bekannte Vite-Warnung betrifft den rund 582 KiB großen Renderer-Chunk.
 
@@ -364,6 +364,7 @@ npm exec -- tsc --noEmit
 - Die optionale Arbeitsordner-Erstellung, der neue Kategoriename und die feinere TiB-Restanzeige sind als `v2.0.82` auf GitHub und Forgejo veröffentlicht. Eine produktive Installation oder ein Neustart ist nicht Bestandteil des Releases.
 - Die einmalige CRC-Neudownload-Wiederherstellung ist als `v2.0.83` auf GitHub und Forgejo veröffentlicht. Entpack-, Passwort- und Extractor-Fallbacklogik blieben unverändert; eine produktive Installation oder ein Neustart ist nicht Bestandteil des Releases.
 - Die unmittelbare Arbeitsordner-Anlage beim Speichern und der Proxybereich mit Standard 32 sowie Maximum 80 sind als `v2.0.84` auf GitHub und Forgejo veröffentlicht. Eine produktive Installation oder ein Neustart ist nicht Bestandteil des Releases.
+- Die Live-Erkennung offline gewordener Quelllinks und der wählbare Überspring-Bereich sind als `v2.0.85` vorbereitet und verifiziert, aber noch nicht veröffentlicht. Entpack-, Passwort- und Nachbearbeitungslogik bleiben unverändert.
 
 ## Nächste sinnvolle Schritte
 

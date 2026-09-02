@@ -1,6 +1,6 @@
 {
   "name": "multi-debrid-downloader",
-  "version": "2.0.84",
+  "version": "2.0.85",
   "description": "Desktop downloader",
   "main": "build/main/main/main.js",
   "author": "Sucukdeluxe",

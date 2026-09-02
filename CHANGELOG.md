@@ -4,6 +4,19 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.85] - 2026-09-02
+
+### Offline source detection
+
+- Mark permanent provider failures such as Real-Debrid `file_unavailable` as offline and directly recheck supported source hosters after ambiguous conversion or account-pool failures.
+- Preserve a terminal offline result when an older availability request finishes late, and throttle source rechecks to avoid tight retry loops.
+
+### Configurable skip scope
+
+- Add a General setting that skips either the affected multipart archive set or every unfinished item in the MDD package when a source link becomes unavailable.
+- Use the affected archive set by default, recognize RAR, ZIP, 7z, and generic split parts from any part number, and keep unrelated episodes running.
+- Preserve completed downloads in both modes and keep extraction, password, and post-processing behavior unchanged.
+
 ## [2.0.84] - 2026-09-01
 
 ### Work folders
