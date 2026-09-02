@@ -12,11 +12,11 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
 - Arbeitsbranch: `release/v2.0.85`
 - Quellbasis: `release/v2.0.84`
-- Release-Tag: `v2.0.85` (Kandidat)
+- Release-Tag: `v2.0.85`
 - Baseline-Commit: `ad75469854e5ae3b0cb8a75a2776308fdc4d22e5`
 - Hotfix-Basis: `ad75469854e5ae3b0cb8a75a2776308fdc4d22e5`
 - Paketversion: `2.0.85`
-- Letztes Release: `Multi-Debrid-Downloader v2.0.84`, veröffentlicht am 1. September 2026 auf GitHub und Forgejo
+- Letztes Release: `Multi-Debrid-Downloader v2.0.85`, veröffentlicht am 2. September 2026 auf GitHub und Forgejo
 - Runtime-Voraussetzung: Node.js `>=20`; lokal verifiziert mit Node.js `24.19.0` und npm `11.17.0`
 
 `main` ist derzeit keine verlässliche Arbeitsbasis:
@@ -246,6 +246,7 @@ npm exec -- tsc --noEmit
 - Nach dem Offline-Link-Fix erfolgreich: TypeScript, Main-Build, Renderer-Produktionsbuild, Node-Self-Check und alle 16 Backup-API-Tests. Die bekannte Vite-Warnung betrifft den rund 582 KiB großen Renderer-Chunk.
 - Release-Build `v2.0.85`: Installer und Portable-Datei wurden aus dem versionierten Release-Vorbereitungsstand erzeugt. Die Release-Prüfung bestätigte Paket- und Bundle-Version, Update-Metadaten, Artefaktnamen, Installergröße und SHA-512, Icon, Lizenzdateien sowie den entpackten Inhalt beider EXE-Archive. Das Quellarchiv enthält Paketversion `2.0.85`, verweist im ZIP-Kommentar auf den Release-Vorbereitungscommit und alle Einträge in `SHA256SUMS.txt` stimmen mit den lokalen Originalen überein.
 - SHA-256 des `v2.0.85`-Setups: `c0cb2a23da9183d678027482002667e6f635e5a35f2c8e68875840c292c16946`; SHA-256 der Portable-Datei: `8593ffdd1f92bf5ee776c9734d79300638c94fef30052300e763a2366117118f`.
+- Veröffentlichung `v2.0.85`: Der annotierte Tag zeigt auf GitHub und Forgejo exakt auf `ac7ae49ea0e823905d16128e95f34af25e00caf0`. GitHub führt den neuesten stabilen Release mit exakt dem englischen Text, Forgejo mit dem inhaltlich gleichwertigen deutschen Text. Beide Plattformen besitzen dieselben sechs benannten Assets. Alle zwölf veröffentlichten Dateien wurden erneut heruntergeladen; Dateigröße und SHA-256 stimmen auf beiden Plattformen exakt mit den lokalen Originalen überein. Die veröffentlichten Update-Metadaten nennen Version `2.0.85` und den korrekten Installer.
 
 - Kandidat für `v2.0.84`: 256 von 256 fokussierten Proxy-Segment-, Storage-, AppController-, Arbeitsordner- und Einstellungsansichtstests erfolgreich. Die Grenzwerttests bestätigen Minimum 2, Standard 32, Maximum 80 und die Begrenzung höherer Werte auf 80.
 - Vollständiger Clientlauf des `v2.0.84`-Kandidaten: 143 Testdateien erfolgreich, 1 optionale JVM-Testdatei übersprungen; 2.728 Tests erfolgreich und 4 übersprungen. Ausschließlich die zwei bekannten Windows-Symlink-Fixtures scheiterten mangels Berechtigung vor ihrer Produktassertion mit `EPERM`. Alle 265 Download-Manager- und 84 Extractor-Tests sind vollständig grün.
@@ -366,7 +367,7 @@ npm exec -- tsc --noEmit
 - Die optionale Arbeitsordner-Erstellung, der neue Kategoriename und die feinere TiB-Restanzeige sind als `v2.0.82` auf GitHub und Forgejo veröffentlicht. Eine produktive Installation oder ein Neustart ist nicht Bestandteil des Releases.
 - Die einmalige CRC-Neudownload-Wiederherstellung ist als `v2.0.83` auf GitHub und Forgejo veröffentlicht. Entpack-, Passwort- und Extractor-Fallbacklogik blieben unverändert; eine produktive Installation oder ein Neustart ist nicht Bestandteil des Releases.
 - Die unmittelbare Arbeitsordner-Anlage beim Speichern und der Proxybereich mit Standard 32 sowie Maximum 80 sind als `v2.0.84` auf GitHub und Forgejo veröffentlicht. Eine produktive Installation oder ein Neustart ist nicht Bestandteil des Releases.
-- Die Live-Erkennung offline gewordener Quelllinks und der wählbare Überspring-Bereich sind als `v2.0.85` vorbereitet und verifiziert, aber noch nicht veröffentlicht. Entpack-, Passwort- und Nachbearbeitungslogik bleiben unverändert.
+- Die Live-Erkennung offline gewordener Quelllinks und der wählbare Überspring-Bereich sind als `v2.0.85` auf GitHub und Forgejo veröffentlicht. Entpack-, Passwort- und Nachbearbeitungslogik blieben unverändert; eine produktive Installation oder ein Neustart ist nicht Bestandteil des Releases.
 
 ## Nächste sinnvolle Schritte
 
