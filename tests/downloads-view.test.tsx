@@ -2067,14 +2067,15 @@ describe("download table row contracts", () => {
     expect(packageHtml).toContain("downloads-availability-separator");
     expect(packageHtml).toContain("downloads-availability-count is-total-count");
     expect(packageHtml).toContain("downloads-availability-label");
+    expect(packageHtml).not.toContain("downloads-availability-symbol");
     expect(itemHtml).toContain("Online");
     expect(itemHtml).toContain("downloads-availability is-online");
   });
 
-  it("aligns availability symbols, split counts and labels on fixed axes", () => {
+  it("keeps package availability counts compact and preserves the state colors", () => {
     const css = fs.readFileSync(path.join(process.cwd(), "src/renderer/views/downloads/downloads.css"), "utf8");
 
-    expect(css).toMatch(/\.downloads-availability\.has-counts\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*16px 4ch 1ch 3ch auto;[^}]*font-variant-numeric:\s*tabular-nums;/s);
+    expect(css).toMatch(/\.downloads-availability\.has-counts\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*max-content max-content max-content max-content;[^}]*font-variant-numeric:\s*tabular-nums;/s);
     expect(css).toMatch(/\.downloads-availability-count\.is-online-count\s*\{[^}]*text-align:\s*right;/s);
     expect(css).toMatch(/\.downloads-availability-count\.is-total-count\s*\{[^}]*text-align:\s*left;/s);
     expect(css).toMatch(/\.downloads-availability-label\s*\{[^}]*padding-left:\s*3px;/s);

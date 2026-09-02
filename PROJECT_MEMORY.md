@@ -10,11 +10,11 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 
 - Verifiziert am: 2. September 2026, Europe/Berlin
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
-- Arbeitsbranch: `release/v2.0.85`
-- Quellbasis: `release/v2.0.84`
+- Arbeitsbranch: `fix/background-availability-refresh`
+- Quellbasis: `release/v2.0.85`
 - Release-Tag: `v2.0.85`
-- Baseline-Commit: `ad75469854e5ae3b0cb8a75a2776308fdc4d22e5`
-- Hotfix-Basis: `ad75469854e5ae3b0cb8a75a2776308fdc4d22e5`
+- Baseline-Commit: `309d7bc04201f12524f22aa791569cbf1c99ebf3`
+- Hotfix-Basis: `309d7bc04201f12524f22aa791569cbf1c99ebf3`
 - Paketversion: `2.0.85`
 - Letztes Release: `Multi-Debrid-Downloader v2.0.85`, veröffentlicht am 2. September 2026 auf GitHub und Forgejo
 - Runtime-Voraussetzung: Node.js `>=20`; lokal verifiziert mit Node.js `24.19.0` und npm `11.17.0`
@@ -24,7 +24,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - GitHub `main` steht auf `4d5161b` (`v2.0.35`) und ist gegenüber `release/v2.0.74` mit 7 zu 136 Commits auseinanderentwickelt.
 - Forgejo `main` steht auf `a8c4dcc` (`v1.7.232`) und ist noch deutlich älter.
 - GitHub und Forgejo zeigen für `release/v2.0.74` beide exakt auf `c1e1095`.
-- Neue Arbeit muss bis zu einer ausdrücklich geplanten Branch-Bereinigung von `release/v2.0.83` beziehungsweise einem davon abgeleiteten Arbeitsbranch ausgehen.
+- Neue Arbeit muss bis zu einer ausdrücklich geplanten Branch-Bereinigung vom neuesten stabilen Release-Branch beziehungsweise einem davon abgeleiteten Arbeitsbranch ausgehen.
 
 ## Remotes
 
@@ -210,6 +210,15 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Verspätete Verfügbarkeitsantworten können einen bereits endgültig als offline markierten Eintrag nicht wieder auf online setzen. Die neue Nachprüfung wird pro Item gedrosselt, sodass mehrdeutige Providerfehler den Hoster nicht in einer schnellen Endlosschleife abfragen.
 - Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert; die vorhandene Dateinamen-Zuordnung für Mehrteilarchive wird ausschließlich für die Auswahl noch offener Download-Items wiederverwendet.
 
+## Unveröffentlichte Änderungen nach v2.0.85
+
+- Zuvor als online bestätigte, weiterhin wartende Rapidgator-, DDownload- und 1Fichier-Links werden nun auch ohne Druck auf „Start“ gedrosselt im Hintergrund nachgeprüft. Der erste Durchlauf beginnt zehn Sekunden nach dem Programmstart; weitere Durchläufe folgen frühestens alle 30 Sekunden.
+- Ein Verfügbarkeitsstand gilt nach 30 Minuten als veraltet. Pro Durchlauf werden die 40 am längsten nicht geprüften Links in Warteschlangenreihenfolge berücksichtigt und höchstens vier Hoster-Anfragen parallel ausgeführt. Damit werden auch große Warteschlangen schrittweise vollständig geprüft, ohne den Hoster mit Tausenden gleichzeitigen Requests zu belasten.
+- Nur ein eindeutiges Offline-Ergebnis ändert den sichtbaren Status und wendet dieselbe konfigurierte Archivsatz-/Paketregel wie während eines Downloads an. Timeouts, Proxyfehler, Rate-Limits und sonstige uneindeutige Antworten behalten den bisherigen Online-Status; der Prüfversuch wird trotzdem zeitlich berücksichtigt, damit gestörte Links die restliche Warteschlange nicht dauerhaft verdrängen.
+- Der Zeitpunkt der letzten Verfügbarkeitsprüfung wird in der Session gespeichert und beim Laden gegen ungültige Zukunftswerte abgesichert. Ein Shutdown bricht laufende Prüfungen ab und stellt deren vorherigen grünen Zustand wieder her. Hintergrundprüfungen erzeugen keine falschen Ergebnisse in einer noch gar nicht gestarteten Download-Sitzung.
+- Die Verfügbarkeit eines Oberpakets wird kompakt als `0/8 online` dargestellt. Das zusätzliche Statussymbol vor dem Zähler und der dadurch entstandene Abstand entfallen; die Verfügbarkeitsanzeige einzelner Dateien bleibt unverändert.
+- Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert.
+
 ## Start-, Build- und Testbefehle
 
 ```powershell
@@ -230,17 +239,19 @@ Robuste direkte beziehungsweise getrennte Varianten:
 
 ```powershell
 node node_modules/vitest/vitest.mjs run
-npm run build:main
-npm run build:renderer
+node node_modules/tsup/dist/cli-default.js src/main/main.ts src/preload/preload.ts --out-dir build/main --format cjs --target node20 --external electron --sourcemap
+node node_modules/vite/bin/vite.js build
+node node_modules/tsx/dist/cli.mjs tests/self-check.ts
+node node_modules/typescript/bin/tsc --noEmit
 npm run test:backup-api
-npm run self-check
-npm exec -- tsc --noEmit
 ```
 
 `npm run release:win` baut Release-Artefakte und darf nur nach ausdrücklicher Release-Freigabe ausgeführt werden.
 
 ## Verifizierungen bis 2. September 2026
 
+- Unveröffentlichter Stand nach `v2.0.85`: vollständiger Clientlauf ohne die zwei lokal nicht ausführbaren Windows-Symlink-Fixtures mit 143 erfolgreichen Testdateien, 1 optional übersprungenen JVM-Testdatei, 2.723 erfolgreichen und 4 übersprungenen Tests. Darin sind alle 278 Download-Manager-, 151 Downloads-Ansicht-, 129 Storage- und 84 unveränderten Extractor-Tests grün. Die vier neuen Hintergrundprüfungs-Regressionen bestätigen Archiv-Scope, uneindeutige Antworten ohne falsches Offline, höchstens 40 Links und vier parallele Requests je Durchlauf sowie den sauberen Shutdown-Abbruch. Der vollständige Lauf einschließlich Release-Metadaten erreichte 2.745 erfolgreiche Tests; ausschließlich zwei Fixtures endeten bereits beim unter Windows nicht erlaubten Anlegen eines Symlinks mit `EPERM`.
+- Für denselben unveröffentlichten Stand sind TypeScript, Main-Build, Renderer-Produktionsbuild, Node-Self-Check und alle 16 Backup-API-Tests erfolgreich. Die fokussierten UI-Tests bestätigen die kompakte Paketverfügbarkeit ohne vorangestelltes Symbol. Die bekannte Vite-Warnung betrifft den rund 582 KiB großen Renderer-Chunk.
 - Kandidat für `v2.0.85`: zwei vollständige Download-Manager-Läufe mit jeweils 274 von 274 erfolgreichen Tests. Die neuen Regressionen bestätigen den Wechsel eines zuvor online gemeldeten Rapidgator-Links auf offline, die direkte Behandlung von Real-Debrid-`file_unavailable`, den Schutz vor verspäteten Online-Antworten, die Gruppierung von `partN.rar`, `.rar`/`.rNN`, `.zip.NNN`, `.7z.NNN` und `.NNN` von jedem Split-Part aus sowie beide Überspring-Bereiche einschließlich Abbruch aktiver Geschwister und Erhalt fertiger Downloads. Nach der strikten Trennung von Download- und Entpacker-Gruppierung liefen die 9 betroffenen Regressionen und alle 84 Extractor-Tests erneut erfolgreich. Ein zusätzlicher vollständiger Lauf hatte ausschließlich im fachfremden Fake-Timer-Test für den globalen Speed-Limiter einen 10.000-Timer-Abbruch; dieser Test war in den beiden vorherigen Komplettläufen und direkt danach isoliert erfolgreich.
 - Vollständiger Clientlauf ohne die lokal nicht ausführbaren Symlink-Fixtures: 143 Testdateien erfolgreich, 1 optionale JVM-Testdatei übersprungen; 2.718 Tests erfolgreich und 4 übersprungen. Alle 84 unveränderten Extractor-Tests sind grün. Die Public-Release-Metadatendatei lief separat mit 22 von 24 erfolgreichen Tests; die zwei übrigen Fälle endeten unverändert bereits beim Anlegen ihrer Windows-Symlinks mit `EPERM`.
 - Nach dem Offline-Link-Fix erfolgreich: TypeScript, Main-Build, Renderer-Produktionsbuild, Node-Self-Check und alle 16 Backup-API-Tests. Die bekannte Vite-Warnung betrifft den rund 582 KiB großen Renderer-Chunk.

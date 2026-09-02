@@ -98,7 +98,6 @@ function Availability({ online, total, state, text }: { online: number; total: n
   }
   return (
     <span aria-label={label} className={`downloads-cell downloads-availability has-counts is-${state}`} title={label}>
-      <span aria-hidden="true" className="downloads-availability-symbol">{symbol}</span>
       <span className="downloads-availability-count is-online-count">{online}</span>
       <span aria-hidden="true" className="downloads-availability-separator">/</span>
       <span className="downloads-availability-count is-total-count">{total}</span>
