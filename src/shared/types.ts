@@ -502,6 +502,7 @@ export interface DownloadItem {
   createdAt: number;
   updatedAt: number;
   onlineStatus?: "online" | "offline" | "checking";
+  onlineCheckedAt?: number;
 }
 
 export interface AudioStripFileResult {

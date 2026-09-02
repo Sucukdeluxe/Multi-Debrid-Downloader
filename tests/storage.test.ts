@@ -157,6 +157,57 @@ describe("settings storage", () => {
     expect(history?.provider).toBe("deepbrid");
   });
 
+  it("preserves valid availability timestamps and clamps future values while loading a session", () => {
+    const validCheckedAt = Date.now() - 60_000;
+    const beforeNormalize = Date.now();
+    const normalized = normalizeLoadedSession({
+      ...emptySession(),
+      packageOrder: ["pkg-availability"],
+      packages: {
+        "pkg-availability": {
+          id: "pkg-availability",
+          name: "Availability",
+          outputDir: "C:\\Downloads\\Availability",
+          extractDir: "C:\\Downloads\\Availability",
+          status: "queued",
+          itemIds: ["item-valid", "item-future"],
+          cancelled: false,
+          enabled: true,
+          createdAt: 1,
+          updatedAt: 2
+        }
+      },
+      items: {
+        "item-valid": {
+          id: "item-valid",
+          packageId: "pkg-availability",
+          url: "https://example.test/valid.bin",
+          status: "queued",
+          fileName: "valid.bin",
+          onlineStatus: "online",
+          onlineCheckedAt: validCheckedAt,
+          createdAt: 1,
+          updatedAt: 2
+        },
+        "item-future": {
+          id: "item-future",
+          packageId: "pkg-availability",
+          url: "https://example.test/future.bin",
+          status: "queued",
+          fileName: "future.bin",
+          onlineStatus: "online",
+          onlineCheckedAt: Date.now() + 60_000,
+          createdAt: 1,
+          updatedAt: 2
+        }
+      }
+    });
+
+    expect(normalized.items["item-valid"].onlineCheckedAt).toBe(validCheckedAt);
+    expect(normalized.items["item-future"].onlineCheckedAt).toBeGreaterThanOrEqual(beforeNormalize);
+    expect(normalized.items["item-future"].onlineCheckedAt).toBeLessThanOrEqual(Date.now());
+  });
+
   it.each([undefined, "megadebrid", "realdebrid", "invalid-provider"])("normalizes svc-deepbrid status with provider %s deterministically to Deepbrid", (provider) => {
     const key = "fixture-deepbrid-status-key-4pQ5";
     const normalized = normalizeSettings({

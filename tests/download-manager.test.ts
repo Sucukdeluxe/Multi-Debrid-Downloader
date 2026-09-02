@@ -1534,6 +1534,157 @@ describe("download manager", () => {
     expect(items[2]).toMatchObject({ status: "completed", downloadedBytes: 16 });
   });
 
+  it("refreshes a stale queued link in the background and applies the archive offline scope", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-background-availability-offline-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager({
+      ...defaultSettings(),
+      offlineSkipScope: "archive",
+      outputDir: path.join(root, "downloads"),
+      extractDir: path.join(root, "extract")
+    }, emptySession(), createStoragePaths(path.join(root, "state")));
+    const fileNames = [
+      "show.s01e02.part2.rar",
+      "show.s01e02.part1.rar",
+      "show.s01e02.part3.rar",
+      "show.s01e03.part1.rar"
+    ];
+    manager.addPackages([{ name: "show-season", links: fileNames.map((fileName) => `https://example.test/${fileName}`) }]);
+    await waitFor(() => Object.values(manager.getSnapshot().session.items).every((item) => item.onlineStatus !== "checking"), 1_000);
+
+    const internal = manager as any;
+    const items = internal.session.packages[internal.session.packageOrder[0]].itemIds
+      .map((itemId: string) => internal.session.items[itemId]) as DownloadItem[];
+    const checkedAt = Date.now();
+    for (let index = 0; index < items.length; index += 1) {
+      items[index].url = `https://rapidgator.net/file/${String(index + 1).padStart(32, "0")}/${fileNames[index]}.html`;
+      items[index].onlineStatus = "online";
+      items[index].onlineCheckedAt = index === 0 ? checkedAt - 31 * 60 * 1000 : checkedAt;
+      items[index].totalBytes = 16;
+    }
+
+    const requested: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      requested.push(url);
+      return new Response("File not found", { status: 404 });
+    }) as typeof fetch;
+
+    await internal.runBackgroundAvailabilityPass();
+
+    expect(requested).toEqual([items[0].url]);
+    expect(items[0]).toMatchObject({ status: "failed", onlineStatus: "offline", fullStatus: "Offline" });
+    expect(items[1]).toMatchObject({ status: "cancelled", fullStatus: "Übersprungen (Archivteil offline)" });
+    expect(items[2]).toMatchObject({ status: "cancelled", fullStatus: "Übersprungen (Archivteil offline)" });
+    expect(items[3]).toMatchObject({ status: "queued", onlineStatus: "online" });
+    expect(internal.runOutcomes.size).toBe(0);
+  });
+
+  it("keeps the previous online state when a background check is not definitive", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-background-availability-ambiguous-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(root, "state")));
+    manager.addPackages([{ name: "ambiguous", links: ["https://example.test/episode.mkv"] }]);
+    await waitFor(() => Object.values(manager.getSnapshot().session.items).every((item) => item.onlineStatus !== "checking"), 1_000);
+
+    const internal = manager as any;
+    const item = Object.values(internal.session.items)[0] as DownloadItem;
+    const previousCheckedAt = Date.now() - 31 * 60 * 1000;
+    item.url = "https://rapidgator.net/file/11111111111111111111111111111111/episode.mkv.html";
+    item.onlineStatus = "online";
+    item.onlineCheckedAt = previousCheckedAt;
+    item.totalBytes = 16;
+    let requestCount = 0;
+    globalThis.fetch = (async (): Promise<Response> => {
+      requestCount += 1;
+      return new Response("temporarily blocked", { status: 403 });
+    }) as typeof fetch;
+
+    await internal.runBackgroundAvailabilityPass();
+    await internal.runBackgroundAvailabilityPass();
+
+    expect(item).toMatchObject({ status: "queued", onlineStatus: "online" });
+    expect(item.onlineCheckedAt).toBeGreaterThan(previousCheckedAt);
+    expect(requestCount).toBe(1);
+  });
+
+  it("limits each background pass to 40 links and four concurrent hoster requests", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-background-availability-limit-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager(defaultSettings(), emptySession(), createStoragePaths(path.join(root, "state")));
+    const fileNames = Array.from({ length: 45 }, (_, index) => `episode-${index}.mkv`);
+    manager.addPackages([{ name: "large-queue", links: fileNames.map((fileName) => `https://example.test/${fileName}`) }]);
+    await waitFor(() => Object.values(manager.getSnapshot().session.items).every((item) => item.onlineStatus !== "checking"), 1_000);
+
+    const internal = manager as any;
+    const items = internal.session.packages[internal.session.packageOrder[0]].itemIds
+      .map((itemId: string) => internal.session.items[itemId]) as DownloadItem[];
+    const staleBase = Date.now() - 2 * 60 * 60 * 1000;
+    for (let index = 0; index < items.length; index += 1) {
+      items[index].url = `https://rapidgator.net/file/${index.toString(16).padStart(32, "0")}/${fileNames[index]}.html`;
+      items[index].onlineStatus = "online";
+      items[index].onlineCheckedAt = staleBase + index;
+      items[index].totalBytes = 16;
+    }
+
+    const requested: string[] = [];
+    let active = 0;
+    let peak = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      requested.push(url);
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      const fileName = path.basename(new URL(url).pathname).replace(/\.html$/i, "");
+      return new Response(`<html><title>${fileName}</title><div>File size: <strong>16 B</strong></div></html>`, {
+        status: 200,
+        headers: { "Content-Type": "text/html" }
+      });
+    }) as typeof fetch;
+
+    await internal.runBackgroundAvailabilityPass();
+
+    expect(requested).toHaveLength(40);
+    expect(peak).toBeLessThanOrEqual(4);
+    expect(new Set(requested)).toEqual(new Set(items.slice(0, 40).map((item) => item.url)));
+    expect(items.slice(0, 40).every((item) => Number(item.onlineCheckedAt) > staleBase + 44)).toBe(true);
+    expect(items.slice(40).every((item, index) => item.onlineCheckedAt === staleBase + index + 40)).toBe(true);
+  });
+
+  it("restores a background checking marker to online during shutdown", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-background-availability-shutdown-"));
+    tempDirs.push(root);
+    const manager = new DownloadManager(
+      defaultSettings(),
+      emptySession(),
+      createStoragePaths(path.join(root, "state")),
+      { enableBackgroundAvailabilityChecks: true }
+    );
+    manager.addPackages([{ name: "shutdown", links: ["https://example.test/episode.mkv"] }]);
+    await waitFor(() => Object.values(manager.getSnapshot().session.items).every((item) => item.onlineStatus !== "checking"), 1_000);
+
+    const internal = manager as any;
+    const item = Object.values(internal.session.items)[0] as DownloadItem;
+    item.url = "https://rapidgator.net/file/22222222222222222222222222222222/episode.mkv.html";
+    item.onlineStatus = "online";
+    item.onlineCheckedAt = Date.now() - 31 * 60 * 1000;
+    item.totalBytes = 16;
+    globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    })) as typeof fetch;
+
+    expect(internal.backgroundAvailabilityTimer).not.toBeNull();
+    const pass = internal.runBackgroundAvailabilityPass();
+    await waitFor(() => item.onlineStatus === "checking", 1_000);
+    manager.prepareForShutdown();
+    await pass;
+
+    expect(item.onlineStatus).toBe("online");
+    expect(internal.backgroundAvailabilityTimer).toBeNull();
+  });
+
   it("applies an imported settings snapshot without touching queued items or filesystem workflows", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-settings-import-"));
     tempDirs.push(root);

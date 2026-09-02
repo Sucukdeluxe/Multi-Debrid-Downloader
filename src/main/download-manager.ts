@@ -194,6 +194,12 @@ const MAX_SAME_DIRECT_URL_ATTEMPTS = 3;
 const MAX_HTTP416_FRESH_RESTARTS = 2;
 const HTTP416_FRESH_RESTART_DELAY_MS = 8000;
 const DOWNLOAD_LIVE_UPDATE_INTERVAL_MS = 750;
+const BACKGROUND_AVAILABILITY_INITIAL_DELAY_MS = 10000;
+const BACKGROUND_AVAILABILITY_INTERVAL_MS = 30000;
+const BACKGROUND_AVAILABILITY_STALE_MS = 30 * 60 * 1000;
+const BACKGROUND_AVAILABILITY_BATCH_SIZE = 40;
+const BACKGROUND_AVAILABILITY_CONCURRENCY = 4;
+const BACKGROUND_AVAILABILITY_TIMEOUT_MS = 15000;
 
 function getHttp416FreshRestartDelayMs(): number {
   const fromEnv = Number(process.env.RD_HTTP416_FRESH_RESTART_DELAY_MS ?? NaN);
@@ -479,7 +485,15 @@ type DownloadManagerOptions = {
   onHistoryEntry?: HistoryEntryCallback;
   enqueueNotification?: (event: NotificationEvent) => Promise<void>;
   protectEmptyClobber?: boolean;
+  enableBackgroundAvailabilityChecks?: boolean;
 };
+
+type BackgroundAvailabilityHoster = "rapidgator" | "ddownload" | "onefichier";
+
+type BackgroundAvailabilityResult =
+  | { hoster: "rapidgator"; value: NonNullable<Awaited<ReturnType<typeof checkRapidgatorOnline>>> }
+  | { hoster: "ddownload"; value: DdownloadCheckResult }
+  | { hoster: "onefichier"; value: OneFichierCheckResult };
 
 type RunLifecycleContext = {
   id: string;
@@ -2105,6 +2119,14 @@ export class DownloadManager extends EventEmitter {
 
   private sourceAvailabilityRecheckAt = new Map<string, number>();
 
+  private backgroundAvailabilityTimer: NodeJS.Timeout | null = null;
+
+  private backgroundAvailabilityAbortController: AbortController | null = null;
+
+  private backgroundAvailabilityItemIds = new Set<string>();
+
+  private readonly backgroundAvailabilityChecksEnabled: boolean;
+
   private packageDiskRetryAfterByPackage = new Map<string, number>();
 
   private diskWaitEvents: NonNullable<UiSnapshot["diskWaitEvents"]> = [];
@@ -2139,6 +2161,7 @@ export class DownloadManager extends EventEmitter {
   public constructor(settings: AppSettings, session: SessionState, storagePaths: StoragePaths, options: DownloadManagerOptions = {}) {
     super();
     this.settings = settings;
+    this.backgroundAvailabilityChecksEnabled = options.enableBackgroundAvailabilityChecks ?? !process.env.VITEST;
     const startedAt = nowMs();
     this.appSessionStartedAt = startedAt;
     this.runtimePersistedTotalMs = Math.max(0, Number(settings.totalRuntimeAllTimeMs || 0));
@@ -2186,6 +2209,7 @@ export class DownloadManager extends EventEmitter {
     this.checkExistingRapidgatorLinks();
     this.checkExistingDdownloadLinks();
     this.checkExistingOneFichierLinks();
+    this.scheduleBackgroundAvailabilityCheck(BACKGROUND_AVAILABILITY_INITIAL_DELAY_MS);
     void this.cleanupExistingExtractedArchives().catch((err) => logger.warn(`cleanupExistingExtractedArchives Fehler (constructor): ${compactErrorText(err)}`));
     setRotationEventListener(() => {
       if (this.rotationListenerActive === false) {
@@ -3960,11 +3984,13 @@ export class DownloadManager extends EventEmitter {
       if (item.status === "failed" && item.onlineStatus === "offline") {
         return;
       }
+      item.onlineCheckedAt = nowMs();
       item.onlineStatus = result.online ? "online" : "offline";
       item.updatedAt = nowMs();
       return;
     }
 
+    item.onlineCheckedAt = nowMs();
     if (!result.online) {
       item.status = "failed";
       item.fullStatus = "Offline";
@@ -3986,6 +4012,172 @@ export class DownloadManager extends EventEmitter {
       }
       item.onlineStatus = "online";
       item.updatedAt = nowMs();
+    }
+  }
+
+  private scheduleBackgroundAvailabilityCheck(delayMs: number): void {
+    if (!this.backgroundAvailabilityChecksEnabled || !this.metadataChecksActive || this.backgroundAvailabilityTimer) {
+      return;
+    }
+    this.backgroundAvailabilityTimer = setTimeout(() => {
+      this.backgroundAvailabilityTimer = null;
+      void this.runBackgroundAvailabilityPass()
+        .catch((error) => logger.warn(`Hintergrund-Linkprüfung fehlgeschlagen: ${compactErrorText(error)}`))
+        .finally(() => this.scheduleBackgroundAvailabilityCheck(BACKGROUND_AVAILABILITY_INTERVAL_MS));
+    }, Math.max(0, delayMs));
+    this.backgroundAvailabilityTimer.unref?.();
+  }
+
+  private stopBackgroundAvailabilityChecks(): void {
+    if (this.backgroundAvailabilityTimer) {
+      clearTimeout(this.backgroundAvailabilityTimer);
+      this.backgroundAvailabilityTimer = null;
+    }
+    for (const itemId of this.backgroundAvailabilityItemIds) {
+      const item = this.session.items[itemId];
+      if (item?.onlineStatus === "checking") item.onlineStatus = "online";
+    }
+    this.backgroundAvailabilityItemIds.clear();
+    this.backgroundAvailabilityAbortController?.abort("shutdown");
+  }
+
+  private backgroundAvailabilityHoster(item: DownloadItem): BackgroundAvailabilityHoster | null {
+    if (isRapidgatorSourceLink(item.url)) return "rapidgator";
+    if (isDdownloadLink(item.url)) return "ddownload";
+    if (isOneFichierLink(item.url)) return "onefichier";
+    return null;
+  }
+
+  private isBackgroundAvailabilityPending(item: DownloadItem): boolean {
+    const pkg = this.session.packages[item.packageId];
+    return Boolean(pkg
+      && !pkg.cancelled
+      && pkg.enabled
+      && (item.status === "queued" || item.status === "reconnect_wait")
+      && !this.activeTasks.has(item.id)
+      && this.backgroundAvailabilityHoster(item));
+  }
+
+  private collectBackgroundAvailabilityCandidates(checkedAt: number): DownloadItem[] {
+    const staleBefore = checkedAt - BACKGROUND_AVAILABILITY_STALE_MS;
+    const candidates: DownloadItem[] = [];
+    for (const packageId of this.session.packageOrder) {
+      const pkg = this.session.packages[packageId];
+      if (!pkg || pkg.cancelled || !pkg.enabled) continue;
+      for (const itemId of pkg.itemIds) {
+        const item = this.session.items[itemId];
+        if (!item || item.onlineStatus !== "online" || !this.isBackgroundAvailabilityPending(item)) continue;
+        if (Number(item.onlineCheckedAt || 0) > staleBefore) continue;
+        candidates.push(item);
+      }
+    }
+    return candidates
+      .sort((left, right) => Number(left.onlineCheckedAt || 0) - Number(right.onlineCheckedAt || 0))
+      .slice(0, BACKGROUND_AVAILABILITY_BATCH_SIZE);
+  }
+
+  private async checkBackgroundAvailability(
+    item: DownloadItem,
+    hoster: BackgroundAvailabilityHoster,
+    signal: AbortSignal
+  ): Promise<BackgroundAvailabilityResult | null> {
+    const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(BACKGROUND_AVAILABILITY_TIMEOUT_MS)]);
+    if (hoster === "rapidgator") {
+      const result = await checkRapidgatorOnline(item.url, requestSignal);
+      return result ? { hoster, value: result } : null;
+    }
+    if (hoster === "ddownload") {
+      const result = await checkDdownloadOnline(item.url, requestSignal);
+      return result ? { hoster, value: result } : null;
+    }
+    const results = await checkOneFichierLinks([item.url], requestSignal);
+    const result = results.get(item.url);
+    return result ? { hoster, value: result } : null;
+  }
+
+  private applyBackgroundAvailabilityResult(
+    itemId: string,
+    result: BackgroundAvailabilityResult | null
+  ): void {
+    const item = this.session.items[itemId];
+    if (!item) return;
+    if (!this.isBackgroundAvailabilityPending(item)) {
+      if (item.onlineStatus === "checking") item.onlineStatus = "online";
+      return;
+    }
+    if (!result) {
+      item.onlineCheckedAt = nowMs();
+      if (item.onlineStatus === "checking") item.onlineStatus = "online";
+      return;
+    }
+    if (result.value.online) {
+      if (result.hoster === "rapidgator") {
+        this.applyRapidgatorCheckResult(item, result.value);
+      } else if (result.hoster === "ddownload") {
+        this.applyDdownloadCheckResult(item, result.value);
+      } else {
+        this.applyOneFichierCheckResult(item, result.value);
+      }
+      return;
+    }
+    const pkg = this.session.packages[item.packageId];
+    if (!pkg) return;
+    const hosterLabel = result.hoster === "rapidgator" ? "Rapidgator" : result.hoster === "ddownload" ? "DDownload" : "1Fichier";
+    this.markItemOfflineAndSkipRelated(pkg, item, `Datei nicht gefunden auf ${hosterLabel}`, "hoster", "background");
+  }
+
+  private async runBackgroundAvailabilityPass(): Promise<void> {
+    if (!this.metadataChecksActive || this.backgroundAvailabilityAbortController) {
+      return;
+    }
+    const candidates = this.collectBackgroundAvailabilityCandidates(nowMs());
+    if (candidates.length === 0) return;
+
+    const controller = new AbortController();
+    this.backgroundAvailabilityAbortController = controller;
+    const pendingByUrl = new Map<string, Promise<BackgroundAvailabilityResult | null>>();
+    for (const item of candidates) {
+      item.onlineStatus = "checking";
+      this.backgroundAvailabilityItemIds.add(item.id);
+    }
+    this.emitState();
+
+    try {
+      await runWithLimitedConcurrency(candidates, BACKGROUND_AVAILABILITY_CONCURRENCY, async (candidate) => {
+        const item = this.session.items[candidate.id];
+        if (!item || !this.isBackgroundAvailabilityPending(item) || controller.signal.aborted) return;
+        const hoster = this.backgroundAvailabilityHoster(item);
+        if (!hoster) return;
+        const key = `${hoster}:${item.url}`;
+        let pending = pendingByUrl.get(key);
+        if (!pending) {
+          pending = this.checkBackgroundAvailability(item, hoster, controller.signal);
+          pendingByUrl.set(key, pending);
+        }
+        let result: BackgroundAvailabilityResult | null = null;
+        try {
+          result = await pending;
+        } catch (error) {
+          if (!controller.signal.aborted) {
+            logger.warn(`Gedrosselte Link-Nachprüfung fehlgeschlagen: item=${item.fileName || item.id}, error=${compactErrorText(error)}`);
+          }
+        }
+        if (!this.metadataChecksActive || controller.signal.aborted) return;
+        this.applyBackgroundAvailabilityResult(candidate.id, result);
+        this.persistSoon();
+        this.emitState();
+      });
+    } finally {
+      if (this.backgroundAvailabilityAbortController === controller) {
+        this.backgroundAvailabilityAbortController = null;
+      }
+      for (const candidate of candidates) {
+        const item = this.session.items[candidate.id];
+        if (item?.onlineStatus === "checking") item.onlineStatus = "online";
+        this.backgroundAvailabilityItemIds.delete(candidate.id);
+      }
+      this.persistSoon();
+      this.emitState();
     }
   }
 
@@ -4018,14 +4210,17 @@ export class DownloadManager extends EventEmitter {
       const checkSignal = AbortSignal.any([signal, AbortSignal.timeout(15_000)]);
       if (isRapidgatorSourceLink(item.url)) {
         const result = await checkRapidgatorOnline(item.url, checkSignal);
+        if (result) item.onlineCheckedAt = checkedAt;
         return result && !result.online ? "hoster" : null;
       }
       if (isDdownloadLink(item.url)) {
         const result = await checkDdownloadOnline(item.url, checkSignal);
+        if (result) item.onlineCheckedAt = checkedAt;
         return result && !result.online ? "hoster" : null;
       }
       const results = await checkOneFichierLinks([item.url], checkSignal);
       const result = results.get(item.url);
+      if (result) item.onlineCheckedAt = checkedAt;
       return result && !result.online ? "hoster" : null;
     } catch (error) {
       if (signal.aborted) {
@@ -4040,7 +4235,8 @@ export class DownloadManager extends EventEmitter {
     pkg: PackageEntry,
     item: DownloadItem,
     errorText: string,
-    confirmedBy: "provider" | "hoster"
+    confirmedBy: "provider" | "hoster",
+    detectedDuring: "download" | "background" = "download"
   ): void {
     const cleanError = errorText
       .replace(/^Error:\s*/i, "")
@@ -4048,6 +4244,7 @@ export class DownloadManager extends EventEmitter {
       .trim();
     item.status = "failed";
     item.onlineStatus = "offline";
+    item.onlineCheckedAt = nowMs();
     item.lastError = cleanError || "Quelllink ist nicht mehr verfügbar";
     item.fullStatus = "Offline";
     item.speedBps = 0;
@@ -4055,7 +4252,7 @@ export class DownloadManager extends EventEmitter {
     this.retryAfterByItem.delete(item.id);
     this.retryStateByItem.delete(item.id);
     this.sourceAvailabilityRecheckAt.delete(item.id);
-    this.recordRunOutcome(item.id, "failed");
+    if (this.runItemIds.has(item.id)) this.recordRunOutcome(item.id, "failed");
 
     const packageItems = pkg.itemIds
       .map((itemId) => this.session.items[itemId])
@@ -4086,12 +4283,15 @@ export class DownloadManager extends EventEmitter {
       if (!relatedActive) {
         this.releaseTargetPath(related.id);
       }
-      this.recordRunOutcome(related.id, "cancelled");
+      if (this.runItemIds.has(related.id)) this.recordRunOutcome(related.id, "cancelled");
       skippedItems.push(related);
     }
 
-    this.logPackageForItem(item, "WARN", "Quelllink während des Downloads offline geworden", {
+    this.logPackageForItem(item, "WARN", detectedDuring === "background"
+      ? "Quelllink bei Hintergrundprüfung offline geworden"
+      : "Quelllink während des Downloads offline geworden", {
       confirmedBy,
+      detectedDuring,
       offlineSkipScope: this.settings.offlineSkipScope,
       skippedItems: skippedItems.length,
       skippedNames: skippedItems.map((entry) => entry.fileName).join(" | ")
@@ -4140,6 +4340,7 @@ export class DownloadManager extends EventEmitter {
     if (item.status === "failed" && item.onlineStatus === "offline") {
       return;
     }
+    item.onlineCheckedAt = nowMs();
     if (!result.online) {
       item.onlineStatus = "offline";
       item.updatedAt = nowMs();
@@ -4204,6 +4405,7 @@ export class DownloadManager extends EventEmitter {
     if (item.status === "failed" && item.onlineStatus === "offline") {
       return;
     }
+    item.onlineCheckedAt = nowMs();
     if (!result.online) {
       item.onlineStatus = "offline";
       item.updatedAt = nowMs();
@@ -6935,6 +7137,7 @@ export class DownloadManager extends EventEmitter {
     this.updateStatisticsActivity(nowMs());
     this.rotationListenerActive = false;
     this.metadataChecksActive = false;
+    this.stopBackgroundAvailabilityChecks();
     this.clearPersistTimer();
     if (this.stateEmitTimer) {
       clearTimeout(this.stateEmitTimer);

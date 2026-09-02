@@ -1047,6 +1047,9 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
       lastError: asText(item.lastError),
       fullStatus: asText(item.fullStatus),
       onlineStatus: VALID_ONLINE_STATUSES.has(onlineStatusRaw) ? onlineStatusRaw as "online" | "offline" | "checking" : undefined,
+      onlineCheckedAt: item.onlineCheckedAt === undefined
+        ? undefined
+        : clampNumber(item.onlineCheckedAt, 0, 0, now),
       createdAt: clampNumber(item.createdAt, now, 0, Number.MAX_SAFE_INTEGER),
       updatedAt: clampNumber(item.updatedAt, now, 0, Number.MAX_SAFE_INTEGER)
     };
