@@ -260,7 +260,10 @@ npm run test:backup-api
 
 `npm run release:win` baut Release-Artefakte und darf nur nach ausdrücklicher Release-Freigabe ausgeführt werden.
 
-## Verifizierungen bis 2. September 2026
+## Verifizierungen bis 4. September 2026
+
+- Release-Build `v2.0.87`: Installer und Portable-Datei wurden aus dem versionierten Release-Vorbereitungsstand `966509a1d4ebe24c0e61ee1de3aacc890f8d7d7f` erzeugt. Das Verifizierungsskript mit `--verify-archives` bestätigte Publish-Konfiguration, Artefaktnamen, Update-Metadaten, Lizenzdateien sowie den vollständig entpackten Inhalt beider EXE-Archive. Der Installer-SHA-512 in `latest.yml` stimmt mit der lokal berechneten Prüfsumme überein; die Installergröße beträgt `90.672.456` Bytes. Das Quellarchiv enthält Paketversion `2.0.87` und trägt den Release-Vorbereitungscommit als ZIP-Kommentar.
+- SHA-256 des `v2.0.87`-Setups: `9d86569f09439a7a9c71b0dbf21995b590f29c56cb95a628d35a8681c07c3e40`; SHA-256 der Portable-Datei: `2a032499de6112774d5d9709bff81b848cc005cf6cfc44ceeae2564acd5b5975`; SHA-256 des Quellarchivs: `b6f2c16207e08c8e4eddcfa3abacb82f5b761407a4f1071eeefc3b1b74b6596b`.
 
 - Kandidat für `v2.0.86`: vollständiger Clientlauf ohne die zwei lokal nicht ausführbaren Windows-Symlink-Fixtures mit 143 erfolgreichen Testdateien, 1 optional übersprungenen JVM-Testdatei, 2.723 erfolgreichen und 4 übersprungenen Tests. Darin sind alle 278 Download-Manager-, 151 Downloads-Ansicht-, 129 Storage- und 84 unveränderten Extractor-Tests grün. Die vier neuen Hintergrundprüfungs-Regressionen bestätigen Archiv-Scope, uneindeutige Antworten ohne falsches Offline, höchstens 40 Links und vier parallele Requests je Durchlauf sowie den sauberen Shutdown-Abbruch. Der vollständige Lauf einschließlich Release-Metadaten erreichte 2.745 erfolgreiche Tests; ausschließlich zwei Fixtures endeten bereits beim unter Windows nicht erlaubten Anlegen eines Symlinks mit `EPERM`.
 - Für denselben Kandidaten sind TypeScript, Main-Build, Renderer-Produktionsbuild, Node-Self-Check und alle 16 Backup-API-Tests erfolgreich. Die fokussierten UI-Tests bestätigen die kompakte Paketverfügbarkeit ohne vorangestelltes Symbol. Die bekannte Vite-Warnung betrifft den rund 582 KiB großen Renderer-Chunk.
