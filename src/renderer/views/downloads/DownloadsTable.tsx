@@ -14,7 +14,7 @@ import {
 } from "../../download-format";
 import type { DownloadPackageRow } from "./downloads-model";
 
-export type DownloadSortColumn = "name" | "size" | "hoster" | "progress" | "service";
+export type DownloadSortColumn = "name" | "size" | "hoster" | "progress" | "service" | "availability";
 
 const DOWNLOAD_SELECTION_COLUMN_WIDTH = "36px";
 const DOWNLOAD_ACTION_COLUMN_WIDTH = "60px";
@@ -68,7 +68,7 @@ export const downloadColumnDefinitions: Record<string, { label: string; width: s
   prio: { label: "Priorität", width: "minmax(var(--downloads-priority-min, 85px), 0.8fr)" },
   status: { label: "Status", width: "minmax(var(--downloads-status-min, 210px), 1.2fr)" },
   speed: { label: "Geschwindigkeit", width: "minmax(var(--downloads-speed-min, 120px), 1fr)" },
-  availability: { label: "Verfügbarkeit", width: "minmax(var(--downloads-availability-min, 110px), 1fr)" },
+  availability: { label: "Verfügbarkeit", width: "minmax(var(--downloads-availability-min, 110px), 1fr)", sortable: "availability" },
   added: { label: "Hinzugefügt am", width: "minmax(var(--downloads-added-min, 135px), 1fr)" }
 };
 
@@ -79,15 +79,31 @@ function effectiveItemOnlineStatus(item: DownloadItem): DownloadItem["onlineStat
     ?? (item.status === "downloading" || item.status === "integrity_check" || item.status === "completed" ? "online" : undefined);
 }
 
-export function getAvailabilitySummary(items: DownloadItem[]): { online: number; total: number; state: AvailabilityState } {
+export interface AvailabilitySummary {
+  online: number;
+  offline: number;
+  total: number;
+  state: AvailabilityState;
+}
+
+export function getAvailabilitySummary(items: readonly DownloadItem[]): AvailabilitySummary {
   const total = items.length;
   const availability = items.map(effectiveItemOnlineStatus);
   const online = availability.filter((status) => status === "online").length;
   const offline = availability.filter((status) => status === "offline").length;
-  if (total > 0 && online === total) return { online, total, state: "online" };
-  if (total > 0 && offline === total) return { online, total, state: "offline" };
-  if (total > 0 && online + offline === total) return { online, total, state: "partial" };
-  return { online, total, state: "checking" };
+  if (total > 0 && online === total) return { online, offline, total, state: "online" };
+  if (total > 0 && offline === total) return { online, offline, total, state: "offline" };
+  if (online > 0 && offline > 0) return { online, offline, total, state: "partial" };
+  return { online, offline, total, state: "checking" };
+}
+
+export function compareAvailabilitySummaries(a: AvailabilitySummary, b: AvailabilitySummary): number {
+  const onlineShareA = a.total > 0 ? a.online / a.total : 0;
+  const onlineShareB = b.total > 0 ? b.online / b.total : 0;
+  if (onlineShareA !== onlineShareB) return onlineShareB - onlineShareA;
+  const offlineShareA = a.total > 0 ? a.offline / a.total : 0;
+  const offlineShareB = b.total > 0 ? b.offline / b.total : 0;
+  return offlineShareA - offlineShareB;
 }
 
 function Availability({ online, total, state, text }: { online: number; total: number; state: AvailabilityState; text?: string }): ReactElement {
@@ -333,9 +349,10 @@ export function areItemRowPropsEqual(previous: ItemRowProps, next: ItemRowProps)
 
 export const ItemRow = memo(ItemRowContent, areItemRowPropsEqual);
 
-export function getPackageProgress(row: DownloadPackageRow): { done: number; failed: number; cancelled: number; total: number; value: number } {
+export function getPackageProgress(row: DownloadPackageRow): { done: number; failed: number; offline: number; cancelled: number; total: number; value: number } {
   let done = Math.max(0, Number(row.package.cleanedCompletedItemCount || 0));
   let failed = 0;
+  let offline = 0;
   let cancelled = 0;
   let extracted = Math.max(0, Number(row.package.cleanedExtractedItemCount || 0));
   let extracting = false;
@@ -343,8 +360,10 @@ export function getPackageProgress(row: DownloadPackageRow): { done: number; fai
   let extractingProgress = 0;
   for (const item of row.allItems) {
     if (item.status === "completed") done += 1;
-    else if (item.status === "failed") failed += 1;
-    else if (item.status === "cancelled") cancelled += 1;
+    else if (item.status === "failed") {
+      failed += 1;
+      if (item.onlineStatus === "offline") offline += 1;
+    } else if (item.status === "cancelled") cancelled += 1;
     const fullStatus = item.fullStatus || "";
     if (fullStatus.startsWith("Entpackt")) {
       extracted += 1;
@@ -368,7 +387,7 @@ export function getPackageProgress(row: DownloadPackageRow): { done: number; fai
   const downloadProgress = Math.min(useExtractSplit ? 50 : 100, Math.floor(downloadRatio * (useExtractSplit ? 50 : 100)));
   const extractionProgress = Math.min(50, Math.floor(((extracted + extractingProgress) / total) * 50));
   const value = Math.min(100, useExtractSplit ? downloadProgress + extractionProgress : downloadProgress);
-  return { done, failed, cancelled, total, value };
+  return { done, failed: failed - offline, offline, cancelled, total, value };
 }
 
 export function getPackageSizeProgress(row: DownloadPackageRow): { downloaded: number; total: number; value: number } {
@@ -442,7 +461,7 @@ function packageCell(row: DownloadPackageRow, column: string, packageSpeedBps: n
     const text = availability.state === "checking"
       ? row.allItems.some((item) => item.onlineStatus === "checking") ? "Prüfung" : "Ungeprüft"
       : undefined;
-    return <Availability {...availability} text={text} />;
+    return <Availability online={availability.online} state={availability.state} text={text} total={availability.total} />;
   }
   if (column === "added") return <span className="downloads-cell">{formatDateTime(entry.createdAt)}</span>;
   return null;

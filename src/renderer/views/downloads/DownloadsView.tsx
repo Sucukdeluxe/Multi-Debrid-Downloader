@@ -52,6 +52,7 @@ export interface DownloadsViewModel extends DownloadsViewModelCore {
   gridTemplate: string;
   sortColumn?: DownloadSortColumn;
   sortDirection?: "asc" | "desc";
+  packageOrderSortRevision?: number;
   disclosureRevision: number;
   animationsEnabled: boolean;
   status: DownloadsStatusModel;

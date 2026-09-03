@@ -4,6 +4,18 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+### Availability sorting
+
+- Make the Availability column header sortable: the first click orders packages from fully online through partially available and unchecked down to fully offline, the second click reverses the order.
+- Rank packages by their online share first and by their offline share second, so `25/26 online` sorts above `6/7 online` and unchecked packages sit between partial and fully offline ones.
+- Show a package in the warning color as soon as at least one link is online and at least one is offline, even while other links are still unchecked; fully online stays green and fully offline stays red.
+- Switch the package order instantly when a column sort changes it instead of sliding rows up and down; manual moves keep their animation.
+- Keep offline links out of the package status error count, because the Availability column already shows them; genuine download failures still appear as errors.
+
+### Sidebar totals
+
+- Show remaining and total queue volume of one terabyte or more as grouped gigabytes with one decimal, such as `1.449,5 GB` in German and `1,449.5 GB` in English, instead of a five-decimal terabyte value.
+
 ## [2.0.86] - 2026-09-02
 
 ### Background availability refresh

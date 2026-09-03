@@ -16,6 +16,7 @@ import {
   animateDownloadOrderRows,
   captureDownloadOrderRowTops,
   getDownloadOrderTransitionPinnedIds,
+  shouldAnimateDownloadOrderChange,
   getDownloadPackageOrder,
   isDownloadPackageOrderChange
 } from "./download-order-transition";
@@ -137,8 +138,15 @@ export function VirtualizedDownloadsBody({ actions, model, state }: { actions: D
   const orderRowTopsRef = useRef<Map<string, number>>(new Map());
   const [, setOrderTransitionRevision] = useState(0);
   const packageOrderChanged = isDownloadPackageOrderChange(previousPackageOrderRef.current, packageOrder);
+  const packageOrderSortRevision = model.packageOrderSortRevision ?? 0;
+  const appliedSortRevisionRef = useRef(packageOrderSortRevision);
+  const orderAnimationsEnabled = shouldAnimateDownloadOrderChange({
+    animationsEnabled: model.animationsEnabled,
+    sortRevision: packageOrderSortRevision,
+    appliedSortRevision: appliedSortRevisionRef.current
+  });
   const orderTransitionPinnedIds = getDownloadOrderTransitionPinnedIds({
-    enabled: model.animationsEnabled,
+    enabled: orderAnimationsEnabled,
     previousOrder: previousPackageOrderRef.current,
     nextOrder: packageOrder,
     previousVisibleIds: previousVisibleIdsRef.current,
@@ -198,9 +206,10 @@ export function VirtualizedDownloadsBody({ actions, model, state }: { actions: D
   useRendererLayoutEffect(() => {
     previousPackageOrderRef.current = packageOrder;
     previousVisibleIdsRef.current = virtualWindow.rows.map((entry) => entry.id);
+    appliedSortRevisionRef.current = packageOrderSortRevision;
     const body = bodyRef.current;
     if (!body) return;
-    if (!model.animationsEnabled) {
+    if (!orderAnimationsEnabled) {
       for (const animation of orderAnimationsRef.current) animation.cancel();
       orderAnimationsRef.current = [];
       orderRowTopsRef.current = captureDownloadOrderRowTops(body);
@@ -228,7 +237,7 @@ export function VirtualizedDownloadsBody({ actions, model, state }: { actions: D
       orderTransitionTimerRef.current = 0;
       setOrderTransitionRevision((revision) => revision + 1);
     }, DOWNLOAD_ORDER_TRANSITION_DURATION_MS);
-  }, [model.animationsEnabled, orderTransitionPinnedIds, packageOrder, packageOrderChanged, virtualWindow.rows]);
+  }, [orderAnimationsEnabled, orderTransitionPinnedIds, packageOrder, packageOrderChanged, packageOrderSortRevision, virtualWindow.rows]);
 
   useEffect(() => () => {
     if (orderTransitionTimerRef.current) window.clearTimeout(orderTransitionTimerRef.current);

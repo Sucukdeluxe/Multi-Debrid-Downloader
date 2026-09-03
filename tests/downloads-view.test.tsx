@@ -37,7 +37,8 @@ import {
   DOWNLOAD_ORDER_TRANSITION_DURATION_MS,
   getDownloadOrderTransitionPinnedIds,
   getDownloadOrderTransformKeyframes,
-  isDownloadPackageOrderChange
+  isDownloadPackageOrderChange,
+  shouldAnimateDownloadOrderChange
 } from "../src/renderer/views/downloads/download-order-transition";
 import {
   DownloadsContent,
@@ -58,6 +59,7 @@ import {
   arePackageCardPropsEqual,
   compactDownloadStatus,
   downloadColumnDefinitions,
+  compareAvailabilitySummaries,
   getAvailabilitySummary,
   getPackageProgress,
   getPackageSizeProgress
@@ -281,11 +283,14 @@ describe("Download-ETA", () => {
 });
 
 describe("verbleibendes Downloadvolumen", () => {
-  it("uses TB precision that changes on every normal large-queue live tick", () => {
+  it("shows queues of one terabyte or more as grouped gigabytes with one decimal per language", () => {
     const before = Math.round(1.125 * 1024 ** 4);
-    const after = before - 40 * 1024 ** 2;
-    expect(formatRemainingDownloadBytes({ bytes: before, unknownItems: 0 })).toBe("1.12500 TB");
-    expect(formatRemainingDownloadBytes({ bytes: after, unknownItems: 0 })).toBe("1.12496 TB");
+    const after = before - 120 * 1024 ** 2;
+    expect(formatRemainingDownloadBytes({ bytes: before, unknownItems: 0 }, "de")).toBe("1.152,0 GB");
+    expect(formatRemainingDownloadBytes({ bytes: after, unknownItems: 0 }, "de")).toBe("1.151,9 GB");
+    expect(formatRemainingDownloadBytes({ bytes: before, unknownItems: 0 }, "en")).toBe("1,152.0 GB");
+    expect(formatRemainingDownloadBytes({ bytes: Math.round(1449.5 * 1024 ** 3), unknownItems: 2 }, "de")).toBe("≥ 1.449,5 GB");
+    expect(formatRemainingDownloadBytes({ bytes: 998.5 * 1024 ** 3, unknownItems: 0 }, "de")).toBe("998.50 GB");
   });
 
   it("summiert nur offene bekannte Restbytes und klemmt überladene Fortschritte bei null", () => {
@@ -373,6 +378,12 @@ describe("virtualisierte Paketanimation", () => {
 
     expect(html).toContain('class="downloads-table-body is-download-motion-disabled"');
     expect(css).toMatch(/\.downloads-table-body\.is-download-motion-disabled \.downloads-virtual-spacer,\s*\.downloads-table-body\.is-download-motion-disabled \.downloads-virtual-row\s*\{[^}]*transition:\s*none !important;/s);
+  });
+
+  it("switches instantly instead of animating when a column sort changed the package order", () => {
+    expect(shouldAnimateDownloadOrderChange({ animationsEnabled: true, sortRevision: 3, appliedSortRevision: 3 })).toBe(true);
+    expect(shouldAnimateDownloadOrderChange({ animationsEnabled: true, sortRevision: 4, appliedSortRevision: 3 })).toBe(false);
+    expect(shouldAnimateDownloadOrderChange({ animationsEnabled: false, sortRevision: 3, appliedSortRevision: 3 })).toBe(false);
   });
 
   it("pins only previously visible rows for a real priority reorder", () => {
@@ -1088,7 +1099,7 @@ describe("downloads model", () => {
 
     expect(row.items.map((entry) => entry.id)).toEqual(["queued-item"]);
     expect(row.allItems.map((entry) => entry.id)).toEqual(["extracted-item", "queued-item"]);
-    expect(getPackageProgress(row)).toEqual({ done: 1, failed: 0, cancelled: 0, total: 2, value: 50 });
+    expect(getPackageProgress(row)).toEqual({ done: 1, failed: 0, offline: 0, cancelled: 0, total: 2, value: 50 });
     expect(getPackageSizeProgress(row)).toEqual({ downloaded: 100, total: 200, value: 50 });
   });
 
@@ -1985,21 +1996,118 @@ describe("download table row contracts", () => {
     expect(getAvailabilitySummary([
       item("online-a", "package-a", "queued", { onlineStatus: "online" }),
       item("online-b", "package-a", "queued", { onlineStatus: "online" })
-    ])).toEqual({ online: 2, total: 2, state: "online" });
+    ])).toEqual({ online: 2, offline: 0, total: 2, state: "online" });
     expect(getAvailabilitySummary([
       item("partial-a", "package-a", "queued", { onlineStatus: "online" }),
       item("partial-b", "package-a", "queued", { onlineStatus: "offline" })
-    ])).toEqual({ online: 1, total: 2, state: "partial" });
+    ])).toEqual({ online: 1, offline: 1, total: 2, state: "partial" });
     expect(getAvailabilitySummary([
       item("offline-a", "package-a", "queued", { onlineStatus: "offline" }),
       item("offline-b", "package-a", "queued", { onlineStatus: "offline" })
-    ])).toEqual({ online: 0, total: 2, state: "offline" });
+    ])).toEqual({ online: 0, offline: 2, total: 2, state: "offline" });
     expect(getAvailabilitySummary([
       item("unknown-a", "package-a", "queued", { onlineStatus: undefined })
-    ])).toEqual({ online: 0, total: 1, state: "checking" });
+    ])).toEqual({ online: 0, offline: 0, total: 1, state: "checking" });
     expect(getAvailabilitySummary([
       item("active-a", "package-a", "downloading", { onlineStatus: undefined })
-    ])).toEqual({ online: 1, total: 1, state: "online" });
+    ])).toEqual({ online: 1, offline: 0, total: 1, state: "online" });
+  });
+
+  it("treats a package with online and offline links as partial even while other links are still unchecked", () => {
+    expect(getAvailabilitySummary([
+      item("mixed-online", "package-a", "queued", { onlineStatus: "online" }),
+      item("mixed-offline", "package-a", "queued", { onlineStatus: "offline" }),
+      item("mixed-checking", "package-a", "queued", { onlineStatus: "checking" })
+    ])).toEqual({ online: 1, offline: 1, total: 3, state: "partial" });
+    expect(getAvailabilitySummary([
+      item("pending-online", "package-a", "queued", { onlineStatus: "online" }),
+      item("pending-unknown", "package-a", "queued", { onlineStatus: undefined })
+    ])).toEqual({ online: 1, offline: 0, total: 2, state: "checking" });
+  });
+
+  it("renders partially available packages with the warning tone", () => {
+    const items = [
+      item("partial-online-a", "package-a", "queued", { onlineStatus: "online" }),
+      item("partial-online-b", "package-a", "queued", { onlineStatus: "online" }),
+      item("partial-offline", "package-a", "queued", { onlineStatus: "offline" })
+    ];
+    const html = renderToStaticMarkup(PackageCardContent({
+      actions: createActions(),
+      columnOrder: ["availability"],
+      editing: false,
+      editingName: "",
+      gridTemplate: "110px",
+      packageSpeedBps: 0,
+      row: { package: pkg("package-a", "Paket", items.map((entry) => entry.id)), items, allItems: items, collapsed: true },
+      selectedIds: new Set<string>(),
+      selectedVersion: 0
+    }));
+
+    expect(html).toContain("downloads-availability has-counts is-partial");
+    expect(html).toContain("2/3 online");
+  });
+
+  it("keeps offline links out of the package status error count", () => {
+    const renderStatus = (items: DownloadItem[]): string => renderToStaticMarkup(PackageCardContent({
+      actions: createActions(),
+      columnOrder: ["status"],
+      editing: false,
+      editingName: "",
+      gridTemplate: "210px",
+      packageSpeedBps: 0,
+      row: { package: pkg("package-a", "Paket", items.map((entry) => entry.id)), items, allItems: items, collapsed: true },
+      selectedIds: new Set<string>(),
+      selectedVersion: 0
+    }));
+    const offlineItems = [
+      item("offline-a", "package-a", "failed", { onlineStatus: "offline", fullStatus: "Offline" }),
+      item("offline-b", "package-a", "failed", { onlineStatus: "offline", fullStatus: "Offline" }),
+      item("queued-c", "package-a", "queued", { onlineStatus: "online" })
+    ];
+    const failedItems = [
+      item("failed-a", "package-a", "failed", { fullStatus: "Fehler: Provider" }),
+      item("offline-b", "package-a", "failed", { onlineStatus: "offline", fullStatus: "Offline" })
+    ];
+
+    expect(getPackageProgress({ package: pkg("package-a", "Paket", offlineItems.map((entry) => entry.id)), items: offlineItems, allItems: offlineItems, collapsed: true }))
+      .toEqual(expect.objectContaining({ done: 0, failed: 0, offline: 2, total: 3 }));
+    expect(renderStatus(offlineItems)).not.toContain("Fehler");
+    expect(renderStatus(offlineItems)).toContain("0/3");
+    expect(renderStatus(failedItems)).toContain("1 Fehler");
+  });
+
+  it("orders package availability from fully online through partial and unchecked down to fully offline", () => {
+    const summary = (online: number, offline: number, total: number) => ({ online, offline, total, state: "checking" as const });
+    const ordered = [
+      summary(0, 5, 5),
+      summary(6, 1, 7),
+      summary(0, 0, 4),
+      summary(25, 1, 26),
+      summary(0, 2, 6),
+      summary(3, 3, 3)
+    ].sort(compareAvailabilitySummaries);
+
+    expect(ordered.map((entry) => `${entry.online}/${entry.total}:${entry.offline}`)).toEqual(["3/3:3", "25/26:1", "6/7:1", "0/4:0", "0/6:2", "0/5:5"]);
+  });
+
+  it("exposes Verfügbarkeit as a sortable column header", () => {
+    const sorted: string[] = [];
+    const header = DownloadsTableHeader({
+      actions: createActions({ onSortColumn: (column) => sorted.push(column) }),
+      columnOrder: ["availability"],
+      gridTemplate: "100px",
+      selectedCount: 0,
+      sortColumn: "availability",
+      sortDirection: "asc",
+      visibleIds: []
+    });
+    const availabilityHeader = findElement(header, (element) => element.props["data-download-column"] === "availability");
+    const sortButton = findElement(availabilityHeader, (element) => element.type === "button" && String(element.props.children).startsWith("Verfügbarkeit"));
+
+    sortButton.props.onClick({ detail: 0 });
+
+    expect(availabilityHeader.props["aria-sort"]).toBe("ascending");
+    expect(sorted).toEqual(["availability"]);
   });
 
   it("shows an actively downloading item as online even without a stored availability result", () => {

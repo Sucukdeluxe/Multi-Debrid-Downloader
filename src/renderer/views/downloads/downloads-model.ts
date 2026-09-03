@@ -1,4 +1,4 @@
-import type { DownloadItem, DownloadStatus, PackageEntry } from "../../../shared/types";
+import type { AppLanguage, DownloadItem, DownloadStatus, PackageEntry } from "../../../shared/types";
 import { extractHoster, humanSize } from "../../download-format";
 import { DOWNLOAD_FILE_ROW_HEIGHT, DOWNLOAD_PACKAGE_ROW_HEIGHT, type DownloadVirtualRowInput } from "./download-virtualizer";
 
@@ -147,9 +147,14 @@ export function getDownloadQueueStatusMetrics(items: readonly DownloadItem[]): {
   };
 }
 
-export function formatRemainingDownloadBytes(summary: { bytes: number; unknownItems: number }): string {
+const largeQueueGigabyteFormatters: Record<AppLanguage, Intl.NumberFormat> = {
+  de: new Intl.NumberFormat("de-DE", { minimumFractionDigits: 1, maximumFractionDigits: 1 }),
+  en: new Intl.NumberFormat("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+};
+
+export function formatRemainingDownloadBytes(summary: { bytes: number; unknownItems: number }, language: AppLanguage = "de"): string {
   const value = summary.bytes >= 1024 ** 4
-    ? `${(summary.bytes / 1024 ** 4).toFixed(5)} TB`
+    ? `${largeQueueGigabyteFormatters[language].format(summary.bytes / 1024 ** 3)} GB`
     : humanSize(summary.bytes);
   if (summary.unknownItems <= 0) return value;
   return summary.bytes > 0 ? `≥ ${value}` : "Unbekannt";

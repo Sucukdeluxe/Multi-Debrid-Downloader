@@ -1,4 +1,5 @@
-import type { PackageEntry } from "../shared/types";
+import type { DownloadItem, PackageEntry } from "../shared/types";
+import { compareAvailabilitySummaries, getAvailabilitySummary } from "./views/downloads/DownloadsTable";
 
 export function reorderPackageOrderByDrop(order: string[], draggedPackageId: string, targetPackageId: string): string[] {
   const fromIndex = order.indexOf(draggedPackageId);
@@ -19,6 +20,24 @@ export function sortPackageOrderByName(order: string[], packages: Record<string,
     const nameA = (packages[a]?.name ?? "").toLowerCase();
     const nameB = (packages[b]?.name ?? "").toLowerCase();
     const cmp = nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: "base" });
+    return descending ? -cmp : cmp;
+  });
+  return sorted;
+}
+
+export function sortPackageOrderByAvailability(
+  order: string[],
+  packages: Record<string, PackageEntry>,
+  items: Record<string, DownloadItem>,
+  descending: boolean
+): string[] {
+  const summaries = new Map(order.map((packageId) => {
+    const packageItems = (packages[packageId]?.itemIds ?? []).map((id) => items[id]).filter((item): item is DownloadItem => Boolean(item));
+    return [packageId, getAvailabilitySummary(packageItems)] as const;
+  }));
+  const sorted = [...order];
+  sorted.sort((a, b) => {
+    const cmp = compareAvailabilitySummaries(summaries.get(a)!, summaries.get(b)!);
     return descending ? -cmp : cmp;
   });
   return sorted;

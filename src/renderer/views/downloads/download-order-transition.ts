@@ -20,6 +20,10 @@ export function isDownloadPackageOrderChange(previous: readonly string[], next: 
   return next.some((id, index) => previous[index] !== id);
 }
 
+export function shouldAnimateDownloadOrderChange(input: { animationsEnabled: boolean; sortRevision: number; appliedSortRevision: number }): boolean {
+  return input.animationsEnabled && input.sortRevision === input.appliedSortRevision;
+}
+
 export function getDownloadOrderTransitionPinnedIds(input: {
   enabled: boolean;
   previousOrder: readonly string[];

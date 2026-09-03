@@ -8,14 +8,13 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 
 ## Zuletzt verifizierter Stand
 
-- Verifiziert am: 2. September 2026, Europe/Berlin
+- Verifiziert am: 3. September 2026, Europe/Berlin
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
-- Arbeitsbranch: `release/v2.0.86`
-- Quellbasis: `release/v2.0.85`
-- Release-Tag: `v2.0.86`
-- Baseline-Commit: `fd71caa341979fbc43307040b662131a8de5f9b1`
-- Hotfix-Basis: `fd71caa341979fbc43307040b662131a8de5f9b1`
-- Paketversion: `2.0.86`
+- Arbeitsbranch: `release/v2.0.87` (in Arbeit, unveröffentlicht)
+- Quellbasis: `release/v2.0.86`
+- Letztes Release-Tag: `v2.0.86`
+- Baseline-Commit: `65084bd6d2a5add6a1552316f63cf0b0b2c27080`
+- Paketversion: `2.0.86` (Versionsanhebung auf `2.0.87` erfolgt erst mit dem Release-Vorbereitungscommit)
 - Letztes Release: `Multi-Debrid-Downloader v2.0.86`, veröffentlicht am 2. September 2026 auf GitHub und Forgejo
 - Runtime-Voraussetzung: Node.js `>=20`; lokal verifiziert mit Node.js `24.19.0` und npm `11.17.0`
 
@@ -219,6 +218,17 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Der Zeitpunkt der letzten Verfügbarkeitsprüfung wird in der Session gespeichert und beim Laden gegen ungültige Zukunftswerte abgesichert. Ein Shutdown bricht laufende Prüfungen ab und stellt deren vorherigen grünen Zustand wieder her. Hintergrundprüfungen erzeugen keine falschen Ergebnisse in einer noch gar nicht gestarteten Download-Sitzung.
 - Die Verfügbarkeit eines Oberpakets wird kompakt als `0/8 online` dargestellt. Das zusätzliche Statussymbol vor dem Zähler und der dadurch entstandene Abstand entfallen; die Verfügbarkeitsanzeige einzelner Dateien bleibt unverändert.
 - Entpack-, Passwort- und Nachbearbeitungslogik wurden nicht verändert.
+
+## Änderungen in v2.0.87 (in Arbeit, unveröffentlicht)
+
+- Die Spalte „Verfügbarkeit“ in der Download-Ansicht ist sortierbar. Der erste Klick ordnet Pakete von vollständig online über teilweise verfügbar und ungeprüft bis vollständig offline; der zweite Klick kehrt die Reihenfolge um. Sortiert wird primär nach Online-Anteil, sekundär nach Offline-Anteil, sodass `25/26 online` vor `6/7 online` steht und ungeprüfte Pakete zwischen teilweise verfügbaren und vollständig offline liegenden Paketen einsortiert werden.
+- Ein Paket gilt als teilweise verfügbar (orange), sobald mindestens ein Link online und mindestens ein Link offline ist, auch wenn weitere Links noch ungeprüft sind. Vollständig online bleibt grün, vollständig offline bleibt rot; Pakete ohne Offline-Ergebnis und mit ungeprüften Links bleiben grau „Ungeprüft“/„Prüfung“.
+- Ein Spaltensortierung wechselt die Paketreihenfolge sofort statt mit der 3-Sekunden-Gleitanimation; manuelle Verschiebungen bleiben animiert. Dazu zählt `App.tsx` pro Sortierung `packageOrderSortRevision` hoch, und `VirtualizedDownloadsBody` überspringt die Reihenfolge-Animation, solange die zuletzt angewendete Revision abweicht (`shouldAnimateDownloadOrderChange`).
+- Offline-Links zählen im Paketstatus nicht mehr als „N Fehler“, weil die Spalte „Verfügbarkeit“ das bereits zeigt. `getPackageProgress` liefert `offline` getrennt und zieht diese Einträge vom angezeigten `failed` ab; echte Download-Fehler erscheinen weiterhin. Für Fortschritt und Entpack-Aufteilung zählen Offline-Einträge unverändert als abgeschlossen.
+- Seitenleiste „Verbleibend“/„Gesamt“: Ab 1 TiB wird das Volumen als gruppierte Gigabyte mit einer Nachkommastelle nach Sprache angezeigt (`1.449,5 GB` deutsch, `1,449.5 GB` englisch) statt als `1.32922 TB`. Der Wert ändert sich damit alle 100 MB sichtbar; unter 1 TiB bleibt `humanSize` unverändert. `formatRemainingDownloadBytes` nimmt dafür die Sprache als zweiten Parameter.
+- Umsetzung: `DownloadSortColumn` um `availability` erweitert, `getAvailabilitySummary` liefert zusätzlich `offline`, `compareAvailabilitySummaries` in `DownloadsTable.tsx`, `sortPackageOrderByAvailability` in `package-order.ts`, Verdrahtung in `sortDownloadsByColumn` in `App.tsx`. Entpack-, Passwort- und Nachbearbeitungslogik unverändert.
+- Verifiziert am 4. September 2026: TypeScript fehlerfrei; vollständiger Clientlauf mit 143 erfolgreichen Testdateien, 1 optional übersprungenen JVM-Testdatei, 2.752 erfolgreichen und 4 übersprungenen Tests. Nur die zwei bekannten Windows-Symlink-Fixtures in `public-release-metadata.test.ts` endeten vor ihrer Produktassertion mit `EPERM`. Main-Build, Renderer-Produktionsbuild (bekannte Vite-Warnung, rund 583 KiB Chunk), Node-Self-Check und 16 von 16 Backup-API-Tests erfolgreich. Release-Build und Veröffentlichung stehen noch aus und brauchen eine neue ausdrückliche Freigabe.
+- Dev-Start im Pfad mit `&`: `npm run dev` scheitert, weil der `cross-env`/`tsx`-Shim in `dev:electron` den Pfad an `&` zerlegt. Funktionierender Weg sind drei direkte Node-Aufrufe: `node node_modules/tsup/dist/cli-default.js src/main/main.ts src/preload/preload.ts --out-dir build/main --format cjs --target node20 --external electron --sourcemap --watch`, `node node_modules/vite/bin/vite.js --port 5180 --strictPort` und danach `NODE_ENV=development DEV_SERVER_PORT=5180 node node_modules/tsx/dist/cli.mjs scripts/run-dev-electron.ts`.
 
 ## Start-, Build- und Testbefehle
 

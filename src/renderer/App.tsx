@@ -39,7 +39,7 @@ import {
   getProviderDailyUsageBytes,
   getProviderUsageDayKey
 } from "../shared/provider-daily-limits";
-import { preservePackageOrderForDisplay, sortPackageOrderByName } from "./package-order";
+import { preservePackageOrderForDisplay, sortPackageOrderByAvailability, sortPackageOrderByName } from "./package-order";
 import { pruneSelection, releaseAccountSelectionFocus, resolveEscapeSelectionScope, resolveSelectAllSelectionScope, shouldClearDownloadSelection } from "./selection";
 import { buildConfiguredProviderOrder, createAccountToggleQueue, enqueueAccountToggleIntent, filterAccountDialogOptions, formatAccountOperationError, getAccountDialogSelectableOptions, getAvailableAccountOptions, mergeAccountToggleSettings, pruneAccountRowSelections, resolveAccountStatusState, resolveAccountToggleIntentEnabled, resolveAccountUsername, resolveVisibleAccountKind, sortAccountServices, updateAccountRowSelection, type AccountToggleTarget } from "./account-ui";
 import { buildAccountDeleteCommand, buildAccountReplaceCommand, buildAccountSecretRequest, createAccountEditState, validateAccountEdit } from "./account-edit";
@@ -1904,6 +1904,7 @@ export function App(): ReactElement {
   const [downloadFilter, setDownloadFilter] = useState<DownloadSidebarFilter>("all");
   const [downloadProviderFilter, setDownloadProviderFilter] = useState("all");
   const [downloadsSortColumn, setDownloadsSortColumn] = useState<DownloadSortColumn>("name");
+  const [downloadsSortRevision, setDownloadsSortRevision] = useState(0);
   const [downloadsSortDescending, setDownloadsSortDescending] = useState(false);
   const [showAllPackages, setShowAllPackages] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
@@ -5292,6 +5293,7 @@ export function App(): ReactElement {
     const nextDescending = downloadsSortColumn === column ? !downloadsSortDescending : false;
     setDownloadsSortColumn(column);
     setDownloadsSortDescending(nextDescending);
+    setDownloadsSortRevision((revision) => revision + 1);
     const baseOrder = packageOrderRef.current.length > 0 ? packageOrderRef.current : snapshot.session.packageOrder;
     const sorted = column === "progress"
       ? sortPackageOrderByProgress(baseOrder, snapshot.session.packages, snapshot.session.items, nextDescending)
@@ -5307,7 +5309,9 @@ export function App(): ReactElement {
               nextDescending,
               Object.fromEntries(downloadsViewCore.packageRows.map((row) => [row.package.id, row.items]))
             )
-          : sortPackageOrderByName(baseOrder, snapshot.session.packages, nextDescending);
+            : column === "availability"
+              ? sortPackageOrderByAvailability(baseOrder, snapshot.session.packages, snapshot.session.items, nextDescending)
+              : sortPackageOrderByName(baseOrder, snapshot.session.packages, nextDescending);
     pendingPackageOrderRef.current = [...sorted];
     pendingPackageOrderAtRef.current = Date.now();
     packageOrderRef.current = sorted;
@@ -5450,6 +5454,7 @@ export function App(): ReactElement {
     gridTemplate,
     sortColumn: downloadsSortColumn,
     sortDirection: downloadsSortDescending ? "desc" : "asc",
+    packageOrderSortRevision: downloadsSortRevision,
     disclosureRevision: downloadDisclosureRevision,
     animationsEnabled: snapshot.settings.animatePackageDisclosure,
     status: {
@@ -5457,9 +5462,9 @@ export function App(): ReactElement {
       links: downloadQueueMetrics.pendingItemCount,
       session: humanSize(snapshot.stats.totalDownloaded),
       sessionBytes: snapshot.stats.totalDownloaded,
-      total: formatRemainingDownloadBytes(downloadQueueTotal),
+      total: formatRemainingDownloadBytes(downloadQueueTotal, normalizeLanguage(settingsDraft.language)),
       totalBytes: downloadQueueTotal.bytes,
-      remaining: formatRemainingDownloadBytes(downloadRemaining),
+      remaining: formatRemainingDownloadBytes(downloadRemaining, normalizeLanguage(settingsDraft.language)),
       remainingBytes: downloadRemaining.bytes,
       remainingTooltip: formatRemainingDownloadTooltip(downloadRemaining),
       hosters: downloadQueueMetrics.hosterCount,
