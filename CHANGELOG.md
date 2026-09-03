@@ -4,6 +4,8 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.87] - 2026-09-04
+
 ### Availability sorting
 
 - Make the Availability column header sortable: the first click orders packages from fully online through partially available and unchecked down to fully offline, the second click reverses the order.
