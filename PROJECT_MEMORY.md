@@ -12,11 +12,11 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
 - Arbeitsbranch: `release/v2.0.87`
 - Quellbasis: `release/v2.0.86`
-- Release-Tag: `v2.0.87` (in Vorbereitung)
+- Release-Tag: `v2.0.87` auf `d8661619c5f01a484f936513c7aea1c1b172aca3`
 - Baseline-Commit: `65084bd6d2a5add6a1552316f63cf0b0b2c27080`
 - Feature-Commit: `558d6ca4f499c86221d1054b0f00d3068d4d4654`
 - Paketversion: `2.0.87`
-- Letztes Release: `Multi-Debrid-Downloader v2.0.86`, veröffentlicht am 2. September 2026 auf GitHub und Forgejo
+- Letztes Release: `Multi-Debrid Downloader v2.0.87`, veröffentlicht am 4. September 2026 auf GitHub und Forgejo
 - Runtime-Voraussetzung: Node.js `>=20`; lokal verifiziert mit Node.js `24.19.0` und npm `11.17.0`
 
 `main` ist derzeit keine verlässliche Arbeitsbasis:
@@ -264,6 +264,7 @@ npm run test:backup-api
 
 - Release-Build `v2.0.87`: Installer und Portable-Datei wurden aus dem versionierten Release-Vorbereitungsstand `966509a1d4ebe24c0e61ee1de3aacc890f8d7d7f` erzeugt. Das Verifizierungsskript mit `--verify-archives` bestätigte Publish-Konfiguration, Artefaktnamen, Update-Metadaten, Lizenzdateien sowie den vollständig entpackten Inhalt beider EXE-Archive. Der Installer-SHA-512 in `latest.yml` stimmt mit der lokal berechneten Prüfsumme überein; die Installergröße beträgt `90.672.456` Bytes. Das Quellarchiv enthält Paketversion `2.0.87` und trägt den Release-Vorbereitungscommit als ZIP-Kommentar.
 - SHA-256 des `v2.0.87`-Setups: `9d86569f09439a7a9c71b0dbf21995b590f29c56cb95a628d35a8681c07c3e40`; SHA-256 der Portable-Datei: `2a032499de6112774d5d9709bff81b848cc005cf6cfc44ceeae2564acd5b5975`; SHA-256 des Quellarchivs: `b6f2c16207e08c8e4eddcfa3abacb82f5b761407a4f1071eeefc3b1b74b6596b`.
+- Veröffentlichung `v2.0.87`: Der annotierte Tag zeigt auf GitHub und Forgejo exakt auf `d8661619c5f01a484f936513c7aea1c1b172aca3`. GitHub führt `v2.0.87` als Latest Release mit englischem Text, Forgejo (Release-ID 1440, Ziel `release/v2.0.87`, stabil) mit dem inhaltlich gleichwertigen deutschen Text. Beide Plattformen besitzen dieselben sechs Assets. Alle zwölf veröffentlichten Dateien wurden erneut heruntergeladen und stimmen in Größe und SHA-256 exakt mit den lokalen Originalen überein; `latest.yml` nennt Version `2.0.87`. Das temporäre Serververzeichnis wurde nach der Verifizierung entfernt; Datenbank und Forgejo-Container wurden nicht angefasst.
 
 - Kandidat für `v2.0.86`: vollständiger Clientlauf ohne die zwei lokal nicht ausführbaren Windows-Symlink-Fixtures mit 143 erfolgreichen Testdateien, 1 optional übersprungenen JVM-Testdatei, 2.723 erfolgreichen und 4 übersprungenen Tests. Darin sind alle 278 Download-Manager-, 151 Downloads-Ansicht-, 129 Storage- und 84 unveränderten Extractor-Tests grün. Die vier neuen Hintergrundprüfungs-Regressionen bestätigen Archiv-Scope, uneindeutige Antworten ohne falsches Offline, höchstens 40 Links und vier parallele Requests je Durchlauf sowie den sauberen Shutdown-Abbruch. Der vollständige Lauf einschließlich Release-Metadaten erreichte 2.745 erfolgreiche Tests; ausschließlich zwei Fixtures endeten bereits beim unter Windows nicht erlaubten Anlegen eines Symlinks mit `EPERM`.
 - Für denselben Kandidaten sind TypeScript, Main-Build, Renderer-Produktionsbuild, Node-Self-Check und alle 16 Backup-API-Tests erfolgreich. Die fokussierten UI-Tests bestätigen die kompakte Paketverfügbarkeit ohne vorangestelltes Symbol. Die bekannte Vite-Warnung betrifft den rund 582 KiB großen Renderer-Chunk.
@@ -398,10 +399,13 @@ npm run test:backup-api
 - Die unmittelbare Arbeitsordner-Anlage beim Speichern und der Proxybereich mit Standard 32 sowie Maximum 80 sind als `v2.0.84` auf GitHub und Forgejo veröffentlicht. Eine produktive Installation oder ein Neustart ist nicht Bestandteil des Releases.
 - Die Live-Erkennung offline gewordener Quelllinks und der wählbare Überspring-Bereich sind als `v2.0.85` auf GitHub und Forgejo veröffentlicht. Entpack-, Passwort- und Nachbearbeitungslogik blieben unverändert; eine produktive Installation oder ein Neustart ist nicht Bestandteil des Releases.
 - Die gedrosselte Hintergrundprüfung veralteter grüner Warteschlangen-Links und die kompakte Paketverfügbarkeit sind als `v2.0.86` auf GitHub und Forgejo veröffentlicht. Entpack-, Passwort- und Nachbearbeitungslogik blieben unverändert; eine produktive Installation oder ein Neustart ist nicht Bestandteil des Releases.
+- Die Verfügbarkeits-Sortierung, die orangene Teilverfügbarkeit, der sofortige Sortierwechsel, der Paketstatus ohne Offline-Fehlerzähler und die GB-Anzeige ab 1 TiB sind als `v2.0.87` auf GitHub und Forgejo veröffentlicht. Entpack-, Passwort- und Nachbearbeitungslogik blieben unverändert; eine produktive Installation oder ein Neustart ist nicht Bestandteil des Releases.
+- Mehrere Quelldateien liegen im Index mit gemischten Zeilenenden (`git ls-files --eol` zeigt `i/mixed`). Editoren, die auf LF normalisieren, erzeugen tausende Scheinänderungen; vor jedem Commit `git diff --stat` gegen `git diff --ignore-cr-at-eol --stat` prüfen und bei Abweichung die Originalbytes per `git show HEAD:<datei>` wiederherstellen und den Patch mit `git -c core.autocrlf=false apply --ignore-whitespace` einspielen.
 
 ## Nächste sinnvolle Schritte
 
-1. Nach einer getrennt freigegebenen Installation von `v2.0.86` die schrittweise Hintergrundprüfung und kompakte Paketverfügbarkeit mit der echten großen Queue beobachten.
+1. Nach einer getrennt freigegebenen Installation von `v2.0.87` die Verfügbarkeits-Sortierung, die Teilverfügbarkeitsfarbe und die GB-Anzeige der Seitenleiste mit der echten großen Queue prüfen.
+2. Nach einer getrennt freigegebenen Installation von `v2.0.86` die schrittweise Hintergrundprüfung und kompakte Paketverfügbarkeit mit der echten großen Queue beobachten.
 2. Nach einer getrennt freigegebenen Installation von `v2.0.83` einen echten CRC-Fall über „Entpack-Fehler zurücksetzen“ prüfen und bestätigen, dass genau ein frischer Download erfolgt und ein zweiter identischer Upstream-Fehler sichtbar bleibt.
 3. Nach einer getrennt freigegebenen Serverinstallation die neue Arbeitsordner-Option und die feinere Restanzeige mit der großen echten Queue prüfen.
 4. Nach einer getrennt freigegebenen Serverinstallation die Account-Fehlerführung, den verschlüsselten Proxy-Listen-Import und `Strg+A` am echten Zielsystem prüfen.
