@@ -1921,7 +1921,7 @@ export function App(): ReactElement {
   const [startConflictPrompt, setStartConflictPrompt] = useState<StartConflictPromptState | null>(null);
   const startConflictResolverRef = useRef<((result: { policy: Extract<DuplicatePolicy, "skip" | "overwrite">; applyToAll: boolean } | null) => void) | null>(null);
   const [confirmPrompt, setConfirmPrompt] = useState<ConfirmPromptState | null>(null);
-  const offlineRemovalScopeRef = useRef<OfflineSkipScope>("archive");
+  const offlineRemovalScopeRef = useRef<OfflineSkipScope>("package");
   const [backupPassphraseMode, setBackupPassphraseMode] = useState<BackupPassphraseMode | null>(null);
   const [onlineBackupDialog, setOnlineBackupDialog] = useState<OnlineBackupDialogState | null>(null);
   const [remoteDiag, setRemoteDiag] = useState<RemoteDiagnosticsInfo | null>(null);
@@ -4864,9 +4864,9 @@ export function App(): ReactElement {
       const english = normalizeLanguage(settings.language) === "en";
       const count = candidates.length.toLocaleString(english ? "en-US" : "de-DE");
       const packageLabel = english ? (candidates.length === 1 ? "package" : "packages") : (candidates.length === 1 ? "Paket" : "Pakete");
-      offlineRemovalScopeRef.current = "archive";
+      offlineRemovalScopeRef.current = "package";
       const confirmed = await askConfirmPrompt({
-        offlineScope: "archive",
+        offlineScope: "package",
         title: english ? "Remove packages with offline links" : "Pakete mit Offline-Links entfernen",
         message: english
           ? `${count} ${packageLabel} with offline links in the entire queue. This applies regardless of filters or selection.`
