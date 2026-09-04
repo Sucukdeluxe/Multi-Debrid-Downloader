@@ -40,6 +40,7 @@ import {
   getProviderUsageDayKey
 } from "../shared/provider-daily-limits";
 import { preservePackageOrderForDisplay, sortPackageOrderByAvailability, sortPackageOrderByName } from "./package-order";
+import { createPackageOrderState } from "./package-order-state";
 import { pruneSelection, releaseAccountSelectionFocus, resolveEscapeSelectionScope, resolveSelectAllSelectionScope, shouldClearDownloadSelection } from "./selection";
 import { buildConfiguredProviderOrder, createAccountToggleQueue, enqueueAccountToggleIntent, filterAccountDialogOptions, formatAccountOperationError, getAccountDialogSelectableOptions, getAvailableAccountOptions, mergeAccountToggleSettings, pruneAccountRowSelections, resolveAccountStatusState, resolveAccountToggleIntentEnabled, resolveAccountUsername, resolveVisibleAccountKind, sortAccountServices, updateAccountRowSelection, type AccountToggleTarget } from "./account-ui";
 import { buildAccountDeleteCommand, buildAccountReplaceCommand, buildAccountSecretRequest, createAccountEditState, validateAccountEdit } from "./account-edit";
@@ -1616,18 +1617,6 @@ const DEFAULT_COLUMN_ORDER = ["name", "size", "progress", "hoster", "account", "
 const ALL_COLUMN_KEYS = ["name", "size", "progress", "hoster", "account", "prio", "status", "speed", "availability", "added"];
 const COLUMN_DEFS = downloadColumnDefinitions;
 
-function sameStringArray(a: string[], b: string[]): boolean {
-  if (a.length !== b.length) {
-    return false;
-  }
-  for (let index = 0; index < a.length; index += 1) {
-    if (a[index] !== b[index]) {
-      return false;
-    }
-  }
-  return true;
-}
-
 function formatMbpsInputFromKbps(kbps: number): string {
   const mbps = Math.max(0, Number(kbps) || 0) / 1024;
   return String(Number(mbps.toFixed(2)));
@@ -1894,9 +1883,7 @@ export function App(): ReactElement {
   const importCollectorTextRef = useRef<(rawText: string) => Promise<void>>(() => Promise.resolve());
   const activeTabRef = useRef<Tab>(tab);
   const packageOrderRef = useRef<string[]>([]);
-  const serverPackageOrderRef = useRef<string[]>([]);
-  const pendingPackageOrderRef = useRef<string[] | null>(null);
-  const pendingPackageOrderAtRef = useRef(0);
+  const packageOrderStateRef = useRef(createPackageOrderState());
   const [collapsedPackages, setCollapsedPackages] = useState<Record<string, boolean>>({});
   const [downloadDisclosureRevision, setDownloadDisclosureRevision] = useState(0);
   const [downloadSearch, setDownloadSearch] = useState("");
@@ -2065,31 +2052,7 @@ export function App(): ReactElement {
   }, [tab]);
 
   useEffect(() => {
-    const incoming = snapshot.session.packageOrder;
-    serverPackageOrderRef.current = incoming;
-
-    const pending = pendingPackageOrderRef.current;
-    if (!pending) {
-      packageOrderRef.current = incoming;
-      return;
-    }
-
-    if (sameStringArray(pending, incoming)) {
-      pendingPackageOrderRef.current = null;
-      pendingPackageOrderAtRef.current = 0;
-      packageOrderRef.current = incoming;
-      return;
-    }
-
-    const maxOptimisticHoldMs = 1500;
-    if (Date.now() - pendingPackageOrderAtRef.current >= maxOptimisticHoldMs) {
-      pendingPackageOrderRef.current = null;
-      pendingPackageOrderAtRef.current = 0;
-      packageOrderRef.current = incoming;
-      return;
-    }
-
-    packageOrderRef.current = pending;
+    packageOrderRef.current = snapshot.session.packageOrder;
   }, [snapshot.session.packageOrder]);
 
   useEffect(() => {
@@ -2342,7 +2305,8 @@ export function App(): ReactElement {
         stateFlushTimerRef.current = null;
         if (!latestStateRef.current) return;
         const next = latestStateRef.current;
-        setSnapshot(next);
+        const packageOrder = packageOrderStateRef.current.accept(next.session.packageOrder);
+        setSnapshot(packageOrder === next.session.packageOrder ? next : { ...next, session: { ...next.session, packageOrder } });
         if (!settingsDirtyRef.current) {
           setSettingsDraft((current) => createSettingsDraft(next.settings, current));
         }
@@ -2357,6 +2321,7 @@ export function App(): ReactElement {
         return;
       }
       authoritativeSnapshotApplied = true;
+      packageOrderStateRef.current.accept(state.session.packageOrder);
       masterSnapshotRef.current = state;
       persistedSettingsRef.current = state.settings;
       const resolvedTheme = resolveSettingsThemeChoice(
@@ -4361,6 +4326,22 @@ export function App(): ReactElement {
     }
   };
 
+  const commitPackageOrder = useCallback((order: string[]): void => {
+    const requestId = packageOrderStateRef.current.begin(order);
+    packageOrderRef.current = [...order];
+    setSnapshot((current) => ({ ...current, session: { ...current.session, packageOrder: [...order] } }));
+    void window.rd.reorderPackages(order).then(() => {
+      packageOrderStateRef.current.confirm(requestId);
+    }).catch((error) => {
+      const restoredOrder = packageOrderStateRef.current.reject(requestId);
+      if (!restoredOrder) return;
+      packageOrderRef.current = restoredOrder;
+      setDownloadsSortRevision((revision) => revision + 1);
+      setSnapshot((current) => ({ ...current, session: { ...current.session, packageOrder: restoredOrder } }));
+      showToast(`Sortierung fehlgeschlagen: ${String(error)}`, 2400);
+    });
+  }, [showToast]);
+
   const movePackage = useCallback((packageId: string, direction: "up" | "down") => {
     const currentOrder = packageOrderRef.current;
     const order = [...currentOrder];
@@ -4370,24 +4351,8 @@ export function App(): ReactElement {
     if (target < 0 || target >= order.length) { return; }
     [order[idx], order[target]] = [order[target], order[idx]];
     setDownloadsSortDescending(false);
-    pendingPackageOrderRef.current = [...order];
-    pendingPackageOrderAtRef.current = Date.now();
-    packageOrderRef.current = [...order];
-    setSnapshot((prev) => {
-      if (!prev) return prev;
-      return { ...prev, session: { ...prev.session, packageOrder: [...order] } };
-    });
-    void window.rd.reorderPackages(order).catch((error) => {
-      pendingPackageOrderRef.current = null;
-      pendingPackageOrderAtRef.current = 0;
-      packageOrderRef.current = serverPackageOrderRef.current;
-      setSnapshot((prev) => {
-        if (!prev) return prev;
-        return { ...prev, session: { ...prev.session, packageOrder: serverPackageOrderRef.current } };
-      });
-      showToast(`Sortierung fehlgeschlagen: ${String(error)}`, 2400);
-    });
-  }, [showToast]);
+    commitPackageOrder(order);
+  }, [commitPackageOrder]);
 
   const openCollectorInput = (): void => {
     setCollectorError("");
@@ -4541,24 +4506,8 @@ export function App(): ReactElement {
     const unchanged = order.length === currentOrder.length && order.every((id, idx) => id === currentOrder[idx]);
     if (unchanged) return;
     setDownloadsSortDescending(false);
-    pendingPackageOrderRef.current = [...order];
-    pendingPackageOrderAtRef.current = Date.now();
-    packageOrderRef.current = [...order];
-    setSnapshot((prev) => {
-      if (!prev) return prev;
-      return { ...prev, session: { ...prev.session, packageOrder: [...order] } };
-    });
-    void window.rd.reorderPackages(order).catch((error) => {
-      pendingPackageOrderRef.current = null;
-      pendingPackageOrderAtRef.current = 0;
-      packageOrderRef.current = serverPackageOrderRef.current;
-      setSnapshot((prev) => {
-        if (!prev) return prev;
-        return { ...prev, session: { ...prev.session, packageOrder: serverPackageOrderRef.current } };
-      });
-      showToast(`Sortierung fehlgeschlagen: ${String(error)}`, 2400);
-    });
-  }, [selectedIds, snapshot.session.packages, showToast]);
+    commitPackageOrder(order);
+  }, [commitPackageOrder, selectedIds, snapshot.session.packages]);
 
   const onPackageToggle = useCallback((packageId: string): void => {
     let previousEnabled: boolean | null = null;
@@ -5312,18 +5261,8 @@ export function App(): ReactElement {
             : column === "availability"
               ? sortPackageOrderByAvailability(baseOrder, snapshot.session.packages, snapshot.session.items, nextDescending)
               : sortPackageOrderByName(baseOrder, snapshot.session.packages, nextDescending);
-    pendingPackageOrderRef.current = [...sorted];
-    pendingPackageOrderAtRef.current = Date.now();
-    packageOrderRef.current = sorted;
-    setSnapshot((current) => ({ ...current, session: { ...current.session, packageOrder: [...sorted] } }));
-    void window.rd.reorderPackages(sorted).catch((error) => {
-      pendingPackageOrderRef.current = null;
-      pendingPackageOrderAtRef.current = 0;
-      packageOrderRef.current = serverPackageOrderRef.current;
-      setSnapshot((current) => ({ ...current, session: { ...current.session, packageOrder: serverPackageOrderRef.current } }));
-      showToast(`Sortierung fehlgeschlagen: ${String(error)}`, 2400);
-    });
-  }, [downloadsSortColumn, downloadsSortDescending, downloadsViewCore.packageRows, showToast, snapshot.session.items, snapshot.session.packageOrder, snapshot.session.packages]);
+    commitPackageOrder(sorted);
+  }, [commitPackageOrder, downloadsSortColumn, downloadsSortDescending, downloadsViewCore.packageRows, snapshot.session.items, snapshot.session.packageOrder, snapshot.session.packages]);
 
   const clearDownloadQueue = useCallback((): void => {
     void performQuickAction(async () => {

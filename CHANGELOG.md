@@ -7,6 +7,7 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 ### Fixed
 
 - Disable CSS row transitions as well as JavaScript animations during column sorting, so packages immediately jump to their sorted positions.
+- Keep the chosen package order stable while live snapshots and reorder confirmations arrive, preventing a brief jump back to the previous order when reversing a sort. Ignore failures from superseded reorder requests.
 
 ## [2.0.87] - 2026-09-04
 
