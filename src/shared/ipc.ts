@@ -30,6 +30,7 @@ export const IPC_CHANNELS = {
   STOP: "queue:stop",
   TOGGLE_PAUSE: "queue:toggle-pause",
   CANCEL_PACKAGE: "queue:cancel-package",
+  REMOVE_OFFLINE_PACKAGES: "queue:remove-offline-packages",
   RENAME_PACKAGE: "queue:rename-package",
   REORDER_PACKAGES: "queue:reorder-packages",
   REMOVE_ITEM: "queue:remove-item",

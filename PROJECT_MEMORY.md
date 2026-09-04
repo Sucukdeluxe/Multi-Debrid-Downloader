@@ -233,6 +233,13 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 
 ## Start-, Build- und Testbefehle
 
+### Unveröffentlichte Offline-Paketbereinigung vom 4. September 2026
+
+- Das Rechtsklick-/Aktionsmenü der Downloadzeilen bietet unten „Pakete mit Offline-Links entfernen …“. Es erfasst die gesamte Queue unabhängig von Auswahl, Suche und Filtern, sobald mindestens ein Item ausdrücklich `onlineStatus: offline` besitzt. Teilverfügbarkeit genügt; ungeprüfte und nur fehlgeschlagene Links ohne Offline-Befund genügen nicht.
+- Eine immer angezeigte Bestätigung nennt die sprachgerecht formatierte Paketanzahl und erklärt, dass vollständige Pakete einschließlich Online-Links entfernt, zugehörige aktive Downloads gestoppt und heruntergeladene Dateien behalten werden. Ohne Treffer ist die Aktion deaktiviert. Texte sind deutsch/englisch verfügbar.
+- Der neue typisierte und validierte IPC-Aufruf `removeOfflinePackages` übergibt ausschließlich die zuvor bestätigten IDs. Der Main-Prozess prüft diese erneut: inzwischen wieder verfügbare Pakete bleiben stehen, inzwischen zusätzlich offline gewordene, aber nicht bestätigte Pakete werden nicht nachträglich aufgenommen. Der Paketabbruch erhält einen internen Dateierhaltungsmodus ohne Archiv-/Artefaktbereinigung; aktive Tasks verwenden den Stop-Abbruch, damit der bisherige Cancel-Handler keine Zieldatei löscht. Der bestehende normale Paketabbruch bleibt unverändert.
+- Verifiziert: 177 fokussierte Tests einschließlich einer neuen Dateisystem-/Manager-Regression, zusätzlich 21 bestehende Abbruch-/Entfernungsfälle, TypeScript sowie Main- und Renderer-Build erfolgreich. Browserprüfung mit Testdaten bestätigt Menü auf einem anderen Paket, Bestätigungsanzahl, Abbrechen ohne Änderung, gezieltes Entfernen und deaktivierte Aktion ohne Treffer. Dev-App für den neuen Preload-/Main-Aufruf einmal regulär geschlossen und neu gestartet. Kein Release erstellt; nächster Schritt ist Saschas Bedienprüfung.
+
 ### Unveröffentlichter Sortierfix vom 4. September 2026
 
 - Der Sortierfix in `v2.0.87` unterdrückte nur die JavaScript-Animation. Die CSS-Transition der virtuellen Zeilen bewegte sie weiterhin 1,5 Sekunden lang. `VirtualizedDownloadsBody` verwendet jetzt denselben Sortierguard auch für `is-download-motion-disabled`, wodurch CSS und JavaScript beim Spaltensortieren gemeinsam ausgesetzt werden.

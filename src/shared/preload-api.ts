@@ -103,6 +103,7 @@ export interface ElectronApi {
   stop: () => Promise<void>;
   togglePause: () => Promise<boolean>;
   cancelPackage: (packageId: string) => Promise<void>;
+  removeOfflinePackages: (packageIds: string[]) => Promise<number>;
   renamePackage: (packageId: string, newName: string) => Promise<void>;
   reorderPackages: (packageIds: string[]) => Promise<void>;
   removeItem: (itemId: string) => Promise<void>;

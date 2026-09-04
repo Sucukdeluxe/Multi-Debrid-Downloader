@@ -1,4 +1,5 @@
 import type { ElectronApi } from "../../src/shared/preload-api";
+import { getPackagesWithOfflineLinks } from "../../src/shared/offline-packages";
 import type { HistoryEntry, RendererSettings, RendererSettingsUpdate } from "../../src/shared/types";
 import type { VisualFixture } from "./fixtures";
 
@@ -109,6 +110,17 @@ export function createVisualElectronApi(
     togglePause: async () => {
       fixture.snapshot.session.paused = !fixture.snapshot.session.paused;
       return fixture.snapshot.session.paused;
+    },
+    removeOfflinePackages: async (packageIds) => {
+      const { session } = fixture.snapshot;
+      const candidates = getPackagesWithOfflineLinks(packageIds, session.packages, session.items);
+      for (const id of candidates) {
+        for (const itemId of session.packages[id].itemIds) delete session.items[itemId];
+        delete session.packages[id];
+      }
+      session.packageOrder = session.packageOrder.filter((id) => !candidates.includes(id));
+      emitStateUpdate();
+      return candidates.length;
     },
     cancelPackage: async (packageId) => {
       const entry = fixture.snapshot.session.packages[packageId];

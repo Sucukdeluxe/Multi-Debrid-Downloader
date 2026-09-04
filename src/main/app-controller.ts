@@ -1338,6 +1338,12 @@ export class AppController {
     this.manager.resetPackage(packageId);
   }
 
+  public removeOfflinePackages(packageIds: string[]): number {
+    const removed = this.manager.removeOfflinePackages(packageIds);
+    this.audit("WARN", "Pakete mit Offline-Links aus der Queue entfernt", { removed });
+    return removed;
+  }
+
   public cancelPackage(packageId: string): void {
     this.audit("WARN", "Paket abgebrochen", { packageId });
     this.manager.cancelPackage(packageId);

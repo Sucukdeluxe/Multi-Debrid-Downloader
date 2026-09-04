@@ -802,6 +802,9 @@ function registerIpcHandlers(): void {
     validateString(packageId, "packageId");
     return controller.cancelPackage(packageId);
   });
+  handleTrusted(IPC_CHANNELS.REMOVE_OFFLINE_PACKAGES, (_event: IpcMainInvokeEvent, packageIds: string[]) => {
+    return controller.removeOfflinePackages(validateStringArray(packageIds, "packageIds"));
+  });
   handleTrusted(IPC_CHANNELS.RENAME_PACKAGE, (_event: IpcMainInvokeEvent, packageId: string, newName: string) => {
     validateString(packageId, "packageId");
     validateString(newName, "newName");

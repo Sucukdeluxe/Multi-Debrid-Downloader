@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { getPackagesWithOfflineLinks } from "../shared/offline-packages";
 import path from "node:path";
 import os from "node:os";
 import { createHash } from "node:crypto";
@@ -6384,7 +6385,13 @@ export class DownloadManager extends EventEmitter {
     });
   }
 
-  public cancelPackage(packageId: string): void {
+  public removeOfflinePackages(packageIds: string[]): number {
+    const candidates = getPackagesWithOfflineLinks(packageIds, this.session.packages, this.session.items);
+    for (const packageId of candidates) this.cancelPackage(packageId, true);
+    return candidates.length;
+  }
+
+  public cancelPackage(packageId: string, preserveFiles = false): void {
     const pkg = this.session.packages[packageId];
     if (!pkg) {
       return;
@@ -6408,8 +6415,8 @@ export class DownloadManager extends EventEmitter {
       }
       const active = this.activeTasks.get(itemId);
       if (active) {
-        active.abortReason = "cancel";
-        active.abortController.abort("cancel");
+        active.abortReason = preserveFiles ? "stop" : "cancel";
+        active.abortController.abort(active.abortReason);
       }
     }
 
@@ -6418,6 +6425,8 @@ export class DownloadManager extends EventEmitter {
     this.removePackageFromSession(packageId, itemIds);
     this.persistSoon();
     this.emitState(true);
+
+    if (preserveFiles) return;
 
     this.cleanupQueue = this.cleanupQueue
       .then(async () => {

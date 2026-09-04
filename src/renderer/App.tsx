@@ -41,6 +41,7 @@ import {
 } from "../shared/provider-daily-limits";
 import { preservePackageOrderForDisplay, sortPackageOrderByAvailability, sortPackageOrderByName } from "./package-order";
 import { createPackageOrderState } from "./package-order-state";
+import { getPackagesWithOfflineLinks } from "../shared/offline-packages";
 import { pruneSelection, releaseAccountSelectionFocus, resolveEscapeSelectionScope, resolveSelectAllSelectionScope, shouldClearDownloadSelection } from "./selection";
 import { buildConfiguredProviderOrder, createAccountToggleQueue, enqueueAccountToggleIntent, filterAccountDialogOptions, formatAccountOperationError, getAccountDialogSelectableOptions, getAvailableAccountOptions, mergeAccountToggleSettings, pruneAccountRowSelections, resolveAccountStatusState, resolveAccountToggleIntentEnabled, resolveAccountUsername, resolveVisibleAccountKind, sortAccountServices, updateAccountRowSelection, type AccountToggleTarget } from "./account-ui";
 import { buildAccountDeleteCommand, buildAccountReplaceCommand, buildAccountSecretRequest, createAccountEditState, validateAccountEdit } from "./account-edit";
@@ -4850,6 +4851,31 @@ export function App(): ReactElement {
     setSelectedIds(new Set());
   }, []);
 
+  const requestRemoveOfflinePackages = useCallback((): void => {
+    setContextMenu(null);
+    void performQuickAction(async () => {
+      const { session, settings } = snapshotRef.current;
+      const candidates = getPackagesWithOfflineLinks(session.packageOrder, session.packages, session.items);
+      if (candidates.length === 0) return;
+      const english = normalizeLanguage(settings.language) === "en";
+      const count = candidates.length.toLocaleString(english ? "en-US" : "de-DE");
+      const packageLabel = english ? (candidates.length === 1 ? "package" : "packages") : (candidates.length === 1 ? "Paket" : "Pakete");
+      const confirmed = await askConfirmPrompt({
+        title: english ? "Remove packages with offline links" : "Pakete mit Offline-Links entfernen",
+        message: english
+          ? `Remove ${count} ${packageLabel} with at least one offline link from the entire download queue?\n\nEach package is removed in full, including its online links. This applies regardless of filters or selection. Active downloads in these packages will stop. Downloaded files are kept.`
+          : `${count} ${packageLabel} mit mindestens einem Offline-Link aus der gesamten Downloadliste entfernen?\n\nDie Pakete werden vollständig entfernt, einschließlich ihrer Online-Links. Das gilt unabhängig von Filtern und Auswahl. Laufende Downloads in diesen Paketen werden gestoppt. Bereits heruntergeladene Dateien bleiben erhalten.`,
+        confirmLabel: english ? "Remove packages" : "Pakete entfernen",
+        cancelLabel: english ? "Cancel" : "Abbrechen",
+        danger: true
+      });
+      if (!confirmed) return;
+      const removed = await window.rd.removeOfflinePackages(candidates);
+      const removedCount = removed.toLocaleString(english ? "en-US" : "de-DE");
+      showToast(english ? `${removedCount} ${removed === 1 ? "package" : "packages"} removed. Downloaded files were kept.` : `${removedCount} ${removed === 1 ? "Paket" : "Pakete"} entfernt. Heruntergeladene Dateien wurden behalten.`, 3200);
+    });
+  }, [askConfirmPrompt, performQuickAction, showToast]);
+
   const requestDeleteSelection = useCallback((): void => {
     if (selectedIds.size === 0) return;
     if (!settingsDraft.confirmDeleteSelection) {
@@ -7136,6 +7162,12 @@ export function App(): ReactElement {
               else { executeDeleteSelection(ids); }
             }}>{multi ? `Ausgewählte entfernen (${selectedPackageIds.length})` : "Paket entfernen"}</button>
           )}
+          <div className="ctx-menu-sep" />
+          <button
+            className="ctx-menu-item ctx-danger"
+            disabled={actionBusy || getPackagesWithOfflineLinks(snapshot.session.packageOrder, snapshot.session.packages, snapshot.session.items).length === 0}
+            onClick={requestRemoveOfflinePackages}
+          >{normalizeLanguage(snapshot.settings.language) === "en" ? "Remove packages with offline links …" : "Pakete mit Offline-Links entfernen …"}</button>
         </ContextMenu>
         );
         })() : null}

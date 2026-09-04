@@ -4,6 +4,10 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Add “Remove packages with offline links …” to the download context menu. After confirmation, remove whole packages containing at least one offline link across the entire queue, regardless of filters or selection, while keeping downloaded files. Recheck the confirmed package IDs before removal.
+
 ### Fixed
 
 - Disable CSS row transitions as well as JavaScript animations during column sorting, so packages immediately jump to their sorted positions.
