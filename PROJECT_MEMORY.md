@@ -10,8 +10,8 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 
 - Verifiziert am: 4. September 2026, Europe/Berlin
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
-- Arbeitsbranch: `release/v2.0.87`
-- Quellbasis: `release/v2.0.86`
+- Arbeitsbranch: `fix/availability-sort-snap`
+- Quellbasis: `release/v2.0.87` auf `c54a14f2becfabb9ee20a3783715e280069f2775`
 - Release-Tag: `v2.0.87` auf `d8661619c5f01a484f936513c7aea1c1b172aca3`
 - Baseline-Commit: `65084bd6d2a5add6a1552316f63cf0b0b2c27080`
 - Feature-Commit: `558d6ca4f499c86221d1054b0f00d3068d4d4654`
@@ -232,6 +232,12 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Dev-Start im Pfad mit `&`: `npm run dev` scheitert, weil der `cross-env`/`tsx`-Shim in `dev:electron` den Pfad an `&` zerlegt. Funktionierender Weg sind drei direkte Node-Aufrufe: `node node_modules/tsup/dist/cli-default.js src/main/main.ts src/preload/preload.ts --out-dir build/main --format cjs --target node20 --external electron --sourcemap --watch`, `node node_modules/vite/bin/vite.js --port 5180 --strictPort` und danach `NODE_ENV=development DEV_SERVER_PORT=5180 node node_modules/tsx/dist/cli.mjs scripts/run-dev-electron.ts`.
 
 ## Start-, Build- und Testbefehle
+
+### Unveröffentlichter Sortierfix vom 4. September 2026
+
+- Der Sortierfix in `v2.0.87` unterdrückte nur die JavaScript-Animation. Die CSS-Transition der virtuellen Zeilen bewegte sie weiterhin 1,5 Sekunden lang. `VirtualizedDownloadsBody` verwendet jetzt denselben Sortierguard auch für `is-download-motion-disabled`, wodurch CSS und JavaScript beim Spaltensortieren gemeinsam ausgesetzt werden.
+- Verifiziert: 160 Tests aus `download-sort.test.ts` und `downloads-view.test.tsx` erfolgreich; TypeScript mit `tsc --noEmit` fehlerfrei. Im lokalen Browser-Test mit der bestehenden visuellen Fixture wurden beide Verfügbarkeits-Sortierrichtungen samt CSS-Bewegungssperre geprüft. Normales Einklappen hebt die sortierbedingte Sperre wieder auf.
+- Die Dev-App läuft mit Vite auf Port 5180 und Main-Watcher; Vite hat die Änderung automatisch geladen. Paketversion bleibt `2.0.87`, der Fix ist noch nicht veröffentlicht. Nächster Schritt: Saschas Sichtprüfung in der Dev-App und gegebenenfalls ein ausdrücklich beauftragtes Release.
 
 ```powershell
 npm ci
