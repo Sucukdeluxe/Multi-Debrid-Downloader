@@ -235,6 +235,10 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 
 ### Unveröffentlichte Offline-Paketbereinigung vom 4. September 2026
 
+- Entfernen ohne Animation: Die Downloadansicht erkennt entfernte IDs im tatsächlichen Queue-Itembestand. CSS-Zeilen-/Höhentransitionen und laufende Reihenfolgeanimationen werden für diesen Render ausgesetzt; eventuell laufende Aufklappübergänge werden beendet. Das gilt auch für einzelne Archivsätze, deren Oberpaket erhalten bleibt. Normales Auf-/Zuklappen wird durch die bloße Sichtbarkeit einzelner Zeilen nicht als Löschung behandelt.
+- Verifiziert: 189 fokussierte Tests erfolgreich und TypeScript fehlerfrei. Browserprobe mit aktivierten Animationen unter `?motion=on&offline-cleanup=multipart&check-removal-motion` meldet für Paketmodus 12 Prüfungen/0 Bewegungen, für Archivsatzmodus 10 Prüfungen/0 Bewegungen; Folge 4 bleibt beim Entfernen von Folge 3 erhalten. Änderung per Hot-Reload geladen.
+- Release-Status: Sascha hat die Vorbereitung von v2.0.88 unterbrochen, um zuerst das animationslose Entfernen umzusetzen. Version bleibt 2.0.87; kein Release veröffentlicht. Release bleibt bis zur Fortsetzung pausiert.
+
 - Aktuelle Bedienvorgabe: „Ganze Pakete“ steht im Bestätigungsdialog oben und wird bei jedem Öffnen vorausgewählt. „Nur betroffene Archivsätze“ folgt darunter. Beide Modi bleiben wählbar; der gewählte Scope wird ausdrücklich an das Backend übergeben. Browserprüfung bestätigt Reihenfolge `package`, `archive` und ausschließlich `package` als vorausgewählt; TypeScript fehlerfrei. Änderung per Hot-Reload in der Dev-App geladen.
 
 - Erweiterung nach Saschas Rückmeldung: Die Bestätigung enthält jetzt zwei Radiooptionen. Standard bei jedem Öffnen ist „Nur betroffene Archivsätze“; alternativ „Ganze Pakete“. Im Archivsatz-Modus entfernt ein Offline-Part alle zusammengehörigen Parts derselben Folge, einschließlich bereits abgeschlossener Queue-Einträge; andere Folgen bleiben im Oberpaket. Leere Oberpakete verschwinden automatisch. Dateien bleiben in beiden Modi erhalten. Der Scope wird separat vom automatischen Offline-Überspringen übergeben und verändert dessen Einstellung nicht.

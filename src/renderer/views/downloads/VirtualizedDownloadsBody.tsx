@@ -17,6 +17,7 @@ import {
   captureDownloadOrderRowTops,
   getDownloadOrderTransitionPinnedIds,
   shouldAnimateDownloadOrderChange,
+  hasRemovedDownloadItems,
   getDownloadPackageOrder,
   isDownloadPackageOrderChange
 } from "./download-order-transition";
@@ -140,8 +141,10 @@ export function VirtualizedDownloadsBody({ actions, model, state }: { actions: D
   const packageOrderChanged = isDownloadPackageOrderChange(previousPackageOrderRef.current, packageOrder);
   const packageOrderSortRevision = model.packageOrderSortRevision ?? 0;
   const appliedSortRevisionRef = useRef(packageOrderSortRevision);
+  const previousQueueItemsRef = useRef(model.queueItems);
+  const itemsRemoved = hasRemovedDownloadItems(previousQueueItemsRef.current, model.queueItems);
   const orderAnimationsEnabled = shouldAnimateDownloadOrderChange({
-    animationsEnabled: model.animationsEnabled,
+    animationsEnabled: model.animationsEnabled && !itemsRemoved,
     sortRevision: packageOrderSortRevision,
     appliedSortRevision: appliedSortRevisionRef.current
   });
@@ -161,7 +164,7 @@ export function VirtualizedDownloadsBody({ actions, model, state }: { actions: D
     const prepared = prepareDownloadDisclosureTransition(
       transitionRowsRef.current ?? previousRowsRef.current,
       desiredRowsRef.current,
-      model.animationsEnabled
+      model.animationsEnabled && !itemsRemoved
     );
     if (!prepared.animated) {
       transitionRowsRef.current = null;
@@ -193,9 +196,9 @@ export function VirtualizedDownloadsBody({ actions, model, state }: { actions: D
       cancelActivation();
       if (settleTimer) window.clearTimeout(settleTimer);
     };
-  }, [model.animationsEnabled, model.disclosureRevision, model.displayMode]);
+  }, [itemsRemoved, model.animationsEnabled, model.disclosureRevision, model.displayMode]);
 
-  const renderedRows = useMemo<DownloadDisclosureRow[]>(() => transitionRows ? mergeDownloadDisclosureRows(transitionRows, desiredRows) : stableDownloadDisclosureRows(desiredRows), [desiredRows, transitionRows]);
+  const renderedRows = useMemo<DownloadDisclosureRow[]>(() => transitionRows && !itemsRemoved ? mergeDownloadDisclosureRows(transitionRows, desiredRows) : stableDownloadDisclosureRows(desiredRows), [desiredRows, itemsRemoved, transitionRows]);
   const virtualWindow = useMemo(() => calculateDownloadVirtualWindow(renderedRows, {
     scrollTop: viewport.scrollTop,
     viewportHeight: viewport.viewportHeight,
@@ -207,6 +210,7 @@ export function VirtualizedDownloadsBody({ actions, model, state }: { actions: D
     previousPackageOrderRef.current = packageOrder;
     previousVisibleIdsRef.current = virtualWindow.rows.map((entry) => entry.id);
     appliedSortRevisionRef.current = packageOrderSortRevision;
+    previousQueueItemsRef.current = model.queueItems;
     const body = bodyRef.current;
     if (!body) return;
     if (!orderAnimationsEnabled) {
@@ -237,7 +241,7 @@ export function VirtualizedDownloadsBody({ actions, model, state }: { actions: D
       orderTransitionTimerRef.current = 0;
       setOrderTransitionRevision((revision) => revision + 1);
     }, DOWNLOAD_ORDER_TRANSITION_DURATION_MS);
-  }, [orderAnimationsEnabled, orderTransitionPinnedIds, packageOrder, packageOrderChanged, packageOrderSortRevision, virtualWindow.rows]);
+  }, [model.queueItems, orderAnimationsEnabled, orderTransitionPinnedIds, packageOrder, packageOrderChanged, packageOrderSortRevision, virtualWindow.rows]);
 
   useEffect(() => () => {
     if (orderTransitionTimerRef.current) window.clearTimeout(orderTransitionTimerRef.current);

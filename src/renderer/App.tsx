@@ -5426,6 +5426,7 @@ export function App(): ReactElement {
     sortColumn: downloadsSortColumn,
     sortDirection: downloadsSortDescending ? "desc" : "asc",
     packageOrderSortRevision: downloadsSortRevision,
+    queueItems: snapshot.session.items,
     disclosureRevision: downloadDisclosureRevision,
     animationsEnabled: snapshot.settings.animatePackageDisclosure,
     status: {

@@ -53,6 +53,7 @@ export interface DownloadsViewModel extends DownloadsViewModelCore {
   sortColumn?: DownloadSortColumn;
   sortDirection?: "asc" | "desc";
   packageOrderSortRevision?: number;
+  queueItems?: Readonly<Record<string, unknown>>;
   disclosureRevision: number;
   animationsEnabled: boolean;
   status: DownloadsStatusModel;

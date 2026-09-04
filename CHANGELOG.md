@@ -10,6 +10,7 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ### Fixed
 
+- Remove queue entries and reposition the remaining rows immediately, without row or table-height animations, for both whole-package and archive-set cleanup.
 - Disable CSS row transitions as well as JavaScript animations during column sorting, so packages immediately jump to their sorted positions.
 - Keep the chosen package order stable while live snapshots and reorder confirmations arrive, preventing a brief jump back to the previous order when reversing a sort. Ignore failures from superseded reorder requests.
 

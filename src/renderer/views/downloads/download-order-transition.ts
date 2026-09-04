@@ -24,6 +24,10 @@ export function shouldAnimateDownloadOrderChange(input: { animationsEnabled: boo
   return input.animationsEnabled && input.sortRevision === input.appliedSortRevision;
 }
 
+export function hasRemovedDownloadItems(previous: Readonly<Record<string, unknown>> | undefined, current: Readonly<Record<string, unknown>> | undefined): boolean {
+  return Boolean(previous && current && previous !== current && Object.keys(previous).some((id) => !Object.hasOwn(current, id)));
+}
+
 export function getDownloadOrderTransitionPinnedIds(input: {
   enabled: boolean;
   previousOrder: readonly string[];

@@ -38,7 +38,8 @@ import {
   getDownloadOrderTransitionPinnedIds,
   getDownloadOrderTransformKeyframes,
   isDownloadPackageOrderChange,
-  shouldAnimateDownloadOrderChange
+  shouldAnimateDownloadOrderChange,
+  hasRemovedDownloadItems
 } from "../src/renderer/views/downloads/download-order-transition";
 import {
   DownloadsContent,
@@ -384,6 +385,14 @@ describe("virtualisierte Paketanimation", () => {
     expect(shouldAnimateDownloadOrderChange({ animationsEnabled: true, sortRevision: 3, appliedSortRevision: 3 })).toBe(true);
     expect(shouldAnimateDownloadOrderChange({ animationsEnabled: true, sortRevision: 4, appliedSortRevision: 3 })).toBe(false);
     expect(shouldAnimateDownloadOrderChange({ animationsEnabled: false, sortRevision: 3, appliedSortRevision: 3 })).toBe(false);
+  });
+
+  it("detects removed queue entries even when another entry is added in the same update", () => {
+    expect(hasRemovedDownloadItems({ first: {}, second: {} }, { second: {} })).toBe(true);
+    expect(hasRemovedDownloadItems({ first: {}, second: {} }, { second: {}, third: {} })).toBe(true);
+    expect(hasRemovedDownloadItems({ first: {} }, {})).toBe(true);
+    expect(hasRemovedDownloadItems({ first: {} }, { first: { status: "completed" }, second: {} })).toBe(false);
+    expect(hasRemovedDownloadItems(undefined, { first: {} })).toBe(false);
   });
 
   it("pins only previously visible rows for a real priority reorder", () => {

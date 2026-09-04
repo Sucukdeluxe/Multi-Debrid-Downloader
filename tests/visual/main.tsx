@@ -205,5 +205,6 @@ export async function startVisualHarness(
 }
 
 if (typeof window !== "undefined" && typeof document !== "undefined") {
+  if (new URLSearchParams(window.location.search).has("check-removal-motion")) void import("./removal-motion-probe");
   startVisualHarness();
 }
