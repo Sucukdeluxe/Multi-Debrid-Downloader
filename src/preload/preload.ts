@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import {
+  OfflineSkipScope,
   AddLinksPayload,
   AccountCheckScope,
   AccountCommandResult,
@@ -83,7 +84,7 @@ const api: ElectronApi = {
   stop: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.STOP),
   togglePause: (): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.TOGGLE_PAUSE),
   cancelPackage: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.CANCEL_PACKAGE, packageId),
-  removeOfflinePackages: (packageIds: string[]): Promise<number> => ipcRenderer.invoke(IPC_CHANNELS.REMOVE_OFFLINE_PACKAGES, packageIds),
+  removeOfflinePackages: (packageIds: string[], scope: OfflineSkipScope = "archive"): Promise<number> => ipcRenderer.invoke(IPC_CHANNELS.REMOVE_OFFLINE_PACKAGES, packageIds, scope),
   renamePackage: (packageId: string, newName: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.RENAME_PACKAGE, packageId, newName),
   reorderPackages: (packageIds: string[]): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.REORDER_PACKAGES, packageIds),
   removeItem: (itemId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.REMOVE_ITEM, itemId),

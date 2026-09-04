@@ -4,6 +4,7 @@ import v8 from "node:v8";
 import { randomUUID } from "node:crypto";
 import { app } from "electron";
 import {
+  OfflineSkipScope,
   AddLinksPayload,
   AccountCheckScope,
   AllDebridHostInfo,
@@ -1338,9 +1339,9 @@ export class AppController {
     this.manager.resetPackage(packageId);
   }
 
-  public removeOfflinePackages(packageIds: string[]): number {
-    const removed = this.manager.removeOfflinePackages(packageIds);
-    this.audit("WARN", "Pakete mit Offline-Links aus der Queue entfernt", { removed });
+  public removeOfflinePackages(packageIds: string[], scope: OfflineSkipScope = "archive"): number {
+    const removed = this.manager.removeOfflinePackages(packageIds, scope);
+    this.audit("WARN", "Offline-Bereinigung der Queue", { affectedPackages: removed, scope });
     return removed;
   }
 

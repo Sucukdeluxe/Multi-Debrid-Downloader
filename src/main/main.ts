@@ -802,8 +802,9 @@ function registerIpcHandlers(): void {
     validateString(packageId, "packageId");
     return controller.cancelPackage(packageId);
   });
-  handleTrusted(IPC_CHANNELS.REMOVE_OFFLINE_PACKAGES, (_event: IpcMainInvokeEvent, packageIds: string[]) => {
-    return controller.removeOfflinePackages(validateStringArray(packageIds, "packageIds"));
+  handleTrusted(IPC_CHANNELS.REMOVE_OFFLINE_PACKAGES, (_event: IpcMainInvokeEvent, packageIds: string[], scope: unknown = "archive") => {
+    if (scope !== "archive" && scope !== "package") throw new Error("Ungültiger Bereich für Offline-Bereinigung");
+    return controller.removeOfflinePackages(validateStringArray(packageIds, "packageIds"), scope);
   });
   handleTrusted(IPC_CHANNELS.RENAME_PACKAGE, (_event: IpcMainInvokeEvent, packageId: string, newName: string) => {
     validateString(packageId, "packageId");

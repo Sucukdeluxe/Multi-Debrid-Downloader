@@ -42,6 +42,8 @@ import {
 import { preservePackageOrderForDisplay, sortPackageOrderByAvailability, sortPackageOrderByName } from "./package-order";
 import { createPackageOrderState } from "./package-order-state";
 import { getPackagesWithOfflineLinks } from "../shared/offline-packages";
+import type { OfflineSkipScope } from "../shared/types";
+import { OfflineRemovalScopeChoice } from "./views/downloads/OfflineRemovalScopeChoice";
 import { pruneSelection, releaseAccountSelectionFocus, resolveEscapeSelectionScope, resolveSelectAllSelectionScope, shouldClearDownloadSelection } from "./selection";
 import { buildConfiguredProviderOrder, createAccountToggleQueue, enqueueAccountToggleIntent, filterAccountDialogOptions, formatAccountOperationError, getAccountDialogSelectableOptions, getAvailableAccountOptions, mergeAccountToggleSettings, pruneAccountRowSelections, resolveAccountStatusState, resolveAccountToggleIntentEnabled, resolveAccountUsername, resolveVisibleAccountKind, sortAccountServices, updateAccountRowSelection, type AccountToggleTarget } from "./account-ui";
 import { buildAccountDeleteCommand, buildAccountReplaceCommand, buildAccountSecretRequest, createAccountEditState, validateAccountEdit } from "./account-edit";
@@ -288,6 +290,7 @@ interface StartConflictPromptState {
 }
 
 interface ConfirmPromptState {
+  offlineScope?: OfflineSkipScope;
   title: string;
   message: string;
   confirmLabel: string;
@@ -1918,6 +1921,7 @@ export function App(): ReactElement {
   const [startConflictPrompt, setStartConflictPrompt] = useState<StartConflictPromptState | null>(null);
   const startConflictResolverRef = useRef<((result: { policy: Extract<DuplicatePolicy, "skip" | "overwrite">; applyToAll: boolean } | null) => void) | null>(null);
   const [confirmPrompt, setConfirmPrompt] = useState<ConfirmPromptState | null>(null);
+  const offlineRemovalScopeRef = useRef<OfflineSkipScope>("archive");
   const [backupPassphraseMode, setBackupPassphraseMode] = useState<BackupPassphraseMode | null>(null);
   const [onlineBackupDialog, setOnlineBackupDialog] = useState<OnlineBackupDialogState | null>(null);
   const [remoteDiag, setRemoteDiag] = useState<RemoteDiagnosticsInfo | null>(null);
@@ -4860,19 +4864,21 @@ export function App(): ReactElement {
       const english = normalizeLanguage(settings.language) === "en";
       const count = candidates.length.toLocaleString(english ? "en-US" : "de-DE");
       const packageLabel = english ? (candidates.length === 1 ? "package" : "packages") : (candidates.length === 1 ? "Paket" : "Pakete");
+      offlineRemovalScopeRef.current = "archive";
       const confirmed = await askConfirmPrompt({
+        offlineScope: "archive",
         title: english ? "Remove packages with offline links" : "Pakete mit Offline-Links entfernen",
         message: english
-          ? `Remove ${count} ${packageLabel} with at least one offline link from the entire download queue?\n\nEach package is removed in full, including its online links. This applies regardless of filters or selection. Active downloads in these packages will stop. Downloaded files are kept.`
-          : `${count} ${packageLabel} mit mindestens einem Offline-Link aus der gesamten Downloadliste entfernen?\n\nDie Pakete werden vollständig entfernt, einschließlich ihrer Online-Links. Das gilt unabhängig von Filtern und Auswahl. Laufende Downloads in diesen Paketen werden gestoppt. Bereits heruntergeladene Dateien bleiben erhalten.`,
-        confirmLabel: english ? "Remove packages" : "Pakete entfernen",
+          ? `${count} ${packageLabel} with offline links in the entire queue. This applies regardless of filters or selection.`
+          : `${count} ${packageLabel} mit Offline-Links in der gesamten Queue. Das gilt unabhängig von Filtern und Auswahl.`,
+        confirmLabel: english ? "Remove" : "Entfernen",
         cancelLabel: english ? "Cancel" : "Abbrechen",
         danger: true
       });
       if (!confirmed) return;
-      const removed = await window.rd.removeOfflinePackages(candidates);
+      const removed = await window.rd.removeOfflinePackages(candidates, offlineRemovalScopeRef.current);
       const removedCount = removed.toLocaleString(english ? "en-US" : "de-DE");
-      showToast(english ? `${removedCount} ${removed === 1 ? "package" : "packages"} removed. Downloaded files were kept.` : `${removedCount} ${removed === 1 ? "Paket" : "Pakete"} entfernt. Heruntergeladene Dateien wurden behalten.`, 3200);
+      showToast(english ? `Cleanup completed in ${removedCount} ${removed === 1 ? "package" : "packages"}. Downloaded files were kept.` : `Bereinigung in ${removedCount} ${removed === 1 ? "Paket" : "Paketen"} abgeschlossen. Heruntergeladene Dateien wurden behalten.`, 3200);
     });
   }, [askConfirmPrompt, performQuickAction, showToast]);
 
@@ -6758,6 +6764,16 @@ export function App(): ReactElement {
         confirm={confirmPrompt ? (
           <Dialog actions={null} danger={confirmPrompt.danger} onClose={() => closeConfirmPrompt(false)} open title={confirmPrompt.title}>
             <p style={{ whiteSpace: "pre-line" }}>{confirmPrompt.message}</p>
+            {confirmPrompt.offlineScope && (
+              <OfflineRemovalScopeChoice
+                scope={confirmPrompt.offlineScope}
+                english={normalizeLanguage(settingsDraft.language) === "en"}
+                onChange={(scope) => {
+                  offlineRemovalScopeRef.current = scope;
+                  setConfirmPrompt((current) => current ? { ...current, offlineScope: scope } : current);
+                }}
+              />
+            )}
             {confirmPrompt.details && (
               <details className="modal-details">
                 <summary>{confirmPrompt.detailsLabel || "Details anzeigen"}</summary>

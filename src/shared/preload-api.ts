@@ -34,6 +34,7 @@ import type {
   UpdateInstallResult
 } from "./types";
 import { isRealDebridWebAccountId } from "./real-debrid-accounts";
+import type { OfflineSkipScope } from "./types";
 import type {
   CollectorEnrichmentRequest,
   CollectorEnrichmentProgress,
@@ -103,7 +104,7 @@ export interface ElectronApi {
   stop: () => Promise<void>;
   togglePause: () => Promise<boolean>;
   cancelPackage: (packageId: string) => Promise<void>;
-  removeOfflinePackages: (packageIds: string[]) => Promise<number>;
+  removeOfflinePackages: (packageIds: string[], scope?: OfflineSkipScope) => Promise<number>;
   renamePackage: (packageId: string, newName: string) => Promise<void>;
   reorderPackages: (packageIds: string[]) => Promise<void>;
   removeItem: (itemId: string) => Promise<void>;

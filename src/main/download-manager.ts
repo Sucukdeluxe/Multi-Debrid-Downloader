@@ -1,4 +1,7 @@
 import fs from "node:fs";
+import type { OfflineSkipScope } from "../shared/types";
+import { resolveOfflineArchiveItemsFromList } from "../shared/offline-archive-items";
+export { resolveOfflineArchiveItemsFromList } from "../shared/offline-archive-items";
 import { getPackagesWithOfflineLinks } from "../shared/offline-packages";
 import path from "node:path";
 import os from "node:os";
@@ -1755,55 +1758,6 @@ export function resolveArchiveItemsFromList(archiveName: string, items: Download
   return [];
 }
 
-export function resolveOfflineArchiveItemsFromList(archiveName: string, items: DownloadItem[]): DownloadItem[] {
-  const normalizeArchiveMatchName = (value: string): string =>
-    stripDuplicateSuffixBeforeExtension(path.basename(String(value || "")));
-  const entryLower = normalizeArchiveMatchName(archiveName).toLowerCase();
-  const itemBaseName = (item: DownloadItem): string =>
-    normalizeArchiveMatchName(item.targetPath || item.fileName || "");
-
-  let pattern: RegExp | null = null;
-  const multipartMatch = entryLower.match(/^(.*)\.part0*\d+\.rar$/);
-  if (multipartMatch) {
-    const prefix = multipartMatch[1].replace(REGEX_ESCAPE_RE, "\\$&");
-    pattern = new RegExp(`^${prefix}\\.part\\d+\\.rar$`, "i");
-  }
-  if (!pattern) {
-    const rarMatch = entryLower.match(/^(.*)\.r(?:ar|\d{2,3})$/);
-    if (rarMatch) {
-      const stem = rarMatch[1].replace(REGEX_ESCAPE_RE, "\\$&");
-      pattern = new RegExp(`^${stem}\\.r(ar|\\d{2,3})$`, "i");
-    }
-  }
-  if (!pattern) {
-    const zipSplitMatch = entryLower.match(/^(.*)\.zip\.\d+$/);
-    if (zipSplitMatch) {
-      const stem = zipSplitMatch[1].replace(REGEX_ESCAPE_RE, "\\$&");
-      pattern = new RegExp(`^${stem}\\.zip(\\.\\d+)?$`, "i");
-    }
-  }
-  if (!pattern) {
-    const sevenSplitMatch = entryLower.match(/^(.*)\.7z\.\d+$/);
-    if (sevenSplitMatch) {
-      const stem = sevenSplitMatch[1].replace(REGEX_ESCAPE_RE, "\\$&");
-      pattern = new RegExp(`^${stem}\\.7z(\\.\\d+)?$`, "i");
-    }
-  }
-  if (!pattern && /^(.*)\.\d{3}$/.test(entryLower) && !/\.(zip|7z)\.\d{3}$/.test(entryLower)) {
-    const genericSplitMatch = entryLower.match(/^(.*)\.\d{3}$/);
-    if (genericSplitMatch) {
-      const stem = genericSplitMatch[1].replace(REGEX_ESCAPE_RE, "\\$&");
-      pattern = new RegExp(`^${stem}\\.\\d{3}$`, "i");
-    }
-  }
-
-  if (pattern) {
-    const matched = items.filter((item) => pattern!.test(itemBaseName(item)));
-    if (matched.length > 0) return matched;
-  }
-
-  return items.filter((item) => itemBaseName(item).toLowerCase() === entryLower);
-}
 
 function stripDuplicateSuffixBeforeExtension(fileName: string): string {
   return String(fileName || "").replace(/ \(\d+\)(?=\.[^.]+$)/, "");
@@ -3289,7 +3243,7 @@ export class DownloadManager extends EventEmitter {
     this.emitState(true);
   }
 
-  public removeItem(itemId: string): void {
+  public removeItem(itemId: string, preserveFiles = false): void {
     const item = this.session.items[itemId];
     if (!item) {
       return;
@@ -3301,8 +3255,8 @@ export class DownloadManager extends EventEmitter {
     const active = this.activeTasks.get(itemId);
     const hasActiveTask = Boolean(active);
     if (active) {
-      active.abortReason = "cancel";
-      active.abortController.abort("cancel");
+      active.abortReason = preserveFiles ? "stop" : "cancel";
+      active.abortController.abort(active.abortReason);
     }
     const pkg = this.session.packages[item.packageId];
     let removedByPackageCleanup = false;
@@ -6385,9 +6339,27 @@ export class DownloadManager extends EventEmitter {
     });
   }
 
-  public removeOfflinePackages(packageIds: string[]): number {
+  public removeOfflinePackages(packageIds: string[], scope: OfflineSkipScope = "archive"): number {
     const candidates = getPackagesWithOfflineLinks(packageIds, this.session.packages, this.session.items);
-    for (const packageId of candidates) this.cancelPackage(packageId, true);
+    for (const packageId of candidates) {
+      if (scope === "package") {
+        this.cancelPackage(packageId, true);
+        continue;
+      }
+      const items = this.session.packages[packageId].itemIds.map((id) => this.session.items[id]).filter(Boolean);
+      const itemIds = new Set<string>();
+      for (const item of items) {
+        if (item.onlineStatus !== "offline") continue;
+        itemIds.add(item.id);
+        for (const related of resolveOfflineArchiveItemsFromList(item.fileName, items)) itemIds.add(related.id);
+      }
+      if (itemIds.size === items.length) {
+        this.cancelPackage(packageId, true);
+      } else {
+        this.abortPackagePostProcessing(packageId, "offline_cleanup");
+        for (const itemId of itemIds) this.removeItem(itemId, true);
+      }
+    }
     return candidates.length;
   }
 

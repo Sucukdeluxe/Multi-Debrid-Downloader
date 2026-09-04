@@ -1,5 +1,6 @@
 import type { ElectronApi } from "../../src/shared/preload-api";
 import { getPackagesWithOfflineLinks } from "../../src/shared/offline-packages";
+import { resolveOfflineArchiveItemsFromList } from "../../src/shared/offline-archive-items";
 import type { HistoryEntry, RendererSettings, RendererSettingsUpdate } from "../../src/shared/types";
 import type { VisualFixture } from "./fixtures";
 
@@ -14,6 +15,21 @@ export function createVisualElectronApi(
   search = typeof window === "undefined" ? "" : window.location.search
 ): ElectronApi {
   const searchParams = new URLSearchParams(search);
+  if (searchParams.get("offline-cleanup") === "multipart") {
+    const { session } = fixture.snapshot;
+    const pkg = session.packages[session.packageOrder[0]];
+    const originals = pkg.itemIds.map((id) => session.items[id]);
+    originals.forEach((item, index) => {
+      item.fileName = `episode03.part${index + 1}.rar`;
+      item.targetPath = "";
+      item.onlineStatus = index === 1 ? "offline" : "online";
+    });
+    for (let part = 1; part <= 2; part++) {
+      const id = `${pkg.id}-episode04-${part}`;
+      session.items[id] = { ...originals[0], id, fileName: `episode04.part${part}.rar`, targetPath: "", onlineStatus: "online" };
+      pkg.itemIds.push(id);
+    }
+  }
   const historyState = searchParams.get("history-state");
   if (searchParams.get("animations") === "off") fixture.snapshot.settings.animatePackageDisclosure = false;
   let archivePasswordList = searchParams.get("archive-passwords") === "configured"
@@ -111,14 +127,18 @@ export function createVisualElectronApi(
       fixture.snapshot.session.paused = !fixture.snapshot.session.paused;
       return fixture.snapshot.session.paused;
     },
-    removeOfflinePackages: async (packageIds) => {
+    removeOfflinePackages: async (packageIds, scope = "archive") => {
       const { session } = fixture.snapshot;
       const candidates = getPackagesWithOfflineLinks(packageIds, session.packages, session.items);
       for (const id of candidates) {
-        for (const itemId of session.packages[id].itemIds) delete session.items[itemId];
-        delete session.packages[id];
+        const pkg = session.packages[id];
+        const items = pkg.itemIds.map((itemId) => session.items[itemId]).filter(Boolean);
+        const targets = scope === "package" ? items : items.filter((item) => item.onlineStatus === "offline").flatMap((item) => [item, ...resolveOfflineArchiveItemsFromList(item.fileName, items)]);
+        for (const item of targets) delete session.items[item.id];
+        pkg.itemIds = pkg.itemIds.filter((itemId) => session.items[itemId]);
+        if (pkg.itemIds.length === 0) delete session.packages[id];
       }
-      session.packageOrder = session.packageOrder.filter((id) => !candidates.includes(id));
+      session.packageOrder = session.packageOrder.filter((id) => session.packages[id]);
       emitStateUpdate();
       return candidates.length;
     },
