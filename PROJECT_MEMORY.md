@@ -13,11 +13,12 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
 - Arbeitsbranch: `release/v2.0.88`
 - Quellbasis: `release/v2.0.87` auf `c54a14f2becfabb9ee20a3783715e280069f2775`
-- Release-Tag: `v2.0.87` auf `d8661619c5f01a484f936513c7aea1c1b172aca3`
+- Release-Tag: `v2.0.88` auf `6e0b88751282310fb7bb09d423ffa56ea88b5bb2`
 - Baseline-Commit: `65084bd6d2a5add6a1552316f63cf0b0b2c27080`
 - Feature-Commit: `558d6ca4f499c86221d1054b0f00d3068d4d4654`
 - Paketversion: `2.0.88`
-- Letztes Release: `Multi-Debrid Downloader v2.0.87`, veröffentlicht am 4. September 2026 auf GitHub und Forgejo
+- Letztes Release: `Multi-Debrid Downloader v2.0.88`, veröffentlicht am 5. September 2026 auf GitHub und Forgejo
+- Veröffentlichungsprüfung v2.0.88: Beide Plattformen melden denselben Titel und Tag als neuestes stabiles Release; GitHub-Text Englisch, Forgejo-Text Deutsch. Je sechs Assets vollständig erneut heruntergeladen und Größe sowie SHA-256 mit lokalen Originalen verglichen; beide `latest.yml` bestätigen Version und Installer-SHA-512. Installer-SHA-256: `ab9325251bcb2d95224025b38bf53ad770cb92ddef81baa91b83e3987bff2de9`; Portable-SHA-256: `009459b59efa664f520e8e4525bfb31cdb077a667c59b040a731fa3523a83552`. Lokale Originale liegen ignoriert unter `release/staging-v2.0.88`. Source-ZIP entspricht dem Release-Commit und wurde zusätzlich mit 7-Zip geprüft.
 - Runtime-Voraussetzung: Node.js `>=20`; lokal verifiziert mit Node.js `24.19.0` und npm `11.17.0`
 
 `main` ist derzeit keine verlässliche Arbeitsbasis:
@@ -238,7 +239,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 
 - Entfernen ohne Animation: Die Downloadansicht erkennt entfernte IDs im tatsächlichen Queue-Itembestand. CSS-Zeilen-/Höhentransitionen und laufende Reihenfolgeanimationen werden für diesen Render ausgesetzt; eventuell laufende Aufklappübergänge werden beendet. Das gilt auch für einzelne Archivsätze, deren Oberpaket erhalten bleibt. Normales Auf-/Zuklappen wird durch die bloße Sichtbarkeit einzelner Zeilen nicht als Löschung behandelt.
 - Verifiziert: 189 fokussierte Tests erfolgreich und TypeScript fehlerfrei. Browserprobe mit aktivierten Animationen unter `?motion=on&offline-cleanup=multipart&check-removal-motion` meldet für Paketmodus 12 Prüfungen/0 Bewegungen, für Archivsatzmodus 10 Prüfungen/0 Bewegungen; Folge 4 bleibt beim Entfernen von Folge 3 erhalten. Änderung per Hot-Reload geladen.
-- Release-Status: Nach dem animationslosen Entfernen hat Sascha am 5. September 2026 mit „nice release“ die Veröffentlichung von v2.0.88 ausdrücklich fortgesetzt. Vorbereitung auf `release/v2.0.88`; keine produktive Installation und kein Serverneustart.
+- Release-Status: Nach dem animationslosen Entfernen hat Sascha am 5. September 2026 mit „nice release“ die Veröffentlichung von v2.0.88 ausdrücklich fortgesetzt. v2.0.88 ist auf beiden Plattformen veröffentlicht und verifiziert; keine produktive Installation und kein Serverneustart.
 
 - Aktuelle Bedienvorgabe: „Ganze Pakete“ steht im Bestätigungsdialog oben und wird bei jedem Öffnen vorausgewählt. „Nur betroffene Archivsätze“ folgt darunter. Beide Modi bleiben wählbar; der gewählte Scope wird ausdrücklich an das Backend übergeben. Browserprüfung bestätigt Reihenfolge `package`, `archive` und ausschließlich `package` als vorausgewählt; TypeScript fehlerfrei. Änderung per Hot-Reload in der Dev-App geladen.
 
