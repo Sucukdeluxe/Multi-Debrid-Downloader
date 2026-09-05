@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { sortPackageOrderByService } from "../src/renderer/App";
-import { sortPackageOrderByAvailability } from "../src/renderer/package-order";
+import { createAvailabilitySortCycle, sortPackageOrderByAvailability } from "../src/renderer/package-order";
 
 describe("download package sorting", () => {
   it("sorts the Verfügbarkeit column from fully online through partial and unchecked down to fully offline", () => {
@@ -30,7 +30,58 @@ describe("download package sorting", () => {
     const order = ["offline", "partialLow", "unchecked", "online", "partialHigh", "empty"];
 
     expect(sortPackageOrderByAvailability(order, packages, items, false)).toEqual(["online", "partialHigh", "partialLow", "unchecked", "empty", "offline"]);
-    expect(sortPackageOrderByAvailability(order, packages, items, true)).toEqual(["offline", "unchecked", "empty", "partialLow", "partialHigh", "online"]);
+    expect(sortPackageOrderByAvailability(order, packages, items, true)).toEqual(["offline", "empty", "unchecked", "partialLow", "partialHigh", "online"]);
+  });
+
+  it("uses part counts only for equal availability, including offline and partial packages", () => {
+    const definitions = [
+      ["offlineSmall", 0, 2], ["onlineSmall", 2, 2], ["partialSmall", 1, 2],
+      ["offlineLarge", 0, 8], ["onlineLarge", 8, 8], ["partialLarge", 4, 8],
+      ["partialHigh", 3, 4], ["onlineEqual", 2, 2]
+    ] as const;
+    const packages: any = {};
+    const items: any = {};
+    for (const [id, online, total] of definitions) {
+      const itemIds = Array.from({ length: total }, (_, index) => `${id}-${index}`);
+      packages[id] = { id, itemIds };
+      itemIds.forEach((itemId, index) => { items[itemId] = { status: "queued", onlineStatus: index < online ? "online" : "offline" }; });
+    }
+    const order = definitions.map(([id]) => id);
+    expect(sortPackageOrderByAvailability(order, packages, items, false)).toEqual([
+      "onlineLarge", "onlineSmall", "onlineEqual", "partialHigh", "partialLarge", "partialSmall", "offlineLarge", "offlineSmall"
+    ]);
+    expect(sortPackageOrderByAvailability(order, packages, items, true)).toEqual([
+      "offlineSmall", "offlineLarge", "partialSmall", "partialLarge", "partialHigh", "onlineSmall", "onlineEqual", "onlineLarge"
+    ]);
+  });
+
+  it("cycles online first, offline first, original order, then starts a new cycle", () => {
+    const cycle = createAvailabilitySortCycle();
+    const original = ["b", "a", "c"];
+    expect(cycle.next(original).descending).toBe(false);
+    expect(cycle.next(["a", "b", "c"]).descending).toBe(true);
+    expect(cycle.next(["c", "b", "a"])).toEqual({ descending: null, order: original });
+    expect(cycle.next(["new", "a"]).descending).toBe(false);
+    expect(cycle.next(["a", "new"]).descending).toBe(true);
+    expect(cycle.next(["a", "new"])).toEqual({ descending: null, order: ["new", "a"] });
+  });
+
+  it("restores surviving packages and appends new packages without resurrecting deletions", () => {
+    const cycle = createAvailabilitySortCycle();
+    const original = ["b", "a", "deleted"];
+    cycle.next(original);
+    original.reverse();
+    cycle.next(["a", "b", "new"]);
+    expect(cycle.next(["new", "a", "b", "newer"])).toEqual({ descending: null, order: ["b", "a", "new", "newer"] });
+  });
+
+  it("starts afresh after another column and handles an empty queue", () => {
+    const cycle = createAvailabilitySortCycle();
+    cycle.next(["old"]);
+    cycle.reset();
+    expect(cycle.next([])).toEqual({ descending: false, order: [] });
+    cycle.next([]);
+    expect(cycle.next([])).toEqual({ descending: null, order: [] });
   });
 
   it("sorts the Service column by its visible provider labels", () => {

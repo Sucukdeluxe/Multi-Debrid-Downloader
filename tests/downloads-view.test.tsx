@@ -2119,6 +2119,24 @@ describe("download table row contracts", () => {
     expect(sorted).toEqual(["availability"]);
   });
 
+  it("shows no active sorting or direction arrow when sorting is switched off", () => {
+    const header = DownloadsTableHeader({
+      actions: createActions(),
+      columnOrder: ["name", "availability"],
+      gridTemplate: "100px 100px",
+      selectedCount: 0,
+      sortColumn: undefined,
+      sortDirection: "asc",
+      visibleIds: []
+    });
+    for (const column of ["name", "availability"]) {
+      expect(findElement(header, (element) => element.props["data-download-column"] === column).props["aria-sort"]).toBe("none");
+    }
+    const html = renderToStaticMarkup(header);
+    expect(html).not.toContain("↑");
+    expect(html).not.toContain("↓");
+  });
+
   it("shows an actively downloading item as online even without a stored availability result", () => {
     const html = renderToStaticMarkup(ItemRowContent({
       actions: createActions(),

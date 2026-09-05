@@ -39,7 +39,7 @@ import {
   getProviderDailyUsageBytes,
   getProviderUsageDayKey
 } from "../shared/provider-daily-limits";
-import { preservePackageOrderForDisplay, sortPackageOrderByAvailability, sortPackageOrderByName } from "./package-order";
+import { createAvailabilitySortCycle, preservePackageOrderForDisplay, sortPackageOrderByAvailability, sortPackageOrderByName } from "./package-order";
 import { createPackageOrderState } from "./package-order-state";
 import { getPackagesWithOfflineLinks } from "../shared/offline-packages";
 import type { OfflineSkipScope } from "../shared/types";
@@ -1894,7 +1894,8 @@ export function App(): ReactElement {
   const [downloadDisplayMode, setDownloadDisplayMode] = useState<DownloadDisplayMode>("packages");
   const [downloadFilter, setDownloadFilter] = useState<DownloadSidebarFilter>("all");
   const [downloadProviderFilter, setDownloadProviderFilter] = useState("all");
-  const [downloadsSortColumn, setDownloadsSortColumn] = useState<DownloadSortColumn>("name");
+  const [downloadsSortColumn, setDownloadsSortColumn] = useState<DownloadSortColumn | undefined>("name");
+  const availabilitySortCycleRef = useRef(createAvailabilitySortCycle());
   const [downloadsSortRevision, setDownloadsSortRevision] = useState(0);
   const [downloadsSortDescending, setDownloadsSortDescending] = useState(false);
   const [showAllPackages, setShowAllPackages] = useState(false);
@@ -5271,11 +5272,22 @@ export function App(): ReactElement {
   }, [snapshot.packageSpeedBps]);
 
   const sortDownloadsByColumn = useCallback((column: DownloadSortColumn): void => {
+    const baseOrder = packageOrderRef.current.length > 0 ? packageOrderRef.current : snapshot.session.packageOrder;
+    if (column === "availability") {
+      const step = availabilitySortCycleRef.current.next(baseOrder);
+      setDownloadsSortColumn(step.descending === null ? undefined : column);
+      setDownloadsSortDescending(step.descending === false);
+      setDownloadsSortRevision((revision) => revision + 1);
+      commitPackageOrder(step.descending === null ? step.order : sortPackageOrderByAvailability(
+        step.order, snapshot.session.packages, snapshot.session.items, step.descending
+      ));
+      return;
+    }
+    availabilitySortCycleRef.current.reset();
     const nextDescending = downloadsSortColumn === column ? !downloadsSortDescending : false;
     setDownloadsSortColumn(column);
     setDownloadsSortDescending(nextDescending);
     setDownloadsSortRevision((revision) => revision + 1);
-    const baseOrder = packageOrderRef.current.length > 0 ? packageOrderRef.current : snapshot.session.packageOrder;
     const sorted = column === "progress"
       ? sortPackageOrderByProgress(baseOrder, snapshot.session.packages, snapshot.session.items, nextDescending)
       : column === "size"
@@ -5290,9 +5302,7 @@ export function App(): ReactElement {
               nextDescending,
               Object.fromEntries(downloadsViewCore.packageRows.map((row) => [row.package.id, row.items]))
             )
-            : column === "availability"
-              ? sortPackageOrderByAvailability(baseOrder, snapshot.session.packages, snapshot.session.items, nextDescending)
-              : sortPackageOrderByName(baseOrder, snapshot.session.packages, nextDescending);
+            : sortPackageOrderByName(baseOrder, snapshot.session.packages, nextDescending);
     commitPackageOrder(sorted);
   }, [commitPackageOrder, downloadsSortColumn, downloadsSortDescending, downloadsViewCore.packageRows, snapshot.session.items, snapshot.session.packageOrder, snapshot.session.packages]);
 

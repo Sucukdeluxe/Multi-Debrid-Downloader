@@ -37,7 +37,9 @@ export function sortPackageOrderByAvailability(
   }));
   const sorted = [...order];
   sorted.sort((a, b) => {
-    const cmp = compareAvailabilitySummaries(summaries.get(a)!, summaries.get(b)!);
+    const summaryA = summaries.get(a)!;
+    const summaryB = summaries.get(b)!;
+    const cmp = compareAvailabilitySummaries(summaryA, summaryB) || summaryB.total - summaryA.total;
     return descending ? -cmp : cmp;
   });
   return sorted;
@@ -45,4 +47,32 @@ export function sortPackageOrderByAvailability(
 
 export function preservePackageOrderForDisplay(packages: PackageEntry[]): PackageEntry[] {
   return packages;
+}
+
+export function createAvailabilitySortCycle() {
+  let phase: "off" | "online" | "offline" = "off";
+  let originalOrder: string[] = [];
+  return {
+    reset(): void {
+      phase = "off";
+      originalOrder = [];
+    },
+    next(currentOrder: string[]): { descending: boolean | null; order: string[] } {
+      if (phase === "off") {
+        originalOrder = [...currentOrder];
+        phase = "online";
+        return { descending: false, order: currentOrder };
+      }
+      if (phase === "online") {
+        phase = "offline";
+        return { descending: true, order: currentOrder };
+      }
+      phase = "off";
+      const available = new Set(currentOrder);
+      const order = originalOrder.filter((id) => available.delete(id));
+      order.push(...available);
+      originalOrder = [];
+      return { descending: null, order };
+    }
+  };
 }

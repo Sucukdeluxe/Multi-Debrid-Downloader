@@ -260,7 +260,7 @@ export function DownloadsContent({ actions, model }: { actions: DownloadsViewAct
   return (
     <main className="downloads-content">
       <div className="downloads-table" role="table" aria-label="Downloads">
-        <DownloadsTableHeader actions={actions} columnOrder={model.columnOrder} gridTemplate={model.gridTemplate} selectedCount={model.actionableSelectedIds.length} sortColumn={model.sortColumn ?? "name"} sortDirection={model.sortDirection ?? "asc"} visibleIds={model.visibleRowIds} />
+        <DownloadsTableHeader actions={actions} columnOrder={model.columnOrder} gridTemplate={model.gridTemplate} selectedCount={model.actionableSelectedIds.length} sortColumn={model.sortColumn} sortDirection={model.sortDirection ?? "asc"} visibleIds={model.visibleRowIds} />
         <VirtualizedDownloadsBody actions={actions} model={model} state={state} />
       </div>
     </main>

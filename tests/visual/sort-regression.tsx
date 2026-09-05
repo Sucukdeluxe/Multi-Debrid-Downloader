@@ -42,13 +42,15 @@ async function verify(): Promise<void> {
   const sortButton = findSortButton();
   if (!sortButton) throw new Error("Verfügbarkeitsspalte fehlt");
   const results = [];
-  for (let turn = 0; turn < 4; turn++) {
-    const expected = sortPackageOrderByAvailability(
+  const originalOrder = [...fixture.snapshot.session.packageOrder];
+  for (let turn = 0; turn < 6; turn++) {
+    const phase = turn % 3;
+    const expected = (phase === 2 ? originalOrder : sortPackageOrderByAvailability(
       fixture.snapshot.session.packageOrder,
       fixture.snapshot.session.packages,
       fixture.snapshot.session.items,
-      turn % 2 === 1
-    ).map((id) => fixture.snapshot.session.packages[id].name);
+      phase === 1
+    )).map((id) => fixture.snapshot.session.packages[id].name);
     let wrongOrderUpdates = 0;
     const orderChanges: string[][] = [];
     const body = document.querySelector<HTMLElement>(".downloads-table-body")!;
@@ -77,9 +79,11 @@ async function verify(): Promise<void> {
       })) movingFrames++;
     }
     observer.disconnect();
-    results.push({ direction: turn % 2 === 1 ? "offline-first" : "online-first", frames, wrongOrderFrames, wrongOrderUpdates, movingFrames, orderChanges });
+    const expectedAriaSort = phase === 2 ? "none" : phase === 0 ? "descending" : "ascending";
+    const correctIndicator = sortButton.closest("[aria-sort]")?.getAttribute("aria-sort") === expectedAriaSort;
+    results.push({ direction: ["online-first", "offline-first", "off"][phase], correctIndicator, frames, wrongOrderFrames, wrongOrderUpdates, movingFrames, orderChanges });
   }
-  report.textContent = JSON.stringify({ passed: results.every((result) => result.wrongOrderFrames === 0 && result.wrongOrderUpdates === 0 && result.movingFrames === 0), results });
+  report.textContent = JSON.stringify({ passed: results.every((result) => result.correctIndicator && result.wrongOrderFrames === 0 && result.wrongOrderUpdates === 0 && result.movingFrames === 0), results });
 }
 
 void verify().catch((error) => { report.textContent = String(error); });

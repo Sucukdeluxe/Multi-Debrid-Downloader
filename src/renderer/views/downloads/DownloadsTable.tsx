@@ -551,7 +551,7 @@ export interface DownloadsTableHeaderProps {
   actions: DownloadsTableActions;
   columnOrder: readonly string[];
   gridTemplate: string;
-  sortColumn: DownloadSortColumn;
+  sortColumn?: DownloadSortColumn;
   sortDirection: "asc" | "desc";
   selectedCount: number;
   visibleIds: string[];
