@@ -8,14 +8,15 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 
 ## Zuletzt verifizierter Stand
 
-- Verifiziert am: 4. September 2026, Europe/Berlin
+- Release-Vorprüfung v2.0.88: 2.765 Client-Tests erfolgreich; vier bestehende optionale Tests übersprungen, zwei Windows-Symlink-Fixtures wegen fehlender Berechtigung gezielt ausgenommen. Alle 16 Backup-API-Tests, TypeScript und Node-Self-Check erfolgreich. Main-/Renderer-Build sowie Windows-Installer und portable Anwendung gebaut; `verify_public_release.mjs --verify-archives` bestätigt beide Archive einschließlich Lizenzen, Versionsstand und Update-Metadaten. Bekannte Vite-Chunkgrößenwarnung unverändert.
+- Verifiziert am: 5. September 2026, Europe/Berlin
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
-- Arbeitsbranch: `fix/availability-sort-snap`
+- Arbeitsbranch: `release/v2.0.88`
 - Quellbasis: `release/v2.0.87` auf `c54a14f2becfabb9ee20a3783715e280069f2775`
 - Release-Tag: `v2.0.87` auf `d8661619c5f01a484f936513c7aea1c1b172aca3`
 - Baseline-Commit: `65084bd6d2a5add6a1552316f63cf0b0b2c27080`
 - Feature-Commit: `558d6ca4f499c86221d1054b0f00d3068d4d4654`
-- Paketversion: `2.0.87`
+- Paketversion: `2.0.88`
 - Letztes Release: `Multi-Debrid Downloader v2.0.87`, veröffentlicht am 4. September 2026 auf GitHub und Forgejo
 - Runtime-Voraussetzung: Node.js `>=20`; lokal verifiziert mit Node.js `24.19.0` und npm `11.17.0`
 
@@ -237,7 +238,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 
 - Entfernen ohne Animation: Die Downloadansicht erkennt entfernte IDs im tatsächlichen Queue-Itembestand. CSS-Zeilen-/Höhentransitionen und laufende Reihenfolgeanimationen werden für diesen Render ausgesetzt; eventuell laufende Aufklappübergänge werden beendet. Das gilt auch für einzelne Archivsätze, deren Oberpaket erhalten bleibt. Normales Auf-/Zuklappen wird durch die bloße Sichtbarkeit einzelner Zeilen nicht als Löschung behandelt.
 - Verifiziert: 189 fokussierte Tests erfolgreich und TypeScript fehlerfrei. Browserprobe mit aktivierten Animationen unter `?motion=on&offline-cleanup=multipart&check-removal-motion` meldet für Paketmodus 12 Prüfungen/0 Bewegungen, für Archivsatzmodus 10 Prüfungen/0 Bewegungen; Folge 4 bleibt beim Entfernen von Folge 3 erhalten. Änderung per Hot-Reload geladen.
-- Release-Status: Sascha hat die Vorbereitung von v2.0.88 unterbrochen, um zuerst das animationslose Entfernen umzusetzen. Version bleibt 2.0.87; kein Release veröffentlicht. Release bleibt bis zur Fortsetzung pausiert.
+- Release-Status: Nach dem animationslosen Entfernen hat Sascha am 5. September 2026 mit „nice release“ die Veröffentlichung von v2.0.88 ausdrücklich fortgesetzt. Vorbereitung auf `release/v2.0.88`; keine produktive Installation und kein Serverneustart.
 
 - Aktuelle Bedienvorgabe: „Ganze Pakete“ steht im Bestätigungsdialog oben und wird bei jedem Öffnen vorausgewählt. „Nur betroffene Archivsätze“ folgt darunter. Beide Modi bleiben wählbar; der gewählte Scope wird ausdrücklich an das Backend übergeben. Browserprüfung bestätigt Reihenfolge `package`, `archive` und ausschließlich `package` als vorausgewählt; TypeScript fehlerfrei. Änderung per Hot-Reload in der Dev-App geladen.
 

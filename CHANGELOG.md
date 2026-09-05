@@ -4,6 +4,8 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.88] - 2026-09-05
+
 ### Added
 
 - Add “Remove packages with offline links …” to the download context menu. The confirmation lists entire parent packages first and selects that option by default; affected archive sets are available as the second option. One offline part removes all parts of that archive while other episodes remain in archive-set mode. Both modes cover the entire queue regardless of filters or selection, keep downloaded files, and recheck the confirmed package IDs before removal.
