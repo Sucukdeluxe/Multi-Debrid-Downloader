@@ -8,6 +8,7 @@ Diese Datei hält den verifizierten technischen Arbeitsstand fest. Sie enthält 
 
 ## Zuletzt verifizierter Stand
 
+- Hot-Dev-Diagnose am 5. September 2026: Vite auf `http://localhost:5180` antwortet mit HTTP 200; Main-Watcher läuft, kein Electron-App-Prozess vorhanden. Der Start über den vorhandenen Launcher mittels PowerShell `Start-Process` wird vor Shell-Ausführung vom Werkzeug mit `blocked by policy` abgewiesen. PowerShell meldet `LocalMachine=RemoteSigned`, übrige Scopes `Undefined`. Keine passende lokale `.rules`-Datei gefunden; die konkret auslösende Werkzeugregel bleibt unbekannt. Fensterstart weiterhin ungelöst; keine Sicherheitsrichtlinie verändert und kein Anwendungsfix als erfolgreich behauptet.
 - Release-Vorprüfung v2.0.88: 2.765 Client-Tests erfolgreich; vier bestehende optionale Tests übersprungen, zwei Windows-Symlink-Fixtures wegen fehlender Berechtigung gezielt ausgenommen. Alle 16 Backup-API-Tests, TypeScript und Node-Self-Check erfolgreich. Main-/Renderer-Build sowie Windows-Installer und portable Anwendung gebaut; `verify_public_release.mjs --verify-archives` bestätigt beide Archive einschließlich Lizenzen, Versionsstand und Update-Metadaten. Bekannte Vite-Chunkgrößenwarnung unverändert.
 - Verifiziert am: 5. September 2026, Europe/Berlin
 - Lokaler Pfad: `C:\Users\Sascha\Desktop\Claude & ChatGPT Projekte\Multi-Debrid-Downloader`
