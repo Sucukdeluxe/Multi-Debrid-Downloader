@@ -10,6 +10,8 @@ export type DownloadStatus =
   | "failed"
   | "cancelled";
 
+export type { AccountUsageRules } from "./account-usage-rules";
+
 export type CleanupMode = "none" | "trash" | "delete";
 export type ConflictMode = "overwrite" | "skip" | "rename" | "ask";
 export type SpeedMode = "global" | "per_download";
@@ -179,6 +181,7 @@ export interface AppSettings extends DailyStartSettings, ProxyDownloadSettings {
   linkSnappyPassword: string;
   archivePasswordList: string;
   rememberToken: boolean;
+  accountUsageRules: import("./account-usage-rules").AccountUsageRules;
   providerOrder: readonly DebridProvider[];
   providerPrimary: DebridProvider;
   providerSecondary: DebridFallbackProvider;
@@ -317,6 +320,7 @@ export interface RendererSettings extends DailyStartSettings, ProxyDownloadSetti
   debridLinkDisabledKeyIds: string[];
   rememberToken: boolean;
   configuredProviders: DebridProvider[];
+  accountUsageRules: import("./account-usage-rules").AccountUsageRules;
   providerOrder: readonly DebridProvider[];
   providerPrimary: DebridProvider;
   providerSecondary: DebridFallbackProvider;

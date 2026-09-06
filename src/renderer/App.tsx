@@ -42,6 +42,7 @@ import {
 import { createAvailabilitySortCycle, preservePackageOrderForDisplay, sortPackageOrderByAvailability, sortPackageOrderByName } from "./package-order";
 import { createPackageOrderState } from "./package-order-state";
 import { shouldFocusCollectorImport, type CollectorImportSource } from "./collector-navigation";
+import { isAccountRuleProvider, reconcileAccountOrder, type AccountUsageRule } from "../shared/account-usage-rules";
 import { getPackagesWithOfflineLinks } from "../shared/offline-packages";
 import type { OfflineSkipScope } from "../shared/types";
 import { OfflineRemovalScopeChoice } from "./views/downloads/OfflineRemovalScopeChoice";
@@ -951,7 +952,7 @@ const emptySnapshot = (): UiSnapshot => ({
     language: "en", realDebridUseWebLogin: false, realDebridDisabledAccountIds: [], realDebridAccountDailyLimitBytes: {}, realDebridAccountDailyUsageBytes: {}, realDebridAccountTotalUsageBytes: {}, megaDebridApiEnabled: false, megaDebridWebEnabled: false, megaDebridPreferApi: true, bestDebridUseWebLogin: false, allDebridUseWebLogin: false,
     debridLinkDisabledKeyIds: [],
     archivePasswordListConfigured: false, notifyUrlConfigured: false,
-    rememberToken: true, configuredProviders: [], providerOrder: [], providerPrimary: "realdebrid", providerSecondary: "none",
+    rememberToken: true, configuredProviders: [], accountUsageRules: {}, providerOrder: [], providerPrimary: "realdebrid", providerSecondary: "none",
     providerTertiary: "none", autoProviderFallback: true, outputDir: "", createWorkDirectoriesOnStartup: false, packageName: "",
     autoExtract: true, autoRename4sf4sj: false, keepGermanAudioOnly: false, germanAudioMode: "tag", extractDir: "", createExtractSubfolder: true, hybridExtract: true,
     collectMkvToLibrary: false, mkvLibraryDir: "",
@@ -5909,7 +5910,21 @@ export function App(): ReactElement {
     statusSort: accountStatusSort,
     runtime: accountRuntimeModel,
     rules: {
-      providerOrder: activeProviderOrder.map((provider) => buildProviderOrderEntry(provider, settingsDraft)),
+      providerOrder: activeProviderOrder.map((provider) => {
+        const entry = buildProviderOrderEntry(provider, settingsDraft);
+        if (!isAccountRuleProvider(provider)) return entry;
+        const rows = accountRows.filter((row) => row.entry.service === provider && row.accountId);
+        const rule = settingsDraft.accountUsageRules?.[provider];
+        const ids = reconcileAccountOrder(rule?.accountIds ?? [], rows.map((row) => row.accountId!));
+        return { ...entry, accountSelection: {
+          mode: rule?.mode ?? "automatic",
+          accounts: ids.map((id) => {
+            const row = rows.find((candidate) => candidate.accountId === id)!;
+            const runtime = accountRuntimeModel.accounts.find((account) => account.id === accountRowViewId(row));
+            return { id, label: row.username || row.dlKey?.label || row.entry.summary || id, mode: row.modeLabel, status: runtime?.stateLabel ?? (row.disabled ? "Deaktiviert" : "Bereit") };
+          })
+        } };
+      }),
       routing: routingEntries.map(([hosterId, provider]) => `${KNOWN_HOSTERS.find((hoster) => hoster.id === hosterId)?.label || hosterId} → ${providerLabelWithMode(provider, settingsDraft)}`),
       autoFallback: settingsDraft.autoProviderFallback,
       rememberCredentials: settingsDraft.rememberToken,
@@ -5938,7 +5953,30 @@ export function App(): ReactElement {
     setSettingsSaveState("dirty");
     setSettingsDraft((current) => ({ ...current, hosterRouting }));
   };
+  const updateAccountUsageRule = (provider: string, update: (rule: AccountUsageRule) => AccountUsageRule): void => {
+    if (!isAccountRuleProvider(provider)) return;
+    settingsDraftRevisionRef.current += 1;
+    panelDirtyRevisionRef.current += 1;
+    settingsDirtyRef.current = true;
+    setSettingsDirty(true);
+    setSettingsSaveState("dirty");
+    setSettingsDraft((current) => {
+      const previous = current.accountUsageRules?.[provider];
+      const rule = { mode: previous?.mode ?? "automatic", accountIds: reconcileAccountOrder(previous?.accountIds ?? [], accountRows.filter((row) => row.entry.service === provider && row.accountId).map((row) => row.accountId!)) };
+      return { ...current, accountUsageRules: { ...current.accountUsageRules, [provider]: update(rule) } };
+    });
+  };
   const accountWorkspaceActions: AccountWorkspaceActions = {
+    onAccountSelectionMode: (provider, mode) => updateAccountUsageRule(provider, (rule) => ({ ...rule, mode })),
+    onMovePriorityAccount: (provider, accountId, targetId) => updateAccountUsageRule(provider, (rule) => {
+      const accountIds = [...rule.accountIds];
+      const from = accountIds.indexOf(accountId);
+      const to = accountIds.indexOf(targetId);
+      if (from < 0 || to < 0 || from === to) return rule;
+      accountIds.splice(from, 1);
+      accountIds.splice(to, 0, accountId);
+      return { ...rule, accountIds };
+    }),
     onPanelChange: setAccountManagementTab,
     onSelect: (rowId, additive) => {
       const rowKey = accountRowBindings.get(rowId)?.rowKey;

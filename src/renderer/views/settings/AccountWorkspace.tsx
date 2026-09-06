@@ -8,6 +8,8 @@ import {
   type UIEvent
 } from "react";
 import { SlidingSelection } from "../../ui/SlidingSelection";
+import { AccountPriorityControls, type AccountPriorityModel } from "./AccountPriorityControls";
+import type { AccountSelectionMode } from "../../../shared/account-usage-rules";
 import {
   DataTable,
   DataTableBody,
@@ -81,7 +83,7 @@ function getAccountPanelNavigationIndex(currentIndex: number, key: string): numb
 }
 
 export interface AccountRulesViewModel {
-  providerOrder: readonly { id: string; label: string; icon: string }[];
+  providerOrder: readonly { id: string; label: string; icon: string; accountSelection?: AccountPriorityModel }[];
   routing: readonly string[];
   autoFallback: boolean;
   rememberCredentials?: boolean;
@@ -147,6 +149,8 @@ export interface AccountWorkspaceActions {
   onCheckAll: () => void;
   onStatusSort?: () => void;
   onMoveProvider?: (index: number, direction: -1 | 1) => void;
+  onAccountSelectionMode?: (provider: string, mode: AccountSelectionMode) => void;
+  onMovePriorityAccount?: (provider: string, accountId: string, targetId: string) => void;
   onProviderDragStart?: (event: DragEvent<HTMLElement>, index: number) => void;
   onProviderDragOver?: (event: DragEvent<HTMLElement>, index: number) => void;
   onProviderDrop?: (event: DragEvent<HTMLElement>, index: number) => void;
@@ -525,6 +529,7 @@ function AccountRules({ model, actions }: AccountWorkspaceProps): ReactElement {
                     <button aria-label={`${provider.label} nach unten`} disabled={index === model.rules.providerOrder.length - 1} onClick={() => actions.onMoveProvider?.(index, 1)} type="button">↓</button>
                   </span>
                 ) : null}
+                {provider.accountSelection ? <AccountPriorityControls provider={provider.id} model={provider.accountSelection} busy={model.busy} onModeChange={actions.onAccountSelectionMode} onMove={actions.onMovePriorityAccount} /> : null}
               </li>
             ))}
           </ol>

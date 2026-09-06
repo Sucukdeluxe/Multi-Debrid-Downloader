@@ -174,6 +174,7 @@ export function createRendererSettings(settings: AppSettings): RendererSettings 
     rememberToken: settings.rememberToken,
     configuredProviders,
     providerOrder: [...settings.providerOrder],
+    accountUsageRules: structuredClone(settings.accountUsageRules ?? {}),
     providerPrimary: settings.providerPrimary,
     providerSecondary: settings.providerSecondary,
     providerTertiary: settings.providerTertiary,

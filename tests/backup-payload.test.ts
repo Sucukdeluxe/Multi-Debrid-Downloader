@@ -19,6 +19,13 @@ const statistics: StatisticsLedger = { version: 2, startedAt: 1, days: [], minut
 const baseInput = { appVersion: "1.7.183", exportedAt: "2026-06-07T00:00:00Z", session, history, statistics };
 
 describe("buildBackupPayload — default is settings-only", () => {
+  it("keeps account selection mode and priority IDs through encrypted export and import", () => {
+    const accountUsageRules = { debridlink: { mode: "priority" as const, accountIds: ["second", "first"] } };
+    const payload = buildBackupPayload({ ...baseInput, settings: settings({ accountUsageRules }) });
+    const restored = JSON.parse(decryptBackup(encryptBackup(JSON.stringify(payload), "fixture-priority-passphrase"), "fixture-priority-passphrase"));
+    expect(planBackupImport(restored).valid).toBe(true);
+    expect(restored.settings.accountUsageRules).toEqual(accountUsageRules);
+  });
   it("keeps the semantic theme preference in exported settings", () => {
     const payload = buildBackupPayload({
       ...baseInput,

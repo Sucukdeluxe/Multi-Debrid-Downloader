@@ -1071,6 +1071,57 @@
   gap: 4px;
 }
 
+.settings-provider-order > li {
+  flex-wrap: wrap;
+}
+
+.settings-account-priority {
+  flex-basis: 100%;
+  min-width: 0;
+  padding: 8px 12px;
+  border-top: 1px solid var(--ui-border);
+  font-size: 12px;
+}
+
+.settings-account-priority summary {
+  cursor: pointer;
+  padding: 4px 0;
+  color: var(--ui-text);
+}
+
+.settings-account-priority-mode {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 12px 0;
+  border: 0;
+  padding: 0;
+}
+
+.settings-account-priority-mode label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-account-priority ol {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  padding: 0;
+}
+
+.settings-account-priority-identity {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.settings-account-priority-identity small {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+}
+
 .settings-provider-order-provider {
   display: inline-flex;
   align-items: center;

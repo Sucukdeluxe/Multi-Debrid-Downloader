@@ -1,5 +1,6 @@
 import type { AppSettings, RendererSettingsUpdate } from "../shared/types";
 import { createRendererSettings } from "./renderer-state";
+import { isAccountRuleProvider } from "../shared/account-usage-rules";
 import { isValidLocalDate } from "./daily-start-scheduler";
 
 const DERIVED_KEYS = new Set([
@@ -90,6 +91,15 @@ export function validateRendererSettingsUpdate(value: unknown, current: AppSetti
     }
     if (!(key in safe)) {
       invalid();
+    }
+    if (key === "accountUsageRules") {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) invalid();
+      for (const [provider, rule] of Object.entries(entry)) {
+        if (!isAccountRuleProvider(provider) || !rule || typeof rule !== "object" || Array.isArray(rule)) invalid();
+        if (Object.keys(rule).some((field) => field !== "mode" && field !== "accountIds")) invalid();
+        if (rule.mode !== "automatic" && rule.mode !== "priority") invalid();
+        if (!Array.isArray(rule.accountIds) || rule.accountIds.length > 10000 || rule.accountIds.some((id: unknown) => typeof id !== "string" || id.length === 0 || id.length > 256)) invalid();
+      }
     }
     if (key === "notifyPackageSuccessMode" && entry !== "digest" && entry !== "individual") {
       invalid();

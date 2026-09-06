@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import { normalizeLanguage, translateUiText } from "../src/renderer/i18n";
 
 describe("renderer localization", () => {
+  it("translates account priority controls", () => {
+    expect(translateUiText("Account-Reihenfolge", "en")).toBe("Account order");
+    expect(translateUiText("Automatisch verteilen", "en")).toBe("Automatic distribution");
+    expect(translateUiText("Feste Reihenfolge", "en")).toBe("Fixed priority");
+    expect(translateUiText("Fixed priority", "de")).toBe("Feste Reihenfolge");
+  });
   it("translates the optional clipboard navigation setting", () => {
     expect(translateUiText("Bei erkannten Zwischenablage-Links zum Linksammler wechseln", "en")).toBe("Switch to Link Collector when clipboard links are detected");
     expect(translateUiText("Switch to Link Collector when clipboard links are detected", "de")).toBe("Bei erkannten Zwischenablage-Links zum Linksammler wechseln");

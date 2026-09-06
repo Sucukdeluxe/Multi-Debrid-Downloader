@@ -87,6 +87,7 @@ function createSettings(): AppSettings {
     archivePasswordList: "visual-archive-password",
     rememberToken: true,
     providerOrder: ["realdebrid", "megadebrid-api", "bestdebrid", "alldebrid", "debridlink"],
+    accountUsageRules: {},
     providerPrimary: "realdebrid",
     providerSecondary: "megadebrid-api",
     providerTertiary: "bestdebrid",

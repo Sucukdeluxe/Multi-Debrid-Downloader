@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { normalizeConfiguredAccountRules } from "./account-usage-rules";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -577,6 +578,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     linkSnappyPassword: asText(settings.linkSnappyPassword),
     archivePasswordList: String(settings.archivePasswordList ?? "").replace(/\r\n|\r/g, "\n"),
     rememberToken: Boolean(settings.rememberToken),
+    accountUsageRules: {},
     providerOrder: normalizeProviderOrder(
       settings.providerOrder,
       megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled,
@@ -704,6 +706,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     scheduledStartEpochMs: clampNumber(settings.scheduledStartEpochMs, defaults.scheduledStartEpochMs, 0, Number.MAX_SAFE_INTEGER)
   };
 
+  normalized.accountUsageRules = normalizeConfiguredAccountRules({ ...normalized, accountUsageRules: settings.accountUsageRules });
   if (!VALID_PRIMARY_PROVIDERS.has(normalized.providerPrimary)) {
     normalized.providerPrimary = defaults.providerPrimary;
   }

@@ -1,5 +1,7 @@
 import { getDebridLinkApiKeyId, parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
 import { randomUUID } from "node:crypto";
+import { normalizeConfiguredAccountRules } from "./account-usage-rules";
+import { isAccountRuleProvider } from "../shared/account-usage-rules";
 import {
   getMegaDebridAccountId,
   getMegaDebridAccountsForMode,
@@ -617,7 +619,7 @@ function createSingle(settings: AppSettings, command: Extract<AccountCommand, { 
   return { settings: next, response: { accountId: `svc-${provider}` } };
 }
 
-export function applyAccountCommand(settings: AppSettings, command: AccountCommand): AppliedAccountCommand {
+function applyAccountCommandToCredentials(settings: AppSettings, command: AccountCommand): AppliedAccountCommand {
   if (command.action === "update-secret") {
     const replace: Extract<AccountCommand, { action: "replace" }> = {
       action: "replace",
@@ -625,7 +627,7 @@ export function applyAccountCommand(settings: AppSettings, command: AccountComma
       accountId: command.accountId,
       secret: command.secret
     };
-    return applyAccountCommand(settings, replace);
+    return applyAccountCommandToCredentials(settings, replace);
   }
   if (command.kind === "realdebrid-api" || command.kind === "realdebrid-web") {
     const normalizedSettings = normalizeRealDebridCommandSettings(settings);
@@ -646,4 +648,15 @@ export function applyAccountCommand(settings: AppSettings, command: AccountComma
   if (command.action === "create") return createSingle(settings, command);
   if (command.action === "replace") return replaceSingle(settings, command);
   return deleteSingle(settings, command);
+}
+
+export function applyAccountCommand(settings: AppSettings, command: AccountCommand): AppliedAccountCommand {
+  const result = applyAccountCommandToCredentials(settings, command);
+  const rules = structuredClone(settings.accountUsageRules ?? {});
+  const provider = command.kind.startsWith("realdebrid") ? "realdebrid" : command.kind === "debridlink-api" ? "debridlink" : command.kind;
+  if (isAccountRuleProvider(provider) && rules[provider] && (command.action === "replace" || command.action === "update-secret") && result.response.accountId) {
+    rules[provider]!.accountIds = rules[provider]!.accountIds.map((id) => id === command.accountId ? result.response.accountId! : id);
+  }
+  result.settings.accountUsageRules = normalizeConfiguredAccountRules({ ...result.settings, accountUsageRules: rules });
+  return result;
 }

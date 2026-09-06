@@ -1,4 +1,5 @@
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
+import { orderAccountsByRule } from "../shared/account-usage-rules";
 import { getMegaDebridAccountsForMode, mergeMegaDebridCredentialPools, parseMegaDebridAccounts, type MegaDebridAccountEntry, type MegaDebridAccountMode } from "../shared/mega-debrid-accounts";
 import { getRealDebridAccounts, type RealDebridAccountEntry } from "../shared/real-debrid-accounts";
 import { extractHosterFromUrl } from "../shared/hoster";
@@ -2380,12 +2381,30 @@ class MegaDebridClient {
     // Reihenfolge == cursorOrder => bleibt klebrig beim warmen Account.
     const inFlightDepth = (entry: { account: MegaDebridAccountEntry }): number =>
       megaDebridInFlight.get(`${entry.account.id}:${mode}`) ?? 0;
-    const orderedEntries = cursorOrder
+    const automaticEntries = cursorOrder
       .map((entry, position) => ({ entry, position }))
       .sort((a, b) => (inFlightDepth(a.entry) - inFlightDepth(b.entry)) || (a.position - b.position))
       .map((wrapped) => wrapped.entry);
-
+    const accountRule = settings.accountUsageRules?.[mode === "api" ? "megadebrid-api" : "megadebrid-web"];
+    const orderedEntries = accountRule?.mode === "priority"
+      ? orderAccountsByRule(accounts, accountRule).map((account) => ({ account, idx: accounts.findIndex((candidate) => candidate.id === account.id) }))
+      : automaticEntries;
     for (let orderPos = 0; orderPos < orderedEntries.length; orderPos += 1) {
+      if (accountRule?.mode === "priority") {
+        const usableEntries = orderedEntries.slice(orderPos).filter(({ account }) => !isMegaDebridAccountDisabled(settings, account.id, mode)
+          && !isMegaDebridAccountDailyLimitReached(settings, account.id)
+          && !getMegaDebridAccountCooldownState(`${account.id}:${mode}`));
+        const freeEntry = usableEntries.find(({ account }) => (megaDebridInFlight.get(`${account.id}:${mode}`) ?? 0) === 0);
+        if (freeEntry) {
+          const freeIndex = orderedEntries.indexOf(freeEntry);
+          orderedEntries.splice(freeIndex, 1);
+          orderedEntries.splice(orderPos, 0, freeEntry);
+        } else if (usableEntries.length > 0) {
+          await sleepWithSignal(50, signal);
+          orderPos -= 1;
+          continue;
+        }
+      }
       const entry = orderedEntries[orderPos];
       const account = entry.account;
       const idx = entry.idx;
@@ -3140,13 +3159,14 @@ class DebridLinkClient {
     let earliestCooldownUntil = 0;
     const attemptedKeyFailures: Array<{ message: string; cooldownMs: number; category?: DebridLinkCooldownCategory }> = [];
     let consecutiveTransportFailures = 0;
-    const totalKeys = this.apiKeys.length;
+    const apiKeys = orderAccountsByRule(this.apiKeys, settings.accountUsageRules?.debridlink);
+    const totalKeys = apiKeys.length;
     const providerName = "Debrid-Link";
     const linkShort = String(link || "").slice(0, 80);
     const linkHoster = extractHosterFromUrl(link);
 
-    for (let keyIdx = 0; keyIdx < this.apiKeys.length; keyIdx += 1) {
-      const apiKey = this.apiKeys[keyIdx];
+    for (let keyIdx = 0; keyIdx < apiKeys.length; keyIdx += 1) {
+      const apiKey = apiKeys[keyIdx];
       const keyLabel = ` (${apiKey.label}/${totalKeys}, ${apiKey.masked})`;
       const rotationLabel = `${apiKey.label}/${totalKeys} (${apiKey.masked})`;
       if (isDebridLinkApiKeyDisabled(settings, apiKey.id)) {
@@ -3297,8 +3317,8 @@ class DebridLinkClient {
           throw new Error(`debrid_link_cooldown:${cascadeCooldownMs}:Debrid-Link: Transport-Kaskade (${consecutiveTransportFailures}x)`);
         }
         let nextLabel = "ENDE";
-        for (let nextIdx = keyIdx + 1; nextIdx < this.apiKeys.length; nextIdx += 1) {
-          const nextKey = this.apiKeys[nextIdx];
+        for (let nextIdx = keyIdx + 1; nextIdx < apiKeys.length; nextIdx += 1) {
+          const nextKey = apiKeys[nextIdx];
           if (!isDebridLinkApiKeyDisabled(settings, nextKey.id) && !isDebridLinkApiKeyDailyLimitReached(settings, nextKey.id) && !getDebridLinkKeyCooldownState(nextKey.id)) {
             nextLabel = `${nextKey.label}/${totalKeys} (${nextKey.masked})`;
             break;
@@ -4584,7 +4604,9 @@ export class DebridService {
       if (available.length === 0) {
         break;
       }
-      const account = this.selectRealDebridAccount(available);
+      const account = settings.accountUsageRules?.realdebrid?.mode === "priority"
+        ? orderAccountsByRule(available, settings.accountUsageRules.realdebrid)[0]
+        : this.selectRealDebridAccount(available);
       attempted.add(account.id);
       realDebridInFlight.set(account.id, (realDebridInFlight.get(account.id) || 0) + 1);
       recordAccountRuntimeAttempt("realdebrid", account.id);

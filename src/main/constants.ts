@@ -76,6 +76,7 @@ export function defaultSettings(): AppSettings {
     archivePasswordList: "",
     rememberToken: true,
     providerOrder: ["realdebrid", "megadebrid-api", "bestdebrid"],
+    accountUsageRules: {},
     providerPrimary: "realdebrid",
     providerSecondary: "megadebrid-api",
     providerTertiary: "bestdebrid",
