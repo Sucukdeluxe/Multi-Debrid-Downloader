@@ -4,6 +4,21 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.90] - 2026-09-06
+
+### Account priorities
+
+- Choose automatic distribution or a fixed account order for Real-Debrid, Mega-Debrid API/Web, and Debrid-Link under Settings → Accounts → Usage rules. Automatic distribution remains the default for existing and new configurations.
+- Expand a provider and reorder its accounts using arrows or drag-and-drop, then save the settings. Account identity, access mode, and status remain visible.
+- Skip disabled accounts, exhausted daily limits, and active cooldowns. The preferred account becomes first choice again when available; existing provider fallback rules remain in effect.
+- In fixed-priority mode, Mega-Debrid uses the first free account conversion slot and waits cancellably when all slots are occupied. Already resolved downloads are not switched between accounts.
+- Preserve priorities across restarts, encrypted backups, and credential replacement. Append new accounts and remove deleted account references automatically.
+
+### Clipboard navigation
+
+- Make switching to the Link Collector after clipboard detection optional under Settings → General → Download behavior. The option is off by default, including for existing configurations without an explicit preference.
+- Continue collecting clipboard links in the background without changing the current tab or collector filters. Manual paste, drag-and-drop, and DLC imports keep their existing navigation.
+
 ## [2.0.88] - 2026-09-05
 
 ### Added
