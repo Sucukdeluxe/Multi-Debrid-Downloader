@@ -623,7 +623,12 @@ export function buildSettingsFormViewModel({
             help: "Beim Archivsatz werden alle noch offenen Teile desselben Mehrteil-Archivs übersprungen. Bereits abgeschlossene Downloads bleiben erhalten."
           },
           { id: "autoResumeOnStart", kind: "switch", label: "Beim Start automatisch fortsetzen", value: settings.autoResumeOnStart },
-          { id: "clipboardWatch", kind: "switch", label: "Zwischenablage überwachen", value: settings.clipboardWatch }
+          { id: "clipboardWatch", kind: "switch", label: "Zwischenablage überwachen", value: settings.clipboardWatch },
+          {
+            id: "switchToCollectorOnClipboard", kind: "switch", label: "Bei erkannten Zwischenablage-Links zum Linksammler wechseln",
+            value: settings.switchToCollectorOnClipboard,
+            help: "Standardmäßig aus: Links werden im Hintergrund gesammelt, ohne den aktuellen Tab zu wechseln. Gilt nur bei aktivierter Zwischenablage-Überwachung."
+          }
         ]
       },
       {

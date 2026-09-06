@@ -213,6 +213,7 @@ export function createRendererSettings(settings: AppSettings): RendererSettings 
     updateRepo: settings.updateRepo,
     autoUpdateCheck: settings.autoUpdateCheck,
     clipboardWatch: settings.clipboardWatch,
+    switchToCollectorOnClipboard: settings.switchToCollectorOnClipboard,
     minimizeToTray: settings.minimizeToTray,
     theme: settings.theme,
     themePreference: settings.themePreference,

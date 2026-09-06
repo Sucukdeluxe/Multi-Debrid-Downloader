@@ -126,6 +126,7 @@ function createSettings(): AppSettings {
     updateRepo: "Sucukdeluxe/Multi-Debrid-Downloader",
     autoUpdateCheck: true,
     clipboardWatch: true,
+    switchToCollectorOnClipboard: false,
     minimizeToTray: false,
     theme: "dark",
     themePreference: "dark",

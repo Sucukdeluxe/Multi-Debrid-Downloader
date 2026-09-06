@@ -41,6 +41,7 @@ import {
 } from "../shared/provider-daily-limits";
 import { createAvailabilitySortCycle, preservePackageOrderForDisplay, sortPackageOrderByAvailability, sortPackageOrderByName } from "./package-order";
 import { createPackageOrderState } from "./package-order-state";
+import { shouldFocusCollectorImport, type CollectorImportSource } from "./collector-navigation";
 import { getPackagesWithOfflineLinks } from "../shared/offline-packages";
 import type { OfflineSkipScope } from "../shared/types";
 import { OfflineRemovalScopeChoice } from "./views/downloads/OfflineRemovalScopeChoice";
@@ -959,7 +960,7 @@ const emptySnapshot = (): UiSnapshot => ({
     autoReconnect: false, reconnectWaitSeconds: 45, completedCleanupPolicy: "never",
     maxParallel: 4, maxParallelExtract: 2, extractCpuPriority: "high", retryLimit: 0, offlineSkipScope: "archive", speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
     proxyDownloadEnabled: false, proxyListPath: "", proxyApiProxyIndex: 1, proxyConnectionsPerDownload: 32,
-    updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, minimizeToTray: false,
+    updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, switchToCollectorOnClipboard: false, minimizeToTray: false,
     theme: "dark", themePreference: "dark", logStorageLocation: "appdata", collapseNewPackages: true, animatePackageDisclosure: true, historyRetentionMode: "permanent", historyMaxEntries: 500, historyMaxAgeDays: 0, autoSortPackagesByProgress: false, autoSkipExtracted: false, hideExtractedItems: true, confirmDeleteSelection: true, backupIncludeDownloads: false, backupIncludeRemoteDiagnostics: false,
     notifyMention: "", notifyOnPackageCompleted: false, notifyOnPackageFailed: false, notifyOnRunFinished: false,
     notifyPackageSuccessMode: "digest", notifyOnRemainingBelow: false, notifyRemainingThresholdGb: 50,
@@ -1884,7 +1885,7 @@ export function App(): ReactElement {
   const collectorPersistenceBudgetRef = useRef<CollectorPersistenceBudget | null>(null);
   const collectorEnrichmentGenerationsRef = useRef(new Map<string, number>());
   const collectorEnrichmentRequestsRef = useRef(new Map<string, ReturnType<typeof beginCollectorEnrichment>>());
-  const importCollectorTextRef = useRef<(rawText: string) => Promise<void>>(() => Promise.resolve());
+  const importCollectorTextRef = useRef<(rawText: string, source?: CollectorImportSource) => Promise<void>>(() => Promise.resolve());
   const activeTabRef = useRef<Tab>(tab);
   const packageOrderRef = useRef<string[]>([]);
   const packageOrderStateRef = useRef(createPackageOrderState());
@@ -2401,7 +2402,7 @@ export function App(): ReactElement {
     loadInitialSnapshot();
     unsubClipboard = window.rd.onClipboardDetected((links) => {
       showToast(`Zwischenablage: ${links.length} Link(s) erkannt`, 3000);
-      void importCollectorTextRef.current(links.join("\n"));
+      void importCollectorTextRef.current(links.join("\n"), "clipboard");
     });
     unsubUpdateInstallProgress = window.rd.onUpdateInstallProgress((progress) => {
       if (!mountedRef.current) {
@@ -4033,7 +4034,7 @@ export function App(): ReactElement {
     });
   }, [collapsedCollectorPackageIds, collectorPackages]);
 
-  const importCollectorText = async (rawText: string): Promise<void> => {
+  const importCollectorText = async (rawText: string, source: CollectorImportSource = "manual"): Promise<void> => {
     if (!rawText.trim()) {
       showToast("Keine Links eingegeben", 2200);
       return;
@@ -4049,8 +4050,10 @@ export function App(): ReactElement {
         return;
       }
       if (!mergeCollectorResult(prepared)) return;
-      setCollectorFilter("all");
-      setTab("collector");
+      if (shouldFocusCollectorImport(source, snapshotRef.current.settings.switchToCollectorOnClipboard)) {
+        setCollectorFilter("all");
+        setTab("collector");
+      }
       const linkCount = prepared.packages.reduce((sum, pkg) => sum + pkg.links.length, 0);
       showToast(`${prepared.packages.length} Paket(e), ${linkCount} Link(s) gesammelt`);
       enrichCollectorResult(prepared.packages);

@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 import { normalizeLanguage, translateUiText } from "../src/renderer/i18n";
 
 describe("renderer localization", () => {
+  it("translates the optional clipboard navigation setting", () => {
+    expect(translateUiText("Bei erkannten Zwischenablage-Links zum Linksammler wechseln", "en")).toBe("Switch to Link Collector when clipboard links are detected");
+    expect(translateUiText("Switch to Link Collector when clipboard links are detected", "de")).toBe("Bei erkannten Zwischenablage-Links zum Linksammler wechseln");
+    expect(translateUiText("Standardmäßig aus: Links werden im Hintergrund gesammelt, ohne den aktuellen Tab zu wechseln. Gilt nur bei aktivierter Zwischenablage-Überwachung.", "en")).toBe("Off by default: links are collected in the background without switching tabs. Applies only when clipboard monitoring is enabled.");
+  });
   it("falls back to English", () => {
     expect(normalizeLanguage(undefined)).toBe("en");
     expect(normalizeLanguage("fr")).toBe("en");

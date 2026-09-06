@@ -12,6 +12,23 @@ import { configureCredentialProtector } from "../src/main/credential-protection"
 import { acquirePersistenceBarrier, addHistoryEntryForRetention, clearHistory, createStoragePaths, emptySession, loadHistory, loadHistoryForRetention, loadSession, loadSessionWithStatus, loadSettings, normalizeHistoryEntry, normalizeLoadedSession, normalizeSettings, removeHistoryEntries, replaceHistory, resetHistoryForRetention, saveHistory, saveSession, saveSessionAsync, saveSettings, saveSettingsAsync } from "../src/main/storage";
 
 const tempDirs: string[] = [];
+describe("automatic collector navigation settings", () => {
+  it("defaults new and existing installations to background collection", () => {
+    expect(defaultSettings().switchToCollectorOnClipboard).toBe(false);
+    expect(loadSettingsFrom({ clipboardWatch: true }).switchToCollectorOnClipboard).toBe(false);
+    expect(loadSettingsFrom({ switchToCollectorOnClipboard: "false" }).switchToCollectorOnClipboard).toBe(false);
+  });
+
+  it("persists opt-in and subsequent opt-out across reloads", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-collector-navigation-"));
+    tempDirs.push(dir);
+    const paths = createStoragePaths(dir);
+    for (const enabled of [true, false]) {
+      saveSettings(paths, { ...defaultSettings(), switchToCollectorOnClipboard: enabled });
+      expect(loadSettings(paths).switchToCollectorOnClipboard).toBe(enabled);
+    }
+  });
+});
 type SettingsSaveMode = "sync" | "async";
 
 async function saveSettingsInMode(mode: SettingsSaveMode, paths: ReturnType<typeof createStoragePaths>, settings: AppSettings): Promise<void> {

@@ -115,6 +115,7 @@ export function defaultSettings(): AppSettings {
     updateRepo: DEFAULT_UPDATE_REPO,
     autoUpdateCheck: true,
     clipboardWatch: false,
+    switchToCollectorOnClipboard: false,
     minimizeToTray: false,
     theme: "dark" as const,
     themePreference: "dark" as const,

@@ -215,6 +215,7 @@ export interface AppSettings extends DailyStartSettings, ProxyDownloadSettings {
   updateRepo: string;
   autoUpdateCheck: boolean;
   clipboardWatch: boolean;
+  switchToCollectorOnClipboard: boolean;
   minimizeToTray: boolean;
   theme: AppTheme;
   themePreference: ThemePreference;
@@ -352,6 +353,7 @@ export interface RendererSettings extends DailyStartSettings, ProxyDownloadSetti
   updateRepo: string;
   autoUpdateCheck: boolean;
   clipboardWatch: boolean;
+  switchToCollectorOnClipboard: boolean;
   minimizeToTray: boolean;
   theme: AppTheme;
   themePreference: ThemePreference;

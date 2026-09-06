@@ -623,6 +623,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     autoUpdateCheck: Boolean(settings.autoUpdateCheck),
     updateRepo: migrateUpdateRepo(asText(settings.updateRepo), defaults.updateRepo),
     clipboardWatch: Boolean(settings.clipboardWatch),
+    switchToCollectorOnClipboard: settings.switchToCollectorOnClipboard === true,
     minimizeToTray: Boolean(settings.minimizeToTray),
     logStorageLocation: VALID_LOG_STORAGE_LOCATIONS.has(settings.logStorageLocation)
       ? settings.logStorageLocation

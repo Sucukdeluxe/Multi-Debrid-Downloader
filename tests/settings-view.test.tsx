@@ -589,6 +589,8 @@ describe("settings views", () => {
       scheduleSpeedInputs: {}
     });
     const language = form.groups.flatMap((group) => group.fields).find((field) => field.id === "language");
+    const clipboardSwitch = form.groups.flatMap((group) => group.fields).find((field) => field.id === "switchToCollectorOnClipboard");
+    expect(clipboardSwitch).toMatchObject({ kind: "switch", value: false, label: "Bei erkannten Zwischenablage-Links zum Linksammler wechseln" });
 
     expect(language).toEqual({
       id: "language",

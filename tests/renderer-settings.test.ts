@@ -4,6 +4,15 @@ import { createRendererSettings } from "../src/main/renderer-state";
 import { validateRendererSettingsUpdate } from "../src/main/renderer-settings";
 
 describe("renderer settings validation", () => {
+  it("projects and validates the optional clipboard tab switch as a boolean", () => {
+    const current = defaultSettings();
+    expect(createRendererSettings(current).switchToCollectorOnClipboard).toBe(false);
+    for (const enabled of [true, false]) {
+      expect(validateRendererSettingsUpdate({ switchToCollectorOnClipboard: enabled }, current)).toEqual({ switchToCollectorOnClipboard: enabled });
+      expect(createRendererSettings({ ...current, switchToCollectorOnClipboard: enabled }).switchToCollectorOnClipboard).toBe(enabled);
+    }
+    expect(() => validateRendererSettingsUpdate({ switchToCollectorOnClipboard: "true" }, current)).toThrow("Settings-Payload ist ungültig");
+  });
   it("projects and validates startup work-directory creation", () => {
     const current = { ...defaultSettings(), createWorkDirectoriesOnStartup: true };
     const projected = createRendererSettings(current);
