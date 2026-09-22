@@ -2,6 +2,7 @@ import { generateKeyPairSync } from 'node:crypto'
 import { mkdir, open, readFile, readdir, realpath } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { recoverOnlineKey, recoveryDescriptor } from './recovery.mjs'
+import { formatRecoveryReport, recoveryMetadata } from './recovery-report.mjs'
 
 async function writeExclusive(file, text) {
   const handle = await open(file, 'wx', 0o600)
@@ -33,11 +34,11 @@ async function run() {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       if (!entry.isFile() || !/^[A-Za-z0-9_-]{22}\.json$/.test(entry.name)) continue
       const record = JSON.parse(await readFile(join(directory, entry.name), 'utf8'))
-      process.stdout.write(JSON.stringify({ id: entry.name.slice(0, -5), createdAt: record.createdAt, recoveryKeyId: record.recovery?.keyId ?? null }) + '\n')
+      process.stdout.write(JSON.stringify({ id: entry.name.slice(0, -5), ...recoveryMetadata(record), recoveryKeyId: record.recovery?.keyId ?? null }) + '\n')
     }
     return
   }
-  if (command === 'recover' && args.length === 4) {
+  if (command === 'recover' && (args.length === 4 || (args.length === 5 && args[4] === '--with-metadata'))) {
     const [root, id, privateFile, output] = args
     if (!/^[A-Za-z0-9_-]{22}$/.test(id) || Buffer.from(id, 'base64url').toString('base64url') !== id) throw new Error()
     const directory = await realpath(root)
@@ -49,11 +50,11 @@ async function run() {
     }
     const record = JSON.parse(await readFile(join(directory, `${id}.json`), 'utf8'))
     const key = recoverOnlineKey({ ...record, id }, await readFile(privatePath, 'utf8'))
-    await writeExclusive(outputPath, key + '\n')
+    await writeExclusive(outputPath, args[4] === '--with-metadata' ? formatRecoveryReport(record, key) : key + '\n')
     process.stdout.write('Online key written to the requested file. Protect it like a password.\n')
     return
   }
-  process.stderr.write('Usage: recovery-admin.mjs init <new-key-directory> | list <backup-data-directory> | recover <backup-data-directory> <backup-id> <private.pem> <new-output-file>\n')
+  process.stderr.write('Usage: recovery-admin.mjs init <new-key-directory> | list <backup-data-directory> | recover <backup-data-directory> <backup-id> <private.pem> <new-output-file> [--with-metadata]\n')
   process.exitCode = 1
 }
 

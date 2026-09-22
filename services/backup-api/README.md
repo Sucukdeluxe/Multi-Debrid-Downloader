@@ -4,6 +4,8 @@ Die API speichert clientseitig verschlüsselte Backups. Neue Clients hinterlegen
 
 Jeder Export wird als eigener unveränderlicher Datensatz gespeichert. Es gibt keine automatische Ablaufzeit und ein neuer Export überschreibt oder löscht keine älteren Sicherungen.
 
+Neue Datensätze speichern zusätzlich die beim Upload erkannte IP-Adresse als administratives Metadatum (`sourceIp`, außerhalb des verschlüsselten Blobs). Die IP wird zusammen mit dem Datensatz gelöscht und nicht über den öffentlichen Restore-Endpunkt ausgegeben. Sie bezeichnet die vom Dienst gesehene Upload-Verbindung, bei Proxy/VPN also möglicherweise deren Ausgangs-IP, nicht zwingend den ursprünglichen Rechner oder eine eindeutige Person. Vorhandene Datensätze werden nicht nachträglich ergänzt.
+
 ## Konfiguration
 
 | Variable | Standard | Bedeutung |
@@ -58,7 +60,7 @@ Die folgenden Linux-Pfade sind Beispiele und müssen an die tatsächliche Instal
    node src/recovery-admin.mjs list /var/lib/mdd-backups
    ```
 
-   `recoveryKeyId: null` bedeutet: keine Schlüsselkopie vorhanden. Bei mehreren Sicherungen dienen Erstellungszeitpunkt und Backup-ID zur Zuordnung; Inhalte oder Accountnamen werden nicht aufgelistet.
+   `recoveryKeyId: null` bedeutet: keine Schlüsselkopie vorhanden. Bei mehreren Sicherungen dienen Erstellungszeitpunkt, `sourceIp` und Backup-ID zur Zuordnung; Inhalte oder Accountnamen werden nicht aufgelistet. `sourceIp: null` bedeutet, dass keine gültige IP gespeichert wurde. Bei `TRUST_PROXY=true` muss der vorgeschaltete, allein zugelassene Proxy den Forwarding-Header überschreiben. In der Downloader-Produktivkonfiguration bindet der Dienst nur an Loopback; Nginx setzt `X-Forwarded-For` ausdrücklich auf `$remote_addr` und übernimmt keine vom Client behauptete Adresse.
 
 4. Als Administrator den Schlüssel in eine neue Datei außerhalb des Datenverzeichnisses schreiben:
 
@@ -67,5 +69,13 @@ Die folgenden Linux-Pfade sind Beispiele und müssen an die tatsächliche Instal
    ```
 
    `BACKUP_ID` durch die ausgewählte ID ersetzen. Der Befehl prüft Schlüssel-Fingerabdruck, OAEP-Bindung, MDD2-Prüfsumme, Löschverifikator und AES-GCM-Authentizität des Backups. Er überschreibt keine Datei und gibt den Schlüssel nicht im Terminal aus. Die Ausgabedatei enthält den vollständigen MDD2-Schlüssel und ist wie ein Passwort zu behandeln. Sicher auf den eigenen Rechner übertragen, in MDD unter „Online-Schlüssel importieren“ verwenden und nicht in Chats oder Logs kopieren.
+
+   Für eine lesbare Zuordnung beim Auslesen `--with-metadata` ergänzen:
+
+   ```sh
+   node src/recovery-admin.mjs recover /var/lib/mdd-backups BACKUP_ID /root/mdd-recovery-keys/private.pem /root/mdd-online-key-info.txt --with-metadata
+   ```
+
+   Die geschützte Ausgabedatei enthält dann beispielsweise `22.09.2026 - 14:30 | IP: 203.0.113.7 | Schlüssel: MDD2-…`. Das Datum bezeichnet die Erstellung der Sicherung, dargestellt in `Europe/Berlin` mit Sommer-/Winterzeit. Ohne gespeicherte IP steht `IP: unbekannt`. Für den Import nur den `MDD2-…`-Teil kopieren. Ohne Option bleibt das bisherige reine Schlüsselformat für Import und Skripte unverändert.
 
 Schlüsselrotation: Alte private Schlüssel sicher behalten, solange zugehörige Sicherungen existieren. Neue öffentliche Schlüssel gelten nur für neue Exporte; vorhandene Kopien werden nicht umgeschrieben. Bei Verlust des privaten Schlüssels sind die dazugehörigen Schlüsselkopien nicht wiederherstellbar. Der Dienst benötigt den privaten Schlüssel auch nach der Einrichtung nicht.

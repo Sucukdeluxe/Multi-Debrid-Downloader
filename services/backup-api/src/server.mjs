@@ -182,7 +182,7 @@ async function recordExists(rootDir, id) {
   }
 }
 
-async function createRecord(rootDir, payload, maxStorageBytes) {
+async function createRecord(rootDir, payload, maxStorageBytes, sourceIp) {
   await mkdir(rootDir, { recursive: true })
   if (await recordExists(rootDir, payload.id)) return 'duplicate'
   const contents = Buffer.from(JSON.stringify({
@@ -190,7 +190,8 @@ async function createRecord(rootDir, payload, maxStorageBytes) {
     blob: payload.blob,
     deleteVerifier: payload.deleteVerifier,
     ...(payload.recovery ? { recovery: payload.recovery } : {}),
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    sourceIp: isIP(sourceIp) ? sourceIp : null
   }), 'utf8')
   if (await directoryUsage(rootDir) + contents.length > maxStorageBytes) return 'full'
   const temporaryPath = join(rootDir, `.${randomBytes(16).toString('hex')}.tmp`)
@@ -450,7 +451,7 @@ export function createBackupServer(options) {
         }
         const result = await runStorageMutation(() => withStorageLock(
           options.rootDir,
-          () => createRecord(options.rootDir, parsed.value, maxStorageBytes)
+          () => createRecord(options.rootDir, parsed.value, maxStorageBytes, clientAddress(request, options.trustedProxy === true))
         ))
         if (result === 'duplicate') {
           sendJson(response, 409, { error: 'already_exists' })

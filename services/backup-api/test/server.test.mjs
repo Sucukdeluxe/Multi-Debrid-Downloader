@@ -61,6 +61,33 @@ test('health endpoint reports readiness without exposing storage details', async
   assert.equal(response.headers.get('cache-control'), 'no-store')
 })
 
+for (const [label, trustedProxy, forwarded, expected] of [
+  ['socket peer without proxy trust', false, '203.0.113.7', '127.0.0.1'],
+  ['trusted ingress IPv4', true, '203.0.113.7', '203.0.113.7'],
+  ['trusted ingress IPv6', true, '2001:db8::7', '2001:db8::7'],
+  ['invalid forwarding header', true, 'not-an-ip', '127.0.0.1']
+]) {
+  test(`records source IP from ${label} without exposing it through restore`, async t => {
+    const api = await startApi({ trustedProxy })
+    t.after(() => api.close())
+    const fixture = backupFixture()
+    const response = await request(api, '/v1/backups', { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': forwarded }, body: JSON.stringify(fixture.payload) })
+    assert.equal(response.status, 201)
+    const filename = join(api.rootDir, `${fixture.payload.id}.json`)
+    const original = await readFile(filename, 'utf8')
+    const stored = JSON.parse(original)
+    assert.equal(stored.sourceIp, expected)
+    assert(Number.isFinite(Date.parse(stored.createdAt)))
+    const duplicate = await request(api, '/v1/backups', { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': '192.0.2.9' }, body: JSON.stringify(fixture.payload) })
+    assert.equal(duplicate.status, 409)
+    assert.equal(await readFile(filename, 'utf8'), original)
+    const restore = await request(api, '/v1/backups/restore', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: fixture.payload.id }) })
+    assert.deepEqual(await restore.json(), { blob: fixture.payload.blob })
+    const forged = await request(api, '/v1/backups', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...backupFixture().payload, sourceIp: '192.0.2.99' }) })
+    assert.equal(forged.status, 400)
+  })
+}
+
 test('health endpoint rejects an unusable storage path', async t => {
   const container = await mkdtemp(join(tmpdir(), 'mdd-backup-health-'))
   const rootDir = join(container, 'not-a-directory')
