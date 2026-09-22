@@ -29,6 +29,24 @@ function settings(): AppSettings {
 }
 
 describe("online backup key", () => {
+  it("fails closed on an invalid recovery descriptor without uploading a backup", async () => {
+    const urls: string[] = [];
+    const server = http.createServer((request, response) => {
+      urls.push(request.url || "");
+      request.resume();
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ version: 1, keyId: "invalid", publicKey: "server-secret-value" }));
+    });
+    servers.push(server);
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing address");
+    const created = createOnlineBackup(settings(), "2.0.90");
+    await expect(uploadOnlineBackup(created.record, `http://127.0.0.1:${address.port}`, created.key)).rejects.toThrow("Wiederherstellungsschlüssel des Sicherungsservers ist ungültig");
+    expect(urls).toEqual(["/v1/backups/recovery-key"]);
+  });
+
   it("creates a compact key and restores every immutable settings snapshot independently", () => {
     const first = createOnlineBackup(settings(), "2.0.0", "2026-08-07T00:00:00.000Z");
     const second = createOnlineBackup({ ...settings(), outputDir: "E:\\Neu" }, "2.0.0", "2026-08-08T00:00:00.000Z");

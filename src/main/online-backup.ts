@@ -250,11 +250,37 @@ export function restoreOnlineBackup(key: string, blob: string): OnlineSettingsPa
   }
 }
 
-export async function uploadOnlineBackup(record: OnlineBackupRecord, baseUrl: string): Promise<void> {
+export async function uploadOnlineBackup(record: OnlineBackupRecord, baseUrl: string, recoveryKey?: string): Promise<void> {
+  let recovery: { version: number; keyId: string; ciphertext: string } | undefined;
+  if (recoveryKey !== undefined) {
+    if (parseOnlineBackupKey(recoveryKey).id !== record.id) throw new Error("Online-Schlüssel passt nicht zur Sicherung");
+    restoreOnlineBackup(recoveryKey, record.blob);
+    const descriptorResponse = await request(endpoint(baseUrl, "/v1/backups/recovery-key"), { method: "POST" });
+    const descriptorBody = await readLimitedText(descriptorResponse);
+    if (descriptorResponse.status !== 200) throw new Error("Schlüsselwiederherstellung ist auf dem Sicherungsserver nicht eingerichtet");
+    try {
+      const descriptor = JSON.parse(descriptorBody);
+      if (descriptor.version !== 1 || typeof descriptor.publicKey !== "string" || !descriptor.publicKey.startsWith("-----BEGIN PUBLIC KEY-----")) throw new Error();
+      const publicKey = crypto.createPublicKey(descriptor.publicKey);
+      if (publicKey.asymmetricKeyType !== "rsa" || publicKey.asymmetricKeyDetails?.modulusLength !== 3072) throw new Error();
+      const keyId = crypto.createHash("sha256").update(publicKey.export({ type: "spki", format: "der" })).digest("base64url");
+      if (descriptor.keyId !== keyId) throw new Error();
+      const blobHash = crypto.createHash("sha256").update(record.blob).digest("base64url");
+      const ciphertext = crypto.publicEncrypt({
+        key: publicKey,
+        padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+        oaepHash: "sha256",
+        oaepLabel: Buffer.from(`MDD-RECOVERY-V1:${record.id}:${record.deleteVerifier}:${blobHash}`)
+      }, Buffer.from(recoveryKey.trim(), "utf8")).toString("base64url");
+      recovery = { version: 1, keyId, ciphertext };
+    } catch {
+      throw new Error("Wiederherstellungsschlüssel des Sicherungsservers ist ungültig");
+    }
+  }
   const response = await request(endpoint(baseUrl, "/v1/backups"), {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
-    body: JSON.stringify(record)
+    body: JSON.stringify({ ...record, ...(recovery ? { recovery } : {}) })
   });
   await readLimitedText(response);
   if (response.status !== 201) {

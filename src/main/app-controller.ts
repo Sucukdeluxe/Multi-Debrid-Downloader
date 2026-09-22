@@ -1457,7 +1457,7 @@ export class AppController {
   public async exportOnlineBackup(): Promise<{ key: string }> {
     const proxyListContent = captureOnlineProxyList(this.settings);
     const created = createOnlineBackup({ ...this.settings }, APP_VERSION, undefined, proxyListContent);
-    await uploadOnlineBackup(created.record, ONLINE_BACKUP_API_URL);
+    await uploadOnlineBackup(created.record, ONLINE_BACKUP_API_URL, created.key);
     this.audit("INFO", "Online-Sicherung erstellt", { kind: "settings-only", proxyListIncluded: proxyListContent !== undefined });
     return { key: created.key };
   }

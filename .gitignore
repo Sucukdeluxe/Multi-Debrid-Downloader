@@ -20,6 +20,9 @@ rd_download_manifest.json
 _update_staging/
 apply_update.cmd
 .env
+*.pem
+services/backup-api/data/
+services/backup-api/recovery-keys/
 .env.*
 !.env.example
 .DS_Store

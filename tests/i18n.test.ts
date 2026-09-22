@@ -55,7 +55,8 @@ describe("renderer localization", () => {
   });
 
   it.each([
-    ["Dieser Schlüssel stellt deine Einstellungen inklusive gespeicherter Zugangsdaten und hinterlegter Proxy-Liste wieder her. Bewahre ihn wie ein Passwort auf.", "This key restores your settings, including saved credentials and the configured proxy list. Keep it as secure as a password."],
+    ["Dieser Schlüssel stellt deine Einstellungen inklusive gespeicherter Zugangsdaten und hinterlegter Proxy-Liste wieder her. Bewahre ihn wie ein Passwort auf. Eine verschlüsselte Schlüsselkopie ermöglicht dem Betreiber, den Schlüssel und damit die Sicherung wiederherzustellen.", "This key restores your settings, including saved credentials and the configured proxy list. Keep it as secure as a password. An encrypted copy allows the operator to recover the key and access the backup."],
+    ["Online-Sicherung konnte nicht erstellt werden. Verbindung und serverseitige Schlüsselwiederherstellung prüfen.", "Online backup could not be created. Check the connection and server-side key recovery configuration."],
     ["Füge den vollständigen MDD2-Schlüssel ein. Einstellungen und eine enthaltene Proxy-Liste werden durch die gespeicherte Version ersetzt.", "Paste the complete MDD2 key. Settings and any included proxy list will be replaced by the stored version."],
     ["Einstellungen und Proxy-Liste aus Online-Sicherung wiederhergestellt", "Settings and proxy list restored from online backup"],
     ["Einstellungen wiederhergestellt; Proxy-only wurde deaktiviert, weil die Online-Sicherung keine Proxy-Liste enthält", "Settings restored; Proxy-only was disabled because the online backup contains no proxy list"]

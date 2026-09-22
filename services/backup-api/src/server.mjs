@@ -4,6 +4,7 @@ import { link, mkdir, open, readFile, readdir, stat, unlink } from 'node:fs/prom
 import { isIP } from 'node:net'
 import { join } from 'node:path'
 import lockfile from 'proper-lockfile'
+import { recoveryDescriptor, validRecoveryEnvelope } from './recovery.mjs'
 
 const maxBlobBytes = 256 * 1024
 const maxBodyBytes = 384 * 1024
@@ -18,10 +19,11 @@ function isCanonicalBase64Url(value, byteLength, pattern) {
   return decoded.length === byteLength && decoded.toString('base64url') === value
 }
 
-function isValidBackup(payload) {
+function isValidBackup(payload, recovery) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false
   const keys = Object.keys(payload).sort()
-  if (keys.join(',') !== 'blob,deleteVerifier,id') return false
+  if (!['blob,deleteVerifier,id', 'blob,deleteVerifier,id,recovery'].includes(keys.join(','))) return false
+  if ('recovery' in payload && !validRecoveryEnvelope(payload.recovery, recovery)) return false
   if (!isCanonicalBase64Url(payload.id, 16, idPattern)) return false
   if (!isCanonicalBase64Url(payload.deleteVerifier, 32, verifierPattern)) return false
   if (typeof payload.blob !== 'string' || !blobPattern.test(payload.blob)) return false
@@ -187,6 +189,7 @@ async function createRecord(rootDir, payload, maxStorageBytes) {
     version: 1,
     blob: payload.blob,
     deleteVerifier: payload.deleteVerifier,
+    ...(payload.recovery ? { recovery: payload.recovery } : {}),
     createdAt: new Date().toISOString()
   }), 'utf8')
   if (await directoryUsage(rootDir) + contents.length > maxStorageBytes) return 'full'
@@ -314,6 +317,7 @@ function clientAddress(request, trustedProxy) {
 export function createBackupServer(options) {
   if (!options?.rootDir) throw new Error('rootDir is required')
   const allowedOrigins = new Set(options.allowedOrigins ?? [])
+  const recovery = options.recoveryPublicKey ? recoveryDescriptor(options.recoveryPublicKey) : null
   const rateLimit = options.rateLimit ?? { max: 60, windowMs: 60_000 }
   const uploadRateLimit = options.uploadRateLimit ?? { max: 10, windowMs: 3_600_000 }
   const maxStorageBytes = options.maxStorageBytes ?? 10 * 1024 * 1024 * 1024
@@ -365,6 +369,12 @@ export function createBackupServer(options) {
           sendJson(response, 429, { error: 'rate_limited' })
           return
         }
+      }
+
+      if (request.method === 'POST' && url.pathname === '/v1/backups/recovery-key') {
+        request.resume()
+        sendJson(response, recovery ? 200 : 503, recovery ?? { error: 'recovery_unavailable' })
+        return
       }
 
       if (request.method === 'POST' && ['/v1/backups', '/v1/backups/restore', '/v1/backups/delete'].includes(url.pathname)) {
@@ -428,7 +438,7 @@ export function createBackupServer(options) {
           sendJson(response, 413, { error: 'payload_too_large' })
           return
         }
-        if (!isValidBackup(parsed.value)) {
+        if (!isValidBackup(parsed.value, recovery)) {
           sendJson(response, 400, { error: 'invalid_request' })
           return
         }

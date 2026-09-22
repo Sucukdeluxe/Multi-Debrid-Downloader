@@ -4970,7 +4970,7 @@ export function App(): ReactElement {
       setOnlineBackupDialog({ mode: "export", key: result.key, busy: false, error: "" });
       showToast("Online-Schlüssel erstellt", 2600);
     } catch {
-      setOnlineBackupDialog({ mode: "export", key: "", busy: false, error: "Online-Sicherung konnte nicht erstellt werden." });
+      setOnlineBackupDialog({ mode: "export", key: "", busy: false, error: "Online-Sicherung konnte nicht erstellt werden. Verbindung und serverseitige Schlüsselwiederherstellung prüfen." });
     }
   };
 
@@ -6858,7 +6858,7 @@ export function App(): ReactElement {
           >
             <p>
               {onlineBackupDialog.mode === "export"
-                ? "Dieser Schlüssel stellt deine Einstellungen inklusive gespeicherter Zugangsdaten und hinterlegter Proxy-Liste wieder her. Bewahre ihn wie ein Passwort auf."
+                ? "Dieser Schlüssel stellt deine Einstellungen inklusive gespeicherter Zugangsdaten und hinterlegter Proxy-Liste wieder her. Bewahre ihn wie ein Passwort auf. Eine verschlüsselte Schlüsselkopie ermöglicht dem Betreiber, den Schlüssel und damit die Sicherung wiederherzustellen."
                 : "Füge den vollständigen MDD2-Schlüssel ein. Einstellungen und eine enthaltene Proxy-Liste werden durch die gespeicherte Version ersetzt."}
             </p>
             {onlineBackupDialog.mode === "export" && onlineBackupDialog.busy && <div className="online-backup-status">Online-Sicherung wird verschlüsselt und gespeichert …</div>}

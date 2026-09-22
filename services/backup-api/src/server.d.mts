@@ -2,6 +2,7 @@ import type { Server } from "node:http";
 
 export interface BackupServerOptions {
   rootDir: string;
+  recoveryPublicKey?: string;
   allowedOrigins?: string[];
   rateLimit?: {
     max: number;
