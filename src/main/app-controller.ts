@@ -1479,7 +1479,7 @@ export class AppController {
     return { restored: true, relaunch: false, message };
   }
 
-  public async exportSupportBundle(): Promise<{ buffer: Buffer; defaultFileName: string }> {
+  public async exportSupportBundle(options: { includeArchivePasswords?: boolean } = {}): Promise<{ buffer: Buffer; defaultFileName: string }> {
     this.audit("INFO", "Support-Bundle exportiert");
     logTraceEvent("INFO", "support", "Support-Bundle erstellt", {
       packageCount: Object.keys(this.manager.getSnapshot().session.packages).length,
@@ -1488,7 +1488,8 @@ export class AppController {
     return {
       buffer: await buildSupportBundle(this.manager, this.storagePaths.baseDir, {
         hostDiagnosticsMode: "cached",
-        notificationStatus: this.getNotificationSupportPayload()
+        notificationStatus: this.getNotificationSupportPayload(),
+        includeArchivePasswords: options.includeArchivePasswords === true
       }),
       defaultFileName: getSupportBundleDefaultFileName()
     };

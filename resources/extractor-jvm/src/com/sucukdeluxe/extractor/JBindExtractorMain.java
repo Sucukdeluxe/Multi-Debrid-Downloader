@@ -195,16 +195,24 @@ public final class JBindExtractorMain {
         List<String> passwords = normalizePasswords(request.passwords);
         Exception lastError = null;
         boolean hadWrongPassword = false;
+        int attempt = 0;
         for (String password : passwords) {
+            attempt += 1;
+            long startedAt = System.nanoTime();
             try {
-                extractSingle(request, password);
+                extractSingle(request, password, attempt, passwords.size());
+                emitAttemptEnd(attempt, "success", startedAt);
                 emitPassword(password);
                 emitDone();
                 return 0;
             } catch (WrongPasswordException wrongPassword) {
+                emitAttemptEnd(attempt, "wrong_password", startedAt);
                 hadWrongPassword = true;
                 lastError = wrongPassword;
             } catch (Exception error) {
+                String message = safeMessage(error).toLowerCase(Locale.ROOT);
+                String outcome = message.contains("crc") || message.contains("checksum") ? "crc_error" : "error";
+                emitAttemptEnd(attempt, outcome, startedAt);
                 lastError = error;
                 break;
             }
@@ -221,12 +229,13 @@ public final class JBindExtractorMain {
         return 1;
     }
 
-    private static void extractSingle(ExtractionRequest request, String password) throws Exception {
+    private static void extractSingle(ExtractionRequest request, String password, int attempt, int total) throws Exception {
         Backend backend = request.backend;
         if (backend == Backend.AUTO) {
             backend = shouldUseZip4j(request.archiveFile) ? Backend.ZIP4J : Backend.SEVENZIPJBIND;
         }
         emitBackend(backend);
+        System.out.println("RD_ATTEMPT_START " + attempt + " " + total);
 
         if (backend == Backend.ZIP4J) {
             extractWithZip4j(request, password);
@@ -810,6 +819,11 @@ public final class JBindExtractorMain {
     private static void emitPassword(String password) {
         String encoded = Base64.getEncoder().encodeToString((password == null ? "" : password).getBytes(StandardCharsets.UTF_8));
         System.out.println("RD_PASSWORD " + encoded);
+    }
+
+    private static void emitAttemptEnd(int attempt, String outcome, long startedAt) {
+        long durationMs = Math.max(0L, (System.nanoTime() - startedAt) / 1_000_000L);
+        System.out.println("RD_ATTEMPT_END " + attempt + " " + outcome + " " + durationMs);
     }
 
     private static void emitDone() {

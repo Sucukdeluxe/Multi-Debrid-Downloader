@@ -188,7 +188,7 @@ src/shared               Shared types and contracts
 resources/extractor-jvm  Optional extraction runtime
 services/backup-api      Backup API service
 scripts                  Build and release verification tools
-tests                    Unit and integration tests
+tests                    Local-only unit and integration tests (not included in Git)
 ```
 
 ## Data, privacy, and diagnostics
@@ -196,6 +196,10 @@ tests                    Unit and integration tests
 Configuration, credentials, queue state, history, and logs are stored locally in Electron's `userData` directory. Secrets are not included in public source or release archives. Provider credentials are only sent to the configured provider endpoints required for account and download operations.
 
 The application can generate support diagnostics and expose an optional authenticated local debug API. Remote access is disabled by default. Do not expose diagnostic endpoints publicly without a firewall, VPN, or reverse proxy, and always use a strong unique token.
+
+Support bundles include actual native and JVM archive-password attempts with their archive, backend, timing, and result. Password values are encrypted locally with Electron SafeStorage and omitted when encryption is unavailable. The diagnostic history retains up to 5,000 events or 4 MiB and reports discarded events. It cannot reconstruct attempts made before this feature was installed.
+
+The desktop support export offers an unchecked **Include attempted archive passwords in plain text** option. Enabling it includes only available, actually attempted archive passwords in `overview/archive-password-attempts.json`, not account passwords or API keys. Share such ZIP files only with trusted recipients. Standard exports and the diagnostic HTTP endpoint include only metadata for these attempts; the encrypted local password store is never bundled.
 
 ## Updates and changelog
 

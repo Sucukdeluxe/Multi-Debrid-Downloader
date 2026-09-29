@@ -15,6 +15,8 @@ import { revealHistoryEntry } from "./history-reveal";
 import { DEV_SERVER_URL } from "./dev-server-url";
 import { resolveAppIconPath } from "./app-icon";
 import { configureCredentialProtector } from "./credential-protection";
+import { configureArchivePasswordDiagnostics, flushArchivePasswordDiagnostics } from "./archive-password-diagnostics";
+import { getSupportBundleExportDialogOptions } from "./support-bundle-dialog";
 import { isMdd2Backup } from "./backup-crypto";
 import { validateAccountCommand, validateAccountCredentialCheckInput, validateAccountSecretRequest } from "./account-commands";
 import { createRendererSettings } from "./renderer-state";
@@ -1011,6 +1013,11 @@ function registerIpcHandlers(): void {
   });
 
   handleTrusted(IPC_CHANNELS.EXPORT_SUPPORT_BUNDLE, async () => {
+    const diagnosticOptions = getSupportBundleExportDialogOptions(controller.getSettings().language);
+    const selection = mainWindow
+      ? await dialog.showMessageBox(mainWindow, diagnosticOptions)
+      : await dialog.showMessageBox(diagnosticOptions);
+    if (selection.response !== 0) return { saved: false };
     const options = {
       defaultPath: controller.getSupportBundleDefaultFileName(),
       filters: [{ name: "Support Bundle", extensions: ["zip"] }]
@@ -1019,7 +1026,7 @@ function registerIpcHandlers(): void {
     if (result.canceled || !result.filePath) {
       return { saved: false };
     }
-    const exported = await controller.exportSupportBundle();
+    const exported = await controller.exportSupportBundle({ includeArchivePasswords: selection.checkboxChecked === true });
     await fs.promises.writeFile(result.filePath, exported.buffer);
     return { saved: true, filePath: result.filePath };
   });
@@ -1312,6 +1319,7 @@ app.on("second-instance", () => {
 
 app.whenReady().then(() => {
   configureCredentialProtector(safeStorage);
+  configureArchivePasswordDiagnostics(path.join(app.getPath("userData"), "runtime"), safeStorage);
   controller = new AppController();
   dailyStartScheduler = new DailyStartScheduler(controller);
   cleanupStaleSubstDrives();
@@ -1380,6 +1388,7 @@ app.on("before-quit", createBeforeQuitHandler({
       }
     } finally {
       shutdownDaemon();
+      await flushArchivePasswordDiagnostics();
     }
   },
   continueQuit: confirmApplicationQuit,

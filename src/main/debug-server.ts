@@ -1060,7 +1060,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
       return;
     }
     const fileName = getSupportBundleDefaultFileName();
-    buildSupportBundle(manager, runtimeBaseDir, { notificationStatus: readNotificationStatus() })
+    buildSupportBundle(manager, runtimeBaseDir, { notificationStatus: readNotificationStatus(), includeArchivePasswords: false })
       .then((body) => {
         logTraceEvent("INFO", "support", "Support-Bundle über Debug-Server heruntergeladen", {
           fileName,

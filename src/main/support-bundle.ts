@@ -17,6 +17,7 @@ import { buildAccountSummary, buildRedactedSettingsPayload, buildStatsPayload, n
 import { getTraceConfig, getTraceConfigPath, getTraceLogPath } from "./trace-log";
 import { getCachedWindowsHostDiagnostics, getWindowsHostDiagnostics } from "./windows-host-diagnostics";
 import type { DownloadManager } from "./download-manager";
+import { readArchivePasswordDiagnostics } from "./archive-password-diagnostics";
 
 const SUPPORT_MANIFEST_FILE = "debug_support_manifest.json";
 
@@ -102,6 +103,7 @@ type HostDiagnosticsMode = "full" | "cached" | "none";
 interface BuildSupportBundleOptions {
   hostDiagnosticsMode?: HostDiagnosticsMode;
   notificationStatus?: NotificationSupportPayload;
+  includeArchivePasswords?: boolean;
 }
 
 function createDeferredHostDiagnostics(reason: string): unknown {
@@ -157,6 +159,7 @@ export async function buildSupportBundle(manager: DownloadManager, baseDir: stri
   });
   addJson(zip, "overview/status.json", snapshot.session);
   addJson(zip, "overview/settings.json", buildRedactedSettingsPayload(settings));
+  addJson(zip, "overview/archive-password-attempts.json", await readArchivePasswordDiagnostics(baseDir, options.includeArchivePasswords === true));
   addJson(zip, "overview/accounts.json", buildAccountSummary(settings));
   addJson(zip, "overview/stats.json", {
     ...buildStatsPayload(snapshot),

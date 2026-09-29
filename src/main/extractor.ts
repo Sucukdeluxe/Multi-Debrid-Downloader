@@ -7,6 +7,7 @@ import { CleanupMode, ConflictMode } from "../shared/types";
 import { logger } from "./logger";
 import { removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 import { isExtractionStagingDirectoryName, isVerifiedExtractionOutput, withStagedExtraction } from "./extraction-output";
+import { recordArchivePasswordAttempt } from "./archive-password-diagnostics";
 
 import crypto from "node:crypto";
 
@@ -155,6 +156,68 @@ type ExtractSpawnResult = {
   errorText: string;
 };
 
+type PasswordAttemptOutcome = "success" | "wrong_password" | "crc_error" | "error" | "aborted" | "timeout";
+type PasswordDiagnosticContext = { packageId?: string };
+type PasswordAttemptDetails = PasswordDiagnosticContext & {
+  archivePath: string;
+  backend: string;
+  attempt: number;
+  total: number;
+  password: string;
+};
+type ActivePasswordAttempt = PasswordAttemptDetails & { attemptId: string; startedAt: number; finished: boolean };
+type JvmParseState = {
+  bestPercent: number;
+  usedPassword: string;
+  backend: string;
+  reportedError: string;
+  diagnostics?: {
+    archivePath: string;
+    context?: PasswordDiagnosticContext;
+    passwords: string[];
+    active?: ActivePasswordAttempt;
+    seen: Set<number>;
+    closed: boolean;
+  };
+};
+
+function beginPasswordAttempt(details: PasswordAttemptDetails): ActivePasswordAttempt {
+  const active = { ...details, attemptId: crypto.randomUUID(), startedAt: Date.now(), finished: false };
+  recordArchivePasswordAttempt({ ...details, attemptId: active.attemptId, phase: "started" });
+  return active;
+}
+
+function finishPasswordAttempt(active: ActivePasswordAttempt | undefined, outcome: PasswordAttemptOutcome, durationMs?: number): void {
+  if (!active || active.finished) return;
+  active.finished = true;
+  const { attemptId, archivePath, packageId, backend, attempt, total, password } = active;
+  recordArchivePasswordAttempt({
+    attemptId, archivePath, packageId, backend, attempt, total, password, phase: "finished", outcome,
+    durationMs: Math.max(0, Number.isFinite(durationMs) ? Number(durationMs) : Date.now() - active.startedAt)
+  });
+}
+
+function passwordAttemptOutcome(result: Pick<ExtractSpawnResult, "ok" | "aborted" | "timedOut" | "errorText">): PasswordAttemptOutcome {
+  if (result.aborted) return "aborted";
+  if (result.timedOut) return "timeout";
+  if (result.ok) return "success";
+  const category = classifyExtractionError(result.errorText);
+  return category === "crc_error" || category === "wrong_password" ? category : "error";
+}
+
+function createJvmParseState(archivePath: string, passwords: string[], context?: PasswordDiagnosticContext): JvmParseState {
+  return {
+    bestPercent: 0, usedPassword: "", backend: "", reportedError: "",
+    diagnostics: { archivePath, context, passwords: Array.from(new Set(["", ...passwords])), seen: new Set(), closed: false }
+  };
+}
+
+function finishJvmPasswordDiagnostics(state: JvmParseState, outcome: PasswordAttemptOutcome): void {
+  if (!state.diagnostics) return;
+  state.diagnostics.closed = true;
+  finishPasswordAttempt(state.diagnostics.active, outcome);
+}
+
 type ExtractResumeState = {
   completedArchives: string[];
   outputVerificationVersion?: number;
@@ -169,7 +232,7 @@ interface DaemonRequest {
   onArchiveProgress?: (percent: number) => void;
   signal?: AbortSignal;
   timeoutMs?: number;
-  parseState: { bestPercent: number; usedPassword: string; backend: string; reportedError: string };
+  parseState: JvmParseState;
   archiveName: string;
   startedAt: number;
   passwordCount: number;
@@ -810,6 +873,11 @@ function appendLimited(base: string, chunk: string, maxLen = MAX_EXTRACT_OUTPUT_
   return next.slice(next.length - maxLen);
 }
 
+function appendJvmDiagnosticLine(output: string, line: string): string {
+  if (/^\s*RD_(?:PASSWORD|ATTEMPT_START|ATTEMPT_END)(?:\s|$)/.test(line)) return output;
+  return appendLimited(output, `${line}\n`);
+}
+
 function withExtractionErrorHints(
   error: unknown,
   hints: {
@@ -1330,7 +1398,8 @@ function runExtractCommand(
   args: string[],
   onChunk?: (chunk: string) => void,
   signal?: AbortSignal,
-  timeoutMs?: number
+  timeoutMs?: number,
+  passwordAttempt?: PasswordAttemptDetails
 ): Promise<ExtractSpawnResult> {
   if (signal?.aborted) {
     return Promise.resolve({ ok: false, missingCommand: false, aborted: true, timedOut: false, errorText: "aborted:extract" });
@@ -1341,6 +1410,7 @@ function runExtractCommand(
     let output = "";
     let diagnosticOutput = "";
     const child = spawn(command, args, { windowsHide: true });
+    const activePasswordAttempt = passwordAttempt ? beginPasswordAttempt(passwordAttempt) : undefined;
     lowerExtractProcessPriority(child.pid, currentExtractCpuPriority);
     let timeoutId: NodeJS.Timeout | null = null;
     let timedOutByWatchdog = false;
@@ -1351,6 +1421,7 @@ function runExtractCommand(
         return;
       }
       settled = true;
+      finishPasswordAttempt(activePasswordAttempt, passwordAttemptOutcome(result));
       if (timeoutId) {
         clearTimeout(timeoutId);
         timeoutId = null;
@@ -1536,10 +1607,36 @@ function resolveJvmExtractorLayout(): JvmExtractorLayout | null {
 function parseJvmLine(
   line: string,
   onArchiveProgress: ((percent: number) => void) | undefined,
-  state: { bestPercent: number; usedPassword: string; backend: string; reportedError: string }
+  state: JvmParseState
 ): void {
   const trimmed = String(line || "").trim();
   if (!trimmed) {
+    return;
+  }
+
+  if (trimmed.startsWith("RD_ATTEMPT_START ")) {
+    const match = /^RD_ATTEMPT_START (\d+) (\d+)$/.exec(trimmed);
+    const diagnostics = state.diagnostics;
+    if (!match || !diagnostics || diagnostics.closed) return;
+    const attempt = Number(match[1]);
+    const total = Number(match[2]);
+    if (total !== diagnostics.passwords.length || attempt < 1 || attempt > total || diagnostics.seen.has(attempt)) return;
+    finishPasswordAttempt(diagnostics.active, "error");
+    diagnostics.seen.add(attempt);
+    diagnostics.active = beginPasswordAttempt({
+      ...diagnostics.context,
+      archivePath: diagnostics.archivePath,
+      backend: `jvm/${state.backend || "unknown"}`,
+      attempt, total, password: diagnostics.passwords[attempt - 1]
+    });
+    return;
+  }
+
+  if (trimmed.startsWith("RD_ATTEMPT_END ")) {
+    const match = /^RD_ATTEMPT_END (\d+) (success|wrong_password|crc_error|error|aborted|timeout) (\d+)$/.exec(trimmed);
+    const active = state.diagnostics?.active;
+    if (!match || state.diagnostics?.closed || !active || active.attempt !== Number(match[1])) return;
+    finishPasswordAttempt(active, match[2] as PasswordAttemptOutcome, Number(match[3]));
     return;
   }
 
@@ -1587,6 +1684,7 @@ let daemonAbortHandler: (() => void) | null = null;
 let daemonLayout: JvmExtractorLayout | null = null;
 
 export function shutdownDaemon(): void {
+  if (daemonCurrentRequest) finishJvmPasswordDiagnostics(daemonCurrentRequest.parseState, "aborted");
   if (daemonProcess) {
     try { daemonProcess.stdin?.end(); } catch {  }
     try { killProcessTree(daemonProcess); } catch {  }
@@ -1606,6 +1704,7 @@ export function shutdownDaemon(): void {
 function finishDaemonRequest(result: JvmExtractResult): void {
   const req = daemonCurrentRequest;
   if (!req) return;
+  finishJvmPasswordDiagnostics(req.parseState, passwordAttemptOutcome(result));
   daemonCurrentRequest = null;
   daemonBusy = false;
   daemonStdoutBuffer = "";
@@ -1624,10 +1723,12 @@ function flushDaemonParseBuffers(req: DaemonRequest | null): void {
     return;
   }
   if (daemonStdoutBuffer.trim()) {
+    daemonOutput = appendJvmDiagnosticLine(daemonOutput, daemonStdoutBuffer);
     parseJvmLine(daemonStdoutBuffer, req.onArchiveProgress, req.parseState);
     daemonStdoutBuffer = "";
   }
   if (daemonStderrBuffer.trim()) {
+    daemonOutput = appendJvmDiagnosticLine(daemonOutput, daemonStderrBuffer);
     parseJvmLine(daemonStderrBuffer, req.onArchiveProgress, req.parseState);
     daemonStderrBuffer = "";
   }
@@ -1721,23 +1822,25 @@ function startDaemon(layout: JvmExtractorLayout): boolean {
     daemonLayout = layout;
 
     child.stdout!.on("data", (chunk) => {
+      if (daemonProcess !== child) return;
       const raw = String(chunk || "");
-      daemonOutput = appendLimited(daemonOutput, raw);
       daemonStdoutBuffer += raw;
       const lines = daemonStdoutBuffer.split(/\r?\n/);
       daemonStdoutBuffer = lines.pop() || "";
       for (const line of lines) {
+        daemonOutput = appendJvmDiagnosticLine(daemonOutput, line);
         handleDaemonLine(line);
       }
     });
 
     child.stderr!.on("data", (chunk) => {
+      if (daemonProcess !== child) return;
       const raw = String(chunk || "");
-      daemonOutput = appendLimited(daemonOutput, raw);
       daemonStderrBuffer += raw;
       const lines = daemonStderrBuffer.split(/\r?\n/);
       daemonStderrBuffer = lines.pop() || "";
       for (const line of lines) {
+        daemonOutput = appendJvmDiagnosticLine(daemonOutput, line);
         if (daemonCurrentRequest) {
           parseJvmLine(line, daemonCurrentRequest.onArchiveProgress, daemonCurrentRequest.parseState);
         }
@@ -1745,6 +1848,7 @@ function startDaemon(layout: JvmExtractorLayout): boolean {
     });
 
     child.on("error", () => {
+      if (daemonProcess !== child) return;
       if (daemonCurrentRequest) {
         finishDaemonRequest({
           ok: false, missingCommand: true, missingRuntime: true,
@@ -1756,8 +1860,11 @@ function startDaemon(layout: JvmExtractorLayout): boolean {
     });
 
     child.on("close", () => {
+      fs.rm(jvmTmpDir, { recursive: true, force: true }, () => {});
+      if (daemonProcess !== child) return;
       if (daemonCurrentRequest) {
         const req = daemonCurrentRequest;
+        flushDaemonParseBuffers(req);
         finishDaemonRequest({
           ok: false, missingCommand: false, missingRuntime: false,
           aborted: false, timedOut: false,
@@ -1765,7 +1872,6 @@ function startDaemon(layout: JvmExtractorLayout): boolean {
           usedPassword: req.parseState.usedPassword, backend: req.parseState.backend
         });
       }
-      fs.rm(jvmTmpDir, { recursive: true, force: true }, () => {});
       daemonProcess = null;
       daemonReady = false;
       daemonBusy = false;
@@ -1808,11 +1914,12 @@ function sendDaemonRequest(
   passwordCandidates: string[],
   onArchiveProgress?: (percent: number) => void,
   signal?: AbortSignal,
-  timeoutMs?: number
+  timeoutMs?: number,
+  diagnosticContext?: PasswordDiagnosticContext
 ): Promise<JvmExtractResult> {
   return new Promise((resolve) => {
     const mode = effectiveConflictMode(conflictMode);
-    const parseState = { bestPercent: 0, usedPassword: "", backend: "", reportedError: "" };
+    const parseState = createJvmParseState(archivePath, passwordCandidates, diagnosticContext);
     const archiveName = path.basename(archivePath);
 
     daemonBusy = true;
@@ -1889,7 +1996,8 @@ async function runJvmExtractCommand(
   passwordCandidates: string[],
   onArchiveProgress?: (percent: number) => void,
   signal?: AbortSignal,
-  timeoutMs?: number
+  timeoutMs?: number,
+  diagnosticContext?: PasswordDiagnosticContext
 ): Promise<JvmExtractResult> {
   if (signal?.aborted) {
     return Promise.resolve({
@@ -1902,7 +2010,7 @@ async function runJvmExtractCommand(
   if (isDaemonAvailable(layout)) {
     lowerExtractProcessPriority(daemonProcess?.pid, currentExtractCpuPriority);
     logger.info(`JVM Daemon: Sofort verfügbar, sende Request für ${path.basename(archivePath)} (pwCandidates=${passwordCandidates.length})`);
-    return sendDaemonRequest(archivePath, targetDir, conflictMode, passwordCandidates, onArchiveProgress, signal, timeoutMs);
+    return sendDaemonRequest(archivePath, targetDir, conflictMode, passwordCandidates, onArchiveProgress, signal, timeoutMs, diagnosticContext);
   }
 
   if (daemonProcess) {
@@ -1914,7 +2022,7 @@ async function runJvmExtractCommand(
     if (ready) {
       lowerExtractProcessPriority(daemonProcess?.pid, currentExtractCpuPriority);
       logger.info(`JVM Daemon: Bereit nach ${waitedMs}ms — sende Request für ${path.basename(archivePath)}`);
-      return sendDaemonRequest(archivePath, targetDir, conflictMode, passwordCandidates, onArchiveProgress, signal, timeoutMs);
+      return sendDaemonRequest(archivePath, targetDir, conflictMode, passwordCandidates, onArchiveProgress, signal, timeoutMs, diagnosticContext);
     }
     logger.warn(`JVM Daemon: Timeout nach ${waitedMs}ms beim Warten — Fallback auf neuen Prozess für ${path.basename(archivePath)}`);
   }
@@ -1954,7 +2062,7 @@ async function runJvmExtractCommand(
     let timedOutByWatchdog = false;
     let abortedBySignal = false;
     let onAbort: (() => void) | null = null;
-    const parseState = { bestPercent: 0, usedPassword: "", backend: "", reportedError: "" };
+    const parseState = createJvmParseState(archivePath, passwordCandidates, diagnosticContext);
     let stdoutBuffer = "";
     let stderrBuffer = "";
 
@@ -1965,11 +2073,11 @@ async function runJvmExtractCommand(
       if (!rawChunk) {
         return;
       }
-      output = appendLimited(output, rawChunk);
       const nextBuffer = `${fromStdErr ? stderrBuffer : stdoutBuffer}${rawChunk}`;
       const lines = nextBuffer.split(/\r?\n/);
       const keep = lines.pop() || "";
       for (const line of lines) {
+        output = appendJvmDiagnosticLine(output, line);
         parseJvmLine(line, onArchiveProgress, parseState);
       }
       if (fromStdErr) {
@@ -1988,6 +2096,7 @@ async function runJvmExtractCommand(
         return;
       }
       settled = true;
+      finishJvmPasswordDiagnostics(parseState, passwordAttemptOutcome(result));
       if (timeoutId) {
         clearTimeout(timeoutId);
         timeoutId = null;
@@ -2045,6 +2154,8 @@ async function runJvmExtractCommand(
     });
 
     child.on("close", (code) => {
+      output = appendJvmDiagnosticLine(output, stdoutBuffer);
+      output = appendJvmDiagnosticLine(output, stderrBuffer);
       parseJvmLine(stdoutBuffer, onArchiveProgress, parseState);
       parseJvmLine(stderrBuffer, onArchiveProgress, parseState);
 
@@ -2129,11 +2240,15 @@ async function runExternalExtractInner(
   forceFlatMode = false,
   flatModeResult?: { needed: boolean },
   onLog?: ExtractOptions["onLog"],
-  prepareTarget?: () => Promise<void>
+  prepareTarget?: () => Promise<void>,
+  diagnosticContext?: PasswordDiagnosticContext
 ): Promise<string> {
   const passwords = passwordCandidates;
   let lastError = "";
   const extractorName = path.basename(command).replace(/\.exe$/i, "") || command;
+  const attemptDetails = (password: string, attempt: number, total: number, mode = ""): PasswordAttemptDetails => ({
+    ...diagnosticContext, archivePath, backend: `legacy/${extractorName}${mode}`, password, attempt, total
+  });
 
   const emptyPasswordCount = passwords.filter((candidate) => candidate === "").length;
   onLog?.("INFO", `Legacy-Extractor Start: archive=${path.basename(archivePath)}, extractor=${extractorName}, passwordCount=${passwords.length}, forceFlatMode=${forceFlatMode}, targetDir=${targetDir}`);
@@ -2162,7 +2277,7 @@ async function runExternalExtractInner(
         if (parsed === null) return;
         const next = nextArchivePercent(bestPercent, parsed);
         if (next !== bestPercent) { bestPercent = next; onArchiveProgress?.(bestPercent); }
-      }, signal, timeoutMs);
+      }, signal, timeoutMs, attemptDetails(password, passwordAttempt, passwords.length, "/flat"));
       logger.info(`Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length}: ok=${result.ok}, bestPercent=${bestPercent}`);
       onLog?.("INFO", `Flach-Extraktion Ergebnis ${passwordAttempt}/${passwords.length}: archive=${path.basename(archivePath)}, ok=${result.ok}, timedOut=${result.timedOut}, missingCommand=${result.missingCommand}, bestPercent=${bestPercent}`);
       if (result.ok) { if (flatModeResult) flatModeResult.needed = true; onArchiveProgress?.(100); return password; }
@@ -2200,7 +2315,7 @@ async function runExternalExtractInner(
         bestPercent = next;
         onArchiveProgress?.(bestPercent);
       }
-    }, signal, timeoutMs);
+    }, signal, timeoutMs, attemptDetails(password, passwordAttempt, passwords.length));
 
     if (!result.ok && usePerformanceFlags && isUnsupportedExtractorSwitchError(result.errorText)) {
       usePerformanceFlags = false;
@@ -2219,7 +2334,7 @@ async function runExternalExtractInner(
           bestPercent = next;
           onArchiveProgress?.(bestPercent);
         }
-      }, signal, timeoutMs);
+      }, signal, timeoutMs, attemptDetails(password, passwordAttempt, passwords.length, "/compat"));
     }
 
       logger.info(
@@ -2288,7 +2403,7 @@ async function runExternalExtractInner(
         if (parsed === null) return;
         const next = nextArchivePercent(bestPercent, parsed);
         if (next !== bestPercent) { bestPercent = next; onArchiveProgress?.(bestPercent); }
-      }, signal, timeoutMs);
+      }, signal, timeoutMs, attemptDetails(password, passwordAttempt, flatPasswords.length, "/flat"));
       logger.info(`Flach-Extraktion Versuch ${passwordAttempt}/${passwords.length}: ok=${result.ok}, bestPercent=${bestPercent}`);
       onLog?.("INFO", `Flach-Extraktion Ergebnis ${passwordAttempt}/${flatPasswords.length}: archive=${path.basename(archivePath)}, ok=${result.ok}, timedOut=${result.timedOut}, missingCommand=${result.missingCommand}, bestPercent=${bestPercent}`);
       if (result.ok) { if (flatModeResult) flatModeResult.needed = true; onArchiveProgress?.(100); return password; }
@@ -2313,7 +2428,8 @@ async function runExternalExtract(
   forceFlatMode = false,
   flatModeResult?: { needed: boolean },
   onLog?: ExtractOptions["onLog"],
-  prepareTarget?: () => Promise<void>
+  prepareTarget?: () => Promise<void>,
+  diagnosticContext?: PasswordDiagnosticContext
 ): Promise<string> {
   const timeoutMs = await computeExtractTimeoutMs(archivePath);
   const configuredBackendMode = extractorBackendMode();
@@ -2347,7 +2463,7 @@ async function runExternalExtract(
         await prepareTarget?.();
         const jvmResult = await runJvmExtractCommand(
           layout, archivePath, targetDir, conflictMode, passwordCandidates,
-          onArchiveProgress, signal, timeoutMs
+          onArchiveProgress, signal, timeoutMs, diagnosticContext
         );
         const jvmMs = Date.now() - jvmStartedAt;
         onLog?.("INFO", `JVM-Extractor Ergebnis: archive=${archiveName}, ok=${jvmResult.ok}, ms=${jvmMs}, timedOut=${jvmResult.timedOut}, aborted=${jvmResult.aborted}, backend=${jvmResult.backend || "unknown"}, usedPassword=${jvmResult.usedPassword ? "yes" : "no"}`);
@@ -2409,7 +2525,7 @@ async function runExternalExtract(
         password = await runExternalExtractInner(
           command, archivePath, effectiveTargetDir, conflictMode, passwordCandidates,
           onArchiveProgress, signal, timeoutMs, hybridMode, onPasswordAttempt,
-          forceFlatMode, flatModeResult, onLog, prepareTarget
+          forceFlatMode, flatModeResult, onLog, prepareTarget, diagnosticContext
         );
       } catch (primaryError) {
         const isRar = /\.rar$/i.test(archiveName) || /\.r\d{2,3}$/i.test(archiveName);
@@ -2425,7 +2541,7 @@ async function runExternalExtract(
             password = await runExternalExtractInner(
               alt, archivePath, effectiveTargetDir, conflictMode, passwordCandidates,
               onArchiveProgress, signal, timeoutMs, hybridMode, onPasswordAttempt,
-              forceFlatMode, flatModeResult, onLog, prepareTarget
+              forceFlatMode, flatModeResult, onLog, prepareTarget, diagnosticContext
             );
           } else {
             throw primaryError;
@@ -2468,7 +2584,8 @@ async function runExternalExtract(
               forceFlatMode,
               flatModeResult,
               onLog,
-              prepareTarget
+              prepareTarget,
+              diagnosticContext
             );
             logger.info(`Legacy-Retry erfolgreich: ${archiveName}`);
             onLog?.("INFO", `Legacy-Retry erfolgreich: ${archiveName}`);
@@ -2529,7 +2646,8 @@ async function runExternalExtract(
             passwordCandidates,
             onArchiveProgress,
             signal,
-            timeoutMs
+            timeoutMs,
+            diagnosticContext
           );
           const jvmMs = Date.now() - jvmStartedAt;
           logger.info(`JVM-Extractor Ergebnis (nach Legacy-Fallback): archive=${archiveName}, ok=${jvmResult.ok}, ms=${jvmMs}, timedOut=${jvmResult.timedOut}, aborted=${jvmResult.aborted}, backend=${jvmResult.backend || "unknown"}, usedPassword=${jvmResult.usedPassword ? "yes" : "no"}`);
@@ -3159,7 +3277,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
             try {
               const usedPassword = await runExternalExtract(archivePath, stagingDir, "overwrite", archivePasswordCandidates, (value) => {
                 reportArchiveProgress(value);
-              }, options.signal, hybrid, onPwAttempt, false, undefined, options.onLog, resetStage);
+              }, options.signal, hybrid, onPwAttempt, false, undefined, options.onLog, resetStage, { packageId: options.packageId });
               rememberLearnedPassword(usedPassword);
             } catch (error) {
               if (isNoExtractorError(String(error))) {
@@ -3180,7 +3298,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
               try {
                 const usedPassword = await runExternalExtract(archivePath, stagingDir, "overwrite", archivePasswordCandidates, (value) => {
                   reportArchiveProgress(value);
-                }, options.signal, hybrid, onPwAttempt, false, undefined, options.onLog, resetStage);
+                }, options.signal, hybrid, onPwAttempt, false, undefined, options.onLog, resetStage, { packageId: options.packageId });
                 rememberLearnedPassword(usedPassword);
               } catch (externalError) {
                 throw selectZipFallbackError(error, externalError);
@@ -3191,7 +3309,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
           const flatResult = { needed: false };
           const usedPassword = await runExternalExtract(archivePath, stagingDir, "overwrite", archivePasswordCandidates, (value) => {
             reportArchiveProgress(value);
-          }, options.signal, hybrid, onPwAttempt, packageNeedsFlatMode, flatResult, options.onLog, resetStage);
+          }, options.signal, hybrid, onPwAttempt, packageNeedsFlatMode, flatResult, options.onLog, resetStage, { packageId: options.packageId });
           rememberLearnedPassword(usedPassword);
           if (flatResult.needed) packageNeedsFlatMode = true;
         }
@@ -3422,11 +3540,11 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
                   nestedPercent = 100;
                 } catch (zipErr) {
                   if (!shouldFallbackToExternalZip(zipErr)) throw zipErr;
-                  const usedPw = await runExternalExtract(nestedArchive, stagingDir, "overwrite", passwordCandidates, (v) => { nestedPercent = Math.max(nestedPercent, v); }, options.signal, hybrid, undefined, false, undefined, options.onLog, resetStage);
+                  const usedPw = await runExternalExtract(nestedArchive, stagingDir, "overwrite", passwordCandidates, (v) => { nestedPercent = Math.max(nestedPercent, v); }, options.signal, hybrid, undefined, false, undefined, options.onLog, resetStage, { packageId: options.packageId });
                   rememberLearnedPassword(usedPw);
                 }
               } else {
-                const usedPw = await runExternalExtract(nestedArchive, stagingDir, "overwrite", passwordCandidates, (v) => { nestedPercent = Math.max(nestedPercent, v); }, options.signal, hybrid, undefined, false, undefined, options.onLog, resetStage);
+                const usedPw = await runExternalExtract(nestedArchive, stagingDir, "overwrite", passwordCandidates, (v) => { nestedPercent = Math.max(nestedPercent, v); }, options.signal, hybrid, undefined, false, undefined, options.onLog, resetStage, { packageId: options.packageId });
                 rememberLearnedPassword(usedPw);
               }
             }, options.signal, options.publishOutput);
