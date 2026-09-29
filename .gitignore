@@ -1,4 +1,16 @@
 node_modules/
+.diagnostics/
+.support-analysis/
+PROJECT_MEMORY.md
+*MEMORY*.md
+tests/
+test/
+__tests__/
+fixtures/
+*.test.*
+*.spec.*
+test-results/
+playwright-report/
 .worktrees/
 .claude/
 .codex/
