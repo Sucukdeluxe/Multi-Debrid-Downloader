@@ -69,7 +69,8 @@ import { planDownloadCompletion, reconcileFinalizedSize, validateDownloadedFileC
 import { downloadWithProxySegments, type ProxyFallbackReason } from "./proxy-segmented-download";
 import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkDdownloadOnline, checkOneFichierLinks, checkRapidgatorOnline, fetchAllDebridHostInfo, filenameFromDdownloadUrlPath, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, isDdownloadLink, isOneFichierLink, isRealDebridAccountBlockedForStart, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown, type DdownloadCheckResult, type OneFichierCheckResult } from "./debrid";
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo, type ExtractProgressUpdate } from "./extractor";
-import { validateFileAgainstManifest } from "./integrity";
+import { filesHaveEqualContent, validateFileAgainstManifest } from "./integrity";
+import { forgetVerifiedExtractionOutput, isExtractionStagingDirectoryName, isVerifiedExtractionOutput, moveVerifiedExtractionOutput, recordVerifiedExtractionOutput } from "./extraction-output";
 import { classifyDiskError } from "./fs-error";
 import { processVideoFile, resolveVideoTooling, stripDualLangMarker, hasDualLangMarker, isRemuxableVideoFile, type GermanAudioMode, type VideoProcessResult } from "./video-processor";
 import { logger } from "./logger";
@@ -1031,10 +1032,12 @@ const EMPTY_DIR_IGNORED_FILE_NAMES = new Set([
   ".ds_store"
 ]);
 const EMPTY_DIR_IGNORED_FILE_RE = /^\.rd_extract_progress(?:_[^.\\/]+)?\.json$/i;
+const EXTRACTION_OUTPUT_METADATA_FILE_RE = /^\.rd_verified_extraction\.json(?:\..+\.tmp)?$/i;
 
 function isIgnorableEmptyDirFileName(fileName: string): boolean {
   const normalized = String(fileName || "").trim().toLowerCase();
-  return EMPTY_DIR_IGNORED_FILE_NAMES.has(normalized) || EMPTY_DIR_IGNORED_FILE_RE.test(normalized);
+  return EMPTY_DIR_IGNORED_FILE_NAMES.has(normalized) || EMPTY_DIR_IGNORED_FILE_RE.test(normalized)
+    || EXTRACTION_OUTPUT_METADATA_FILE_RE.test(normalized);
 }
 
 function verifyHeadline(v: RenameVerification): string {
@@ -4645,7 +4648,7 @@ export class DownloadManager extends EventEmitter {
         if (entry.isFile() && !isIgnorableEmptyDirFileName(entry.name)) {
           return true;
         }
-        if (entry.isDirectory()) {
+        if (entry.isDirectory() && !isExtractionStagingDirectoryName(entry.name)) {
           stack.push(path.join(current, entry.name));
         }
       }
@@ -4672,7 +4675,7 @@ export class DownloadManager extends EventEmitter {
         if (entry.isSymbolicLink()) {
           continue;
         }
-        if (entry.isDirectory()) {
+        if (entry.isDirectory() && !isExtractionStagingDirectoryName(entry.name)) {
           stack.push(fullPath);
         } else if (entry.isFile() && !isArchiveLikePath(fullPath) && !isIgnorableEmptyDirFileName(entry.name)) {
           try {
@@ -4723,7 +4726,7 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
       for (const entry of entries) {
-        if (entry.isDirectory()) {
+        if (entry.isDirectory() && !isExtractionStagingDirectoryName(entry.name)) {
           const full = path.join(current, entry.name);
           dirs.push(full);
           stack.push(full);
@@ -4736,8 +4739,10 @@ export class DownloadManager extends EventEmitter {
     for (const dirPath of dirs) {
       try {
         let entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
+        const hasRemainingOutput = entries.some((entry) => !entry.isFile() || !isIgnorableEmptyDirFileName(entry.name));
         for (const entry of entries) {
-          if (!entry.isFile() || !isIgnorableEmptyDirFileName(entry.name)) {
+          if (!entry.isFile() || !isIgnorableEmptyDirFileName(entry.name)
+            || (hasRemainingOutput && EXTRACTION_OUTPUT_METADATA_FILE_RE.test(entry.name))) {
             continue;
           }
           try {
@@ -4795,7 +4800,7 @@ export class DownloadManager extends EventEmitter {
           continue;
         }
         if (entry.isDirectory()) {
-          stack.push(fullPath);
+          if (!isExtractionStagingDirectoryName(entry.name)) stack.push(fullPath);
           continue;
         }
         if (!entry.isFile()) {
@@ -4953,8 +4958,10 @@ export class DownloadManager extends EventEmitter {
       if (sourceCompanionPath === targetCompanionPath) {
         continue;
       }
+      if (!await this.canPostProcessMediaFile(pkg, sourceCompanionPath)) continue;
       try {
         await this.renamePathWithExdevFallback(sourceCompanionPath, targetCompanionPath, { label: "companion" });
+        await this.moveMediaOutputVerification(pkg, sourceCompanionPath, targetCompanionPath);
         logger.info(`Auto-Rename Companion: ${entryName} -> ${newCompanionName}`);
         if (pkg) {
           this.logPackageForPackage(pkg, "INFO", "Auto-Rename Companion umbenannt", {
@@ -5009,8 +5016,10 @@ export class DownloadManager extends EventEmitter {
       if (sourceCompanionPath === targetCompanionPath) {
         continue;
       }
+      if (!await this.canPostProcessMediaFile(pkg, sourceCompanionPath)) continue;
       try {
         await this.moveFileWithExdevFallback(sourceCompanionPath, targetCompanionPath);
+        if (pkg) await this.forgetMediaOutputVerification(pkg, sourceCompanionPath);
         logger.info(`MKV-Move Companion: ${entryName} -> ${newCompanionName}`);
         if (pkg) {
           this.logPackageForPackage(pkg, "INFO", "Companion mit-verschoben", {
@@ -5140,6 +5149,61 @@ export class DownloadManager extends EventEmitter {
     });
   }
 
+  private mediaExtractionRoot(pkg: PackageEntry | undefined, filePath: string): string | null {
+    return pkg?.extractDir && isPathInsideDir(filePath, pkg.extractDir) ? pkg.extractDir : null;
+  }
+
+  private isCompletedDownloadOutput(pkg: PackageEntry, filePath: string): boolean {
+    if (isArchiveLikePath(filePath)) return false;
+    return pkg.itemIds.some((itemId) => {
+      const item = this.session.items[itemId];
+      return item?.status === "completed" && Boolean(item.targetPath)
+        && pathKey(item.targetPath) === pathKey(filePath);
+    });
+  }
+
+  private async canPostProcessMediaFile(pkg: PackageEntry | undefined, filePath: string): Promise<boolean> {
+    const root = this.mediaExtractionRoot(pkg, filePath);
+    if (!root || !pkg || this.isCompletedDownloadOutput(pkg, filePath)) return true;
+    if (await isVerifiedExtractionOutput(root, filePath)) return true;
+    const reason = "Entpackausgabe nicht verifiziert; Archiv erneut entpacken oder Datei manuell prüfen";
+    if (pkg.status === "completed" || pkg.status === "failed") {
+      this.recordPostProcessFailure(pkg, "postprocess", reason);
+      pkg.status = "failed";
+    }
+    this.logPackageForPackage(pkg, "WARN", reason, { filePath });
+    logger.warn(`${reason}: ${filePath}`);
+    return false;
+  }
+
+  private async moveMediaOutputVerification(pkg: PackageEntry | undefined, sourcePath: string, targetPath: string): Promise<void> {
+    const root = this.mediaExtractionRoot(pkg, sourcePath);
+    if (!root || !pkg) return;
+    try {
+      if (this.isCompletedDownloadOutput(pkg, sourcePath)) {
+        await recordVerifiedExtractionOutput(root, targetPath);
+      } else {
+        await moveVerifiedExtractionOutput(root, sourcePath, targetPath);
+      }
+    } catch (error) {
+      this.recordPostProcessFailure(pkg, "postprocess", error);
+      if (pkg.status === "completed") pkg.status = "failed";
+      throw error;
+    }
+  }
+
+  private async forgetMediaOutputVerification(pkg: PackageEntry, sourcePath: string): Promise<void> {
+    const root = this.mediaExtractionRoot(pkg, sourcePath);
+    if (!root) return;
+    try {
+      await forgetVerifiedExtractionOutput(root, sourcePath);
+    } catch (error) {
+      this.recordPostProcessFailure(pkg, "postprocess", error);
+      if (pkg.status === "completed") pkg.status = "failed";
+      throw error;
+    }
+  }
+
   private async autoRenameExtractedVideoFiles(
     extractDir: string,
     pkg?: PackageEntry,
@@ -5253,6 +5317,7 @@ export class DownloadManager extends EventEmitter {
       if (shouldAbort?.() || signal?.aborted) {
         return processed;
       }
+      if (!await this.canPostProcessMediaFile(pkg, sourcePath)) continue;
       const sourceName = path.basename(sourcePath);
       const remuxStartedAt = nowMs();
       let result: VideoProcessResult | null = null;
@@ -5343,6 +5408,8 @@ export class DownloadManager extends EventEmitter {
       // already single-track. Skips/errors leave the file fully untouched so the
       // unprocessed state stays visible.
       if (result.action === "remuxed" || result.action === "kept-single") {
+        const root = this.mediaExtractionRoot(pkg, sourcePath);
+        if (root) await recordVerifiedExtractionOutput(root, sourcePath);
         await this.stripDualLangFromFileName(sourcePath, pkg);
       }
       if (pkg) {
@@ -5386,6 +5453,7 @@ export class DownloadManager extends EventEmitter {
     }
     try {
       await this.renamePathWithExdevFallback(sourcePath, targetPath, { label: "audio-strip" });
+      await this.moveMediaOutputVerification(pkg, sourcePath, targetPath);
       await this.renameCompanionFiles(sourcePath, targetPath, pkg);
       if (pkg) {
         const resolved = this.inferItemForMediaLog(pkg, targetPath, path.basename(targetPath));
@@ -5452,6 +5520,7 @@ export class DownloadManager extends EventEmitter {
       if (shouldAbort?.()) {
         return renamed;
       }
+      if (!await this.canPostProcessMediaFile(pkg, sourcePath)) continue;
       const sourceName = path.basename(sourcePath);
       const sourceExt = path.extname(sourceName);
       const sourceBaseName = path.basename(sourceName, sourceExt);
@@ -5667,6 +5736,7 @@ export class DownloadManager extends EventEmitter {
       if (pathKey(targetPath) === pathKey(sourcePath) && targetPath !== sourcePath) {
         try {
           await this.renamePathWithExdevFallback(sourcePath, targetPath, { label: "auto-rename (Schreibweise)" });
+          await this.moveMediaOutputVerification(pkg, sourcePath, targetPath);
           renamed += 1;
           if (pkg) {
             const resolved = resolveRenameItem(targetPath);
@@ -5728,6 +5798,7 @@ export class DownloadManager extends EventEmitter {
 
       try {
         await this.renamePathWithExdevFallback(sourcePath, targetPath, { label: "auto-rename" });
+        await this.moveMediaOutputVerification(pkg, sourcePath, targetPath);
         if (pkg) {
           this.logPackageForPackage(pkg, "INFO", "Auto-Rename durchgeführt", {
             sourcePath,
@@ -5763,6 +5834,7 @@ export class DownloadManager extends EventEmitter {
             }
             try {
               await this.renamePathWithExdevFallback(sourcePath, fallbackPath, { label: "auto-rename (Pfadlaenge-Fallback)" });
+              await this.moveMediaOutputVerification(pkg, sourcePath, fallbackPath);
               logger.warn(`Auto-Rename Fallback wegen Pfadlänge: ${sourceName} -> ${path.basename(fallbackPath)}`);
               renamed += 1;
               if (pkg) {
@@ -5841,17 +5913,17 @@ export class DownloadManager extends EventEmitter {
       for (const entry of entries) {
         const fullPath = path.join(current, entry.name);
         if (entry.isDirectory()) {
-          if (isPathInsideDir(fullPath, targetDir)) {
+          if (isExtractionStagingDirectoryName(entry.name) || isPathInsideDir(fullPath, targetDir)) {
             continue;
           }
           stack.push(fullPath);
           continue;
         }
-        if (!entry.isFile()) {
+        if (!entry.isFile() || EXTRACTION_OUTPUT_METADATA_FILE_RE.test(entry.name)) {
           continue;
         }
         const extension = path.extname(entry.name).toLowerCase();
-        if (SAMPLE_VIDEO_EXTENSIONS.has(extension)) {
+        if (SAMPLE_VIDEO_EXTENSIONS.has(extension) || isArchiveLikePath(fullPath)) {
           continue;
         }
         try {
@@ -6138,6 +6210,7 @@ export class DownloadManager extends EventEmitter {
     for (const dir of sourceDirs) {
       const filesInDir = await this.collectFilesByExtensions(dir, SAMPLE_VIDEO_EXTENSIONS);
       for (const filePath of filesInDir) {
+        if (!await this.canPostProcessMediaFile(pkg, filePath)) continue;
         const baseLower = path.basename(filePath).toLowerCase();
         if (seenBasenames.has(baseLower)) continue;
         seenBasenames.add(baseLower);
@@ -6199,6 +6272,7 @@ export class DownloadManager extends EventEmitter {
       if (shouldAbort?.()) {
         return;
       }
+      if (!await this.canPostProcessMediaFile(pkg, sourcePath)) continue;
       if (isPathInsideDir(sourcePath, targetDir)) {
         skipped += 1;
         continue;
@@ -6256,8 +6330,8 @@ export class DownloadManager extends EventEmitter {
       const idealTargetPath = path.join(targetDir, desiredFileName);
       try {
         const existingStat = await fs.promises.stat(idealTargetPath);
-        if (existingStat.size === sourceSize) {
-          logger.info(`MKV-Sammelordner: Duplikat übersprungen (gleiche Größe ${humanSize(sourceSize)}): ${path.basename(sourcePath)}`);
+        if (existingStat.size === sourceSize && await filesHaveEqualContent(sourcePath, idealTargetPath, shouldAbort)) {
+          logger.info(`MKV-Sammelordner: Duplikat übersprungen (identischer Inhalt, ${humanSize(sourceSize)}): ${path.basename(sourcePath)}`);
           const resolved = this.inferItemForMediaLog(pkg, sourcePath, path.basename(sourcePath), idealTargetPath);
           this.logRenameProcess(pkg, "INFO", "mkv-move", "MKV-Duplikat übersprungen", {
             sourcePath,
@@ -6266,6 +6340,7 @@ export class DownloadManager extends EventEmitter {
           }, resolved.item, resolved.matchedBy);
           try {
             await fs.promises.unlink(sourcePath);
+            await this.forgetMediaOutputVerification(pkg, sourcePath);
             sourceArtifactsChanged = true;
           } catch {
           }
@@ -6276,6 +6351,7 @@ export class DownloadManager extends EventEmitter {
       } catch {
       }
 
+      if (shouldAbort?.()) return;
       const targetPath = await this.buildUniqueFlattenTargetPath(targetDir, sourcePath, reservedTargets, desiredFileName);
       if (pathKey(sourcePath) === pathKey(targetPath)) {
         skipped += 1;
@@ -6284,6 +6360,7 @@ export class DownloadManager extends EventEmitter {
 
       try {
         await this.moveFileWithExdevFallback(sourcePath, targetPath);
+        await this.forgetMediaOutputVerification(pkg, sourcePath);
         moved += 1;
         sourceArtifactsChanged = true;
         sourceCleanupRelevant = true;
@@ -8218,18 +8295,17 @@ export class DownloadManager extends EventEmitter {
       return 0;
     }
 
-    const corruptArchiveItems = inspectedArchiveItems
-      .filter(({ state }) => state.reason !== "ok");
+    const corruptArchiveItems = failure.category === "crc_error"
+      ? [...inspectedArchiveItems]
+      : inspectedArchiveItems.filter(({ state }) => state.reason !== "ok");
+    if (failure.category === "crc_error") {
+      logger.warn(
+        `Auto-Recovery (${scope}): ${failure.archiveName} meldet CRC-Fehler, ` +
+        `erzwinge einmaligen Neu-Download aller ${archiveItems.length} Parts`
+      );
+    }
 
     if (corruptArchiveItems.length === 0) {
-      if (failure.category === "crc_error") {
-        logger.warn(
-          `Auto-Recovery (${scope}): ${failure.archiveName} meldet CRC-Fehler trotz korrekter Größe und Archiv-Signatur, ` +
-          `erzwinge einmaligen Neu-Download aller ${archiveItems.length} Parts`
-        );
-        corruptArchiveItems.push(...inspectedArchiveItems);
-      }
-
       if (failure.category !== "crc_error") {
         const firstPart = inspectedArchiveItems.find(({ state }) => state.diskPath);
         let hasValidSignature = false;
@@ -8266,17 +8342,57 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
+    const stagedArchives: Array<{ item: DownloadItem; originalPath: string; quarantinePath: string }> = [];
+    let blockedPath = "";
+    try {
+      for (const { item, state } of corruptArchiveItems) {
+        const originalPath = String(state.diskPath || item.targetPath || "").trim();
+        if (!originalPath) continue;
+        blockedPath = originalPath;
+        if (!isPathInsideDir(originalPath, pkg.outputDir)) throw new Error("Archivpfad liegt außerhalb des Paketordners");
+        try {
+          if (!fs.lstatSync(originalPath).isFile()) throw new Error("Archivpfad ist keine reguläre Datei");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+          throw error;
+        }
+        const quarantinePath = `${originalPath}.crc-recovery-${uuidv4()}.quarantine`;
+        fs.renameSync(originalPath, quarantinePath);
+        stagedArchives.push({ item, originalPath, quarantinePath });
+      }
+    } catch (error) {
+      let rollbackFailed = false;
+      for (const staged of [...stagedArchives].reverse()) {
+        try {
+          if (fs.existsSync(staged.originalPath)) throw new Error("Originalpfad ist bereits wieder belegt");
+          fs.renameSync(staged.quarantinePath, staged.originalPath);
+        } catch (rollbackError) {
+          rollbackFailed = true;
+          this.logPackageForItem(staged.item, "ERROR", "Archiv-Wiederherstellung blockiert; gesicherte Datei konnte nicht zurückverschoben werden", {
+            originalPath: staged.originalPath,
+            quarantinePath: staged.quarantinePath,
+            error: compactErrorText(rollbackError)
+          });
+        }
+      }
+      const reason = `Automatischer Archiv-Neudownload blockiert: ${path.basename(blockedPath) || failure.archiveName} konnte nicht sicher ersetzt werden. ` +
+        `${compactErrorText(error)}${rollbackFailed ? " Gesicherte Archivdateien sind erhalten; Pfade stehen im Item-Log." : " Archivdateien unverändert erhalten."}`;
+      failure.errorText = reason;
+      failure.suggestRedownload = false;
+      for (const item of archiveItems) {
+        item.lastError = reason;
+        item.fullStatus = formatExtractFailureLabel(reason, failure.archiveName);
+        item.updatedAt = nowMs();
+        this.logPackageForItem(item, "ERROR", "Automatischer Archiv-Neudownload blockiert", { archiveName: failure.archiveName, blockedPath, reason });
+      }
+      this.persistSoon();
+      return 0;
+    }
+
     const queuedAt = nowMs();
     const reason = "Wartet (Auto-Recovery: Archiv beschädigt/unvollständig)";
     let changed = 0;
     for (const { item } of corruptArchiveItems) {
-      const claimedTargetPath = String(item.targetPath || "").trim();
-      if (claimedTargetPath) {
-        try {
-          fs.rmSync(claimedTargetPath, { force: true });
-        } catch {
-        }
-      }
       this.releaseTargetPath(item.id);
       this.dropItemContribution(item.id);
       item.targetPath = "";
@@ -8295,6 +8411,17 @@ export class DownloadManager extends EventEmitter {
       item.fullStatus = reason;
       item.updatedAt = queuedAt;
       changed += 1;
+    }
+
+    for (const staged of stagedArchives) {
+      try {
+        fs.rmSync(staged.quarantinePath, { force: true });
+      } catch (error) {
+        this.logPackageForItem(staged.item, "WARN", "Beschädigte Archivdatei nach Neudownload-Vorbereitung weiterhin gesichert", {
+          quarantinePath: staged.quarantinePath,
+          error: compactErrorText(error)
+        });
+      }
     }
 
     if (changed > 0) {
@@ -13754,7 +13881,6 @@ export class DownloadManager extends EventEmitter {
     const hybridResolvedItems = new Map<string, DownloadItem[]>();
     const hybridStartTimes = new Map<string, number>();
     let hybridLastEmitAt = 0;
-    let hybridLastProgressCurrent: number | null = null;
 
     const allDownloaded = completedItems.length >= items.length;
     let labelsChanged = false;
@@ -13795,25 +13921,30 @@ export class DownloadManager extends EventEmitter {
         passwordList: this.settings.archivePasswordList,
         signal,
         onlyArchives: readyArchives,
+        overwriteArchives: new Set([...readyArchives].filter((archivePath) =>
+          resolveArchiveItemsFromList(path.basename(archivePath), items).some((item) => (item.archiveRecoveryRedownloads || 0) > 0)
+        )),
         skipPostCleanup: true,
         packageId,
         hybridMode: true,
         maxParallel: this.settings.maxParallelExtract || 2,
         extractCpuPriority: "high",
         onLog: (level, message) => this.logExtractionForItems(pkg, items, "Hybrid-Extractor", level, message),
+        publishOutput: (commit) => this.chainPackageFileOp(packageId, commit),
         onArchiveFailure: (failure) => {
           failedArchiveCategories.set(String(failure.archiveName || "").toLowerCase(), failure.category);
           const failedArchiveKey = readyArchiveKeyByName.get(String(failure.archiveName || "").toLowerCase());
-          if (failedArchiveKey) {
-            failedArchiveErrors.set(failedArchiveKey, failure.errorText || failure.jvmFailureReason || "Entpacken fehlgeschlagen");
-          }
           if (autoRecoveredArchives.has(failure.archiveName)) {
-            return;
+            return true;
           }
           const changed = this.autoRecoverArchiveCrcFailure(pkg, items, failure, "hybrid");
           if (changed > 0) {
             autoRecoveredArchives.add(failure.archiveName);
+            if (failedArchiveKey) failedArchiveErrors.delete(failedArchiveKey);
+          } else if (failedArchiveKey) {
+            failedArchiveErrors.set(failedArchiveKey, failure.errorText || failure.jvmFailureReason || "Entpacken fehlgeschlagen");
           }
+          return changed > 0;
         },
         onProgress: (progress) => {
           if (progress.phase === "preparing") {
@@ -13824,14 +13955,11 @@ export class DownloadManager extends EventEmitter {
           if (progress.phase === "done") {
             hybridResolvedItems.clear();
             hybridStartTimes.clear();
-            hybridLastProgressCurrent = null;
             return;
           }
 
           const currentCount = Math.max(0, Number(progress.current ?? 0));
-          const archiveFinished = progress.archiveDone === true
-            || (hybridLastProgressCurrent !== null && currentCount > hybridLastProgressCurrent);
-          hybridLastProgressCurrent = currentCount;
+          const archiveFinished = progress.archiveDone === true;
 
           if (progress.archiveName) {
             if (!hybridResolvedItems.has(progress.archiveName)) {
@@ -14298,7 +14426,6 @@ export class DownloadManager extends EventEmitter {
         const fullFailedArchiveCategories = new Map<string, string>();
         const fullResolvedItems = new Map<string, DownloadItem[]>();
         const fullStartTimes = new Map<string, number>();
-        let fullLastProgressCurrent: number | null = null;
 
         await this.waitForCompletedArchiveFilesToSettle(
           pkg,
@@ -14377,21 +14504,25 @@ export class DownloadManager extends EventEmitter {
           signal: extractAbortController.signal,
           packageId,
           onlyArchives: fullArchiveSet,
+          overwriteArchives: new Set([...fullArchiveSet].filter((archivePath) =>
+            resolveArchiveItemsFromList(path.basename(archivePath), completedItems).some((item) => (item.archiveRecoveryRedownloads || 0) > 0)
+          )),
           skipPostCleanup: true,
           maxParallel: this.settings.maxParallelExtract || 2,
           extractCpuPriority: "high",
           onLog: (level, message) => this.logExtractionForItems(pkg, completedItems, "Extractor", level, message),
+          publishOutput: (commit) => this.chainPackageFileOp(packageId, commit),
           onArchiveFailure: (failure) => {
             fullFailedArchiveCategories.set(failure.archiveName.toLowerCase(), failure.category);
             if (autoRecoveredArchives.has(failure.archiveName)) {
-              return;
+              return true;
             }
             const changed = this.autoRecoverArchiveCrcFailure(pkg, completedItems, failure, "full");
             if (changed > 0) {
               autoRecoveredArchives.add(failure.archiveName);
               fullFailedArchiveErrors.delete(failure.archiveName);
               fullFailedArchiveCategories.delete(failure.archiveName.toLowerCase());
-              return;
+              return true;
             }
             fullFailedArchiveErrors.set(
               failure.archiveName,
@@ -14407,15 +14538,12 @@ export class DownloadManager extends EventEmitter {
             if (progress.phase === "done") {
               fullResolvedItems.clear();
               fullStartTimes.clear();
-              fullLastProgressCurrent = null;
               emitExtractStatus("Entpacken 100%", true);
               return;
             }
 
             const currentCount = Math.max(0, Number(progress.current ?? 0));
-            const archiveFinished = progress.archiveDone === true
-              || (fullLastProgressCurrent !== null && currentCount > fullLastProgressCurrent);
-            fullLastProgressCurrent = currentCount;
+            const archiveFinished = progress.archiveDone === true;
 
             if (progress.archiveName) {
               if (!fullResolvedItems.has(progress.archiveName)) {
@@ -14705,7 +14833,7 @@ export class DownloadManager extends EventEmitter {
     const deferredVersion = this.getPackagePostProcessVersion(packageId);
     const shouldAbort = (): boolean => !this.isDeferredPostProcessStillCurrent(packageId, pkg, deferredVersion, deferredController.signal);
     const throwIfAborted = (): void => this.throwIfDeferredPostProcessAborted(packageId, pkg, deferredVersion, deferredController.signal);
-    const hasBlockingExtractError = pkg.itemIds.some((itemId) => {
+    let hasBlockingExtractError = pkg.itemIds.some((itemId) => {
       const item = this.session.items[itemId];
       return Boolean(item && item.status === "completed" && isExtractErrorLabel(item.fullStatus || ""));
     });
@@ -14769,6 +14897,7 @@ export class DownloadManager extends EventEmitter {
             maxParallel: this.settings.maxParallelExtract || 2,
             extractCpuPriority: this.settings.extractCpuPriority,
             onLog: (level, message) => this.logPackageForPackage(pkg, level, `Nested-Extractor: ${message}`),
+            publishOutput: (commit) => this.chainPackageFileOp(packageId, commit),
             onArchiveFailure: (failure) => {
               nestedFailureCategories.set(failure.archiveName.toLowerCase(), failure.category);
             },
@@ -14787,11 +14916,24 @@ export class DownloadManager extends EventEmitter {
           throwIfAborted();
           await this.refreshPackageOutputCount(pkg);
           extractedCount += nestedResult.extracted;
+          if (nestedResult.failed > 0) {
+            failed += nestedResult.failed;
+            hasBlockingExtractError = true;
+            this.recordPostProcessFailure(pkg, "postprocess", nestedResult.lastError || "Fehler beim Entpacken verschachtelter Archive");
+            pkg.status = "failed";
+          }
           logger.info(`Deferred Nested-Extraction Ende: extracted=${nestedResult.extracted}, failed=${nestedResult.failed}`);
           this.logPackageForPackage(pkg, "INFO", "Deferred Nested-Extraction Ende", {
             extracted: nestedResult.extracted,
             failed: nestedResult.failed
           });
+        }
+      }
+
+      if (this.settings.autoExtract && pkg.extractDir) {
+        for (const filePath of await this.collectVideoFiles(pkg.extractDir)) {
+          throwIfAborted();
+          if (!await this.canPostProcessMediaFile(pkg, filePath)) hasBlockingExtractError = true;
         }
       }
 
@@ -14855,7 +14997,7 @@ export class DownloadManager extends EventEmitter {
         }
       }
 
-      if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0) {
+      if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0 && !hasBlockingExtractError) {
         throwIfAborted();
         await runCleanup(() => clearExtractResumeState(pkg.outputDir, packageId));
         await runCleanup(() => clearExtractResumeState(pkg.outputDir));

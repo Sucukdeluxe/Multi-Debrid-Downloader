@@ -7,6 +7,45 @@ import { MAX_MANIFEST_FILE_BYTES } from "./constants";
 const manifestCache = new Map<string, { at: number; entries: Map<string, ParsedHashEntry> }>();
 const MANIFEST_CACHE_TTL_MS = 15000;
 
+export async function filesHaveEqualContent(
+  firstPath: string,
+  secondPath: string,
+  shouldAbort?: () => boolean
+): Promise<boolean> {
+  if (shouldAbort?.()) return false;
+  const first = await fs.promises.open(firstPath, "r");
+  try {
+    const second = await fs.promises.open(secondPath, "r");
+    try {
+      const [firstBefore, secondBefore] = await Promise.all([first.stat(), second.stat()]);
+      if (!firstBefore.isFile() || !secondBefore.isFile() || firstBefore.size !== secondBefore.size) return false;
+      const firstBuffer = Buffer.allocUnsafe(1024 * 1024);
+      const secondBuffer = Buffer.allocUnsafe(firstBuffer.length);
+      for (let offset = 0; offset < firstBefore.size;) {
+        if (shouldAbort?.()) return false;
+        const length = Math.min(firstBuffer.length, firstBefore.size - offset);
+        const [firstRead, secondRead] = await Promise.all([
+          first.read(firstBuffer, 0, length, offset),
+          second.read(secondBuffer, 0, length, offset)
+        ]);
+        if (firstRead.bytesRead !== length || secondRead.bytesRead !== length) return false;
+        if (!firstBuffer.subarray(0, length).equals(secondBuffer.subarray(0, length))) return false;
+        offset += length;
+      }
+      const [firstAfter, secondAfter] = await Promise.all([fs.promises.stat(firstPath), fs.promises.stat(secondPath)]);
+      return !shouldAbort?.()
+        && firstBefore.ino === firstAfter.ino && firstBefore.dev === firstAfter.dev
+        && secondBefore.ino === secondAfter.ino && secondBefore.dev === secondAfter.dev
+        && firstBefore.size === firstAfter.size && firstBefore.mtimeMs === firstAfter.mtimeMs && firstBefore.ctimeMs === firstAfter.ctimeMs
+        && secondBefore.size === secondAfter.size && secondBefore.mtimeMs === secondAfter.mtimeMs && secondBefore.ctimeMs === secondAfter.ctimeMs;
+    } finally {
+      await second.close();
+    }
+  } finally {
+    await first.close();
+  }
+}
+
 function normalizeManifestKey(value: string): string {
   return String(value || "")
     .replace(/\\/g, "/")
