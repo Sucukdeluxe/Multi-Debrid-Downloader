@@ -164,7 +164,7 @@ textarea,
 :where(
   button,
   [href],
-  input,
+  input:not([type="checkbox"]),
   select,
   textarea,
   summary,
@@ -172,6 +172,10 @@ textarea,
 ):focus-visible {
   outline: 2px solid var(--ui-focus);
   outline-offset: 2px;
+}
+
+input[type="checkbox"]:focus {
+  outline: none;
 }
 
 .ui-toolbar {

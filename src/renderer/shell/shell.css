@@ -785,7 +785,7 @@
   background: var(--ui-surface);
 }
 
-.md-dialog :where(button, summary, input, select, textarea):focus-visible,
+.md-dialog :where(button, summary, input:not([type="checkbox"]), select, textarea):focus-visible,
 .md-context-menu [role="menuitem"]:focus-visible {
   outline: 2px solid var(--ui-focus);
   outline-offset: 2px;

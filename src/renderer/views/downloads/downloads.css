@@ -407,7 +407,7 @@
   min-height: 0;
 }
 
-.downloads-view :where(button, input, select):focus-visible {
+.downloads-view :where(button, input:not([type="checkbox"]), select):focus-visible {
   outline: 1px solid #7B8492;
   outline-offset: 1px;
 }
