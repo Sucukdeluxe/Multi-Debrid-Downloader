@@ -64,7 +64,7 @@ export const downloadColumnDefinitions: Record<string, { label: string; width: s
   size: { label: "Geladen / Größe", width: "minmax(var(--downloads-size-min, 140px), 1.1fr)", sortable: "size" },
   progress: { label: "Fortschritt", width: "minmax(var(--downloads-progress-min, 105px), 0.85fr)", sortable: "progress" },
   hoster: { label: "Hoster", width: "minmax(var(--downloads-hoster-min, 90px), 0.85fr)", sortable: "hoster" },
-  account: { label: "Service", width: "minmax(var(--downloads-service-min, 90px), 0.85fr)", sortable: "service" },
+  account: { label: "Provider", width: "minmax(var(--downloads-service-min, 90px), 0.85fr)", sortable: "service" },
   prio: { label: "Priorität", width: "minmax(var(--downloads-priority-min, 85px), 0.8fr)" },
   status: { label: "Status", width: "minmax(var(--downloads-status-min, 210px), 1.2fr)" },
   speed: { label: "Geschwindigkeit", width: "minmax(var(--downloads-speed-min, 120px), 1fr)" },
