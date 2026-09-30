@@ -44,6 +44,24 @@
   border: 1px solid var(--ui-border);
   border-radius: 6px;
   background: var(--ui-input);
+  flex-shrink: 0;
+}
+
+.downloads-filter-controls {
+  display: grid;
+  gap: 12px;
+  flex-shrink: 0;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--ui-border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--ui-input) 40%, var(--ui-surface));
+}
+
+.downloads-filter-controls input,
+.downloads-filter-controls select {
+  width: 100%;
+  min-width: 0;
 }
 
 .downloads-sidebar nav button,
@@ -80,6 +98,41 @@
   align-items: center;
   justify-content: space-between;
   padding: 0 10px;
+  gap: 8px;
+  border-color: var(--ui-border);
+}
+
+.downloads-filter-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.downloads-filter-label .ui-icon {
+  flex-shrink: 0;
+  color: var(--ui-text-muted);
+}
+
+.downloads-sidebar nav button.is-active .ui-icon {
+  color: currentColor;
+}
+
+.downloads-sidebar nav button b {
+  flex-shrink: 0;
+  min-width: 25px;
+  padding: 3px 7px;
+  border-radius: 5px;
+  background: var(--ui-surface);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+  text-align: center;
+}
+
+.downloads-sidebar nav button.is-active b {
+  background: color-mix(in srgb, var(--ui-accent) 85%, #fff);
 }
 
 .downloads-provider-filter,
