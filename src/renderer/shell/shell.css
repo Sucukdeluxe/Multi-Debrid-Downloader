@@ -128,7 +128,10 @@
   background: transparent;
 }
 
-.md-shell-navigation-item:focus-visible,
+.md-shell-navigation-item:focus {
+  outline: none;
+}
+
 .md-shell-header-actions button:focus-visible,
 .md-shell-sidebar-toggle:focus-visible,
 .md-avatar-menu-action:focus-visible {

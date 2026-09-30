@@ -57,6 +57,7 @@ export function AppHeader({ activeView, onViewChange, actions }: AppHeaderProps)
             key={item.id}
             onClick={() => onViewChange(item.id)}
             role="tab"
+            tabIndex={-1}
             title={item.label}
             type="button"
           >
