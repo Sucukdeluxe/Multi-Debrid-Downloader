@@ -56,8 +56,8 @@ export function SlidingSelection({ activeKey, as = "div", axis, children, classN
       }
       const containerRect = element.getBoundingClientRect();
       const activeRect = active.getBoundingClientRect();
-      element.style.setProperty("--ui-sliding-selection-x", `${activeRect.left - containerRect.left + element.scrollLeft}px`);
-      element.style.setProperty("--ui-sliding-selection-y", `${activeRect.top - containerRect.top + element.scrollTop}px`);
+      element.style.setProperty("--ui-sliding-selection-x", `${activeRect.left - containerRect.left - element.clientLeft + element.scrollLeft}px`);
+      element.style.setProperty("--ui-sliding-selection-y", `${activeRect.top - containerRect.top - element.clientTop + element.scrollTop}px`);
       element.style.setProperty("--ui-sliding-selection-width", `${activeRect.width}px`);
       element.style.setProperty("--ui-sliding-selection-height", `${activeRect.height}px`);
       hasPositionRef.current = true;
