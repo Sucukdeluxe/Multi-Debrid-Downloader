@@ -30,7 +30,7 @@ const pairs = [
   ["Update verfügbar", "Update available"], ["Eine neue Version ist bereit. Klicke hier, um sie zu installieren.", "A new version is ready. Click here to install it."], ["Update installieren", "Install update"],
   ["Später", "Later"], ["Jetzt aktualisieren", "Update now"], ["Changelog anzeigen", "Show changelog"], ["Update wird vorbereitet...", "Preparing update..."], ["Update-Fortschritt", "Update progress"],
   ["Pakete", "Packages"], ["Dateien", "Files"], ["Alle", "All"], ["Aktiv", "Active"], ["Wartend", "Queued"], ["Pausiert", "Paused"], ["Fertig", "Completed"], ["Fehler", "Errors"],
-  ["Downloadansicht", "Download view"], ["Downloadfilter", "Download filters"], ["Provider filtern", "Filter providers"], ["Downloads durchsuchen", "Search downloads"], ["Downloadstatus", "Download status"],
+  ["Downloadansicht", "Download view"], ["Downloadfilter", "Download filters"], ["Nach Provider filtern", "Filter by provider"], ["Downloads durchsuchen", "Search downloads"], ["Downloadstatus", "Download status"],
   ["Seitenleiste einklappen", "Collapse sidebar"], ["Seitenleiste ausklappen", "Expand sidebar"], ["Informationen", "Information"], ["Alle sichtbaren Downloads auswählen", "Select all visible downloads"],
   ["Links hinzufügen", "Add links"], ["Start", "Start"], ["Pause", "Pause"], ["Stop", "Stop"], ["Zeitplan", "Schedule"], ["Nach oben", "Move up"], ["Nach unten", "Move down"],
   ["Umbenennen", "Rename"], ["Entfernen", "Remove"], ["Name", "Name"], ["Geladen / Größe", "Downloaded / size"], ["Fortschritt", "Progress"], ["Hoster", "Hoster"], ["Provider", "Provider"],
