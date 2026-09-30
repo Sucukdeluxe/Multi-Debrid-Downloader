@@ -49,6 +49,7 @@ import {
 } from "../shared/provider-daily-limits";
 import { REQUEST_RETRIES, SAMPLE_VIDEO_EXTENSIONS, SPEED_WINDOW_SECONDS, WRITE_BUFFER_SIZE, WRITE_FLUSH_TIMEOUT_MS, ALLOCATION_UNIT_SIZE, STREAM_HIGH_WATER_MARK, DISK_BUSY_THRESHOLD_MS, DISK_BUSY_STATUS_THRESHOLD_MS } from "./constants";
 import { parseCollectorInput } from "./link-parser";
+import { RealDebridDownloadBackoffError, getRealDebridDownloadRetryDelay } from "./download-server-backoff";
 
 let tlsSkipRefCount = 0;
 function acquireTlsSkip(): void {
@@ -11122,6 +11123,33 @@ export class DownloadManager extends EventEmitter {
             error: errorText,
             abortReason: reason || "none"
           });
+          if (error instanceof RealDebridDownloadBackoffError) {
+            item.lastError = error.message;
+            if (active.genericErrorRetries < maxGenericErrorRetries) {
+              active.genericErrorRetries += 1;
+              item.retries += 1;
+              const delayMs = getRealDebridDownloadRetryDelay(error, active.genericErrorRetries);
+              this.logPackageForItem(item, "WARN", "Real-Debrid-Downloadfehler: nur diese Datei wird wiederholt", {
+                status: error.status,
+                delayMs,
+                retryAfterMs: error.retryAfterMs,
+                retry: active.genericErrorRetries,
+                globalReconnect: false
+              });
+              this.queueRetry(item, active, delayMs, `Downloadserver HTTP ${error.status}, neuer Link in ${Math.ceil(delayMs / 1000)}s`);
+            } else {
+              item.status = "failed";
+              item.fullStatus = `Fehler: ${item.lastError}`;
+              item.speedBps = 0;
+              item.updatedAt = nowMs();
+              this.recordRunOutcome(item.id, "failed");
+              this.retryStateByItem.delete(item.id);
+              this.refreshPackageStatus(pkg);
+            }
+            this.persistSoon();
+            this.emitState();
+            return;
+          }
           const directLinkRetryMatch = errorText.match(/^(?:Error:\s*)?direct_link_retry_exhausted:(.+)$/);
           if (directLinkRetryMatch) {
             const exhaustedReason = compactErrorText(directLinkRetryMatch[1] || errorText).replace(/^Error:\s*/i, "");
@@ -11754,6 +11782,11 @@ export class DownloadManager extends EventEmitter {
           statusText: response.statusText,
           existingBytes
         });
+        if (item.provider === "realdebrid" && (response.status === 429 || response.status === 503)) {
+          const error = new RealDebridDownloadBackoffError(response.status, response.headers.get("retry-after"));
+          await response.body?.cancel().catch(() => undefined);
+          throw error;
+        }
         if (response.status === 416 && existingBytes > 0) {
           await response.arrayBuffer().catch(() => undefined);
           const rangeTotal = parseContentRangeTotal(response.headers.get("content-range"));
