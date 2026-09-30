@@ -188,10 +188,10 @@ export function DownloadsSidebar({ actions, model }: { actions: DownloadsViewAct
   return (
     <aside className="downloads-sidebar" data-visual-region="downloads-sidebar">
       <label className="downloads-sidebar-search"><span>Downloads durchsuchen</span><input className="downloads-search-input" onChange={(event) => actions.onQueryChange(event.target.value)} placeholder="Paket, Datei oder Provider" type="search" value={model.query} /></label>
+      <label className="downloads-provider-filter"><span>Filter</span><select aria-label="Provider filtern" disabled={model.providerOptions.length <= 1} onChange={(event) => actions.onProviderFilterChange(event.target.value)} value={model.providerFilter}><option value="all">Alle Provider</option>{model.providerOptions.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select></label>
       <SlidingSelection activeKey={model.filter} aria-label="Downloadfilter" as="nav" axis="vertical" className="downloads-filter-group">
         {filters.map((filter) => <button aria-current={model.filter === filter.id ? "page" : undefined} className={model.filter === filter.id ? "is-active" : ""} data-sliding-selection-active={model.filter === filter.id} data-sliding-selection-item="true" key={filter.id} onClick={() => actions.onFilterChange(filter.id)} type="button"><span>{filter.label}</span><b>{integerFormatter.format(model.counts[filter.id])}</b></button>)}
       </SlidingSelection>
-      <label className="downloads-provider-filter"><span>Filter</span><select aria-label="Provider filtern" disabled={model.providerOptions.length <= 1} onChange={(event) => actions.onProviderFilterChange(event.target.value)} value={model.providerFilter}><option value="all">Alle Provider</option>{model.providerOptions.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select></label>
       <label className="downloads-clipboard-toggle"><input checked={model.clipboardWatcher} onChange={actions.onToggleClipboardWatcher} type="checkbox" />Zwischenablage überwachen</label>
       <div className="downloads-sidebar-actions">
         <button disabled={model.empty} onClick={actions.onClearAll} type="button">Liste leeren</button>
