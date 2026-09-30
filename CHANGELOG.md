@@ -4,6 +4,24 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.93] - 2026-10-01
+
+### Fixed
+
+- Retry Real-Debrid download HTTP 429/503 responses per file, respecting Retry-After and resolving a new download link without interrupting healthy parallel transfers.
+- Prevent delayed state snapshots from reverting account activation checkboxes after saving.
+- Keep history loaded and updated across view changes, preserve its page and cached entries, and avoid transient zero counts while loading.
+- Correct the one-pixel offset of sliding selection highlights inside bordered containers.
+
+### Interface
+
+- Group download search and provider filtering above status rows with outline icons and compact count badges.
+- Move the red, centered Clear list button below Monitor clipboard while retaining the confirmation dialog.
+- Use Provider terminology in the download view, improve dropdown arrow spacing, add consistent sidebar borders, and normalize statistics sidebar typography.
+- Disable Tab/Shift+Tab focus navigation throughout the application and remove checkbox focus outlines; other keyboard shortcuts remain available.
+
+Archive extraction, proxy-only routing, and the lower sidebar status area are unchanged.
+
 ## [2.0.90] - 2026-09-06
 
 ### Account priorities
