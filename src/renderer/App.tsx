@@ -1996,13 +1996,14 @@ export function App(): ReactElement {
   const [historyQuery, setHistoryQuery] = useState("");
   const [historyVisiblePageCount, setHistoryVisiblePageCount] = useState(0);
   const [statisticsRange, setStatisticsRange] = useState<StatisticsRange>("session");
-  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState("");
   const [historyCtxMenu, setHistoryCtxMenu] = useState<{ x: number; y: number; entryId: string } | null>(null);
   const historyCtxMenuRef = useRef<HTMLDivElement>(null);
   const historyLoadGenerationRef = useRef(0);
   const historyLoadActiveRef = useRef(false);
   const historyLoadFailedRef = useRef(false);
+  const historyLoadedRef = useRef(false);
   const pendingLiveHistoryEntriesRef = useRef<HistoryEntry[]>([]);
   const historyVisibleIdsRef = useRef<string[]>([]);
   const [allDebridHostInfo, setAllDebridHostInfo] = useState<AllDebridHostInfo | null>(null);
@@ -2044,7 +2045,7 @@ export function App(): ReactElement {
   ), [historyCalendarDayStart, historyEntries, historyError, historyExpandedIds, historyFilter, historyLoading, historyQuery, selectedHistoryIds, settingsDraft.language, snapshot.settings.animatePackageDisclosure]);
   const historySidebarCounts = formatHistorySidebarCounts(
     historyViewModel.totalCount,
-    historyViewModel.loading || historyViewModel.error ? 0 : historyVisiblePageCount,
+    historyVisiblePageCount,
     historyViewModel.selectedIds.length
   );
   const statisticsViewModel = useMemo(
@@ -2141,7 +2142,7 @@ export function App(): ReactElement {
     historyLoadActiveRef.current = true;
     historyLoadFailedRef.current = false;
     pendingLiveHistoryEntriesRef.current = [];
-    setHistoryLoading(true);
+    setHistoryLoading(!historyLoadedRef.current);
     setHistoryError("");
     try {
       const entries = await window.rd.getHistory();
@@ -2157,12 +2158,12 @@ export function App(): ReactElement {
         entries
       );
       pendingLiveHistoryEntriesRef.current = [];
+      historyLoadedRef.current = true;
       applyHistoryEntries(merged);
     } catch {
       if (mountedRef.current && generation === historyLoadGenerationRef.current) {
         historyLoadFailedRef.current = true;
         pendingLiveHistoryEntriesRef.current = [];
-        applyHistoryEntries([]);
         setHistoryError("Verlauf konnte nicht geladen werden");
       }
     } finally {
@@ -2175,22 +2176,22 @@ export function App(): ReactElement {
   }, [applyHistoryEntries]);
 
   useEffect(() => {
-    if (tab !== "history") {
-      return;
-    }
     void loadHistoryEntries();
     return () => {
       historyLoadGenerationRef.current += 1;
       historyLoadActiveRef.current = false;
       pendingLiveHistoryEntriesRef.current = [];
     };
+  }, [loadHistoryEntries, historyCalendarDayStart, snapshot.settings.historyRetentionMode, snapshot.settings.historyMaxEntries, snapshot.settings.historyMaxAgeDays]);
+
+  useEffect(() => {
+    if (tab === "history" && historyLoadFailedRef.current && !historyLoadActiveRef.current) {
+      void loadHistoryEntries();
+    }
   }, [loadHistoryEntries, tab]);
 
   useEffect(() => {
     const unsubscribeHistoryEntryAdded = window.rd.onHistoryEntryAdded((entry) => {
-      if (activeTabRef.current !== "history") {
-        return;
-      }
       routeHistoryLiveEntry(entry, historyLoadFailedRef.current, {
         reload: () => { void loadHistoryEntries(); },
         accept: (liveEntry) => {
@@ -3663,6 +3664,9 @@ export function App(): ReactElement {
     }
     const removed = new Set(ids);
     applyHistoryEntries(historyEntriesRef.current.filter((entry) => !removed.has(entry.id)));
+    if (historyLoadActiveRef.current) {
+      await loadHistoryEntries();
+    }
     showToast(ids.length === 1 ? "Verlaufseintrag entfernt" : `${ids.length} Verlaufseinträge entfernt`);
   }, [applyHistoryEntries, askConfirmPrompt, loadHistoryEntries, showToast]);
 
@@ -3682,6 +3686,7 @@ export function App(): ReactElement {
     try {
       await window.rd.clearHistory();
       applyHistoryEntries([]);
+      await loadHistoryEntries();
       showToast("Verlauf geleert");
     } catch {
       showToast("Verlauf konnte nicht geleert werden");
@@ -4952,6 +4957,7 @@ export function App(): ReactElement {
           if (!result.relaunch) {
             const fresh = await window.rd.getSnapshot();
             applyPersistedSettings(fresh.settings, false);
+            await loadHistoryEntries();
           }
         } else if (result.message !== "Abgebrochen") {
           showToast(`Sicherung laden fehlgeschlagen: ${result.message}`, 3000);
@@ -4988,6 +4994,7 @@ export function App(): ReactElement {
         const result = await window.rd.importOnlineBackup(key);
         const fresh = await window.rd.getSnapshot();
         applyPersistedSettings(fresh.settings, false);
+        await loadHistoryEntries();
         setOnlineBackupDialog(null);
         showToast(result.message, 4000);
       });
@@ -6766,9 +6773,9 @@ export function App(): ReactElement {
           <CollectorSidebarStatus model={collectorViewModel} />
         ) : tab === "history" ? (
           <>
-            <span>{historySidebarCounts.entries}</span>
-            <span>{historySidebarCounts.visible}</span>
-            <span>{historySidebarCounts.selected}</span>
+            <span>{historyLoading ? "Verlauf wird geladen …" : historySidebarCounts.entries}</span>
+            {!historyLoading && <span>{historySidebarCounts.visible}</span>}
+            {!historyLoading && <span>{historySidebarCounts.selected}</span>}
           </>
         ) : tab === "statistics" ? (
           <StatisticsSidebarStatus model={statisticsViewModel} />
@@ -6788,9 +6795,9 @@ export function App(): ReactElement {
 
         {tab === "downloads" && <DownloadsContent actions={downloadsActions} model={downloadsViewModel} />}
 
-        {tab === "history" && (
+        <div className="history-persistent-panel" hidden={tab !== "history"}>
           <HistoryContent actions={historyActions} model={historyViewModel} />
-        )}
+        </div>
 
         {tab === "statistics" && (
           <StatisticsContent

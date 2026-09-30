@@ -72,6 +72,21 @@
   color: var(--ui-text);
 }
 
+.history-persistent-panel {
+  display: flex;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.history-persistent-panel[hidden] {
+  display: none;
+}
+
+.history-persistent-panel > .history-content {
+  width: 100%;
+}
+
 .history-sidebar-clear {
   border-color: var(--ui-border);
   justify-content: flex-start;
@@ -539,7 +554,7 @@
   opacity: 0.45;
 }
 
-.md-shell-main:has(.history-content) > .md-shell-footer {
+.md-shell-main:has(.history-persistent-panel:not([hidden])) > .md-shell-footer {
   display: none;
 }
 

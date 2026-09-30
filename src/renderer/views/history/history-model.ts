@@ -429,7 +429,6 @@ interface HistorySourceAnalysis {
 }
 
 const historySourceCache = new WeakMap<readonly HistoryViewEntry[], HistorySourceAnalysis>();
-const emptyHistoryEntries: readonly HistoryViewEntry[] = [];
 
 function createHistoryFilterCounts(): HistoryFilterCounts {
   return {
@@ -537,7 +536,7 @@ export function buildHistoryViewModel(
   animationsEnabled = true,
   language: HistoryLanguage = "de"
 ): HistoryViewModel {
-  const availableEntries = loading || error ? emptyHistoryEntries : entries;
+  const availableEntries = entries;
   const analysis = getHistoryAnalysis(availableEntries, filter, query, now, language);
   const selected: string[] = [];
   let restorableSelected = false;

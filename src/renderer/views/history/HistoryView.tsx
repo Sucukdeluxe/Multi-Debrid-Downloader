@@ -1,4 +1,5 @@
 import {
+  memo,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -273,7 +274,7 @@ export function HistorySidebar({ model, actions }: HistoryViewProps): ReactEleme
             type="button"
           >
             <span>{item.label}</span>
-            <span>{formatHistoryInteger(model.counts[item.id], model.language)}</span>
+            <span>{model.loading ? "—" : formatHistoryInteger(model.counts[item.id], model.language)}</span>
           </button>
         ))}
       </SlidingSelection>
@@ -452,7 +453,7 @@ export function HistoryContentPage({ model, actions, page, onPageChange }: Histo
         <DataTableBody className="history-table-body" data-visual-region="history-table-body" onScroll={syncHistoryTableScroll}>
           {model.loading ? (
             <DataTableEmpty description="Die gespeicherten Einträge werden geladen." title="Verlauf wird geladen" />
-          ) : model.error ? (
+          ) : model.error && model.totalCount === 0 ? (
             <DataTableEmpty className="history-table-error" description="Öffne die Ansicht erneut, um es noch einmal zu versuchen." title={model.error} />
           ) : showEmpty ? (
             <DataTableEmpty description={emptyTitle === "Noch kein Verlauf" ? "Abgeschlossene und gelöschte Pakete erscheinen hier." : "Passe Filter oder Suche an."} title={emptyTitle} />
@@ -530,7 +531,7 @@ export function HistoryContentPage({ model, actions, page, onPageChange }: Histo
           {announcement.message}
         </div>
       ) : null}
-      <HistoryPagination onPageChange={onPageChange} page={page} />
+      {!model.loading && <HistoryPagination onPageChange={onPageChange} page={page} />}
     </section>
   );
 }
@@ -557,9 +558,9 @@ function PaginatedHistoryContent({ model, actions }: HistoryViewProps): ReactEle
   );
 }
 
-export function HistoryContent({ model, actions }: HistoryViewProps): ReactElement {
+export const HistoryContent = memo(function HistoryContent({ model, actions }: HistoryViewProps): ReactElement {
   return <PaginatedHistoryContent actions={actions} key={`${model.filter}\u0000${model.query}`} model={model} />;
-}
+});
 
 export function HistoryFooter(_props: Pick<HistoryViewProps, "model">): null {
   return null;
