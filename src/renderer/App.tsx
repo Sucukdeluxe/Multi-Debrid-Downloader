@@ -3395,7 +3395,18 @@ export function App(): ReactElement {
       persist: async (patch) => {
         const result = await window.rd.updateSettings(patch);
         persistedSettingsRef.current = result;
-        setSnapshot((current) => ({ ...current, settings: result }));
+        const apply = (current: UiSnapshot): UiSnapshot => ({
+          ...current,
+          settings: mergeAccountToggleSettings(current.settings, result)
+        });
+        snapshotRef.current = apply(snapshotRef.current);
+        if (masterSnapshotRef.current) {
+          masterSnapshotRef.current = apply(masterSnapshotRef.current);
+        }
+        if (latestStateRef.current) {
+          latestStateRef.current = apply(latestStateRef.current);
+        }
+        setSnapshot(apply);
         setSettingsDraft((current) => mergeAccountToggleSettings(current, result));
         return result;
       }
