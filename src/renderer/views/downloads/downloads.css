@@ -57,7 +57,6 @@
 }
 
 .downloads-sidebar nav button:not(.is-active):hover,
-.downloads-sidebar-actions button:hover:not(:disabled),
 .downloads-clipboard-toggle:hover {
   border-color: var(--ui-border);
   background: var(--ui-hover);
@@ -109,10 +108,17 @@
 }
 
 .downloads-sidebar-actions button {
-  border: 1px solid var(--ui-border);
-  background: var(--ui-input);
+  border: 1px solid color-mix(in srgb, var(--ui-danger) 65%, #000);
+  background: color-mix(in srgb, var(--ui-danger) 65%, #000);
+  color: #fff;
+  text-align: center;
   padding: 0 10px;
   cursor: pointer;
+}
+
+.downloads-sidebar-actions button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--ui-danger) 75%, #000);
+  background: color-mix(in srgb, var(--ui-danger) 75%, #000);
 }
 
 .downloads-sidebar-actions button:disabled {
