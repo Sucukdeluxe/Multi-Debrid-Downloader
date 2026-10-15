@@ -223,6 +223,7 @@ export async function receiveMcpFile({ call, installationId, kind, source, trans
 }
 
 export async function pullMcpFile({ codeFile, ...options }) {
+  if (typeof codeFile !== 'string' || codeFile.includes('media-mcp:')) throw new Error('Pfad zur privaten Schlüsseldatei angeben, nicht den Verbindungscode selbst.');
   const codeHandle = await openRegular(codeFile, 'r');
   let code;
   try {
