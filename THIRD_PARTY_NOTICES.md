@@ -1,5 +1,7 @@
 # Third-Party Notices
 
+License and copyright texts for bundled runtime dependencies, including the Model Context Protocol SDK, are included in `licenses/RUNTIME_LICENSES.txt` and in the source tree under `resources/licenses/RUNTIME_LICENSES.txt`.
+
 The provider names, logos, and favicons bundled with this application are trademarks or brand assets of their respective owners. They are included unchanged solely to identify the supported services and are not covered by this project's MIT license. Inclusion does not imply endorsement or affiliation.
 
 | Provider | Source | Retrieved | SHA-256 |

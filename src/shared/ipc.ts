@@ -1,4 +1,8 @@
 export const IPC_CHANNELS = {
+  MCP_STATUS: "mcp:status",
+  MCP_CONFIGURE: "mcp:configure",
+  MCP_ROTATE: "mcp:rotate",
+  MCP_CONNECTION_CODE: "mcp:connection-code",
   GET_SNAPSHOT: "app:get-snapshot",
   GET_VERSION: "app:get-version",
   CHECK_UPDATES: "app:check-updates",

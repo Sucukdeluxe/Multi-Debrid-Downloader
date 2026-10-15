@@ -43,6 +43,10 @@ import { IPC_CHANNELS } from "../shared/ipc";
 import { ElectronApi } from "../shared/preload-api";
 
 const api: ElectronApi = {
+  getMcpStatus: () => ipcRenderer.invoke(IPC_CHANNELS.MCP_STATUS),
+  configureMcp: (configuration) => ipcRenderer.invoke(IPC_CHANNELS.MCP_CONFIGURE, configuration),
+  rotateMcp: () => ipcRenderer.invoke(IPC_CHANNELS.MCP_ROTATE),
+  getMcpConnectionCode: () => ipcRenderer.invoke(IPC_CHANNELS.MCP_CONNECTION_CODE),
   getSnapshot: (): Promise<UiSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.GET_SNAPSHOT),
   getVersion: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.GET_VERSION),
   checkUpdates: (): Promise<UpdateCheckResult> => ipcRenderer.invoke(IPC_CHANNELS.CHECK_UPDATES),

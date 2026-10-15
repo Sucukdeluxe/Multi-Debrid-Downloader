@@ -35,6 +35,7 @@ import {
   validateCollectorTextPreparationRequest
 } from "../shared/collector";
 import { getProxyAuthentication } from "./network-proxy";
+import { McpService } from "./mcp/service";
 
 forceDarkNativeTheme(nativeTheme);
 
@@ -105,6 +106,7 @@ let scheduledStartTimer: ReturnType<typeof setTimeout> | null = null;
 let dailyStartScheduler: DailyStartScheduler | null = null;
 let lastClipboardText = "";
 let controller: AppController;
+let mcpService: McpService | null = null;
 let applicationStarted = false;
 let appShutdownStarted = false;
 let pendingBackupImport: Buffer | null = null;
@@ -647,6 +649,20 @@ function updateTray(): void {
 }
 
 function registerIpcHandlers(): void {
+  handleTrusted(IPC_CHANNELS.MCP_STATUS, () => mcpService?.getStatus());
+  handleTrusted(IPC_CHANNELS.MCP_CONFIGURE, async (_event, configuration: unknown) => {
+    if (!mcpService) throw new Error("MCP ist noch nicht initialisiert.");
+    return mcpService.configure(configuration);
+  });
+  handleTrusted(IPC_CHANNELS.MCP_ROTATE, async () => {
+    if (!mcpService) throw new Error("MCP ist noch nicht initialisiert.");
+    const { enabled, relayUrl, name, scopes, extraRoots } = mcpService.getStatus();
+    return mcpService.configure({ enabled, relayUrl, name, scopes, extraRoots }, true);
+  });
+  handleTrusted(IPC_CHANNELS.MCP_CONNECTION_CODE, () => {
+    if (!mcpService) throw new Error("MCP ist noch nicht initialisiert.");
+    return mcpService.connectionCode();
+  });
   handleTrusted(IPC_CHANNELS.GET_SNAPSHOT, () => controller.getSnapshot());
   handleTrusted(IPC_CHANNELS.GET_VERSION, () => controller.getVersion());
   handleTrusted(IPC_CHANNELS.CHECK_UPDATES, async () => controller.checkUpdates());
@@ -1321,11 +1337,53 @@ app.whenReady().then(() => {
   configureCredentialProtector(safeStorage);
   configureArchivePasswordDiagnostics(path.join(app.getPath("userData"), "runtime"), safeStorage);
   controller = new AppController();
+  controller.retireLegacyRemoteDiagnostics();
   dailyStartScheduler = new DailyStartScheduler(controller);
   cleanupStaleSubstDrives();
   registerIpcHandlers();
   mainWindow = createWindow();
   bindMainWindowLifecycle(mainWindow);
+  mcpService = new McpService({
+    controller,
+    baseDir: path.join(app.getPath("userData"), "runtime"),
+    start: async () => {
+      if (scheduledStartTimer !== null) {
+        clearTimeout(scheduledStartTimer);
+        scheduledStartTimer = null;
+        controller.updateSettings({ scheduledStartEpochMs: 0 });
+      }
+      await controller.start();
+    },
+    accountsChanged: () => reconcileDailyStart("MCP-Accountänderung"),
+    updateSettings: async partial => {
+      const current = controller.getSettings();
+      const validated = validateRendererSettingsUpdate(partial, current);
+      const result = controller.updateSettings(prepareDailyStartSettingsPatch(validated, current) as Partial<AppSettings>);
+      updateClipboardWatcher();
+      updateTray();
+      armScheduledStart(result.scheduledStartEpochMs || 0, { startOnPast: true });
+      await dailyStartScheduler?.reconcile();
+      return createRendererSettings(controller.getSettings());
+    },
+    restart: () => { if (scheduleApplicationRelaunch()) app.quit(); },
+    quit: () => app.quit(),
+    confirm: async (tool, summary, digest, signal) => {
+      const english = controller.getSettings().language === "en";
+      const options: Electron.MessageBoxOptions = {
+        type: "warning",
+        title: english ? "Confirm MCP action" : "MCP-Aktion bestätigen",
+        message: english ? "Allow this remote action?" : "Diese Fernsteuerungsaktion erlauben?",
+        detail: `${tool}\n${JSON.stringify(summary, null, 2).slice(0, 6000)}\n\n${english ? "Action reference" : "Aktionsreferenz"}: ${digest.slice(0, 16)}`,
+        buttons: english ? ["Cancel", "Allow this action"] : ["Abbrechen", "Diese Aktion erlauben"],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+        signal: AbortSignal.any([signal, AbortSignal.timeout(60_000)])
+      };
+      const result = mainWindow && !mainWindow.isDestroyed() ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options);
+      return !signal.aborted && result.response === 1;
+    }
+  });
   applicationStarted = true;
   updateClipboardWatcher();
   updateTray();
@@ -1383,6 +1441,7 @@ app.on("before-quit", createBeforeQuitHandler({
   },
   shutdown: async () => {
     try {
+      await mcpService?.shutdown();
       if (controller) {
         await controller.shutdown();
       }

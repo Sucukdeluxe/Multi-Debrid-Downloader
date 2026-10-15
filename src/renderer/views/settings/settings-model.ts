@@ -663,7 +663,6 @@ export function buildSettingsFormViewModel({
           { id: "minimizeToTray", kind: "switch", label: "In den Infobereich minimieren", value: settings.minimizeToTray },
           { id: "confirmDeleteSelection", kind: "switch", label: "Vor dem Löschen nachfragen", value: settings.confirmDeleteSelection },
           { id: "backupIncludeDownloads", kind: "switch", label: "Download-Liste mitsichern", value: settings.backupIncludeDownloads },
-          { id: "backupIncludeRemoteDiagnostics", kind: "switch", label: "Ferndiagnose-Einstellungen mitsichern", value: settings.backupIncludeRemoteDiagnostics },
           {
             id: "theme",
             kind: "theme",

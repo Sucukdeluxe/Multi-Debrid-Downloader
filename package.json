@@ -11,7 +11,7 @@
     "visual:dev": "vite --config tests/visual/vite.config.mts --host 127.0.0.1 --port 5174 --strictPort",
     "dev:main:watch": "node node_modules/tsup/dist/cli-default.js src/main/main.ts src/preload/preload.ts --out-dir build/main --format cjs --target node20 --external electron --sourcemap --watch",
     "dev:electron": "node node_modules/wait-on/bin/wait-on tcp:5180 file:build/main/main/main.js && node node_modules/cross-env/src/bin/cross-env.js NODE_ENV=development DEV_SERVER_PORT=5180 node node_modules/tsx/dist/cli.mjs scripts/run-dev-electron.ts",
-    "build": "npm run build:main && npm run build:renderer",
+    "build": "node scripts/generate-runtime-licenses.cjs && npm run build:main && npm run build:renderer",
     "build:main": "tsup src/main/main.ts src/preload/preload.ts --out-dir build/main --format cjs --target node20 --external electron --sourcemap",
     "build:renderer": "vite build",
     "start": "cross-env NODE_ENV=production electron .",
@@ -24,11 +24,12 @@
     "verify:release": "node scripts/verify_public_release.mjs"
   },
   "dependencies": {
-    "adm-zip": "0.6.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "adm-zip": "0.6.1",
     "https-proxy-agent": "7.0.6",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "undici": "6.28.0",
+    "undici": "6.29.1",
     "uuid": "11.1.1"
   },
   "devDependencies": {
@@ -67,11 +68,16 @@
       "build/main/**/*",
       "build/renderer/**/*",
       "resources/extractor-jvm/**/*",
+      "resources/licenses/**/*",
       "LICENSE",
       "THIRD_PARTY_NOTICES.md",
       "package.json"
     ],
     "extraResources": [
+      {
+        "from": "resources/licenses",
+        "to": "licenses"
+      },
       {
         "from": "LICENSE",
         "to": "LICENSE"

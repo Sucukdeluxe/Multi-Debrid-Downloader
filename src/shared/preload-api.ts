@@ -35,6 +35,7 @@ import type {
 } from "./types";
 import { isRealDebridWebAccountId } from "./real-debrid-accounts";
 import type { OfflineSkipScope } from "./types";
+import type { McpConfiguration, McpStatus } from "./mcp";
 import type {
   CollectorEnrichmentRequest,
   CollectorEnrichmentProgress,
@@ -73,6 +74,10 @@ export function validateRealDebridLoginRequest(value: unknown): Required<RealDeb
 }
 
 export interface ElectronApi {
+  getMcpStatus(): Promise<McpStatus>;
+  configureMcp(configuration: McpConfiguration): Promise<McpStatus>;
+  rotateMcp(): Promise<McpStatus>;
+  getMcpConnectionCode(): Promise<string>;
   getSnapshot: () => Promise<UiSnapshot>;
   getVersion: () => Promise<string>;
   checkUpdates: () => Promise<UpdateCheckResult>;

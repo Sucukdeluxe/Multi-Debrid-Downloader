@@ -1,0 +1,32 @@
+[Unit]
+Description=Media applications MCP relay
+After=network.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=media-mcp-relay
+StateDirectoryMode=0700
+WorkingDirectory=/opt/media-mcp-relay/current
+ExecStart=/usr/bin/node /opt/media-mcp-relay/current/server.mjs
+Environment=HOST=127.0.0.1
+Environment=PORT=9872
+Environment=MCP_PREFIX=/mcp-relay
+Environment=MCP_DATA_DIR=/var/lib/media-mcp-relay
+Environment=MCP_TRUST_LOOPBACK_PROXY=1
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=256M
+TasksMax=32
+LimitNOFILE=4096
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

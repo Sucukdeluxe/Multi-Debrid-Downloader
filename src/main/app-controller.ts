@@ -122,6 +122,7 @@ type PendingRealDebridWebAccount = {
 };
 
 export class AppController {
+  private legacyRemoteRetired = false;
   private settings: AppSettings;
 
   private manager: DownloadManager;
@@ -446,6 +447,7 @@ export class AppController {
   }
 
   public async enableRemoteDiagnostics(input: EnableRemoteDiagnosticsInput): Promise<RemoteDiagnosticsInfo> {
+    if (this.legacyRemoteRetired) throw new Error("Die alte Ferndiagnose wurde durch MCP-Fernzugriff ersetzt.");
     const baseDir = this.storagePaths.baseDir;
     const port = input.port && Number.isInteger(input.port) && input.port >= 1024 && input.port <= 65535
       ? input.port
@@ -479,6 +481,7 @@ export class AppController {
   }
 
   public async rotateRemoteDiagnosticsToken(): Promise<RemoteDiagnosticsInfo> {
+    if (this.legacyRemoteRetired) throw new Error("Die alte Ferndiagnose wurde durch MCP-Fernzugriff ersetzt.");
     rotateDebugToken(this.storagePaths.baseDir);
     await restartDebugServer();
     this.audit("WARN", "Ferndiagnose-Token rotiert");
@@ -486,12 +489,19 @@ export class AppController {
   }
 
   private persistRemoteDiagnosticsFromBackup(section: unknown): ReturnType<typeof resolveRemoteDiagnosticsRestore> {
+    if (this.legacyRemoteRetired) return null;
     const restore = resolveRemoteDiagnosticsRestore(section);
     if (!restore) {
       return null;
     }
     writeDebugServerConfig({ host: restore.host, port: restore.port, allowlist: restore.allowlist });
     return restore;
+  }
+
+  public retireLegacyRemoteDiagnostics(): void {
+    this.legacyRemoteRetired = true;
+    stopDebugServer();
+    clearDebugToken();
   }
 
   private async restartRemoteDiagnosticsRestore(
@@ -790,7 +800,9 @@ export class AppController {
     return this.settings;
   }
 
-  public async executeAccountCommand(command: AccountCommand): Promise<AccountCommandResult> {
+  public async executeAccountCommand(command: AccountCommand, signal?: AbortSignal): Promise<AccountCommandResult> {
+    signal?.throwIfAborted();
+    const originalSettings = signal ? settingsFingerprint(this.settings) : null;
     const applied = applyAccountCommand(this.settings, command);
     let checkedStatus: DebridAccountStatus | null = null;
     const redactions = collectAccountStatusRedactionValues(applied.settings, command);
@@ -801,20 +813,20 @@ export class AppController {
       const mode = command.kind === "megadebrid-web" ? "web" : "api";
       const account = getMegaDebridAccountsForMode(applied.settings, mode).find((entry) => entry.id === applied.response.accountId);
       if (!account) throw new Error("Account-Payload ist ungültig");
-      checkedStatus = await checkMegaDebridAccount(account);
+      checkedStatus = await checkMegaDebridAccount(account, signal);
     }
     if (command.action !== "delete" && applied.response.accountId && command.kind === "debridlink-api") {
       const key = parseDebridLinkApiKeys(applied.settings.debridLinkApiKeys).find((entry) => entry.id === applied.response.accountId);
       if (!key) throw new Error("Account-Payload ist ungültig");
-      checkedStatus = await checkDebridLinkKey(key);
+      checkedStatus = await checkDebridLinkKey(key, signal);
     }
     if (command.action !== "delete" && applied.response.accountId && command.kind === "realdebrid-api") {
       const account = getRealDebridAccounts(applied.settings).find((entry) => entry.id === applied.response.accountId && entry.kind === "api");
       if (!account) throw new Error("Account-Payload ist ungültig");
-      checkedStatus = await checkRealDebridAccount(account);
+      checkedStatus = await checkRealDebridAccount(account, signal);
     }
     if (command.action !== "delete" && applied.response.accountId && command.kind === "deepbrid-api") {
-      checkedStatus = await checkDeepbridAccount(applied.settings.deepbridApiKey);
+      checkedStatus = await checkDeepbridAccount(applied.settings.deepbridApiKey, signal);
     }
     if (checkedStatus) {
       checkedStatus = sanitizeDebridAccountStatus(checkedStatus, redactions);
@@ -823,6 +835,8 @@ export class AppController {
       this.throwProxyOnlyAccountFailure(checkedStatus.message || "", checkedStatus.checkFailure);
       throw new Error(checkedStatus.message || "Zugangsdaten ungültig");
     }
+    signal?.throwIfAborted();
+    if (originalSettings !== null && originalSettings !== settingsFingerprint(this.settings)) throw new Error("Einstellungen wurden während der Account-Prüfung geändert. Vorgang erneut prüfen.");
     this.updateSettings(applied.settings);
     if (checkedStatus) this.manager.applyDebridAccountStatuses([checkedStatus]);
     const state = createRendererState(this.settings);
@@ -843,13 +857,15 @@ export class AppController {
     return { passwords };
   }
 
-  public async checkAccountCredentials(input: AccountCredentialCheckInput): Promise<DebridAccountStatus> {
+  public async checkAccountCredentials(input: AccountCredentialCheckInput, signal?: AbortSignal): Promise<DebridAccountStatus> {
+    signal?.throwIfAborted();
     this.assertProxyOnlyAccountSetup();
     const redactions = collectAccountStatusRedactionValues(this.settings, input);
     if (input.kind === "deepbrid-api") {
       const key = input.secret?.trim() || this.settings.deepbridApiKey.trim();
       if (!key) throw new Error("Account-Payload ist ungültig");
-      const status = sanitizeDebridAccountStatus(await checkDeepbridAccount(key), redactions);
+      const status = sanitizeDebridAccountStatus(await checkDeepbridAccount(key, signal), redactions);
+      signal?.throwIfAborted();
       if (!status.valid) this.throwProxyOnlyAccountFailure(status.message || "", status.checkFailure);
       if (!status.checkFailure && !input.secret && input.accountId === "svc-deepbrid" && this.settings.deepbridApiKey.trim()) {
         this.manager.applyDebridAccountStatuses([status]);
@@ -873,12 +889,13 @@ export class AppController {
       const status = sanitizeDebridAccountStatus(
         await checkRealDebridAccount(
           account,
-          undefined,
+          signal,
           Date.now(),
           useWebLogin ? (signal) => this.getRealDebridWebFallback(account.id).probeLoginState(signal) : undefined
         ),
         redactions
       );
+      signal?.throwIfAborted();
       if (!status.valid) this.throwProxyOnlyAccountFailure(status.message || "", status.checkFailure);
       if (!status.checkFailure && !input.secret && getRealDebridAccounts(this.settings).some((entry) => entry.id === status.accountId)) {
         this.manager.applyDebridAccountStatuses([status]);
@@ -891,7 +908,8 @@ export class AppController {
         ? parseMegaDebridAccounts(`${input.identity.trim()}:${input.secret}`)[0]
         : getMegaDebridAccountsForMode(this.settings, mode).find((entry) => entry.id === input.accountId);
       if (!account) throw new Error("Account-Payload ist ungültig");
-      const status = sanitizeDebridAccountStatus(await checkMegaDebridAccount(account), redactions);
+      const status = sanitizeDebridAccountStatus(await checkMegaDebridAccount(account, signal), redactions);
+      signal?.throwIfAborted();
       if (!status.valid) this.throwProxyOnlyAccountFailure(status.message || "", status.checkFailure);
       if (!status.checkFailure && !input.secret && getMegaDebridAccountsForMode(this.settings, mode).some((entry) => entry.id === status.accountId)) {
         this.manager.applyDebridAccountStatuses([status]);
@@ -902,7 +920,8 @@ export class AppController {
       ? parseDebridLinkApiKeys(input.secret)[0]
       : parseDebridLinkApiKeys(this.settings.debridLinkApiKeys).find((entry) => entry.id === input.accountId);
     if (!key) throw new Error("Account-Payload ist ungültig");
-    const status = sanitizeDebridAccountStatus(await checkDebridLinkKey(key), redactions);
+    const status = sanitizeDebridAccountStatus(await checkDebridLinkKey(key, signal), redactions);
+    signal?.throwIfAborted();
     if (!status.valid) this.throwProxyOnlyAccountFailure(status.message || "", status.checkFailure);
     if (!status.checkFailure && !input.secret && parseDebridLinkApiKeys(this.settings.debridLinkApiKeys).some((entry) => entry.id === status.accountId)) {
       this.manager.applyDebridAccountStatuses([status]);
@@ -1174,17 +1193,19 @@ export class AppController {
     return fetchDebridLinkHostLimits(this.settings.debridLinkApiKeys, host);
   }
 
-  public async checkDebridAccounts(scope: AccountCheckScope = "active"): Promise<DebridAccountStatus[]> {
+  public async checkDebridAccounts(scope: AccountCheckScope = "active", signal?: AbortSignal): Promise<DebridAccountStatus[]> {
+    signal?.throwIfAborted();
     this.assertProxyOnlyAccountSetup();
     const checkedStatuses = sanitizeDebridAccountStatuses(
       await checkAllDebridAccounts(
         this.settings,
-        undefined,
+        signal,
         (accountId, signal) => this.getRealDebridWebFallback(accountId).probeLoginState(signal),
         scope
       ),
       collectAccountStatusRedactionValues(this.settings)
     );
+    signal?.throwIfAborted();
     const statuses = retainConfiguredRealDebridStatuses(this.settings, checkedStatuses);
     const proxyFailure = statuses.find((status) => !status.valid && resolveProxyOnlyAccountErrorCode(
       this.settings,

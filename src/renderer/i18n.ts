@@ -172,7 +172,7 @@ const pairs = [
   ["In Zwischenablage kopieren", "Copy to clipboard"], ["Einträge anzeigen", "Show entries"], ["Fehlerliste kopiert", "Error list copied"], ["Debug-Token rotieren", "Rotate debug token"],
   ["Das aktuelle Debug-Token wird ersetzt. Externe Debug-Links mit altem Token funktionieren danach nicht mehr.", "The current debug token will be replaced. External debug links using the old token will stop working."],
   ["Token rotieren", "Rotate token"], ["Netzwerkmodus braucht mindestens eine IP oder CIDR in der Allowlist", "Network mode requires at least one IP address or CIDR in the allowlist"],
-  ["Ferndiagnose aktiv", "Remote diagnostics active"], ["Ferndiagnose konfiguriert", "Remote diagnostics configured"], ["Ferndiagnose deaktiviert", "Remote diagnostics disabled"],
+  ["Ferndiagnose aktiv", "Remote diagnostics active"], ["Ferndiagnose konfiguriert", "Remote diagnostics configured"], ["Ferndiagnose deaktiviert", "Remote diagnostics disabled"], ["MCP-Fernzugriff …", "MCP remote access …"],
   ["Neues Token - alter Verbindungscode ist ungueltig", "New token - old connection code is invalid"], ["Verbindungscode kopiert", "Connection code copied"], ["Kopieren fehlgeschlagen", "Copy failed"],
   ["Queue löschen", "Delete queue"], ["Wirklich alle Einträge aus der Queue löschen?", "Delete all entries from the queue?"], ["Alles löschen", "Delete all"], ["Session-Statistik zurückgesetzt", "Session statistics reset"],
   ["Gesamt-Downloadstatistik zurückgesetzt", "Total download statistics reset"], ["Hoster-Domain eingeben:", "Enter hoster domain:"], ["Test-Nachricht gesendet", "Test message sent"], ["Test fehlgeschlagen", "Test failed"],

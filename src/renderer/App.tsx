@@ -16,7 +16,6 @@ import type {
   DuplicatePolicy,
   HistoryEntry,
   PackageEntry,
-  RemoteDiagnosticsInfo,
   RendererAccount,
   RendererSettings,
   RendererSettingsUpdate,
@@ -64,6 +63,7 @@ import type { MainView } from "./shell/shell-model";
 import { ContextMenu } from "./ui/ContextMenu";
 import { BackupPassphraseDialog } from "./ui/BackupPassphraseDialog";
 import { Dialog } from "./ui/Dialog";
+import { McpDialog } from "./ui/McpDialog";
 import { Icon } from "./ui/Icon";
 import { Toast } from "./ui/Toast";
 import { LinkAddressesDialog } from "./ui/LinkAddressesDialog";
@@ -1927,14 +1927,7 @@ export function App(): ReactElement {
   const offlineRemovalScopeRef = useRef<OfflineSkipScope>("package");
   const [backupPassphraseMode, setBackupPassphraseMode] = useState<BackupPassphraseMode | null>(null);
   const [onlineBackupDialog, setOnlineBackupDialog] = useState<OnlineBackupDialogState | null>(null);
-  const [remoteDiag, setRemoteDiag] = useState<RemoteDiagnosticsInfo | null>(null);
-  const [remoteDiagOpen, setRemoteDiagOpen] = useState(false);
-  const [remoteDiagBusy, setRemoteDiagBusy] = useState(false);
-  const [rdHostMode, setRdHostMode] = useState<"local" | "network">("local");
-  const [rdPublicHost, setRdPublicHost] = useState("");
-  const [rdPort, setRdPort] = useState("9868");
-  const [rdAllowlist, setRdAllowlist] = useState("");
-  const [rdName, setRdName] = useState("");
+  const [mcpOpen, setMcpOpen] = useState(false);
   const confirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
   const backupPassphraseResolverRef = useRef<((passphrase: string | null) => void) | null>(null);
   const confirmQueueRef = useRef<Array<{ prompt: ConfirmPromptState; resolve: (confirmed: boolean) => void }>>([]);
@@ -5094,107 +5087,7 @@ export function App(): ReactElement {
     }
   };
 
-  const onRotateDebugToken = async (): Promise<void> => {
-    closeMenus();
-    const confirmed = await askConfirmPrompt({
-      title: "Debug-Token rotieren",
-      message: "Das aktuelle Debug-Token wird ersetzt. Externe Debug-Links mit altem Token funktionieren danach nicht mehr.",
-      confirmLabel: "Token rotieren",
-      danger: true
-    });
-    if (!confirmed) {
-      return;
-    }
-    await performQuickAction(async () => {
-      const result = await window.rd.rotateDebugToken();
-      showToast(`Debug-Token rotiert: ${result.path}`, 4200);
-    }, (error) => {
-      showToast(`Token-Rotation fehlgeschlagen: ${String(error)}`, 3000);
-    });
-  };
 
-  const applyRemoteDiagInfo = (info: RemoteDiagnosticsInfo): void => {
-    setRemoteDiag(info);
-    setRdHostMode(info.status.localOnly ? "local" : "network");
-    setRdPublicHost(info.publicHost || (info.status.localOnly ? "" : (info.suggestedHosts[0] || "")));
-    setRdPort(String(info.status.port || 9868));
-    setRdAllowlist(info.allowlist.join("\n"));
-    setRdName(info.name || "");
-  };
-
-  const onOpenRemoteDiagnostics = async (): Promise<void> => {
-    closeMenus();
-    try {
-      const info = await window.rd.getRemoteDiagnostics();
-      applyRemoteDiagInfo(info);
-      setRemoteDiagOpen(true);
-    } catch (error) {
-      showToast(`Ferndiagnose-Status fehlgeschlagen: ${String(error)}`, 3000);
-    }
-  };
-
-  const onSubmitRemoteDiagnostics = async (): Promise<void> => {
-    const port = Number(rdPort) || 9868;
-    const allowlist = rdAllowlist.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
-    if (rdHostMode === "network" && allowlist.length === 0) {
-      showToast("Netzwerkmodus braucht mindestens eine IP oder CIDR in der Allowlist", 3600);
-      return;
-    }
-    setRemoteDiagBusy(true);
-    try {
-      const info = await window.rd.enableRemoteDiagnostics({
-        hostMode: rdHostMode,
-        publicHost: rdPublicHost,
-        port,
-        allowlist,
-        name: rdName
-      });
-      applyRemoteDiagInfo(info);
-      showToast(info.status.running ? "Ferndiagnose aktiv" : "Ferndiagnose konfiguriert", 2600);
-    } catch (error) {
-      showToast(`Aktivieren fehlgeschlagen: ${String(error)}`, 3600);
-    } finally {
-      setRemoteDiagBusy(false);
-    }
-  };
-
-  const onDisableRemoteDiagnostics = async (): Promise<void> => {
-    setRemoteDiagBusy(true);
-    try {
-      const info = await window.rd.disableRemoteDiagnostics();
-      applyRemoteDiagInfo(info);
-      showToast("Ferndiagnose deaktiviert", 2400);
-    } catch (error) {
-      showToast(`Deaktivieren fehlgeschlagen: ${String(error)}`, 3000);
-    } finally {
-      setRemoteDiagBusy(false);
-    }
-  };
-
-  const onRotateRemoteDiagnosticsToken = async (): Promise<void> => {
-    setRemoteDiagBusy(true);
-    try {
-      const info = await window.rd.rotateRemoteDiagnosticsToken();
-      applyRemoteDiagInfo(info);
-      showToast("Neues Token - alter Verbindungscode ist ungueltig", 3000);
-    } catch (error) {
-      showToast(`Token-Rotation fehlgeschlagen: ${String(error)}`, 3000);
-    } finally {
-      setRemoteDiagBusy(false);
-    }
-  };
-
-  const onCopyRemoteDiagnosticsCode = async (): Promise<void> => {
-    if (!remoteDiag?.code) {
-      return;
-    }
-    try {
-      if (!(await window.rd.writeClipboardText(remoteDiag.code))) throw new Error("clipboard_write_rejected");
-      showToast("Verbindungscode kopiert", 2200);
-    } catch {
-      showToast("Kopieren fehlgeschlagen", 2200);
-    }
-  };
 
   const onMenuRestart = (): void => {
     closeMenus();
@@ -6709,7 +6602,7 @@ export function App(): ReactElement {
                   {...(openSubmenu !== "hilfe-remote" ? { inert: "" } : {})}
                   className={`menu-submenu-dropdown${openSubmenu === "hilfe-remote" ? " is-open" : ""}`}
                 >
-                    <button className="menu-dropdown-item" onClick={() => { void onOpenRemoteDiagnostics(); }}><span>Ferndiagnose …</span></button>
+                    <button className="menu-dropdown-item" onClick={() => { closeMenus(); setMcpOpen(true); }}><span>MCP-Fernzugriff …</span></button>
                     <button className="menu-dropdown-item" onClick={() => { void onExportSupportBundle(); }}><span>Support-Bundle exportieren</span></button>
                     <button className="menu-dropdown-item" onClick={() => { void onToggleSupportTrace(); }}><span>{supportTraceEnabled ? "Support-Trace deaktivieren" : "Support-Trace aktivieren"}</span></button>
                 </div>
@@ -6730,7 +6623,6 @@ export function App(): ReactElement {
                   className={`menu-submenu-dropdown${openSubmenu === "hilfe-diagnose" ? " is-open" : ""}`}
                 >
                     <button className="menu-dropdown-item" onClick={() => { void onRunDebugSetupCheck(); }}><span>Debug-Setup prüfen</span></button>
-                    <button className="menu-dropdown-item" onClick={() => { void onRotateDebugToken(); }}><span>Debug-Token rotieren</span></button>
                 </div>
               </div>
               <div className="menu-separator" />
@@ -6905,93 +6797,7 @@ export function App(): ReactElement {
           </Dialog>
         ) : null}
 
-        diagnostics={remoteDiagOpen ? (
-          <Dialog actions={null} onClose={() => setRemoteDiagOpen(false)} open title="Ferndiagnose">
-            <p>Ermöglicht einer vertrauenswürdigen Support-Stelle den geschützten Lesezugriff auf Status, Logs und Fehler. Der Verbindungscode enthält das Zugriffstoken und ist wie ein Passwort zu behandeln.</p>
-            <div className="rd-status-line">
-              <span className={`rd-dot${remoteDiag?.status.running ? " on" : ""}`} />
-              <span>
-                {remoteDiag?.status.running
-                  ? `Aktiv auf ${remoteDiag.status.host}:${remoteDiag.status.port}${remoteDiag.status.localOnly ? " (nur lokal)" : ` (Allowlist: ${remoteDiag.status.allowlistCount})`}`
-                  : "Inaktiv"}
-              </span>
-            </div>
-
-            <div className="rd-field">
-              <label>Sichtbarkeit</label>
-              <div className="rd-seg">
-                <button className={rdHostMode === "local" ? "active" : ""} onClick={() => setRdHostMode("local")}>Nur lokal</button>
-                <button className={rdHostMode === "network" ? "active" : ""} onClick={() => setRdHostMode("network")}>Im Netzwerk</button>
-              </div>
-              <span className="rd-hint">
-                {rdHostMode === "local"
-                  ? "Bindet nur an 127.0.0.1. Fernzugriff nur ueber einen Tunnel (z.B. Tailscale/SSH) - die sicherste Variante."
-                  : "Bindet an 0.0.0.0. Erreichbar im Netzwerk, erfordert eine Allowlist. Nur in vertrauenswuerdigen Netzen/VPN nutzen."}
-              </span>
-            </div>
-
-            <div className="rd-field">
-              <label>Oeffentliche Adresse (fuer den Verbindungscode)</label>
-              <input
-                value={rdPublicHost}
-                placeholder={rdHostMode === "local" ? "127.0.0.1 oder Tunnel-Adresse" : "Server-IP oder DNS-Name"}
-                onChange={(event) => setRdPublicHost(event.target.value)}
-              />
-              {remoteDiag && remoteDiag.suggestedHosts.length > 0 && (
-                <div className="rd-chips">
-                  {remoteDiag.suggestedHosts.map((host) => (
-                    <button key={host} className="rd-chip" onClick={() => setRdPublicHost(host)}>{host}</button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="rd-field rd-field-inline">
-              <div className="rd-field">
-                <label>Port</label>
-                <input value={rdPort} onChange={(event) => setRdPort(event.target.value.replace(/[^0-9]/g, ""))} />
-              </div>
-              <div className="rd-field">
-                <label>Name (optional)</label>
-                <input value={rdName} placeholder="z.B. Server-Berlin" onChange={(event) => setRdName(event.target.value)} />
-              </div>
-            </div>
-
-            {rdHostMode === "network" && (
-              <div className="rd-field">
-                <label>Allowlist - erlaubte IPs/CIDR (eine pro Zeile)</label>
-                <textarea
-                  value={rdAllowlist}
-                  placeholder={"203.0.113.5\n10.0.0.0/24"}
-                  onChange={(event) => setRdAllowlist(event.target.value)}
-                />
-                <span className="rd-hint">Pflicht im Netzwerkmodus. Nur diese Quell-IPs duerfen verbinden (zusaetzlich zum Token). Loopback ist immer erlaubt.</span>
-              </div>
-            )}
-
-            {remoteDiag?.status.running && remoteDiag.code && (
-              <div className="rd-field">
-                <label>Verbindungscode</label>
-                <div className="rd-code">{remoteDiag.code}</div>
-                <div className="rd-chips">
-                  <button className="btn" onClick={() => { void onCopyRemoteDiagnosticsCode(); }}>Kopieren</button>
-                  <button className="btn" onClick={() => { void onRotateRemoteDiagnosticsToken(); }} disabled={remoteDiagBusy}>Token neu (Code ungueltig machen)</button>
-                </div>
-                <span className="rd-hint">Enthaelt das Zugriffstoken - wie ein Passwort behandeln. Token neu = alter Code wird sofort ungueltig.</span>
-              </div>
-            )}
-
-            <div className="modal-actions">
-              <button className="btn" onClick={() => setRemoteDiagOpen(false)}>Schliessen</button>
-              {remoteDiag?.status.running && (
-                <button className="btn danger" onClick={() => { void onDisableRemoteDiagnostics(); }} disabled={remoteDiagBusy}>Deaktivieren</button>
-              )}
-              <button className="btn accent" onClick={() => { void onSubmitRemoteDiagnostics(); }} disabled={remoteDiagBusy}>
-                {remoteDiag?.status.running ? "Aktualisieren" : "Aktivieren"}
-              </button>
-            </div>
-          </Dialog>
-        ) : null}
+        diagnostics={mcpOpen ? <McpDialog onClose={() => setMcpOpen(false)} language={settingsDraft.language} /> : null}
 
         deleteConfirmation={deleteConfirm ? (() => {
         const itemCount = [...deleteConfirm.ids].filter((id) => snapshot.session.items[id]).length;

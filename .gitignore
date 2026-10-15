@@ -35,6 +35,8 @@ apply_update.cmd
 *.pem
 services/backup-api/data/
 services/backup-api/recovery-keys/
+/data/
+/services/mcp-relay/data/
 .env.*
 !.env.example
 .DS_Store
