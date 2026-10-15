@@ -13,6 +13,7 @@ import { getSessionLogPath } from "../session-log";
 import { getConversionLogPath } from "../conversion-trace";
 import { getNetworkProxyState } from "../network-proxy";
 import { getWindowsHostDiagnostics } from "../windows-host-diagnostics";
+import { runtimePerformance } from "../runtime-performance";
 import type { AddLinksPayload, DebridProvider, PackagePriority, RendererSettingsUpdate } from "../../shared/types";
 import type { McpScope } from "../../shared/mcp";
 import type { McpTool } from "./endpoint";
@@ -98,6 +99,7 @@ export function createMcpTools(deps: McpToolDependencies): McpTool[] {
   read("settings_get", "Read non-secret settings. Secret values are never returned.", object(), () => createRendererSettings(c.getSettings()));
   read("accounts_list", "Read accounts and their known validation and usage status; credentials remain masked.", object(page, []), args => paginate(createRendererAccounts(c.getSettings()), args));
   read("providers", "Read provider runtime cooldowns, capacity and routing information.", object(), () => getProviderRuntimeSnapshot());
+  read("performance", "Read bounded main-thread delay, CPU, memory and operation timings from memory without running host commands.", object(), () => runtimePerformance.snapshot());
   read("errors", "Read the latest application warnings and errors.", object({ limit: integer(500, 1) }, []), args => getRecentErrors().slice(-Number(args.limit || 100)));
   read("diagnostics", "Run the existing local diagnostic checks. Does not change downloads.", object(), () => c.getDebugSetupCheck());
   read("host_diagnostics", "Read bounded Windows crash and host diagnostic information.", object(), () => getWindowsHostDiagnostics());

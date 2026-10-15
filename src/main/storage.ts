@@ -14,6 +14,8 @@ import { needsPersistedSettingsRewrite, protectPersistedSettings, restorePersist
 import { logger } from "./logger";
 import { isValidLocalDate } from "./daily-start-scheduler";
 import { projectPackageFailureCategory } from "./package-telemetry";
+import { waitForStatisticsLedgerSaves } from "./statistics-ledger";
+import { runtimePerformance } from "./runtime-performance";
 
 export function migrateProductUserDataDirectory(appDataPath: string): string {
   const legacyPath = path.join(appDataPath, "Real-Debrid-Downloader");
@@ -948,9 +950,9 @@ interface LoadedSettingsFile {
   needsCredentialRewrite: boolean;
 }
 
-function readSettingsFile(filePath: string): LoadedSettingsFile | null {
+function readSettingsFile(filePath: string, contents?: string): LoadedSettingsFile | null {
   try {
-    const raw = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+    const raw = JSON.parse(contents ?? fs.readFileSync(filePath, "utf8")) as unknown;
     if (!isPersistedSettingsEnvelope(raw)) {
       logger.error(`Settings-Datei beschädigt (Struktur ungültig): ${filePath}`);
       return null;
@@ -1245,7 +1247,7 @@ function syncRenameWithExdevFallback(tempPath: string, targetPath: string): void
 }
 
 function settingsPayload(settings: AppSettings): string {
-  return JSON.stringify(protectPersistedSettings(normalizeSettings(settings)), safeJsonReplacer, 2);
+  return runtimePerformance.measureSync("settings.encode", () => JSON.stringify(protectPersistedSettings(normalizeSettings(settings)), safeJsonReplacer, 2));
 }
 
 interface SettingsSavePayloads {
@@ -1257,8 +1259,7 @@ function credentialFreeSettingsPayload(settings: AppSettings): string {
   return settingsPayload({ ...settings, rememberToken: false });
 }
 
-function createSettingsSavePayloads(paths: StoragePaths, settings: AppSettings): SettingsSavePayloads {
-  const previous = readSettingsFile(paths.configFile);
+function createSettingsSavePayloads(paths: StoragePaths, settings: AppSettings, previous = readSettingsFile(paths.configFile)): SettingsSavePayloads {
   const backup = previous
     ? settingsPayload({ ...previous.settings, rememberToken: settings.rememberToken })
     : credentialFreeSettingsPayload(settings);
@@ -1424,15 +1425,24 @@ let activeSettingsSave: Promise<void> | null = null;
 
 async function writeSettingsPayload(paths: StoragePaths, settings: AppSettings, generation: number): Promise<void> {
   await fs.promises.mkdir(paths.baseDir, { recursive: true });
-  const payloads = createSettingsSavePayloads(paths, settings);
+  let previous: LoadedSettingsFile | null = null;
+  try {
+    previous = readSettingsFile(paths.configFile, await runtimePerformance.measure("settings.read", () => fsp.readFile(paths.configFile, "utf8")));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      logger.warn(`Settings-Datei nicht lesbar: ${paths.configFile}: ${String(error)}`);
+    }
+  }
+  if (generation < syncSettingsSaveGeneration) return;
+  const payloads = createSettingsSavePayloads(paths, settings, previous);
   const tempPath = `${paths.configFile}.settings.tmp`;
-  await fsp.writeFile(tempPath, payloads.primary, "utf8");
+  await runtimePerformance.measure("settings.write", () => fsp.writeFile(tempPath, payloads.primary, "utf8"));
   if (generation < syncSettingsSaveGeneration) {
     await fsp.rm(tempPath, { force: true }).catch(() => {});
     return;
   }
   const backupTempPath = `${paths.configFile}.bak.settings.tmp`;
-  await fsp.writeFile(backupTempPath, payloads.backup, "utf8");
+  await runtimePerformance.measure("settings.write", () => fsp.writeFile(backupTempPath, payloads.backup, "utf8"));
   if (generation < syncSettingsSaveGeneration) {
     await Promise.all([
       fsp.rm(tempPath, { force: true }).catch(() => {}),
@@ -1441,11 +1451,15 @@ async function writeSettingsPayload(paths: StoragePaths, settings: AppSettings, 
     return;
   }
   try {
-    syncRenameWithExdevFallback(backupTempPath, `${paths.configFile}.bak`);
-    syncRenameWithExdevFallback(tempPath, paths.configFile);
+    runtimePerformance.measureSync("settings.commit", () => {
+      syncRenameWithExdevFallback(backupTempPath, `${paths.configFile}.bak`);
+      syncRenameWithExdevFallback(tempPath, paths.configFile);
+    });
   } catch (error) {
-    try { fs.rmSync(backupTempPath, { force: true }); } catch { }
-    try { fs.rmSync(tempPath, { force: true }); } catch { }
+    await Promise.all([
+      fsp.rm(backupTempPath, { force: true }).catch(() => {}),
+      fsp.rm(tempPath, { force: true }).catch(() => {})
+    ]);
     throw error;
   }
 }
@@ -1643,8 +1657,8 @@ async function writeSessionPayload(paths: StoragePaths, payload: string, generat
   const backupTempPath = `${paths.sessionFile}.async.backup.tmp`;
   const handle = await fsp.open(tempPath, "w");
   try {
-    await handle.writeFile(payload, "utf8");
-    await handle.sync();
+    await runtimePerformance.measure("session.write", () => handle.writeFile(payload, "utf8"));
+    await runtimePerformance.measure("session.sync", () => handle.sync());
   } finally {
     await handle.close();
   }
@@ -1652,19 +1666,35 @@ async function writeSessionPayload(paths: StoragePaths, payload: string, generat
     await fsp.rm(tempPath, { force: true }).catch(() => {});
     return;
   }
-  if (fs.existsSync(paths.sessionFile)) {
+  let backupReady = false;
+  try {
+    await runtimePerformance.measure("session.backup", () => fsp.copyFile(paths.sessionFile, backupTempPath));
+    backupReady = true;
+  } catch {
+    await fsp.rm(backupTempPath, { force: true }).catch(() => {});
+  }
+  if (generation < syncSaveGeneration) {
+    await Promise.all([
+      fsp.rm(tempPath, { force: true }).catch(() => {}),
+      fsp.rm(backupTempPath, { force: true }).catch(() => {})
+    ]);
+    return;
+  }
+  let backupCleanup: Promise<void> | null = null;
+  if (backupReady) {
     try {
-      fs.copyFileSync(paths.sessionFile, backupTempPath);
-      syncRenameWithExdevFallback(backupTempPath, sessionBackupPath(paths.sessionFile));
+      runtimePerformance.measureSync("session.commit", () => syncRenameWithExdevFallback(backupTempPath, sessionBackupPath(paths.sessionFile)));
     } catch {
-      try { fs.rmSync(backupTempPath, { force: true }); } catch { }
+      backupCleanup = fsp.rm(backupTempPath, { force: true }).catch(() => {});
     }
   }
   try {
-    syncRenameWithExdevFallback(tempPath, paths.sessionFile);
+    runtimePerformance.measureSync("session.commit", () => syncRenameWithExdevFallback(tempPath, paths.sessionFile));
   } catch (error) {
-    try { fs.rmSync(tempPath, { force: true }); } catch { }
+    await fsp.rm(tempPath, { force: true }).catch(() => {});
     throw error;
+  } finally {
+    await backupCleanup;
   }
 }
 
@@ -1882,7 +1912,8 @@ export async function acquirePersistenceBarrier(): Promise<PersistenceBarrier> {
   const detachedSaves = detachPendingAsyncSaves();
   const activeWriteResults = await Promise.allSettled([
     activeSettingsSave ?? Promise.resolve(),
-    activeSessionSave ?? Promise.resolve()
+    activeSessionSave ?? Promise.resolve(),
+    waitForStatisticsLedgerSaves()
   ]);
   const activeWriteFailure = activeWriteResults.find((result) => result.status === "rejected");
   if (activeWriteFailure?.status === "rejected") {
@@ -1939,7 +1970,7 @@ export function cancelPendingAsyncSaves(): void {
 }
 
 export async function saveSessionAsync(paths: StoragePaths, session: SessionState): Promise<void> {
-  const payload = JSON.stringify({ ...session, updatedAt: Date.now() }, safeJsonReplacer);
+  const payload = runtimePerformance.measureSync("session.encode", () => JSON.stringify({ ...session, updatedAt: Date.now() }, safeJsonReplacer));
   if (activePersistenceBarrier) {
     return blockSessionSave(activePersistenceBarrier, paths, payload);
   }

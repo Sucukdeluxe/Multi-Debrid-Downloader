@@ -99,6 +99,7 @@ import {
   projectStatisticsLedger,
   rebaseStatisticsProviderSeedBaseline,
   saveStatisticsLedger,
+  saveStatisticsLedgerAsync,
   seedStatisticsDayProviderBytes,
   suppressStatisticsProviderSeedForDay
 } from "./statistics-ledger";
@@ -7618,18 +7619,15 @@ export class DownloadManager extends EventEmitter {
       this.lastStatisticsPersistAt = now;
       this.statisticsDirty = false;
       this.statisticsUrgent = false;
-      try {
-        saveStatisticsLedger(this.storagePaths.statisticsFile, this.statisticsLedger);
-      } catch (error) {
-        this.statisticsDirty = true;
+      void saveStatisticsLedgerAsync(this.storagePaths.statisticsFile, this.statisticsLedger).catch((error) => {
         logger.warn(`Statistik konnte nicht gespeichert werden: ${compactErrorText(error)}`);
-        try {
-          saveSettings(this.storagePaths, this.settings);
-          this.lastSettingsPersistAt = now;
-        } catch (settingsError) {
+        if (this.healthShuttingDown) return;
+        this.statisticsDirty = true;
+        this.lastSettingsPersistAt = now;
+        void saveSettingsAsync(this.storagePaths, this.settings).catch((settingsError) => {
           logger.warn(`Statistik-Fallback konnte nicht gespeichert werden: ${compactErrorText(settingsError)}`);
-        }
-      }
+        });
+      });
     }
   }
 

@@ -5,6 +5,7 @@ import path from "node:path";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { HttpsProxyAgent } from "https-proxy-agent";
+import { runtimePerformance } from "./runtime-performance";
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 const DEFAULT_IDLE_TIMEOUT_MS = 45_000;
@@ -687,7 +688,7 @@ async function openRangeResponse(
     rejectUnauthorized: !skipTlsVerify
   };
 
-  return new Promise<RangeResponse>((resolve, reject) => {
+  return runtimePerformance.measure("proxy.response", () => new Promise<RangeResponse>((resolve, reject) => {
     let settled = false;
     let responseRef: IncomingMessage | null = null;
     const requestFn: typeof http.request = target.protocol === "https:" ? https.request : http.request;
@@ -761,7 +762,7 @@ async function openRangeResponse(
     });
     request.setTimeout(idleTimeoutMs, () => request.destroy(new Error("proxy_idle_timeout")));
     request.end();
-  });
+  }));
 }
 
 async function consumeProbe(response: IncomingMessage, expectedBytes: number, onTrafficBytes?: (bytes: number) => void): Promise<number> {
@@ -1121,7 +1122,7 @@ async function downloadSegmentOnce(
         await callbacks.waitWhilePaused();
         response.setTimeout(options.idleTimeoutMs);
       }
-      await writeBufferAt(handle, chunk, segment.start + received);
+      await runtimePerformance.measure("proxy.write", () => writeBufferAt(handle, chunk, segment.start + received));
       receivedHash.update(chunk);
       trailingZeros = collectSuspiciousZeroRanges(
         chunk,
@@ -1139,7 +1140,7 @@ async function downloadSegmentOnce(
     opened.dispose();
     await handle.close();
   }
-  const writtenHash = await hashFileRange(tempPath, segment.start, expectedBytes, signal);
+  const writtenHash = await runtimePerformance.measure("proxy.readback", () => hashFileRange(tempPath, segment.start, expectedBytes, signal));
   const networkHash = receivedHash.digest();
   if (!timingSafeEqual(networkHash, writtenHash)) {
     throw new SegmentValidationError("readback_mismatch", segment.start, segment.end, segment);
@@ -1246,7 +1247,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
     const initialHandle = await fs.promises.open(tempPath, "wx");
     tempCreated = true;
     try {
-      await initialHandle.truncate(probe.totalBytes);
+      await runtimePerformance.measure("proxy.allocate", () => initialHandle.truncate(probe.totalBytes));
     } finally {
       await initialHandle.close();
     }
@@ -1264,7 +1265,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
         if (signal.aborted) {
           throw abortError();
         }
-        let lease = await sharedProxyCoordinator.acquire(poolKey, groupId, segmentProxies, excluded, signal);
+        let lease = await runtimePerformance.measure("proxy.wait", () => sharedProxyCoordinator.acquire(poolKey, groupId, segmentProxies, excluded, signal));
         if (!lease) {
           break;
         }
@@ -1299,7 +1300,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
           lease = null;
 
           if (outcome.suspiciousZeroRanges.length > 0) {
-            lease = await sharedProxyCoordinator.acquire(poolKey, groupId, segmentProxies, excluded, signal);
+            lease = await runtimePerformance.measure("proxy.wait", () => sharedProxyCoordinator.acquire(poolKey, groupId, segmentProxies, excluded, signal));
             if (!lease) {
               throw new Error("proxy_zero_run_verification_unavailable");
             }
@@ -1419,7 +1420,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
 
     const finalizedHandle = await fs.promises.open(tempPath, "r+");
     try {
-      await finalizedHandle.datasync();
+      await runtimePerformance.measure("proxy.flush", () => finalizedHandle.datasync());
     } finally {
       await finalizedHandle.close();
     }
@@ -1427,7 +1428,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
     if (finalStat.size !== probe.totalBytes) {
       return { status: "fallback", reason: "segment_failed" };
     }
-    await fs.promises.rename(tempPath, options.targetPath);
+    await runtimePerformance.measure("proxy.commit", () => fs.promises.rename(tempPath, options.targetPath));
     tempCreated = false;
     return { status: "completed", totalBytes: probe.totalBytes, connections };
   } catch (error) {

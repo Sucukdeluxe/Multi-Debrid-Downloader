@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { runtimePerformance } from "./runtime-performance";
 import { getProviderUsageDayKey } from "../shared/provider-daily-limits";
 import type {
   DebridProvider,
@@ -668,7 +669,7 @@ export function loadStatisticsLedger(filePath: string, now = Date.now()): Statis
 }
 
 function statisticsPayload(ledger: StatisticsLedger): string {
-  return JSON.stringify(normalizeStatisticsLedger(ledger), null, 2);
+  return runtimePerformance.measureSync("statistics.encode", () => JSON.stringify(normalizeStatisticsLedger(ledger), null, 2));
 }
 
 function renameErrorCode(error: unknown): string {
@@ -693,19 +694,8 @@ function renameStatisticsFileSync(tempPath: string, filePath: string): void {
   }
 }
 
-async function renameStatisticsFile(tempPath: string, filePath: string): Promise<void> {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      await fsp.rename(tempPath, filePath);
-      return;
-    } catch (error) {
-      if (!isTransientRenameError(error) || attempt >= renameRetryDelaysMs.length) throw error;
-      await new Promise((resolve) => setTimeout(resolve, renameRetryDelaysMs[attempt]));
-    }
-  }
-}
-
 export function saveStatisticsLedger(filePath: string, ledger: StatisticsLedger): void {
+  statisticsSaveState(filePath).generation += 1;
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const tempPath = `${filePath}.tmp`;
   try {
@@ -717,14 +707,88 @@ export function saveStatisticsLedger(filePath: string, ledger: StatisticsLedger)
   }
 }
 
-export async function saveStatisticsLedgerAsync(filePath: string, ledger: StatisticsLedger): Promise<void> {
-  await fsp.mkdir(path.dirname(filePath), { recursive: true });
+interface StatisticsSave {
+  payload: string;
+  generation: number;
+  waiters: Array<{ resolve(): void; reject(error: unknown): void }>;
+}
+
+interface StatisticsSaveState {
+  generation: number;
+  queued: StatisticsSave | null;
+  active: Promise<void> | null;
+}
+
+const statisticsSaves = new Map<string, StatisticsSaveState>();
+
+function statisticsSaveState(filePath: string): StatisticsSaveState {
+  let state = statisticsSaves.get(filePath);
+  if (!state) {
+    state = { generation: 0, queued: null, active: null };
+    statisticsSaves.set(filePath, state);
+  }
+  return state;
+}
+
+async function writeStatisticsPayload(filePath: string, save: StatisticsSave, state: StatisticsSaveState): Promise<void> {
+  if (save.generation !== state.generation) return;
   const tempPath = `${filePath}.async.tmp`;
   try {
-    await fsp.writeFile(tempPath, statisticsPayload(ledger), "utf8");
-    await renameStatisticsFile(tempPath, filePath);
-  } catch (error) {
-    try { await fsp.rm(tempPath, { force: true }); } catch {}
-    throw error;
+    await fsp.mkdir(path.dirname(filePath), { recursive: true });
+    await runtimePerformance.measure("statistics.write", () => fsp.writeFile(tempPath, save.payload, "utf8"));
+    for (let attempt = 0; ; attempt += 1) {
+      if (save.generation !== state.generation) return;
+      try {
+        runtimePerformance.measureSync("statistics.commit", () => fs.renameSync(tempPath, filePath));
+        return;
+      } catch (error) {
+        if (!isTransientRenameError(error) || attempt >= renameRetryDelaysMs.length) throw error;
+        await new Promise((resolve) => setTimeout(resolve, renameRetryDelaysMs[attempt]));
+      }
+    }
+  } finally {
+    await fsp.rm(tempPath, { force: true }).catch(() => {});
+  }
+}
+
+function drainStatisticsSaves(filePath: string, state: StatisticsSaveState): void {
+  if (state.active) return;
+  state.active = (async () => {
+    while (state.queued) {
+      const save = state.queued;
+      state.queued = null;
+      try {
+        await writeStatisticsPayload(filePath, save, state);
+        save.waiters.forEach((waiter) => waiter.resolve());
+      } catch (error) {
+        save.waiters.forEach((waiter) => waiter.reject(error));
+      }
+    }
+  })().finally(() => {
+    state.active = null;
+    if (state.queued) drainStatisticsSaves(filePath, state);
+    else statisticsSaves.delete(filePath);
+  });
+}
+
+export async function saveStatisticsLedgerAsync(filePath: string, ledger: StatisticsLedger): Promise<void> {
+  const payload = statisticsPayload(ledger);
+  const state = statisticsSaveState(filePath);
+  return new Promise<void>((resolve, reject) => {
+    const waiter = { resolve, reject };
+    if (state.queued) {
+      state.queued.payload = payload;
+      state.queued.generation = state.generation;
+      state.queued.waiters.push(waiter);
+    } else {
+      state.queued = { payload, generation: state.generation, waiters: [waiter] };
+    }
+    drainStatisticsSaves(filePath, state);
+  });
+}
+
+export async function waitForStatisticsLedgerSaves(): Promise<void> {
+  while ([...statisticsSaves.values()].some((state) => state.active)) {
+    await Promise.all([...statisticsSaves.values()].map((state) => state.active));
   }
 }

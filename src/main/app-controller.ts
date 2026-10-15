@@ -1730,7 +1730,20 @@ export class AppController {
       logger.warn(`Linksammler konnte beim Beenden nicht gespeichert werden: ${String(error)}`);
     }
     cancelPendingAsyncSaves();
-    this.manager.prepareForShutdown();
+    let persistenceBarrier: Awaited<ReturnType<typeof acquirePersistenceBarrier>> | null = null;
+    let acceptingBarrier = true;
+    const persistenceReady = acquirePersistenceBarrier().then(async (barrier) => {
+      if (acceptingBarrier) persistenceBarrier = barrier;
+      else await barrier.release({ replayBlocked: false });
+    }).catch((error) => logger.warn(`Laufende Speicherung konnte vor dem Beenden nicht abgeschlossen werden: ${String(error)}`));
+    await this.waitForShutdownTask(persistenceReady, Math.min(deadlineAt, Date.now() + 1000));
+    acceptingBarrier = false;
+    try {
+      this.manager.prepareForShutdown();
+    } finally {
+      const barrier = persistenceBarrier as Awaited<ReturnType<typeof acquirePersistenceBarrier>> | null;
+      if (barrier) await barrier.release({ replayBlocked: false });
+    }
     if (this.downloadHealthEvaluation) {
       await this.waitForShutdownTask(this.downloadHealthEvaluation, deadlineAt);
     }

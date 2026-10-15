@@ -36,6 +36,7 @@ import {
 } from "../shared/collector";
 import { getProxyAuthentication } from "./network-proxy";
 import { McpService } from "./mcp/service";
+import { runtimePerformance } from "./runtime-performance";
 
 forceDarkNativeTheme(nativeTheme);
 
@@ -1337,6 +1338,7 @@ app.whenReady().then(() => {
   configureCredentialProtector(safeStorage);
   configureArchivePasswordDiagnostics(path.join(app.getPath("userData"), "runtime"), safeStorage);
   controller = new AppController();
+  runtimePerformance.start((sample) => logger.warn(`Hauptthread verzögert: maxDelayMs=${sample.maxDelayMs}, timerDelayMs=${sample.timerDelayMs}, cpuPercent=${sample.cpuPercent}`));
   controller.retireLegacyRemoteDiagnostics();
   dailyStartScheduler = new DailyStartScheduler(controller);
   cleanupStaleSubstDrives();
