@@ -92,7 +92,7 @@ export interface ProxySegmentedDownloadOptions {
 
 export type ProxySegmentedDownloadResult =
   | { status: "completed"; totalBytes: number; connections: number }
-  | { status: "fallback"; reason: ProxyFallbackReason; httpStatus?: number };
+  | { status: "fallback"; reason: ProxyFallbackReason; httpStatus?: number; errorCode?: string };
 
 export type ProxyFallbackReason =
   | "proxy_file_unavailable"
@@ -130,6 +130,23 @@ class SegmentValidationError extends Error {
   ) {
     super(`proxy_segment_${reason}`);
   }
+}
+
+function proxyFailureCode(error: unknown): string {
+  if (error instanceof OriginHttpError) return `http_${error.statusCode}`;
+  if (error instanceof SegmentValidationError) return error.reason;
+  const message = error instanceof Error ? error.message : "";
+  const knownMessages = new Set([
+    "proxy_connect_timeout", "proxy_idle_timeout", "proxy_redirect_limit", "proxy_redirect_invalid",
+    "proxy_probe_overflow", "proxy_range_mismatch", "proxy_segment_overflow", "proxy_segment_underflow",
+    "proxy_verification_range_mismatch", "proxy_verification_range_overflow", "proxy_verification_range_underflow",
+    "proxy_zero_run_verification_unavailable", "proxy_segment_failed"
+  ]);
+  if (knownMessages.has(message)) return message;
+  const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+  return /^(ECONNRESET|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|EPIPE|CERT_HAS_EXPIRED|DEPTH_ZERO_SELF_SIGNED_CERT|UNABLE_TO_VERIFY_LEAF_SIGNATURE)$/.test(code)
+    ? code
+    : "proxy_transport_error";
 }
 
 interface ProxyLeaseOutcome {
@@ -264,13 +281,13 @@ class SharedProxyCoordinator {
     });
   }
 
-  private selectProxy(waiter: ProxyLeaseWaiter): ProxyEndpoint | null {
+  private selectProxy(waiter: ProxyLeaseWaiter, borrowIdleCapacity = false): ProxyEndpoint | null {
     if (this.activeConnections >= this.adaptiveConnectionLimit) {
       return null;
     }
     const groupCount = Math.max(1, this.registeredGroups.size);
     const groupLimit = Math.max(1, Math.ceil(this.adaptiveConnectionLimit / groupCount));
-    if ((this.activeConnectionsByGroup.get(waiter.groupId) || 0) >= groupLimit) {
+    if (!borrowIdleCapacity && (this.activeConnectionsByGroup.get(waiter.groupId) || 0) >= groupLimit) {
       return null;
     }
     const now = Date.now();
@@ -374,28 +391,107 @@ class SharedProxyCoordinator {
     let granted = true;
     while (granted && this.activeConnections < this.adaptiveConnectionLimit) {
       granted = false;
-      for (let index = 0; index < this.waiters.length; index += 1) {
-        const waiter = this.waiters[index];
-        if (waiter.signal.aborted) {
+      for (const borrowIdleCapacity of [false, true]) {
+        for (let index = 0; index < this.waiters.length; index += 1) {
+          const waiter = this.waiters[index];
+          if (waiter.signal.aborted) {
+            this.waiters.splice(index, 1);
+            waiter.reject(abortError());
+            granted = true;
+            break;
+          }
+          const proxy = this.selectProxy(waiter, borrowIdleCapacity);
+          if (!proxy) {
+            continue;
+          }
           this.waiters.splice(index, 1);
-          waiter.reject(abortError());
+          waiter.resolve(this.createLease(proxy, waiter.groupId));
           granted = true;
           break;
         }
-        const proxy = this.selectProxy(waiter);
-        if (!proxy) {
-          continue;
-        }
-        this.waiters.splice(index, 1);
-        waiter.resolve(this.createLease(proxy, waiter.groupId));
-        granted = true;
-        break;
+        if (granted) break;
       }
     }
   }
 }
 
 const sharedProxyCoordinator = new SharedProxyCoordinator();
+
+interface ProxyConnectionEntry {
+  agent: HttpsProxyAgent<string>;
+  origin: string;
+  skipTlsVerify: boolean;
+  active: number;
+}
+
+class ProxyConnectionPool {
+  private readonly entries = new Map<string, ProxyConnectionEntry>();
+  private references = 0;
+  private limit = DEFAULT_CONNECTION_LIMIT;
+
+  public retain(limit: number): () => void {
+    this.references += 1;
+    this.limit = limit;
+    this.evictIdle();
+    return () => {
+      this.references -= 1;
+      if (this.references === 0) {
+        for (const entry of this.entries.values()) entry.agent.destroy();
+        this.entries.clear();
+      }
+    };
+  }
+
+  public acquire(proxy: ProxyEndpoint, target: URL, skipTlsVerify: boolean): { agent: HttpsProxyAgent<string>; release: () => void } {
+    const key = proxyEndpointKey(proxy);
+    let entry = this.entries.get(key);
+    if (entry && (entry.origin !== target.origin || entry.skipTlsVerify !== skipTlsVerify)) {
+      entry.agent.destroy();
+      this.entries.delete(key);
+      entry = undefined;
+    }
+    if (!entry) {
+      entry = {
+        agent: new HttpsProxyAgent(proxy.url, {
+          keepAlive: true,
+          maxSockets: 1,
+          maxFreeSockets: 1,
+          timeout: DEFAULT_CONNECT_TIMEOUT_MS,
+          headers: proxy.authorization ? { "Proxy-Authorization": proxy.authorization } : {}
+        }),
+        origin: target.origin,
+        skipTlsVerify,
+        active: 0
+      };
+    }
+    this.entries.delete(key);
+    this.entries.set(key, entry);
+    entry.active += 1;
+    this.evictIdle();
+    const acquired = entry;
+    let released = false;
+    return {
+      agent: acquired.agent,
+      release: () => {
+        if (released) return;
+        released = true;
+        acquired.active -= 1;
+        this.evictIdle();
+      }
+    };
+  }
+
+  private evictIdle(): void {
+    for (const [key, entry] of this.entries) {
+      if (this.entries.size <= this.limit) break;
+      if (entry.active > 0) continue;
+      entry.agent.destroy();
+      this.entries.delete(key);
+    }
+  }
+}
+
+const sharedProxyConnections = new ProxyConnectionPool();
 
 function parseProxyLine(rawLine: string, id: number): ProxyEndpoint | null {
   const value = rawLine.trim();
@@ -572,10 +668,7 @@ async function openRangeResponse(
     throw abortError();
   }
 
-  const agent = new HttpsProxyAgent(proxy.url, {
-    keepAlive: false,
-    headers: proxy.authorization ? { "Proxy-Authorization": proxy.authorization } : {}
-  });
+  const connection = sharedProxyConnections.acquire(proxy, target, skipTlsVerify);
   const requestOptions: https.RequestOptions = {
     method: "GET",
     headers: {
@@ -583,7 +676,7 @@ async function openRangeResponse(
       Range: `bytes=${start}-${end}`,
       "User-Agent": "Multi-Debrid-Downloader"
     },
-    agent,
+    agent: connection.agent,
     rejectUnauthorized: !skipTlsVerify
   };
 
@@ -645,7 +738,7 @@ async function openRangeResponse(
     const cleanup = (): void => {
       clearTimeout(connectTimer);
       signal.removeEventListener("abort", onAbort);
-      agent.destroy();
+      connection.release();
     };
     const onAbort = (): void => {
       request.destroy(abortError());
@@ -688,12 +781,13 @@ async function probeRangeSupport(
 ): Promise<
   { status: "ok"; totalBytes: number }
   | { status: "unsupported" }
-  | { status: "unavailable" }
+  | { status: "unavailable"; errorCode?: string }
   | { status: "origin_error"; httpStatus: number }
 > {
   const attempts = Math.min(proxies.length, options.proxyAttempts);
   const excluded = new Set<string>();
   let lastHttpStatus = 0;
+  let lastErrorCode: string | undefined;
   for (let index = 0; index < attempts; index += 1) {
     let opened: RangeResponse | null = null;
     let lease: ProxyLease | null = null;
@@ -736,6 +830,7 @@ async function probeRangeSupport(
         || range.start !== 0
         || range.end !== expectedEnd
         || (contentLength > 0 && contentLength !== expectedBytes)) {
+        lastErrorCode = "proxy_probe_range_mismatch";
         opened.dispose();
         opened = null;
         lease.release({ succeeded: false });
@@ -750,7 +845,9 @@ async function probeRangeSupport(
         lease = null;
         return { status: "ok", totalBytes: range.total };
       }
+      lastErrorCode = "proxy_probe_underflow";
     } catch (error) {
+      lastErrorCode = proxyFailureCode(error);
       opened?.dispose();
       opened = null;
       lease?.release({ succeeded: signal.aborted });
@@ -770,7 +867,7 @@ async function probeRangeSupport(
     sharedProxyCoordinator.reportOriginStatus(lastHttpStatus);
     return { status: "origin_error", httpStatus: lastHttpStatus };
   }
-  return { status: "unavailable" };
+  return { status: "unavailable", ...(lastErrorCode ? { errorCode: lastErrorCode } : {}) };
 }
 
 function buildSegments(totalBytes: number, connections: number, minSegmentBytes: number): Segment[] {
@@ -1070,6 +1167,7 @@ export async function downloadWithProxySegments(options: ProxySegmentedDownloadO
 
   const groupId = String(options.downloadId || options.targetPath || randomUUID());
   const unregisterGroup = sharedProxyCoordinator.registerGroup(groupId);
+  const releaseConnections = sharedProxyConnections.retain(totalConnectionLimit);
   try {
   const normalized = {
     skipTlsVerify: Boolean(options.skipTlsVerify),
@@ -1082,7 +1180,7 @@ export async function downloadWithProxySegments(options: ProxySegmentedDownloadO
     return { status: "fallback", reason: "range_unsupported" };
   }
   if (probe.status === "unavailable") {
-    return { status: "fallback", reason: "proxy_unavailable" };
+    return { status: "fallback", reason: "proxy_unavailable", ...(probe.errorCode ? { errorCode: probe.errorCode } : {}) };
   }
   if (probe.status === "origin_error") {
     return { status: "fallback", reason: "origin_http_error", httpStatus: probe.httpStatus };
@@ -1289,7 +1387,10 @@ export async function downloadWithProxySegments(options: ProxySegmentedDownloadO
           httpStatus: (originFailure.reason as OriginHttpError).statusCode
         };
       }
-      return { status: "fallback", reason: "segment_failed" };
+      const primaryFailure = settled.find((result): result is PromiseRejectedResult => (
+        result.status === "rejected" && !String(result.reason).includes("aborted:proxy_download")
+      ));
+      return { status: "fallback", reason: "segment_failed", errorCode: proxyFailureCode((primaryFailure || failed).reason) };
     }
 
     const finalizedHandle = await fs.promises.open(tempPath, "r+");
@@ -1312,7 +1413,7 @@ export async function downloadWithProxySegments(options: ProxySegmentedDownloadO
     if (isDiskError(error)) {
       throw error;
     }
-    return { status: "fallback", reason: "segment_failed" };
+    return { status: "fallback", reason: "segment_failed", errorCode: proxyFailureCode(error) };
   } finally {
     if (tempCreated) {
       try {
@@ -1325,6 +1426,7 @@ export async function downloadWithProxySegments(options: ProxySegmentedDownloadO
     }
   }
   } finally {
+    releaseConnections();
     unregisterGroup();
   }
 }

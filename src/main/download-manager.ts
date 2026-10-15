@@ -11732,6 +11732,7 @@ export class DownloadManager extends EventEmitter {
           logAttemptEvent("WARN", "Proxy-Segmentdownload nicht verwendet, fester Einzel-Proxy folgt", {
             attempt,
             reason: proxyReasonLabels[proxyResult.reason],
+            ...(proxyResult.errorCode ? { segmentError: proxyResult.errorCode } : {}),
             ...(proxyResult.httpStatus ? { originHttpStatus: proxyResult.httpStatus } : {})
           });
         }
