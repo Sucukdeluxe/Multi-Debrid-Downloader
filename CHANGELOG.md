@@ -4,6 +4,16 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.96] - 2026-10-15
+
+### Download stability
+
+- Reuse bounded proxy connections for consecutive download segments instead of opening a new tunnel for every block. Keep proxy credentials, destination origins and TLS verification modes isolated.
+- Let downloads borrow otherwise unused connection slots while other files wait for their final segments, without raising the configured total connection limit or starving waiting downloads.
+- Include a sanitized technical error code when a segmented download falls back to the fixed proxy, making connection and range failures easier to diagnose.
+
+Proxy-only routing, the reserved API proxy, HTTP 429/503 backoff, the default of 32 connections and the maximum of 80 are unchanged. Archive extraction and download integrity checks are unchanged.
+
 ## [2.0.95] - 2026-10-15
 
 ### MCP remote access
