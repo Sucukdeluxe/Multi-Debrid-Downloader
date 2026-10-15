@@ -4,6 +4,19 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.95] - 2026-10-15
+
+### MCP remote access
+
+- Replace legacy remote support with an optional MCP connection under Help → MCP remote access. The running app connects through an authenticated HTTPS relay without opening an inbound port.
+- Provide 81 explicit tools for diagnostics, logs, queues, packages, accounts, settings, history, statistics, backups, updates and approved local files. Keep destructive operations behind expiring local confirmation.
+- Store installation credentials separately with local encryption, support rotation and revocation, and keep MCP credentials out of normal backups and support bundles. Secret access remains off by default.
+- Add complete-file transfers with a separate disabled-by-default permission, approved roots, bounded blocks, cancellation, expiry and source-change detection. The receiver supports resume, block and full-file SHA-256 checks, disk readback and no-overwrite publication.
+- Preserve proxy-only routing for relay traffic and reject access to protected app storage, credential files, raw diagnostic logs and filesystem links. Keep binary payloads out of text results and prevent accidental connection-code echoing.
+- Include connection/receiver helpers and the shared relay protocol documentation in the source distribution, plus complete production dependency license notices.
+
+Legacy remote support is disabled on upgrade and cannot be re-enabled by importing an old backup. Local support-bundle export remains available. Download and extraction algorithms are unchanged.
+
 ## [2.0.94] - 2026-10-15
 
 ### Fixed
