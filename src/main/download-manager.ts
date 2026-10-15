@@ -11694,6 +11694,11 @@ export class DownloadManager extends EventEmitter {
                 lastProxyUiEmitAt = nowTick;
               }
             },
+            onRepresentationRetry: () => {
+              logAttemptEvent("WARN", "Dateigröße zwischen Proxy-Antworten geändert; Segmentdownload wird einmal vollständig neu geprüft", {
+                attempt
+              });
+            },
             onValidationRetry: (event) => {
               logAttemptEvent("WARN", "Proxy-Segmentprüfung fehlgeschlagen, Segment wird neu geladen", {
                 reason: event.reason,

@@ -88,6 +88,7 @@ export interface ProxySegmentedDownloadOptions {
   onTrafficBytes?: (bytes: number) => void;
   onProgress?: (deltaBytes: number, downloadedBytes: number, totalBytes: number) => void;
   onValidationRetry?: (event: ProxySegmentValidationRetry) => void;
+  onRepresentationRetry?: () => void;
 }
 
 export type ProxySegmentedDownloadResult =
@@ -138,7 +139,7 @@ function proxyFailureCode(error: unknown): string {
   const message = error instanceof Error ? error.message : "";
   const knownMessages = new Set([
     "proxy_connect_timeout", "proxy_idle_timeout", "proxy_redirect_limit", "proxy_redirect_invalid",
-    "proxy_probe_overflow", "proxy_range_mismatch", "proxy_segment_overflow", "proxy_segment_underflow",
+    "proxy_probe_overflow", "proxy_range_mismatch", "proxy_representation_changed", "proxy_segment_overflow", "proxy_segment_underflow",
     "proxy_verification_range_mismatch", "proxy_verification_range_overflow", "proxy_verification_range_underflow",
     "proxy_zero_run_verification_unavailable", "proxy_segment_failed"
   ]);
@@ -642,6 +643,12 @@ function parseContentRange(value: string | undefined): ParsedRange | null {
   return { start, end, total };
 }
 
+function isChangedRepresentation(status: number, range: ParsedRange | null, start: number, end: number, total: number, contentLength: number): boolean {
+  return status === 206 && range !== null && range.total !== total
+    && range.start === start && range.end === Math.min(end, range.total - 1)
+    && (contentLength === 0 || contentLength === range.end - range.start + 1);
+}
+
 function abortError(): Error {
   return new Error("aborted:proxy_download");
 }
@@ -1006,6 +1013,10 @@ async function readRangeOnce(
   const expectedBytes = range.end - range.start + 1;
   const contentRange = parseContentRange(response.headers["content-range"]);
   const contentLength = Number(response.headers["content-length"] || 0);
+  if (isChangedRepresentation(status, contentRange, range.start, range.end, totalBytes, contentLength)) {
+    opened.dispose();
+    throw new Error("proxy_representation_changed");
+  }
   if (status !== 206
     || !contentRange
     || contentRange.start !== range.start
@@ -1070,6 +1081,10 @@ async function downloadSegmentOnce(
   const expectedBytes = segment.end - segment.start + 1;
   const range = parseContentRange(response.headers["content-range"]);
   const contentLength = Number(response.headers["content-length"] || 0);
+  if (isChangedRepresentation(status, range, segment.start, segment.end, totalBytes, contentLength)) {
+    opened.dispose();
+    throw new Error("proxy_representation_changed");
+  }
   if (status !== 206
     || !range
     || range.start !== segment.start
@@ -1133,6 +1148,15 @@ async function downloadSegmentOnce(
 }
 
 export async function downloadWithProxySegments(options: ProxySegmentedDownloadOptions): Promise<ProxySegmentedDownloadResult> {
+  const result = await downloadWithProxySegmentsOnce(options);
+  if (result.status !== "fallback" || result.errorCode !== "proxy_representation_changed") return result;
+  if (options.signal.aborted) throw abortError();
+  try { options.onRepresentationRetry?.(); } catch {}
+  if (options.signal.aborted) throw abortError();
+  return downloadWithProxySegmentsOnce(options);
+}
+
+async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOptions): Promise<ProxySegmentedDownloadResult> {
   const proxyPath = String(options.proxyListPath || "").trim();
   if (!proxyPath) {
     return { status: "fallback", reason: "proxy_file_unavailable" };
