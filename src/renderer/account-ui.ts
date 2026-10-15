@@ -5,7 +5,7 @@ const proxyOnlyAccountMessages = {
   proxy_list_unreadable: "Proxy-only ist aktiviert, aber die hinterlegte Proxy-Liste kann nicht gelesen werden. Prüfe die Datei unter Einstellungen → Geschwindigkeit & Proxy.",
   proxy_list_empty: "Proxy-only ist aktiviert, aber die hinterlegte Proxy-Liste ist leer oder enthält keine gültigen HTTP-Proxys.",
   proxy_index_unavailable: "Proxy-only ist aktiviert, aber der feste API-Proxy ist in der Liste nicht verfügbar. Prüfe den Listeneintrag unter Einstellungen → Geschwindigkeit & Proxy.",
-  proxy_unreachable: "Proxy-only ist aktiviert, aber der feste API-Proxy ist nicht erreichbar oder lehnt die Verbindung ab. Prüfe den Proxy unter Einstellungen → Geschwindigkeit & Proxy."
+  proxy_unreachable: "Die Account-Prüfung über den festen API-Proxy ist fehlgeschlagen. Prüfe unter Einstellungen → Geschwindigkeit & Proxy den Proxy-Zugang und beim Proxy-Anbieter die Freigabe deiner aktuellen IP."
 } as const;
 
 export function formatAccountOperationError(prefix: string, error: unknown): string {

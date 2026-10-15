@@ -535,8 +535,9 @@ export class AppController {
     if (code) throw createProxyOnlyAccountError(code);
   }
 
-  private throwProxyOnlyAccountFailure(failureText: string): void {
-    const code = resolveProxyOnlyAccountErrorCode(this.settings, getNetworkProxyState(), failureText);
+  private throwProxyOnlyAccountFailure(failureText: string, checkFailure?: DebridAccountStatus["checkFailure"]): void {
+    if (checkFailure === "aborted") return;
+    const code = resolveProxyOnlyAccountErrorCode(this.settings, getNetworkProxyState(), checkFailure === "transport" ? "network" : failureText);
     if (code) throw createProxyOnlyAccountError(code);
   }
 
@@ -623,7 +624,7 @@ export class AppController {
     remoteDiagnostics?: unknown,
     restoreRemoteDiagnostics = false,
     onlineProxyListContent?: string | null
-  ): Promise<{ proxyListRestored: boolean; proxyOnlyDisabled: boolean }> {
+  ): Promise<{ proxyListRestored: boolean; proxyListRequired: boolean }> {
     const barrier = await acquirePersistenceBarrier();
     const previousSettings = this.settings;
     let restoredSettings: AppSettings | null = null;
@@ -632,7 +633,7 @@ export class AppController {
     let logStorageChanged = false;
     let runtimeApplied = false;
     let proxyListRestored = false;
-    let proxyOnlyDisabled = false;
+    let proxyListRequired = false;
     try {
       restoredSettings = this.prepareImportedLogStorage(normalizeSettings(importedSettings));
       if (typeof onlineProxyListContent === "string") {
@@ -641,10 +642,9 @@ export class AppController {
           proxyListPath: getManagedOnlineProxyListPath(this.storagePaths.baseDir)
         });
       } else if (onlineProxyListContent === null) {
-        proxyOnlyDisabled = restoredSettings.proxyDownloadEnabled || Boolean(restoredSettings.proxyListPath.trim());
+        proxyListRequired = restoredSettings.proxyDownloadEnabled;
         restoredSettings = normalizeSettings({
           ...restoredSettings,
-          proxyDownloadEnabled: false,
           proxyListPath: ""
         });
       }
@@ -707,7 +707,7 @@ export class AppController {
       throw error;
     }
     this.auditRemoteDiagnosticsRestore(remoteRestore, restoreRemoteDiagnostics);
-    return { proxyListRestored, proxyOnlyDisabled };
+    return { proxyListRestored, proxyListRequired };
   }
 
   private ensureConfiguredWorkDirectories(settings: AppSettings, trigger: "beim Start" | "nach dem Speichern"): void {
@@ -820,7 +820,7 @@ export class AppController {
       checkedStatus = sanitizeDebridAccountStatus(checkedStatus, redactions);
     }
     if (checkedStatus && !checkedStatus.valid) {
-      this.throwProxyOnlyAccountFailure(checkedStatus.message || "");
+      this.throwProxyOnlyAccountFailure(checkedStatus.message || "", checkedStatus.checkFailure);
       throw new Error(checkedStatus.message || "Zugangsdaten ungültig");
     }
     this.updateSettings(applied.settings);
@@ -850,10 +850,10 @@ export class AppController {
       const key = input.secret?.trim() || this.settings.deepbridApiKey.trim();
       if (!key) throw new Error("Account-Payload ist ungültig");
       const status = sanitizeDebridAccountStatus(await checkDeepbridAccount(key), redactions);
-      if (!input.secret && input.accountId === "svc-deepbrid" && this.settings.deepbridApiKey.trim()) {
+      if (!status.valid) this.throwProxyOnlyAccountFailure(status.message || "", status.checkFailure);
+      if (!status.checkFailure && !input.secret && input.accountId === "svc-deepbrid" && this.settings.deepbridApiKey.trim()) {
         this.manager.applyDebridAccountStatuses([status]);
       }
-      if (!status.valid) this.throwProxyOnlyAccountFailure(status.message || "");
       return status;
     }
     if (input.kind === "realdebrid-api" || input.kind === "realdebrid-web") {
@@ -879,10 +879,10 @@ export class AppController {
         ),
         redactions
       );
-      if (!input.secret && getRealDebridAccounts(this.settings).some((entry) => entry.id === status.accountId)) {
+      if (!status.valid) this.throwProxyOnlyAccountFailure(status.message || "", status.checkFailure);
+      if (!status.checkFailure && !input.secret && getRealDebridAccounts(this.settings).some((entry) => entry.id === status.accountId)) {
         this.manager.applyDebridAccountStatuses([status]);
       }
-      if (!status.valid) this.throwProxyOnlyAccountFailure(status.message || "");
       return status;
     }
     if (input.kind === "megadebrid-api" || input.kind === "megadebrid-web") {
@@ -892,10 +892,10 @@ export class AppController {
         : getMegaDebridAccountsForMode(this.settings, mode).find((entry) => entry.id === input.accountId);
       if (!account) throw new Error("Account-Payload ist ungültig");
       const status = sanitizeDebridAccountStatus(await checkMegaDebridAccount(account), redactions);
-      if (!input.secret && getMegaDebridAccountsForMode(this.settings, mode).some((entry) => entry.id === status.accountId)) {
+      if (!status.valid) this.throwProxyOnlyAccountFailure(status.message || "", status.checkFailure);
+      if (!status.checkFailure && !input.secret && getMegaDebridAccountsForMode(this.settings, mode).some((entry) => entry.id === status.accountId)) {
         this.manager.applyDebridAccountStatuses([status]);
       }
-      if (!status.valid) this.throwProxyOnlyAccountFailure(status.message || "");
       return status;
     }
     const key = input.secret?.trim()
@@ -903,10 +903,10 @@ export class AppController {
       : parseDebridLinkApiKeys(this.settings.debridLinkApiKeys).find((entry) => entry.id === input.accountId);
     if (!key) throw new Error("Account-Payload ist ungültig");
     const status = sanitizeDebridAccountStatus(await checkDebridLinkKey(key), redactions);
-    if (!input.secret && parseDebridLinkApiKeys(this.settings.debridLinkApiKeys).some((entry) => entry.id === status.accountId)) {
+    if (!status.valid) this.throwProxyOnlyAccountFailure(status.message || "", status.checkFailure);
+    if (!status.checkFailure && !input.secret && parseDebridLinkApiKeys(this.settings.debridLinkApiKeys).some((entry) => entry.id === status.accountId)) {
       this.manager.applyDebridAccountStatuses([status]);
     }
-    if (!status.valid) this.throwProxyOnlyAccountFailure(status.message || "");
     return status;
   }
 
@@ -1189,10 +1189,10 @@ export class AppController {
     const proxyFailure = statuses.find((status) => !status.valid && resolveProxyOnlyAccountErrorCode(
       this.settings,
       getNetworkProxyState(),
-      status.message || ""
+      status.checkFailure === "transport" ? "network" : status.checkFailure === "aborted" ? "" : status.message || ""
     ));
-    if (proxyFailure) this.throwProxyOnlyAccountFailure(proxyFailure.message || "");
     this.manager.applyDebridAccountStatuses(statuses);
+    if (proxyFailure) this.throwProxyOnlyAccountFailure(proxyFailure.message || "", proxyFailure.checkFailure);
     this.audit("INFO", "Debrid-Accounts geprueft", {
       total: statuses.length,
       scope,
@@ -1468,13 +1468,13 @@ export class AppController {
     this.audit("INFO", "Online-Sicherung importiert", {
       kind: "settings-only",
       proxyListRestored: result.proxyListRestored,
-      proxyOnlyDisabled: result.proxyOnlyDisabled,
+      proxyListRequired: result.proxyListRequired,
       accountSummary: buildAccountSummary(this.settings)
     });
     const message = result.proxyListRestored
       ? "Einstellungen und Proxy-Liste aus Online-Sicherung wiederhergestellt"
-      : result.proxyOnlyDisabled
-        ? "Einstellungen wiederhergestellt; Proxy-only wurde deaktiviert, weil die Online-Sicherung keine Proxy-Liste enthält"
+      : result.proxyListRequired
+        ? "Einstellungen wiederhergestellt; Proxy-only bleibt aktiv. Die Online-Sicherung enthält keine Proxy-Liste. Hinterlege sie unter Einstellungen → Geschwindigkeit & Proxy."
         : "Einstellungen aus Online-Sicherung wiederhergestellt";
     return { restored: true, relaunch: false, message };
   }

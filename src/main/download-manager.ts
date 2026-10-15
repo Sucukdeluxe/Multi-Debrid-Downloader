@@ -2424,8 +2424,10 @@ export class DownloadManager extends EventEmitter {
   }
 
   public applyDebridAccountStatuses(statuses: DebridAccountStatus[]): void {
+    const confirmed = statuses.filter((status) => !status.checkFailure);
+    if (confirmed.length === 0) return;
     const map: Record<string, DebridAccountStatus> = { ...(this.settings.debridAccountStatuses || {}) };
-    for (const status of statuses) {
+    for (const status of confirmed) {
       map[status.accountId] = status;
     }
     this.settings.debridAccountStatuses = map;

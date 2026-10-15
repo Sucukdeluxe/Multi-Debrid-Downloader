@@ -5,13 +5,13 @@ import { getRealDebridAccounts, type RealDebridAccountEntry } from "../shared/re
 import { DEEPBRID_ACCOUNT_ID, DeepbridApiError, DeepbridClient } from "./deepbrid";
 import { logger } from "./logger";
 import { compactErrorText } from "./utils";
+import { fetchAccountCheck, isAccountTransportFailure } from "./account-check-request";
 
 const MEGA_DEBRID_API = "https://www.mega-debrid.eu/api.php";
 const DEBRID_LINK_API = "https://debrid-link.com/api/v2";
 const REAL_DEBRID_USER_API = "https://api.real-debrid.com/rest/1.0/user";
 const CHECK_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
-const CHECK_TIMEOUT_MS = 20000;
 
 export const REAL_DEBRID_STATUS_ID = "svc-realdebrid";
 
@@ -33,11 +33,6 @@ export function retainConfiguredRealDebridStatuses(settings: AppSettings, status
     accountIds.add(REAL_DEBRID_STATUS_ID);
   }
   return statuses.filter((status) => status.provider !== "realdebrid" || accountIds.has(status.accountId));
-}
-
-function timeoutSignal(signal: AbortSignal | undefined, ms: number): AbortSignal {
-  const timeout = AbortSignal.timeout(ms);
-  return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
 function parseJsonSafe(text: string): Record<string, unknown> | null {
@@ -113,12 +108,12 @@ export async function checkRealDebridAccount(
 
   if (useWebLogin) {
     if (!probeWebSession) {
-      return { ...base, message: "Browser-Sitzung ist nicht prüfbar" };
+      return { ...base, checkFailure: "service", message: "Browser-Sitzung ist nicht prüfbar" };
     }
     try {
       const result = await probeWebSession(signal);
       if (!result.valid) {
-        return { ...base, message: result.message || "Browser-Sitzung abgelaufen" };
+        return { ...base, ...(isAccountTransportFailure(result.message) ? { checkFailure: "transport" as const } : {}), message: result.message || "Browser-Sitzung abgelaufen" };
       }
       const premiumUntilMs = typeof result.premiumUntilMs === "number" ? result.premiumUntilMs : null;
       return {
@@ -132,8 +127,7 @@ export async function checkRealDebridAccount(
       };
     } catch (error) {
       const errText = compactErrorText(error);
-      const aborted = signal?.aborted || /aborted/i.test(errText);
-      return { ...base, message: aborted ? "Prüfung abgebrochen" : `Prüfung fehlgeschlagen: ${errText}` };
+      return { ...base, checkFailure: signal?.aborted ? "aborted" : "transport", message: signal?.aborted ? "Prüfung abgebrochen" : `Prüfung fehlgeschlagen: ${errText}` };
     }
   }
 
@@ -142,20 +136,18 @@ export async function checkRealDebridAccount(
   }
 
   try {
-    const response = await fetch(REAL_DEBRID_USER_API, {
+    const { response, text } = await fetchAccountCheck(REAL_DEBRID_USER_API, {
       headers: {
         Authorization: `Bearer ${token}`,
         "User-Agent": CHECK_USER_AGENT
-      },
-      signal: timeoutSignal(signal, CHECK_TIMEOUT_MS)
-    });
-    const text = await response.text();
+      }
+    }, signal);
     const payload = parseJsonSafe(text);
     if (!response.ok || !payload) {
       if (response.status === 401 || response.status === 403) {
         return { ...base, message: "Ungültiger API-Token" };
       }
-      return { ...base, message: `Prüfung fehlgeschlagen (HTTP ${response.status})` };
+      return { ...base, checkFailure: response.status === 407 ? "transport" : "service", message: `Prüfung fehlgeschlagen (HTTP ${response.status})` };
     }
     const expiration = Date.parse(String(payload.expiration || ""));
     const premiumUntilMs = Number.isFinite(expiration) ? expiration : null;
@@ -172,8 +164,7 @@ export async function checkRealDebridAccount(
     };
   } catch (error) {
     const errText = compactErrorText(error);
-    const aborted = signal?.aborted || /aborted/i.test(errText);
-    return { ...base, message: aborted ? "Prüfung abgebrochen" : `Prüfung fehlgeschlagen: ${errText}` };
+    return { ...base, checkFailure: signal?.aborted ? "aborted" : "transport", message: signal?.aborted ? "Prüfung abgebrochen" : `Prüfung fehlgeschlagen: ${errText}` };
   }
 }
 
@@ -219,12 +210,12 @@ export async function checkDeepbridAccount(
     };
   } catch (error) {
     if (signal?.aborted) {
-      return { ...base, message: "Prüfung abgebrochen" };
+      return { ...base, checkFailure: "aborted", message: "Prüfung abgebrochen" };
     }
     if (error instanceof DeepbridApiError && error.classification === "auth") {
       return { ...base, message: error.status === 403 ? "Deepbrid API-Key gesperrt" : "Ungültiger Deepbrid API-Key" };
     }
-    return { ...base, message: "Prüfung fehlgeschlagen" };
+    return { ...base, checkFailure: error instanceof DeepbridApiError ? "service" : "transport", message: "Prüfung fehlgeschlagen" };
   }
 }
 
@@ -246,18 +237,16 @@ export async function checkMegaDebridAccount(
   };
   try {
     const url = `${MEGA_DEBRID_API}?action=connectUser&login=${encodeURIComponent(account.login)}&password=${encodeURIComponent(account.password)}`;
-    const response = await fetch(url, {
-      headers: { "User-Agent": CHECK_USER_AGENT },
-      signal: timeoutSignal(signal, CHECK_TIMEOUT_MS)
-    });
-    const text = await response.text();
+    const { response, text } = await fetchAccountCheck(url, {
+      headers: { "User-Agent": CHECK_USER_AGENT }
+    }, signal);
     const payload = parseJsonSafe(text);
     if (!response.ok || !payload) {
-      return { ...base, message: `Login fehlgeschlagen (HTTP ${response.status})` };
+      return { ...base, checkFailure: response.status === 407 ? "transport" : "service", message: `Login fehlgeschlagen (HTTP ${response.status})` };
     }
     if (payload.response_code !== "ok") {
       const reason = String(payload.response_text || payload.response_code || "Login abgelehnt");
-      return { ...base, message: `Ungueltiger Login: ${reason}` };
+      return { ...base, message: `Ungültiger Login: ${reason}` };
     }
     const vipEndRaw = Number(payload.vip_end || 0);
     const premiumUntilMs = Number.isFinite(vipEndRaw) && vipEndRaw > 0 ? vipEndRaw * 1000 : 0;
@@ -273,10 +262,10 @@ export async function checkMegaDebridAccount(
     };
   } catch (error) {
     const errText = compactErrorText(error);
-    const aborted = signal?.aborted || /aborted/i.test(errText);
     return {
       ...base,
-      message: aborted ? "Pruefung abgebrochen" : `Pruefung fehlgeschlagen: ${errText}`
+      checkFailure: signal?.aborted ? "aborted" : "transport",
+      message: signal?.aborted ? "Prüfung abgebrochen" : `Prüfung fehlgeschlagen: ${errText}`
     };
   }
 }
@@ -298,24 +287,22 @@ export async function checkDebridLinkKey(
     checkedAt: now
   };
   try {
-    const response = await fetch(`${DEBRID_LINK_API}/account/infos`, {
+    const { response, text } = await fetchAccountCheck(`${DEBRID_LINK_API}/account/infos`, {
       headers: {
         Authorization: `Bearer ${key.token}`,
         "User-Agent": CHECK_USER_AGENT
-      },
-      signal: timeoutSignal(signal, CHECK_TIMEOUT_MS)
-    });
-    const text = await response.text();
+      }
+    }, signal);
     const payload = parseJsonSafe(text);
     if (!response.ok || !payload) {
       if (response.status === 401 || response.status === 403) {
-        return { ...base, message: "Ungueltiger API-Key (nicht autorisiert)" };
+        return { ...base, message: "Ungültiger API-Key (nicht autorisiert)" };
       }
-      return { ...base, message: `Pruefung fehlgeschlagen (HTTP ${response.status})` };
+      return { ...base, checkFailure: response.status === 407 ? "transport" : "service", message: `Prüfung fehlgeschlagen (HTTP ${response.status})` };
     }
     if (payload.success === false) {
       const reason = String(payload.error || "Key abgelehnt");
-      return { ...base, message: `Ungueltiger API-Key: ${reason}` };
+      return { ...base, message: `Ungültiger API-Key: ${reason}` };
     }
     const value = (payload.value && typeof payload.value === "object" ? payload.value : payload) as Record<string, unknown>;
     const premiumLeftSec = Number(value.premiumLeft || 0);
@@ -337,10 +324,10 @@ export async function checkDebridLinkKey(
     };
   } catch (error) {
     const errText = compactErrorText(error);
-    const aborted = signal?.aborted || /aborted/i.test(errText);
     return {
       ...base,
-      message: aborted ? "Pruefung abgebrochen" : `Pruefung fehlgeschlagen: ${errText}`
+      checkFailure: signal?.aborted ? "aborted" : "transport",
+      message: signal?.aborted ? "Prüfung abgebrochen" : `Prüfung fehlgeschlagen: ${errText}`
     };
   }
 }

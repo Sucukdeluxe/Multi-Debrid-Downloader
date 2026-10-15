@@ -1,5 +1,6 @@
 import type { AppSettings } from "../shared/types";
 import type { NetworkProxyState } from "./network-proxy";
+import { isAccountTransportFailure } from "./account-check-request";
 
 export type ProxyOnlyAccountErrorCode =
   | "proxy_list_missing"
@@ -9,8 +10,6 @@ export type ProxyOnlyAccountErrorCode =
   | "proxy_unreachable";
 
 export const PROXY_ONLY_ACCOUNT_ERROR_PREFIX = "proxy_only_account:";
-
-const TRANSPORT_FAILURE_PATTERN = /proxy|fetch failed|network|econn|enotfound|eai_again|etimedout|und_err|socket hang up|err_proxy|tunneling socket|timeout|aborted due to timeout|HTTP 407|connection (?:closed|refused|reset|timed out)/i;
 
 export function resolveProxyOnlyAccountErrorCode(
   settings: Pick<AppSettings, "proxyDownloadEnabled" | "proxyListPath">,
@@ -25,7 +24,7 @@ export function resolveProxyOnlyAccountErrorCode(
     if (state.reason === "no_valid_proxies") return "proxy_list_empty";
     return "proxy_index_unavailable";
   }
-  return TRANSPORT_FAILURE_PATTERN.test(failureText) ? "proxy_unreachable" : null;
+  return isAccountTransportFailure(failureText) ? "proxy_unreachable" : null;
 }
 
 export function createProxyOnlyAccountError(code: ProxyOnlyAccountErrorCode): Error {

@@ -126,6 +126,7 @@ export interface DebridAccountStatus {
   username?: string;
   email?: string;
   message: string;
+  checkFailure?: "transport" | "service" | "aborted";
   checkedAt: number;
 }
 
