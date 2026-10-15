@@ -3,9 +3,11 @@ import http from "node:http";
 import https from "node:https";
 import path from "node:path";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import type { IncomingMessage } from "node:http";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { runtimePerformance } from "./runtime-performance";
+import { ProxyReadbackLimiter } from "./proxy-readback-limiter";
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 const DEFAULT_IDLE_TIMEOUT_MS = 45_000;
@@ -20,6 +22,8 @@ const MAX_REDIRECTS = 5;
 const MAX_SEGMENTS = 4_096;
 const MAX_PROXY_FILE_BYTES = 8 * 1024 * 1024;
 const SEGMENT_READBACK_BUFFER_BYTES = 256 * 1024;
+const SEGMENT_WRITE_BUFFER_BYTES = 256 * 1024;
+const SEGMENT_WRITE_FLUSH_INTERVAL_MS = 100;
 const SUSPICIOUS_ZERO_RUN_BYTES = 1024;
 const MAX_ZERO_RUN_VERIFICATIONS_PER_SEGMENT = 4;
 const ZERO_RUN_SENTINEL = Buffer.alloc(SUSPICIOUS_ZERO_RUN_BYTES);
@@ -159,6 +163,7 @@ interface ProxyLeaseOutcome {
 
 interface ProxyLease {
   proxy: ProxyEndpoint;
+  releaseSlot: () => void;
   release: (outcome: ProxyLeaseOutcome) => void;
 }
 
@@ -339,20 +344,30 @@ class SharedProxyCoordinator {
     this.activeConnections += 1;
     this.activeProxies.add(key);
     this.activeConnectionsByGroup.set(groupId, (this.activeConnectionsByGroup.get(groupId) || 0) + 1);
+    let slotReleased = false;
+    const releaseCapacity = (): void => {
+      if (slotReleased) return;
+      slotReleased = true;
+      this.activeConnections = Math.max(0, this.activeConnections - 1);
+      this.activeProxies.delete(key);
+      const groupConnections = Math.max(0, (this.activeConnectionsByGroup.get(groupId) || 1) - 1);
+      if (groupConnections > 0) {
+        this.activeConnectionsByGroup.set(groupId, groupConnections);
+      } else {
+        this.activeConnectionsByGroup.delete(groupId);
+      }
+    };
     let released = false;
     return {
       proxy,
+      releaseSlot: () => {
+        releaseCapacity();
+        this.drain();
+      },
       release: (outcome) => {
         if (released) return;
         released = true;
-        this.activeConnections = Math.max(0, this.activeConnections - 1);
-        this.activeProxies.delete(key);
-        const groupConnections = Math.max(0, (this.activeConnectionsByGroup.get(groupId) || 1) - 1);
-        if (groupConnections > 0) {
-          this.activeConnectionsByGroup.set(groupId, groupConnections);
-        } else {
-          this.activeConnectionsByGroup.delete(groupId);
-        }
+        releaseCapacity();
         if (outcome.succeeded) {
           this.cooldownUntil.delete(key);
           if ((outcome.transferredBytes || 0) > 0 && (outcome.durationMs || 0) > 0) {
@@ -418,6 +433,7 @@ class SharedProxyCoordinator {
 }
 
 const sharedProxyCoordinator = new SharedProxyCoordinator();
+const sharedReadbackLimiter = new ProxyReadbackLimiter(MAX_CONNECTION_LIMIT * 2);
 
 interface ProxyConnectionEntry {
   agent: HttpsProxyAgent<string>;
@@ -1059,7 +1075,7 @@ async function downloadSegmentOnce(
   proxy: ProxyEndpoint,
   signal: AbortSignal,
   options: Required<Pick<ProxySegmentedDownloadOptions, "skipTlsVerify" | "connectTimeoutMs" | "idleTimeoutMs">>,
-  callbacks: Pick<ProxySegmentedDownloadOptions, "waitWhilePaused" | "onTrafficBytes" | "onProgress">,
+  callbacks: Pick<ProxySegmentedDownloadOptions, "waitWhilePaused" | "onTrafficBytes" | "onProgress"> & { onTransferWritten?: () => void },
   totalBytes: number,
   currentProgress: () => number
 ): Promise<SegmentDownloadOutcome> {
@@ -1107,6 +1123,20 @@ async function downloadSegmentOnce(
   const receivedHash = createHash("sha256");
   const suspiciousZeroRanges: Segment[] = [];
   let trailingZeros = 0;
+  let writeBuffer = Buffer.allocUnsafe(Math.min(SEGMENT_WRITE_BUFFER_BYTES, expectedBytes));
+  let bufferedBytes = 0;
+  let writtenBytes = 0;
+  let lastFlushAt = performance.now();
+  const flushBuffered = async (): Promise<void> => {
+    if (!bufferedBytes) return;
+    if (signal.aborted) throw abortError();
+    const length = bufferedBytes;
+    await runtimePerformance.measure("proxy.write", () => writeBufferAt(handle, writeBuffer.subarray(0, length), segment.start + writtenBytes));
+    writtenBytes += length;
+    bufferedBytes = 0;
+    lastFlushAt = performance.now();
+    callbacks.onProgress?.(length, currentProgress() + length, totalBytes);
+  };
   try {
     for await (const rawChunk of response) {
       if (signal.aborted) {
@@ -1122,7 +1152,6 @@ async function downloadSegmentOnce(
         await callbacks.waitWhilePaused();
         response.setTimeout(options.idleTimeoutMs);
       }
-      await runtimePerformance.measure("proxy.write", () => writeBufferAt(handle, chunk, segment.start + received));
       receivedHash.update(chunk);
       trailingZeros = collectSuspiciousZeroRanges(
         chunk,
@@ -1131,16 +1160,33 @@ async function downloadSegmentOnce(
         suspiciousZeroRanges
       );
       received += chunk.length;
-      callbacks.onProgress?.(chunk.length, currentProgress() + chunk.length, totalBytes);
+      let offset = 0;
+      while (offset < chunk.length) {
+        const length = Math.min(writeBuffer.length - bufferedBytes, chunk.length - offset);
+        chunk.copy(writeBuffer, bufferedBytes, offset, offset + length);
+        bufferedBytes += length;
+        offset += length;
+        if (bufferedBytes === writeBuffer.length) await flushBuffered();
+      }
+      if (performance.now() - lastFlushAt >= SEGMENT_WRITE_FLUSH_INTERVAL_MS) await flushBuffered();
     }
     if (received !== expectedBytes) {
       throw new Error("proxy_segment_underflow");
     }
+    await flushBuffered();
   } finally {
     opened.dispose();
+    writeBuffer = Buffer.alloc(0);
     await handle.close();
   }
-  const writtenHash = await runtimePerformance.measure("proxy.readback", () => hashFileRange(tempPath, segment.start, expectedBytes, signal));
+  callbacks.onTransferWritten?.();
+  const releaseReadback = await sharedReadbackLimiter.acquire(signal);
+  let writtenHash: Buffer;
+  try {
+    writtenHash = await runtimePerformance.measure("proxy.readback", () => hashFileRange(tempPath, segment.start, expectedBytes, signal));
+  } finally {
+    releaseReadback();
+  }
   const networkHash = receivedHash.digest();
   if (!timingSafeEqual(networkHash, writtenHash)) {
     throw new SegmentValidationError("readback_mismatch", segment.start, segment.end, segment);
@@ -1273,6 +1319,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
         excluded.add(proxyEndpointKey(primaryProxy));
         let attemptProgress = 0;
         const startedAt = Date.now();
+        let transferDurationMs = 0;
         try {
           const outcome = await downloadSegmentOnce(
             target,
@@ -1284,6 +1331,10 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
             {
               waitWhilePaused: options.waitWhilePaused,
               onTrafficBytes: options.onTrafficBytes,
+              onTransferWritten: () => {
+                transferDurationMs = Math.max(1, Date.now() - startedAt);
+                lease?.releaseSlot();
+              },
               onProgress: (deltaBytes, downloadedBytes, totalBytes) => {
                 attemptProgress += deltaBytes;
                 updateProgress(deltaBytes, downloadedBytes, totalBytes);
@@ -1295,7 +1346,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
           lease.release({
             succeeded: true,
             transferredBytes: outcome.bytes,
-            durationMs: Math.max(1, Date.now() - startedAt)
+            durationMs: transferDurationMs || Math.max(1, Date.now() - startedAt)
           });
           lease = null;
 
