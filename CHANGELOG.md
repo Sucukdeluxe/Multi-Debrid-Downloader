@@ -4,6 +4,17 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.94] - 2026-10-15
+
+### Fixed
+
+- Retry temporary API account-check connection failures and HTTP 408, 429, and server errors within a bounded time budget. Keep the configured fixed proxy and respect Retry-After and cancellation.
+- Preserve confirmed account validity and premium information when a check cannot complete. Explicit credential rejections still update the account status.
+- Recognize “Unable to fetch” and explain proxy access and source-IP allowlisting requirements in account error messages.
+- Keep Proxy-only enabled when importing an older online backup without an embedded proxy list. Network requests remain blocked until a valid list is configured.
+
+Current online backups continue to restore their proxy list and fixed API-proxy selection. Archive extraction is unchanged.
+
 ## [2.0.93] - 2026-10-01
 
 ### Fixed
