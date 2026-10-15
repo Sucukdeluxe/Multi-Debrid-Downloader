@@ -4,6 +4,16 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.97] - 2026-10-15
+
+### Proxy download recovery
+
+- Retry a segmented transfer once from the beginning when valid range responses report a changed total file size. Probe the size again instead of immediately falling back to the fixed single proxy.
+- Discard all bytes and roll back progress from the rejected attempt before retrying. Preserve exact range, length and disk-readback checks; persistently inconsistent responses still use the existing safe fallback.
+- Log the fresh size check and a dedicated technical error code for representation-size changes.
+
+Proxy-only routing, the fixed API proxy, connection limits, cancellation and archive extraction are unchanged. This addresses a specific fallback case; overall server throughput and reported application freezes still require live verification.
+
 ## [2.0.96] - 2026-10-15
 
 ### Download stability
