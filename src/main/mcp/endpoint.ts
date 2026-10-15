@@ -14,6 +14,8 @@ export interface McpTool {
   idempotent?: boolean;
   openWorld?: boolean;
   reveal?: boolean;
+  binary?: boolean;
+  format?(value: unknown, secrets: string[]): unknown;
   dispose?(): void;
   run(args: Record<string, unknown>, context: ToolContext): unknown | Promise<unknown>;
 }
@@ -82,9 +84,16 @@ export class McpEndpoint {
           this.mutations = operation.then(() => {}, () => {});
           value = await operation;
         } else value = await execute();
-        const result = tool.reveal ? value : redact(value, this.options.getSecrets());
+        let result = tool.format ? tool.format(value, this.options.getSecrets()) : tool.reveal ? value : redact(value, this.options.getSecrets());
+        if (tool.binary) {
+          const binary = value as { base64?: unknown };
+          if (!binary || typeof binary.base64 !== "string" || binary.base64.length > 1_398_104 || binary.base64.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(binary.base64) || Buffer.from(binary.base64, "base64").toString("base64") !== binary.base64) throw new Error("Ungültige Binärantwort.");
+          const metadata = tool.format ? tool.format({ ...binary, base64: undefined }, this.options.getSecrets()) : redact({ ...binary, base64: undefined }, this.options.getSecrets());
+          result = { ...metadata as object, base64: binary.base64 };
+        }
         if (Buffer.byteLength(JSON.stringify(result ?? null)) > 6_000_000) throw new Error("Ergebnis zu groß; bitte Filter oder kleinere Seiten verwenden.");
-        const response = { content: [{ type: "text" as const, text: JSON.stringify(result ?? null) }], structuredContent: { result: result ?? null } };
+        const textResult = tool.binary ? { ...result as object, base64: undefined } : result;
+        const response = { content: [{ type: "text" as const, text: JSON.stringify(textResult ?? null) }], structuredContent: { result: result ?? null } };
         if (Buffer.byteLength(JSON.stringify(response)) > 7_500_000) throw new Error("Ergebnis zu groß; bitte Filter oder kleinere Seiten verwenden.");
         outcome = "success";
         return response;

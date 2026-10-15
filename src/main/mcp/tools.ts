@@ -17,6 +17,7 @@ import type { AddLinksPayload, DebridProvider, PackagePriority, RendererSettings
 import type { McpScope } from "../../shared/mcp";
 import type { McpTool } from "./endpoint";
 import { McpFiles } from "./files";
+import { McpFileTransfers, formatTransferResult } from "./file-transfers";
 import { redact, requireScopes, type Schema } from "./security";
 
 const str = (maxLength = 256): Schema => ({ type: "string", minLength: 1, maxLength });
@@ -58,6 +59,7 @@ export interface McpToolDependencies {
   files: McpFiles;
   getScopes(): McpScope[];
   getSecrets(): string[];
+  getInstallationId?(): string;
   updateSettings(patch: RendererSettingsUpdate): Promise<unknown>;
   start?(): Promise<void>;
   accountsChanged?(): void;
@@ -67,6 +69,7 @@ export interface McpToolDependencies {
 
 export function createMcpTools(deps: McpToolDependencies): McpTool[] {
   const c = deps.controller;
+  const transfers = new McpFileTransfers(deps.files);
   const tools: McpTool[] = [];
   const add = (name: string, description: string, inputSchema: Schema, scopes: McpScope[], run: McpTool["run"], options: Partial<McpTool> = {}) => tools.push({ name: `mdd_${name}`, description, inputSchema, scopes, run, ...options });
   const read = (name: string, description: string, schema: Schema, run: McpTool["run"]) => add(name, description, schema, ["read"], run, { idempotent: true });
@@ -171,6 +174,15 @@ export function createMcpTools(deps: McpToolDependencies): McpTool[] {
   add("files_list", "List a directory under an approved root. Symbolic links and private app files are excluded.", object({ rootId: str(), relativePath: { type: "string", maxLength: 2048 }, offset: integer(10_000_000), limit: integer(200, 1) }, ["rootId"]), ["read", "files"], args => deps.files.list(String(args.rootId), String(args.relativePath || ""), Number(args.offset || 0), Number(args.limit || 100)), { idempotent: true });
   add("files_read", "Read at most 256 KiB of text from an approved root. Credential files and symbolic links are rejected.", object({ rootId: str(), relativePath: str(2048), offset: integer(Number.MAX_SAFE_INTEGER), length: integer(262_144, 1) }, ["rootId", "relativePath"]), ["read", "files"], args => deps.files.read(String(args.rootId), String(args.relativePath), Number(args.offset || 0), Number(args.length || 65536)), { idempotent: true });
   add("files_hash", "Compute SHA-256 for an approved file, with cancellation and concurrent-file-change detection.", object({ rootId: str(), relativePath: str(2048) }), ["read", "files"], (args, context) => deps.files.hash(String(args.rootId), String(args.relativePath), context.signal), { idempotent: true });
+  add("files_transfer_open", "Prepare a complete binary file transfer from an approved root. Requires locally enabled complete-file transfer. The original stays unchanged. Poll files_transfer_get until ready; expires after one hour or ten idle minutes.", object({ rootId: str(), relativePath: str(2048) }), ["read", "files", "transfer"], async (args, context) => {
+    const result = await transfers.open(String(args.rootId), String(args.relativePath), context.principalId, context.signal);
+    const installationId = deps.getInstallationId?.();
+    return { ...result, reference: installationId ? `media-mcp-file:v1:${Buffer.from(JSON.stringify({ v: 1, installationId, kind: "downloader", transferId: result.transferId })).toString("base64url")}` : undefined };
+  }, { dispose: () => transfers.dispose(), format: formatTransferResult });
+  add("files_transfer_get", "Read transfer preparation, size, source SHA-256 and expiry. Only the same authenticated installation principal can access it.", object({ transferId: str() }), ["read", "files", "transfer"], (args, context) => transfers.get(String(args.transferId), context.principalId), { idempotent: true, format: formatTransferResult });
+  add("files_transfer_list", "List this principal's pending binary transfers without exposing source paths or credentials.", object(), ["read", "files", "transfer"], (_args, context) => transfers.list(context.principalId), { idempotent: true, format: formatTransferResult });
+  add("files_transfer_read", "Read an exact binary range up to 1 MiB with a chunk SHA-256. Use a receiver script rather than putting base64 in conversation. Repeating a range is safe; no source bytes are changed.", object({ transferId: str(), offset: integer(Number.MAX_SAFE_INTEGER), length: integer(1_048_576, 1) }, ["transferId", "offset"]), ["read", "files", "transfer"], (args, context) => transfers.read(String(args.transferId), context.principalId, Number(args.offset), Number(args.length || 1_048_576), context.signal), { idempotent: true, binary: true, format: formatTransferResult });
+  add("files_transfer_close", "Close a binary transfer and release its source handle. Does not remove the original file.", object({ transferId: str() }), ["read", "files", "transfer"], (args, context) => transfers.close(String(args.transferId), context.principalId));
   add("files_hash_start", "Start a background SHA-256 check for a large approved file. Poll jobs_get and cancel with jobs_cancel.", object({ rootId: str(), relativePath: str(2048) }), ["read", "files"], args => {
     for (const [id, job] of jobs) if (job.state !== "running" && job.startedAt < Date.now() - 3_600_000) jobs.delete(id);
     if ([...jobs.values()].filter(job => job.state === "running").length >= 2 || jobs.size >= 32) throw new Error("Prüfauftragslimit erreicht.");
@@ -211,7 +223,7 @@ export function createMcpTools(deps: McpToolDependencies): McpTool[] {
     const offset = Number(args.offset || 0);
     const end = Math.min(entry.data.length, offset + Number(args.length || 65536));
     return { base64: entry.data.subarray(offset, end).toString("base64"), nextOffset: end < entry.data.length ? end : null, bytes: entry.data.length };
-  }, { reveal: true, idempotent: true });
+  }, { binary: true, idempotent: true });
   read("artifact_close", "Release one in-memory export immediately.", object({ artifactId: str() }), args => ({ removed: artifacts.delete(String(args.artifactId)) }));
   return tools;
 }

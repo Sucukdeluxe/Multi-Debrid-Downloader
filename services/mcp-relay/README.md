@@ -32,6 +32,24 @@ Keine beliebige Shell, kein frei wählbarer IPC-Aufruf, kein Screenshot-/Tastatu
 
 Proxy-only gilt auch für Registrierung, Polling und Schlüsselwiderruf. Bei fehlendem oder ausgefallenem Proxy wird keine direkte Verbindung versucht. Ein Ausfall beendet keine laufenden Downloads. Unklare Übertragungsergebnisse werden nicht automatisch als erfolgreiche Aktionen gemeldet und Mutationen nicht nach Verbindungsabbrüchen wiederholt.
 
+## Fehlerhafte Archive direkt übernehmen
+
+Unter **Hilfe → MCP-Fernzugriff** zusätzlich **Vollständige Dateien aus freigegebenen Arbeitsordnern übertragen** aktivieren. Diese Berechtigung ist standardmäßig aus; alte Konfigurationen erhalten sie nicht automatisch. Sie gilt nur zusammen mit der Dateiberechtigung und den lokal freigegebenen Ordnern. Die Nutzdatei wird unverändert übertragen und kann vertrauliche Inhalte enthalten. Anwendungsspeicher, Schlüssel, Proxy-Zugangsdaten und rohe Diagnose-Logs bleiben gesperrt.
+
+Der Assistent kann einen fehlerhaften Eintrag und seine Logs prüfen, das betreffende Archiv mit `mdd_files_transfer_open` gezielt freigeben und auf dem Arbeits-PC abrufen. Mehrteilige Archive werden als einzelne, ausdrücklich gewählte Dateien übertragen. Ein Abruf funktioniert auch zwischen zwei Servern, wenn der Empfänger dort ausgeführt wird. Es werden keine eingehenden Ports geöffnet und keine beliebigen Upload-Zieladressen angenommen.
+
+Beispiel für den Empfänger mit vorhandenem Node.js und den Projektabhängigkeiten:
+
+```powershell
+node "C:\Pfad\Multi-Debrid-Downloader\scripts\pull-mcp-file.mjs" "C:\Privater Ordner\mcp-code.txt" "output" "Paket\datei.part1.rar" "C:\Diagnose\datei.part1.rar"
+```
+
+Der Zielordner muss bestehen. Statt Root und relativem Dateipfad können `--transfer` und die tokenlose `media-mcp-file:v1:…`-Referenz des vorbereiteten Transfers angegeben werden. Die Referenz allein reicht nicht für einen Zugriff; sie ist kein öffentlicher Browser-Downloadlink. Derselbe private Verbindungscode wird zur Authentifizierung verwendet und nicht ausgegeben.
+
+Der Empfänger prüft die vollständige SHA-256 der Quelle, jeden übertragenen Block und die fertige Zieldatei erneut von der Festplatte. Erst danach entsteht die endgültige Zieldatei. Die Quelle bleibt unverändert und bestehende Ziele werden nicht überschrieben. Bis zu vier Transfers sind gleichzeitig offen; ein Transfer läuft nach einer Stunde oder zehn Minuten ohne Zugriff ab. Die App muss währenddessen laufen.
+
+Nach einem Verbindungsabbruch denselben Aufruf mit `--resume` wiederholen. `.mcp-part` und `.mcp-transfer.json` bleiben dafür neben dem Ziel erhalten; sie enthalten keinen Zugangsschlüssel. Fortsetzen akzeptiert nur dieselbe Quelle und einen passenden, erneut geprüften lokalen Dateianfang. Bei geändertem Quellinhalt bricht es ab. Nach einem harten Prozessabbruch kann zusätzlich eine `.mcp-lock` zurückbleiben; diese nur entfernen, wenn kein Empfängerprozess mehr für genau dieses Ziel läuft. Nach erfolgreicher Prüfung werden die eigenen Hilfsdateien entfernt. Ein SHA-256-Gleichstand beweist eine identische Übertragung, nicht die inhaltliche Fehlerfreiheit des ursprünglichen RAR-Archivs.
+
 ## Vermittlungsdienst
 
 Start: `node services/mcp-relay/src/server.mjs`. Konfiguration über `HOST` (Standard `127.0.0.1`), `PORT` (Standard `9872`), `MCP_DATA_DIR`, `MCP_PREFIX` und optional `MCP_TRUST_LOOPBACK_PROXY=1` hinter einem ausschließlich lokalen Reverse-Proxy. Der Dienst muss hinter HTTPS laufen. Er darf nicht mit Root-Rechten oder unter dem Benutzer eines Backup-Dienstes laufen.

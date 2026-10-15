@@ -1,4 +1,4 @@
-export type McpScope = "read" | "control" | "files" | "secrets";
+export type McpScope = "read" | "control" | "files" | "transfer" | "secrets";
 
 export interface McpConfiguration {
   enabled: boolean;
