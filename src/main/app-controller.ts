@@ -56,9 +56,10 @@ import { configureLogger, flushLoggerSync, getLogFilePath, logger } from "./logg
 import { AllDebridWebFallback } from "./all-debrid-web";
 import { BestDebridWebFallback } from "./bestdebrid-web";
 import { RealDebridWebFallback } from "./realdebrid-web";
-import { getItemLogPath, initItemLogs, shutdownItemLogs } from "./item-log";
-import { getPackageLogPath, initPackageLogs, shutdownPackageLogs } from "./package-log";
-import { initSessionLog, getSessionLogPath, shutdownSessionLog } from "./session-log";
+import { flushItemLogs, getItemLogPath, initItemLogs, shutdownItemLogs } from "./item-log";
+import { flushPackageLogs, getPackageLogPath, initPackageLogs, shutdownPackageLogs } from "./package-log";
+import { flushSessionLog, initSessionLog, getSessionLogPath, shutdownSessionLog } from "./session-log";
+import { flushDiagnosticLogWrites } from "./diagnostic-log-writer";
 import { MegaWebFallback } from "./mega-web-fallback";
 import { acquirePersistenceBarrier, addHistoryEntry, addHistoryEntryForRetention, cancelPendingAsyncSaves, clearHistory, createFileRollback, createHistoryRollback, createStoragePaths, loadHistory, loadHistoryForRetention, loadSessionWithStatus, loadSettings, normalizeHistoryEntry, normalizeLoadedSession, normalizeLoadedSessionTransientFields, normalizeSettings, removeHistoryEntries, replaceHistory, resetHistoryForRetention, saveHistory, saveSession, saveSettings } from "./storage";
 import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate } from "./update";
@@ -156,6 +157,7 @@ export class AppController {
   private downloadHealthTimer: NodeJS.Timeout | null = null;
 
   private downloadHealthEvaluation: Promise<void> | null = null;
+  private settingsLogUpdate: Promise<unknown> = Promise.resolve();
 
   private logDirectory = this.storagePaths.baseDir;
 
@@ -621,8 +623,9 @@ export class AppController {
     }
   }
 
-  private restoreLogStorageAfterFailedImport(location: AppSettings["logStorageLocation"]): void {
+  private async restoreLogStorageAfterFailedImport(location: AppSettings["logStorageLocation"]): Promise<void> {
     try {
+      await this.flushLogs();
       this.reconfigureLogStorage(location);
     } catch (error) {
       logger.error(`Log-Speicherort konnte nach fehlgeschlagenem Backup-Import nicht wiederhergestellt werden: ${String(error)}`);
@@ -672,6 +675,7 @@ export class AppController {
         ? this.persistRemoteDiagnosticsFromBackup(remoteDiagnostics)
         : null;
       if (previousSettings.logStorageLocation !== restoredSettings.logStorageLocation) {
+        await this.flushLogs();
         if (!this.reconfigureLogStorage(restoredSettings.logStorageLocation)) {
           throw new Error("Log-Speicherort konnte nicht wiederhergestellt werden");
         }
@@ -700,7 +704,7 @@ export class AppController {
         }
       }
       if (logStorageChanged) {
-        this.restoreLogStorageAfterFailedImport(previousSettings.logStorageLocation);
+        await this.restoreLogStorageAfterFailedImport(previousSettings.logStorageLocation);
       }
       if (remoteRestore && restoreRemoteDiagnostics) {
         try {
@@ -728,6 +732,15 @@ export class AppController {
     for (const failure of workDirectories.failures) {
       logger.warn(`Arbeitsordner konnte ${trigger} nicht angelegt werden (${failure.kind}): ${failure.error}`);
     }
+  }
+
+  public updateSettingsWithLogs(partial: Partial<AppSettings>): Promise<AppSettings> {
+    const update = (this.settingsLogUpdate ?? Promise.resolve()).then(async () => {
+      if (partial.logStorageLocation && partial.logStorageLocation !== this.settings.logStorageLocation) await this.flushLogs();
+      return this.updateSettings(partial);
+    });
+    this.settingsLogUpdate = update.catch(() => {});
+    return update;
   }
 
   public updateSettings(partial: Partial<AppSettings>): AppSettings {
@@ -1617,6 +1630,7 @@ export class AppController {
       resetHistoryForRetention(this.storagePaths, restoredSettings.historyRetentionMode);
       remoteRestore = this.persistRemoteDiagnosticsFromBackup(parsed.remoteDiagnostics);
       if (previousLogStorageLocation !== restoredSettings.logStorageLocation) {
+        await this.flushLogs();
         if (!this.reconfigureLogStorage(restoredSettings.logStorageLocation)) {
           throw new Error("Log-Speicherort konnte nicht wiederhergestellt werden");
         }
@@ -1648,7 +1662,7 @@ export class AppController {
         }
       }
       if (logStorageChanged) {
-        this.restoreLogStorageAfterFailedImport(previousLogStorageLocation);
+        await this.restoreLogStorageAfterFailedImport(previousLogStorageLocation);
       }
       try {
         await barrier.release({ replayBlocked: true });
@@ -1769,12 +1783,14 @@ export class AppController {
     if (this.settings.historyRetentionMode === "session") {
       this.runHistoryLifecycleCleanup("Beenden", () => clearHistory(this.storagePaths));
     }
+    await this.waitForShutdownTask(this.flushLogs(), deadlineAt);
     this.shutdownLogStorage();
     this.audit("INFO", "App beendet");
     shutdownTraceLog();
     shutdownAccountRotationLog();
     shutdownConversionLog();
     shutdownAuditLog();
+    await this.waitForShutdownTask(flushDiagnosticLogWrites(), deadlineAt);
     logger.info("App beendet");
   }
 
@@ -1821,6 +1837,11 @@ export class AppController {
     initRenameLog(this.logDirectory);
     initDesktopRenameLogAt(this.logDirectory);
     initTraceLog(this.logDirectory);
+  }
+
+  public async flushLogs(filePath?: string): Promise<void> {
+    await Promise.all([flushSessionLog(filePath), flushPackageLogs(filePath), flushItemLogs(filePath)]);
+    await flushDiagnosticLogWrites(filePath);
   }
 
   private shutdownLogStorage(): void {

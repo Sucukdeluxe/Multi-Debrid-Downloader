@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { appendDiagnosticLog, finishDiagnosticLog, hasPendingDiagnosticLogWrites } from "./diagnostic-log-writer";
 import { logTimestamp } from "./log-timestamp";
 import path from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -170,22 +171,15 @@ export function logAccountRotation(
   if (!rotationLogPath) {
     return;
   }
-  try {
-    rotateIfNeeded(rotationLogPath);
-    if (!fs.existsSync(rotationLogPath)) {
-      fs.writeFileSync(rotationLogPath, "", "utf8");
-    }
-    const head = `${logTimestamp()} [${level}] ${provider} | ${accountLabel} | ${event}`;
-    fs.appendFileSync(rotationLogPath, `${head}${formatFields(fields)}\n`, "utf8");
-  } catch {
-  }
+  const head = `${logTimestamp()} [${level}] ${provider} | ${accountLabel} | ${event}`;
+  void appendDiagnosticLog(rotationLogPath, `${head}${formatFields(fields)}\n`, ROTATION_LOG_MAX_FILE_BYTES);
 }
 
 export function getAccountRotationLogPath(): string | null {
   if (!rotationLogPath) {
     return null;
   }
-  return fs.existsSync(rotationLogPath) ? rotationLogPath : null;
+  return hasPendingDiagnosticLogWrites(rotationLogPath) || fs.existsSync(rotationLogPath) ? rotationLogPath : null;
 }
 
 export function shutdownAccountRotationLog(): void {
@@ -193,10 +187,9 @@ export function shutdownAccountRotationLog(): void {
     return;
   }
   try {
-    fs.appendFileSync(
+    void finishDiagnosticLog(
       rotationLogPath,
-      `=== Account-Rotation Log Ende: ${logTimestamp()} ===\n`,
-      "utf8"
+      `=== Account-Rotation Log Ende: ${logTimestamp()} ===\n`
     );
   } catch {
   }

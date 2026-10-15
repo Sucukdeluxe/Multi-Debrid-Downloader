@@ -1,6 +1,7 @@
 import { monitorEventLoopDelay, performance, type IntervalHistogram } from "node:perf_hooks";
 
 export type RuntimeOperation =
+  | "log.write"
   | "settings.read" | "settings.encode" | "settings.write" | "settings.commit"
   | "session.encode" | "session.write" | "session.sync" | "session.backup" | "session.commit"
   | "statistics.encode" | "statistics.write" | "statistics.commit"

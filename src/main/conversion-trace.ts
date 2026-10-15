@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { logTimestamp } from "./log-timestamp";
+import { appendDiagnosticLog, finishDiagnosticLog, hasPendingDiagnosticLogWrites } from "./diagnostic-log-writer";
 
 export interface ConversionPhase {
   atMs: number;
@@ -133,7 +134,7 @@ export function getConversionLogPath(): string | null {
   if (!conversionLogPath) {
     return null;
   }
-  return fs.existsSync(conversionLogPath) ? conversionLogPath : null;
+  return hasPendingDiagnosticLogWrites(conversionLogPath) || fs.existsSync(conversionLogPath) ? conversionLogPath : null;
 }
 
 export function shutdownConversionLog(): void {
@@ -141,7 +142,7 @@ export function shutdownConversionLog(): void {
     return;
   }
   try {
-    fs.appendFileSync(conversionLogPath, `=== Conversion Log Ende: ${logTimestamp()} ===\n`, "utf8");
+    void finishDiagnosticLog(conversionLogPath, `=== Conversion Log Ende: ${logTimestamp()} ===\n`);
   } catch {
   }
   conversionLogPath = null;
@@ -151,14 +152,7 @@ function writeConversionBlock(block: string): void {
   if (!conversionLogPath) {
     return;
   }
-  try {
-    rotateIfNeeded(conversionLogPath);
-    if (!fs.existsSync(conversionLogPath)) {
-      fs.writeFileSync(conversionLogPath, "", "utf8");
-    }
-    fs.appendFileSync(conversionLogPath, `${block}\n`, "utf8");
-  } catch {
-  }
+  void appendDiagnosticLog(conversionLogPath, `${block}\n`, CONVERSION_LOG_MAX_FILE_BYTES);
 }
 
 export async function runWithConversionTrace<T>(

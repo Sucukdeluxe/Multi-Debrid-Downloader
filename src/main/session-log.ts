@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { logTimestamp } from "./log-timestamp";
 import path from "node:path";
 import { setLogListener } from "./logger";
+import { appendDiagnosticLog, finishDiagnosticLog, flushDiagnosticLogWrites } from "./diagnostic-log-writer";
 
 const SESSION_LOG_FLUSH_INTERVAL_MS = 200;
 
@@ -21,14 +22,15 @@ function formatTimestamp(): string {
   return `${y}-${mo}-${d}_${h}-${mi}-${s}`;
 }
 
-function flushPending(): void {
+function flushPending(asynchronous = false): void {
   if (pendingLines.length === 0 || !sessionLogPath) {
     return;
   }
   const chunk = pendingLines.join("");
   pendingLines = [];
   try {
-    fs.appendFileSync(sessionLogPath, chunk, "utf8");
+    if (asynchronous) void appendDiagnosticLog(sessionLogPath, chunk);
+    else void finishDiagnosticLog(sessionLogPath, chunk);
   } catch {
   }
 }
@@ -39,7 +41,7 @@ function scheduleFlush(): void {
   }
   flushTimer = setTimeout(() => {
     flushTimer = null;
-    flushPending();
+    flushPending(true);
   }, SESSION_LOG_FLUSH_INTERVAL_MS);
 }
 
@@ -101,9 +103,16 @@ export function getSessionLogPath(): string | null {
   return sessionLogPath;
 }
 
-export function shutdownSessionLog(): void {
+export function flushSessionLog(filePath?: string): Promise<void> {
+  if (flushTimer) clearTimeout(flushTimer);
+  flushTimer = null;
+  flushPending(true);
+  return flushDiagnosticLogWrites(filePath || sessionLogPath || undefined);
+}
+
+export function shutdownSessionLog(): Promise<void> {
   if (!sessionLogPath) {
-    return;
+    return flushDiagnosticLogWrites();
   }
 
   if (flushTimer) {
@@ -114,10 +123,11 @@ export function shutdownSessionLog(): void {
 
   const isoTimestamp = logTimestamp();
   try {
-    fs.appendFileSync(sessionLogPath, `=== Session beendet: ${isoTimestamp} ===\n`, "utf8");
+    void finishDiagnosticLog(sessionLogPath, `=== Session beendet: ${isoTimestamp} ===\n`);
   } catch {
   }
 
   setLogListener(null);
   sessionLogPath = null;
+  return flushDiagnosticLogWrites();
 }

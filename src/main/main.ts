@@ -687,7 +687,7 @@ function registerIpcHandlers(): void {
   handleTrusted(IPC_CHANNELS.UPDATE_SETTINGS, async (_event: IpcMainInvokeEvent, partial: RendererSettingsUpdate) => {
     const currentSettings = controller.getSettings();
     const validated = validateRendererSettingsUpdate(partial ?? {}, currentSettings);
-    const result = controller.updateSettings(prepareDailyStartSettingsPatch(validated, currentSettings) as Partial<AppSettings>);
+    const result = await controller.updateSettingsWithLogs(prepareDailyStartSettingsPatch(validated, currentSettings) as Partial<AppSettings>);
     updateClipboardWatcher();
     updateTray();
     armScheduledStart(result.scheduledStartEpochMs || 0, { startOnPast: true });
@@ -1060,6 +1060,7 @@ function registerIpcHandlers(): void {
   handleTrusted(IPC_CHANNELS.OPEN_AUDIT_LOG, async () => {
     const logPath = controller.getAuditLogPath();
     if (logPath) {
+      await controller.flushLogs(logPath);
       await shell.openPath(logPath);
     }
   });
@@ -1074,6 +1075,7 @@ function registerIpcHandlers(): void {
   handleTrusted(IPC_CHANNELS.OPEN_SESSION_LOG, async () => {
     const logPath = controller.getSessionLogPath();
     if (logPath) {
+      await controller.flushLogs(logPath);
       await shell.openPath(logPath);
     }
   });
@@ -1089,6 +1091,7 @@ function registerIpcHandlers(): void {
     validateString(packageId, "packageId");
     const logPath = controller.getPackageLogPath(packageId);
     if (logPath) {
+      await controller.flushLogs(logPath);
       await shell.openPath(logPath);
     }
   });
@@ -1157,6 +1160,7 @@ function registerIpcHandlers(): void {
     validateString(itemId, "itemId");
     const logPath = controller.getItemLogPath(itemId);
     if (logPath) {
+      await controller.flushLogs(logPath);
       await shell.openPath(logPath);
     }
   });
@@ -1360,7 +1364,7 @@ app.whenReady().then(() => {
     updateSettings: async partial => {
       const current = controller.getSettings();
       const validated = validateRendererSettingsUpdate(partial, current);
-      const result = controller.updateSettings(prepareDailyStartSettingsPatch(validated, current) as Partial<AppSettings>);
+      const result = await controller.updateSettingsWithLogs(prepareDailyStartSettingsPatch(validated, current) as Partial<AppSettings>);
       updateClipboardWatcher();
       updateTray();
       armScheduledStart(result.scheduledStartEpochMs || 0, { startOnPast: true });

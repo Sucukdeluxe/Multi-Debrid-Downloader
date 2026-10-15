@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { logTimestamp } from "./log-timestamp";
 import path from "node:path";
 import crypto from "node:crypto";
+import { appendDiagnosticLog, finishDiagnosticLog, flushDiagnosticLogWrites } from "./diagnostic-log-writer";
 
 const PACKAGE_LOG_FLUSH_INTERVAL_MS = 200;
 const PACKAGE_LOG_RETENTION_DAYS = 30;
@@ -79,7 +80,7 @@ function getPackageLogFilePath(packageId: string): string | null {
   return getPackageLogFilePathFromNormalized(normalizePackageId(packageId));
 }
 
-function flushPending(): void {
+function flushPending(asynchronous = false): void {
   for (const [packageId, lines] of pendingLinesByPackage.entries()) {
     if (lines.length === 0) {
       continue;
@@ -91,7 +92,8 @@ function flushPending(): void {
     const chunk = lines.join("");
     pendingLinesByPackage.set(packageId, []);
     try {
-      fs.appendFileSync(logPath, chunk, "utf8");
+      if (asynchronous) void appendDiagnosticLog(logPath, chunk);
+      else void finishDiagnosticLog(logPath, chunk);
     } catch {
     }
   }
@@ -103,7 +105,7 @@ function scheduleFlush(): void {
   }
   flushTimer = setTimeout(() => {
     flushTimer = null;
-    flushPending();
+    flushPending(true);
   }, PACKAGE_LOG_FLUSH_INTERVAL_MS);
 }
 
@@ -156,32 +158,16 @@ export function ensurePackageLog(meta: PackageLogMeta): string | null {
   if (!logPath) {
     return null;
   }
-  try {
-    fs.mkdirSync(path.dirname(logPath), { recursive: true });
-    if (!fs.existsSync(logPath)) {
-      fs.writeFileSync(logPath, "", "utf8");
-    }
-    if (!initializedThisProcess.has(normalizedPackageId)) {
-      initializedThisProcess.add(normalizedPackageId);
-      const startedAt = logTimestamp();
-      fs.appendFileSync(
-        logPath,
-        `=== Paket-Log Start: ${startedAt} | packageId=${sanitizeFieldValue(String(meta.packageId || ""))} | logKey=${normalizedPackageId} | name=${sanitizeFieldValue(meta.name)} ===\n`,
-        "utf8"
-      );
-      fs.appendFileSync(
-        logPath,
-        `${logTimestamp()} [INFO] Paket-Kontext initialisiert${formatFields({
-          name: meta.name,
-          outputDir: meta.outputDir,
-          extractDir: meta.extractDir
-        })}\n`,
-        "utf8"
-      );
-    }
-  } catch {
-    return null;
-  }
+  if (initializedThisProcess.has(normalizedPackageId)) return logPath;
+  initializedThisProcess.add(normalizedPackageId);
+  const startedAt = logTimestamp();
+  void appendDiagnosticLog(logPath,
+    `=== Paket-Log Start: ${startedAt} | packageId=${sanitizeFieldValue(String(meta.packageId || ""))} | logKey=${normalizedPackageId} | name=${sanitizeFieldValue(meta.name)} ===\n`
+    + `${logTimestamp()} [INFO] Paket-Kontext initialisiert${formatFields({
+      name: meta.name,
+      outputDir: meta.outputDir,
+      extractDir: meta.extractDir
+    })}\n`);
   return logPath;
 }
 
@@ -204,10 +190,18 @@ export function getPackageLogPath(packageId: string): string | null {
   if (!logPath) {
     return null;
   }
-  return fs.existsSync(logPath) ? logPath : null;
+  return initializedThisProcess.has(normalizePackageId(packageId)) || fs.existsSync(logPath) ? logPath : null;
 }
 
-export function shutdownPackageLogs(): void {
+export function flushPackageLogs(filePath?: string): Promise<void> {
+  if (flushTimer) clearTimeout(flushTimer);
+  flushTimer = null;
+  flushPending(true);
+  const paths = filePath ? [filePath] : [...knownLogPaths.values()];
+  return Promise.all(paths.map(logPath => flushDiagnosticLogWrites(logPath))).then(() => undefined);
+}
+
+export function shutdownPackageLogs(): Promise<void> {
   if (flushTimer) {
     clearTimeout(flushTimer);
     flushTimer = null;
@@ -219,7 +213,7 @@ export function shutdownPackageLogs(): void {
       continue;
     }
     try {
-      fs.appendFileSync(logPath, `=== Paket-Log Ende: ${logTimestamp()} ===\n`, "utf8");
+      void finishDiagnosticLog(logPath, `=== Paket-Log Ende: ${logTimestamp()} ===\n`);
     } catch {
     }
   }
@@ -227,4 +221,5 @@ export function shutdownPackageLogs(): void {
   knownLogPaths.clear();
   initializedThisProcess.clear();
   packageLogsDir = null;
+  return flushDiagnosticLogWrites();
 }

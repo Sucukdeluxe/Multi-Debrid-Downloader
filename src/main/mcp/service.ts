@@ -11,6 +11,7 @@ import { McpFiles } from "./files";
 import { createMcpTools, type McpToolDependencies } from "./tools";
 import { RelayAgent } from "./relay-client";
 import { validateRelayUrl } from "./security";
+import { appendDiagnosticLog, flushDiagnosticLogWrites } from "../diagnostic-log-writer";
 
 const DEFAULT_RELAY = "https://downloader.24-music.de/mcp-relay";
 const defaults = (): McpConfiguration => ({ enabled: false, relayUrl: DEFAULT_RELAY, name: "Multi-Debrid-Downloader", scopes: ["read", "control", "files"], extraRoots: [] });
@@ -108,8 +109,7 @@ export class McpService {
   private audit(event: { tool: string; requestId: string; outcome: string; durationMs: number }): void {
     try {
       const file = path.join(this.directory, "audit.log");
-      if (fs.existsSync(file) && fs.statSync(file).size > 2_000_000) fs.renameSync(file, `${file}.old`);
-      fs.appendFileSync(file, `${JSON.stringify({ at: new Date().toISOString(), installationId: this.secrets.current?.installationId, ...event })}\n`, { mode: 0o600 });
+      void appendDiagnosticLog(file, `${JSON.stringify({ at: new Date().toISOString(), installationId: this.secrets.current?.installationId, ...event })}\n`, 2_000_000);
     } catch { }
   }
   private async stopAgent(): Promise<void> {
@@ -233,5 +233,6 @@ export class McpService {
     this.revocationTimer = null;
     ++this.revision;
     await this.stopAgent();
+    await flushDiagnosticLogWrites(path.join(this.directory, "audit.log"));
   }
 }

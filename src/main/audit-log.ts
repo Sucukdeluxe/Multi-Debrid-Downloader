@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { logTimestamp } from "./log-timestamp";
 import path from "node:path";
+import { appendDiagnosticLog, finishDiagnosticLog, hasPendingDiagnosticLogWrites } from "./diagnostic-log-writer";
 
 type AuditLevel = "INFO" | "WARN" | "ERROR";
 
@@ -86,25 +87,14 @@ export function logAuditEvent(level: AuditLevel, message: string, fields?: Recor
   if (!auditLogPath) {
     return;
   }
-  try {
-    rotateIfNeeded(auditLogPath);
-    if (!fs.existsSync(auditLogPath)) {
-      fs.writeFileSync(auditLogPath, "", "utf8");
-    }
-    fs.appendFileSync(
-      auditLogPath,
-      `${logTimestamp()} [${level}] ${message}${formatFields(fields)}\n`,
-      "utf8"
-    );
-  } catch {
-  }
+  void appendDiagnosticLog(auditLogPath, `${logTimestamp()} [${level}] ${message}${formatFields(fields)}\n`, AUDIT_LOG_MAX_FILE_BYTES);
 }
 
 export function getAuditLogPath(): string | null {
   if (!auditLogPath) {
     return null;
   }
-  return fs.existsSync(auditLogPath) ? auditLogPath : null;
+  return hasPendingDiagnosticLogWrites(auditLogPath) || fs.existsSync(auditLogPath) ? auditLogPath : null;
 }
 
 export function shutdownAuditLog(): void {
@@ -112,7 +102,7 @@ export function shutdownAuditLog(): void {
     return;
   }
   try {
-    fs.appendFileSync(auditLogPath, `=== Audit-Log Ende: ${logTimestamp()} ===\n`, "utf8");
+    void finishDiagnosticLog(auditLogPath, `=== Audit-Log Ende: ${logTimestamp()} ===\n`);
   } catch {
   }
   auditLogPath = null;

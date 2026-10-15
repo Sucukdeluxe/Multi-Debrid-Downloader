@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { flushDiagnosticLogWrites } from "../diagnostic-log-writer";
 import crypto from "node:crypto";
 import AdmZip from "adm-zip";
 import type { AppController } from "../app-controller";
@@ -39,6 +40,7 @@ function paginate(entries: unknown[], args: Record<string, unknown>): unknown {
 
 async function tail(file: string | null, lines: number, search: string): Promise<unknown> {
   if (!file) return { lines: [], missing: true };
+  await flushDiagnosticLogWrites(file);
   let handle;
   try {
     handle = await fs.open(file, "r");
