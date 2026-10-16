@@ -15,10 +15,12 @@ import { getConversionLogPath } from "../conversion-trace";
 import { getNetworkProxyState } from "../network-proxy";
 import { getWindowsHostDiagnostics } from "../windows-host-diagnostics";
 import { runtimePerformance } from "../runtime-performance";
+import { getProxyTransferSnapshot } from "../proxy-segmented-download";
 import type { AddLinksPayload, DebridProvider, PackagePriority, RendererSettingsUpdate } from "../../shared/types";
 import type { McpScope } from "../../shared/mcp";
 import type { McpTool } from "./endpoint";
 import { McpFiles } from "./files";
+import type { McpUpdateJobs } from "./update-jobs";
 import { McpFileTransfers, formatTransferResult } from "./file-transfers";
 import { redact, requireScopes, type Schema } from "./security";
 
@@ -63,6 +65,7 @@ export interface McpToolDependencies {
   getScopes(): McpScope[];
   getSecrets(): string[];
   getInstallationId?(): string;
+  updates: Pick<McpUpdateJobs, "start" | "status">;
   updateSettings(patch: RendererSettingsUpdate): Promise<unknown>;
   start?(): Promise<void>;
   accountsChanged?(): void;
@@ -101,7 +104,7 @@ export function createMcpTools(deps: McpToolDependencies): McpTool[] {
   read("settings_get", "Read non-secret settings. Secret values are never returned.", object(), () => createRendererSettings(c.getSettings()));
   read("accounts_list", "Read accounts and their known validation and usage status; credentials remain masked.", object(page, []), args => paginate(createRendererAccounts(c.getSettings()), args));
   read("providers", "Read provider runtime cooldowns, capacity and routing information.", object(), () => getProviderRuntimeSnapshot());
-  read("performance", "Read bounded main-thread delay, CPU, memory and operation timings from memory without running host commands.", object(), () => runtimePerformance.snapshot());
+  read("performance", "Read bounded main-thread delay, CPU, memory, disk timings and connection/readback queue occupancy from memory without running host commands.", object(), () => ({ ...runtimePerformance.snapshot(), proxyTransfers: getProxyTransferSnapshot() }));
   read("errors", "Read the latest application warnings and errors.", object({ limit: integer(500, 1) }, []), args => getRecentErrors().slice(-Number(args.limit || 100)));
   read("diagnostics", "Run the existing local diagnostic checks. Does not change downloads.", object(), () => c.getDebugSetupCheck());
   read("host_diagnostics", "Read bounded Windows crash and host diagnostic information.", object(), () => getWindowsHostDiagnostics());
@@ -201,7 +204,8 @@ export function createMcpTools(deps: McpToolDependencies): McpTool[] {
   add("jobs_cancel", "Cancel one background read-only file check.", object({ jobId: str() }), ["read", "files"], args => { const job = jobs.get(String(args.jobId)); if (!job) throw new Error("Prüfauftrag nicht gefunden."); job.abort.abort(); return { cancelled: true }; }, { idempotent: true });
   add("containers_add", "Import a supported link container from an approved file root.", object({ rootId: str(), relativePath: str(2048) }), ["control", "files"], async args => c.addContainers([await deps.files.allowedPath(String(args.rootId), String(args.relativePath))]), { openWorld: true });
   write("update_check", "Check the application's configured update source.", object(), () => c.checkUpdates(), { openWorld: true, idempotent: true });
-  write("update_install", "Install the currently offered app update. May restart the application; requires local confirmation.", object(), () => c.installUpdate(), { destructive: true, openWorld: true });
+  read("update_status", "Read the persistent update job, progress and target-version verification after reconnecting. A disconnected MCP connection alone does not prove an update succeeded.", object(), () => deps.updates.status());
+  write("update_install", "Start one persistent update job for an exact stable version. Requires local confirmation unless the separate updates permission is enabled locally. Poll update_status; after reconnecting verify completed and verifiedVersion. Reuse requestKey after an uncertain response; never submit a new key automatically. Downloads continue during preparation; allowInterrupt explicitly permits parking them for installation and restart.", object({ expectedVersion: { type: "string", pattern: "^\\d{1,6}\\.\\d{1,6}\\.\\d{1,6}$", maxLength: 20 }, requestKey: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$", maxLength: 128 }, allowInterrupt: { type: "boolean" } }, ["expectedVersion", "requestKey"]), (args, context) => deps.updates.start(String(args.expectedVersion), String(args.requestKey), args.allowInterrupt === true, context.signal), { destructive: true, confirmationBypassScope: "updates", openWorld: true, idempotent: true });
   write("app_restart", "Restart this application only; requires local confirmation.", object(), () => { setTimeout(deps.restart, 1000); return { scheduled: true }; }, { destructive: true });
   write("app_quit", "Close this application only; requires local confirmation. MCP becomes unavailable until the app starts again.", object(), () => { setTimeout(deps.quit, 1000); return { scheduled: true }; }, { destructive: true });
   read("support_export", "Create an in-memory support ZIP with redacted text entries; does not include credentials.", object(), async () => {

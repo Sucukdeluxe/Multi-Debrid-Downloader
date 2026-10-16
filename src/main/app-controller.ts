@@ -1244,10 +1244,15 @@ export class AppController {
     return result;
   }
 
-  public async installUpdate(onProgress?: (progress: UpdateInstallProgress) => void): Promise<UpdateInstallResult> {
+  public async installUpdate(onProgress?: (progress: UpdateInstallProgress) => void, options?: { expectedVersion?: string; beforeLaunch?: () => Promise<void> }): Promise<UpdateInstallResult> {
     const result = await runInstallWithResume(
       this.manager,
-      () => installLatestUpdate(this.settings.updateRepo, undefined, onProgress)
+      park => installLatestUpdate(this.settings.updateRepo, undefined, onProgress, {
+        expectedVersion: options?.expectedVersion,
+        requireDigest: Boolean(options?.expectedVersion),
+        beforeLaunch: async () => { await options?.beforeLaunch?.(); park(); }
+      }),
+      true
     );
     if (result.started) {
       this.lastUpdateCheck = null;

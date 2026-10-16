@@ -4,6 +4,18 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.101] - 2026-10-16
+
+### MCP updates and transfer I/O
+
+- Add persistent, idempotent MCP update jobs with an exact stable target version, mandatory installer digest verification, progress polling and target-version verification after restart. Installed Windows editions using the official update repository are supported; portable editions are not remotely replaced.
+- Offer a separate, disabled-by-default permission under Help → MCP remote access for installing official updates without a local prompt. Other destructive actions still require confirmation. Recheck permissions and key generation before installer launch.
+- Keep downloads running while preparing and verifying an update, then park and persist them at installer handoff. Resume the previous running session if launching fails; quit after a successful MCP installer launch so installation can proceed.
+- Batch proxy writes and readback checks into bounded 1 MiB buffers and limit concurrent readback checks to two. Preserve complete SHA-256 disk readback, range/length validation, suspicious-content checks, cancellation and final disk flush.
+- Expose connection occupancy, effective connection limits and readback queue/wait timings through lightweight MCP performance diagnostics. Connection settings, proxy-only routing and extraction behavior are unchanged.
+
+Controlled local I/O-contention tests show fewer disk operations and higher throughput with matching file hashes. Live server throughput and freeze behavior still require verification after installation; this release does not claim all speed drops are eliminated.
+
 ## [2.0.97] - 2026-10-15
 
 ### Proxy download recovery

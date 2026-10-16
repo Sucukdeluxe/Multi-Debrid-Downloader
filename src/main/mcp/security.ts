@@ -10,6 +10,7 @@ export type Schema = {
   enum?: unknown[];
   minLength?: number;
   maxLength?: number;
+  pattern?: string;
   minimum?: number;
   maximum?: number;
   maxItems?: number;
@@ -36,6 +37,7 @@ export function validateSchema(value: unknown, schema: Schema, depth = 0): void 
     for (const entry of value) if (schema.items) validateSchema(entry, schema.items, depth + 1);
   } else if (schema.type === "string") {
     if (typeof value !== "string" || value.length > (schema.maxLength ?? 100_000) || value.length < (schema.minLength ?? 0) || value.includes("\0")) throw new Error("Ungültiger Text.");
+    if (schema.pattern && !new RegExp(schema.pattern).test(value)) throw new Error("Ungültiges Textformat.");
   } else if (schema.type === "number" || schema.type === "integer") {
     if (typeof value !== "number" || !Number.isFinite(value) || (schema.type === "integer" && !Number.isSafeInteger(value)) || value < (schema.minimum ?? -Infinity) || value > (schema.maximum ?? Infinity)) throw new Error("Ungültige Zahl.");
   } else if (schema.type === "boolean" && typeof value !== "boolean") throw new Error("Wahrheitswert erwartet.");

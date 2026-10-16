@@ -340,12 +340,12 @@ async function verifyBinaryShape(filePath: string): Promise<void> {
   }
 }
 
-async function verifyDownloadedInstaller(filePath: string, digestRaw: string): Promise<void> {
+async function verifyDownloadedInstaller(filePath: string, digestRaw: string, requireDigest = false): Promise<void> {
   await verifyBinaryShape(filePath);
 
   const expected = parseExpectedDigest(digestRaw);
   if (!expected) {
-    if (String(process.env.RD_ALLOW_UNSIGNED_UPDATE || "").trim() === "1") {
+    if (!requireDigest && String(process.env.RD_ALLOW_UNSIGNED_UPDATE || "").trim() === "1") {
       logger.warn("Update-Asset ohne gültigen SHA-Digest (RD_ALLOW_UNSIGNED_UPDATE=1) - nur EXE-Basisprüfung durchgeführt");
       return;
     }
@@ -957,20 +957,21 @@ async function downloadFromCandidates(
   throw lastError;
 }
 
-async function resolveAssetFromApi(repo: string, tag: string): Promise<{
+async function resolveAssetFromApi(repo: string, tag: string, pinned = false): Promise<{
   setupAssetUrl: string;
   setupAssetName: string;
   setupAssetDigest: string;
 } | null> {
   const endpoints = uniqueStrings([
     tag ? `releases/tags/${encodeURIComponent(tag)}` : "",
-    "releases/latest",
+    pinned ? "" : "releases/latest",
   ]);
 
   for (const ep of endpoints) {
     try {
       const { ok, payload } = await fetchRelease(repo, ep);
       if (!ok || !payload || isDraftOrPrerelease(payload)) continue;
+      if (pinned && payload.tag_name !== tag) continue;
       const setup = pickSetupAsset(readAssets(payload));
       if (!setup) continue;
       return {
@@ -984,16 +985,17 @@ async function resolveAssetFromApi(repo: string, tag: string): Promise<{
   return null;
 }
 
-async function resolveDigestFromYml(repo: string, tag: string, setupName: string): Promise<string> {
+async function resolveDigestFromYml(repo: string, tag: string, setupName: string, pinned = false): Promise<string> {
   const endpoints = uniqueStrings([
     tag ? `releases/tags/${encodeURIComponent(tag)}` : "",
-    "releases/latest",
+    pinned ? "" : "releases/latest",
   ]);
 
   for (const ep of endpoints) {
     try {
       const { ok, payload } = await fetchRelease(repo, ep);
       if (!ok || !payload || isDraftOrPrerelease(payload)) continue;
+      if (pinned && payload.tag_name !== tag) continue;
 
       const yml = pickLatestYml(readAssets(payload));
       if (!yml) continue;
@@ -1055,6 +1057,7 @@ export async function installLatestUpdate(
   repo: string,
   prechecked?: UpdateCheckResult,
   onProgress?: UpdateProgressCallback,
+  options: { expectedVersion?: string; requireDigest?: boolean; beforeLaunch?: () => Promise<void> } = {},
 ): Promise<UpdateInstallResult> {
   if (activeAbortController && !activeAbortController.signal.aborted) {
     emitProgress(onProgress, {
@@ -1090,6 +1093,11 @@ export async function installLatestUpdate(
     return { started: false, message: "Kein neues Update verfügbar" };
   }
 
+  if (options.expectedVersion && (!/^\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(options.expectedVersion) || check.latestVersion !== options.expectedVersion || check.latestTag !== `v${options.expectedVersion}`)) {
+    activeAbortController = null;
+    return { started: false, message: "Angebotene Update-Version stimmt nicht mit der angeforderten Zielversion überein." };
+  }
+
   let effective: UpdateCheckResult = {
     ...check,
     setupAssetUrl: String(check.setupAssetUrl || ""),
@@ -1098,7 +1106,7 @@ export async function installLatestUpdate(
   };
 
   if (!effective.setupAssetUrl || !effective.setupAssetDigest) {
-    const refreshed = await resolveAssetFromApi(safeRepo, effective.latestTag);
+    const refreshed = await resolveAssetFromApi(safeRepo, effective.latestTag, Boolean(options.expectedVersion));
     if (refreshed) {
       effective = {
         ...effective,
@@ -1110,7 +1118,7 @@ export async function installLatestUpdate(
   }
 
   if (!effective.setupAssetDigest && effective.setupAssetUrl) {
-    const digest = await resolveDigestFromYml(safeRepo, effective.latestTag, effective.setupAssetName || "");
+    const digest = await resolveDigestFromYml(safeRepo, effective.latestTag, effective.setupAssetName || "", Boolean(options.expectedVersion));
     if (digest) {
       effective = { ...effective, setupAssetDigest: digest };
       logger.info("Update-Integritätsdigest aus latest.yml übernommen");
@@ -1159,7 +1167,7 @@ export async function installLatestUpdate(
             message: `Prüfe Installer-Integrität (${i + 1}/${candidates.length})`,
           });
 
-          await verifyDownloadedInstaller(targetPath, String(effective.setupAssetDigest || ""));
+          await verifyDownloadedInstaller(targetPath, String(effective.setupAssetDigest || ""), options.requireDigest);
           verified = true;
           break;
         } catch (error) {
@@ -1182,7 +1190,7 @@ export async function installLatestUpdate(
 
       logger.warn(`Pass ${pass + 1} fehlgeschlagen (${integrityError ? "Integritätsfehler" : "HTTP 404"}), aktualisiere Kandidaten...`);
 
-      const refreshed = await resolveAssetFromApi(safeRepo, effective.latestTag);
+      const refreshed = await resolveAssetFromApi(safeRepo, effective.latestTag, Boolean(options.expectedVersion));
       if (refreshed) {
         effective = {
           ...effective,
@@ -1192,7 +1200,7 @@ export async function installLatestUpdate(
         };
       }
 
-      const ymlDigest = await resolveDigestFromYml(safeRepo, effective.latestTag, effective.setupAssetName || "");
+      const ymlDigest = await resolveDigestFromYml(safeRepo, effective.latestTag, effective.setupAssetName || "", Boolean(options.expectedVersion));
       if (ymlDigest) {
         effective = { ...effective, setupAssetDigest: ymlDigest };
         logger.info("Update-Integritätsdigest aus latest.yml aktualisiert");
@@ -1217,6 +1225,9 @@ export async function installLatestUpdate(
     if (!verified) {
       throw integrityError || lastVerifyError || new Error("Update-Download fehlgeschlagen");
     }
+
+    await options.beforeLaunch?.();
+    if (abortCtrl.signal.aborted) throw new Error("aborted:update_shutdown");
 
     emitProgress(onProgress, {
       stage: "launching", percent: 100, downloadedBytes: 0, totalBytes: null,

@@ -13,6 +13,10 @@ export class ProxyReadbackLimiter {
     if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("invalid_readback_limit");
   }
 
+  public snapshot() {
+    return { limit: this.limit, active: this.active, waiting: this.waiting.length };
+  }
+
   public acquire(signal: AbortSignal): Promise<() => void> {
     if (signal.aborted) return Promise.reject(new Error("aborted:proxy_download"));
     if (this.active < this.limit) {

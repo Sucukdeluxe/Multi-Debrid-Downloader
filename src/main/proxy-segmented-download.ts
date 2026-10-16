@@ -21,8 +21,8 @@ const PROXY_PROBE_END = 1;
 const MAX_REDIRECTS = 5;
 const MAX_SEGMENTS = 4_096;
 const MAX_PROXY_FILE_BYTES = 8 * 1024 * 1024;
-const SEGMENT_READBACK_BUFFER_BYTES = 256 * 1024;
-const SEGMENT_WRITE_BUFFER_BYTES = 256 * 1024;
+const SEGMENT_READBACK_BUFFER_BYTES = 1024 * 1024;
+const SEGMENT_WRITE_BUFFER_BYTES = 1024 * 1024;
 const SEGMENT_WRITE_FLUSH_INTERVAL_MS = 100;
 const SUSPICIOUS_ZERO_RUN_BYTES = 1024;
 const MAX_ZERO_RUN_VERIFICATIONS_PER_SEGMENT = 4;
@@ -197,6 +197,17 @@ class SharedProxyCoordinator {
   private acquisitionCount = 0;
   private lastThrottleAt = 0;
   private successfulTransfersSinceThrottle = 0;
+
+  public snapshot() {
+    return {
+      configuredConnections: this.configuredConnectionLimit,
+      effectiveConnections: this.adaptiveConnectionLimit,
+      activeConnections: this.activeConnections,
+      waitingConnections: this.waiters.length,
+      downloadGroups: this.registeredGroups.size,
+      throttledAt: this.lastThrottleAt || null
+    };
+  }
 
   public setConnectionLimit(limit: number): void {
     const normalized = normalizeProxyConnectionLimit(limit);
@@ -433,7 +444,11 @@ class SharedProxyCoordinator {
 }
 
 const sharedProxyCoordinator = new SharedProxyCoordinator();
-const sharedReadbackLimiter = new ProxyReadbackLimiter(MAX_CONNECTION_LIMIT * 2);
+const sharedReadbackLimiter = new ProxyReadbackLimiter(2);
+
+export function getProxyTransferSnapshot() {
+  return { ...sharedProxyCoordinator.snapshot(), readback: sharedReadbackLimiter.snapshot() };
+}
 
 interface ProxyConnectionEntry {
   agent: HttpsProxyAgent<string>;
@@ -1180,7 +1195,7 @@ async function downloadSegmentOnce(
     await handle.close();
   }
   callbacks.onTransferWritten?.();
-  const releaseReadback = await sharedReadbackLimiter.acquire(signal);
+  const releaseReadback = await runtimePerformance.measure("proxy.readback.wait", () => sharedReadbackLimiter.acquire(signal));
   let writtenHash: Buffer;
   try {
     writtenHash = await runtimePerformance.measure("proxy.readback", () => hashFileRange(tempPath, segment.start, expectedBytes, signal));

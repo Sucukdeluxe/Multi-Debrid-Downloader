@@ -5,7 +5,7 @@ export type RuntimeOperation =
   | "settings.read" | "settings.encode" | "settings.write" | "settings.commit"
   | "session.encode" | "session.write" | "session.sync" | "session.backup" | "session.commit"
   | "statistics.encode" | "statistics.write" | "statistics.commit"
-  | "proxy.allocate" | "proxy.write" | "proxy.readback" | "proxy.flush" | "proxy.commit"
+  | "proxy.allocate" | "proxy.write" | "proxy.readback" | "proxy.readback.wait" | "proxy.flush" | "proxy.commit"
   | "proxy.wait" | "proxy.response";
 
 interface OperationSummary {

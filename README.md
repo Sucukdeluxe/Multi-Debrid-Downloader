@@ -38,6 +38,15 @@ Windows 10 or Windows 11 is required. Release executables are currently unsigned
 - Persistent sessions, history, all-time statistics, queue backup import/export, and recovery after restart.
 - English and German interface with localized dialogs, statuses, menus, settings, and update information.
 - Built-in GitHub update checks with release changelogs and installer download support.
+- Optional MCP remote diagnostics and controls, including separately authorized official updates with persistent jobs and restart/version verification.
+
+## MCP updates
+
+Enable MCP under Help → MCP remote access. The separate permission to install official updates without local confirmation is off by default and requires control permission. Existing connection codes remain valid; permissions cannot be expanded through remote settings tools. Deletions, restores and other critical actions retain their local confirmation.
+
+For the installed Windows edition using the official update repository, call `mdd_update_check`, then `mdd_update_install` with the exact `expectedVersion` and a unique `requestKey` containing 8–128 letters, digits, underscores or hyphens. Set `allowInterrupt: true` only when interrupting active downloads for installation is intended. Preparation and installer verification do not stop downloads. Query `mdd_update_status` for progress; the accepted job continues after the initiating MCP request ends. If a response is lost, query status or repeat the same request key rather than creating another job.
+
+The verified installer parks and persists the current queue before handoff and restarts the application. After reconnecting, require both `completed` and the matching `verifiedVersion`; losing a connection or launching an installer alone is not success. Failed or interrupted jobs are not retried automatically. Portable editions are explicitly unsupported for remote replacement. Update the application manually once to obtain this capability, then enable the new permission locally.
 
 ## Supported services
 
