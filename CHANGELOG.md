@@ -4,6 +4,17 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.104] - 2026-10-18
+
+### Archive recovery and volume matching
+
+- Recover eligible RAR archives after a CRC failure using embedded recovery records and the installed RAR tool. Repair temporary copies, preserve originals and require successful verified extraction before publishing output.
+- Recognize uniquely matching episodic RAR continuation volumes with inconsistent title prefixes through temporary aliases. Wait for every related download to finish and reject ambiguous matches.
+- Preserve explicit missing-volume errors instead of replacing them with secondary checksum errors.
+- Clear stale extraction error details after a confirmed successful archive extraction.
+
+Recovery depends on usable recovery data. Archives with damaged source data and no usable recovery record still require an intact source; integrity checks remain enabled.
+
 ## [2.0.103] - 2026-10-17
 
 ### Download-server overload isolation
