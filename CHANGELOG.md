@@ -4,6 +4,16 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.103] - 2026-10-17
+
+### Download-server overload isolation
+
+- Apply HTTP 503 backoff only to the affected download origin, shared across its active downloads. Other origins can use idle connection capacity without increasing the configured global limit.
+- Preserve global HTTP 429 backoff, bounded recovery after successful transfers, cooldown wakeups and full segment-integrity checks.
+- Include per-origin limits and active connection counts in lightweight MCP performance diagnostics.
+
+Controlled 640 MiB comparisons with an intermittently overloaded origin completed in approximately 6.3–6.5 seconds instead of 10.4–10.7 seconds, with identical final file hashes. The no-error control was approximately unchanged. This does not eliminate upstream HTTP 503 responses or guarantee constant live transfer rates.
+
 ## [2.0.102] - 2026-10-17
 
 ### Transfer queues
