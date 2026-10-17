@@ -183,7 +183,7 @@ interface ProxyPerformance {
   samples: number;
 }
 
-class SharedProxyCoordinator {
+export class SharedProxyCoordinator {
   private configuredConnectionLimit = DEFAULT_CONNECTION_LIMIT;
   private adaptiveConnectionLimit = DEFAULT_CONNECTION_LIMIT;
   private activeConnections = 0;
@@ -197,6 +197,8 @@ class SharedProxyCoordinator {
   private acquisitionCount = 0;
   private lastThrottleAt = 0;
   private successfulTransfersSinceThrottle = 0;
+  private cooldownTimer: NodeJS.Timeout | null = null;
+  private cooldownWakeAt: number | null = null;
 
   public snapshot() {
     return {
@@ -205,6 +207,7 @@ class SharedProxyCoordinator {
       activeConnections: this.activeConnections,
       waitingConnections: this.waiters.length,
       downloadGroups: this.registeredGroups.size,
+      cooldownWakeAt: this.cooldownWakeAt,
       throttledAt: this.lastThrottleAt || null
     };
   }
@@ -281,6 +284,7 @@ class SharedProxyCoordinator {
         if (index >= 0) {
           this.waiters.splice(index, 1);
           reject(abortError());
+          this.drain();
         }
       };
       signal.addEventListener("abort", onAbort, { once: true });
@@ -416,6 +420,9 @@ class SharedProxyCoordinator {
   }
 
   private drain(): void {
+    if (this.cooldownTimer) clearTimeout(this.cooldownTimer);
+    this.cooldownTimer = null;
+    this.cooldownWakeAt = null;
     let granted = true;
     while (granted && this.activeConnections < this.adaptiveConnectionLimit) {
       granted = false;
@@ -440,11 +447,35 @@ class SharedProxyCoordinator {
         if (granted) break;
       }
     }
+    this.scheduleCooldownWake();
+  }
+
+  private scheduleCooldownWake(): void {
+    if (!this.waiters.length || this.activeConnections >= this.adaptiveConnectionLimit) return;
+    const now = Date.now();
+    let earliest = Infinity;
+    for (const waiter of this.waiters) {
+      if (waiter.signal.aborted) continue;
+      for (const proxy of waiter.proxies) {
+        const key = proxyEndpointKey(proxy);
+        if (waiter.excluded.has(key) || this.activeProxies.has(key)) continue;
+        const until = this.cooldownUntil.get(key) || 0;
+        if (until > now) earliest = Math.min(earliest, until);
+      }
+    }
+    if (!Number.isFinite(earliest)) return;
+    this.cooldownWakeAt = earliest;
+    this.cooldownTimer = setTimeout(() => {
+      this.cooldownTimer = null;
+      this.cooldownWakeAt = null;
+      this.drain();
+    }, Math.max(1, earliest - now));
+    this.cooldownTimer.unref();
   }
 }
 
 const sharedProxyCoordinator = new SharedProxyCoordinator();
-const sharedReadbackLimiter = new ProxyReadbackLimiter(2);
+const sharedReadbackLimiter = new ProxyReadbackLimiter(8);
 
 export function getProxyTransferSnapshot() {
   return { ...sharedProxyCoordinator.snapshot(), readback: sharedReadbackLimiter.snapshot() };

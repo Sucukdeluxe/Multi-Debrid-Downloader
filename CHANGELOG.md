@@ -4,6 +4,16 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.102] - 2026-10-17
+
+### Transfer queues
+
+- Wake queued segment requests when a proxy cooldown expires, even if another transfer remains open. Cancel unused wakeups and keep the configured connection budget enforced.
+- Raise the bounded disk-readback pool from two to eight checks so high-latency reads do not hold the entire segment-worker queue. Continue to verify every segment with SHA-256 before publishing the completed file.
+- Expose the next cooldown wakeup in lightweight MCP performance diagnostics.
+
+Controlled 1 GiB comparisons with four downloads and 32 connections completed faster under simulated read latency and shared disk contention, with identical final hashes. Provider errors and server conditions can still affect live transfer rates.
+
 ## [2.0.101] - 2026-10-16
 
 ### MCP updates and transfer I/O
