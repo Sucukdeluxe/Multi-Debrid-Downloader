@@ -199,6 +199,8 @@ export class SharedProxyCoordinator {
   private successfulTransfersSinceThrottle = 0;
   private cooldownTimer: NodeJS.Timeout | null = null;
   private cooldownWakeAt: number | null = null;
+  private readonly groupOrigins = new Map<string, string>();
+  private readonly originThrottle = new Map<string, { limit: number; lastThrottleAt: number; successes: number }>();
 
   public snapshot() {
     return {
@@ -208,7 +210,8 @@ export class SharedProxyCoordinator {
       waitingConnections: this.waiters.length,
       downloadGroups: this.registeredGroups.size,
       cooldownWakeAt: this.cooldownWakeAt,
-      throttledAt: this.lastThrottleAt || null
+      throttledAt: Math.max(this.lastThrottleAt, ...Array.from(this.originThrottle.values(), state => state.lastThrottleAt)) || null,
+      originLimits: Array.from(this.originThrottle, ([origin, state]) => ({ origin, limit: state.limit, active: this.activeForOrigin(origin), throttledAt: state.lastThrottleAt }))
     };
   }
 
@@ -219,13 +222,18 @@ export class SharedProxyCoordinator {
       this.adaptiveConnectionLimit = normalized;
       this.lastThrottleAt = 0;
       this.successfulTransfersSinceThrottle = 0;
+      this.originThrottle.clear();
     } else {
       this.adaptiveConnectionLimit = Math.min(this.adaptiveConnectionLimit, normalized);
     }
     this.drain();
   }
 
-  public registerGroup(groupId: string): () => void {
+  public registerGroup(groupId: string, origin?: string): () => void {
+    for (const [key, state] of this.originThrottle) {
+      if (Date.now() - state.lastThrottleAt > 900_000 && !Array.from(this.groupOrigins.values()).includes(key)) this.originThrottle.delete(key);
+    }
+    if (origin) this.groupOrigins.set(groupId, origin);
     this.registeredGroups.set(groupId, (this.registeredGroups.get(groupId) || 0) + 1);
     this.drain();
     let released = false;
@@ -237,14 +245,24 @@ export class SharedProxyCoordinator {
         this.registeredGroups.set(groupId, remaining);
       } else {
         this.registeredGroups.delete(groupId);
+        this.groupOrigins.delete(groupId);
       }
       this.drain();
     };
   }
 
-  public reportOriginStatus(statusCode: number): void {
+  public reportOriginStatus(statusCode: number, origin?: string): void {
     if (statusCode !== 429 && statusCode !== 503) return;
     const now = Date.now();
+    if (statusCode === 503 && origin) {
+      const state = this.originThrottle.get(origin);
+      if (state && now - state.lastThrottleAt < 1_500) return;
+      const originGroups = Array.from(this.groupOrigins.values()).filter(value => value === origin).length;
+      const share = Math.max(2, Math.ceil(this.adaptiveConnectionLimit * Math.max(1, originGroups) / Math.max(1, this.registeredGroups.size)));
+      this.originThrottle.set(origin, { limit: Math.max(2, Math.min(state?.limit ?? share, share) - 2), lastThrottleAt: now, successes: 0 });
+      this.drain();
+      return;
+    }
     if (now - this.lastThrottleAt < 1_500) return;
     this.lastThrottleAt = now;
     this.successfulTransfersSinceThrottle = 0;
@@ -307,6 +325,9 @@ export class SharedProxyCoordinator {
     if (this.activeConnections >= this.adaptiveConnectionLimit) {
       return null;
     }
+    const origin = this.groupOrigins.get(waiter.groupId);
+    const originState = origin ? this.originThrottle.get(origin) : undefined;
+    if (origin && originState && this.activeForOrigin(origin) >= originState.limit) return null;
     const groupCount = Math.max(1, this.registeredGroups.size);
     const groupLimit = Math.max(1, Math.ceil(this.adaptiveConnectionLimit / groupCount));
     if (!borrowIdleCapacity && (this.activeConnectionsByGroup.get(waiter.groupId) || 0) >= groupLimit) {
@@ -395,7 +416,7 @@ export class SharedProxyCoordinator {
               failures: Math.max(0, (previous?.failures || 0) - 1),
               samples: (previous?.samples || 0) + 1
             });
-            this.restoreAdaptiveCapacity();
+            this.restoreAdaptiveCapacity(this.groupOrigins.get(groupId));
           }
         } else {
           this.cooldownUntil.set(key, Date.now() + 30_000);
@@ -411,7 +432,24 @@ export class SharedProxyCoordinator {
     };
   }
 
-  private restoreAdaptiveCapacity(): void {
+  private activeForOrigin(origin: string): number {
+    let active = 0;
+    for (const [group, count] of this.activeConnectionsByGroup) {
+      if (this.groupOrigins.get(group) === origin) active += count;
+    }
+    return active;
+  }
+
+  private restoreAdaptiveCapacity(origin?: string): void {
+    const state = origin ? this.originThrottle.get(origin) : undefined;
+    if (state) {
+      state.successes += 1;
+      if (Date.now() - state.lastThrottleAt >= 5_000 && state.successes >= 24) {
+        state.limit = Math.min(this.configuredConnectionLimit, state.limit + 1);
+        state.successes = 0;
+        if (state.limit >= this.configuredConnectionLimit) this.originThrottle.delete(origin!);
+      }
+    }
     if (this.adaptiveConnectionLimit >= this.configuredConnectionLimit) return;
     this.successfulTransfersSinceThrottle += 1;
     if (Date.now() - this.lastThrottleAt < 5_000 || this.successfulTransfersSinceThrottle < 24) return;
@@ -934,7 +972,7 @@ async function probeRangeSupport(
     }
   }
   if (lastHttpStatus > 0) {
-    sharedProxyCoordinator.reportOriginStatus(lastHttpStatus);
+    sharedProxyCoordinator.reportOriginStatus(lastHttpStatus, target.origin);
     return { status: "origin_error", httpStatus: lastHttpStatus };
   }
   return { status: "unavailable", ...(lastErrorCode ? { errorCode: lastErrorCode } : {}) };
@@ -1283,7 +1321,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
   }
 
   const groupId = String(options.downloadId || options.targetPath || randomUUID());
-  const unregisterGroup = sharedProxyCoordinator.registerGroup(groupId);
+  const unregisterGroup = sharedProxyCoordinator.registerGroup(groupId, target.origin);
   const releaseConnections = sharedProxyConnections.retain(totalConnectionLimit);
   try {
   const normalized = {
@@ -1446,7 +1484,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
           lease?.release({ succeeded: originError || signal.aborted });
           lease = null;
           if (originError) {
-            sharedProxyCoordinator.reportOriginStatus(error.statusCode);
+            sharedProxyCoordinator.reportOriginStatus(error.statusCode, target.origin);
           }
           if (attemptProgress > 0) {
             updateProgress(-attemptProgress, committedProgress - attemptProgress, probe.totalBytes);
