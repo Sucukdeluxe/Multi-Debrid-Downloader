@@ -70,6 +70,7 @@ import { planDownloadCompletion, reconcileFinalizedSize, validateDownloadedFileC
 import { downloadWithProxySegments, type ProxyFallbackReason } from "./proxy-segmented-download";
 import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkDdownloadOnline, checkOneFichierLinks, checkRapidgatorOnline, fetchAllDebridHostInfo, filenameFromDdownloadUrlPath, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, isDdownloadLink, isOneFichierLink, isRealDebridAccountBlockedForStart, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown, type DdownloadCheckResult, type OneFichierCheckResult } from "./debrid";
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo, type ExtractProgressUpdate } from "./extractor";
+import { planRarVolumeAliases } from "./archive-volume-names";
 import { filesHaveEqualContent, validateFileAgainstManifest } from "./integrity";
 import { forgetVerifiedExtractionOutput, isExtractionStagingDirectoryName, isVerifiedExtractionOutput, moveVerifiedExtractionOutput, recordVerifiedExtractionOutput } from "./extraction-output";
 import { classifyDiskError } from "./fs-error";
@@ -1694,6 +1695,12 @@ export function resolveArchiveItemsFromList(archiveName: string, items: Download
 
   const itemBaseName = (item: DownloadItem): string =>
     normalizeArchiveMatchName(item.targetPath || item.fileName || "");
+
+  const aliases = planRarVolumeAliases(entryLower, items.map(itemBaseName));
+  if (aliases.length > 0) {
+    const members = new Set(aliases.map(alias => alias.sourceName.toLowerCase()));
+    return items.filter(item => members.has(itemBaseName(item).toLowerCase()));
+  }
 
   let pattern: RegExp | null = null;
   const multipartMatch = entryLower.match(ARCHIVE_MULTIPART_RAR_RE);
@@ -13591,6 +13598,10 @@ export class DownloadManager extends EventEmitter {
       .filter(Boolean) as DownloadItem[];
 
     for (const candidate of candidates) {
+      const aliases = planRarVolumeAliases(path.basename(candidate), packageItems.map(item => path.basename(item.targetPath || item.fileName || "")));
+      if (aliases.length > 0 && resolveArchiveItemsFromList(path.basename(candidate), packageItems).some(item => item.status !== "completed")) {
+        continue;
+      }
       const partsOnDisk = collectArchiveCleanupTargets(candidate, dirFiles);
       const allPartsCompleted = partsOnDisk.every((part) => completedPaths.has(pathKey(part)));
       if (allPartsCompleted) {
@@ -14048,6 +14059,7 @@ export class DownloadManager extends EventEmitter {
               for (const entry of archItems) {
                 if (entry.status !== "completed" || isExtractedLabel(entry.fullStatus)) continue;
                 entry.fullStatus = doneLabel;
+                if (progress.archiveSuccess === true) entry.lastError = "";
                 entry.updatedAt = doneAt;
               }
               hybridResolvedItems.delete(progress.archiveName);
@@ -14623,6 +14635,7 @@ export class DownloadManager extends EventEmitter {
                 for (const entry of archiveItems) {
                   if (entry.status !== "completed" || isExtractedLabel(entry.fullStatus)) continue;
                   entry.fullStatus = doneLabel;
+                  if (progress.archiveSuccess === true) entry.lastError = "";
                   entry.updatedAt = doneAt;
                 }
                 fullResolvedItems.delete(progress.archiveName);

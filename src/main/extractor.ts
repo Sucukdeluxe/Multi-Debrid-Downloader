@@ -8,6 +8,8 @@ import { logger } from "./logger";
 import { removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 import { isExtractionStagingDirectoryName, isVerifiedExtractionOutput, withStagedExtraction } from "./extraction-output";
 import { recordArchivePasswordAttempt } from "./archive-password-diagnostics";
+import { planRarVolumeAliases, withRarVolumeAliases } from "./archive-volume-names";
+import { hasRarRecoveryRecord, withRecoveredRar } from "./rar-recovery";
 
 import crypto from "node:crypto";
 
@@ -33,6 +35,7 @@ const EXTRACTOR_RETRY_AFTER_MS = 30_000;
 const DEFAULT_ZIP_ENTRY_MEMORY_LIMIT_MB = 256;
 const MAX_EXTRACT_OUTPUT_BUFFER = 48 * 1024;
 const CRC_FAILURE_RE = /\bcrc\s*(?:failed|error)\b|checksum error|pr(?:ü|ue|\uFFFD)fsummenfehler/i;
+const MISSING_VOLUME_RE = /cannot find volume|missing volume|next volume is required|kann das volumen/i;
 const EXTRACT_PROGRESS_FILE = ".rd_extract_progress.json";
 const EXTRACT_BASE_TIMEOUT_MS = 6 * 60 * 1000;
 const EXTRACT_PER_GIB_TIMEOUT_MS = 4 * 60 * 1000;
@@ -505,6 +508,9 @@ export function collectArchiveCleanupTargets(sourceArchivePath: string, director
 
   const multipartRar = fileName.match(/^(.*)\.part\d+\.rar$/i);
   if (multipartRar) {
+    for (const alias of planRarVolumeAliases(fileName, filesInDir)) {
+      targets.add(path.join(dir, alias.sourceName));
+    }
     const prefix = escapeRegex(multipartRar[1]);
     addMatching(new RegExp(`^${prefix}\\.part\\d+\\.rar$`, "i"));
     addMatching(new RegExp(`^${prefix}\\.part\\d+\\.rev$`, "i"));
@@ -855,7 +861,7 @@ export function cleanErrorText(text: string): string {
   }
   const head = normalized.slice(0, 240).trimEnd();
   const tail = normalized.slice(-240).trimStart();
-  const diagnostic = normalized.match(CRC_FAILURE_RE)
+  const diagnostic = normalized.match(MISSING_VOLUME_RE) || normalized.match(CRC_FAILURE_RE)
     || normalized.match(/wrong password|falsches passwort|incorrect password|missing volume|next volume|unexpected end of archive|missing parts|cannot create|disk full|no space left|not enough space|timeout|aborted:extract/i);
   if (diagnostic && !`${head} ${tail}`.toLowerCase().includes(diagnostic[0].toLowerCase())) {
     const start = Math.max(0, (diagnostic.index || 0) - 48);
@@ -909,6 +915,7 @@ export function classifyExtractionError(errorText: unknown): ExtractErrorCategor
   const text = String(errorText || "").toLowerCase();
   if (text.includes("aborted:extract") || text.includes("extract_aborted")) return "aborted";
   if (text.includes("timeout")) return "timeout";
+  if (MISSING_VOLUME_RE.test(text)) return "missing_parts";
   if (CRC_FAILURE_RE.test(text)) return "crc_error";
   if (text.includes("wrong password") || text.includes("falsches passwort") || text.includes("incorrect password")) return "wrong_password";
   if (text.includes("missing volume") || text.includes("next volume") || text.includes("unexpected end of archive") || text.includes("missing parts")) return "missing_parts";
@@ -1461,7 +1468,7 @@ function runExtractCommand(
       const text = String(chunk || "");
       const diagnosticWindow = output.slice(-256) + text;
       const category = classifyExtractionError(diagnosticWindow);
-      if (category !== "unknown" && (!diagnosticOutput || category === "crc_error")) {
+      if (category !== "unknown" && (!diagnosticOutput || category === "missing_parts" || (category === "crc_error" && classifyExtractionError(diagnosticOutput) !== "missing_parts"))) {
         diagnosticOutput = cleanErrorText(diagnosticWindow);
       }
       output = appendLimited(output, text);
@@ -2431,6 +2438,56 @@ async function runExternalExtract(
   prepareTarget?: () => Promise<void>,
   diagnosticContext?: PasswordDiagnosticContext
 ): Promise<string> {
+  const extract = (source: string): Promise<string> => runExternalExtractUnrepaired(
+    source, targetDir, conflictMode, passwordCandidates, onArchiveProgress, signal,
+    hybridMode, onPasswordAttempt, forceFlatMode, flatModeResult, onLog, prepareTarget, diagnosticContext
+  );
+  try {
+    return await extract(archivePath);
+  } catch (originalError) {
+    if (signal?.aborted || classifyExtractionError(originalError) !== "crc_error" || !isRarArchivePath(archivePath)) throw originalError;
+    const volumes = collectArchiveCleanupTargets(archivePath).filter(file => /\.(rar|r\d{2,3})$/i.test(file));
+    let recoverable = false;
+    for (const volume of volumes) if (await hasRarRecoveryRecord(volume)) recoverable = true;
+    if (!recoverable) throw originalError;
+    const command = nativeExtractorCandidates(archivePath).find(candidate =>
+      /^rar(?:\.exe)?$/i.test(path.basename(candidate)) && isAbsoluteCommand(candidate) && fs.existsSync(candidate)
+    );
+    if (!command) throw originalError;
+    onLog?.("INFO", `RAR-Wiederherstellung auf Arbeitskopie: archive=${path.basename(archivePath)}, volumes=${volumes.length}`);
+    try {
+      return await withRecoveredRar(archivePath, volumes, async (source, destination) => {
+        const result = await runExtractCommand(command, ["r", "-y", "-p-", "-idq", source, `${destination}${path.sep}`], undefined, signal, await computeExtractTimeoutMs(source));
+        if (result.aborted || signal?.aborted) throw new Error("aborted:extract");
+        if (!result.ok) throw new Error(result.errorText || "RAR-Wiederherstellung fehlgeschlagen");
+      }, async source => {
+        const password = await extract(source);
+        onLog?.("INFO", `RAR-Wiederherstellung erfolgreich geprüft: archive=${path.basename(archivePath)}`);
+        return password;
+      }, signal);
+    } catch (recoveryError) {
+      if (signal?.aborted) throw new Error("aborted:extract");
+      onLog?.("WARN", `RAR-Wiederherstellung nicht erfolgreich: archive=${path.basename(archivePath)}, reason=${cleanErrorText(String(recoveryError))}`);
+      throw originalError;
+    }
+  }
+}
+
+async function runExternalExtractUnrepaired(
+  archivePath: string,
+  targetDir: string,
+  conflictMode: ConflictMode,
+  passwordCandidates: string[],
+  onArchiveProgress?: (percent: number) => void,
+  signal?: AbortSignal,
+  hybridMode = false,
+  onPasswordAttempt?: (attempt: number, total: number) => void,
+  forceFlatMode = false,
+  flatModeResult?: { needed: boolean },
+  onLog?: ExtractOptions["onLog"],
+  prepareTarget?: () => Promise<void>,
+  diagnosticContext?: PasswordDiagnosticContext
+): Promise<string> {
   const timeoutMs = await computeExtractTimeoutMs(archivePath);
   const configuredBackendMode = extractorBackendMode();
   const backendMode = extractorBackendModeForArchive(archivePath);
@@ -3307,9 +3364,9 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
           }
         } else {
           const flatResult = { needed: false };
-          const usedPassword = await runExternalExtract(archivePath, stagingDir, "overwrite", archivePasswordCandidates, (value) => {
+          const usedPassword = await withRarVolumeAliases(archivePath, (readableArchivePath) => runExternalExtract(readableArchivePath, stagingDir, "overwrite", archivePasswordCandidates, (value) => {
             reportArchiveProgress(value);
-          }, options.signal, hybrid, onPwAttempt, packageNeedsFlatMode, flatResult, options.onLog, resetStage, { packageId: options.packageId });
+          }, options.signal, hybrid, onPwAttempt, packageNeedsFlatMode, flatResult, options.onLog, resetStage, { packageId: options.packageId }), options.signal);
           rememberLearnedPassword(usedPassword);
           if (flatResult.needed) packageNeedsFlatMode = true;
         }
