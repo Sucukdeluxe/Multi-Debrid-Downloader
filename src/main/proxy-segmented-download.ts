@@ -329,7 +329,9 @@ export class SharedProxyCoordinator {
     const originState = origin ? this.originThrottle.get(origin) : undefined;
     if (origin && originState && this.activeForOrigin(origin) >= originState.limit) return null;
     const groupCount = Math.max(1, this.registeredGroups.size);
-    const groupLimit = Math.max(1, Math.ceil(this.adaptiveConnectionLimit / groupCount));
+    const originGroupCount = originState ? Array.from(this.groupOrigins.values()).filter(value => value === origin).length : 0;
+    const originShare = originState ? Math.ceil(originState.limit / Math.max(1, originGroupCount)) : this.adaptiveConnectionLimit;
+    const groupLimit = Math.max(1, Math.min(Math.ceil(this.adaptiveConnectionLimit / groupCount), originShare));
     if (!borrowIdleCapacity && (this.activeConnectionsByGroup.get(waiter.groupId) || 0) >= groupLimit) {
       return null;
     }
