@@ -69,7 +69,7 @@ import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, rem
 import { planDownloadCompletion, reconcileFinalizedSize, validateDownloadedFileCompletion } from "./download-completion";
 import { downloadWithProxySegments, type ProxyFallbackReason } from "./proxy-segmented-download";
 import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkDdownloadOnline, checkOneFichierLinks, checkRapidgatorOnline, fetchAllDebridHostInfo, filenameFromDdownloadUrlPath, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, isDdownloadLink, isOneFichierLink, isRealDebridAccountBlockedForStart, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown, type DdownloadCheckResult, type OneFichierCheckResult } from "./debrid";
-import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo, type ExtractProgressUpdate } from "./extractor";
+import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractionActivityLabel, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo, type ExtractProgressUpdate } from "./extractor";
 import { planRarVolumeAliases } from "./archive-volume-names";
 import { filesHaveEqualContent, validateFileAgainstManifest } from "./integrity";
 import { forgetVerifiedExtractionOutput, isExtractionStagingDirectoryName, isVerifiedExtractionOutput, moveVerifiedExtractionOutput, recordVerifiedExtractionOutput } from "./extraction-output";
@@ -14095,6 +14095,8 @@ export class DownloadManager extends EventEmitter {
               let label: string;
               if (progress.passwordFound) {
                 label = `Passwort gefunden · ${progress.archiveName}`;
+              } else if (extractionActivityLabel(progress)) {
+                label = `${extractionActivityLabel(progress)}${archiveLabel}${elapsed}`;
               } else if (progress.passwordAttempt && progress.passwordTotal && progress.passwordTotal > 1) {
                 const pwPct = Math.round((progress.passwordAttempt / progress.passwordTotal) * 100);
                 label = `Passwort knacken: ${pwPct}% (${progress.passwordAttempt}/${progress.passwordTotal}) · ${progress.archiveName}`;
@@ -14116,6 +14118,8 @@ export class DownloadManager extends EventEmitter {
           const currentDisplay = Math.max(0, Math.min(progress.total, progress.current + activeArchive));
           if (progress.passwordFound) {
             pkg.postProcessLabel = "Passwort gefunden";
+          } else if (extractionActivityLabel(progress)) {
+            pkg.postProcessLabel = `${extractionActivityLabel(progress)} · ${progress.archiveName}`;
           } else if (progress.passwordAttempt && progress.passwordTotal && progress.passwordTotal > 1) {
             const pwPct = Math.round((progress.passwordAttempt / progress.passwordTotal) * 100);
             pkg.postProcessLabel = `Passwort knacken: ${pwPct}%`;
@@ -14670,6 +14674,8 @@ export class DownloadManager extends EventEmitter {
                 let label: string;
                 if (progress.passwordFound) {
                   label = `Passwort gefunden · ${progress.archiveName}`;
+                } else if (extractionActivityLabel(progress)) {
+                  label = `${extractionActivityLabel(progress)}${archiveTag}${elapsed}`;
                 } else if (progress.passwordAttempt && progress.passwordTotal && progress.passwordTotal > 1) {
                   const pwPct = Math.round((progress.passwordAttempt / progress.passwordTotal) * 100);
                   label = `Passwort knacken: ${pwPct}% (${progress.passwordAttempt}/${progress.passwordTotal}) · ${progress.archiveName}`;
@@ -14696,6 +14702,8 @@ export class DownloadManager extends EventEmitter {
             let overallLabel: string;
             if (progress.passwordFound) {
               overallLabel = `Passwort gefunden · ${progress.archiveName || ""}`;
+            } else if (extractionActivityLabel(progress)) {
+              overallLabel = `${extractionActivityLabel(progress)}${archive}${elapsed}`;
             } else if (progress.passwordAttempt && progress.passwordTotal && progress.passwordTotal > 1) {
               const pwPct = Math.round((progress.passwordAttempt / progress.passwordTotal) * 100);
               overallLabel = `Passwort knacken: ${pwPct}% (${progress.passwordAttempt}/${progress.passwordTotal}) · ${progress.archiveName || ""}`;
