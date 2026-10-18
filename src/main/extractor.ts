@@ -3501,7 +3501,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
 
       if (abortError) throw new Error("aborted:extract");
 
-      if (failed > 0 && extracted === 0) {
+      if (workerCount > 1 && failed > 0 && extracted === 0) {
         const failedArchives = parallelQueue.filter((ap) => !replacedArchives.has(ap) && !extractedArchives.has(ap) && !resumeCompleted.has(archiveNameKey(path.basename(ap))));
         const failedCategories = failedArchives.map((archivePath) => failedArchiveCategories.get(archivePath) || "unknown");
         if (failedArchives.length > 0 && shouldSerialRetryParallelFailures(extracted, failedCategories)) {
@@ -3515,8 +3515,9 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
             if (options.signal?.aborted || noExtractorEncountered) break;
             try {
               failed -= 1;
+              const extractedBefore = extracted;
               await extractSingleArchive(archivePath);
-              retryRecovered += 1;
+              retryRecovered += extracted - extractedBefore;
             } catch (retryError) {
               const errText = String(retryError);
               if (isExtractAbortError(errText)) throw retryError;
@@ -3528,7 +3529,7 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
         }
       }
 
-      if (failed > 0 && extracted > 0) {
+      else if (workerCount > 1 && failed > 0 && extracted > 0) {
         const failedArchives = parallelQueue.filter((ap) => !replacedArchives.has(ap) && !extractedArchives.has(ap) && !resumeCompleted.has(archiveNameKey(path.basename(ap))));
         if (failedArchives.length > 0) {
           logger.info(`Serielle Wiederholung: ${failedArchives.length} fehlgeschlagene Archive werden einzeln wiederholt (mögliche Parallelitäts-Kollision)`);
@@ -3537,8 +3538,9 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
             if (options.signal?.aborted || noExtractorEncountered) break;
             try {
               failed -= 1;
+              const extractedBefore = extracted;
               await extractSingleArchive(archivePath);
-              retryRecovered += 1;
+              retryRecovered += extracted - extractedBefore;
             } catch (retryError) {
               const errText = String(retryError);
               if (isExtractAbortError(errText)) throw retryError;

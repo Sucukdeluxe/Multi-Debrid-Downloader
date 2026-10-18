@@ -3257,6 +3257,22 @@ export class DownloadManager extends EventEmitter {
     this.emitState(true);
   }
 
+  public removeFailedExtractions(itemIds: string[]): { removed: number; filesPreserved: true } {
+    const uniqueIds = [...new Set(itemIds)];
+    if (uniqueIds.length === 0 || uniqueIds.length > 500) throw new Error("Ungültige Anzahl von Fehlereinträgen.");
+    for (const id of uniqueIds) {
+      const item = this.session.items[id];
+      if (!item || item.status !== "completed" || !/^Entpack-Fehler\b/.test(item.fullStatus || "")) {
+        throw new Error("Auswahl enthält einen Eintrag ohne abgeschlossenen Entpackfehler.");
+      }
+      if (this.activeTasks.has(id) || this.packagePostProcessTasks.has(item.packageId)) {
+        throw new Error("Auswahl wird noch verarbeitet. Bereinigung später erneut ausführen.");
+      }
+    }
+    for (const id of uniqueIds) this.removeItem(id, true);
+    return { removed: uniqueIds.length, filesPreserved: true };
+  }
+
   public removeItem(itemId: string, preserveFiles = false): void {
     const item = this.session.items[itemId];
     if (!item) {

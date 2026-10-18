@@ -1417,6 +1417,12 @@ export class AppController {
     this.manager.reorderPackages(packageIds);
   }
 
+  public removeFailedExtractions(itemIds: string[]): { removed: number; filesPreserved: true } {
+    const result = this.manager.removeFailedExtractions(itemIds);
+    this.audit("WARN", "Abgeschlossene Entpackfehler aus Warteschlange entfernt; Dateien erhalten", { itemIds, ...result });
+    return result;
+  }
+
   public removeItem(itemId: string): void {
     this.audit("WARN", "Item entfernt", { itemId });
     this.manager.removeItem(itemId);
