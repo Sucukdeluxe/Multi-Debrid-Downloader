@@ -37,6 +37,7 @@ import {
 import { getProxyAuthentication } from "./network-proxy";
 import { McpService } from "./mcp/service";
 import { runtimePerformance } from "./runtime-performance";
+import { installBlockingIoMonitor } from "./blocking-io-monitor";
 
 forceDarkNativeTheme(nativeTheme);
 
@@ -1338,14 +1339,15 @@ app.on("second-instance", () => {
     : "Zweite Instanz erkannt – Hauptfenster wiederhergestellt");
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   configureCredentialProtector(safeStorage);
   configureArchivePasswordDiagnostics(path.join(app.getPath("userData"), "runtime"), safeStorage);
   controller = new AppController();
   runtimePerformance.start((sample) => logger.warn(`Hauptthread verzögert: maxDelayMs=${sample.maxDelayMs}, timerDelayMs=${sample.timerDelayMs}, cpuPercent=${sample.cpuPercent}`));
+  installBlockingIoMonitor(runtimePerformance);
   controller.retireLegacyRemoteDiagnostics();
   dailyStartScheduler = new DailyStartScheduler(controller);
-  cleanupStaleSubstDrives();
+  await cleanupStaleSubstDrives();
   registerIpcHandlers();
   mainWindow = createWindow();
   bindMainWindowLifecycle(mainWindow);

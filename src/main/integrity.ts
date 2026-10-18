@@ -150,7 +150,7 @@ for (let i = 0; i < 256; i++) {
   crcTable[i] = c;
 }
 
-function crc32Buffer(data: Buffer, seed = 0): number {
+export function crc32Buffer(data: Buffer, seed = 0): number {
   let crc = seed ^ -1;
   for (let i = 0; i < data.length; i++) {
     crc = (crc >>> 8) ^ crcTable[(crc ^ data[i]) & 0xff];

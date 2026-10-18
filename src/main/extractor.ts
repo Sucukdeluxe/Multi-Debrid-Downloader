@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, execFile, type ChildProcess } from "node:child_process";
+import { promisify } from "node:util";
 import AdmZip from "adm-zip";
 import { CleanupMode, ConflictMode } from "../shared/types";
 import { logger } from "./logger";
@@ -10,6 +11,7 @@ import { isExtractionStagingDirectoryName, isVerifiedExtractionOutput, withStage
 import { recordArchivePasswordAttempt } from "./archive-password-diagnostics";
 import { planRarVolumeAliases, withRarVolumeAliases } from "./archive-volume-names";
 import { hasRarRecoveryRecord, repairRarWithPasswords, withRecoveredRar } from "./rar-recovery";
+import { checkRarVolumeCrc } from "./rar-volume-integrity";
 
 import crypto from "node:crypto";
 
@@ -83,7 +85,7 @@ export interface ExtractProgressUpdate {
   passwordAttempt?: number;
   passwordTotal?: number;
   passwordFound?: boolean;
-  activity?: "extracting" | "password" | "checking" | "repairing" | "retrying" | "publishing";
+  activity?: "extracting" | "password" | "checking" | "integrity" | "repairing" | "retrying" | "publishing";
   archiveDone?: boolean;
   archiveSuccess?: boolean;
   archiveSkipped?: boolean;
@@ -102,6 +104,7 @@ export function extractionActivityLabel(progress: ExtractProgressUpdate): string
   switch (progress.activity) {
     case "password": return `Passwort prüfen (${progress.passwordAttempt}/${progress.passwordTotal})`;
     case "checking": return "Alternativen Entpacker prüfen";
+    case "integrity": return "Archivintegrität prüfen";
     case "repairing": return "Archiv reparieren";
     case "retrying": return "Entpackversuch wiederholen";
     case "publishing": return "Entpackte Dateien übernehmen";
@@ -140,6 +143,7 @@ export class ExtractionError extends Error {
 }
 
 type ExtractionErrorWithHints = Error & {
+  confirmedArchiveDamage?: boolean;
   suggestRedownload?: boolean;
   jvmFailureReason?: string;
   legacyBestPercent?: number;
@@ -256,14 +260,17 @@ interface DaemonRequest {
 }
 
 const activeSubstDrives = new Set<string>();
+const runSubst = promisify(execFile);
 
-function findFreeSubstDrive(): string | null {
+async function findFreeSubstDrive(): Promise<string | null> {
   if (process.platform !== "win32") return null;
   for (let code = 90; code >= 71; code--) {
     const letter = String.fromCharCode(code);
     if (activeSubstDrives.has(letter)) continue;
+    activeSubstDrives.add(letter);
     try {
-      fs.accessSync(`${letter}:\\`);
+      await fs.promises.access(`${letter}:\\`);
+      activeSubstDrives.delete(letter);
     } catch {
       return letter;
     }
@@ -271,13 +278,15 @@ function findFreeSubstDrive(): string | null {
   return null;
 }
 
-function createSubstMapping(targetDir: string): SubstMapping | null {
+async function createSubstMapping(targetDir: string): Promise<SubstMapping | null> {
   if (process.platform !== "win32" || !path.isAbsolute(targetDir)) return null;
-  const drive = findFreeSubstDrive();
+  const drive = await findFreeSubstDrive();
   if (!drive) return null;
-  const result = spawnSync("subst", [`${drive}:`, targetDir], { stdio: "pipe", timeout: 5000 });
-  if (result.status !== 0) {
-    logger.warn(`subst ${drive}: fehlgeschlagen: ${String(result.stderr || "").trim()}`);
+  try {
+    await runSubst("subst.exe", [`${drive}:`, targetDir], { windowsHide: true, timeout: 5000 });
+  } catch {
+    activeSubstDrives.delete(drive);
+    logger.warn(`subst ${drive}: fehlgeschlagen`);
     return null;
   }
   activeSubstDrives.add(drive);
@@ -285,24 +294,28 @@ function createSubstMapping(targetDir: string): SubstMapping | null {
   return { drive, original: targetDir };
 }
 
-function removeSubstMapping(mapping: SubstMapping): void {
-  spawnSync("subst", [`${mapping.drive}:`, "/d"], { stdio: "pipe", timeout: 5000 });
-  activeSubstDrives.delete(mapping.drive);
-  logger.info(`subst ${mapping.drive}: entfernt`);
+async function removeSubstMapping(mapping: SubstMapping): Promise<void> {
+  try {
+    await runSubst("subst.exe", [`${mapping.drive}:`, "/d"], { windowsHide: true, timeout: 5000 });
+    activeSubstDrives.delete(mapping.drive);
+    logger.info(`subst ${mapping.drive}: entfernt`);
+  } catch {
+    logger.warn(`subst ${mapping.drive}: konnte nicht entfernt werden`);
+  }
 }
 
-export function cleanupStaleSubstDrives(): void {
+export async function cleanupStaleSubstDrives(): Promise<void> {
   if (process.platform !== "win32") return;
   try {
-    const result = spawnSync("subst", [], { stdio: "pipe", timeout: 5000 });
+    const result = await runSubst("subst.exe", [], { windowsHide: true, timeout: 5000 });
     const output = String(result.stdout || "");
     for (const line of output.split("\n")) {
       const match = line.match(/^([A-Z]):\\: => (.+)/i);
       if (!match) continue;
       const drive = match[1].toUpperCase();
       const target = match[2].trim();
-      if (/\\rd-extract-|\\(?:Real|Multi)-Debrid-Downloader/i.test(target)) {
-        spawnSync("subst", [`${drive}:`, "/d"], { stdio: "pipe", timeout: 5000 });
+      if (!activeSubstDrives.has(drive) && /\\rd-extract-|\\(?:Real|Multi)-Debrid-Downloader/i.test(target)) {
+        await runSubst("subst.exe", [`${drive}:`, "/d"], { windowsHide: true, timeout: 5000 });
         logger.info(`Stale subst ${drive}: entfernt (${target})`);
       }
     }
@@ -2262,7 +2275,8 @@ async function runExternalExtractInner(
   flatModeResult?: { needed: boolean },
   onLog?: ExtractOptions["onLog"],
   prepareTarget?: () => Promise<void>,
-  diagnosticContext?: PasswordDiagnosticContext
+  diagnosticContext?: PasswordDiagnosticContext,
+  checkDamage?: () => Promise<Error | undefined>
 ): Promise<string> {
   const passwords = passwordCandidates;
   let lastError = "";
@@ -2312,6 +2326,10 @@ async function runExternalExtractInner(
       onLog?.("INFO", `Flach-Extraktion Ergebnis ${passwordAttempt}/${passwords.length}: archive=${path.basename(archivePath)}, ok=${result.ok}, timedOut=${result.timedOut}, missingCommand=${result.missingCommand}, bestPercent=${bestPercent}`);
       if (result.ok) { if (flatModeResult) flatModeResult.needed = true; onArchiveProgress?.(100); return password; }
       if (result.aborted) throw new Error("aborted:extract");
+      if (passwordAttempt === passwords.length && ["crc_error", "wrong_password"].includes(classifyExtractionError(result.errorText))) {
+        const damage = await checkDamage?.();
+        if (damage) throw damage;
+      }
       if (result.timedOut || result.missingCommand) break;
       lastError = result.errorText;
     }
@@ -2367,6 +2385,11 @@ async function runExternalExtractInner(
     if (result.ok) {
       onArchiveProgress?.(100);
       return password;
+    }
+
+    if (!result.aborted && passwordAttempt === passwords.length && ["crc_error", "wrong_password"].includes(classifyExtractionError(result.errorText))) {
+      const damage = await checkDamage?.();
+      if (damage) throw damage;
     }
 
     if (!createErrorText && result.errorText.includes("Cannot create")) {
@@ -2508,6 +2531,24 @@ async function runExternalExtractUnrepaired(
   let jvmFailureReason = "";
   let jvmCodecError = false;
   let fallbackFromJvm = false;
+  let damageCheck: Promise<Error | undefined> | undefined;
+  const checkDamage = (): Promise<Error | undefined> => damageCheck ??= (async () => {
+    if (!isRarArchivePath(archivePath)) return;
+    onActivity?.("integrity");
+    const volumes = collectArchiveCleanupTargets(archivePath).filter(file => /\.(rar|r\d{2,3})$/i.test(file));
+    for (const volume of volumes.reverse()) {
+      try {
+        const result = await checkRarVolumeCrc(volume, signal);
+        if (result?.damaged) {
+          const message = `Volume-CRC beschädigt: ${result.fileName} (erwartet ${result.expected}, gelesen ${result.actual})`;
+          onLog?.("WARN", message);
+          return Object.assign(new ExtractionError(message, "crc_error"), { confirmedArchiveDamage: true, suggestRedownload: true });
+        }
+      } catch (error) {
+        if (signal?.aborted) throw error;
+      }
+    }
+  })();
   logger.info(`Extract-Backend Start: archive=${archiveName}, mode=${backendMode}, configuredMode=${configuredBackendMode}, pwCandidates=${passwordCandidates.length}, timeoutMs=${timeoutMs}, hybrid=${hybridMode}`);
   onLog?.("INFO", `Extract-Backend Start: archive=${archiveName}, mode=${backendMode}, configuredMode=${configuredBackendMode}, pwCandidates=${passwordCandidates.length}, timeoutMs=${timeoutMs}, hybrid=${hybridMode}`);
 
@@ -2578,7 +2619,7 @@ async function runExternalExtractUnrepaired(
       }
     }
 
-    subst = createSubstMapping(targetDir);
+    subst = await createSubstMapping(targetDir);
     const effectiveTargetDir = subst ? `${subst.drive}:\\` : targetDir;
     if (subst) {
       onLog?.("INFO", `Legacy-Zielpfad verkuerzt via subst: archive=${archiveName}, originalTargetDir=${targetDir}, effectiveTargetDir=${effectiveTargetDir}`);
@@ -2595,9 +2636,10 @@ async function runExternalExtractUnrepaired(
         password = await runExternalExtractInner(
           command, archivePath, effectiveTargetDir, conflictMode, passwordCandidates,
           onArchiveProgress, signal, timeoutMs, hybridMode, onPasswordAttempt,
-          forceFlatMode, flatModeResult, onLog, prepareTarget, diagnosticContext
+          forceFlatMode, flatModeResult, onLog, prepareTarget, diagnosticContext, checkDamage
         );
       } catch (primaryError) {
+        if ((primaryError as ExtractionErrorWithHints).confirmedArchiveDamage) throw primaryError;
         const isRar = /\.rar$/i.test(archiveName) || /\.r\d{2,3}$/i.test(archiveName);
         const errText = String((primaryError as Error)?.message || primaryError || "");
         const isPasswordOrCorrupt = /wrong.password|checksum error|corrupt/i.test(errText);
@@ -2612,7 +2654,7 @@ async function runExternalExtractUnrepaired(
             password = await runExternalExtractInner(
               alt, archivePath, effectiveTargetDir, conflictMode, passwordCandidates,
               onArchiveProgress, signal, timeoutMs, hybridMode, onPasswordAttempt,
-              forceFlatMode, flatModeResult, onLog, prepareTarget, diagnosticContext
+              forceFlatMode, flatModeResult, onLog, prepareTarget, diagnosticContext, checkDamage
             );
           } else {
             throw primaryError;
@@ -2622,6 +2664,7 @@ async function runExternalExtractUnrepaired(
         }
       }
     } catch (legacyError) {
+      if ((legacyError as ExtractionErrorWithHints).confirmedArchiveDamage) throw legacyError;
       const initialLegacyText = String((legacyError as Error)?.message || legacyError || "");
       const initialLegacyCategory = classifyExtractionError(initialLegacyText);
       const initialLegacyHints = legacyError as ExtractionErrorWithHints;
@@ -2657,7 +2700,8 @@ async function runExternalExtractUnrepaired(
               flatModeResult,
               onLog,
               prepareTarget,
-              diagnosticContext
+              diagnosticContext,
+              checkDamage
             );
             logger.info(`Legacy-Retry erfolgreich: ${archiveName}`);
             onLog?.("INFO", `Legacy-Retry erfolgreich: ${archiveName}`);
@@ -2758,7 +2802,7 @@ async function runExternalExtractUnrepaired(
     onLog?.("INFO", `Extract-Backend Ende: archive=${archiveName}, backend=legacy/${extractorName}, mode=${backendMode}, ms=${Date.now() - totalStartedAt}, legacyMs=${legacyMs}, fallbackFromJvm=${fallbackFromJvm}, usedPassword=${password ? "yes" : "no"}`);
     return password;
   } finally {
-    if (subst) removeSubstMapping(subst);
+    if (subst) await removeSubstMapping(subst);
   }
 }
 
