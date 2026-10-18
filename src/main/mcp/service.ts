@@ -13,6 +13,7 @@ import { RelayAgent } from "./relay-client";
 import { validateRelayUrl } from "./security";
 import { appendDiagnosticLog, flushDiagnosticLogWrites } from "../diagnostic-log-writer";
 import { McpUpdateJobs } from "./update-jobs";
+import { McpInstallerUploads } from "./installer-uploads";
 import { DEFAULT_UPDATE_REPO } from "../constants";
 import { normalizeUpdateRepo } from "../update";
 
@@ -44,6 +45,7 @@ export class McpService {
   private revocationTask: Promise<void> | null = null;
   private closed = false;
   private updates: McpUpdateJobs;
+  private installerUploads: McpInstallerUploads;
   constructor(private options: McpServiceOptions) {
     this.directory = path.join(options.baseDir, "mcp");
     this.updates = new McpUpdateJobs({
@@ -55,7 +57,20 @@ export class McpService {
       running: () => options.controller.getSnapshot().session.running,
       check: () => options.controller.checkUpdates(),
       install: (progress, expectedVersion, beforeLaunch) => options.controller.installUpdate(progress, { expectedVersion, beforeLaunch }),
+      installFile: (source, progress, beforeLaunch) => options.controller.installDirectUpdate(source.file, source.sha256, source.expectedVersion, progress, beforeLaunch),
       quit: options.quit
+    });
+    this.installerUploads = new McpInstallerUploads({
+      directory: path.join(this.directory, "installer-uploads"),
+      installationId: () => this.secrets.current?.installationId || "",
+      version: () => options.controller.getVersion(),
+      authorize: () => {
+        if (!this.scopes().includes("control") || !this.scopes().includes("updates") || !app?.isPackaged || process.platform !== "win32" || process.env.PORTABLE_EXECUTABLE_FILE
+          || normalizeUpdateRepo(options.controller.getSettings().updateRepo) !== DEFAULT_UPDATE_REPO) throw new Error("Direkte Updates sind lokal nicht freigegeben oder nicht unterstützt.");
+        return `${this.revision}:${this.secrets.current?.installationId || ""}`;
+      },
+      canReplace: async () => ["failed", "interrupted"].includes((await this.updates.status()).job?.state || ""),
+      install: (file, manifest, validate, allowInterrupt, signal) => this.updates.startDirect({ file, sha256: manifest.sha256, expectedVersion: manifest.version, validate }, manifest.requestKey, allowInterrupt, signal)
     });
     try {
       const configFile = path.join(this.directory, "configuration.json");
@@ -187,7 +202,7 @@ export class McpService {
       const settings = c.getSettings();
       return [{ id: "output", path: settings.outputDir }, { id: "extract", path: settings.extractDir }, { id: "library", path: settings.mkvLibraryDir }, { id: "logs", path: c.getLogDirectory(), logsOnly: true }, ...this.config.extraRoots.map((root, i) => ({ id: `extra-${i + 1}`, path: root }))];
     }, () => [path.dirname(this.options.baseDir), c.getLogDirectory()], () => [c.getSettings().proxyListPath]);
-    const tools = createMcpTools({ ...this.options, files, updates: this.updates, getScopes: () => this.scopes(), getSecrets: () => this.redactions(), getInstallationId: () => credentials.installationId });
+    const tools = createMcpTools({ ...this.options, files, updates: this.updates, installerUploads: this.installerUploads, getScopes: () => this.scopes(), getSecrets: () => this.redactions(), getInstallationId: () => credentials.installationId });
     this.toolsCount = tools.length;
     this.endpoint = new McpEndpoint({ name: "multi-debrid-downloader", version: c.getVersion(), tools, getScopes: () => this.scopes(), getSecrets: () => this.redactions(), confirm: this.options.confirm, audit: event => this.audit(event) });
     this.agent = new RelayAgent(credentials, this.endpoint, (state, count) => {

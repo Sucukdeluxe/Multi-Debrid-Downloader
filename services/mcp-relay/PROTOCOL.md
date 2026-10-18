@@ -52,6 +52,14 @@ Open may return a non-secret `reference`: `media-mcp-file:v1:` plus base64url JS
 
 `scripts/pull-mcp-file.mjs` provides a bounded-memory receiver. It reads the credential from a private file, not a command-line token, and writes an exclusive `.mcp-part` plus a token-free checkpoint. On explicit resume it verifies the local prefix and the unchanged source digest. Each block and the entire received file are verified; the file is reread from disk before publication. Final publication never overwrites an existing target. Original source files are never deleted or altered. A failed transfer keeps its local partial file for inspection or resume; it is not reported as complete.
 
-## Verification
+## Signed direct installer updates
+
+The downloader accepts publisher-signed installers through `update_upload_begin`, `update_upload_chunk`, `update_upload_status`, `update_upload_commit` and `update_upload_cancel`. All require locally enabled `control` and `updates` permissions. No caller-supplied paths, URLs or execution arguments are accepted. The installer is limited to 256 MiB and each canonical base64 block to 512 KiB. Uploads are owned by the authenticated principal and authorization generation; exact block retries are idempotent.
+
+The manifest contains `version`, `baseVersion`, `bytes`, lowercase hex `sha256`, epoch-millisecond `expiresAt`, `installationId` and `requestKey`. Ed25519 signs UTF-8 fields joined with a single newline, with no trailing newline: `mdd-direct-installer-v1`, followed by those fields in the listed order. The pinned publisher key, exact installation/current version, increasing target version and expiry are checked before acceptance and again at handoff. Only a fully received, SHA-256-verified installer can enter the existing persistent update job. Direct installation does not query release services. Fixed installer arguments, queue parking, verified local settings/session backups, permission rechecks and post-restart version verification still apply.
+
+Clients should terminate their MCP transport session explicitly before closing it. Closing a local HTTP transport alone does not release the relay session; abandoned sessions remain until expiry and can exhaust the per-installation limit.
+
+## Verification requirements
 
 Each implementation must verify its tool catalog against every exposed action, positive and negative input cases, permissions, confirmation denial and expiry, simultaneous changes, cancellation, response redaction, bounded pagination, stale/disconnected sessions and restart. Transport tests must cover two independent installations, wrong credential roles, cross-installation session/result injection, revocation/rotation, no mutation replay, request limits and proxy-only failure. Test with an official MCP client as well as HTTP-level negative cases. Existing transfer/extraction behavior and legacy support exports must retain their regression coverage. Legacy remote control is removed only after its supported functions have an explicit tested replacement or documented local-only boundary.

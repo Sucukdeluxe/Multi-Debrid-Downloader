@@ -1,4 +1,5 @@
 import path from "node:path";
+import fs from "node:fs";
 import os from "node:os";
 import v8 from "node:v8";
 import { randomUUID } from "node:crypto";
@@ -62,7 +63,7 @@ import { flushSessionLog, initSessionLog, getSessionLogPath, shutdownSessionLog 
 import { flushDiagnosticLogWrites } from "./diagnostic-log-writer";
 import { MegaWebFallback } from "./mega-web-fallback";
 import { acquirePersistenceBarrier, addHistoryEntry, addHistoryEntryForRetention, cancelPendingAsyncSaves, clearHistory, createFileRollback, createHistoryRollback, createStoragePaths, loadHistory, loadHistoryForRetention, loadSessionWithStatus, loadSettings, normalizeHistoryEntry, normalizeLoadedSession, normalizeLoadedSessionTransientFields, normalizeSettings, removeHistoryEntries, replaceHistory, resetHistoryForRetention, saveHistory, saveSession, saveSettings } from "./storage";
-import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate } from "./update";
+import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate, installVerifiedLocalUpdate } from "./update";
 import { runInstallWithResume } from "./update-install-flow";
 import { rotateDebugToken, startDebugServer, stopDebugServer, restartDebugServer, getDebugServerRuntimeStatus, getActiveDebugToken, getDebugAllowlist, writeDebugServerConfig, clearDebugToken } from "./debug-server";
 import { encodeConnectionCode, loadRemoteMeta, saveRemoteMeta } from "./connection-code";
@@ -1259,6 +1260,23 @@ export class AppController {
       this.lastUpdateCheckAt = 0;
     }
     return result;
+  }
+
+  public async installDirectUpdate(file: string, sha256: string, expectedVersion: string, progress: (value: UpdateInstallProgress) => void, beforeLaunch: () => Promise<void>): Promise<UpdateInstallResult> {
+    return runInstallWithResume(this.manager, park => installVerifiedLocalUpdate(file, sha256, expectedVersion, progress, async () => {
+      await beforeLaunch();
+      park();
+      const directory = path.join(this.storagePaths.baseDir, "mcp", "update-backups");
+      await fs.promises.mkdir(directory, { recursive: true });
+      const backup = await fs.promises.mkdtemp(path.join(directory, "direct-"));
+      for (const source of [this.storagePaths.configFile, this.storagePaths.sessionFile]) {
+        const destination = path.join(backup, path.basename(source));
+        await fs.promises.copyFile(source, destination, fs.constants.COPYFILE_EXCL);
+        const [original, saved] = await Promise.all([fs.promises.readFile(source), fs.promises.readFile(destination)]);
+        if (!original.equals(saved)) throw new Error("Update-Sicherung konnte nicht verifiziert werden.");
+      }
+      await beforeLaunch();
+    }), true);
   }
 
   public addLinks(payload: AddLinksPayload): { addedPackages: number; addedLinks: number; invalidCount: number } {

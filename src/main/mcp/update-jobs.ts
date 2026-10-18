@@ -16,7 +16,9 @@ interface UpdateJob {
   progress: UpdateInstallProgress | null;
   message: string;
   verifiedVersion?: string;
+  installerSha256?: string;
 }
+export interface DirectInstaller { file: string; sha256: string; expectedVersion: string; validate(): void; }
 export interface McpUpdateJobOptions {
   directory: string;
   version(): string;
@@ -26,6 +28,7 @@ export interface McpUpdateJobOptions {
   running(): boolean;
   check(): Promise<UpdateCheckResult>;
   install(progress: (value: UpdateInstallProgress) => void, expectedVersion: string, beforeLaunch: () => Promise<void>): Promise<UpdateInstallResult>;
+  installFile?(source: DirectInstaller, progress: (value: UpdateInstallProgress) => void, beforeLaunch: () => Promise<void>): Promise<UpdateInstallResult>;
   quit(): void;
 }
 
@@ -97,12 +100,23 @@ export class McpUpdateJobs {
   }
 
   public async start(expectedVersion: string, requestKey: string, allowInterrupt: boolean, signal: AbortSignal) {
+    return this.begin(expectedVersion, requestKey, allowInterrupt, signal);
+  }
+
+  public async startDirect(source: DirectInstaller, requestKey: string, allowInterrupt: boolean, signal: AbortSignal) {
+    if (!this.options.installFile || !/^[a-f0-9]{64}$/.test(source.sha256)) throw new Error("Direkte Update-Installation nicht verfügbar.");
+    source.validate();
+    return this.begin(source.expectedVersion, requestKey, allowInterrupt, signal, source);
+  }
+
+  private async begin(expectedVersion: string, requestKey: string, allowInterrupt: boolean, signal: AbortSignal, source?: DirectInstaller) {
     await this.ready;
     signal.throwIfAborted();
     if (this.loadError) throw new Error(this.loadError);
     if (!validVersion(expectedVersion) || !/^[A-Za-z0-9_-]{8,128}$/.test(requestKey)) throw new Error("Ungültige Zielversion oder Auftragsreferenz.");
     if (this.job?.requestKey === requestKey) {
       if (this.job.expectedVersion !== expectedVersion) throw new Error("Auftragsreferenz gehört zu einer anderen Zielversion.");
+      if ((this.job.installerSha256 || "") !== (source?.sha256 || "")) throw new Error("Auftragsreferenz gehört zu einem anderen Installationspaket.");
       return this.status();
     }
     if (this.executing || (this.job && !terminal(this.job.state))) throw new Error("Ein Update-Auftrag läuft bereits. Zuerst update_status abfragen.");
@@ -111,6 +125,7 @@ export class McpUpdateJobs {
     const unattended = this.options.scopes().includes("updates");
     const authorizationId = this.options.authorizationId?.();
     const authorize = () => {
+      source?.validate();
       const scopes = this.options.scopes();
       if (this.options.authorizationId?.() !== authorizationId) throw new Error("MCP-Freigabe wurde geändert oder der Schlüssel erneuert.");
       if (!scopes.includes("control") || (unattended && !scopes.includes("updates"))) throw new Error("MCP-Update-Berechtigung wurde entzogen.");
@@ -119,33 +134,39 @@ export class McpUpdateJobs {
     };
     authorize();
     this.executing = true;
-    this.job = { id: randomUUID(), requestKey, expectedVersion, fromVersion: this.options.version(), state: "accepted", createdAt: Date.now(), updatedAt: Date.now(), progress: null, message: "Update-Auftrag angenommen." };
+    this.job = { id: randomUUID(), requestKey, expectedVersion, fromVersion: this.options.version(), state: "accepted", createdAt: Date.now(), updatedAt: Date.now(), progress: null, message: "Update-Auftrag angenommen.", ...(source ? { installerSha256: source.sha256 } : {}) };
     try { await this.persist(); } catch (error) { this.executing = false; this.job = null; throw error; }
-    void this.execute(authorize).finally(() => { this.executing = false; });
+    void this.execute(authorize, source).finally(() => { this.executing = false; });
     return this.status();
   }
 
-  private async execute(authorize: () => void): Promise<void> {
+  private async execute(authorize: () => void, source?: DirectInstaller): Promise<void> {
     const job = this.job!;
     try {
       job.state = "checking";
       await this.persist();
       authorize();
-      const check = await this.options.check();
-      if (check.error) throw new Error(check.error);
-      if (!check.updateAvailable || check.latestVersion !== job.expectedVersion) throw new Error("Die angebotene stabile Version stimmt nicht mit der angeforderten Zielversion überein.");
+      if (!source) {
+        const check = await this.options.check();
+        if (check.error) throw new Error(check.error);
+        if (!check.updateAvailable || check.latestVersion !== job.expectedVersion) throw new Error("Die angebotene stabile Version stimmt nicht mit der angeforderten Zielversion überein.");
+      }
       authorize();
       job.state = "downloading";
       await this.persist();
-      const result = await this.options.install(progress => {
+      const progress = (progress: UpdateInstallProgress) => {
         job.progress = progress;
         if (progress.stage === "verifying") job.state = "verifying";
-      }, job.expectedVersion, async () => {
+      };
+      const beforeLaunch = async () => {
         authorize();
         job.state = "installing";
         await this.persist();
         authorize();
-      });
+      };
+      const result = source
+        ? await this.options.installFile!(source, progress, beforeLaunch)
+        : await this.options.install(progress, job.expectedVersion, beforeLaunch);
       if (!result.started) throw new Error(result.message);
       job.state = "awaiting_restart";
       job.message = "Geprüfter Installer gestartet. Verbindung wird beim Neustart getrennt; danach update_status abfragen.";

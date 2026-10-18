@@ -42,6 +42,8 @@ Windows 10 or Windows 11 is required. Release executables are currently unsigned
 
 ## MCP updates
 
+Publisher-signed direct installers can also be sent over MCP without publishing a release. The same local update permission is required. The transfer is bound to this installation and its current version, verifies the publisher signature and the complete SHA-256 digest, and creates a verified settings/session backup before the fixed installer starts. Use `mdd_update_upload_*` followed by `mdd_update_status`; no arbitrary remote commands or destination paths are exposed. See `services/mcp-relay/PROTOCOL.md` for the signed manifest and transfer contract.
+
 Enable MCP under Help → MCP remote access. The separate permission to install official updates without local confirmation is off by default and requires control permission. Existing connection codes remain valid; permissions cannot be expanded through remote settings tools. Deletions, restores and other critical actions retain their local confirmation.
 
 For the installed Windows edition using the official update repository, call `mdd_update_check`, then `mdd_update_install` with the exact `expectedVersion` and a unique `requestKey` containing 8–128 letters, digits, underscores or hyphens. Set `allowInterrupt: true` only when interrupting active downloads for installation is intended. Preparation and installer verification do not stop downloads. Query `mdd_update_status` for progress; the accepted job continues after the initiating MCP request ends. If a response is lost, query status or repeat the same request key rather than creating another job.

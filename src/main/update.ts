@@ -1278,3 +1278,34 @@ export function abortActiveUpdateDownload(): void {
   if (!activeAbortController || activeAbortController.signal.aborted) return;
   activeAbortController.abort("shutdown");
 }
+
+export async function installVerifiedLocalUpdate(
+  installerPath: string,
+  sha256: string,
+  expectedVersion: string,
+  onProgress: UpdateProgressCallback,
+  beforeLaunch: () => Promise<void>
+): Promise<UpdateInstallResult> {
+  if (activeAbortController && !activeAbortController.signal.aborted) return { started: false, message: "Ein Update läuft bereits." };
+  if (!/^[a-f0-9]{64}$/.test(sha256) || !/^\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(expectedVersion) || !isRemoteNewer(APP_VERSION, expectedVersion)) {
+    return { started: false, message: "Ungültige direkte Update-Version oder Prüfsumme." };
+  }
+  const abort = new AbortController();
+  activeAbortController = abort;
+  try {
+    emitProgress(onProgress, { stage: "verifying", percent: 100, downloadedBytes: 0, totalBytes: null, message: "Prüfe direkt übertragenes Installationspaket" });
+    await verifyDownloadedInstaller(installerPath, `sha256:${sha256}`, true);
+    abort.signal.throwIfAborted();
+    await beforeLaunch();
+    abort.signal.throwIfAborted();
+    const child = childProcess.spawn(installerPath, buildInstallerLaunchArgs(), { detached: true, stdio: "ignore", windowsHide: true });
+    await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+    child.unref();
+    emitProgress(onProgress, { stage: "done", percent: 100, downloadedBytes: 0, totalBytes: null, message: "Direkt übertragenes Update wird installiert" });
+    return { started: true, message: "Geprüfte direkte Update-Installation gestartet." };
+  } catch (error) {
+    return { started: false, message: compactErrorText(error) };
+  } finally {
+    if (activeAbortController === abort) activeAbortController = null;
+  }
+}

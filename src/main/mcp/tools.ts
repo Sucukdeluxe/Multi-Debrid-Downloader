@@ -21,6 +21,7 @@ import type { McpScope } from "../../shared/mcp";
 import type { McpTool } from "./endpoint";
 import { McpFiles } from "./files";
 import type { McpUpdateJobs } from "./update-jobs";
+import type { InstallerManifest, McpInstallerUploads } from "./installer-uploads";
 import { McpFileTransfers, formatTransferResult } from "./file-transfers";
 import { redact, requireScopes, type Schema } from "./security";
 
@@ -66,6 +67,7 @@ export interface McpToolDependencies {
   getSecrets(): string[];
   getInstallationId?(): string;
   updates: Pick<McpUpdateJobs, "start" | "status">;
+  installerUploads?: Pick<McpInstallerUploads, "begin" | "chunk" | "status" | "commit" | "cancel">;
   updateSettings(patch: RendererSettingsUpdate): Promise<unknown>;
   start?(): Promise<void>;
   accountsChanged?(): void;
@@ -205,6 +207,15 @@ export function createMcpTools(deps: McpToolDependencies): McpTool[] {
   add("containers_add", "Import a supported link container from an approved file root.", object({ rootId: str(), relativePath: str(2048) }), ["control", "files"], async args => c.addContainers([await deps.files.allowedPath(String(args.rootId), String(args.relativePath))]), { openWorld: true });
   write("update_check", "Check the application's configured update source.", object(), () => c.checkUpdates(), { openWorld: true, idempotent: true });
   read("update_status", "Read the persistent update job, progress and target-version verification after reconnecting. A disconnected MCP connection alone does not prove an update succeeded.", object(), () => deps.updates.status());
+  if (deps.installerUploads) {
+    const upload = deps.installerUploads;
+    const manifest = object({ version: str(20), baseVersion: str(20), bytes: integer(268435456, 131072), sha256: str(64), expiresAt: integer(Number.MAX_SAFE_INTEGER), installationId: str(36), requestKey: str(128) });
+    add("update_upload_begin", "Begin a signed, installation-bound installer upload without a public release. Requires the local updates grant. Only the pinned publisher key is trusted; no arbitrary paths or commands. Resume by repeating the identical signed manifest.", object({ manifest, signature: str(88) }), ["control", "updates"], (args, context) => upload.begin(args.manifest as unknown as InstallerManifest, String(args.signature), context.principalId), { idempotent: true });
+    add("update_upload_chunk", "Upload one canonical base64 block, at most 512 KiB. Exact retries are safe; different repeated data or gaps are rejected. Do not print installer data in chat.", object({ uploadId: str(36), offset: integer(268435456), base64: str(699052) }), ["control", "updates"], (args, context) => upload.chunk(String(args.uploadId), context.principalId, Number(args.offset), String(args.base64)), { idempotent: true });
+    add("update_upload_status", "Read upload progress. After commit use update_status to verify installation after restart.", object({ uploadId: str(36) }), ["control", "updates"], (args, context) => upload.status(String(args.uploadId), context.principalId), { idempotent: true });
+    add("update_upload_commit", "Verify the complete signed installer and start the persistent update job without consulting GitHub. Requires exact base version and local updates grant. Allow interruption explicitly; settings/session are backed up before the fixed installer command runs. Verify completed and verifiedVersion after reconnect.", object({ uploadId: str(36), allowInterrupt: { type: "boolean" } }, ["uploadId"]), ["control", "updates"], (args, context) => upload.commit(String(args.uploadId), context.principalId, args.allowInterrupt === true, context.signal), { destructive: true, confirmationBypassScope: "updates", idempotent: true });
+    add("update_upload_cancel", "Remove an uncommitted installer upload only. Cannot stop an installer already handed over.", object({ uploadId: str(36) }), ["control", "updates"], (args, context) => upload.cancel(String(args.uploadId), context.principalId));
+  }
   write("update_install", "Start one persistent update job for an exact stable version. Requires local confirmation unless the separate updates permission is enabled locally. Poll update_status; after reconnecting verify completed and verifiedVersion. Reuse requestKey after an uncertain response; never submit a new key automatically. Downloads continue during preparation; allowInterrupt explicitly permits parking them for installation and restart.", object({ expectedVersion: { type: "string", pattern: "^\\d{1,6}\\.\\d{1,6}\\.\\d{1,6}$", maxLength: 20 }, requestKey: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$", maxLength: 128 }, allowInterrupt: { type: "boolean" } }, ["expectedVersion", "requestKey"]), (args, context) => deps.updates.start(String(args.expectedVersion), String(args.requestKey), args.allowInterrupt === true, context.signal), { destructive: true, confirmationBypassScope: "updates", openWorld: true, idempotent: true });
   write("app_restart", "Restart this application only; requires local confirmation.", object(), () => { setTimeout(deps.restart, 1000); return { scheduled: true }; }, { destructive: true });
   write("app_quit", "Close this application only; requires local confirmation. MCP becomes unavailable until the app starts again.", object(), () => { setTimeout(deps.quit, 1000); return { scheduled: true }; }, { destructive: true });
