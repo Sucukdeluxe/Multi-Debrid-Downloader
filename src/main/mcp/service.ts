@@ -101,10 +101,11 @@ export class McpService {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Ungültige MCP-Konfiguration.");
     const input = value as Record<string, unknown>;
     if (Object.keys(input).some(key => !["enabled", "relayUrl", "name", "scopes", "extraRoots"].includes(key)) || typeof input.enabled !== "boolean" || typeof input.name !== "string" || !input.name.trim() || input.name.length > 100 || !Array.isArray(input.scopes) || !Array.isArray(input.extraRoots) || input.extraRoots.length > 16) throw new Error("Ungültige MCP-Konfiguration.");
-    const allowed = new Set(["read", "control", "files", "transfer", "secrets", "updates"]);
+    const allowed = new Set(["read", "control", "files", "transfer", "secrets", "updates", "extraction"]);
     if (input.scopes.some(scope => typeof scope !== "string" || !allowed.has(scope)) || !input.scopes.includes("read")) throw new Error("Ungültige MCP-Berechtigungen.");
     if (input.scopes.includes("transfer") && !input.scopes.includes("files")) throw new Error("Dateiübertragung benötigt die Dateiberechtigung.");
     if (input.scopes.includes("updates") && !input.scopes.includes("control")) throw new Error("Unbeaufsichtigte Updates benötigen die Steuerungsberechtigung.");
+    if (input.scopes.includes("extraction") && !input.scopes.includes("control")) throw new Error("Unbeaufsichtigtes Entpacken benötigt die Steuerungsberechtigung.");
     if (input.extraRoots.some(root => typeof root !== "string" || !path.isAbsolute(root) || !fs.statSync(root).isDirectory())) throw new Error("Zusätzliche Dateifreigaben müssen vorhandene absolute Ordner sein.");
     return { enabled: input.enabled, name: input.name.trim(), relayUrl: validateRelayUrl(String(input.relayUrl)), scopes: [...new Set(input.scopes)] as McpScope[], extraRoots: [...new Set(input.extraRoots as string[])] };
   }
