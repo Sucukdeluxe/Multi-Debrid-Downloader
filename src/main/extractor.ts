@@ -2280,6 +2280,11 @@ async function runExternalExtractInner(
 ): Promise<string> {
   const passwords = passwordCandidates;
   let lastError = "";
+  let crcError = "";
+  const rememberError = (text: string): void => {
+    if (CRC_FAILURE_RE.test(text)) crcError = text;
+    lastError = classifyExtractionError(text) === "wrong_password" && crcError ? crcError : text;
+  };
   const extractorName = path.basename(command).replace(/\.exe$/i, "") || command;
   const attemptDetails = (password: string, attempt: number, total: number, mode = ""): PasswordAttemptDetails => ({
     ...diagnosticContext, archivePath, backend: `legacy/${extractorName}${mode}`, password, attempt, total
@@ -2331,7 +2336,7 @@ async function runExternalExtractInner(
         if (damage) throw damage;
       }
       if (result.timedOut || result.missingCommand) break;
-      lastError = result.errorText;
+      rememberError(result.errorText);
     }
     throw withExtractionErrorHints(new Error(lastError || "Entpacken fehlgeschlagen (flat-mode)"), { legacyBestPercent: bestPercent, legacyExtractor: extractorName });
   }
@@ -2404,7 +2409,7 @@ async function runExternalExtractInner(
     }
 
     if (result.timedOut) {
-      lastError = result.errorText;
+      rememberError(result.errorText);
       break;
     }
 
@@ -2415,7 +2420,7 @@ async function runExternalExtractInner(
       throw withExtractionErrorHints(new Error(NO_EXTRACTOR_MESSAGE), { legacyBestPercent: bestPercent, legacyExtractor: extractorName });
     }
 
-    lastError = result.errorText;
+    rememberError(result.errorText);
   }
 
   const pathCreateError = createErrorText || (lastError.includes("Cannot create") ? lastError : "");
@@ -2446,7 +2451,7 @@ async function runExternalExtractInner(
       if (result.ok) { if (flatModeResult) flatModeResult.needed = true; onArchiveProgress?.(100); return password; }
       if (result.aborted) throw new Error("aborted:extract");
       if (result.timedOut || result.missingCommand) break;
-      lastError = result.errorText;
+      rememberError(result.errorText);
     }
   }
 
@@ -2476,10 +2481,10 @@ async function runExternalExtract(
   try {
     return await extract(archivePath);
   } catch (originalError) {
-    if (signal?.aborted || classifyExtractionError(originalError) !== "crc_error" || !isRarArchivePath(archivePath)) throw originalError;
+    if (signal?.aborted || !["crc_error", "wrong_password"].includes(classifyExtractionError(originalError)) || !isRarArchivePath(archivePath)) throw originalError;
     const volumes = collectArchiveCleanupTargets(archivePath).filter(file => /\.(rar|r\d{2,3})$/i.test(file));
     let recoverable = false;
-    for (const volume of volumes) if (await hasRarRecoveryRecord(volume)) recoverable = true;
+    for (const volume of volumes) if (await hasRarRecoveryRecord(volume, passwordCandidates, signal)) recoverable = true;
     if (!recoverable) throw originalError;
     const command = nativeExtractorCandidates(archivePath).find(candidate =>
       /^rar(?:\.exe)?$/i.test(path.basename(candidate)) && isAbsoluteCommand(candidate) && fs.existsSync(candidate)
@@ -2489,16 +2494,22 @@ async function runExternalExtract(
     onLog?.("INFO", `RAR-Wiederherstellung auf Arbeitskopie: archive=${path.basename(archivePath)}, volumes=${volumes.length}`);
     try {
       return await withRecoveredRar(archivePath, volumes, async (source, destination) => {
-        await repairRarWithPasswords(source, destination, passwordCandidates, async (file, attempt, password) => {
+        const repairPasswords: string[] = [];
+        if (await hasRarRecoveryRecord(source)) repairPasswords.push(...passwordCandidates);
+        else for (const password of passwordCandidates) {
+          if (await hasRarRecoveryRecord(source, [password], signal)) repairPasswords.push(password);
+        }
+        if (!repairPasswords.length) throw new Error("RAR-Wiederherstellung: kein gültiger Header-Schlüssel");
+        await repairRarWithPasswords(source, destination, repairPasswords, async (file, attempt, password) => {
           const result = await runExtractCommand(command, ["r", "-y", password ? `-p${password}` : "-p-", "-idq", file, `${attempt}${path.sep}`], undefined, signal, await computeExtractTimeoutMs(file));
           if (result.aborted || signal?.aborted) throw new Error("aborted:extract");
           return result.ok;
-        }, signal);
+        }, signal, true);
       }, async source => {
         const password = await extract(source);
         onLog?.("INFO", `RAR-Wiederherstellung erfolgreich geprüft: archive=${path.basename(archivePath)}`);
         return password;
-      }, signal);
+      }, signal, passwordCandidates);
     } catch (recoveryError) {
       if (signal?.aborted) throw new Error("aborted:extract");
       onLog?.("WARN", `RAR-Wiederherstellung nicht erfolgreich: archive=${path.basename(archivePath)}, reason=${cleanErrorText(String(recoveryError))}`);
