@@ -1401,6 +1401,7 @@ function readSessionFile(filePath: string): LoadedSessionFile | null {
 
 export function saveSettings(paths: StoragePaths, settings: AppSettings): void {
   syncSettingsSaveGeneration += 1;
+  invalidatePendingStorageCommits("settings");
   ensureBaseDir(paths.baseDir);
   const payloads = createSettingsSavePayloads(paths, settings);
   writeSettingsFileAtomically(`${paths.configFile}.bak`, payloads.backup);
@@ -1451,10 +1452,12 @@ async function writeSettingsPayload(paths: StoragePaths, settings: AppSettings, 
     return;
   }
   try {
-    runtimePerformance.measureSync("settings.commit", () => {
-      syncRenameWithExdevFallback(backupTempPath, `${paths.configFile}.bak`);
-      syncRenameWithExdevFallback(tempPath, paths.configFile);
-    });
+    await commitStorageFile(backupTempPath, `${paths.configFile}.bak`, generation, "settings");
+    if (generation < syncSettingsSaveGeneration) {
+      await fsp.rm(tempPath, { force: true }).catch(() => {});
+      return;
+    }
+    await commitStorageFile(tempPath, paths.configFile, generation, "settings");
   } catch (error) {
     await Promise.all([
       fsp.rm(backupTempPath, { force: true }).catch(() => {}),
@@ -1616,6 +1619,7 @@ export function loadSession(paths: StoragePaths): SessionState {
 
 export function saveSession(paths: StoragePaths, session: SessionState): void {
   syncSaveGeneration += 1;
+  invalidatePendingStorageCommits("session");
   ensureBaseDir(paths.baseDir);
   if (fs.existsSync(paths.sessionFile)) {
     try {
@@ -1650,6 +1654,29 @@ interface QueuedSessionSave {
 let asyncSaveQueued: QueuedSessionSave | null = null;
 let syncSaveGeneration = 0;
 let activeSessionSave: Promise<void> | null = null;
+const pendingSessionCommits = new Set<string>();
+const pendingSettingsCommits = new Set<string>();
+
+function invalidatePendingStorageCommits(kind: "session" | "settings"): void {
+  for (const source of kind === "session" ? pendingSessionCommits : pendingSettingsCommits) {
+    try { fs.unlinkSync(source); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  }
+}
+
+async function commitStorageFile(source: string, destination: string, generation: number, kind: "session" | "settings"): Promise<void> {
+  const currentGeneration = () => kind === "session" ? syncSaveGeneration : syncSettingsSaveGeneration;
+  const pending = kind === "session" ? pendingSessionCommits : pendingSettingsCommits;
+  if (generation < currentGeneration()) return;
+  pending.add(source);
+  try {
+    await runtimePerformance.measure(`${kind}.commit`, () => fsp.rename(source, destination));
+  } catch (error) {
+    if (generation >= currentGeneration()) throw error;
+  } finally {
+    pending.delete(source);
+  }
+}
 
 async function writeSessionPayload(paths: StoragePaths, payload: string, generation: number): Promise<void> {
   await fs.promises.mkdir(paths.baseDir, { recursive: true });
@@ -1683,13 +1710,17 @@ async function writeSessionPayload(paths: StoragePaths, payload: string, generat
   let backupCleanup: Promise<void> | null = null;
   if (backupReady) {
     try {
-      runtimePerformance.measureSync("session.commit", () => syncRenameWithExdevFallback(backupTempPath, sessionBackupPath(paths.sessionFile)));
+      await commitStorageFile(backupTempPath, sessionBackupPath(paths.sessionFile), generation, "session");
     } catch {
       backupCleanup = fsp.rm(backupTempPath, { force: true }).catch(() => {});
     }
   }
   try {
-    runtimePerformance.measureSync("session.commit", () => syncRenameWithExdevFallback(tempPath, paths.sessionFile));
+    if (generation < syncSaveGeneration) {
+      await fsp.rm(tempPath, { force: true }).catch(() => {});
+      return;
+    }
+    await commitStorageFile(tempPath, paths.sessionFile, generation, "session");
   } catch (error) {
     await fsp.rm(tempPath, { force: true }).catch(() => {});
     throw error;
@@ -1964,6 +1995,8 @@ export async function acquirePersistenceBarrier(): Promise<PersistenceBarrier> {
 export function cancelPendingAsyncSaves(): void {
   syncSettingsSaveGeneration += 1;
   syncSaveGeneration += 1;
+  invalidatePendingStorageCommits("session");
+  invalidatePendingStorageCommits("settings");
   const detached = detachPendingAsyncSaves();
   detached.session?.waiters.forEach((waiter) => waiter.resolve());
   detached.settings?.waiters.forEach((waiter) => waiter.resolve());
