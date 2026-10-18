@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { app, safeStorage } from "electron";
 import type { AppController } from "../app-controller";
 import type { McpConfiguration, McpCredentials, McpScope, McpStatus } from "../../shared/mcp";
+import { effectiveMcpScopes, MCP_SCOPES } from "../../shared/mcp";
 import { collectAccountStatusRedactionValues } from "../account-status-sanitizer";
 import { getNetworkProxyState } from "../network-proxy";
 import { McpEndpoint } from "./endpoint";
@@ -101,7 +102,7 @@ export class McpService {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Ungültige MCP-Konfiguration.");
     const input = value as Record<string, unknown>;
     if (Object.keys(input).some(key => !["enabled", "relayUrl", "name", "scopes", "extraRoots"].includes(key)) || typeof input.enabled !== "boolean" || typeof input.name !== "string" || !input.name.trim() || input.name.length > 100 || !Array.isArray(input.scopes) || !Array.isArray(input.extraRoots) || input.extraRoots.length > 16) throw new Error("Ungültige MCP-Konfiguration.");
-    const allowed = new Set(["read", "control", "files", "transfer", "secrets", "updates", "extraction"]);
+    const allowed = new Set<string>(MCP_SCOPES);
     if (input.scopes.some(scope => typeof scope !== "string" || !allowed.has(scope)) || !input.scopes.includes("read")) throw new Error("Ungültige MCP-Berechtigungen.");
     if (input.scopes.includes("transfer") && !input.scopes.includes("files")) throw new Error("Dateiübertragung benötigt die Dateiberechtigung.");
     if (input.scopes.includes("updates") && !input.scopes.includes("control")) throw new Error("Unbeaufsichtigte Updates benötigen die Steuerungsberechtigung.");
@@ -134,7 +135,7 @@ export class McpService {
   getStatus(): McpStatus {
     return { ...this.config, scopes: [...this.config.scopes], extraRoots: [...this.config.extraRoots], connection: this.connection, installationId: this.secrets.current?.installationId || null, activeRequests: this.activeRequests, lastContactAt: this.lastContactAt, error: this.error, toolCount: this.toolsCount };
   }
-  private scopes(): McpScope[] { return !this.closed && this.config.enabled ? this.config.scopes : []; }
+  private scopes(): McpScope[] { return !this.closed && this.config.enabled ? effectiveMcpScopes(this.config.scopes) : []; }
   private redactions(): string[] {
     return [...collectAccountStatusRedactionValues(this.options.controller.getSettings()), ...[this.secrets.current, ...this.secrets.revocations].filter(Boolean).flatMap(entry => [entry!.agentToken, entry!.clientToken])];
   }
