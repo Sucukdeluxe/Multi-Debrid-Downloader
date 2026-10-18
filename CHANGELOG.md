@@ -4,6 +4,15 @@ All notable changes to Multi-Debrid Downloader are documented in this file.
 
 ## [Unreleased]
 
+## [2.0.105] - 2026-10-18
+
+### Direct signed MCP updates
+
+- Transfer publisher-signed installers directly through MCP without requiring a release lookup or public asset download.
+- Bind each signed manifest to the installation, current and target versions, size, SHA-256 digest, expiry and request key. Require the existing local control and updates permissions throughout the transfer and handoff.
+- Support bounded, retry-safe data blocks and verify the complete installer before launch. Keep fixed installer arguments, persistent update jobs and post-restart version verification.
+- Save and verify local settings/session backups before direct installation. Do not expose general shell commands, arbitrary executable paths or destination URLs.
+
 ## [2.0.104] - 2026-10-18
 
 ### Archive recovery and volume matching
