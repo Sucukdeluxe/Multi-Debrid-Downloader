@@ -111,6 +111,7 @@ The Downloads workspace is optimized for large queues:
 
 - Automatic RAR, ZIP, and 7z extraction after download.
 - Nested archive extraction and package-scoped password reuse.
+- Recovery-record repair for damaged RAR archives, including password-protected volumes, using isolated working copies and full extraction verification.
 - Conflict policies for overwrite, skip, rename, or confirmation.
 - Disk-space validation before extraction.
 - Optional archive, link-artifact, and sample-file cleanup.

@@ -9,7 +9,7 @@ import { removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 import { isExtractionStagingDirectoryName, isVerifiedExtractionOutput, withStagedExtraction } from "./extraction-output";
 import { recordArchivePasswordAttempt } from "./archive-password-diagnostics";
 import { planRarVolumeAliases, withRarVolumeAliases } from "./archive-volume-names";
-import { hasRarRecoveryRecord, withRecoveredRar } from "./rar-recovery";
+import { hasRarRecoveryRecord, repairRarWithPasswords, withRecoveredRar } from "./rar-recovery";
 
 import crypto from "node:crypto";
 
@@ -2457,9 +2457,11 @@ async function runExternalExtract(
     onLog?.("INFO", `RAR-Wiederherstellung auf Arbeitskopie: archive=${path.basename(archivePath)}, volumes=${volumes.length}`);
     try {
       return await withRecoveredRar(archivePath, volumes, async (source, destination) => {
-        const result = await runExtractCommand(command, ["r", "-y", "-p-", "-idq", source, `${destination}${path.sep}`], undefined, signal, await computeExtractTimeoutMs(source));
-        if (result.aborted || signal?.aborted) throw new Error("aborted:extract");
-        if (!result.ok) throw new Error(result.errorText || "RAR-Wiederherstellung fehlgeschlagen");
+        await repairRarWithPasswords(source, destination, passwordCandidates, async (file, attempt, password) => {
+          const result = await runExtractCommand(command, ["r", "-y", password ? `-p${password}` : "-p-", "-idq", file, `${attempt}${path.sep}`], undefined, signal, await computeExtractTimeoutMs(file));
+          if (result.aborted || signal?.aborted) throw new Error("aborted:extract");
+          return result.ok;
+        }, signal);
       }, async source => {
         const password = await extract(source);
         onLog?.("INFO", `RAR-Wiederherstellung erfolgreich geprüft: archive=${path.basename(archivePath)}`);

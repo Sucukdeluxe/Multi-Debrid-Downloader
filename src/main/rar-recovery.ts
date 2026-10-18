@@ -39,6 +39,32 @@ export async function hasRarRecoveryRecord(filePath: string): Promise<boolean> {
   }
 }
 
+export async function repairRarWithPasswords(
+  source: string,
+  destination: string,
+  passwords: string[],
+  repair: (source: string, destination: string, password: string) => Promise<boolean>,
+  signal?: AbortSignal
+): Promise<void> {
+  for (const password of new Set(passwords.length ? passwords : [""])) {
+    if (signal?.aborted) throw new Error("aborted:extract");
+    const attempt = await fs.mkdtemp(path.join(destination, "attempt-"));
+    try {
+      const ok = await repair(source, attempt, password);
+      if (signal?.aborted) throw new Error("aborted:extract");
+      const name = `fixed.${path.basename(source)}`;
+      const fixed = path.join(attempt, name);
+      if (ok && (await fs.lstat(fixed).catch(() => undefined))?.isFile()) {
+        await fs.rename(fixed, path.join(destination, name));
+        return;
+      }
+    } finally {
+      await fs.rm(attempt, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
+  }
+  throw new Error("RAR-Wiederherstellung mit den vorhandenen Passwort-Kandidaten fehlgeschlagen");
+}
+
 export async function withRecoveredRar<T>(
   archivePath: string,
   volumes: string[],
