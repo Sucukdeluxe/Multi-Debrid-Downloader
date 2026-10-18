@@ -10093,7 +10093,7 @@ export class DownloadManager extends EventEmitter {
         const queuePresence = this.activeTasks.size === 0 ? this.getQueuePresence(now) : { hasImmediate: true, hasDelayed: false };
         const downloadsComplete = this.activeTasks.size === 0 && !queuePresence.hasImmediate && !queuePresence.hasDelayed;
         const postProcessComplete = this.packagePostProcessTasks.size === 0 && !this.hasAnyDeferredPostProcessPending();
-        if (downloadsComplete && (postProcessComplete || this.settings.autoExtractWhenStopped)) {
+        if (downloadsComplete && postProcessComplete) {
           this.finishRun();
           break;
         }
