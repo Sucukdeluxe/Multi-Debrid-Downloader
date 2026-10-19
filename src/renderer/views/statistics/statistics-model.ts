@@ -1,10 +1,12 @@
+import { aggregateStatisticsRange, type StatisticsAggregate } from "../../../shared/statistics-aggregation";
 import { getProviderUsageDayKey } from "../../../shared/provider-daily-limits";
-import type { DebridProvider, DownloadItem, DownloadSummary, UiSnapshot } from "../../../shared/types";
+import type { DebridProvider, DownloadItem, DownloadSummary, StatisticsLedger, StatisticsProviderBucket, UiSnapshot } from "../../../shared/types";
 
-export type StatisticsRange = "session" | "today" | "week" | "month" | "all";
+export type StatisticsRange = "session" | "today" | "last24" | "week" | "month" | "all";
 export type StatisticsCoverage = "partial" | "unavailable";
 export type StatisticsSessionState = "empty" | "idle" | "active" | "paused";
-export type StatisticsProviderScope = "current-queue" | "today" | "all";
+export type StatisticsProviderScope = "current-queue" | "today" | "last24" | "week" | "month" | "all";
+export type StatisticsUsageKind = "providers" | "accounts";
 export type StatisticsMetricTone = "danger";
 
 export interface StatisticsMetric {
@@ -15,7 +17,7 @@ export interface StatisticsMetric {
 }
 
 export interface StatisticsProviderRow {
-  id: DebridProvider;
+  id: string;
   label: string;
   bytes: number;
   completed: number | null;
@@ -37,6 +39,7 @@ export interface StatisticsViewModel {
   sessionState: StatisticsSessionState;
   metrics: StatisticsMetrics;
   providerScope: StatisticsProviderScope | null;
+  usageKind: StatisticsUsageKind;
   providers: StatisticsProviderRow[];
   errorResetAvailable: boolean;
 }
@@ -48,13 +51,12 @@ const providerLabels: Record<DebridProvider, string> = {
   "megadebrid-web": "Mega-Debrid Web",
   bestdebrid: "BestDebrid",
   alldebrid: "AllDebrid",
+  deepbrid: "Deepbrid",
   ddownload: "DDownload",
   onefichier: "1Fichier",
   debridlink: "Debrid-Link",
   linksnappy: "LinkSnappy"
 };
-
-const historicalUnavailableMessage = "Für diesen Zeitraum werden noch keine historischen Daten gespeichert.";
 
 function normalizeNonNegative(value: number): number {
   return Number.isFinite(value) ? Math.max(0, value) : 0;
@@ -153,36 +155,95 @@ function deriveQueueProviders(items: DownloadItem[]): StatisticsProviderRow[] {
   return sortProviderRows([...providers.values()]);
 }
 
-function deriveUsageProviders(usage: Partial<Record<DebridProvider, number>>): StatisticsProviderRow[] {
+function deriveUsageProviders(
+  usage: Partial<Record<DebridProvider, number>>,
+  outcomes: Partial<Record<DebridProvider, StatisticsProviderBucket>> = {},
+  outcomesAvailable = true
+): StatisticsProviderRow[] {
   const rows: StatisticsProviderRow[] = [];
-  for (const [id, rawBytes] of Object.entries(usage) as Array<[DebridProvider, number | undefined]>) {
+  const providerIds = new Set<DebridProvider>([
+    ...(Object.keys(usage) as DebridProvider[]),
+    ...(Object.keys(outcomes) as DebridProvider[])
+  ]);
+  for (const id of providerIds) {
+    const rawBytes = usage[id];
     const bytes = normalizeNonNegative(rawBytes ?? 0);
-    if (bytes <= 0 || !providerLabels[id]) {
+    const completed = normalizeCount(outcomes[id]?.completed ?? 0);
+    const failed = normalizeCount(outcomes[id]?.failed ?? 0);
+    if ((bytes <= 0 && completed <= 0 && failed <= 0) || !providerLabels[id]) {
       continue;
     }
     rows.push({
       id,
       label: providerLabels[id],
       bytes,
-      completed: null,
-      failed: null
+      completed: outcomesAvailable ? completed : null,
+      failed: outcomesAvailable ? failed : null
     });
   }
   return sortProviderRows(rows);
 }
 
-function sumProviderBytes(rows: StatisticsProviderRow[]): number {
-  return rows.reduce((total, row) => total + row.bytes, 0);
+function deriveRollingAccounts(snapshot: UiSnapshot): StatisticsProviderRow[] {
+  return (snapshot.stats.rolling24Hours?.accounts ?? []).map((account) => ({
+    id: account.id,
+    label: `${providerLabels[account.provider]} · ${account.label}`,
+    bytes: normalizeNonNegative(account.bytes),
+    completed: null,
+    failed: null
+  })).sort((left, right) => right.bytes - left.bytes || left.label.localeCompare(right.label, "de-DE", { sensitivity: "base" }) || left.id.localeCompare(right.id));
 }
 
-function buildUnavailableMetrics(): StatisticsMetrics {
+function aggregateMetrics(aggregate: StatisticsAggregate, sourceLabel: string, detailsAvailable = true): StatisticsMetrics {
   return {
-    downloadedBytes: unavailableMetric(historicalUnavailableMessage),
-    files: unavailableMetric(historicalUnavailableMessage),
-    successRate: unavailableMetric(historicalUnavailableMessage),
-    averageSpeedBps: unavailableMetric(historicalUnavailableMessage),
-    errors: unavailableMetric(historicalUnavailableMessage)
+    downloadedBytes: availableMetric(aggregate.downloadedBytes, sourceLabel),
+    files: detailsAvailable ? availableMetric(aggregate.completedFiles, sourceLabel) : unavailableMetric("Nicht verfügbar"),
+    successRate: detailsAvailable
+      ? successRateMetric(aggregate.completedFiles, aggregate.failedFiles, sourceLabel)
+      : unavailableMetric("Nicht verfügbar"),
+    averageSpeedBps: !detailsAvailable
+      ? unavailableMetric("Nicht verfügbar")
+      : aggregate.averageSpeedBps === null
+      ? unavailableMetric("Noch keine aktive Downloadzeit mit übertragenen Daten erfasst")
+      : availableMetric(aggregate.averageSpeedBps, sourceLabel),
+    errors: detailsAvailable ? availableMetric(
+      aggregate.failedFiles,
+      sourceLabel,
+      aggregate.failedFiles > 0 ? "danger" : undefined
+    ) : unavailableMetric("Nicht verfügbar")
   };
+}
+
+function statisticsWindowStart(nowMs: number, days: number | null): string {
+  if (days === null) {
+    return "0000-00-00";
+  }
+  const date = new Date(nowMs);
+  date.setHours(0, 0, 0, 0);
+  date.setDate(date.getDate() - Math.max(0, days - 1));
+  return getProviderUsageDayKey(date.getTime());
+}
+
+function hasProviderBytesOnlyDay(
+  ledger: StatisticsLedger | null | undefined,
+  days: number | null,
+  nowMs: number
+): boolean {
+  const start = statisticsWindowStart(nowMs, days);
+  const end = getProviderUsageDayKey(nowMs);
+  return (ledger?.providerBytesOnlyDays ?? []).some((day) => day >= start && day <= end);
+}
+
+function hasProviderBytesOnlyRollingDay(ledger: StatisticsLedger | null | undefined, nowMs: number): boolean {
+  const start = getProviderUsageDayKey(nowMs - (24 * 60 * 60 * 1_000));
+  const end = getProviderUsageDayKey(nowMs);
+  return (ledger?.providerBytesOnlyDays ?? []).some((day) => day >= start && day <= end);
+}
+
+function recordedDaysMessage(label: string, coveredDays: number): string {
+  return coveredDays === 1
+    ? `${label}: 1 erfasster Tag wird bis heute zusammengefasst.`
+    : `${label}: ${coveredDays} erfasste Tage werden bis heute zusammengefasst.`;
 }
 
 export function buildStatisticsViewModel(
@@ -192,55 +253,80 @@ export function buildStatisticsViewModel(
 ): StatisticsViewModel {
   const sessionState = deriveSessionState(snapshot);
 
-  if (range === "week" || range === "month") {
+  if (range === "last24") {
+    const rolling = snapshot.stats.rolling24Hours;
+    const minuteTrackingStartedAt = snapshot.stats.statistics?.minuteTrackingStartedAt;
+    const rollingAvailable = !hasProviderBytesOnlyRollingDay(snapshot.stats.statistics, nowMs);
+    const hasFullCoverage = typeof minuteTrackingStartedAt === "number"
+      && Number.isFinite(minuteTrackingStartedAt)
+      && minuteTrackingStartedAt > 0
+      && nowMs - minuteTrackingStartedAt >= 24 * 60 * 60 * 1_000;
     return {
       range,
-      coverage: "unavailable",
-      message: historicalUnavailableMessage,
+      coverage: "partial",
+      message: hasFullCoverage
+        ? "Account-Traffic der vergangenen 24 Stunden."
+        : "Letzte 24 Stunden: Werte seit Beginn der Aufzeichnung.",
       sessionState,
-      metrics: buildUnavailableMetrics(),
-      providerScope: null,
-      providers: [],
+      metrics: {
+        downloadedBytes: rollingAvailable
+          ? availableMetric(rolling?.downloadedBytes ?? 0, "Letzte 24 Stunden")
+          : unavailableMetric("Nicht verfügbar"),
+        files: unavailableMetric("Dateien werden nicht minutengenau nach Account erfasst"),
+        successRate: unavailableMetric("Ergebnisse werden nicht minutengenau nach Account erfasst"),
+        averageSpeedBps: unavailableMetric("Aktive Downloadzeit wird nur tagesweise erfasst"),
+        errors: unavailableMetric("Fehler werden nicht minutengenau nach Account erfasst")
+      },
+      providerScope: "last24",
+      usageKind: "accounts",
+      providers: rollingAvailable ? deriveRollingAccounts(snapshot) : [],
       errorResetAvailable: false
     };
   }
 
-  if (range === "today") {
-    const isCurrentDay = snapshot.settings.providerDailyUsageDay === getProviderUsageDayKey(nowMs);
-    const providers = isCurrentDay ? deriveUsageProviders(snapshot.settings.providerDailyUsageBytes) : [];
+  if (range === "today" || range === "week" || range === "month") {
+    const days = range === "today" ? 1 : range === "week" ? 7 : 30;
+    const aggregate = aggregateStatisticsRange(snapshot.stats.statistics, days, nowMs);
+    const label = range === "today" ? "Heute" : range === "week" ? "Letzte sieben Tage" : "Letzte 30 Tage";
+    const detailsAvailable = !hasProviderBytesOnlyDay(snapshot.stats.statistics, days, nowMs);
     return {
       range,
       coverage: "partial",
-      message: "Heutige Daten stammen aus den lokalen Provider-Nutzungszählern des aktuellen Kalendertags.",
+      message: range === "today"
+        ? "Heutige Werte stammen aus der lokalen Statistikaufzeichnung."
+        : recordedDaysMessage(label, aggregate.coveredDays),
       sessionState,
-      metrics: {
-        downloadedBytes: availableMetric(sumProviderBytes(providers), "Provider-Nutzung heute"),
-        files: unavailableMetric("Dateianzahlen werden nicht tagesweise gespeichert"),
-        successRate: unavailableMetric("Ergebnisse werden nicht tagesweise gespeichert"),
-        averageSpeedBps: unavailableMetric("Durchschnittsgeschwindigkeit wird nicht tagesweise gespeichert"),
-        errors: unavailableMetric("Fehler werden nicht tagesweise gespeichert")
-      },
-      providerScope: "today",
-      providers,
+      metrics: aggregateMetrics(aggregate, label, detailsAvailable),
+      providerScope: range,
+      usageKind: "providers",
+      providers: deriveUsageProviders(
+        Object.fromEntries(Object.entries(aggregate.providers).map(([provider, bucket]) => [provider, bucket?.bytes ?? 0])),
+        aggregate.providers,
+        detailsAvailable
+      ),
       errorResetAvailable: false
     };
   }
 
   if (range === "all") {
-    const providers = deriveUsageProviders(snapshot.settings.providerTotalUsageBytes);
+    const aggregate = aggregateStatisticsRange(snapshot.stats.statistics, null, nowMs);
+    const detailsAvailable = !hasProviderBytesOnlyDay(snapshot.stats.statistics, null, nowMs);
+    const providers = deriveUsageProviders(snapshot.settings.providerTotalUsageBytes, aggregate.providers, detailsAvailable);
+    const recordedMetrics = aggregateMetrics(aggregate, "Seit Beginn der Statistikaufzeichnung", detailsAvailable);
     return {
       range,
       coverage: "partial",
-      message: "Gesamtwerte stammen aus dauerhaft gespeicherten Zählern. Ergebnisse und Geschwindigkeiten werden nicht historisch gespeichert.",
+      message: "Datenmenge und Dateien stammen aus den Gesamtzählern; Ergebnisse und Durchschnitt seit Beginn der Statistikaufzeichnung.",
       sessionState,
       metrics: {
         downloadedBytes: availableMetric(snapshot.stats.totalDownloadedAllTime, "Gesamtzähler"),
         files: availableMetric(snapshot.stats.totalFilesAllTime, "Gesamtzähler"),
-        successRate: unavailableMetric("Ergebnisse werden nicht dauerhaft gespeichert"),
-        averageSpeedBps: unavailableMetric("Durchschnittsgeschwindigkeit wird nicht dauerhaft gespeichert"),
-        errors: unavailableMetric("Fehler werden nicht dauerhaft gespeichert")
+        successRate: recordedMetrics.successRate,
+        averageSpeedBps: recordedMetrics.averageSpeedBps,
+        errors: recordedMetrics.errors
       },
       providerScope: "all",
+      usageKind: "providers",
       providers,
       errorResetAvailable: false
     };
@@ -274,6 +360,7 @@ export function buildStatisticsViewModel(
       errors: availableMetric(failed, resultSource, failed > 0 ? "danger" : undefined)
     },
     providerScope: "current-queue",
+    usageKind: "providers",
     providers: deriveQueueProviders(items),
     errorResetAvailable: queueResults.failed > 0
   };

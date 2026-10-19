@@ -1,8 +1,12 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import {
+  OfflineSkipScope,
   AddLinksPayload,
+  AccountCheckScope,
   AccountCommandResult,
   AccountCredentialCheckInput,
+  AccountSecretRequest,
+  AccountSecretResult,
   AccountCreateCommand,
   AccountDeleteCommand,
   AccountReplaceCommand,
@@ -27,10 +31,22 @@ import {
   UpdateCheckResult,
   UpdateInstallProgress
 } from "../shared/types";
+import type { RealDebridLoginRequest } from "../shared/preload-api";
+import type {
+  CollectorEnrichmentRequest,
+  CollectorEnrichmentProgress,
+  CollectorInspectionResult,
+  CollectorPersistenceState,
+  CollectorTextPreparationRequest
+} from "../shared/collector";
 import { IPC_CHANNELS } from "../shared/ipc";
 import { ElectronApi } from "../shared/preload-api";
 
 const api: ElectronApi = {
+  getMcpStatus: () => ipcRenderer.invoke(IPC_CHANNELS.MCP_STATUS),
+  configureMcp: (configuration) => ipcRenderer.invoke(IPC_CHANNELS.MCP_CONFIGURE, configuration),
+  rotateMcp: () => ipcRenderer.invoke(IPC_CHANNELS.MCP_ROTATE),
+  getMcpConnectionCode: () => ipcRenderer.invoke(IPC_CHANNELS.MCP_CONNECTION_CODE),
   getSnapshot: (): Promise<UiSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.GET_SNAPSHOT),
   getVersion: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.GET_VERSION),
   checkUpdates: (): Promise<UpdateCheckResult> => ipcRenderer.invoke(IPC_CHANNELS.CHECK_UPDATES),
@@ -39,7 +55,6 @@ const api: ElectronApi = {
   updateSettings: (settings: RendererSettingsUpdate): Promise<RendererSettings> => ipcRenderer.invoke(IPC_CHANNELS.UPDATE_SETTINGS, settings),
   resetProviderDailyUsage: (provider: DebridProvider): Promise<RendererSettings> => ipcRenderer.invoke(IPC_CHANNELS.RESET_PROVIDER_DAILY_USAGE, provider),
   resetDebridLinkApiKeyDailyUsage: (keyId: string): Promise<RendererSettings> => ipcRenderer.invoke(IPC_CHANNELS.RESET_DEBRID_LINK_API_KEY_DAILY_USAGE, keyId),
-  resetMegaDebridCooldowns: (): Promise<{ cleared: number }> => ipcRenderer.invoke(IPC_CHANNELS.RESET_MEGA_DEBRID_COOLDOWNS),
   createAccount: (command: AccountCreateCommand): Promise<AccountCommandResult> => ipcRenderer.invoke(IPC_CHANNELS.CREATE_ACCOUNT, command),
   replaceAccount: (command: AccountReplaceCommand): Promise<AccountCommandResult> => ipcRenderer.invoke(IPC_CHANNELS.REPLACE_ACCOUNT, command),
   updateAccountSecret: (command: AccountUpdateSecretCommand): Promise<AccountCommandResult> => ipcRenderer.invoke(IPC_CHANNELS.UPDATE_ACCOUNT_SECRET, command),
@@ -48,6 +63,22 @@ const api: ElectronApi = {
     ipcRenderer.invoke(IPC_CHANNELS.ADD_LINKS, payload),
   addContainers: (filePaths: string[]): Promise<{ addedPackages: number; addedLinks: number }> =>
     ipcRenderer.invoke(IPC_CHANNELS.ADD_CONTAINERS, filePaths),
+  prepareCollectorText: (request: CollectorTextPreparationRequest): Promise<CollectorInspectionResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.PREPARE_COLLECTOR_TEXT, request),
+  prepareCollectorContainers: (filePaths: string[], addedAt: number): Promise<CollectorInspectionResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.PREPARE_COLLECTOR_CONTAINERS, filePaths, addedAt),
+  enrichCollectorPackages: (request: CollectorEnrichmentRequest): Promise<CollectorInspectionResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.ENRICH_COLLECTOR_PACKAGES, request),
+  onCollectorEnrichmentProgress: (callback: (progress: CollectorEnrichmentProgress) => void): (() => void) => {
+    const listener = (_event: unknown, progress: CollectorEnrichmentProgress): void => callback(progress);
+    ipcRenderer.on(IPC_CHANNELS.COLLECTOR_ENRICHMENT_PROGRESS, listener);
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.COLLECTOR_ENRICHMENT_PROGRESS, listener);
+  },
+  getCollectorState: (): Promise<CollectorPersistenceState> => ipcRenderer.invoke(IPC_CHANNELS.GET_COLLECTOR_STATE),
+  getCollectorStateSync: (): CollectorPersistenceState | null => ipcRenderer.sendSync(IPC_CHANNELS.GET_COLLECTOR_STATE_SYNC) as CollectorPersistenceState | null,
+  saveCollectorState: (state: CollectorPersistenceState): Promise<CollectorPersistenceState> => ipcRenderer.invoke(IPC_CHANNELS.SAVE_COLLECTOR_STATE, state),
+  saveCollectorStateSync: (state: CollectorPersistenceState): boolean => ipcRenderer.sendSync(IPC_CHANNELS.SAVE_COLLECTOR_STATE_SYNC, state) === true,
+  getPathForDroppedFile: (file: File): string => webUtils.getPathForFile(file),
   getStartConflicts: (): Promise<StartConflictEntry[]> => ipcRenderer.invoke(IPC_CHANNELS.GET_START_CONFLICTS),
   resolveStartConflict: (packageId: string, policy: DuplicatePolicy): Promise<StartConflictResolutionResult> =>
     ipcRenderer.invoke(IPC_CHANNELS.RESOLVE_START_CONFLICT, packageId, policy),
@@ -57,6 +88,7 @@ const api: ElectronApi = {
   stop: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.STOP),
   togglePause: (): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.TOGGLE_PAUSE),
   cancelPackage: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.CANCEL_PACKAGE, packageId),
+  removeOfflinePackages: (packageIds: string[], scope: OfflineSkipScope = "archive"): Promise<number> => ipcRenderer.invoke(IPC_CHANNELS.REMOVE_OFFLINE_PACKAGES, packageIds, scope),
   renamePackage: (packageId: string, newName: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.RENAME_PACKAGE, packageId, newName),
   reorderPackages: (packageIds: string[]): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.REORDER_PACKAGES, packageIds),
   removeItem: (itemId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.REMOVE_ITEM, itemId),
@@ -68,6 +100,7 @@ const api: ElectronApi = {
   toggleClipboard: (): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.TOGGLE_CLIPBOARD),
   writeClipboardText: (text: string): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.WRITE_CLIPBOARD_TEXT, text),
   pickFolder: (): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.PICK_FOLDER),
+  pickProxyList: (): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.PICK_PROXY_LIST),
   pickContainers: (): Promise<string[]> => ipcRenderer.invoke(IPC_CHANNELS.PICK_CONTAINERS),
   getSessionStats: (): Promise<SessionStats> => ipcRenderer.invoke(IPC_CHANNELS.GET_SESSION_STATS),
   resetSessionStats: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.RESET_SESSION_STATS),
@@ -80,7 +113,7 @@ const api: ElectronApi = {
   cancelBackupImport: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.CANCEL_BACKUP_IMPORT),
   exportOnlineBackup: (): Promise<{ key: string }> => ipcRenderer.invoke(IPC_CHANNELS.EXPORT_ONLINE_BACKUP),
   importOnlineBackup: (key: string): Promise<{ restored: boolean; relaunch: false; message: string }> => ipcRenderer.invoke(IPC_CHANNELS.IMPORT_ONLINE_BACKUP, key),
-  exportSupportBundle: (): Promise<{ saved: boolean; filePath?: string; busy?: boolean }> => ipcRenderer.invoke(IPC_CHANNELS.EXPORT_SUPPORT_BUNDLE),
+  exportSupportBundle: (): Promise<{ saved: boolean; filePath?: string }> => ipcRenderer.invoke(IPC_CHANNELS.EXPORT_SUPPORT_BUNDLE),
   openLog: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_LOG),
   openLogDirectory: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_LOG_DIRECTORY),
   openAuditLog: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_AUDIT_LOG),
@@ -99,19 +132,29 @@ const api: ElectronApi = {
   enableRemoteDiagnostics: (input: EnableRemoteDiagnosticsInput): Promise<RemoteDiagnosticsInfo> => ipcRenderer.invoke(IPC_CHANNELS.ENABLE_REMOTE_DIAGNOSTICS, input),
   disableRemoteDiagnostics: (): Promise<RemoteDiagnosticsInfo> => ipcRenderer.invoke(IPC_CHANNELS.DISABLE_REMOTE_DIAGNOSTICS),
   rotateRemoteDiagnosticsToken: (): Promise<RemoteDiagnosticsInfo> => ipcRenderer.invoke(IPC_CHANNELS.ROTATE_REMOTE_DIAGNOSTICS_TOKEN),
-  openRealDebridLogin: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_REALDEBRID_LOGIN),
+  openRealDebridLogin: (request: RealDebridLoginRequest = { accountId: "rdw_legacy" }): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_REALDEBRID_LOGIN, request),
   openAllDebridLogin: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_ALLDEBRID_LOGIN),
   importBestDebridCookies: (): Promise<number> => ipcRenderer.invoke(IPC_CHANNELS.IMPORT_BESTDEBRID_COOKIES),
   getAllDebridHostInfo: (): Promise<AllDebridHostInfo> => ipcRenderer.invoke(IPC_CHANNELS.GET_ALLDEBRID_HOST_INFO),
   getDebridLinkHostLimits: (): Promise<DebridLinkHostLimitInfo[]> => ipcRenderer.invoke(IPC_CHANNELS.GET_DEBRIDLINK_HOST_LIMITS),
-  checkDebridAccounts: (): Promise<DebridAccountStatus[]> => ipcRenderer.invoke(IPC_CHANNELS.CHECK_DEBRID_ACCOUNTS),
+  checkDebridAccounts: (scope: AccountCheckScope = "active"): Promise<DebridAccountStatus[]> => ipcRenderer.invoke(IPC_CHANNELS.CHECK_DEBRID_ACCOUNTS, scope),
   checkAccountCredentials: (input: AccountCredentialCheckInput): Promise<DebridAccountStatus> => ipcRenderer.invoke(IPC_CHANNELS.CHECK_ACCOUNT_CREDENTIALS, input),
+  revealAccountSecret: (input: AccountSecretRequest): Promise<AccountSecretResult> => ipcRenderer.invoke(IPC_CHANNELS.REVEAL_ACCOUNT_SECRET, input),
+  getArchivePasswordList: () => ipcRenderer.invoke(IPC_CHANNELS.GET_ARCHIVE_PASSWORD_LIST),
   retryExtraction: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.RETRY_EXTRACTION, packageId),
   extractNow: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.EXTRACT_NOW, packageId),
   resetPackage: (packageId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.RESET_PACKAGE, packageId),
   getHistory: (): Promise<HistoryEntry[]> => ipcRenderer.invoke(IPC_CHANNELS.GET_HISTORY),
+  onHistoryEntryAdded: (callback: (entry: HistoryEntry) => void): (() => void) => {
+    const listener = (_event: unknown, entry: HistoryEntry): void => callback(entry);
+    ipcRenderer.on(IPC_CHANNELS.HISTORY_ENTRY_ADDED, listener);
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.HISTORY_ENTRY_ADDED, listener);
+    };
+  },
   clearHistory: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.CLEAR_HISTORY),
   removeHistoryEntry: (entryId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.REMOVE_HISTORY_ENTRY, entryId),
+  removeHistoryEntries: (entryIds: string[]): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.REMOVE_HISTORY_ENTRIES, entryIds),
   revealHistoryEntry: (entryId: string): Promise<HistoryRevealResult> => ipcRenderer.invoke(IPC_CHANNELS.REVEAL_HISTORY_ENTRY, entryId),
   setPackagePriority: (packageId: string, priority: PackagePriority): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SET_PACKAGE_PRIORITY, packageId, priority),
   skipItems: (itemIds: string[]): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SKIP_ITEMS, itemIds),

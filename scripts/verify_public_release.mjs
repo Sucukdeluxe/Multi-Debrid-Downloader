@@ -5,15 +5,17 @@ import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
+import { extractFile, uncache } from "@electron/asar";
 
 const EXPECTED_PUBLISH = Object.freeze({
   provider: "github",
   owner: "Sucukdeluxe",
-  repo: "multi-debrid-downloader"
+  repo: "Multi-Debrid-Downloader"
 });
-const EXPECTED_PRODUCT_NAME = "Real-Debrid-Downloader";
+const EXPECTED_PRODUCT_NAME = "Multi-Debrid-Downloader";
 const EXPECTED_NSIS_ARTIFACT_NAME = "${productName}-Setup-${version}.${ext}";
 const EXPECTED_PORTABLE_ARTIFACT_NAME = "${productName}-${version}-portable.${ext}";
+const EXPECTED_NSIS_INCLUDE = "resources/installer.nsh";
 const REQUIRED_BUILD_FILES = Object.freeze([
   "resources/extractor-jvm/**/*",
   "LICENSE",
@@ -36,7 +38,12 @@ const REDISTRIBUTION_FILES = Object.freeze([
   Object.freeze({
     sourcePath: "THIRD_PARTY_NOTICES.md",
     packagedPath: "resources/THIRD_PARTY_NOTICES.md",
-    sha256: "28f9d1f8692811758c41584e59d0db6cbf26654b4b93e335626921bef86bdf76"
+    sha256: "8485b8df5ab1a56942c6e09e134a45a3794320908a9462cfe718ba0be328e28b"
+  }),
+  Object.freeze({
+    sourcePath: "resources/licenses/RUNTIME_LICENSES.txt",
+    packagedPath: "resources/licenses/RUNTIME_LICENSES.txt",
+    sha256: "fd261e5a486cadd833013d7794218e94d29a97f299bd912727e84986cc2077b5"
   }),
   Object.freeze({
     sourcePath: "resources/extractor-jvm/licenses/LGPL-2.1.txt",
@@ -137,6 +144,19 @@ function hasExtraResource(extraResources, expected) {
     && entry.from === expected.from
     && entry.to === expected.to
   ));
+}
+
+function readPackagedMainVersion(asarPath) {
+  requireNonEmptyFile(asarPath, "packaged app.asar");
+  uncache(asarPath);
+  try {
+    const packagePayload = JSON.parse(extractFile(asarPath, "package.json").toString("utf8"));
+    const mainBundle = extractFile(asarPath, path.win32.join("build", "main", "main", "main.js")).toString("utf8");
+    const bundled = /name:\s*["']multi-debrid-downloader["']\s*,\s*version:\s*["']([^"']+)["']/.exec(mainBundle)?.[1] || "";
+    return { packageVersion: String(packagePayload?.version || ""), bundledVersion: bundled };
+  } finally {
+    uncache(asarPath);
+  }
 }
 
 function sha256File(filePath) {
@@ -285,7 +305,14 @@ export function verifyPublicRelease(rootDir = process.cwd()) {
   assertEqual(publish.owner, EXPECTED_PUBLISH.owner, "package.json publish owner");
   assertEqual(publish.repo, EXPECTED_PUBLISH.repo, "package.json publish repo");
   assertEqual(build.nsis?.artifactName, EXPECTED_NSIS_ARTIFACT_NAME, "package.json NSIS artifactName");
+  assertEqual(build.nsis?.include, EXPECTED_NSIS_INCLUDE, "package.json NSIS update include");
   assertEqual(build.portable?.artifactName, EXPECTED_PORTABLE_ARTIFACT_NAME, "package.json portable artifactName");
+  const nsisInclude = readRequiredFile(path.join(absoluteRoot, ...EXPECTED_NSIS_INCLUDE.split("/")));
+  for (const requiredText of ["!macro customCheckAppRunning", "${isUpdated}", "FIND_PROCESS", "taskkill /f /im"]) {
+    if (!nsisInclude.includes(requiredText)) {
+      throw new Error(`NSIS update include omits ${requiredText}`);
+    }
+  }
   const buildFiles = Array.isArray(build.files) ? build.files : [];
   const missingBuildFiles = REQUIRED_BUILD_FILES.filter((entry) => !buildFiles.includes(entry));
   if (missingBuildFiles.length > 0) {
@@ -317,6 +344,9 @@ export function verifyPublicRelease(rootDir = process.cwd()) {
   const expectedPortable = `${EXPECTED_PRODUCT_NAME}-${version}-portable.exe`;
   const expectedBlockmap = `${expectedSetup}.blockmap`;
   assertEqual(latestFields.path, expectedSetup, "latest.yml path");
+  const packagedVersions = readPackagedMainVersion(path.join(releaseDir, "win-unpacked", "resources", "app.asar"));
+  assertEqual(packagedVersions.packageVersion, version, "packaged package version");
+  assertEqual(packagedVersions.bundledVersion, version, "packaged main bundle version");
 
   const requiredArtifacts = [expectedSetup, expectedPortable, expectedBlockmap];
   const missingArtifacts = requiredArtifacts.filter((fileName) => !fs.existsSync(path.join(releaseDir, fileName)));

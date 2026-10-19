@@ -1,14 +1,13 @@
 import { DragEvent, ReactElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
-import { getMegaDebridAccountStatusId } from "../shared/mega-debrid-accounts";
+import type { RealDebridLoginRequest } from "../shared/preload-api";
 import type {
   AccountCreateCommand,
   AllDebridHostInfo,
   AppTheme,
   BandwidthScheduleEntry,
   DebugSetupCheckResult,
-  DebridAccountStatus,
   DebridFallbackProvider,
   DebridLinkHostLimitInfo,
   DebridProvider,
@@ -17,7 +16,6 @@ import type {
   DuplicatePolicy,
   HistoryEntry,
   PackageEntry,
-  RemoteDiagnosticsInfo,
   RendererAccount,
   RendererSettings,
   RendererSettingsUpdate,
@@ -40,19 +38,18 @@ import {
   getProviderDailyUsageBytes,
   getProviderUsageDayKey
 } from "../shared/provider-daily-limits";
-import {
-  preservePackageOrderForDisplay,
-  reconcileCollapsedPackageState,
-  reconcileOptimisticPackageOrder,
-  sortPackageOrderByName
-} from "./package-order";
-import { pruneSelection, shouldClearDownloadSelection, shouldClearDownloadSelectionOnEscape } from "./selection";
-import { buildConfiguredProviderOrder, getAccountDialogSelectableOptions, matchesAccountModeFilter, pruneAccountRowSelection, resolveAccountUsername, resolveVisibleAccountKind } from "./account-ui";
-import type { AccountModeFilter } from "./account-ui";
-import { buildAccountDeleteCommand, buildAccountReplaceCommand, createAccountEditState, validateAccountEdit } from "./account-edit";
+import { createAvailabilitySortCycle, preservePackageOrderForDisplay, sortPackageOrderByAvailability, sortPackageOrderByName } from "./package-order";
+import { createPackageOrderState } from "./package-order-state";
+import { shouldFocusCollectorImport, type CollectorImportSource } from "./collector-navigation";
+import { isAccountRuleProvider, reconcileAccountOrder, type AccountUsageRule } from "../shared/account-usage-rules";
+import { getPackagesWithOfflineLinks } from "../shared/offline-packages";
+import type { OfflineSkipScope } from "../shared/types";
+import { OfflineRemovalScopeChoice } from "./views/downloads/OfflineRemovalScopeChoice";
+import { pruneSelection, releaseAccountSelectionFocus, resolveEscapeSelectionScope, resolveSelectAllSelectionScope, shouldClearDownloadSelection } from "./selection";
+import { buildConfiguredProviderOrder, createAccountToggleQueue, enqueueAccountToggleIntent, filterAccountDialogOptions, formatAccountOperationError, getAccountDialogSelectableOptions, getAvailableAccountOptions, mergeAccountToggleSettings, pruneAccountRowSelections, resolveAccountStatusState, resolveAccountToggleIntentEnabled, resolveAccountUsername, resolveVisibleAccountKind, sortAccountServices, updateAccountRowSelection, type AccountToggleTarget } from "./account-ui";
+import { buildAccountDeleteCommand, buildAccountReplaceCommand, buildAccountSecretRequest, createAccountEditState, validateAccountEdit } from "./account-edit";
 import type { AccountEditState, AccountEditTarget, AccountKind, AccountService, SingleAccountKind } from "./account-edit";
 import { ACCOUNT_SERVICE_ICONS } from "./account-service-icons";
-import { buildAccountToggleSettingsUpdate, SerialTaskQueue, setAccountTargetEnabled, type AccountToggleTarget } from "./account-toggle-queue";
 import { DOWNLOAD_SPEED_MAX_SAMPLES, updateDownloadSpeedHistory } from "./download-speed-state";
 import { createUiLocalizer, normalizeLanguage } from "./i18n";
 import { runLocalBackupExport, runLocalBackupImport, type BackupPassphraseMode } from "./backup-flow";
@@ -66,23 +63,41 @@ import type { MainView } from "./shell/shell-model";
 import { ContextMenu } from "./ui/ContextMenu";
 import { BackupPassphraseDialog } from "./ui/BackupPassphraseDialog";
 import { Dialog } from "./ui/Dialog";
+import { McpDialog } from "./ui/McpDialog";
 import { Icon } from "./ui/Icon";
 import { Toast } from "./ui/Toast";
+import { LinkAddressesDialog } from "./ui/LinkAddressesDialog";
+import { serializeCollectorPackages, type CollectorEnrichmentProgress, type CollectorInspectionResult, type CollectorPackage } from "../shared/collector";
+import { routeDroppedDlcFiles } from "./collector-drop";
+import { beginCollectorEnrichment, filterCurrentCollectorEnrichment, pruneCollectorEnrichmentGenerations } from "./collector-enrichment";
 import {
-  buildCollectorViewModel,
-  type CollectorSourceTab
+  buildCollectorTransferPackages,
+  buildCollectorWorkspaceViewModel,
+  mergeCollectorPackagesWithinCapacity,
+  removeCollectorLinks,
+  reconcileCollectorCollapsedPackageIds,
+  reconcileCollectorCollapsedPackageIdsWithPackages,
+  reconcileCollectorSelectionWithPackages,
+  setCollectorVisibleSelection,
+  selectCollectorPackageLinks,
+  type CollectorWorkspaceFilter
 } from "./views/collector/collector-model";
+import { guardCollectorBeforeUnload, resolveCollectorLateHydration } from "./views/collector/collector-hydration";
+import { createCollectorPersistenceCoordinator, type CollectorPersistenceCoordinator } from "./views/collector/collector-persistence";
+import { advanceCollectorPersistenceBudget, createCollectorPersistenceBudget, type CollectorPersistenceBudget } from "./views/collector/collector-persistence-budget";
 import {
-  CollectorContent,
   CollectorInputDialog,
+  MemoizedCollectorContent,
   CollectorSidebar,
+  CollectorSidebarStatus,
   CollectorToolbar,
   type CollectorViewActions
 } from "./views/collector/CollectorView";
 import {
   buildHistoryViewModel,
+  mergeLiveHistoryEntry,
   pruneHistoryIds,
-  selectVisibleHistoryIds,
+  toggleHistoryPageSelection,
   type HistoryFilter
 } from "./views/history/history-model";
 import {
@@ -102,15 +117,21 @@ import {
   StatisticsSidebarStatus,
   type StatisticsViewActions
 } from "./views/statistics/StatisticsView";
-import { buildDownloadsViewModel, getDownloadQueueTotalBytes, getDownloadSpeedBps, getPendingDownloadItemCount, type DownloadDisplayMode, type DownloadSidebarFilter } from "./views/downloads/downloads-model";
+import { buildDownloadsViewModel, formatDownloadEta, formatRemainingDownloadBytes, formatRemainingDownloadTooltip, getDownloadQueueStatusMetrics, getDownloadSpeedBps, getPackageErrorItemIds, isDownloadItemError, type DownloadDisplayMode, type DownloadSidebarFilter } from "./views/downloads/downloads-model";
 import { downloadColumnDefinitions, type DownloadSortColumn } from "./views/downloads/DownloadsTable";
-import { beginDownloadColumnDrag, clearDownloadColumnDrag, settleDownloadColumnDrag, updateDownloadColumnDrag, type DownloadColumnDragSession } from "./views/downloads/column-drag";
+import { DeleteConfirmationDialog } from "./views/downloads/DeleteConfirmationDialog";
+import { beginDownloadColumnDrag, clearDownloadColumnDrag, commitDownloadColumnDrag, createDownloadColumnOrderPersistence, DOWNLOAD_COLUMN_MOVE_DURATION_MS, updateDownloadColumnDrag, type DownloadColumnDragSession, type DownloadColumnOrderPersistence } from "./views/downloads/column-drag";
 import {
+  DownloadContextStartActions,
   DownloadsContent,
   DownloadsFooter,
   DownloadsSidebar,
   DownloadsSidebarStatus,
   DownloadsToolbar,
+  runPauseDownloadAction,
+  runResumeDownloadAction,
+  runDownloadStartAction,
+  type DailyScheduleStartDay,
   type DownloadsViewActions,
   type DownloadsViewModel
 } from "./views/downloads/DownloadsView";
@@ -120,12 +141,15 @@ import {
   buildTargetedAccountCheck,
   projectAccountRows,
   resolveHistoryRetentionSelection,
+  normalizeNotificationNumberField,
   sortAccountRows,
+  formatAccountContextHeading,
   type AccountAddOption,
   type AccountRowSource,
   type SettingsFormViewModel,
   type SettingsSaveState,
-  type SettingsSection
+  type SettingsSection,
+  type SettingsThemeChoice
 } from "./views/settings/settings-model";
 import {
   AccountAddDialog,
@@ -143,63 +167,123 @@ import {
 
 type Tab = MainView;
 
-type CollectorTab = CollectorSourceTab;
+const appIntegerFormatter = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 0 });
+
+export function formatHistorySidebarCounts(entries: number, visible: number, selected: number): {
+  entries: string;
+  visible: string;
+  selected: string;
+} {
+  return {
+    entries: `Einträge: ${appIntegerFormatter.format(entries)}`,
+    visible: `Sichtbar: ${appIntegerFormatter.format(visible)}`,
+    selected: `Ausgewählt: ${appIntegerFormatter.format(selected)}`
+  };
+}
+
+function mergeSnapshotWireState(master: UiSnapshot, wireState: UiSnapshot): UiSnapshot {
+  if (wireState.payloadKind !== "delta") return wireState;
+  const items: Record<string, DownloadItem> = { ...master.session.items, ...wireState.session.items };
+  for (const id of wireState.removedItemIds ?? []) delete items[id];
+  const packages: Record<string, PackageEntry> = { ...master.session.packages, ...wireState.session.packages };
+  for (const id of wireState.removedPackageIds ?? []) delete packages[id];
+  return {
+    ...wireState,
+    session: {
+      ...wireState.session,
+      items,
+      packages
+    }
+  };
+}
+
+function getSnapshotRevision(snapshot: UiSnapshot): number | null {
+  const revision = snapshot.snapshotRevision;
+  return typeof revision === "number" && Number.isSafeInteger(revision) && revision >= 0
+    ? revision
+    : null;
+}
+
+function mergeNewerSnapshot(master: UiSnapshot, incoming: UiSnapshot): UiSnapshot | null {
+  const masterRevision = getSnapshotRevision(master);
+  const incomingRevision = getSnapshotRevision(incoming);
+  if (masterRevision !== null && (incomingRevision === null || incomingRevision <= masterRevision)) {
+    return null;
+  }
+  return mergeSnapshotWireState(master, incoming);
+}
+
+export interface SnapshotBootstrapCoordinator {
+  initialize: (snapshot: UiSnapshot) => UiSnapshot;
+  push: (snapshot: UiSnapshot) => UiSnapshot | null;
+  getStatus: () => SnapshotBootstrapStatus;
+  fail: (message: string) => SnapshotBootstrapStatus;
+  retry: () => SnapshotBootstrapStatus;
+}
+
+export type SnapshotBootstrapStatus = {
+  phase: "loading" | "ready" | "error";
+  message: string;
+};
+
+export function createSnapshotBootstrapCoordinator(): SnapshotBootstrapCoordinator {
+  let initialized = false;
+  let current: UiSnapshot | null = null;
+  let pending: UiSnapshot[] = [];
+  let status: SnapshotBootstrapStatus = { phase: "loading", message: "" };
+  return {
+    initialize: (snapshot) => {
+      if (initialized && current) {
+        const currentRevision = getSnapshotRevision(current);
+        const snapshotRevision = getSnapshotRevision(snapshot);
+        if (snapshotRevision !== null && (currentRevision === null || snapshotRevision > currentRevision)) {
+          current = snapshot;
+        }
+        return current;
+      }
+      current = pending.reduce((master, incoming) => mergeNewerSnapshot(master, incoming) ?? master, snapshot);
+      pending = [];
+      initialized = true;
+      status = { phase: "ready", message: "" };
+      return current;
+    },
+    push: (snapshot) => {
+      if (!initialized) {
+        if (snapshot.payloadKind === "delta") {
+          pending.push(snapshot);
+          return null;
+        }
+        current = snapshot;
+        pending = [];
+        initialized = true;
+        status = { phase: "ready", message: "" };
+        return current;
+      }
+      const merged = mergeNewerSnapshot(current as UiSnapshot, snapshot);
+      if (!merged) {
+        return null;
+      }
+      current = merged;
+      return current;
+    },
+    getStatus: () => ({ ...status }),
+    fail: (message) => {
+      if (!initialized) {
+        status = { phase: "error", message };
+      }
+      return { ...status };
+    },
+    retry: () => {
+      if (!initialized) {
+        status = { phase: "loading", message: "" };
+      }
+      return { ...status };
+    }
+  };
+}
 
 interface CollectorInputState {
-  tabId: string;
-  tabName: string;
-  baseText: string;
   draft: string;
-}
-export function mergeCollectorDraftText(baseText: string, currentText: string, draft: string): string {
-  if (currentText === baseText) {
-    return draft;
-  }
-  const appended = currentText.startsWith(baseText) ? currentText.slice(baseText.length) : currentText;
-  if (!appended) {
-    return draft;
-  }
-  const normalizedAppend = appended.replace(/^\r?\n/, "");
-  if (!draft) {
-    return normalizedAppend;
-  }
-  if (!normalizedAppend) {
-    return draft;
-  }
-  return `${draft}${draft.endsWith("\n") ? "" : "\n"}${normalizedAppend}`;
-}
-
-export function planCollectorTabRemoval(
-  tabs: CollectorTab[],
-  activeTabId: string,
-  removedTabId: string
-): { tabs: CollectorTab[]; activeTabId: string } {
-  if (tabs.length <= 1) {
-    return { tabs, activeTabId };
-  }
-  const removedIndex = tabs.findIndex((tab) => tab.id === removedTabId);
-  if (removedIndex < 0) {
-    return {
-      tabs,
-      activeTabId: tabs.some((tab) => tab.id === activeTabId) ? activeTabId : (tabs[0]?.id ?? "")
-    };
-  }
-  const nextTabs = tabs.filter((tab) => tab.id !== removedTabId);
-  const nextActiveTabId = activeTabId === removedTabId
-    ? (nextTabs[Math.max(0, removedIndex - 1)]?.id ?? nextTabs[0]?.id ?? "")
-    : (nextTabs.some((tab) => tab.id === activeTabId) ? activeTabId : (nextTabs[0]?.id ?? ""));
-  return { tabs: nextTabs, activeTabId: nextActiveTabId };
-}
-
-export function planCollectorTextReplacement(
-  tabs: CollectorTab[],
-  tabId: string,
-  text: string
-): { tabs: CollectorTab[]; selectedIds: string[] } {
-  return {
-    tabs: tabs.map((tab) => tab.id === tabId ? { ...tab, text } : tab),
-    selectedIds: []
-  };
 }
 
 interface StartConflictPromptState {
@@ -208,6 +292,7 @@ interface StartConflictPromptState {
 }
 
 interface ConfirmPromptState {
+  offlineScope?: OfflineSkipScope;
   title: string;
   message: string;
   confirmLabel: string;
@@ -315,7 +400,7 @@ interface AccountTableRow {
   dailyLimitBytes: number;
   dailyRemainingBytes: number;
   totalUsedBytes: number;
-  toggleKind: "mega" | "dl" | "single";
+  toggleKind: "rd" | "mega" | "dl" | "single";
   dlKey?: DebridLinkAccountKeyEntry;
   editTarget: AccountEditTarget;
 }
@@ -326,14 +411,21 @@ interface AccountContextMenuState {
   rowId: string;
 }
 
-type SettingsThemeChoice = AppTheme | "system";
+function getAccountToggleTarget(account: AccountTableRow): AccountToggleTarget {
+  if (account.toggleKind === "rd" && account.accountId) return { type: "realdebrid", accountId: account.accountId };
+  if (account.toggleKind === "mega" && account.accountId) {
+    return { type: "megadebrid", provider: account.entry.kind as "megadebrid-api" | "megadebrid-web", accountId: account.accountId };
+  }
+  if (account.toggleKind === "dl" && account.dlKey) return { type: "debridlink", accountId: account.dlKey.id };
+  return { type: "provider", provider: account.entry.provider };
+}
 
 interface RendererSettingsDraft extends RendererSettings {
   archivePasswordList: string;
   notifyUrl: string;
 }
 
-function createSettingsDraft(settings: RendererSettings, current?: RendererSettingsDraft): RendererSettingsDraft {
+export function createSettingsDraft(settings: RendererSettings, current?: RendererSettingsDraft): RendererSettingsDraft {
   return {
     ...settings,
     archivePasswordList: current?.archivePasswordList || "",
@@ -341,23 +433,35 @@ function createSettingsDraft(settings: RendererSettings, current?: RendererSetti
   };
 }
 
-function settingsValueEqual(left: unknown, right: unknown): boolean {
-  return Object.is(left, right) || JSON.stringify(left) === JSON.stringify(right);
+export function createDiscardedSettingsState(settings: RendererSettings, themeChoice: SettingsThemeChoice = settings.themePreference): {
+  draft: RendererSettingsDraft;
+  themeChoice: SettingsThemeChoice;
+  speedLimitInput: string;
+  scheduleSpeedInputs: Record<string, string>;
+} {
+  return {
+    draft: createSettingsDraft(settings),
+    themeChoice,
+    speedLimitInput: formatMbpsInputFromKbps(settings.speedLimitKbps),
+    scheduleSpeedInputs: Object.fromEntries(
+      (settings.bandwidthSchedules || []).map((schedule) => [schedule.id, formatMbpsInputFromKbps(schedule.speedLimitKbps)])
+    )
+  };
 }
 
-export function mergeConcurrentSpecificSettings(
-  base: RendererSettingsDraft,
-  requested: RendererSettingsDraft,
-  persisted: RendererSettings,
-  current: RendererSettingsDraft
-): RendererSettingsDraft {
-  const merged = { ...current } as Record<string, unknown>;
-  for (const key of Object.keys(requested) as Array<keyof RendererSettingsDraft>) {
-    if (!settingsValueEqual(base[key], requested[key]) && settingsValueEqual(base[key], current[key]) && key in persisted) {
-      merged[key] = persisted[key as keyof RendererSettings];
-    }
-  }
-  return merged as unknown as RendererSettingsDraft;
+export function resolveSettingsSaveCompletion(revisionAtStart: number, currentRevision: number): {
+  saveState: Extract<SettingsSaveState, "saved" | "dirty">;
+  applyPersistedTheme: boolean;
+  toast: string;
+} {
+  const unchanged = revisionAtStart === currentRevision;
+  return unchanged
+    ? { saveState: "saved", applyPersistedTheme: true, toast: "Einstellungen gespeichert" }
+    : { saveState: "dirty", applyPersistedTheme: false, toast: "Zwischenstand gespeichert – weitere Änderungen sind ungespeichert" };
+}
+
+export function captureSettingsSaveIntent<T>(revision: number, draft: T): { revision: number; draft: T } {
+  return { revision, draft: structuredClone(draft) };
 }
 
 export function resolveSettingsThemeChoice(choice: SettingsThemeChoice, prefersLight: boolean): AppTheme {
@@ -516,6 +620,15 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
     pickerDescription: "Login über Browserfenster für reCAPTCHA.",
   },
   {
+    kind: "deepbrid-api",
+    service: "deepbrid",
+    serviceLabel: "Deepbrid",
+    title: "Deepbrid API",
+    modeLabel: "API",
+    pickerDescription: "Direkter Zugriff über API-Key.",
+    needsToken: true
+  },
+  {
     kind: "ddownload-login",
     service: "ddownload",
     serviceLabel: "DDownload",
@@ -553,7 +666,7 @@ const ACCOUNT_OPTIONS: AccountOption[] = [
   }
 ];
 
-const ACCOUNT_SERVICES: AccountService[] = ["realdebrid", "megadebrid-api", "megadebrid-web", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink", "linksnappy"];
+const ACCOUNT_SERVICES: AccountService[] = ["realdebrid", "megadebrid-api", "megadebrid-web", "bestdebrid", "alldebrid", "deepbrid", "ddownload", "onefichier", "debridlink", "linksnappy"];
 const ACCOUNT_LIMIT_BYTES_PER_GIB = 1024 * 1024 * 1024;
 function findAccountOption(kind: AccountKind): AccountOption {
   const option = ACCOUNT_OPTIONS.find((entry) => entry.kind === kind);
@@ -594,6 +707,7 @@ function getAccountPickerFunctionLabel(option: AccountOption): string {
     case "bestdebrid-web":
       return "Cookies.txt-Import";
     case "alldebrid-api":
+    case "deepbrid-api":
     case "onefichier-api":
       return "API-Key";
     case "ddownload-login":
@@ -617,6 +731,7 @@ function getAccountCredentialLabel(kind: AccountKind): string {
     case "realdebrid-api":
     case "bestdebrid-api":
     case "alldebrid-api":
+    case "deepbrid-api":
     case "onefichier-api":
     case "debridlink-api":
       return "API-Key gespeichert";
@@ -653,6 +768,12 @@ function normalizeProviderSelectionForSettings(
   };
 }
 
+export function buildAccountCreateProviderOrderUpdate(
+  settings: RendererSettings
+): Pick<RendererSettings, "providerOrder" | "providerPrimary" | "providerSecondary" | "providerTertiary"> {
+  return normalizeProviderSelectionForSettings(settings);
+}
+
 function getConfiguredAccountKind(settings: RendererSettings, service: AccountService): AccountKind | null {
   const configured = new Set(settings.configuredProviders);
   switch (service) {
@@ -669,6 +790,8 @@ function getConfiguredAccountKind(settings: RendererSettings, service: AccountSe
     case "alldebrid":
       if (settings.allDebridUseWebLogin) return "alldebrid-web";
       return configured.has("alldebrid") ? "alldebrid-api" : null;
+    case "deepbrid":
+      return configured.has("deepbrid") ? "deepbrid-api" : null;
     case "ddownload":
       return configured.has("ddownload") ? "ddownload-login" : null;
     case "onefichier":
@@ -801,6 +924,15 @@ export function buildAccountCreateCommand(dialog: AccountDialogState): AccountCr
   };
 }
 
+export function buildRealDebridWebCreateLoginRequest(dialog: AccountDialogState, accountId: string): RealDebridLoginRequest | null {
+  if (dialog.kind !== "realdebrid-web") return null;
+  return {
+    accountId,
+    create: true,
+    dailyLimitBytes: parseAccountDailyLimitInputBytes(dialog.dailyLimitGb) || 0
+  };
+}
+
 const emptyStats = (): DownloadStats => ({
   totalDownloaded: 0,
   totalDownloadedAllTime: 0,
@@ -817,20 +949,23 @@ const emptyStats = (): DownloadStats => ({
 
 const emptySnapshot = (): UiSnapshot => ({
   settings: {
-    language: "en", realDebridUseWebLogin: false, megaDebridApiEnabled: false, megaDebridWebEnabled: false, megaDebridPreferApi: true, bestDebridUseWebLogin: false, allDebridUseWebLogin: false,
+    language: "en", realDebridUseWebLogin: false, realDebridDisabledAccountIds: [], realDebridAccountDailyLimitBytes: {}, realDebridAccountDailyUsageBytes: {}, realDebridAccountTotalUsageBytes: {}, megaDebridApiEnabled: false, megaDebridWebEnabled: false, megaDebridPreferApi: true, bestDebridUseWebLogin: false, allDebridUseWebLogin: false,
     debridLinkDisabledKeyIds: [],
     archivePasswordListConfigured: false, notifyUrlConfigured: false,
-    rememberToken: true, configuredProviders: [], providerOrder: [], providerPrimary: "realdebrid", providerSecondary: "none",
-    providerTertiary: "none", autoProviderFallback: true, outputDir: "", packageName: "",
+    rememberToken: true, configuredProviders: [], accountUsageRules: {}, providerOrder: [], providerPrimary: "realdebrid", providerSecondary: "none",
+    providerTertiary: "none", autoProviderFallback: true, outputDir: "", createWorkDirectoriesOnStartup: false, packageName: "",
     autoExtract: true, autoRename4sf4sj: false, keepGermanAudioOnly: false, germanAudioMode: "tag", extractDir: "", createExtractSubfolder: true, hybridExtract: true,
     collectMkvToLibrary: false, mkvLibraryDir: "",
     cleanupMode: "none", extractConflictMode: "overwrite", removeLinkFilesAfterExtract: false,
     removeSamplesAfterExtract: false, enableIntegrityCheck: true, autoResumeOnStart: true,
     autoReconnect: false, reconnectWaitSeconds: 45, completedCleanupPolicy: "never",
-    maxParallel: 4, maxParallelExtract: 2, extractCpuPriority: "high", retryLimit: 0, speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
-    updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, minimizeToTray: false,
-    theme: "dark", logStorageLocation: "appdata", collapseNewPackages: true, historyRetentionMode: "permanent", historyMaxEntries: 500, historyMaxAgeDays: 0, autoSortPackagesByProgress: false, autoSkipExtracted: false, hideExtractedItems: true, confirmDeleteSelection: true, backupIncludeDownloads: false, backupIncludeRemoteDiagnostics: false,
+    maxParallel: 4, maxParallelExtract: 2, extractCpuPriority: "high", retryLimit: 0, offlineSkipScope: "archive", speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
+    proxyDownloadEnabled: false, proxyListPath: "", proxyApiProxyIndex: 1, proxyConnectionsPerDownload: 32,
+    updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, switchToCollectorOnClipboard: false, minimizeToTray: false,
+    theme: "dark", themePreference: "dark", logStorageLocation: "appdata", collapseNewPackages: true, animatePackageDisclosure: true, historyRetentionMode: "permanent", historyMaxEntries: 500, historyMaxAgeDays: 0, autoSortPackagesByProgress: false, autoSkipExtracted: false, hideExtractedItems: true, confirmDeleteSelection: true, backupIncludeDownloads: false, backupIncludeRemoteDiagnostics: false,
     notifyMention: "", notifyOnPackageCompleted: false, notifyOnPackageFailed: false, notifyOnRunFinished: false,
+    notifyPackageSuccessMode: "digest", notifyOnRemainingBelow: false, notifyRemainingThresholdGb: 50,
+    notifyOnDownloadStall: false, notifyStallAfterSeconds: 90, notifyStallCooldownMinutes: 10, notifyOnDownloadRecovery: true,
     accountListShowDetailedDebridLinkKeys: false,
     bandwidthSchedules: [], totalDownloadedAllTime: 0, totalCompletedFilesAllTime: 0, totalRuntimeAllTimeMs: 0,
     columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed", "availability"],
@@ -852,7 +987,14 @@ const emptySnapshot = (): UiSnapshot => ({
     megaDebridAccountTotalUsageBytes: {},
     debridAccountStatuses: {},
     providerDailyUsageDay: getProviderUsageDayKey(),
-    scheduledStartEpochMs: 0
+    dailyStartEnabled: false,
+    dailyStartMinuteOfDay: 0,
+    dailyStartFirstLocalDate: "",
+    dailyStartLastHandledLocalDate: "",
+    dailyStartPendingLocalDate: "",
+    dailyStartLastOutcome: "",
+    scheduledStartEpochMs: 0,
+    nextDailyStartEpochMs: 0
   },
   accounts: [],
   session: {
@@ -861,7 +1003,7 @@ const emptySnapshot = (): UiSnapshot => ({
     paused: false, running: false, updatedAt: Date.now()
   },
   summary: null, stats: emptyStats(), speedText: "Geschwindigkeit: 0 B/s", etaText: "ETA: --",
-  canStart: false, canStop: false, canPause: false, clipboardActive: false, reconnectSeconds: 0, packageSpeedBps: {}
+    canStart: false, canStop: false, canPause: false, clipboardActive: false, reconnectSeconds: 0, packageSpeedBps: {}, runRemainingBytes: 0, runRemainingUnknownItems: 0
 });
 
 const cleanupLabels: Record<string, string> = {
@@ -876,107 +1018,11 @@ const historyRetentionLabels: Record<RendererSettings["historyRetentionMode"], s
 
 const AUTO_RENDER_PACKAGE_LIMIT = 260;
 
-export function getSnapshotRenderDelay(_itemCount: number, _running: boolean, _activeTab: MainView): number {
-  return 0;
-}
-
-export function resolveAccountStatus(
-  statuses: Readonly<Record<string, DebridAccountStatus>>,
-  accountId: string | null,
-  kind: AccountKind
-): DebridAccountStatus | undefined {
-  if (!accountId) {
-    return undefined;
-  }
-  const mode = kind === "megadebrid-api"
-    ? "api"
-    : kind === "megadebrid-web"
-      ? "web"
-      : null;
-  return mode
-    ? statuses[getMegaDebridAccountStatusId(accountId, mode)] ?? statuses[accountId]
-    : statuses[accountId];
-}
-
-export interface ResetUiActionGate {
-  busy: boolean;
-}
-
-interface ResetUiActionOptions {
-  gate: ResetUiActionGate;
-  reset: () => Promise<void>;
-  reconcile: () => Promise<void>;
-  setBusy: (busy: boolean) => void;
-  onError: (error: unknown) => void;
-  onBusy?: () => void;
-}
-
-export async function runResetUiAction(options: ResetUiActionOptions): Promise<"completed" | "failed" | "busy"> {
-  if (options.gate.busy) {
-    options.onBusy?.();
-    return "busy";
-  }
-  options.gate.busy = true;
-  options.setBusy(true);
-  let failed = false;
-  let failure: unknown;
-  try {
-    await options.reset();
-  } catch (error) {
-    failed = true;
-    failure = error;
-  }
-  try {
-    await options.reconcile();
-  } catch (error) {
-    if (!failed) {
-      failure = error;
-    }
-    failed = true;
-  }
-  try {
-    if (failed) {
-      options.onError(failure);
-      return "failed";
-    }
-    return "completed";
-  } finally {
-    options.gate.busy = false;
-    options.setBusy(false);
-  }
-}
-
-interface SupportBundleExportUiOptions {
-  exportBundle: () => Promise<{ saved: boolean; busy?: boolean }>;
-  setBusy: (busy: boolean) => void;
-  clearMessage: () => void;
-  showMessage: (message: string) => void;
-}
-
-export async function runSupportBundleExportUi(options: SupportBundleExportUiOptions): Promise<void> {
-  options.clearMessage();
-  options.setBusy(true);
-  try {
-    const result = await options.exportBundle();
-    if (result.saved) {
-      options.showMessage("Support-Bundle exportiert");
-    } else if (result.busy) {
-      options.showMessage("Support-Bundle wird bereits erstellt …");
-    }
-  } catch (error) {
-    options.showMessage(`Support-Bundle fehlgeschlagen: ${String(error)}`);
-  } finally {
-    options.setBusy(false);
-  }
-}
-
-interface SupportBundleToastProps {
-  busy: boolean;
-  message: string;
-}
-
-export function SupportBundleToast({ busy, message }: SupportBundleToastProps): ReactElement | null {
-  return <Toast message={busy ? "Support-Bundle wird erstellt …" : message} />;
+export function getSnapshotRenderDelay(itemCount: number, running: boolean, activeTab: MainView): number {
+  let delay = running && activeTab === "downloads" ? 0 : itemCount >= 250 ? 0 : 100;
+  if (!running) delay = Math.min(delay, 200);
+  if (activeTab !== "downloads") delay = Math.max(delay, 800);
+  return delay;
 }
 
 const KNOWN_HOSTERS: { id: string; label: string }[] = [
@@ -1009,15 +1055,26 @@ const KNOWN_HOSTERS: { id: string; label: string }[] = [
   { id: "isra", label: "Isra.cloud" }
 ];
 
+export function buildProviderOrderEntry(provider: DebridProvider, settings: RendererSettings): {
+  id: DebridProvider;
+  label: string;
+  icon: string;
+} {
+  const legacyMegaService = settings.megaDebridPreferApi ? "megadebrid-api" : "megadebrid-web";
+  const service = provider === "megadebrid" ? legacyMegaService : provider as AccountService;
+  const kind = getConfiguredAccountKind(settings, service);
+  const option = kind ? ACCOUNT_OPTIONS.find((entry) => entry.kind === kind) : null;
+  const modeLabel = option?.modeLabel || (provider === "megadebrid" ? (settings.megaDebridPreferApi ? "API" : "Web-Login") : "");
+  const serviceLabel = option?.serviceLabel || providerLabels[provider];
+  return {
+    id: provider,
+    label: modeLabel ? `${serviceLabel} (${modeLabel})` : serviceLabel,
+    icon: ACCOUNT_SERVICE_ICONS[option?.service || service]
+  };
+}
+
 function providerLabelWithMode(provider: DebridProvider, settings: RendererSettings): string {
-  const base = providerLabels[provider];
-  if (provider === "megadebrid" || provider === "megadebrid-api" || provider === "megadebrid-web") {
-    return base;
-  }
-  const kind = getConfiguredAccountKind(settings, provider as AccountService);
-  if (!kind) return base;
-  const opt = ACCOUNT_OPTIONS.find((o) => o.kind === kind);
-  return opt?.modeLabel ? `${base} (${opt.modeLabel})` : base;
+  return buildProviderOrderEntry(provider, settings).label;
 }
 
 function formatAllDebridSourceLabel(source: AllDebridHostInfo["source"]): string {
@@ -1080,18 +1137,6 @@ function formatDebridLinkCountQuota(info: DebridLinkHostLimitInfo | null | undef
     return String(info.linksCurrent);
   }
   return info.note || "Nicht verfügbar";
-}
-
-function formatCheckedAgo(checkedAt: number): string {
-  const deltaMs = Date.now() - checkedAt;
-  if (!Number.isFinite(deltaMs) || deltaMs < 0) return "gerade eben";
-  const min = Math.floor(deltaMs / 60000);
-  if (min < 1) return "gerade eben";
-  if (min < 60) return `vor ${min} Min`;
-  const hours = Math.floor(min / 60);
-  if (hours < 24) return `vor ${hours} Std`;
-  const days = Math.floor(hours / 24);
-  return `vor ${days} Tag${days === 1 ? "" : "en"}`;
 }
 
 function rotationEventText(ev: { event: string; cooldownSec?: number; next?: string; reason?: string }): string {
@@ -1209,6 +1254,15 @@ export function readDownloadSpeedSparklinePalette(
 ): { accent: string } {
   return {
     accent: readProperty("--ui-speed-accent").trim()
+  };
+}
+
+export function getIdleSparklineStroke(cssHeight: number, devicePixelRatio: number): { y: number; lineWidth: number } {
+  const dpr = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1;
+  const baseline = Math.max(0, cssHeight - 2);
+  return {
+    y: (Math.floor(baseline * dpr) + 0.5) / dpr,
+    lineWidth: 1 / dpr
   };
 }
 
@@ -1362,9 +1416,10 @@ const BandwidthChart = memo(function BandwidthChart({ running, paused, speedHist
     if (!running || paused) {
       return;
     }
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const interval = setInterval(() => {
       drawChart();
-    }, 500);
+    }, reducedMotion ? 1000 : 750);
     return () => clearInterval(interval);
   }, [drawChart, running, paused]);
 
@@ -1430,6 +1485,7 @@ const DownloadSpeedSparkline = memo(function DownloadSpeedSparkline({ speedBps, 
 
       let maxV = 0;
       for (const v of hist) if (v > maxV) maxV = v;
+      const idle = maxV <= 0;
       maxV = Math.max(maxV, 1024 * 1024);
 
       const pad = 2;
@@ -1438,6 +1494,18 @@ const DownloadSpeedSparkline = memo(function DownloadSpeedSparkline({ speedBps, 
       const startIdx = DOWNLOAD_SPEED_MAX_SAMPLES - hist.length;
       const px = (i: number): number => (startIdx + i) * step;
       const py = (v: number): number => pad + h - (v / maxV) * h;
+
+      if (idle) {
+        const stroke = getIdleSparklineStroke(cssH, dpr);
+        ctx.beginPath();
+        ctx.moveTo(px(0), stroke.y);
+        ctx.lineTo(px(hist.length - 1), stroke.y);
+        ctx.strokeStyle = palette.accent;
+        ctx.lineWidth = stroke.lineWidth;
+        ctx.lineCap = "butt";
+        ctx.stroke();
+        return;
+      }
 
       ctx.beginPath();
       ctx.moveTo(px(0), py(hist[0]));
@@ -1466,19 +1534,19 @@ const DownloadSpeedSparkline = memo(function DownloadSpeedSparkline({ speedBps, 
       draw();
     };
 
-    const id = window.setInterval(tick, 500);
+    const id = window.setInterval(tick, 750);
     return () => window.clearInterval(id);
   }, []);
 
   return (
     <div className={`speed-sparkline${hidden ? " speed-sparkline-hidden" : ""}`} aria-hidden={hidden} title="Aktuelle Download-Geschwindigkeit (geglättet)">
-      <canvas ref={canvasRef} className="speed-sparkline-canvas" />
+      <div className="speed-sparkline-graph">
+        <canvas ref={canvasRef} className="speed-sparkline-canvas" />
+      </div>
       <span className="speed-sparkline-value">{speedBps > 0 ? formatSpeedMbps(speedBps) : "0 B/s"}</span>
     </div>
   );
 });
-
-let nextCollectorId = 1;
 
 function createScheduleId(): string {
   return `schedule-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -1513,6 +1581,25 @@ function sortPackageOrderByProgress(order: string[], packages: Record<string, Pa
     const progressB = computePackageProgress(packages[b], items);
     const cmp = progressA - progressB;
     return descending ? -cmp : cmp;
+  });
+  return sorted;
+}
+
+export function sortPackageOrderByService(
+  order: string[],
+  packages: Record<string, PackageEntry>,
+  items: Record<string, DownloadItem>,
+  descending: boolean,
+  visibleItemsByPackage: Record<string, readonly DownloadItem[]> = {}
+): string[] {
+  const sorted = [...order];
+  const itemsFor = (packageId: string): readonly DownloadItem[] => visibleItemsByPackage[packageId]
+    ?? (packages[packageId]?.itemIds ?? []).map((id) => items[id]).filter((item): item is DownloadItem => Boolean(item));
+  sorted.sort((a, b) => {
+    const serviceA = [...new Set(itemsFor(a).map((item) => item.providerLabel || (item.provider ? providerLabels[item.provider] : "")).filter(Boolean))].join(",").toLocaleLowerCase("de-DE");
+    const serviceB = [...new Set(itemsFor(b).map((item) => item.providerLabel || (item.provider ? providerLabels[item.provider] : "")).filter(Boolean))].join(",").toLocaleLowerCase("de-DE");
+    const comparison = serviceA.localeCompare(serviceB, "de");
+    return descending ? -comparison : comparison;
   });
   return sorted;
 }
@@ -1582,6 +1669,14 @@ export function shouldApplyUpdateCheckResult(
   return completedGeneration === currentGeneration;
 }
 
+export function shouldOpenUpdatePrompt(
+  source: "manual" | "startup",
+  latestTag: string,
+  dismissedTag: string
+): boolean {
+  return source === "manual" || !latestTag || latestTag !== dismissedTag;
+}
+
 export async function runLatestUpdateCheck(
   generationRef: { current: number },
   check: () => Promise<UpdateCheckResult>,
@@ -1595,8 +1690,123 @@ export async function runLatestUpdateCheck(
   await apply(result, generation);
 }
 
+interface DailySchedulePersistenceDependencies {
+  updateSettings: (update: RendererSettingsUpdate) => Promise<RendererSettings>;
+  getSnapshot: () => Promise<UiSnapshot>;
+  applySettings: (settings: RendererSettings) => void;
+  applySnapshot: (snapshot: UiSnapshot) => void;
+  showError: (message: string) => void;
+}
+
+function formatDailyScheduleLocalDate(date: Date): string {
+  const year = String(date.getFullYear()).padStart(4, "0");
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function formatDailyScheduleTime(minuteOfDay: number): string {
+  const minute = Math.max(0, Math.min(1_439, Math.floor(minuteOfDay)));
+  return `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
+}
+
+export function resolveDailyScheduleInitialTime(
+  settings: Pick<RendererSettings, "dailyStartMinuteOfDay" | "dailyStartFirstLocalDate">,
+  now = new Date()
+): string {
+  const minuteOfDay = settings.dailyStartFirstLocalDate
+    ? settings.dailyStartMinuteOfDay
+    : now.getHours() * 60 + now.getMinutes();
+  return formatDailyScheduleTime(minuteOfDay);
+}
+
+export function buildDailyScheduleSettingsUpdate(
+  time: string,
+  startDay: DailyScheduleStartDay,
+  now = new Date()
+): RendererSettingsUpdate | null {
+  const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(time);
+  if (!match) {
+    return null;
+  }
+  const firstDate = new Date(now);
+  if (startDay === "tomorrow") {
+    firstDate.setDate(firstDate.getDate() + 1);
+  }
+  return {
+    dailyStartEnabled: true,
+    dailyStartMinuteOfDay: Number(match[1]) * 60 + Number(match[2]),
+    dailyStartFirstLocalDate: formatDailyScheduleLocalDate(firstDate)
+  };
+}
+
+export function buildScheduleCancellationSettingsUpdate(
+  settings: Pick<RendererSettings, "dailyStartEnabled" | "scheduledStartEpochMs">
+): RendererSettingsUpdate {
+  return settings.dailyStartEnabled
+    ? { dailyStartEnabled: false }
+    : { scheduledStartEpochMs: 0 };
+}
+
+export async function activateDailyScheduleSettings(
+  time: string,
+  startDay: DailyScheduleStartDay,
+  persist: (update: RendererSettingsUpdate) => Promise<boolean>,
+  showError: (message: string) => void,
+  now = new Date()
+): Promise<boolean> {
+  const update = buildDailyScheduleSettingsUpdate(time, startDay, now);
+  if (!update) {
+    showError("Bitte eine gültige Startzeit auswählen.");
+    return false;
+  }
+  return persist(update);
+}
+
+export async function persistDailyScheduleSettingsUpdate(
+  update: RendererSettingsUpdate,
+  operation: "activate" | "cancel",
+  dependencies: DailySchedulePersistenceDependencies
+): Promise<boolean> {
+  try {
+    const settings = await dependencies.updateSettings(update);
+    dependencies.applySettings(settings);
+    return true;
+  } catch (error) {
+    const action = operation === "activate" ? "aktiviert" : "abgebrochen";
+    dependencies.showError(`Zeitplan konnte nicht ${action} werden: ${String(error)}`);
+    try {
+      dependencies.applySnapshot(await dependencies.getSnapshot());
+    } catch (snapshotError) {
+      dependencies.showError(`Zeitplan konnte nicht abgeglichen werden: ${String(snapshotError)}`);
+    }
+    return false;
+  }
+}
+
+export function routeHistoryLiveEntry(
+  entry: HistoryEntry,
+  loadFailed: boolean,
+  actions: { reload: () => void; accept: (entry: HistoryEntry) => void }
+): void {
+  if (loadFailed) {
+    actions.reload();
+    return;
+  }
+  actions.accept(entry);
+}
+
+export function selectHistoryPageFromShortcut(current: ReadonlySet<string>, visibleIds: readonly string[]): Set<string> {
+  return toggleHistoryPageSelection(current, visibleIds);
+}
+
+export function resolveHistoryContextSelection(current: ReadonlySet<string>, entryId: string): Set<string> {
+  return current.has(entryId) ? new Set(current) : new Set([entryId]);
+}
+
 export function App(): ReactElement {
   const [snapshot, setSnapshot] = useState<UiSnapshot>(emptySnapshot);
+  const [snapshotBootstrapStatus, setSnapshotBootstrapStatus] = useState<SnapshotBootstrapStatus>({ phase: "loading", message: "" });
   const [appVersion, setAppVersion] = useState("");
   const [tab, setTab] = useState<Tab>("downloads");
   const [statusToast, setStatusToast] = useState("");
@@ -1604,20 +1814,23 @@ export function App(): ReactElement {
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
   const [updateInstallProgress, setUpdateInstallProgress] = useState<UpdateInstallProgress | null>(null);
   const [settingsDraft, setSettingsDraft] = useState<RendererSettingsDraft>(() => createSettingsDraft(emptySnapshot().settings));
-  const settingsDraftRef = useRef(settingsDraft);
-  settingsDraftRef.current = settingsDraft;
-  const [settingsThemeChoice, setSettingsThemeChoice] = useState<SettingsThemeChoice>(emptySnapshot().settings.theme);
+  const [settingsThemeChoice, setSettingsThemeChoice] = useState<SettingsThemeChoice>(emptySnapshot().settings.themePreference);
   const [speedLimitInput, setSpeedLimitInput] = useState(() => formatMbpsInputFromKbps(emptySnapshot().settings.speedLimitKbps));
   const [scheduleSpeedInputs, setScheduleSpeedInputs] = useState<Record<string, string>>({});
   const [settingsDirty, setSettingsDirty] = useState(false);
   const [settingsSaveState, setSettingsSaveState] = useState<SettingsSaveState>("clean");
+  const [settingsSaveInFlight, setSettingsSaveInFlight] = useState(false);
   const [schedulePickerOpen, setSchedulePickerOpen] = useState(false);
   const [scheduleTimeInput, setScheduleTimeInput] = useState("");
+  const [scheduleStartDay, setScheduleStartDay] = useState<DailyScheduleStartDay>("today");
   const [scheduleCountdown, setScheduleCountdown] = useState("");
   const [runtimeNow, setRuntimeNow] = useState(() => Date.now());
   const updateCheckGenerationRef = useRef(0);
+  const dismissedUpdateTagRef = useRef("");
   const settingsDirtyRef = useRef(false);
+  const settingsSaveInFlightRef = useRef(false);
   const writeOnlySettingsDirtyRef = useRef(new Set<"archivePasswordList" | "notifyUrl">());
+  const archivePasswordLoadGenerationRef = useRef(0);
   const settingsDraftRevisionRef = useRef(0);
 
   useEffect(() => {
@@ -1628,50 +1841,28 @@ export function App(): ReactElement {
   const latestStateRef = useRef<UiSnapshot | null>(null);
   const masterSnapshotRef = useRef<UiSnapshot | null>(null);
   const snapshotRef = useRef(snapshot);
+  const retrySnapshotBootstrapRef = useRef<() => void>(() => {});
+  const persistedSettingsRef = useRef<RendererSettings>(emptySnapshot().settings);
+  const settingsThemeChoiceRef = useRef<SettingsThemeChoice>(settingsThemeChoice);
+  const persistedThemeChoiceRef = useRef<SettingsThemeChoice>(emptySnapshot().settings.themePreference);
   snapshotRef.current = snapshot;
-  const packageOrderRef = useRef<string[]>([]);
-  const serverPackageOrderRef = useRef<string[]>([]);
-  const pendingPackageOrderRef = useRef<string[] | null>(null);
-  const pendingPackageOrderAtRef = useRef(0);
+  settingsThemeChoiceRef.current = settingsThemeChoice;
+  useEffect(() => {
+    const systemTheme = window.matchMedia("(prefers-color-scheme: light)");
+    const onSystemThemeChange = (): void => {
+      if (settingsThemeChoiceRef.current !== "system") {
+        return;
+      }
+      const next = resolveSettingsThemeChoice("system", systemTheme.matches);
+      setSettingsDraft((current) => ({ ...current, theme: next }));
+      applyTheme(next);
+    };
+    systemTheme.addEventListener("change", onSystemThemeChange);
+    return () => systemTheme.removeEventListener("change", onSystemThemeChange);
+  }, []);
   const tabRef = useRef(tab);
   tabRef.current = tab;
   const stateFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const stageAuthoritativeSnapshot = useCallback((fresh: UiSnapshot): UiSnapshot => {
-    masterSnapshotRef.current = fresh;
-    serverPackageOrderRef.current = fresh.session.packageOrder;
-    const order = reconcileOptimisticPackageOrder(
-      fresh.session.packageOrder,
-      pendingPackageOrderRef.current,
-      pendingPackageOrderAtRef.current,
-      Date.now()
-    );
-    pendingPackageOrderRef.current = order.pendingOrder;
-    pendingPackageOrderAtRef.current = order.pendingAt;
-    packageOrderRef.current = order.displayOrder;
-    if (order.displayOrder === fresh.session.packageOrder) {
-      return fresh;
-    }
-    return {
-      ...fresh,
-      session: {
-        ...fresh.session,
-        packageOrder: order.displayOrder
-      }
-    };
-  }, []);
-  const applyAuthoritativeSnapshot = useCallback((fresh: UiSnapshot): void => {
-    if (stateFlushTimerRef.current) {
-      clearTimeout(stateFlushTimerRef.current);
-      stateFlushTimerRef.current = null;
-    }
-    const displaySnapshot = stageAuthoritativeSnapshot(fresh);
-    latestStateRef.current = null;
-    snapshotRef.current = displaySnapshot;
-    setSnapshot(displaySnapshot);
-  }, [stageAuthoritativeSnapshot]);
-  const reconcileAuthoritativeSnapshot = useCallback(async (): Promise<void> => {
-    applyAuthoritativeSnapshot(await window.rd.getSnapshot());
-  }, [applyAuthoritativeSnapshot]);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onImportDlcRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const [dragOver, setDragOver] = useState(false);
@@ -1679,62 +1870,64 @@ export function App(): ReactElement {
   const [providerDropTarget, setProviderDropTarget] = useState<DebridProvider | null>(null);
   const [editingPackageId, setEditingPackageId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
-  const [collectorTabs, setCollectorTabs] = useState<CollectorTab[]>([
-    { id: `tab-${nextCollectorId++}`, name: "Tab 1", text: "" }
-  ]);
-  const [activeCollectorTab, setActiveCollectorTab] = useState(collectorTabs[0].id);
+  const [collectorPackages, setCollectorPackages] = useState<CollectorPackage[]>([]);
+  const [collectorFilter, setCollectorFilter] = useState<CollectorWorkspaceFilter>("all");
   const [collectorQuery, setCollectorQuery] = useState("");
-  const [selectedCollectorRowIds, setSelectedCollectorRowIds] = useState<Set<string>>(() => new Set());
+  const [selectedCollectorLinkIds, setSelectedCollectorLinkIds] = useState<Set<string>>(() => new Set());
+  const [collapsedCollectorPackageIds, setCollapsedCollectorPackageIds] = useState<Set<string>>(() => new Set());
+  const [collectorAnalyzingCount, setCollectorAnalyzingCount] = useState(0);
   const [collectorError, setCollectorError] = useState("");
   const [collectorInput, setCollectorInput] = useState<CollectorInputState | null>(null);
-  const collectorTabsRef = useRef<CollectorTab[]>(collectorTabs);
-  const activeCollectorTabRef = useRef(activeCollectorTab);
+  const collectorPackagesRef = useRef<CollectorPackage[]>(collectorPackages);
+  const collapsedCollectorPackageIdsRef = useRef<Set<string>>(collapsedCollectorPackageIds);
+  const collectorVisibleIdsRef = useRef<string[]>([]);
+  const collectorPersistenceHydratedRef = useRef(false);
+  const collectorPersistenceCoordinatorRef = useRef<CollectorPersistenceCoordinator | null>(null);
+  const collectorPersistenceBudgetRef = useRef<CollectorPersistenceBudget | null>(null);
+  const collectorEnrichmentGenerationsRef = useRef(new Map<string, number>());
+  const collectorEnrichmentRequestsRef = useRef(new Map<string, ReturnType<typeof beginCollectorEnrichment>>());
+  const importCollectorTextRef = useRef<(rawText: string, source?: CollectorImportSource) => Promise<void>>(() => Promise.resolve());
   const activeTabRef = useRef<Tab>(tab);
+  const packageOrderRef = useRef<string[]>([]);
+  const packageOrderStateRef = useRef(createPackageOrderState());
   const [collapsedPackages, setCollapsedPackages] = useState<Record<string, boolean>>({});
+  const [downloadDisclosureRevision, setDownloadDisclosureRevision] = useState(0);
   const [downloadSearch, setDownloadSearch] = useState("");
   const [downloadDisplayMode, setDownloadDisplayMode] = useState<DownloadDisplayMode>("packages");
   const [downloadFilter, setDownloadFilter] = useState<DownloadSidebarFilter>("all");
   const [downloadProviderFilter, setDownloadProviderFilter] = useState("all");
-  const [downloadsSortColumn, setDownloadsSortColumn] = useState<DownloadSortColumn>("name");
+  const [downloadsSortColumn, setDownloadsSortColumn] = useState<DownloadSortColumn | undefined>("name");
+  const availabilitySortCycleRef = useRef(createAvailabilitySortCycle());
+  const [downloadsSortRevision, setDownloadsSortRevision] = useState(0);
   const [downloadsSortDescending, setDownloadsSortDescending] = useState(false);
   const [showAllPackages, setShowAllPackages] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
-  const [resetBusy, setResetBusy] = useState(false);
   const [accountCheckBusy, setAccountCheckBusy] = useState(false);
-  const [accountEnabledOverrides, setAccountEnabledOverrides] = useState<Record<string, boolean>>({});
-  const accountEnabledOverridesRef = useRef<Record<string, boolean>>({});
-  const accountToggleQueueRef = useRef(new SerialTaskQueue());
-  const accountToggleRevisionRef = useRef(0);
-  const accountTogglePendingRef = useRef(0);
   const actionBusyRef = useRef(false);
-  const resetUiActionGateRef = useRef<ResetUiActionGate>({ busy: false });
   const actionUnlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
   const [supportTraceEnabled, setSupportTraceEnabled] = useState(false);
-  const [supportBundleExporting, setSupportBundleExporting] = useState(false);
-  const supportBundleExportingRef = useRef(false);
   const dragOverRef = useRef(false);
   const dragDepthRef = useRef(0);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [avatarMenuOpen, setAvatarMenuOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [settingsSubTab, setSettingsSubTab] = useState<SettingsSection>("allgemein");
-  const [accountManagementTab, setAccountManagementTab] = useState<"overview" | "rules">("overview");
-  const [selectedAccountRowKey, setSelectedAccountRowKey] = useState<string | null>(null);
+  const [accountManagementTab, setAccountManagementTab] = useState<"overview" | "rules" | "runtime">("overview");
+  const [selectedAccountRowKeys, setSelectedAccountRowKeys] = useState<Set<string>>(() => new Set());
+  const settingsSubTabRef = useRef(settingsSubTab);
+  const accountManagementTabRef = useRef(accountManagementTab);
+  const visibleAccountRowKeysRef = useRef<string[]>([]);
+  settingsSubTabRef.current = settingsSubTab;
+  accountManagementTabRef.current = accountManagementTab;
   const [openSubmenu, setOpenSubmenu] = useState<string | null>(null);
   const [startConflictPrompt, setStartConflictPrompt] = useState<StartConflictPromptState | null>(null);
   const startConflictResolverRef = useRef<((result: { policy: Extract<DuplicatePolicy, "skip" | "overwrite">; applyToAll: boolean } | null) => void) | null>(null);
   const [confirmPrompt, setConfirmPrompt] = useState<ConfirmPromptState | null>(null);
+  const offlineRemovalScopeRef = useRef<OfflineSkipScope>("package");
   const [backupPassphraseMode, setBackupPassphraseMode] = useState<BackupPassphraseMode | null>(null);
   const [onlineBackupDialog, setOnlineBackupDialog] = useState<OnlineBackupDialogState | null>(null);
-  const [remoteDiag, setRemoteDiag] = useState<RemoteDiagnosticsInfo | null>(null);
-  const [remoteDiagOpen, setRemoteDiagOpen] = useState(false);
-  const [remoteDiagBusy, setRemoteDiagBusy] = useState(false);
-  const [rdHostMode, setRdHostMode] = useState<"local" | "network">("local");
-  const [rdPublicHost, setRdPublicHost] = useState("");
-  const [rdPort, setRdPort] = useState("9868");
-  const [rdAllowlist, setRdAllowlist] = useState("");
-  const [rdName, setRdName] = useState("");
+  const [mcpOpen, setMcpOpen] = useState(false);
   const confirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
   const backupPassphraseResolverRef = useRef<((passphrase: string | null) => void) | null>(null);
   const confirmQueueRef = useRef<Array<{ prompt: ConfirmPromptState; resolve: (confirmed: boolean) => void }>>([]);
@@ -1746,8 +1939,15 @@ export function App(): ReactElement {
   const [linkPopup, setLinkPopup] = useState<LinkPopupState | null>(null);
   const [accountDialog, setAccountDialog] = useState<AccountDialogState | null>(null);
   const [accountEditDialog, setAccountEditDialog] = useState<AccountEditState | null>(null);
+  const [accountEditSecretVisible, setAccountEditSecretVisible] = useState<Record<string, boolean>>({});
+  const [accountEditSecretBusy, setAccountEditSecretBusy] = useState<string | null>(null);
   const [accountDialogSearch, setAccountDialogSearch] = useState("");
-  const [accountDialogModeFilter, setAccountDialogModeFilter] = useState<AccountModeFilter>("all");
+  const [accountDialogServiceFilter, setAccountDialogServiceFilter] = useState("all");
+  const [pendingAccountToggles, setPendingAccountToggles] = useState<Record<string, { enabled: boolean; sequence: number }>>({});
+  const pendingAccountTogglesRef = useRef<Record<string, { enabled: boolean; sequence: number }>>({});
+  const accountToggleQueueRef = useRef(createAccountToggleQueue());
+  const accountToggleSequenceRef = useRef(0);
+  const settingsMutationSequenceRef = useRef(0);
   const [keyStatsPopup, setKeyStatsPopup] = useState<string | null>(null);
   const [debridLinkHostLimits, setDebridLinkHostLimits] = useState<Record<string, DebridLinkHostLimitInfo>>({});
   const [debridLinkHostLimitsLoading, setDebridLinkHostLimitsLoading] = useState(false);
@@ -1755,13 +1955,30 @@ export function App(): ReactElement {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleteConfirm, setDeleteConfirm] = useState<{ ids: Set<string>; dontAsk: boolean } | null>(null);
   const [columnOrder, setColumnOrder] = useState<string[]>(() => DEFAULT_COLUMN_ORDER);
+  const columnOrderPersistenceRef = useRef<DownloadColumnOrderPersistence | null>(null);
+  if (!columnOrderPersistenceRef.current) {
+    columnOrderPersistenceRef.current = createDownloadColumnOrderPersistence(
+      DEFAULT_COLUMN_ORDER,
+      async (order) => {
+        const settings = await window.rd.updateSettings({ columnOrder: order });
+        return settings.columnOrder?.length ? settings.columnOrder : order;
+      },
+      setColumnOrder
+    );
+  }
   const columnDragSessionRef = useRef<DownloadColumnDragSession | null>(null);
   const columnDragSettleTimerRef = useRef<number | null>(null);
+  const columnDragAnimationsRef = useRef<Animation[]>([]);
   const suppressColumnSortRef = useRef(false);
+  const cancelColumnDragAnimations = useCallback((): void => {
+    columnDragAnimationsRef.current.forEach((animation) => animation.cancel());
+    columnDragAnimationsRef.current = [];
+  }, []);
   useEffect(() => () => {
     if (columnDragSettleTimerRef.current !== null) window.clearTimeout(columnDragSettleTimerRef.current);
+    cancelColumnDragAnimations();
     if (columnDragSessionRef.current) clearDownloadColumnDrag(columnDragSessionRef.current);
-  }, []);
+  }, [cancelColumnDragAnimations]);
   const [colHeaderCtx, setColHeaderCtx] = useState<{ x: number; y: number } | null>(null);
   const colHeaderCtxRef = useRef<HTMLDivElement>(null);
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
@@ -1770,37 +1987,42 @@ export function App(): ReactElement {
   const [selectedHistoryIds, setSelectedHistoryIds] = useState<Set<string>>(new Set());
   const [historyFilter, setHistoryFilter] = useState<HistoryFilter>("all");
   const [historyQuery, setHistoryQuery] = useState("");
+  const [historyVisiblePageCount, setHistoryVisiblePageCount] = useState(0);
   const [statisticsRange, setStatisticsRange] = useState<StatisticsRange>("session");
-  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState("");
   const [historyCtxMenu, setHistoryCtxMenu] = useState<{ x: number; y: number; entryId: string } | null>(null);
   const historyCtxMenuRef = useRef<HTMLDivElement>(null);
   const historyLoadGenerationRef = useRef(0);
+  const historyLoadActiveRef = useRef(false);
+  const historyLoadFailedRef = useRef(false);
+  const historyLoadedRef = useRef(false);
+  const pendingLiveHistoryEntriesRef = useRef<HistoryEntry[]>([]);
   const historyVisibleIdsRef = useRef<string[]>([]);
   const [allDebridHostInfo, setAllDebridHostInfo] = useState<AllDebridHostInfo | null>(null);
   const [allDebridHostLoading, setAllDebridHostLoading] = useState(false);
   const allDebridHostRequestRef = useRef(0);
   const debridLinkHostLimitsRequestRef = useRef(0);
 
-  const columnOrderKey = useMemo(
-    () => (snapshot.settings.columnOrder || []).join("|"),
-    [snapshot.settings.columnOrder]
-  );
-  useEffect(() => {
-    const order = snapshot.settings.columnOrder;
-    if (order && order.length > 0) {
-      setColumnOrder(order);
-    }
-  }, [columnOrderKey]);
+  const persistColumnOrder = useCallback((order: string[]): void => {
+    columnOrderPersistenceRef.current?.enqueue(order);
+  }, []);
 
-  const collectorViewModel = useMemo(() => buildCollectorViewModel(
-    collectorTabs,
-    activeCollectorTab,
+  const collectorViewModel = useMemo(() => buildCollectorWorkspaceViewModel(
+    collectorPackages,
+    collectorFilter,
     collectorQuery,
-    actionBusy,
-    [...selectedCollectorRowIds],
-    collectorError
-  ), [actionBusy, activeCollectorTab, collectorError, collectorQuery, collectorTabs, selectedCollectorRowIds]);
+    collectorAnalyzingCount > 0,
+    [...selectedCollectorLinkIds],
+    [...collapsedCollectorPackageIds],
+    collectorError,
+    snapshot.settings.animatePackageDisclosure
+  ), [collapsedCollectorPackageIds, collectorAnalyzingCount, collectorError, collectorFilter, collectorPackages, collectorQuery, selectedCollectorLinkIds, snapshot.settings.animatePackageDisclosure]);
+  collectorVisibleIdsRef.current = collectorViewModel.visibleIds;
+
+  const historyCalendarDate = new Date(runtimeNow);
+  historyCalendarDate.setHours(0, 0, 0, 0);
+  const historyCalendarDayStart = historyCalendarDate.getTime();
 
   const historyViewModel = useMemo(() => buildHistoryViewModel(
     historyEntries,
@@ -1810,32 +2032,39 @@ export function App(): ReactElement {
     historyExpandedIds,
     historyLoading,
     historyError,
-    runtimeNow
-  ), [historyEntries, historyError, historyExpandedIds, historyFilter, historyLoading, historyQuery, runtimeNow, selectedHistoryIds]);
-  historyVisibleIdsRef.current = historyViewModel.rows.map((entry) => entry.id);
+    historyCalendarDayStart,
+    snapshot.settings.animatePackageDisclosure,
+    normalizeLanguage(settingsDraft.language)
+  ), [historyCalendarDayStart, historyEntries, historyError, historyExpandedIds, historyFilter, historyLoading, historyQuery, selectedHistoryIds, settingsDraft.language, snapshot.settings.animatePackageDisclosure]);
+  const historySidebarCounts = formatHistorySidebarCounts(
+    historyViewModel.totalCount,
+    historyVisiblePageCount,
+    historyViewModel.selectedIds.length
+  );
   const statisticsViewModel = useMemo(
     () => buildStatisticsViewModel(snapshot, statisticsRange, runtimeNow),
     [runtimeNow, snapshot, statisticsRange]
   );
 
-  useEffect(() => {
-    activeCollectorTabRef.current = activeCollectorTab;
-  }, [activeCollectorTab]);
-
-  useEffect(() => {
-    collectorTabsRef.current = collectorTabs;
-  }, [collectorTabs]);
+  collectorPackagesRef.current = collectorPackages;
+  collapsedCollectorPackageIdsRef.current = collapsedCollectorPackageIds;
 
   useEffect(() => {
     activeTabRef.current = tab;
   }, [tab]);
 
   useEffect(() => {
+    packageOrderRef.current = snapshot.session.packageOrder;
+  }, [snapshot.session.packageOrder]);
+
+  useEffect(() => {
     setSpeedLimitInput(formatMbpsInputFromKbps(settingsDraft.speedLimitKbps));
   }, [settingsDraft.speedLimitKbps]);
 
   useEffect(() => {
-    const schedMs = snapshot.settings.scheduledStartEpochMs || 0;
+    const schedMs = snapshot.settings.dailyStartEnabled
+      ? snapshot.settings.nextDailyStartEpochMs
+      : snapshot.settings.scheduledStartEpochMs || 0;
     if (schedMs <= 0) { setScheduleCountdown(""); return; }
     const update = (): void => {
       const remaining = schedMs - Date.now();
@@ -1849,7 +2078,7 @@ export function App(): ReactElement {
     update();
     const timer = setInterval(update, 1000);
     return () => clearInterval(timer);
-  }, [snapshot.settings.scheduledStartEpochMs]);
+  }, [snapshot.settings.dailyStartEnabled, snapshot.settings.nextDailyStartEpochMs, snapshot.settings.scheduledStartEpochMs]);
 
   useEffect(() => {
     const timer = setInterval(() => setRuntimeNow(Date.now()), 1000);
@@ -1865,30 +2094,31 @@ export function App(): ReactElement {
     }, timeoutMs);
   }, []);
 
-  const clearToast = useCallback((): void => {
-    setStatusToast("");
-    if (toastTimerRef.current) {
-      clearTimeout(toastTimerRef.current);
-      toastTimerRef.current = null;
+  useEffect(() => {
+    if (settingsSubTab !== "extract" || writeOnlySettingsDirtyRef.current.has("archivePasswordList")) {
+      archivePasswordLoadGenerationRef.current += 1;
+      return;
     }
-  }, []);
-
-  const performReset = useCallback(async (reset: () => Promise<void>): Promise<void> => {
-    if (!resetUiActionGateRef.current.busy) {
-      showToast("Zurücksetzen läuft …", 60_000);
-    }
-    const result = await runResetUiAction({
-      gate: resetUiActionGateRef.current,
-      reset,
-      reconcile: reconcileAuthoritativeSnapshot,
-      setBusy: setResetBusy,
-      onError: (error) => { showToast(`Zurücksetzen fehlgeschlagen: ${String(error)}`, 3200); },
-      onBusy: () => { showToast("Zurücksetzen läuft bereits …", 2200); }
+    const generation = archivePasswordLoadGenerationRef.current + 1;
+    archivePasswordLoadGenerationRef.current = generation;
+    void window.rd.getArchivePasswordList().then(({ passwords }) => {
+      if (archivePasswordLoadGenerationRef.current !== generation || writeOnlySettingsDirtyRef.current.has("archivePasswordList")) {
+        return;
+      }
+      setSettingsDraft((current) => current.archivePasswordList === passwords
+        ? current
+        : { ...current, archivePasswordList: passwords });
+    }).catch(() => {
+      if (archivePasswordLoadGenerationRef.current === generation) {
+        showToast("Archiv-Passwortliste konnte nicht geladen werden", 2800);
+      }
     });
-    if (result === "completed") {
-      showToast("Zurücksetzen abgeschlossen", 1800);
-    }
-  }, [reconcileAuthoritativeSnapshot, showToast]);
+    return () => {
+      if (archivePasswordLoadGenerationRef.current === generation) {
+        archivePasswordLoadGenerationRef.current += 1;
+      }
+    };
+  }, [settingsSubTab, snapshot.settings.archivePasswordListConfigured, showToast]);
 
   const applyHistoryEntries = useCallback((entries: HistoryEntry[]): void => {
     const availableIds = entries.map((entry) => entry.id);
@@ -1902,34 +2132,79 @@ export function App(): ReactElement {
 
   const loadHistoryEntries = useCallback(async (): Promise<void> => {
     const generation = ++historyLoadGenerationRef.current;
-    setHistoryLoading(true);
+    historyLoadActiveRef.current = true;
+    historyLoadFailedRef.current = false;
+    pendingLiveHistoryEntriesRef.current = [];
+    setHistoryLoading(!historyLoadedRef.current);
     setHistoryError("");
     try {
       const entries = await window.rd.getHistory();
       if (!mountedRef.current || generation !== historyLoadGenerationRef.current) {
         return;
       }
-      applyHistoryEntries(entries);
+      const settings = snapshotRef.current.settings;
+      const merged = [...pendingLiveHistoryEntriesRef.current].reverse().reduce(
+        (current, entry) => mergeLiveHistoryEntry(current, entry, {
+          maxEntries: settings.historyMaxEntries,
+          maxAgeDays: settings.historyMaxAgeDays
+        }),
+        entries
+      );
+      pendingLiveHistoryEntriesRef.current = [];
+      historyLoadedRef.current = true;
+      applyHistoryEntries(merged);
     } catch {
       if (mountedRef.current && generation === historyLoadGenerationRef.current) {
+        historyLoadFailedRef.current = true;
+        pendingLiveHistoryEntriesRef.current = [];
         setHistoryError("Verlauf konnte nicht geladen werden");
       }
     } finally {
       if (mountedRef.current && generation === historyLoadGenerationRef.current) {
+        historyLoadActiveRef.current = false;
+        pendingLiveHistoryEntriesRef.current = [];
         setHistoryLoading(false);
       }
     }
   }, [applyHistoryEntries]);
 
   useEffect(() => {
-    if (tab !== "history") {
-      return;
-    }
     void loadHistoryEntries();
     return () => {
       historyLoadGenerationRef.current += 1;
+      historyLoadActiveRef.current = false;
+      pendingLiveHistoryEntriesRef.current = [];
     };
+  }, [loadHistoryEntries, historyCalendarDayStart, snapshot.settings.historyRetentionMode, snapshot.settings.historyMaxEntries, snapshot.settings.historyMaxAgeDays]);
+
+  useEffect(() => {
+    if (tab === "history" && historyLoadFailedRef.current && !historyLoadActiveRef.current) {
+      void loadHistoryEntries();
+    }
   }, [loadHistoryEntries, tab]);
+
+  useEffect(() => {
+    const unsubscribeHistoryEntryAdded = window.rd.onHistoryEntryAdded((entry) => {
+      routeHistoryLiveEntry(entry, historyLoadFailedRef.current, {
+        reload: () => { void loadHistoryEntries(); },
+        accept: (liveEntry) => {
+          if (historyLoadActiveRef.current) {
+            pendingLiveHistoryEntriesRef.current = [
+              liveEntry,
+              ...pendingLiveHistoryEntriesRef.current.filter((pending) => pending.id !== liveEntry.id)
+            ];
+          }
+          const settings = snapshotRef.current.settings;
+          applyHistoryEntries(mergeLiveHistoryEntry(historyEntriesRef.current, liveEntry, {
+            maxEntries: settings.historyMaxEntries,
+            maxAgeDays: settings.historyMaxAgeDays
+          }));
+          setHistoryError("");
+        }
+      });
+    });
+    return unsubscribeHistoryEntryAdded;
+  }, [applyHistoryEntries, loadHistoryEntries]);
 
   const loadAllDebridHostInfo = useCallback(async (silent = false): Promise<void> => {
     const requestId = allDebridHostRequestRef.current + 1;
@@ -2018,28 +2293,58 @@ export function App(): ReactElement {
     let unsubscribe: (() => void) | null = null;
     let unsubClipboard: (() => void) | null = null;
     let unsubUpdateInstallProgress: (() => void) | null = null;
-    void window.rd.getVersion().then((v) => { if (mountedRef.current) { setAppVersion(v); } }).catch(() => undefined);
-    void window.rd.getTraceConfig().then((config) => {
-      if (mountedRef.current) {
-        setSupportTraceEnabled(config.enabled);
-      }
-    }).catch(() => undefined);
-    void window.rd.getSnapshot().then((state) => {
-      if (!mountedRef.current) {
+    let snapshotRequestGeneration = 0;
+    let authoritativeSnapshotApplied = false;
+    const snapshotCoordinator = createSnapshotBootstrapCoordinator();
+    const applyStreamSnapshot = (merged: UiSnapshot): void => {
+      masterSnapshotRef.current = merged;
+      persistedSettingsRef.current = merged.settings;
+      latestStateRef.current = merged;
+      if (stateFlushTimerRef.current) return;
+      const itemCount = Object.keys(merged.session.items).length;
+      const flushDelay = getSnapshotRenderDelay(itemCount, merged.session.running, activeTabRef.current);
+      stateFlushTimerRef.current = setTimeout(() => {
+        stateFlushTimerRef.current = null;
+        if (!latestStateRef.current) return;
+        const next = latestStateRef.current;
+        const packageOrder = packageOrderStateRef.current.accept(next.session.packageOrder);
+        setSnapshot(packageOrder === next.session.packageOrder ? next : { ...next, session: { ...next.session, packageOrder } });
+        if (!settingsDirtyRef.current) {
+          setSettingsDraft((current) => createSettingsDraft(next.settings, current));
+        }
+        latestStateRef.current = null;
+      }, flushDelay);
+    };
+    const applyAuthoritativeSnapshot = (
+      state: UiSnapshot,
+      storedThemeChoice: SettingsThemeChoice = state.settings.themePreference
+    ): void => {
+      if (authoritativeSnapshotApplied) {
         return;
       }
-      applyAuthoritativeSnapshot(state);
+      authoritativeSnapshotApplied = true;
+      packageOrderStateRef.current.accept(state.session.packageOrder);
+      masterSnapshotRef.current = state;
+      persistedSettingsRef.current = state.settings;
+      const resolvedTheme = resolveSettingsThemeChoice(
+        storedThemeChoice,
+        window.matchMedia("(prefers-color-scheme: light)").matches
+      );
+      persistedThemeChoiceRef.current = storedThemeChoice;
+      setSnapshot(state);
+      setSnapshotBootstrapStatus(snapshotCoordinator.getStatus());
       if (state.settings.columnOrder?.length > 0) {
-        setColumnOrder(state.settings.columnOrder);
+        columnOrderPersistenceRef.current?.applyAuthoritative(state.settings.columnOrder);
       }
-      setSettingsDraft(createSettingsDraft(state.settings));
+      setSettingsDraft((current) => createSettingsDraft({ ...state.settings, theme: resolvedTheme }, current));
       writeOnlySettingsDirtyRef.current.clear();
       settingsDirtyRef.current = false;
       panelDirtyRevisionRef.current = 0;
       setSettingsDirty(false);
       setSettingsSaveState("clean");
-      setSettingsThemeChoice(state.settings.theme);
-      applyTheme(state.settings.theme);
+      setSettingsThemeChoice(storedThemeChoice);
+      settingsThemeChoiceRef.current = storedThemeChoice;
+      applyTheme(resolvedTheme);
       if (state.settings.autoUpdateCheck) {
         void runLatestUpdateCheck(
           updateCheckGenerationRef,
@@ -2047,62 +2352,52 @@ export function App(): ReactElement {
           (result, generation) => handleUpdateResult(result, "startup", generation)
         ).catch(() => undefined);
       }
-    }).catch((error) => {
-      showToast(`Snapshot konnte nicht geladen werden: ${String(error)}`, 2800);
-    });
+    };
     unsubscribe = window.rd.onStateUpdate((wireState) => {
-      let merged: UiSnapshot;
-      const master = masterSnapshotRef.current;
-      if (wireState.payloadKind === "delta" && master) {
-        const newItems: Record<string, DownloadItem> = { ...master.session.items, ...wireState.session.items };
-        if (wireState.removedItemIds && wireState.removedItemIds.length > 0) {
-          for (const id of wireState.removedItemIds) delete newItems[id];
-        }
-        const newPackages: Record<string, PackageEntry> = { ...master.session.packages, ...wireState.session.packages };
-        if (wireState.removedPackageIds && wireState.removedPackageIds.length > 0) {
-          for (const id of wireState.removedPackageIds) delete newPackages[id];
-        }
-        merged = {
-          ...wireState,
-          session: {
-            ...wireState.session,
-            items: newItems,
-            packages: newPackages,
-          },
-        };
-      } else {
-        merged = wireState;
+      const merged = snapshotCoordinator.push(wireState);
+      if (!merged) {
+        return;
       }
-      latestStateRef.current = stageAuthoritativeSnapshot(merged);
-      if (stateFlushTimerRef.current) { return; }
-
-      const itemCount = Object.keys(merged.session.items).length;
-      const flushDelay = getSnapshotRenderDelay(itemCount, merged.session.running, activeTabRef.current);
-
-      stateFlushTimerRef.current = setTimeout(() => {
-        stateFlushTimerRef.current = null;
-        if (latestStateRef.current) {
-          const next = latestStateRef.current;
-          snapshotRef.current = next;
-          setSnapshot(next);
-          if (next.settings.columnOrder?.length > 0) {
-            setColumnOrder(next.settings.columnOrder);
-          }
-          if (!settingsDirtyRef.current && accountTogglePendingRef.current === 0) {
-            setSettingsDraft(createSettingsDraft(next.settings));
-          }
-          latestStateRef.current = null;
-        }
-      }, flushDelay);
+      if (!authoritativeSnapshotApplied && snapshotCoordinator.getStatus().phase === "ready") {
+        applyAuthoritativeSnapshot(merged);
+        return;
+      }
+      applyStreamSnapshot(merged);
     });
+    void window.rd.getVersion().then((v) => { if (mountedRef.current) { setAppVersion(v); } }).catch(() => undefined);
+    void window.rd.getTraceConfig().then((config) => {
+      if (mountedRef.current) {
+        setSupportTraceEnabled(config.enabled);
+      }
+    }).catch(() => undefined);
+    const loadInitialSnapshot = (): void => {
+      const generation = ++snapshotRequestGeneration;
+      setSnapshotBootstrapStatus(snapshotCoordinator.retry());
+      void window.rd.getSnapshot().then((initialState) => {
+        if (!mountedRef.current || generation !== snapshotRequestGeneration) {
+          return;
+        }
+        const state = snapshotCoordinator.initialize(initialState);
+        if (authoritativeSnapshotApplied) {
+          if (state !== masterSnapshotRef.current) {
+            applyStreamSnapshot(state);
+          }
+        } else {
+          applyAuthoritativeSnapshot(state, state.settings.themePreference);
+        }
+      }).catch((error) => {
+        if (!mountedRef.current || generation !== snapshotRequestGeneration) {
+          return;
+        }
+        const message = `Snapshot konnte nicht geladen werden: ${String(error)}`;
+        setSnapshotBootstrapStatus(snapshotCoordinator.fail(message));
+      });
+    };
+    retrySnapshotBootstrapRef.current = loadInitialSnapshot;
+    loadInitialSnapshot();
     unsubClipboard = window.rd.onClipboardDetected((links) => {
       showToast(`Zwischenablage: ${links.length} Link(s) erkannt`, 3000);
-      setCollectorTabs((prev) => {
-        const active = prev.find((t) => t.id === activeCollectorTabRef.current) ?? prev[0];
-        if (!active) { return prev; }
-        const newText = active.text ? `${active.text}\n${links.join("\n")}` : links.join("\n");
-        return prev.map((t) => t.id === active.id ? { ...t, text: newText } : t);
-      });
+      void importCollectorTextRef.current(links.join("\n"), "clipboard");
     });
     unsubUpdateInstallProgress = window.rd.onUpdateInstallProgress((progress) => {
       if (!mountedRef.current) {
@@ -2138,8 +2433,9 @@ export function App(): ReactElement {
       if (unsubscribe) { unsubscribe(); }
       if (unsubClipboard) { unsubClipboard(); }
       if (unsubUpdateInstallProgress) { unsubUpdateInstallProgress(); }
+      retrySnapshotBootstrapRef.current = () => {};
     };
-  }, [applyAuthoritativeSnapshot, clearImportQueueFocusListener, stageAuthoritativeSnapshot]);
+  }, [clearImportQueueFocusListener]);
 
   const downloadsTabActive = tab === "downloads";
   const deferredDownloadSearch = useDeferredValue(downloadSearch);
@@ -2177,12 +2473,24 @@ export function App(): ReactElement {
     if (!downloadsTabActive) {
       return;
     }
-    setCollapsedPackages((prev) => reconcileCollapsedPackageState(
-      prev,
-      snapshot.session.packageOrder,
-      snapshot.session.packages,
-      totalPackageCount >= 24
-    ));
+    setCollapsedPackages((prev) => {
+      let changed = false;
+      const next: Record<string, boolean> = { ...prev };
+      const defaultCollapsed = totalPackageCount >= 24;
+      for (const packageId of snapshot.session.packageOrder) {
+        if (!(packageId in prev)) {
+          next[packageId] = defaultCollapsed;
+          changed = true;
+        }
+      }
+      for (const packageId of Object.keys(next)) {
+        if (!snapshot.session.packages[packageId]) {
+          delete next[packageId];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
   }, [downloadsTabActive, packageOrderKey, snapshot.session.packageOrder, snapshot.session.packages, totalPackageCount]);
 
   // Prune selection when its packages/items disappear (e.g. via delta-removal or
@@ -2210,6 +2518,12 @@ export function App(): ReactElement {
     showAllPackages: showAllPackages || !snapshot.session.running,
     renderLimit: AUTO_RENDER_PACKAGE_LIMIT
   }), [collapsedPackages, deferredDownloadSearch, downloadDisplayMode, downloadFilter, downloadProviderFilter, selectedIds, showAllPackages, snapshot.session.items, snapshot.session.packages, snapshot.session.running, snapshot.settings.hideExtractedItems, visiblePackages]);
+
+  useEffect(() => {
+    if (downloadsTabActive && downloadProviderFilter !== downloadsViewCore.providerFilter) {
+      setDownloadProviderFilter(downloadsViewCore.providerFilter);
+    }
+  }, [downloadProviderFilter, downloadsTabActive, downloadsViewCore.providerFilter]);
 
   const hasSavedAllDebridAccount = snapshot.accounts.some((account) => account.provider === "alldebrid");
   const allDebridSettingsDirty = snapshot.settings.allDebridUseWebLogin !== settingsDraft.allDebridUseWebLogin;
@@ -2366,7 +2680,7 @@ export function App(): ReactElement {
             label: `Key ${index + 1}`,
             token: "",
             masked: account.maskedIdentity,
-            disabled: !account.enabled,
+            disabled: settingsDraft.debridLinkDisabledKeyIds.includes(account.accountId),
             dailyUsedBytes: keyDailyUsedBytes,
             totalUsedBytes: account.totalUsageBytes,
             dailyLimitBytes: keyDailyLimitBytes,
@@ -2425,14 +2739,60 @@ export function App(): ReactElement {
   const accountRows = useMemo(() => {
     const rows: AccountTableRow[] = [];
     for (const entry of configuredAccounts) {
-      if (entry.kind === "megadebrid-api" || entry.kind === "megadebrid-web") {
+      if (entry.service === "realdebrid") {
+        const accounts = snapshot.accounts.filter((account): account is RendererAccount & { kind: "realdebrid-api" | "realdebrid-web" } => (
+          account.provider === "realdebrid" && (account.kind === "realdebrid-api" || account.kind === "realdebrid-web")
+        ));
+        for (const account of accounts) {
+          const option = findAccountOption(account.kind);
+          const disabled = (settingsDraft.disabledProviders || []).includes("realdebrid")
+            || (settingsDraft.realDebridDisabledAccountIds || []).includes(account.accountId);
+          const rowEntry: ConfiguredAccountEntry = {
+            ...entry,
+            kind: account.kind,
+            modeLabel: option.modeLabel,
+            statusLabel: disabled ? "Deaktiviert" : "Aktiviert",
+            summary: account.maskedIdentity,
+            summaryLines: [account.maskedIdentity],
+            disabled,
+            dailyUsedBytes: account.dailyUsageBytes,
+            totalUsedBytes: account.totalUsageBytes,
+            dailyLimitBytes: account.dailyLimitBytes,
+            dailyRemainingBytes: account.dailyLimitBytes > 0 ? Math.max(0, account.dailyLimitBytes - account.dailyUsageBytes) : 0,
+            dailyLimitReached: account.dailyLimitBytes > 0 && account.dailyUsageBytes >= account.dailyLimitBytes
+          };
+          rows.push({
+            rowKey: `rd-${account.accountId}`,
+            entry: rowEntry,
+            hosterLabel: option.serviceLabel,
+            modeLabel: option.modeLabel,
+            username: account.identity,
+            credentialLabel: getAccountCredentialLabel(account.kind),
+            accountId: account.accountId,
+            checkable: true,
+            disabled,
+            dailyUsedBytes: account.dailyUsageBytes,
+            dailyLimitBytes: account.dailyLimitBytes,
+            dailyRemainingBytes: account.dailyLimitBytes > 0 ? Math.max(0, account.dailyLimitBytes - account.dailyUsageBytes) : 0,
+            totalUsedBytes: account.totalUsageBytes,
+            toggleKind: "rd",
+            editTarget: {
+              type: "single",
+              rowKey: `rd-${account.accountId}`,
+              kind: account.kind,
+              service: "realdebrid",
+              provider: "realdebrid",
+              accountId: account.accountId
+            }
+          });
+        }
+      } else if (entry.kind === "megadebrid-api" || entry.kind === "megadebrid-web") {
         const accounts = accountsOfKind(entry.kind, snapshot.accounts);
         for (const acc of accounts) {
           const used = acc.dailyUsageBytes;
           const limit = acc.dailyLimitBytes;
-          const rowKey = `mega-${entry.kind}-${acc.accountId}`;
           rows.push({
-            rowKey,
+            rowKey: `mega-${entry.kind}-${acc.accountId}`,
             entry,
             hosterLabel: entry.serviceLabel,
             modeLabel: entry.modeLabel,
@@ -2440,9 +2800,9 @@ export function App(): ReactElement {
             credentialLabel: "••••••",
             accountId: acc.accountId,
             checkable: true,
-            disabled: Object.prototype.hasOwnProperty.call(accountEnabledOverrides, rowKey)
-              ? !accountEnabledOverrides[rowKey]
-              : !acc.enabled,
+            disabled: entry.disabled || (entry.kind === "megadebrid-api"
+              ? !settingsDraft.megaDebridApiEnabled || settingsDraft.megaDebridApiDisabledAccountIds.includes(acc.accountId)
+              : !settingsDraft.megaDebridWebEnabled || settingsDraft.megaDebridWebDisabledAccountIds.includes(acc.accountId)),
             dailyUsedBytes: used,
             dailyLimitBytes: limit,
             dailyRemainingBytes: limit > 0 ? Math.max(0, limit - used) : 0,
@@ -2459,9 +2819,8 @@ export function App(): ReactElement {
         }
       } else if (entry.kind === "debridlink-api") {
         for (const key of entry.debridLinkKeys) {
-          const rowKey = `dl-${key.id}`;
           rows.push({
-            rowKey,
+            rowKey: `dl-${key.id}`,
             entry,
             hosterLabel: entry.serviceLabel,
             modeLabel: entry.modeLabel,
@@ -2469,9 +2828,7 @@ export function App(): ReactElement {
             credentialLabel: "API-Key",
             accountId: key.id,
             checkable: true,
-            disabled: Object.prototype.hasOwnProperty.call(accountEnabledOverrides, rowKey)
-              ? !accountEnabledOverrides[rowKey]
-              : key.disabled,
+            disabled: entry.disabled || settingsDraft.debridLinkDisabledKeyIds.includes(key.id),
             dailyUsedBytes: key.dailyUsedBytes,
             dailyLimitBytes: key.dailyLimitBytes,
             dailyRemainingBytes: key.dailyLimitBytes > 0 ? Math.max(0, key.dailyLimitBytes - key.dailyUsedBytes) : 0,
@@ -2488,19 +2845,19 @@ export function App(): ReactElement {
           });
         }
       } else {
-        const rowKey = `svc-${entry.service}`;
+        const serviceAccountId = entry.kind === "deepbrid-api"
+          ? accountsOfKind(entry.kind, snapshot.accounts)[0]?.accountId || "svc-deepbrid"
+          : null;
         rows.push({
-          rowKey,
+          rowKey: `svc-${entry.service}`,
           entry,
           hosterLabel: entry.serviceLabel,
           modeLabel: entry.modeLabel,
           username: getStoredAccountUsername(entry.kind, snapshot.accounts),
           credentialLabel: getAccountCredentialLabel(entry.kind),
-          accountId: null,
-          checkable: false,
-          disabled: Object.prototype.hasOwnProperty.call(accountEnabledOverrides, rowKey)
-            ? !accountEnabledOverrides[rowKey]
-            : entry.disabled,
+          accountId: serviceAccountId,
+          checkable: serviceAccountId !== null,
+          disabled: entry.disabled,
           dailyUsedBytes: entry.dailyUsedBytes,
           dailyLimitBytes: entry.dailyLimitBytes,
           dailyRemainingBytes: entry.dailyLimitBytes > 0 ? Math.max(0, entry.dailyRemainingBytes ?? 0) : 0,
@@ -2511,31 +2868,47 @@ export function App(): ReactElement {
             rowKey: `svc-${entry.service}`,
             kind: entry.kind as SingleAccountKind,
             service: entry.service,
-            provider: entry.provider
+            provider: entry.provider,
+            accountId: serviceAccountId || undefined
           }
         });
       }
     }
-    return rows;
-  }, [accountEnabledOverrides, configuredAccounts, snapshot.accounts]);
+    return rows.map((row) => {
+      const pending = pendingAccountToggles[row.rowKey];
+      if (!pending) return row;
+      const disabled = !pending.enabled;
+      return {
+        ...row,
+        disabled,
+        entry: {
+          ...row.entry,
+          disabled,
+          statusLabel: disabled ? "Deaktiviert" : "Aktiviert"
+        }
+      };
+    });
+  }, [configuredAccounts, pendingAccountToggles, settingsDraft, snapshot.accounts]);
 
   const [accountStatusSort, setAccountStatusSort] = useState<"none" | "desc" | "asc">("none");
   const cycleAccountStatusSort = (): void => setAccountStatusSort((s) => (s === "none" ? "desc" : s === "desc" ? "asc" : "none"));
 
   useEffect(() => {
-    setSelectedAccountRowKey((current) => pruneAccountRowSelection(current, accountRows.map((row) => row.rowKey)));
+    const existingRowKeys = accountRows.map((row) => row.rowKey);
+    setSelectedAccountRowKeys((current) => {
+      const next = pruneAccountRowSelections([...current], existingRowKeys);
+      if (next.length === current.size && next.every((rowKey) => current.has(rowKey))) {
+        return current;
+      }
+      return new Set(next);
+    });
   }, [accountRows]);
   const availableAccountOptions = useMemo(() => (
-    ACCOUNT_OPTIONS.filter((option) => option.kind === "megadebrid-api"
-      || option.kind === "megadebrid-web"
-      || option.kind === "debridlink-api"
-      || !configuredAccountServices.has(option.service))
+    getAvailableAccountOptions(ACCOUNT_OPTIONS, [...configuredAccountServices])
   ), [configuredAccountServices]);
   const accountEditOption = accountEditDialog ? findAccountOption(accountEditDialog.target.kind) : null;
   const accountEditRow = accountEditDialog ? accountRows.find((row) => row.rowKey === accountEditDialog.target.rowKey) ?? null : null;
-  const accountEditStatus = accountEditRow
-    ? resolveAccountStatus(snapshot.settings.debridAccountStatuses, accountEditRow.accountId, accountEditRow.entry.kind) ?? null
-    : null;
+  const accountEditStatus = accountEditRow?.accountId ? snapshot.settings.debridAccountStatuses?.[accountEditRow.accountId] ?? null : null;
   const accountEditQuickAction = accountEditOption ? getAccountQuickActionMeta(accountEditOption.kind) : null;
   const accountDialogOption = accountDialog?.kind ? findAccountOption(accountDialog.kind) : null;
   const accountDialogSelectableOptions = useMemo(() => {
@@ -2549,28 +2922,12 @@ export function App(): ReactElement {
       accountDialog.service
     );
   }, [accountDialog, availableAccountOptions]);
-  const accountDialogSearchQuery = accountDialogSearch.trim().toLowerCase();
+  const accountDialogServiceFilters = useMemo(() => (
+    sortAccountServices(accountDialogSelectableOptions.map((option) => option.serviceLabel))
+  ), [accountDialogSelectableOptions]);
   const filteredAccountDialogOptions = useMemo(() => (
-    accountDialogSelectableOptions.filter((option) => {
-      const matchesMode = accountDialogModeFilter === "all"
-        || (accountDialogModeFilter === "api" && option.modeLabel === "API")
-        || (accountDialogModeFilter === "web" && (option.modeLabel.startsWith("Web") || option.kind === "ddownload-login" || option.kind === "linksnappy-login"));
-      if (!matchesMode) {
-        return false;
-      }
-      if (!accountDialogSearchQuery) {
-        return true;
-      }
-      const haystack = [
-        option.title,
-        option.serviceLabel,
-        option.modeLabel,
-        option.pickerDescription,
-        getAccountPickerFunctionLabel(option)
-      ].join(" ").toLowerCase();
-      return haystack.includes(accountDialogSearchQuery);
-    })
-  ), [accountDialogModeFilter, accountDialogSearchQuery, accountDialogSelectableOptions]);
+    filterAccountDialogOptions(accountDialogSelectableOptions, accountDialogSearch, accountDialogServiceFilter)
+  ), [accountDialogSearch, accountDialogSelectableOptions, accountDialogServiceFilter]);
   const handleUpdateResult = async (
     result: UpdateCheckResult,
     source: "manual" | "startup",
@@ -2608,7 +2965,15 @@ export function App(): ReactElement {
       releaseNotes: changelogText
     });
     setUpdateInstallProgress(null);
-    setUpdateDialogOpen(true);
+    setUpdateDialogOpen(shouldOpenUpdatePrompt(source, result.latestTag, dismissedUpdateTagRef.current));
+  };
+
+  const dismissUpdatePrompt = (): void => {
+    if (availableUpdate?.latestTag) {
+      dismissedUpdateTagRef.current = availableUpdate.latestTag;
+    }
+    setUpdateDialogOpen(false);
+    setUpdateInstallProgress(null);
   };
 
   const installUpdate = async (): Promise<void> => {
@@ -2661,16 +3026,65 @@ export function App(): ReactElement {
       return;
     }
     const revisionAtStart = settingsDraftRevisionRef.current;
+    const themeChoiceAtStart = settingsThemeChoiceRef.current;
+    const saveIntent = captureSettingsSaveIntent(revisionAtStart, normalizedSettingsDraft);
+    const writeOnlyFieldsAtStart = new Set(writeOnlySettingsDirtyRef.current);
+    settingsSaveInFlightRef.current = true;
+    setSettingsSaveInFlight(true);
     setSettingsSaveState("saving");
-    await performQuickAction(async () => {
-      const result = await persistDraftSettings();
-      applyTheme(result.theme);
-      setSettingsSaveState(settingsDraftRevisionRef.current === revisionAtStart ? "saved" : "dirty");
-      showToast("Einstellungen gespeichert", 1800);
-    }, (error) => {
-      setSettingsSaveState("error");
-      showToast(`Einstellungen konnten nicht gespeichert werden: ${String(error)}`, 2800);
-    });
+    try {
+      await performQuickAction(async () => {
+        const result = await persistDraftSettings(themeChoiceAtStart, saveIntent, writeOnlyFieldsAtStart);
+        const completion = resolveSettingsSaveCompletion(revisionAtStart, settingsDraftRevisionRef.current);
+        if (completion.applyPersistedTheme) {
+          applyTheme(resolveSettingsThemeChoice(
+            themeChoiceAtStart,
+            window.matchMedia("(prefers-color-scheme: light)").matches
+          ));
+        }
+        setSettingsSaveState(completion.saveState);
+        showToast(completion.toast, 1800);
+      }, (error) => {
+        setSettingsSaveState("error");
+        showToast(`Einstellungen konnten nicht gespeichert werden: ${String(error)}`, 2800);
+      });
+    } finally {
+      settingsSaveInFlightRef.current = false;
+      setSettingsSaveInFlight(false);
+    }
+  };
+
+  const discardSettingsChanges = (): void => {
+    if (settingsSaveInFlightRef.current || actionBusyRef.current || settingsSaveState === "saving" || !settingsDirtyRef.current) {
+      return;
+    }
+    const restored = createDiscardedSettingsState(persistedSettingsRef.current, persistedThemeChoiceRef.current);
+    settingsDraftRevisionRef.current += 1;
+    archivePasswordLoadGenerationRef.current += 1;
+    panelDirtyRevisionRef.current = 0;
+    writeOnlySettingsDirtyRef.current.clear();
+    settingsDirtyRef.current = false;
+    setSettingsDirty(false);
+    setSettingsSaveState("clean");
+    setSettingsDraft(restored.draft);
+    setSettingsThemeChoice(restored.themeChoice);
+    settingsThemeChoiceRef.current = restored.themeChoice;
+    setSpeedLimitInput(restored.speedLimitInput);
+    setScheduleSpeedInputs(restored.scheduleSpeedInputs);
+    applyTheme(resolveSettingsThemeChoice(
+      restored.themeChoice,
+      window.matchMedia("(prefers-color-scheme: light)").matches
+    ));
+    showToast("Ungespeicherte Änderungen verworfen", 1800);
+    if (settingsSubTab === "extract") {
+      const generation = archivePasswordLoadGenerationRef.current;
+      void window.rd.getArchivePasswordList().then(({ passwords }) => {
+        if (archivePasswordLoadGenerationRef.current !== generation || writeOnlySettingsDirtyRef.current.has("archivePasswordList")) {
+          return;
+        }
+        setSettingsDraft((current) => ({ ...current, archivePasswordList: passwords }));
+      }).catch(() => undefined);
+    }
   };
 
   const onOpenRealDebridLogin = async (): Promise<void> => {
@@ -2679,7 +3093,7 @@ export function App(): ReactElement {
       await window.rd.openRealDebridLogin();
       showToast("Real-Debrid Login-Fenster geöffnet", 2200);
     }, (error) => {
-      showToast(`Real-Debrid Login fehlgeschlagen: ${String(error)}`, 2800);
+      showToast(formatAccountOperationError("Real-Debrid Login fehlgeschlagen", error), 3200);
     });
   };
 
@@ -2689,7 +3103,7 @@ export function App(): ReactElement {
       await window.rd.openAllDebridLogin();
       showToast("AllDebrid Login-Fenster geöffnet", 2200);
     }, (error) => {
-      showToast(`AllDebrid Login fehlgeschlagen: ${String(error)}`, 2800);
+      showToast(formatAccountOperationError("AllDebrid Login fehlgeschlagen", error), 3200);
     });
   };
 
@@ -2707,18 +3121,35 @@ export function App(): ReactElement {
     });
   };
 
-  const applyPersistedSettings = (result: RendererSettings): void => {
-    setSettingsDraft(createSettingsDraft(result));
+  const applyPersistedSettings = (
+    result: RendererSettings,
+    preserveWriteOnlyValues = true,
+    themeChoice: SettingsThemeChoice = result.themePreference
+  ): void => {
+    persistedSettingsRef.current = result;
+    persistedThemeChoiceRef.current = themeChoice;
+    if (!preserveWriteOnlyValues) {
+      archivePasswordLoadGenerationRef.current += 1;
+    }
+    setSettingsDraft((current) => createSettingsDraft(result, preserveWriteOnlyValues ? current : undefined));
+    if (result.columnOrder?.length) {
+      columnOrderPersistenceRef.current?.applyAuthoritative(result.columnOrder);
+    }
     writeOnlySettingsDirtyRef.current.clear();
     settingsDirtyRef.current = false;
     panelDirtyRevisionRef.current = 0;
     setSettingsDirty(false);
     setSettingsSaveState("clean");
-    setSettingsThemeChoice((current) => current === "system" ? current : result.theme);
-    applyTheme(result.theme);
+    setSettingsThemeChoice(themeChoice);
+    settingsThemeChoiceRef.current = themeChoice;
+    applyTheme(resolveSettingsThemeChoice(
+      themeChoice,
+      window.matchMedia("(prefers-color-scheme: light)").matches
+    ));
   };
 
   const syncLiveProviderUsageSettings = (result: RendererSettings): void => {
+    persistedSettingsRef.current = result;
     setSnapshot((prev) => ({ ...prev, settings: result }));
     if (!settingsDirtyRef.current) {
       applyPersistedSettings(result);
@@ -2737,32 +3168,11 @@ export function App(): ReactElement {
     }));
   };
 
-  const persistSpecificSettings = async (nextDraft: RendererSettingsDraft): Promise<RendererSettings> => {
-    const revisionAtStart = settingsDraftRevisionRef.current;
-    const draftAtStart = settingsDraft;
-    const normalizedDraft = {
-      ...nextDraft,
-      ...normalizeProviderSelectionForSettings(nextDraft)
-    };
-    const update: RendererSettingsUpdate = { ...normalizedDraft };
-    if (!writeOnlySettingsDirtyRef.current.has("archivePasswordList")) delete update.archivePasswordList;
-    if (!writeOnlySettingsDirtyRef.current.has("notifyUrl")) delete update.notifyUrl;
-    const result = await window.rd.updateSettings(update);
-    if (settingsDraftRevisionRef.current === revisionAtStart) {
-      applyPersistedSettings(result);
-    } else {
-      setSettingsDraft((current) => mergeConcurrentSpecificSettings(draftAtStart, normalizedDraft, result, current));
-      settingsDirtyRef.current = true;
-      setSettingsDirty(true);
-      setSettingsSaveState("dirty");
-    }
-    return result;
-  };
-
-  const runAccountQuickAction = async (action: AccountQuickAction): Promise<void> => {
+  const runAccountQuickAction = async (action: AccountQuickAction, accountId?: string | null): Promise<void> => {
     switch (action) {
       case "realdebrid-login":
-        await window.rd.openRealDebridLogin();
+        if (!accountId) throw new Error("Der ausgewählte Real-Debrid-Account wurde nicht gefunden.");
+        await window.rd.openRealDebridLogin({ accountId });
         showToast("Real-Debrid Login-Fenster geöffnet", 2200);
         return;
       case "bestdebrid-cookies": {
@@ -2782,19 +3192,20 @@ export function App(): ReactElement {
     }
   };
 
-  const checkAllAccounts = useCallback(async (): Promise<void> => {
+  const checkAccounts = useCallback(async (scope: "active" | "all"): Promise<void> => {
     setAccountCheckBusy(true);
     try {
-      const statuses = await window.rd.checkDebridAccounts();
+      const statuses = await window.rd.checkDebridAccounts(scope);
       if (!statuses || statuses.length === 0) {
-        showToast("Keine Mega-Debrid-/Debrid-Link-Accounts zum Prüfen konfiguriert.", 3200);
+        showToast(scope === "active" ? "Keine aktiven prüfbaren Accounts konfiguriert." : "Keine prüfbaren Accounts konfiguriert.", 3200);
       } else {
         const valid = statuses.filter((st) => st.valid).length;
         const premium = statuses.filter((st) => st.isPremium).length;
-        showToast(`Account-Check: ${valid}/${statuses.length} Login gültig, ${premium} mit Premium.`, 3600);
+        const label = scope === "active" ? "Aktive Accounts" : "Alle Accounts";
+        showToast(`${label}: ${valid}/${statuses.length} Login gültig, ${premium} mit Premium.`, 3600);
       }
     } catch (error) {
-      showToast(`Account-Check fehlgeschlagen: ${String(error)}`, 3600);
+      showToast(formatAccountOperationError("Account-Check fehlgeschlagen", error), 3600);
     } finally {
       setAccountCheckBusy(false);
     }
@@ -2802,12 +3213,14 @@ export function App(): ReactElement {
 
   const openCreateAccountDialog = (): void => {
     setAccountDialogSearch("");
-    setAccountDialogModeFilter("all");
+    setAccountDialogServiceFilter("all");
     setAccountDialog(createAccountDialogState("create", availableAccountOptions[0]?.kind ?? null, settingsDraft));
   };
 
   const openEditAccountDialog = (row: AccountTableRow): void => {
     try {
+      setAccountEditSecretVisible({});
+      setAccountEditSecretBusy(null);
       setAccountEditDialog(createAccountEditState(row.editTarget, snapshot.accounts));
     } catch (error) {
       showToast(String(error), 3200);
@@ -2839,11 +3252,13 @@ export function App(): ReactElement {
   const closeAccountDialog = useCallback((): void => {
     setAccountDialog(null);
     setAccountDialogSearch("");
-    setAccountDialogModeFilter("all");
+    setAccountDialogServiceFilter("all");
   }, []);
 
   const closeAccountEditDialog = useCallback((): void => {
     setAccountEditDialog(null);
+    setAccountEditSecretVisible({});
+    setAccountEditSecretBusy(null);
   }, []);
 
   const onSaveAccountEditDialog = async (quickAction?: AccountQuickAction): Promise<void> => {
@@ -2857,17 +3272,20 @@ export function App(): ReactElement {
       return;
     }
     await performQuickAction(async () => {
-      const result = await window.rd.replaceAccount(buildAccountReplaceCommand(editSnapshot));
-      setSnapshot((current) => ({ ...current, settings: result.settings, accounts: result.accounts }));
-      applyPersistedSettings(result.settings);
-      closeAccountEditDialog();
-      if (quickAction) {
-        await runAccountQuickAction(quickAction);
-      } else {
-        showToast(`${findAccountOption(editSnapshot.target.kind).title} gespeichert`, 2200);
-      }
+      await runQueuedSettingsMutation(async () => {
+        await persistDraftSettingsDirect();
+        const result = await window.rd.replaceAccount(buildAccountReplaceCommand(editSnapshot));
+        setSnapshot((current) => ({ ...current, settings: result.settings, accounts: result.accounts }));
+        applyPersistedSettings(result.settings);
+        closeAccountEditDialog();
+        if (quickAction) {
+          await runAccountQuickAction(quickAction, editSnapshot.target.type === "single" ? editSnapshot.target.accountId : null);
+        } else {
+          showToast(`${findAccountOption(editSnapshot.target.kind).title} gespeichert`, 2200);
+        }
+      });
     }, (error) => {
-      showToast(`Account konnte nicht gespeichert werden: ${String(error)}`, 3200);
+      showToast(formatAccountOperationError("Account konnte nicht gespeichert werden", error), 3600);
     });
   };
 
@@ -2887,20 +3305,33 @@ export function App(): ReactElement {
     }
     const selectedOption = dialogSnapshot.kind ? findAccountOption(dialogSnapshot.kind) : null;
     await performQuickAction(async () => {
-      const command = buildAccountCreateCommand(dialogSnapshot);
-      if (!command) throw new Error("Account-Payload ist ungültig");
-      const result = await window.rd.createAccount(command);
-      setSnapshot((current) => ({ ...current, settings: result.settings, accounts: result.accounts }));
-      applyPersistedSettings(result.settings);
-      closeAccountDialog();
-      if (quickAction) {
-        await runAccountQuickAction(quickAction);
-      } else if (selectedOption) {
-        showToast(`${selectedOption.title} gespeichert`, 2200);
-      }
-      void checkAllAccounts();
+      await runQueuedSettingsMutation(async () => {
+        await persistDraftSettingsDirect();
+        if (dialogSnapshot.kind === "realdebrid-web") {
+          const accountId = `rdw_${crypto.randomUUID().replace(/-/g, "")}`;
+          const request = buildRealDebridWebCreateLoginRequest(dialogSnapshot, accountId);
+          if (!request) throw new Error("Account-Payload ist ungültig");
+          await window.rd.openRealDebridLogin(request);
+          closeAccountDialog();
+          showToast("Real-Debrid Login-Fenster geöffnet", 2200);
+          return;
+        }
+        const command = buildAccountCreateCommand(dialogSnapshot);
+        if (!command) throw new Error("Account-Payload ist ungültig");
+        const result = await window.rd.createAccount(command);
+        const persistedSettings = await window.rd.updateSettings(buildAccountCreateProviderOrderUpdate(result.settings));
+        setSnapshot((current) => ({ ...current, settings: persistedSettings, accounts: result.accounts }));
+        applyPersistedSettings(persistedSettings);
+        closeAccountDialog();
+        if (quickAction) {
+          await runAccountQuickAction(quickAction, result.accountId);
+        } else if (selectedOption) {
+          showToast(`${selectedOption.title} gespeichert`, 2200);
+        }
+        void checkAccounts("active");
+      });
     }, (error) => {
-      showToast(`Account konnte nicht gespeichert werden: ${String(error)}`, 3200);
+      showToast(formatAccountOperationError("Account konnte nicht gespeichert werden", error), 3600);
     });
   };
 
@@ -2924,15 +3355,78 @@ export function App(): ReactElement {
     });
   };
 
-  const onAccountRowQuickAction = async (entry: ConfiguredAccountEntry): Promise<void> => {
-    const meta = getAccountQuickActionMeta(entry.kind);
+  const requestAccountToggle = (row: AccountTableRow, enabled: boolean): void => {
+    const sequence = ++accountToggleSequenceRef.current;
+    const requestedEnabled = resolveAccountToggleIntentEnabled(pendingAccountTogglesRef.current[row.rowKey]?.enabled, enabled);
+    const subject = row.toggleKind === "dl" && row.dlKey
+      ? `${row.entry.serviceLabel} ${row.dlKey.label}`
+      : row.entry.serviceLabel;
+    const check = requestedEnabled
+      ? row.toggleKind === "rd" && row.accountId
+        ? () => window.rd.checkAccountCredentials({ kind: row.entry.kind as "realdebrid-api" | "realdebrid-web", accountId: row.accountId || undefined })
+        : row.toggleKind === "mega" && row.accountId
+          ? () => window.rd.checkAccountCredentials({ kind: row.entry.kind as "megadebrid-api" | "megadebrid-web", accountId: row.accountId || undefined })
+          : row.toggleKind === "dl" && row.dlKey
+            ? () => window.rd.checkAccountCredentials({ kind: "debridlink-api", accountId: row.dlKey?.id })
+            : row.entry.kind === "deepbrid-api"
+              ? () => window.rd.checkAccountCredentials({ kind: "deepbrid-api", accountId: "svc-deepbrid" })
+              : undefined
+      : undefined;
+    const nextPending = {
+      ...pendingAccountTogglesRef.current,
+      [row.rowKey]: { enabled: requestedEnabled, sequence }
+    };
+    pendingAccountTogglesRef.current = nextPending;
+    setPendingAccountToggles(nextPending);
+    void enqueueAccountToggleIntent(accountToggleQueueRef.current, {
+      key: row.rowKey,
+      target: getAccountToggleTarget(row),
+      enabled: requestedEnabled,
+      check
+    }, {
+      getSettings: () => persistedSettingsRef.current,
+      persist: async (patch) => {
+        const result = await window.rd.updateSettings(patch);
+        persistedSettingsRef.current = result;
+        const apply = (current: UiSnapshot): UiSnapshot => ({
+          ...current,
+          settings: mergeAccountToggleSettings(current.settings, result)
+        });
+        snapshotRef.current = apply(snapshotRef.current);
+        if (masterSnapshotRef.current) {
+          masterSnapshotRef.current = apply(masterSnapshotRef.current);
+        }
+        if (latestStateRef.current) {
+          latestStateRef.current = apply(latestStateRef.current);
+        }
+        setSnapshot(apply);
+        setSettingsDraft((current) => mergeAccountToggleSettings(current, result));
+        return result;
+      }
+    }).then((result) => {
+      if (result.status === "superseded") return;
+      if (pendingAccountTogglesRef.current[row.rowKey]?.sequence !== sequence) return;
+      const settledPending = { ...pendingAccountTogglesRef.current };
+      delete settledPending[row.rowKey];
+      pendingAccountTogglesRef.current = settledPending;
+      setPendingAccountToggles(settledPending);
+      if (result.status === "failed") {
+        showToast(formatAccountOperationError(`${subject}: Umschalten fehlgeschlagen`, result.error), 3600);
+        return;
+      }
+      showToast(`${subject} ${requestedEnabled ? "aktiviert" : "deaktiviert"}`, 2200);
+    });
+  };
+
+  const onAccountRowQuickAction = async (row: AccountTableRow): Promise<void> => {
+    const meta = getAccountQuickActionMeta(row.entry.kind);
     if (!meta) {
       return;
     }
     await performQuickAction(async () => {
-      await runAccountQuickAction(meta.action);
+      await runAccountQuickAction(meta.action, row.accountId);
     }, (error) => {
-      showToast(`${entry.serviceLabel}: Aktion fehlgeschlagen: ${String(error)}`, 3200);
+      showToast(formatAccountOperationError(`${row.entry.serviceLabel}: Aktion fehlgeschlagen`, error), 3600);
     });
   };
 
@@ -2940,146 +3434,37 @@ export function App(): ReactElement {
     const confirmed = await askConfirmPrompt({ title: "Key entfernen", message: `Soll der Debrid-Link-Key ${key.masked} wirklich entfernt werden?`, confirmLabel: "Entfernen", danger: true });
     if (!confirmed) return;
     await performQuickAction(async () => {
-      const result = await window.rd.deleteAccount({ action: "delete", kind: "debridlink-api", accountId: key.id });
-      setSnapshot((current) => ({ ...current, settings: result.settings, accounts: result.accounts }));
-      applyPersistedSettings(result.settings);
-      showToast("Key entfernt", 2000);
+      await runQueuedSettingsMutation(async () => {
+        await persistDraftSettingsDirect();
+        const result = await window.rd.deleteAccount({ action: "delete", kind: "debridlink-api", accountId: key.id });
+        setSnapshot((current) => ({ ...current, settings: result.settings, accounts: result.accounts }));
+        applyPersistedSettings(result.settings);
+        showToast("Key entfernt", 2000);
+      });
     }, (error) => { showToast(`Entfernen fehlgeschlagen: ${String(error)}`, 3200); });
   };
 
-  const reconcileAccountToggleState = async (revision: number): Promise<void> => {
-    const fresh = await window.rd.getSnapshot();
-    if (!mountedRef.current || revision !== accountToggleRevisionRef.current) {
-      return;
-    }
-    masterSnapshotRef.current = fresh;
-    latestStateRef.current = null;
-    setSnapshot(fresh);
-    const reconciledDraft: RendererSettingsDraft = {
-      ...settingsDraftRef.current,
-      ...buildAccountToggleSettingsUpdate(fresh.settings)
-    };
-    settingsDraftRef.current = reconciledDraft;
-    setSettingsDraft(reconciledDraft);
-    accountEnabledOverridesRef.current = {};
-    setAccountEnabledOverrides({});
-  };
-
-  const enqueueAccountSettingsChange = (
-    nextDraft: RendererSettingsDraft,
-    nextOverrides: Record<string, boolean>,
-    successMessage: string,
-    errorMessage: string
-  ): void => {
-    settingsDraftRevisionRef.current += 1;
-    settingsDraftRef.current = nextDraft;
-    setSettingsDraft(nextDraft);
-    accountEnabledOverridesRef.current = nextOverrides;
-    setAccountEnabledOverrides(nextOverrides);
-    const revision = accountToggleRevisionRef.current + 1;
-    accountToggleRevisionRef.current = revision;
-    accountTogglePendingRef.current += 1;
-    void accountToggleQueueRef.current.enqueue(async () => {
-      let error: unknown = null;
-      try {
-        await window.rd.updateSettings(buildAccountToggleSettingsUpdate(nextDraft));
-      } catch (caught) {
-        error = caught;
-      } finally {
-        accountTogglePendingRef.current = Math.max(0, accountTogglePendingRef.current - 1);
-      }
-      if (revision !== accountToggleRevisionRef.current) {
-        return;
-      }
-      try {
-        await reconcileAccountToggleState(revision);
-      } catch (caught) {
-        error = error ?? caught;
-        if (mountedRef.current && revision === accountToggleRevisionRef.current) {
-          const fallbackDraft: RendererSettingsDraft = {
-            ...settingsDraftRef.current,
-            ...buildAccountToggleSettingsUpdate(snapshotRef.current.settings)
-          };
-          settingsDraftRef.current = fallbackDraft;
-          setSettingsDraft(fallbackDraft);
-          accountEnabledOverridesRef.current = {};
-          setAccountEnabledOverrides({});
-        }
-      }
-      if (error) {
-        showToast(`${errorMessage}: ${String(error)}`, 3200);
-      } else {
-        showToast(successMessage, 1800);
-      }
-    });
-  };
-
-  const onResetMegaDebridCooldowns = async (): Promise<void> => {
-    await performQuickAction(async () => {
-      const result = await window.rd.resetMegaDebridCooldowns();
-      await reconcileAuthoritativeSnapshot();
-      showToast(result.cleared > 0 ? "Mega-Debrid-Cooldowns zurückgesetzt" : "Keine aktiven Mega-Debrid-Cooldowns.", 2400);
-    }, (error) => {
-      showToast(`Cooldown-Reset fehlgeschlagen: ${String(error)}`, 3200);
-    });
-  };
-
-  const getAccountToggleTarget = (row: AccountTableRow): AccountToggleTarget | null => {
-    if (row.toggleKind === "mega" && row.accountId) {
-      return {
-        kind: row.entry.kind === "megadebrid-web" ? "mega-web" : "mega-api",
-        accountId: row.accountId
-      };
-    }
-    if (row.toggleKind === "dl" && row.accountId) {
-      return { kind: "debridlink", accountId: row.accountId };
-    }
-    if (row.toggleKind === "single") {
-      return { kind: "provider", provider: row.entry.service as DebridProvider };
-    }
-    return null;
-  };
-
-  const toggleAccountTableRow = (row: AccountTableRow): void => {
+  const toggleAccountTableRow = (row: AccountTableRow, enabled = row.disabled): void => {
     setAccountContextMenu(null);
-    const target = getAccountToggleTarget(row);
-    if (!target) {
+    requestAccountToggle(row, enabled);
+  };
+
+  const removeAccountTableRows = (rows: readonly AccountTableRow[]): void => {
+    if (rows.length === 0) {
       return;
     }
-    const currentEnabled = Object.prototype.hasOwnProperty.call(accountEnabledOverridesRef.current, row.rowKey)
-      ? accountEnabledOverridesRef.current[row.rowKey]
-      : !row.disabled;
-    const nextEnabled = !currentEnabled;
-    const nextDraft = setAccountTargetEnabled(settingsDraftRef.current, target, nextEnabled);
-    const nextOverrides = {
-      ...accountEnabledOverridesRef.current,
-      [row.rowKey]: nextEnabled
-    };
-    enqueueAccountSettingsChange(
-      nextDraft,
-      nextOverrides,
-      nextEnabled ? "Account aktiviert" : "Account deaktiviert",
-      "Account konnte nicht umgeschaltet werden"
-    );
-  };
-
-  const onToggleDebridLinkApiKeyEnabled = (entry: ConfiguredAccountEntry, key: DebridLinkAccountKeyEntry): void => {
-    const row = accountRows.find((candidate) => candidate.entry.service === entry.service && candidate.accountId === key.id);
-    if (row) {
-      toggleAccountTableRow(row);
-    }
-  };
-
-  const removeAccountTableRow = (row: AccountTableRow): void => {
     setAccountContextMenu(null);
     void (async () => {
-      const username = resolveAccountUsername(
-        row.username,
-        resolveAccountStatus(snapshot.settings.debridAccountStatuses, row.accountId, row.entry.kind)?.email
-      );
+      const row = rows[0];
+      const checkedStatus = row.accountId ? snapshot.settings.debridAccountStatuses?.[row.accountId] : undefined;
+      const username = rows.length === 1
+        ? resolveAccountUsername(row.username, checkedStatus?.username || checkedStatus?.email)
+        : "—";
       const confirmed = await askConfirmPrompt({
-        title: `${row.hosterLabel} entfernen`,
-        message: `Soll ${row.hosterLabel}${username !== "—" ? ` (${username})` : ""} wirklich entfernt werden?`,
+        title: rows.length === 1 ? `${row.hosterLabel} entfernen` : `${rows.length} Accounts entfernen`,
+        message: rows.length === 1
+          ? `Soll ${row.hosterLabel}${username !== "—" ? ` (${username})` : ""} wirklich entfernt werden?`
+          : `Sollen die ausgewählten ${rows.length} Accounts wirklich entfernt werden?`,
         confirmLabel: "Entfernen",
         danger: true
       });
@@ -3087,27 +3472,45 @@ export function App(): ReactElement {
         return;
       }
       await performQuickAction(async () => {
-        const result = await window.rd.deleteAccount(buildAccountDeleteCommand(row.editTarget));
-        setSnapshot((current) => ({ ...current, settings: result.settings, accounts: result.accounts }));
-        applyPersistedSettings(result.settings);
-        if (row.entry.service === "alldebrid") {
-          setAllDebridHostInfo(null);
-        }
-        showToast(`${row.hosterLabel} entfernt`, 2200);
+        await runQueuedSettingsMutation(async () => {
+          await persistDraftSettingsDirect();
+          for (const selectedRow of rows) {
+            const result = await window.rd.deleteAccount(buildAccountDeleteCommand(selectedRow.editTarget));
+            setSnapshot((current) => ({ ...current, settings: result.settings, accounts: result.accounts }));
+            applyPersistedSettings(result.settings);
+            if (selectedRow.entry.service === "alldebrid") {
+              setAllDebridHostInfo(null);
+            }
+          }
+          const removedRowKeys = new Set(rows.map((selectedRow) => selectedRow.rowKey));
+          setSelectedAccountRowKeys((current) => new Set([...current].filter((rowKey) => !removedRowKeys.has(rowKey))));
+          showToast(rows.length === 1 ? `${row.hosterLabel} entfernt` : `${rows.length} Accounts entfernt`, 2200);
+        });
       }, (error) => {
-        showToast(`Account konnte nicht entfernt werden: ${String(error)}`, 3200);
+        showToast(`${rows.length === 1 ? "Account" : "Accounts"} konnte${rows.length === 1 ? "" : "n"} nicht entfernt werden: ${String(error)}`, 3200);
       });
     })();
   };
 
+  const removeAccountTableRow = (row: AccountTableRow): void => removeAccountTableRows([row]);
+
   const checkAccountTableRow = (row: AccountTableRow): void => {
     setAccountContextMenu(null);
-    if (row.toggleKind === "mega" || row.toggleKind === "dl") {
-      void checkAllAccounts();
+    if ((row.entry.kind === "realdebrid-api" || row.entry.kind === "realdebrid-web") && row.accountId) {
+      const kind = row.entry.kind;
+      const accountId = row.accountId;
+      void performQuickAction(async () => {
+        const status = await window.rd.checkAccountCredentials({ kind, accountId });
+        showToast(status.valid ? "Account erfolgreich geprüft" : status.message || "Zugangsdaten ungültig", 2600);
+      }, (error) => showToast(formatAccountOperationError("Prüfung fehlgeschlagen", error), 3600));
+      return;
+    }
+    if (row.checkable) {
+      void checkAccounts("all");
       return;
     }
     if (getAccountQuickActionMeta(row.entry.kind)) {
-      void onAccountRowQuickAction(row.entry);
+      void onAccountRowQuickAction(row);
       return;
     }
     showToast("Für diesen Account ist keine direkte Statusprüfung verfügbar.", 2800);
@@ -3123,17 +3526,42 @@ export function App(): ReactElement {
     });
   };
 
-  const persistDraftSettings = async (): Promise<RendererSettings> => {
-    const revisionAtStart = settingsDraftRevisionRef.current;
-    const update: RendererSettingsUpdate = { ...normalizedSettingsDraft };
-    if (!writeOnlySettingsDirtyRef.current.has("archivePasswordList")) delete update.archivePasswordList;
-    if (!writeOnlySettingsDirtyRef.current.has("notifyUrl")) delete update.notifyUrl;
+  const runQueuedSettingsMutation = async <T,>(task: () => Promise<T>): Promise<T> => {
+    const result = await accountToggleQueueRef.current.enqueue(`settings-mutation-${++settingsMutationSequenceRef.current}`, async () => task());
+    if (result.status === "failed") throw result.error;
+    if (result.status === "superseded") throw new Error("Einstellungsänderung wurde ersetzt");
+    return result.value;
+  };
+
+  const persistDraftSettingsDirect = async (
+    themeChoiceAtStart: SettingsThemeChoice = settingsThemeChoiceRef.current,
+    intent = captureSettingsSaveIntent(settingsDraftRevisionRef.current, normalizedSettingsDraft),
+    writeOnlyFields = new Set(writeOnlySettingsDirtyRef.current)
+  ): Promise<RendererSettings> => {
+    const rebasedDraft = mergeAccountToggleSettings(intent.draft, persistedSettingsRef.current);
+    const update: RendererSettingsUpdate = {
+      ...rebasedDraft,
+      theme: resolveSettingsThemeChoice(themeChoiceAtStart, window.matchMedia("(prefers-color-scheme: light)").matches),
+      themePreference: themeChoiceAtStart
+    };
+    if (!writeOnlyFields.has("archivePasswordList")) delete update.archivePasswordList;
+    if (!writeOnlyFields.has("notifyUrl")) delete update.notifyUrl;
     const result = await window.rd.updateSettings(update);
-    if (settingsDraftRevisionRef.current === revisionAtStart) {
+    persistedSettingsRef.current = result;
+    persistedThemeChoiceRef.current = result.themePreference;
+    if (settingsDraftRevisionRef.current === intent.revision) {
       applyPersistedSettings(result);
     }
     return result;
   };
+
+  const persistDraftSettings = async (
+    themeChoiceAtStart: SettingsThemeChoice = settingsThemeChoiceRef.current,
+    intent = captureSettingsSaveIntent(settingsDraftRevisionRef.current, normalizedSettingsDraft),
+    writeOnlyFields = new Set(writeOnlySettingsDirtyRef.current)
+  ): Promise<RendererSettings> => (
+    runQueuedSettingsMutation(() => persistDraftSettingsDirect(themeChoiceAtStart, intent, writeOnlyFields))
+  );
 
   const closeStartConflictPrompt = (result: { policy: Extract<DuplicatePolicy, "skip" | "overwrite">; applyToAll: boolean } | null): void => {
     const resolver = startConflictResolverRef.current;
@@ -3231,14 +3659,18 @@ export function App(): ReactElement {
     if (!confirmed) {
       return;
     }
-    const results = await Promise.allSettled(ids.map((id) => window.rd.removeHistoryEntry(id)));
-    if (results.some((result) => result.status === "rejected")) {
-      showToast("Einige Verlaufseinträge konnten nicht entfernt werden");
+    try {
+      await window.rd.removeHistoryEntries(ids);
+    } catch {
+      showToast(ids.length === 1 ? "Verlaufseintrag konnte nicht entfernt werden" : "Verlaufseinträge konnten nicht entfernt werden");
       await loadHistoryEntries();
       return;
     }
     const removed = new Set(ids);
     applyHistoryEntries(historyEntriesRef.current.filter((entry) => !removed.has(entry.id)));
+    if (historyLoadActiveRef.current) {
+      await loadHistoryEntries();
+    }
     showToast(ids.length === 1 ? "Verlaufseintrag entfernt" : `${ids.length} Verlaufseinträge entfernt`);
   }, [applyHistoryEntries, askConfirmPrompt, loadHistoryEntries, showToast]);
 
@@ -3258,6 +3690,7 @@ export function App(): ReactElement {
     try {
       await window.rd.clearHistory();
       applyHistoryEntries([]);
+      await loadHistoryEntries();
       showToast("Verlauf geleert");
     } catch {
       showToast("Verlauf konnte nicht geleert werden");
@@ -3300,10 +3733,7 @@ export function App(): ReactElement {
       });
     },
     onToggleSelectAll: (visibleIds) => {
-      setSelectedHistoryIds((current) => {
-        const allSelected = visibleIds.length > 0 && visibleIds.every((id) => current.has(id));
-        return allSelected ? new Set() : selectVisibleHistoryIds(visibleIds);
-      });
+      setSelectedHistoryIds((current) => toggleHistoryPageSelection(current, visibleIds));
     },
     onToggleExpansion: (entryId) => {
       setHistoryExpandedIds((current) => {
@@ -3321,11 +3751,12 @@ export function App(): ReactElement {
     onRemove: (entryIds) => { void removeHistoryEntries(entryIds); },
     onClearSelection: () => setSelectedHistoryIds(new Set()),
     onClearHistory: () => { void clearHistoryEntries(); },
+    onVisiblePageChange: (ids) => {
+      historyVisibleIdsRef.current = ids;
+      setHistoryVisiblePageCount(ids.length);
+    },
     onContextMenu: (entryId, x, y) => {
-      setSelectedHistoryIds((current) => {
-        const visibleSelection = pruneHistoryIds(current, historyVisibleIdsRef.current);
-        return visibleSelection.has(entryId) ? visibleSelection : new Set([entryId]);
-      });
+      setSelectedHistoryIds((current) => resolveHistoryContextSelection(current, entryId));
       setHistoryCtxMenu({ entryId, x, y });
     }
   }), [clearHistoryEntries, removeHistoryEntries, restoreHistoryEntries, revealHistoryEntry]);
@@ -3375,11 +3806,7 @@ export function App(): ReactElement {
         showToast(`Konflikte gelöst: ${overwritten} überschrieben, ${skipped} übersprungen`, 2800);
       }
 
-      try {
-        await window.rd.start();
-      } finally {
-        await reconcileAuthoritativeSnapshot().catch(() => undefined);
-      }
+      await window.rd.start();
     });
   };
 
@@ -3395,47 +3822,330 @@ export function App(): ReactElement {
     }
   };
 
-  const onAddLinks = async (): Promise<void> => {
-    setCollectorError("");
-    await performQuickAction(async () => {
-      const activeId = activeCollectorTabRef.current;
-      const active = collectorTabsRef.current.find((t) => t.id === activeId) ?? collectorTabsRef.current[0];
-      const rawText = active?.text ?? "";
-      const persisted = await persistDraftSettings();
-      const existingIds = new Set(Object.keys(snapshotRef.current.session.packages));
-      const result = await window.rd.addLinks({ rawText, packageName: persisted.packageName });
-      if (result.addedLinks > 0) {
-        showToast(`${result.addedPackages} Paket(e), ${result.addedLinks} Link(s) hinzugefügt`);
-        setCollectorTabs((prev) => planCollectorTextReplacement(prev, activeId, "").tabs);
-        setSelectedCollectorRowIds(new Set());
-        if (snapshotRef.current.settings.collapseNewPackages) { await collapseNewPackages(existingIds); }
-      } else {
-        showToast("Keine gültigen Links gefunden");
+  const mergeCollectorResult = (result: CollectorInspectionResult, enrichment = false): boolean => {
+    const current = collectorPackagesRef.current;
+    const decision = mergeCollectorPackagesWithinCapacity(current, result.packages, enrichment);
+    if (!decision.ok) {
+      setCollectorError(decision.message);
+      if (!enrichment) showToast(decision.message, 3200);
+      return false;
+    }
+    const merged = decision.value;
+    const nextCollapsed = reconcileCollectorCollapsedPackageIds(
+      collapsedCollectorPackageIdsRef.current,
+      current,
+      merged.packages,
+      result.packages,
+      !enrichment
+    );
+    const nextState = {
+      packages: merged.packages,
+      collapsedPackageIds: [...nextCollapsed]
+    };
+    const persistenceBudget = enrichment && collectorPersistenceBudgetRef.current
+      ? advanceCollectorPersistenceBudget(
+        collectorPersistenceBudgetRef.current,
+        merged.persistenceDelta,
+        nextState.collapsedPackageIds
+      )
+      : createCollectorPersistenceBudget(nextState);
+    if (!persistenceBudget.ok) {
+      setCollectorError(persistenceBudget.message);
+      if (!enrichment) showToast(persistenceBudget.message, 3200);
+      return false;
+    }
+    collectorPersistenceBudgetRef.current = persistenceBudget.nextBudget;
+    collectorPackagesRef.current = merged.packages;
+    collapsedCollectorPackageIdsRef.current = nextCollapsed;
+    setCollectorPackages(merged.packages);
+    setCollapsedCollectorPackageIds(nextCollapsed);
+    return true;
+  };
+
+  const reconcileCollectorDependentState = (packages: CollectorPackage[]): void => {
+    setSelectedCollectorLinkIds((current) => reconcileCollectorSelectionWithPackages(current, packages));
+    const nextCollapsed = reconcileCollectorCollapsedPackageIdsWithPackages(collapsedCollectorPackageIdsRef.current, packages);
+    collapsedCollectorPackageIdsRef.current = nextCollapsed;
+    setCollapsedCollectorPackageIds(nextCollapsed);
+    pruneCollectorEnrichmentGenerations(
+      collectorEnrichmentGenerationsRef.current,
+      packages,
+      collectorEnrichmentRequestsRef.current.values()
+    );
+    const budget = createCollectorPersistenceBudget({
+      packages,
+      collapsedPackageIds: [...nextCollapsed]
+    });
+    collectorPersistenceBudgetRef.current = budget.ok ? budget.nextBudget : null;
+  };
+
+  const applyCollectorCollapsedPackageIds = (next: Set<string>): boolean => {
+    const state = {
+      packages: collectorPackagesRef.current,
+      collapsedPackageIds: [...next]
+    };
+    const budget = collectorPersistenceBudgetRef.current
+      ? advanceCollectorPersistenceBudget(
+        collectorPersistenceBudgetRef.current,
+        {
+          links: [],
+          packages: [],
+          removedPackageIds: [],
+          packageCount: collectorPersistenceBudgetRef.current.packageCount
+        },
+        state.collapsedPackageIds
+      )
+      : createCollectorPersistenceBudget(state);
+    if (!budget.ok) {
+      setCollectorError(budget.message);
+      return false;
+    }
+    collectorPersistenceBudgetRef.current = budget.nextBudget;
+    collapsedCollectorPackageIdsRef.current = next;
+    setCollapsedCollectorPackageIds(next);
+    return true;
+  };
+
+  const enrichCollectorResult = (packages: CollectorPackage[]): void => {
+    if (packages.length === 0) {
+      return;
+    }
+    const generations = beginCollectorEnrichment(packages, collectorEnrichmentGenerationsRef.current);
+    const requestId = `collector-${Date.now().toString(36)}-${crypto.randomUUID()}`;
+    collectorEnrichmentRequestsRef.current.set(requestId, generations);
+    setCollectorAnalyzingCount((current) => current + 1);
+    void window.rd.enrichCollectorPackages({ requestId, packages }).then((result) => {
+      mergeCollectorResult({
+        ...result,
+        packages: filterCurrentCollectorEnrichment(
+          result.packages,
+          generations,
+          collectorEnrichmentGenerationsRef.current
+        )
+      }, true);
+    }).catch((error) => {
+      if (filterCurrentCollectorEnrichment(packages, generations, collectorEnrichmentGenerationsRef.current).length > 0) {
+        setCollectorError(`Metadatenprüfung fehlgeschlagen: ${String(error)}`);
       }
-    }, (error) => {
-      setCollectorError(`Fehler beim Hinzufügen: ${String(error)}`);
-      showToast(`Fehler beim Hinzufügen: ${String(error)}`, 2600);
+    }).finally(() => {
+      collectorEnrichmentRequestsRef.current.delete(requestId);
+      pruneCollectorEnrichmentGenerations(
+        collectorEnrichmentGenerationsRef.current,
+        collectorPackagesRef.current,
+        collectorEnrichmentRequestsRef.current.values()
+      );
+      setCollectorAnalyzingCount((current) => Math.max(0, current - 1));
     });
   };
 
-  const onImportDlc = async (): Promise<void> => {
+  useEffect(() => window.rd.onCollectorEnrichmentProgress((progress: CollectorEnrichmentProgress) => {
+    const generations = collectorEnrichmentRequestsRef.current.get(progress.requestId);
+    if (!generations) return;
+    mergeCollectorResult({
+      ...progress.result,
+      packages: filterCurrentCollectorEnrichment(
+        progress.result.packages,
+        generations,
+        collectorEnrichmentGenerationsRef.current
+      )
+    }, true);
+  }), []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const coordinator = createCollectorPersistenceCoordinator(
+      (state) => window.rd.saveCollectorState(state),
+      300,
+      (failure) => {
+        if (cancelled) return;
+        setCollectorError(`Linksammler konnte nicht gespeichert werden: ${String(failure.error)}`);
+        if (!failure.rollbackState) return;
+        collectorPackagesRef.current = failure.rollbackState.packages;
+        collapsedCollectorPackageIdsRef.current = new Set(failure.rollbackState.collapsedPackageIds);
+        setCollectorPackages(failure.rollbackState.packages);
+        setCollapsedCollectorPackageIds(new Set(failure.rollbackState.collapsedPackageIds));
+        setSelectedCollectorLinkIds((current) => reconcileCollectorSelectionWithPackages(current, failure.rollbackState?.packages ?? []));
+        pruneCollectorEnrichmentGenerations(
+          collectorEnrichmentGenerationsRef.current,
+          failure.rollbackState.packages,
+          collectorEnrichmentRequestsRef.current.values()
+        );
+        const rollbackBudget = createCollectorPersistenceBudget(failure.rollbackState);
+        collectorPersistenceBudgetRef.current = rollbackBudget.ok ? rollbackBudget.nextBudget : null;
+      }
+    );
+    collectorPersistenceCoordinatorRef.current = coordinator;
+    const saveBeforeUnload = (event: BeforeUnloadEvent): void => {
+      const saved = guardCollectorBeforeUnload(event, {
+        hydrated: collectorPersistenceHydratedRef.current,
+        currentState: {
+          packages: collectorPackagesRef.current,
+          collapsedPackageIds: [...collapsedCollectorPackageIdsRef.current]
+        },
+        getPersistedStateSync: window.rd.getCollectorStateSync,
+        saveStateSync: window.rd.saveCollectorStateSync
+      });
+      if (!saved) setCollectorError("Linksammler konnte nicht gespeichert werden: Speichern fehlgeschlagen");
+    };
+    window.addEventListener("beforeunload", saveBeforeUnload);
+    void window.rd.getCollectorState().then((persisted) => {
+      if (cancelled) return;
+      const hydration = resolveCollectorLateHydration(persisted, {
+        packages: collectorPackagesRef.current,
+        collapsedPackageIds: [...collapsedCollectorPackageIdsRef.current]
+      });
+      const restored = hydration.ok ? hydration.state : hydration.rollbackState;
+      collectorPackagesRef.current = restored.packages;
+      collapsedCollectorPackageIdsRef.current = new Set(restored.collapsedPackageIds);
+      setCollectorPackages(restored.packages);
+      setCollapsedCollectorPackageIds(new Set(restored.collapsedPackageIds));
+      setSelectedCollectorLinkIds((current) => reconcileCollectorSelectionWithPackages(current, restored.packages));
+      pruneCollectorEnrichmentGenerations(
+        collectorEnrichmentGenerationsRef.current,
+        restored.packages,
+        collectorEnrichmentRequestsRef.current.values()
+      );
+      const restoredBudget = createCollectorPersistenceBudget(restored);
+      collectorPersistenceBudgetRef.current = restoredBudget.ok ? restoredBudget.nextBudget : null;
+      collectorPersistenceHydratedRef.current = true;
+      coordinator.setBaseline(persisted);
+      if (!hydration.ok) {
+        setCollectorError(hydration.message);
+        if (restored.packages.length > 0) enrichCollectorResult(restored.packages);
+        return;
+      }
+      coordinator.schedule(restored);
+      if (restored.packages.length > 0) enrichCollectorResult(restored.packages);
+    }).catch((error) => {
+      if (cancelled) return;
+      setCollectorError(`Linksammler konnte nicht wiederhergestellt werden: ${String(error)}`);
+    });
+    return () => {
+      cancelled = true;
+      window.removeEventListener("beforeunload", saveBeforeUnload);
+      if (!collectorPersistenceHydratedRef.current) {
+        coordinator.dispose();
+        return;
+      }
+      coordinator.schedule({
+        packages: collectorPackagesRef.current,
+        collapsedPackageIds: [...collapsedCollectorPackageIdsRef.current]
+      });
+      void coordinator.flush().finally(() => coordinator.dispose());
+    };
+  }, []);
+
+  useEffect(() => {
+    collapsedCollectorPackageIdsRef.current = collapsedCollectorPackageIds;
+    if (!collectorPersistenceHydratedRef.current) return;
+    collectorPersistenceCoordinatorRef.current?.schedule({
+      packages: collectorPackages,
+      collapsedPackageIds: [...collapsedCollectorPackageIds]
+    });
+  }, [collapsedCollectorPackageIds, collectorPackages]);
+
+  const importCollectorText = async (rawText: string, source: CollectorImportSource = "manual"): Promise<void> => {
+    if (!rawText.trim()) {
+      showToast("Keine Links eingegeben", 2200);
+      return;
+    }
     setCollectorError("");
+    setCollectorAnalyzingCount((current) => current + 1);
+    try {
+      const prepared = await window.rd.prepareCollectorText({ rawText, addedAt: Date.now() });
+      if (prepared.packages.length === 0) {
+        const message = "Keine gültigen Links gefunden";
+        setCollectorError(message);
+        showToast(message, 2600);
+        return;
+      }
+      if (!mergeCollectorResult(prepared)) return;
+      if (shouldFocusCollectorImport(source, snapshotRef.current.settings.switchToCollectorOnClipboard)) {
+        setCollectorFilter("all");
+        setTab("collector");
+      }
+      const linkCount = prepared.packages.reduce((sum, pkg) => sum + pkg.links.length, 0);
+      showToast(`${prepared.packages.length} Paket(e), ${linkCount} Link(s) gesammelt`);
+      enrichCollectorResult(prepared.packages);
+    } catch (error) {
+      const message = `Links konnten nicht vorbereitet werden: ${String(error)}`;
+      setCollectorError(message);
+      showToast(message, 2800);
+    } finally {
+      setCollectorAnalyzingCount((current) => Math.max(0, current - 1));
+    }
+  };
+
+  importCollectorTextRef.current = importCollectorText;
+
+  const importCollectorContainers = async (filePaths: string[]): Promise<CollectorInspectionResult | null> => {
+    if (filePaths.length === 0) {
+      return null;
+    }
+    setCollectorError("");
+    setCollectorAnalyzingCount((current) => current + 1);
+    try {
+      const prepared = await window.rd.prepareCollectorContainers(filePaths, Date.now());
+      if (prepared.packages.length === 0) {
+        const message = "Keine gültigen Links in den DLC-Dateien gefunden";
+        setCollectorError(message);
+        showToast(message, 3000);
+        return prepared;
+      }
+      if (!mergeCollectorResult(prepared)) return prepared;
+      setCollectorFilter("all");
+      setTab("collector");
+      const linkCount = prepared.packages.reduce((sum, pkg) => sum + pkg.links.length, 0);
+      showToast(`DLC gesammelt: ${prepared.packages.length} Paket(e), ${linkCount} Link(s)`);
+      enrichCollectorResult(prepared.packages);
+      return prepared;
+    } catch (error) {
+      const message = `Fehler beim DLC-Import: ${String(error)}`;
+      setCollectorError(message);
+      showToast(message, 2800);
+      return null;
+    } finally {
+      setCollectorAnalyzingCount((current) => Math.max(0, current - 1));
+    }
+  };
+
+  const onImportDlc = async (): Promise<void> => {
+    const files = await window.rd.pickContainers();
+    if (files.length > 0) {
+      await importCollectorContainers(files);
+    }
+  };
+
+  const submitCollectorPackages = async (packages: CollectorPackage[]): Promise<void> => {
+    const transferable = packages.flatMap((pkg) => {
+      const links = pkg.links.filter((link) => link.availability !== "offline");
+      return links.length > 0 ? [{ ...pkg, links }] : [];
+    });
+    const linkIds = new Set(transferable.flatMap((pkg) => pkg.links.map((link) => link.id)));
+    if (linkIds.size === 0) {
+      showToast("Keine übertragbaren Links ausgewählt", 2400);
+      return;
+    }
     await performQuickAction(async () => {
-      const files = await window.rd.pickContainers();
-      if (files.length === 0) { return; }
-      await persistDraftSettings();
       const existingIds = new Set(Object.keys(snapshotRef.current.session.packages));
-      const result = await window.rd.addContainers(files);
-      if (result.addedLinks > 0) {
-        showToast(`DLC importiert: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
-        if (snapshotRef.current.settings.collapseNewPackages) { await collapseNewPackages(existingIds); }
-      } else {
-        setCollectorError("Keine gültigen Links in den DLC-Dateien gefunden");
-        showToast("Keine gültigen Links in den DLC-Dateien gefunden", 3000);
+      const result = await window.rd.addLinks({ rawText: serializeCollectorPackages(transferable), packageName: "" });
+      if (result.addedLinks !== linkIds.size) {
+        showToast(`${result.addedLinks} von ${linkIds.size} Link(s) übergeben; Sammlung bleibt erhalten`, 3200);
+        return;
+      }
+      const nextCollectorPackages = removeCollectorLinks(collectorPackagesRef.current, linkIds);
+      collectorPackagesRef.current = nextCollectorPackages;
+      setCollectorPackages(nextCollectorPackages);
+      reconcileCollectorDependentState(nextCollectorPackages);
+      setTab("downloads");
+      showToast(`${result.addedPackages} Paket(e), ${result.addedLinks} Link(s) übergeben`);
+      if (snapshotRef.current.settings.collapseNewPackages) {
+        await collapseNewPackages(existingIds);
       }
     }, (error) => {
-      setCollectorError(`Fehler beim DLC-Import: ${String(error)}`);
-      showToast(`Fehler beim DLC-Import: ${String(error)}`, 2600);
+      const message = `Übergabe fehlgeschlagen: ${String(error)}`;
+      setCollectorError(message);
+      showToast(message, 2800);
     });
   };
 
@@ -3474,56 +4184,38 @@ export function App(): ReactElement {
     const hasUri = event.dataTransfer.types.includes("text/uri-list");
     if (!hasFiles && !hasUri) { return; }
     const files = Array.from(event.dataTransfer.files ?? []) as File[];
-    const dlc = files.filter((f) => f.name.toLowerCase().endsWith(".dlc")).map((f) => (f as unknown as { path?: string }).path).filter((v): v is string => !!v);
+    const hasDlc = files.some((file) => file.name.toLowerCase().endsWith(".dlc"));
     const importFiles = files.filter((f) => /\.(json|txt)$/i.test(f.name));
     const droppedText = event.dataTransfer.getData("text/plain") || event.dataTransfer.getData("text/uri-list") || "";
-    if (dlc.length > 0) {
-      setCollectorError("");
-      await performQuickAction(async () => {
-        await persistDraftSettings();
+    if (hasDlc) {
+      try {
+        const mode = tabRef.current === "collector" ? "collector" : "downloads";
         const existingIds = new Set(Object.keys(snapshotRef.current.session.packages));
-        const result = await window.rd.addContainers(dlc);
-        if (result.addedLinks > 0) {
-          showToast(`Drag-and-Drop: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
+        const routed = await routeDroppedDlcFiles(files, mode, window.rd.getPathForDroppedFile, {
+          addContainers: window.rd.addContainers,
+          inspectContainers: (filePaths) => importCollectorContainers(filePaths)
+        });
+        if (routed.kind === "empty") {
+          showToast("DLC-Dateipfad konnte nicht gelesen werden", 2800);
+        } else if (routed.kind === "downloads" && routed.result.addedLinks > 0) {
+          setTab("downloads");
+          showToast(`Drag-and-Drop: ${routed.result.addedPackages} Paket(e), ${routed.result.addedLinks} Link(s)`);
           if (snapshotRef.current.settings.collapseNewPackages) { await collapseNewPackages(existingIds); }
-        } else {
-          setCollectorError("Keine gültigen Links in den DLC-Dateien gefunden");
+        } else if (routed.kind === "downloads") {
           showToast("Keine gültigen Links in den DLC-Dateien gefunden", 3000);
         }
-      }, (error) => {
-        setCollectorError(`Fehler bei Drag-and-Drop: ${String(error)}`);
+      } catch (error) {
         showToast(`Fehler bei Drag-and-Drop: ${String(error)}`, 2600);
-      });
+      }
     } else if (importFiles.length > 0) {
-      setCollectorError("");
-      await performQuickAction(async () => {
-        await persistDraftSettings();
-        const existingIds = new Set(Object.keys(snapshotRef.current.session.packages));
-        let addedPackages = 0;
-        let addedLinks = 0;
-        for (const file of importFiles) {
-          const text = await file.text();
-          const result = await window.rd.importQueue(text);
-          addedPackages += result.addedPackages;
-          addedLinks += result.addedLinks;
-        }
-        if (addedLinks > 0) {
-          showToast(`Importiert: ${addedPackages} Paket(e), ${addedLinks} Link(s)`);
-          if (snapshotRef.current.settings.collapseNewPackages) { await collapseNewPackages(existingIds); }
-        } else {
-          setCollectorError("Keine gültigen Links in den Import-Dateien gefunden");
-          showToast("Keine gültigen Links in den Import-Dateien gefunden", 3000);
-        }
-      }, (error) => {
-        setCollectorError(`Fehler bei Drag-and-Drop: ${String(error)}`);
+      try {
+        const text = (await Promise.all(importFiles.map((file) => file.text()))).join("\n");
+        await importCollectorText(text);
+      } catch (error) {
         showToast(`Fehler bei Drag-and-Drop: ${String(error)}`, 2600);
-      });
+      }
     } else if (droppedText.trim()) {
-      const activeCollectorId = activeCollectorTabRef.current;
-      setCollectorTabs((prev) => prev.map((t) => t.id === activeCollectorId
-        ? { ...t, text: t.text ? `${t.text}\n${droppedText}` : droppedText } : t));
-      setTab("collector");
-      showToast("Links per Drag-and-Drop eingefügt");
+      await importCollectorText(droppedText);
     }
   };
 
@@ -3571,22 +4263,12 @@ export function App(): ReactElement {
         return;
       }
       releasePickerBusy();
-      await performQuickAction(async () => {
-        await persistDraftSettings();
-        const existingIds = new Set(Object.keys(snapshotRef.current.session.packages));
+      try {
         const text = await file.text();
-        const result = await window.rd.importQueue(text);
-        if (result.addedLinks > 0) {
-          showToast(`Importiert: ${result.addedPackages} Paket(e), ${result.addedLinks} Link(s)`);
-          if (snapshotRef.current.settings.collapseNewPackages) { await collapseNewPackages(existingIds); }
-        } else {
-          setCollectorError("Keine gültigen Links in der Datei gefunden");
-          showToast("Keine gültigen Links in der Datei gefunden", 3000);
-        }
-      }, (error) => {
-        setCollectorError(`Import fehlgeschlagen: ${String(error)}`);
+        await importCollectorText(text);
+      } catch (error) {
         showToast(`Import fehlgeschlagen: ${String(error)}`, 2600);
-      });
+      }
     };
 
     clearImportQueueFocusListener();
@@ -3663,6 +4345,22 @@ export function App(): ReactElement {
     }
   };
 
+  const commitPackageOrder = useCallback((order: string[]): void => {
+    const requestId = packageOrderStateRef.current.begin(order);
+    packageOrderRef.current = [...order];
+    setSnapshot((current) => ({ ...current, session: { ...current.session, packageOrder: [...order] } }));
+    void window.rd.reorderPackages(order).then(() => {
+      packageOrderStateRef.current.confirm(requestId);
+    }).catch((error) => {
+      const restoredOrder = packageOrderStateRef.current.reject(requestId);
+      if (!restoredOrder) return;
+      packageOrderRef.current = restoredOrder;
+      setDownloadsSortRevision((revision) => revision + 1);
+      setSnapshot((current) => ({ ...current, session: { ...current.session, packageOrder: restoredOrder } }));
+      showToast(`Sortierung fehlgeschlagen: ${String(error)}`, 2400);
+    });
+  }, [showToast]);
+
   const movePackage = useCallback((packageId: string, direction: "up" | "down") => {
     const currentOrder = packageOrderRef.current;
     const order = [...currentOrder];
@@ -3672,129 +4370,56 @@ export function App(): ReactElement {
     if (target < 0 || target >= order.length) { return; }
     [order[idx], order[target]] = [order[target], order[idx]];
     setDownloadsSortDescending(false);
-    pendingPackageOrderRef.current = [...order];
-    pendingPackageOrderAtRef.current = Date.now();
-    packageOrderRef.current = [...order];
-    setSnapshot((prev) => {
-      if (!prev) return prev;
-      return { ...prev, session: { ...prev.session, packageOrder: [...order] } };
-    });
-    void window.rd.reorderPackages(order).catch((error) => {
-      pendingPackageOrderRef.current = null;
-      pendingPackageOrderAtRef.current = 0;
-      packageOrderRef.current = serverPackageOrderRef.current;
-      setSnapshot((prev) => {
-        if (!prev) return prev;
-        return { ...prev, session: { ...prev.session, packageOrder: serverPackageOrderRef.current } };
-      });
-      showToast(`Sortierung fehlgeschlagen: ${String(error)}`, 2400);
-    });
-  }, [showToast]);
-
-  const addCollectorTab = (): void => {
-    const id = `tab-${nextCollectorId++}`;
-    setCollectorTabs((prev) => {
-      const name = `Tab ${prev.length + 1}`;
-      return [...prev, { id, name, text: "" }];
-    });
-    setActiveCollectorTab(id);
-    setSelectedCollectorRowIds(new Set());
-    setCollectorError("");
-  };
-
-  const removeCollectorTab = (id: string): void => {
-    const tab = collectorTabsRef.current.find((entry) => entry.id === id);
-    if (!tab || collectorTabsRef.current.length <= 1) {
-      return;
-    }
-    const linkCount = tab.text.split(/\r?\n/).filter((line) => line.trim().length > 0).length;
-    void askConfirmPrompt({
-      title: "Sammlung entfernen",
-      message: linkCount > 0
-        ? `Soll die Sammlung ${tab.name} mit ${linkCount} Link(s) wirklich entfernt werden?`
-        : `Soll die leere Sammlung ${tab.name} wirklich entfernt werden?`,
-      confirmLabel: "Sammlung entfernen",
-      danger: true
-    }).then((confirmed) => {
-      if (!confirmed) {
-        return;
-      }
-      const removal = planCollectorTabRemoval(
-        collectorTabsRef.current,
-        activeCollectorTabRef.current,
-        id
-      );
-      if (removal.tabs === collectorTabsRef.current) {
-        return;
-      }
-      collectorTabsRef.current = removal.tabs;
-      activeCollectorTabRef.current = removal.activeTabId;
-      setCollectorTabs(removal.tabs);
-      setActiveCollectorTab(removal.activeTabId);
-      setSelectedCollectorRowIds(new Set());
-      setCollectorError("");
-    });
-  };
+    commitPackageOrder(order);
+  }, [commitPackageOrder]);
 
   const openCollectorInput = (): void => {
-    const activeId = activeCollectorTabRef.current;
-    const active = collectorTabsRef.current.find((entry) => entry.id === activeId) ?? collectorTabsRef.current[0];
-    if (!active) {
-      return;
-    }
     setCollectorError("");
-    setCollectorInput({
-      tabId: active.id,
-      tabName: active.name,
-      baseText: active.text,
-      draft: active.text
-    });
+    setCollectorInput({ draft: "" });
   };
 
   const commitCollectorInput = (): void => {
     if (!collectorInput) {
       return;
     }
-    const input = collectorInput;
-    setCollectorTabs((prev) => {
-      const currentText = prev.find((entry) => entry.id === input.tabId)?.text ?? input.baseText;
-      const text = mergeCollectorDraftText(input.baseText, currentText, input.draft);
-      return planCollectorTextReplacement(prev, input.tabId, text).tabs;
-    });
-    setSelectedCollectorRowIds(new Set());
+    const draft = collectorInput.draft;
     setCollectorInput(null);
-    setCollectorError("");
+    void importCollectorText(draft);
   };
 
-  const toggleCollectorRowSelection = (rowId: string): void => {
-    setSelectedCollectorRowIds((prev) => {
+  const setCollectorLinkSelection = (linkId: string, selected: boolean): void => {
+    setSelectedCollectorLinkIds((prev) => {
       const next = new Set(prev);
-      if (next.has(rowId)) {
-        next.delete(rowId);
-      } else {
-        next.add(rowId);
-      }
+      if (selected) next.add(linkId);
+      else next.delete(linkId);
       return next;
     });
   };
 
-  const removeSelectedCollectorRows = (): void => {
-    if (selectedCollectorRowIds.size === 0) {
-      return;
+  const setCollectorPackageSelection = (packageId: string, selected: boolean): void => {
+    const row = collectorViewModel.packages.find((entry) => entry.id === packageId);
+    if (row) {
+      setSelectedCollectorLinkIds((current) => selectCollectorPackageLinks(current, row, selected));
     }
-    const activeId = activeCollectorTabRef.current;
-    const indexes = new Set<number>();
-    for (const rowId of selectedCollectorRowIds) {
-      const separator = rowId.lastIndexOf(":");
-      if (separator <= 0 || rowId.slice(0, separator) !== activeId) {
-        continue;
-      }
-      const index = Number(rowId.slice(separator + 1));
-      if (Number.isInteger(index) && index >= 0) {
-        indexes.add(index);
-      }
-    }
-    if (indexes.size === 0) {
+  };
+
+  const toggleCollectorPackageCollapse = (packageId: string): void => {
+    const next = new Set(collapsedCollectorPackageIdsRef.current);
+    if (next.has(packageId)) next.delete(packageId);
+    else next.add(packageId);
+    applyCollectorCollapsedPackageIds(next);
+  };
+
+  const toggleAllCollectorPackages = (): void => {
+    const packageIds = collectorPackagesRef.current.map((pkg) => pkg.id);
+    applyCollectorCollapsedPackageIds(packageIds.some((id) => !collapsedCollectorPackageIdsRef.current.has(id))
+      ? new Set(packageIds)
+      : new Set());
+  };
+
+  const removeSelectedCollectorLinks = (): void => {
+    const removedIds = new Set(collectorViewModel.selectedIds);
+    if (removedIds.size === 0) {
       return;
     }
     void askConfirmPrompt({
@@ -3806,10 +4431,10 @@ export function App(): ReactElement {
       if (!confirmed) {
         return;
       }
-      setCollectorTabs((prev) => prev.map((entry) => entry.id === activeId
-        ? { ...entry, text: entry.text.split(/\r?\n/).filter((_line, index) => !indexes.has(index)).join("\n") }
-        : entry));
-      setSelectedCollectorRowIds(new Set());
+      const nextCollectorPackages = removeCollectorLinks(collectorPackagesRef.current, removedIds);
+      collectorPackagesRef.current = nextCollectorPackages;
+      setCollectorPackages(nextCollectorPackages);
+      reconcileCollectorDependentState(nextCollectorPackages);
       setCollectorError("");
     });
   };
@@ -3837,6 +4462,7 @@ export function App(): ReactElement {
   }, [showToast]);
 
   const onPackageToggleCollapse = useCallback((packageId: string): void => {
+    setDownloadDisclosureRevision((current) => current + 1);
     setCollapsedPackages((prev) => {
       const nextCollapsed = !(prev[packageId] ?? false);
       return { ...prev, [packageId]: nextCollapsed };
@@ -3899,24 +4525,8 @@ export function App(): ReactElement {
     const unchanged = order.length === currentOrder.length && order.every((id, idx) => id === currentOrder[idx]);
     if (unchanged) return;
     setDownloadsSortDescending(false);
-    pendingPackageOrderRef.current = [...order];
-    pendingPackageOrderAtRef.current = Date.now();
-    packageOrderRef.current = [...order];
-    setSnapshot((prev) => {
-      if (!prev) return prev;
-      return { ...prev, session: { ...prev.session, packageOrder: [...order] } };
-    });
-    void window.rd.reorderPackages(order).catch((error) => {
-      pendingPackageOrderRef.current = null;
-      pendingPackageOrderAtRef.current = 0;
-      packageOrderRef.current = serverPackageOrderRef.current;
-      setSnapshot((prev) => {
-        if (!prev) return prev;
-        return { ...prev, session: { ...prev.session, packageOrder: serverPackageOrderRef.current } };
-      });
-      showToast(`Sortierung fehlgeschlagen: ${String(error)}`, 2400);
-    });
-  }, [selectedIds, snapshot.session.packages, showToast]);
+    commitPackageOrder(order);
+  }, [commitPackageOrder, selectedIds, snapshot.session.packages]);
 
   const onPackageToggle = useCallback((packageId: string): void => {
     let previousEnabled: boolean | null = null;
@@ -4259,6 +4869,33 @@ export function App(): ReactElement {
     setSelectedIds(new Set());
   }, []);
 
+  const requestRemoveOfflinePackages = useCallback((): void => {
+    setContextMenu(null);
+    void performQuickAction(async () => {
+      const { session, settings } = snapshotRef.current;
+      const candidates = getPackagesWithOfflineLinks(session.packageOrder, session.packages, session.items);
+      if (candidates.length === 0) return;
+      const english = normalizeLanguage(settings.language) === "en";
+      const count = candidates.length.toLocaleString(english ? "en-US" : "de-DE");
+      const packageLabel = english ? (candidates.length === 1 ? "package" : "packages") : (candidates.length === 1 ? "Paket" : "Pakete");
+      offlineRemovalScopeRef.current = "package";
+      const confirmed = await askConfirmPrompt({
+        offlineScope: "package",
+        title: english ? "Remove packages with offline links" : "Pakete mit Offline-Links entfernen",
+        message: english
+          ? `${count} ${packageLabel} with offline links in the entire queue. This applies regardless of filters or selection.`
+          : `${count} ${packageLabel} mit Offline-Links in der gesamten Queue. Das gilt unabhängig von Filtern und Auswahl.`,
+        confirmLabel: english ? "Remove" : "Entfernen",
+        cancelLabel: english ? "Cancel" : "Abbrechen",
+        danger: true
+      });
+      if (!confirmed) return;
+      const removed = await window.rd.removeOfflinePackages(candidates, offlineRemovalScopeRef.current);
+      const removedCount = removed.toLocaleString(english ? "en-US" : "de-DE");
+      showToast(english ? `Cleanup completed in ${removedCount} ${removed === 1 ? "package" : "packages"}. Downloaded files were kept.` : `Bereinigung in ${removedCount} ${removed === 1 ? "Paket" : "Paketen"} abgeschlossen. Heruntergeladene Dateien wurden behalten.`, 3200);
+    });
+  }, [askConfirmPrompt, performQuickAction, showToast]);
+
   const requestDeleteSelection = useCallback((): void => {
     if (selectedIds.size === 0) return;
     if (!settingsDraft.confirmDeleteSelection) {
@@ -4273,10 +4910,16 @@ export function App(): ReactElement {
       if (e.key === "Escape") {
         const target = e.target as HTMLElement;
         const inputType = target.tagName === "INPUT" ? (target as HTMLInputElement).type : "";
-        if (shouldClearDownloadSelectionOnEscape(target.tagName, inputType)) {
+        const selectionScope = resolveEscapeSelectionScope(tabRef.current, settingsSubTab, target.tagName, inputType);
+        if (selectionScope) {
           if (document.querySelector(".ctx-menu") || document.querySelector(".modal-backdrop")) return;
-          if (tabRef.current === "downloads") setSelectedIds(new Set());
-          else if (tabRef.current === "history") setSelectedHistoryIds(new Set());
+          if (selectionScope === "downloads") setSelectedIds(new Set());
+          else if (selectionScope === "collector") setSelectedCollectorLinkIds(new Set());
+          else if (selectionScope === "history") setSelectedHistoryIds(new Set());
+          else if (selectedAccountRowKeys.size > 0) {
+            setSelectedAccountRowKeys(new Set());
+            releaseAccountSelectionFocus(document.activeElement instanceof HTMLElement ? document.activeElement : null);
+          }
         }
       }
       if (e.key === "Delete" && tabRef.current === "downloads" && selectedIds.size > 0) {
@@ -4294,7 +4937,7 @@ export function App(): ReactElement {
     window.addEventListener("keydown", onKey);
     window.addEventListener("mousedown", onDown);
     return () => { window.removeEventListener("keydown", onKey); window.removeEventListener("mousedown", onDown); };
-  }, [selectedIds, requestDeleteSelection]);
+  }, [requestDeleteSelection, selectedAccountRowKeys, selectedIds, settingsSubTab]);
 
   const onExportBackup = async (): Promise<void> => {
     closeMenus();
@@ -4311,19 +4954,19 @@ export function App(): ReactElement {
   const onImportBackup = async (): Promise<void> => {
     closeMenus();
     await performQuickAction(async () => {
-      const result = await runLocalBackupImport(window.rd, askBackupPassphrase);
-      if (result.restored) {
-        showToast(result.message, 4000);
-        // A settings-only import applies live without a relaunch, so the editable
-        // settings form would otherwise keep showing the old values. Pull the
-        // fresh settings and re-seed the draft so the UI reflects the import.
-        if (!result.relaunch) {
-          const fresh = await window.rd.getSnapshot();
-          applyPersistedSettings(fresh.settings);
+      await runQueuedSettingsMutation(async () => {
+        const result = await runLocalBackupImport(window.rd, askBackupPassphrase);
+        if (result.restored) {
+          showToast(result.message, 4000);
+          if (!result.relaunch) {
+            const fresh = await window.rd.getSnapshot();
+            applyPersistedSettings(fresh.settings, false);
+            await loadHistoryEntries();
+          }
+        } else if (result.message !== "Abgebrochen") {
+          showToast(`Sicherung laden fehlgeschlagen: ${result.message}`, 3000);
         }
-      } else if (result.message !== "Abgebrochen") {
-        showToast(`Sicherung laden fehlgeschlagen: ${result.message}`, 3000);
-      }
+      });
     }, (error) => {
       showToast(`Sicherung laden fehlgeschlagen: ${String(error)}`, 2600);
     });
@@ -4337,7 +4980,7 @@ export function App(): ReactElement {
       setOnlineBackupDialog({ mode: "export", key: result.key, busy: false, error: "" });
       showToast("Online-Schlüssel erstellt", 2600);
     } catch {
-      setOnlineBackupDialog({ mode: "export", key: "", busy: false, error: "Online-Sicherung konnte nicht erstellt werden." });
+      setOnlineBackupDialog({ mode: "export", key: "", busy: false, error: "Online-Sicherung konnte nicht erstellt werden. Verbindung und serverseitige Schlüsselwiederherstellung prüfen." });
     }
   };
 
@@ -4351,11 +4994,14 @@ export function App(): ReactElement {
     if (!key) return;
     setOnlineBackupDialog((current) => current ? { ...current, busy: true, error: "" } : current);
     try {
-      const result = await window.rd.importOnlineBackup(key);
-      const fresh = await window.rd.getSnapshot();
-      applyPersistedSettings(fresh.settings);
-      setOnlineBackupDialog(null);
-      showToast(result.message, 4000);
+      await runQueuedSettingsMutation(async () => {
+        const result = await window.rd.importOnlineBackup(key);
+        const fresh = await window.rd.getSnapshot();
+        applyPersistedSettings(fresh.settings, false);
+        await loadHistoryEntries();
+        setOnlineBackupDialog(null);
+        showToast(result.message, 4000);
+      });
     } catch {
       setOnlineBackupDialog((current) => current ? { ...current, busy: false, error: "Online-Sicherung konnte nicht geladen werden. Schlüssel prüfen und erneut versuchen." } : current);
     }
@@ -4364,7 +5010,7 @@ export function App(): ReactElement {
   const onCopyOnlineBackupKey = async (): Promise<void> => {
     if (!onlineBackupDialog?.key) return;
     try {
-      await window.rd.writeClipboardText(onlineBackupDialog.key);
+      if (!(await window.rd.writeClipboardText(onlineBackupDialog.key))) throw new Error("clipboard_write_rejected");
       showToast("Online-Schlüssel kopiert", 2200);
     } catch {
       showToast("Schlüssel konnte nicht kopiert werden", 2600);
@@ -4373,21 +5019,14 @@ export function App(): ReactElement {
 
   const onExportSupportBundle = async (): Promise<void> => {
     closeMenus();
-    if (supportBundleExportingRef.current) {
-      showToast("Support-Bundle wird bereits erstellt …", 2600);
-      return;
-    }
-    supportBundleExportingRef.current = true;
-    try {
-      await runSupportBundleExportUi({
-        exportBundle: () => window.rd.exportSupportBundle(),
-        setBusy: setSupportBundleExporting,
-        clearMessage: clearToast,
-        showMessage: (message) => showToast(message, 2800)
-      });
-    } finally {
-      supportBundleExportingRef.current = false;
-    }
+    await performQuickAction(async () => {
+      const result = await window.rd.exportSupportBundle();
+      if (result.saved) {
+        showToast("Support-Bundle exportiert", 2600);
+      }
+    }, (error) => {
+      showToast(`Support-Bundle fehlgeschlagen: ${String(error)}`, 2800);
+    });
   };
 
   const onToggleSupportTrace = async (): Promise<void> => {
@@ -4440,115 +5079,15 @@ export function App(): ReactElement {
         detailsLabel: "Einträge anzeigen"
       });
       if (copy && entries.length > 0) {
-        await window.rd.writeClipboardText(details);
+        if (!(await window.rd.writeClipboardText(details))) throw new Error("clipboard_write_rejected");
         showToast("Fehlerliste kopiert", 2600);
       }
     } catch (error) {
-      showToast(`Fehler-Ansicht fehlgeschlagen: ${String(error)}`, 3000);
+      showToast(String(error).includes("clipboard_write_rejected") ? "Kopieren fehlgeschlagen" : `Fehler-Ansicht fehlgeschlagen: ${String(error)}`, 3000);
     }
   };
 
-  const onRotateDebugToken = async (): Promise<void> => {
-    closeMenus();
-    const confirmed = await askConfirmPrompt({
-      title: "Debug-Token rotieren",
-      message: "Das aktuelle Debug-Token wird ersetzt. Externe Debug-Links mit altem Token funktionieren danach nicht mehr.",
-      confirmLabel: "Token rotieren",
-      danger: true
-    });
-    if (!confirmed) {
-      return;
-    }
-    await performQuickAction(async () => {
-      const result = await window.rd.rotateDebugToken();
-      showToast(`Debug-Token rotiert: ${result.path}`, 4200);
-    }, (error) => {
-      showToast(`Token-Rotation fehlgeschlagen: ${String(error)}`, 3000);
-    });
-  };
 
-  const applyRemoteDiagInfo = (info: RemoteDiagnosticsInfo): void => {
-    setRemoteDiag(info);
-    setRdHostMode(info.status.localOnly ? "local" : "network");
-    setRdPublicHost(info.publicHost || (info.status.localOnly ? "" : (info.suggestedHosts[0] || "")));
-    setRdPort(String(info.status.port || 9868));
-    setRdAllowlist(info.allowlist.join("\n"));
-    setRdName(info.name || "");
-  };
-
-  const onOpenRemoteDiagnostics = async (): Promise<void> => {
-    closeMenus();
-    try {
-      const info = await window.rd.getRemoteDiagnostics();
-      applyRemoteDiagInfo(info);
-      setRemoteDiagOpen(true);
-    } catch (error) {
-      showToast(`Ferndiagnose-Status fehlgeschlagen: ${String(error)}`, 3000);
-    }
-  };
-
-  const onSubmitRemoteDiagnostics = async (): Promise<void> => {
-    const port = Number(rdPort) || 9868;
-    const allowlist = rdAllowlist.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
-    if (rdHostMode === "network" && allowlist.length === 0) {
-      showToast("Netzwerkmodus braucht mindestens eine IP oder CIDR in der Allowlist", 3600);
-      return;
-    }
-    setRemoteDiagBusy(true);
-    try {
-      const info = await window.rd.enableRemoteDiagnostics({
-        hostMode: rdHostMode,
-        publicHost: rdPublicHost,
-        port,
-        allowlist,
-        name: rdName
-      });
-      applyRemoteDiagInfo(info);
-      showToast(info.status.running ? "Ferndiagnose aktiv" : "Ferndiagnose konfiguriert", 2600);
-    } catch (error) {
-      showToast(`Aktivieren fehlgeschlagen: ${String(error)}`, 3600);
-    } finally {
-      setRemoteDiagBusy(false);
-    }
-  };
-
-  const onDisableRemoteDiagnostics = async (): Promise<void> => {
-    setRemoteDiagBusy(true);
-    try {
-      const info = await window.rd.disableRemoteDiagnostics();
-      applyRemoteDiagInfo(info);
-      showToast("Ferndiagnose deaktiviert", 2400);
-    } catch (error) {
-      showToast(`Deaktivieren fehlgeschlagen: ${String(error)}`, 3000);
-    } finally {
-      setRemoteDiagBusy(false);
-    }
-  };
-
-  const onRotateRemoteDiagnosticsToken = async (): Promise<void> => {
-    setRemoteDiagBusy(true);
-    try {
-      const info = await window.rd.rotateRemoteDiagnosticsToken();
-      applyRemoteDiagInfo(info);
-      showToast("Neues Token - alter Verbindungscode ist ungueltig", 3000);
-    } catch (error) {
-      showToast(`Token-Rotation fehlgeschlagen: ${String(error)}`, 3000);
-    } finally {
-      setRemoteDiagBusy(false);
-    }
-  };
-
-  const onCopyRemoteDiagnosticsCode = async (): Promise<void> => {
-    if (!remoteDiag?.code) {
-      return;
-    }
-    try {
-      await window.rd.writeClipboardText(remoteDiag.code);
-      showToast("Verbindungscode kopiert", 2200);
-    } catch {
-      showToast("Kopieren fehlgeschlagen", 2200);
-    }
-  };
 
   const onMenuRestart = (): void => {
     closeMenus();
@@ -4599,16 +5138,24 @@ export function App(): ReactElement {
           return;
         }
         if (!e.shiftKey && e.key.toLowerCase() === "a") {
-          if (inInput) return;
-          if (tabRef.current === "downloads") {
-            e.preventDefault();
-            // Select exactly the VISIBLE rows (packages + their items), honouring
-            // the active search / collapse / hide-extracted filters — selecting
-            // the unfiltered package map would let a later delete hit hidden ones.
+          const inputType = target.tagName === "INPUT" ? (target as HTMLInputElement).type : "";
+          const selectionScope = resolveSelectAllSelectionScope(
+            tabRef.current,
+            settingsSubTabRef.current,
+            accountManagementTabRef.current,
+            target.tagName,
+            inputType
+          );
+          if (!selectionScope) return;
+          e.preventDefault();
+          if (selectionScope === "downloads") {
             setSelectedIds(new Set(visibleOrderIdsRef.current));
-          } else if (tabRef.current === "history") {
-            e.preventDefault();
-            setSelectedHistoryIds(selectVisibleHistoryIds(historyVisibleIdsRef.current));
+          } else if (selectionScope === "collector") {
+            setSelectedCollectorLinkIds((current) => setCollectorVisibleSelection(current, collectorVisibleIdsRef.current, true));
+          } else if (selectionScope === "history") {
+            setSelectedHistoryIds((current) => selectHistoryPageFromShortcut(current, historyVisibleIdsRef.current));
+          } else {
+            setSelectedAccountRowKeys(new Set(visibleAccountRowKeysRef.current));
           }
           return;
         }
@@ -4639,45 +5186,40 @@ export function App(): ReactElement {
     return map;
   }, [snapshot.packageSpeedBps]);
 
-  const providerStats = useMemo(() => {
-    const stats: Record<string, { total: number; completed: number; failed: number; bytes: number }> = {};
-    for (const item of Object.values(snapshot.session.items)) {
-      const hoster = extractHoster(item.url) || "unknown";
-      if (!stats[hoster]) {
-        stats[hoster] = { total: 0, completed: 0, failed: 0, bytes: 0 };
-      }
-      stats[hoster].total += 1;
-      if (item.status === "completed") stats[hoster].completed += 1;
-      if (item.status === "failed") stats[hoster].failed += 1;
-      stats[hoster].bytes += item.downloadedBytes;
-    }
-    return Object.entries(stats);
-  }, [snapshot.session.items]);
-
   const sortDownloadsByColumn = useCallback((column: DownloadSortColumn): void => {
+    const baseOrder = packageOrderRef.current.length > 0 ? packageOrderRef.current : snapshot.session.packageOrder;
+    if (column === "availability") {
+      const step = availabilitySortCycleRef.current.next(baseOrder);
+      setDownloadsSortColumn(step.descending === null ? undefined : column);
+      setDownloadsSortDescending(step.descending === false);
+      setDownloadsSortRevision((revision) => revision + 1);
+      commitPackageOrder(step.descending === null ? step.order : sortPackageOrderByAvailability(
+        step.order, snapshot.session.packages, snapshot.session.items, step.descending
+      ));
+      return;
+    }
+    availabilitySortCycleRef.current.reset();
     const nextDescending = downloadsSortColumn === column ? !downloadsSortDescending : false;
     setDownloadsSortColumn(column);
     setDownloadsSortDescending(nextDescending);
-    const baseOrder = packageOrderRef.current.length > 0 ? packageOrderRef.current : snapshot.session.packageOrder;
+    setDownloadsSortRevision((revision) => revision + 1);
     const sorted = column === "progress"
       ? sortPackageOrderByProgress(baseOrder, snapshot.session.packages, snapshot.session.items, nextDescending)
       : column === "size"
         ? sortPackageOrderBySize(baseOrder, snapshot.session.packages, snapshot.session.items, nextDescending)
         : column === "hoster"
           ? sortPackageOrderByHoster(baseOrder, snapshot.session.packages, snapshot.session.items, nextDescending)
-          : sortPackageOrderByName(baseOrder, snapshot.session.packages, nextDescending);
-    pendingPackageOrderRef.current = [...sorted];
-    pendingPackageOrderAtRef.current = Date.now();
-    packageOrderRef.current = sorted;
-    setSnapshot((current) => ({ ...current, session: { ...current.session, packageOrder: [...sorted] } }));
-    void window.rd.reorderPackages(sorted).catch((error) => {
-      pendingPackageOrderRef.current = null;
-      pendingPackageOrderAtRef.current = 0;
-      packageOrderRef.current = serverPackageOrderRef.current;
-      setSnapshot((current) => ({ ...current, session: { ...current.session, packageOrder: serverPackageOrderRef.current } }));
-      showToast(`Sortierung fehlgeschlagen: ${String(error)}`, 2400);
-    });
-  }, [downloadsSortColumn, downloadsSortDescending, showToast, snapshot.session.items, snapshot.session.packageOrder, snapshot.session.packages]);
+          : column === "service"
+            ? sortPackageOrderByService(
+              baseOrder,
+              snapshot.session.packages,
+              snapshot.session.items,
+              nextDescending,
+              Object.fromEntries(downloadsViewCore.packageRows.map((row) => [row.package.id, row.items]))
+            )
+            : sortPackageOrderByName(baseOrder, snapshot.session.packages, nextDescending);
+    commitPackageOrder(sorted);
+  }, [commitPackageOrder, downloadsSortColumn, downloadsSortDescending, downloadsViewCore.packageRows, snapshot.session.items, snapshot.session.packageOrder, snapshot.session.packages]);
 
   const clearDownloadQueue = useCallback((): void => {
     void performQuickAction(async () => {
@@ -4714,16 +5256,47 @@ export function App(): ReactElement {
       });
   }, [setClipboardWatcherActive, showToast]);
 
+  const applyDailyScheduleSettings = useCallback((settings: RendererSettings): void => {
+    const apply = (current: UiSnapshot): UiSnapshot => ({ ...current, settings });
+    const next = apply(snapshotRef.current);
+    snapshotRef.current = next;
+    masterSnapshotRef.current = masterSnapshotRef.current ? apply(masterSnapshotRef.current) : next;
+    if (latestStateRef.current) {
+      latestStateRef.current = apply(latestStateRef.current);
+    }
+    setSnapshot(next);
+  }, []);
+
+  const applyAuthoritativeDailyScheduleSnapshot = useCallback((state: UiSnapshot): void => {
+    masterSnapshotRef.current = state;
+    persistedSettingsRef.current = state.settings;
+    latestStateRef.current = null;
+    snapshotRef.current = state;
+    setSnapshot(state);
+  }, []);
+
+  const persistDownloadSchedule = useCallback((update: RendererSettingsUpdate, operation: "activate" | "cancel"): Promise<boolean> => (
+    persistDailyScheduleSettingsUpdate(update, operation, {
+      updateSettings: (value) => window.rd.updateSettings(value),
+      getSnapshot: () => window.rd.getSnapshot(),
+      applySettings: applyDailyScheduleSettings,
+      applySnapshot: applyAuthoritativeDailyScheduleSnapshot,
+      showError: (message) => showToast(message, 3200)
+    })
+  ), [applyAuthoritativeDailyScheduleSnapshot, applyDailyScheduleSettings, showToast]);
+
   const activateDownloadSchedule = useCallback((): void => {
-    if (!scheduleTimeInput) return;
-    const [hours, minutes] = scheduleTimeInput.split(":").map(Number);
-    const now = new Date();
-    const target = new Date(now);
-    target.setHours(hours, minutes, 0, 0);
-    if (target.getTime() <= now.getTime()) target.setDate(target.getDate() + 1);
-    void window.rd.updateSettings({ scheduledStartEpochMs: target.getTime() }).catch(() => {});
-    setSchedulePickerOpen(false);
-  }, [scheduleTimeInput]);
+    void activateDailyScheduleSettings(
+      scheduleTimeInput,
+      scheduleStartDay,
+      (update) => persistDownloadSchedule(update, "activate"),
+      (message) => showToast(message, 2800)
+    ).then((persisted) => {
+      if (persisted) {
+        setSchedulePickerOpen(false);
+      }
+    });
+  }, [persistDownloadSchedule, scheduleStartDay, scheduleTimeInput, showToast]);
 
   const removeActionableDownloads = useCallback((): void => {
     const ids = new Set(downloadsViewCore.actionableSelectedIds);
@@ -4741,22 +5314,35 @@ export function App(): ReactElement {
     if (!snapshot.session.running || snapshot.session.paused) return;
     speedHistoryRef.current = appendBandwidthSample(speedHistoryRef.current, liveDownloadSpeedBps);
   }, [liveDownloadSpeedBps, snapshot.packageSpeedBps, snapshot.session.paused, snapshot.session.running]);
-  const downloadQueueTotalBytes = useMemo(() => getDownloadQueueTotalBytes(Object.values(snapshot.session.items)), [snapshot.session.items]);
+  const downloadQueueMetrics = useMemo(() => getDownloadQueueStatusMetrics(downloadsViewCore.eligibleItems), [downloadsViewCore.eligibleItems]);
+  const downloadQueueTotal = downloadQueueMetrics.total;
+  const downloadRemaining = downloadQueueMetrics.remaining;
+  const downloadRunRemaining = useMemo(() => ({
+    bytes: snapshot.runRemainingBytes ?? 0,
+    unknownItems: snapshot.runRemainingUnknownItems ?? 0
+  }), [snapshot.runRemainingBytes, snapshot.runRemainingUnknownItems]);
   const downloadsViewModel = useMemo<DownloadsViewModel>(() => ({
     ...downloadsViewCore,
+    query: downloadSearch,
     running: snapshot.session.running,
     paused: snapshot.session.paused,
     canStart: snapshot.canStart,
     canPause: snapshot.canPause,
     canStop: snapshot.canStop,
-    actionBusy: actionBusy || resetBusy,
+    actionBusy,
     reconnectSeconds: snapshot.reconnectSeconds,
     reconnectReason: snapshot.session.reconnectReason,
     clipboardWatcher: snapshot.clipboardActive,
-    scheduleActive: snapshot.settings.scheduledStartEpochMs > 0,
+    scheduleActive: snapshot.settings.dailyStartEnabled || snapshot.settings.scheduledStartEpochMs > 0,
     scheduleOpen: schedulePickerOpen,
     scheduleTime: scheduleTimeInput,
-    scheduleLabel: scheduleCountdown || (snapshot.settings.scheduledStartEpochMs > 0 ? new Date(snapshot.settings.scheduledStartEpochMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""),
+    scheduleTimeValid: buildDailyScheduleSettingsUpdate(scheduleTimeInput, scheduleStartDay) !== null,
+    scheduleStartDay,
+    scheduleLabel: scheduleCountdown || (snapshot.settings.dailyStartEnabled
+      ? formatDailyScheduleTime(snapshot.settings.dailyStartMinuteOfDay)
+      : snapshot.settings.scheduledStartEpochMs > 0
+        ? new Date(snapshot.settings.scheduledStartEpochMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+        : ""),
     packageSpeedBps: downloadPackageSpeeds,
     editingPackageId,
     editingName,
@@ -4764,20 +5350,43 @@ export function App(): ReactElement {
     gridTemplate,
     sortColumn: downloadsSortColumn,
     sortDirection: downloadsSortDescending ? "desc" : "asc",
+    packageOrderSortRevision: downloadsSortRevision,
+    queueItems: snapshot.session.items,
+    disclosureRevision: downloadDisclosureRevision,
+    animationsEnabled: snapshot.settings.animatePackageDisclosure,
     status: {
-      packages: snapshot.stats.totalPackages,
-      links: getPendingDownloadItemCount(Object.values(snapshot.session.items)),
+      packages: downloadQueueMetrics.packageCount,
+      links: downloadQueueMetrics.pendingItemCount,
       session: humanSize(snapshot.stats.totalDownloaded),
       sessionBytes: snapshot.stats.totalDownloaded,
-      total: humanSize(downloadQueueTotalBytes),
-      totalBytes: downloadQueueTotalBytes,
-      hosters: providerStats.length,
+      total: formatRemainingDownloadBytes(downloadQueueTotal, normalizeLanguage(settingsDraft.language)),
+      totalBytes: downloadQueueTotal.bytes,
+      remaining: formatRemainingDownloadBytes(downloadRemaining, normalizeLanguage(settingsDraft.language)),
+      remainingBytes: downloadRemaining.bytes,
+      remainingTooltip: formatRemainingDownloadTooltip(downloadRemaining),
+      hosters: downloadQueueMetrics.hosterCount,
       speed: liveDownloadSpeedBps > 0 ? formatSpeedMbps(liveDownloadSpeedBps) : "0 B/s",
-      eta: snapshot.etaText
+      eta: `ETA: ${formatDownloadEta(downloadRunRemaining, liveDownloadSpeedBps, snapshot.session.running, snapshot.session.paused)}`
     }
-  }), [actionBusy, columnOrder, downloadPackageSpeeds, downloadQueueTotalBytes, downloadsSortColumn, downloadsSortDescending, downloadsViewCore, editingName, editingPackageId, gridTemplate, liveDownloadSpeedBps, providerStats.length, resetBusy, scheduleCountdown, schedulePickerOpen, scheduleTimeInput, snapshot.canPause, snapshot.canStart, snapshot.canStop, snapshot.clipboardActive, snapshot.etaText, snapshot.reconnectSeconds, snapshot.session.items, snapshot.session.paused, snapshot.session.reconnectReason, snapshot.session.running, snapshot.settings.scheduledStartEpochMs, snapshot.stats.totalDownloaded, snapshot.stats.totalPackages]);
+  }), [actionBusy, columnOrder, downloadDisclosureRevision, downloadPackageSpeeds, downloadQueueMetrics.hosterCount, downloadQueueMetrics.packageCount, downloadQueueMetrics.pendingItemCount, downloadQueueTotal, downloadRemaining, downloadRunRemaining, downloadSearch, downloadsSortColumn, downloadsSortDescending, downloadsViewCore, editingName, editingPackageId, gridTemplate, liveDownloadSpeedBps, scheduleCountdown, schedulePickerOpen, scheduleStartDay, scheduleTimeInput, snapshot.canPause, snapshot.canStart, snapshot.canStop, snapshot.clipboardActive, snapshot.reconnectSeconds, snapshot.session.paused, snapshot.session.reconnectReason, snapshot.session.running, snapshot.settings.animatePackageDisclosure, snapshot.settings.dailyStartEnabled, snapshot.settings.dailyStartMinuteOfDay, snapshot.settings.scheduledStartEpochMs, snapshot.stats.totalDownloaded]);
+
+  const resetColumnLayout = useCallback((): void => {
+    if (columnDragSettleTimerRef.current !== null) {
+      window.clearTimeout(columnDragSettleTimerRef.current);
+      columnDragSettleTimerRef.current = null;
+    }
+    cancelColumnDragAnimations();
+    if (columnDragSessionRef.current) {
+      clearDownloadColumnDrag(columnDragSessionRef.current);
+      columnDragSessionRef.current = null;
+    }
+    setColumnOrder(DEFAULT_COLUMN_ORDER);
+    persistColumnOrder(DEFAULT_COLUMN_ORDER);
+    showToast("Spaltenlayout zurückgesetzt", 1800);
+  }, [cancelColumnDragAnimations, persistColumnOrder, showToast]);
 
   const downloadsActions: DownloadsViewActions = {
+    onResetColumnLayout: resetColumnLayout,
     onDisplayModeChange: setDownloadDisplayMode,
     onFilterChange: setDownloadFilter,
     onProviderFilterChange: setDownloadProviderFilter,
@@ -4787,54 +5396,42 @@ export function App(): ReactElement {
       openCollectorInput();
     },
     onStartDownloads: () => {
+      const onBlocked = (): void => showToast("Downloads können derzeit nicht gestartet werden", 2400);
+      const onError = (error: unknown): void => showToast(`Start fehlgeschlagen: ${String(error)}`, 2800);
       if (snapshot.session.paused) {
-        void (async () => {
-          try {
-            await window.rd.togglePause();
-          } catch (error) {
-            showToast(`Fortsetzen fehlgeschlagen: ${String(error)}`, 3200);
-          } finally {
-            try {
-              await reconcileAuthoritativeSnapshot();
-            } catch {
-            }
-          }
-        })();
-      } else {
-        void onStartDownloads();
+        void runResumeDownloadAction(
+          performQuickAction,
+          snapshot.canStart,
+          () => window.rd.togglePause(),
+          (paused) => setSnapshot((current) => ({ ...current, session: { ...current.session, paused } })),
+          onBlocked,
+          onError
+        );
+        return;
       }
+      void runDownloadStartAction(snapshot.canStart, onStartDownloads, onBlocked, onError);
     },
     onPauseDownloads: () => {
-      setSnapshot((current) => ({ ...current, session: { ...current.session, paused: true } }));
-      void window.rd.togglePause().then(async () => {
-        await reconcileAuthoritativeSnapshot();
-      }).catch(async (error) => {
-        try {
-          await reconcileAuthoritativeSnapshot();
-        } catch {
-        }
-        showToast(`Pause fehlgeschlagen: ${String(error)}`, 3200);
-      });
+      void runPauseDownloadAction(
+        performQuickAction,
+        () => window.rd.togglePause(),
+        (paused) => setSnapshot((current) => ({ ...current, session: { ...current.session, paused } })),
+        (error) => showToast(`Pause fehlgeschlagen: ${String(error)}`, 2800)
+      );
     },
-    onStopDownloads: () => {
-      setSnapshot((current) => ({ ...current, session: { ...current.session, running: false, paused: false } }));
-      void window.rd.stop().then(async () => {
-        await reconcileAuthoritativeSnapshot();
-      }).catch(async (error) => {
-        try {
-          await reconcileAuthoritativeSnapshot();
-        } catch {
-        }
-        showToast(`Stop fehlgeschlagen: ${String(error)}`, 3200);
-      });
-    },
+    onStopDownloads: () => { void performQuickAction(() => window.rd.stop()); },
     onToggleSchedule: () => {
-      setSchedulePickerOpen((current) => !current);
-      setScheduleTimeInput("");
+      if (!schedulePickerOpen) {
+        const now = new Date();
+        setScheduleTimeInput(resolveDailyScheduleInitialTime(snapshot.settings, now));
+        setScheduleStartDay("today");
+      }
+      setSchedulePickerOpen(!schedulePickerOpen);
     },
     onScheduleTimeChange: setScheduleTimeInput,
+    onScheduleStartDayChange: setScheduleStartDay,
     onActivateSchedule: activateDownloadSchedule,
-    onCancelSchedule: () => { void window.rd.updateSettings({ scheduledStartEpochMs: 0 }).catch(() => {}); },
+    onCancelSchedule: () => { void persistDownloadSchedule(buildScheduleCancellationSettingsUpdate(snapshot.settings), "cancel"); },
     onMoveSelectionUp: () => moveSelectedPackages("up", downloadsViewCore.actionableSelectedIds),
     onMoveSelectionDown: () => moveSelectedPackages("down", downloadsViewCore.actionableSelectedIds),
     onRenameSelection: () => {
@@ -4847,6 +5444,7 @@ export function App(): ReactElement {
     onClearAll: clearDownloadQueue,
     onToggleAllPackages: () => {
       const targetState = !allPackagesCollapsed;
+      setDownloadDisclosureRevision((current) => current + 1);
       setCollapsedPackages((current) => {
         const next = { ...current };
         for (const entry of packages) {
@@ -4897,8 +5495,9 @@ export function App(): ReactElement {
         window.clearTimeout(columnDragSettleTimerRef.current);
         columnDragSettleTimerRef.current = null;
       }
+      cancelColumnDragAnimations();
       if (columnDragSessionRef.current) clearDownloadColumnDrag(columnDragSessionRef.current);
-      columnDragSessionRef.current = beginDownloadColumnDrag(event.currentTarget, column, event.pointerId, event.clientX);
+      columnDragSessionRef.current = beginDownloadColumnDrag(event.currentTarget, column, event.pointerId, event.clientX, snapshot.settings.animatePackageDisclosure);
     },
     onColumnPointerMove: (_column, event) => {
       const session = columnDragSessionRef.current;
@@ -4908,33 +5507,52 @@ export function App(): ReactElement {
     onColumnPointerUp: (_column, event) => {
       const session = columnDragSessionRef.current;
       if (!session || session.pointerId !== event.pointerId) return;
-      const next = settleDownloadColumnDrag(session, false);
-      if (!next) {
+      if (!session.active) {
+        clearDownloadColumnDrag(session);
         columnDragSessionRef.current = null;
         return;
       }
+      const next = session.preview.order;
       suppressColumnSortRef.current = true;
       window.setTimeout(() => { suppressColumnSortRef.current = false; }, 0);
       const changed = next.join("|") !== session.measurements.map((measurement) => measurement.id).join("|");
+      const animationsEnabled = snapshot.settings.animatePackageDisclosure;
+      columnDragAnimationsRef.current = commitDownloadColumnDrag(session, next, (order) => {
+        if (changed) flushSync(() => setColumnOrder(order));
+      }, () => {}, animationsEnabled);
+      if (changed) persistColumnOrder(next);
+      if (!animationsEnabled) {
+        if (columnDragSessionRef.current === session) columnDragSessionRef.current = null;
+        return;
+      }
       columnDragSettleTimerRef.current = window.setTimeout(() => {
-        if (changed) {
-          flushSync(() => setColumnOrder(next));
-          void window.rd.updateSettings({ columnOrder: next }).catch(() => {});
-        }
-        clearDownloadColumnDrag(session);
+        cancelColumnDragAnimations();
+        session.root.classList.remove("is-column-drag-settling");
         if (columnDragSessionRef.current === session) columnDragSessionRef.current = null;
         columnDragSettleTimerRef.current = null;
-      }, 220);
+      }, DOWNLOAD_COLUMN_MOVE_DURATION_MS);
     },
     onColumnPointerCancel: (_column, event) => {
       const session = columnDragSessionRef.current;
       if (!session || session.pointerId !== event.pointerId) return;
-      settleDownloadColumnDrag(session, true);
-      columnDragSettleTimerRef.current = window.setTimeout(() => {
+      if (!session.active) {
         clearDownloadColumnDrag(session);
+        columnDragSessionRef.current = null;
+        return;
+      }
+      const originalOrder = session.measurements.map((measurement) => measurement.id);
+      const animationsEnabled = snapshot.settings.animatePackageDisclosure;
+      columnDragAnimationsRef.current = commitDownloadColumnDrag(session, originalOrder, () => {}, () => {}, animationsEnabled);
+      if (!animationsEnabled) {
+        if (columnDragSessionRef.current === session) columnDragSessionRef.current = null;
+        return;
+      }
+      columnDragSettleTimerRef.current = window.setTimeout(() => {
+        cancelColumnDragAnimations();
+        session.root.classList.remove("is-column-drag-settling");
         if (columnDragSessionRef.current === session) columnDragSessionRef.current = null;
         columnDragSettleTimerRef.current = null;
-      }, 220);
+      }, DOWNLOAD_COLUMN_MOVE_DURATION_MS);
     },
     onColumnContextMenu: (_column, x, y) => setColHeaderCtx({ x, y })
   };
@@ -4952,6 +5570,7 @@ export function App(): ReactElement {
           return;
         }
         return window.rd.resetSessionStats().then(() => {
+          speedHistoryRef.current = [];
           showToast("Session-Statistik zurückgesetzt", 1800);
         }).catch((error) => {
           showToast(`Session-Reset fehlgeschlagen: ${String(error)}`, 2400);
@@ -4977,31 +5596,34 @@ export function App(): ReactElement {
     },
     onResetErrors: () => {
       const failedIds = Object.values(snapshot.session.items)
-        .filter((item) => item.status === "failed")
+        .filter(isDownloadItemError)
         .map((item) => item.id);
       if (failedIds.length === 0) {
         return;
       }
-      void performReset(() => window.rd.resetItems(failedIds));
+      void window.rd.resetItems(failedIds).catch(() => {});
     }
   };
   const collectorActions: CollectorViewActions = {
-    onTabSelect: (tabId) => {
-      activeCollectorTabRef.current = tabId;
-      setActiveCollectorTab(tabId);
-      setSelectedCollectorRowIds(new Set());
-      setCollectorError("");
-    },
-    onTabAdd: addCollectorTab,
-    onTabRemove: removeCollectorTab,
+    onFilterChange: setCollectorFilter,
     onOpenInput: openCollectorInput,
     onImportDlc: () => { void onImportDlc(); },
     onImportFile: () => { void onImportQueue(); },
-    onExportQueue: () => { void onExportQueue(); },
-    onSubmit: () => { void onAddLinks(); },
+    onSubmitSelected: () => {
+      void submitCollectorPackages(buildCollectorTransferPackages(collectorPackagesRef.current, new Set(collectorViewModel.selectedTransferableIds)));
+    },
+    onSubmitAll: () => {
+      void submitCollectorPackages(buildCollectorTransferPackages(collectorPackagesRef.current, new Set(collectorViewModel.visibleTransferableIds)));
+    },
     onQueryChange: setCollectorQuery,
-    onSelectionChange: toggleCollectorRowSelection,
-    onRemoveSelected: removeSelectedCollectorRows
+    onLinkSelectionChange: setCollectorLinkSelection,
+    onPackageSelectionChange: setCollectorPackageSelection,
+    onSetVisibleSelection: (ids, selected) => {
+      setSelectedCollectorLinkIds((current) => setCollectorVisibleSelection(current, ids, selected));
+    },
+    onPackageCollapseChange: toggleCollectorPackageCollapse,
+    onToggleAllPackages: toggleAllCollectorPackages,
+    onRemoveSelected: removeSelectedCollectorLinks
   };
 
   const settingsFormModel = useMemo<SettingsFormViewModel>(() => buildSettingsFormViewModel({
@@ -5022,16 +5644,8 @@ export function App(): ReactElement {
     ? accountRowBindings.get(accountContextMenu.rowId) ?? null
     : null;
   const accountSources = useMemo<AccountRowSource[]>(() => accountRows.map((row) => {
-    const checkedStatus = resolveAccountStatus(snapshot.settings.debridAccountStatuses, row.accountId, row.entry.kind);
-    const state: AccountRowSource["status"]["state"] = row.disabled
-      ? "disabled"
-      : !checkedStatus
-        ? "unchecked"
-        : checkedStatus && !checkedStatus.valid
-          ? "invalid"
-          : checkedStatus && !checkedStatus.isPremium
-            ? "free"
-            : "premium";
+    const checkedStatus = row.accountId ? snapshot.settings.debridAccountStatuses?.[row.accountId] : undefined;
+    const state: AccountRowSource["status"]["state"] = resolveAccountStatusState(row.disabled, checkedStatus, runtimeNow);
     return {
       identityId: row.accountId || row.rowKey,
       service: row.entry.service,
@@ -5043,27 +5657,156 @@ export function App(): ReactElement {
         state,
         message: checkedStatus?.message || row.entry.statusLabel,
         premiumUntilMs: checkedStatus?.premiumUntilMs ?? null,
+        checkedAt: checkedStatus?.checkedAt,
+        username: checkedStatus?.username,
         email: checkedStatus?.email
       },
       dailyLimitBytes: row.dailyLimitBytes,
       dailyUsageBytes: row.dailyUsedBytes,
+      totalUsageBytes: row.totalUsedBytes,
       username: row.username,
       credentialKind: row.credentialLabel.includes("API") ? "api-key" : row.credentialLabel.includes("•") ? "password" : "protected",
       canCheck: row.checkable
     };
-  }), [accountRows, snapshot.settings.debridAccountStatuses]);
-  const selectedAccountViewId = useMemo(() => {
-    const selectedRow = selectedAccountRowKey ? accountRows.find((row) => row.rowKey === selectedAccountRowKey) : null;
-    return selectedRow ? accountRowViewId(selectedRow) : null;
-  }, [accountRows, selectedAccountRowKey]);
+  }), [accountRows, runtimeNow, snapshot.settings.debridAccountStatuses]);
+  const selectedAccountViewIds = useMemo(() => accountRows
+    .filter((row) => selectedAccountRowKeys.has(row.rowKey))
+    .map(accountRowViewId), [accountRows, selectedAccountRowKeys]);
   const projectedAccountRows = useMemo(() => projectAccountRows(
     accountSources,
-    selectedAccountViewId ? [selectedAccountViewId] : [],
+    selectedAccountViewIds,
     runtimeNow
-  ), [accountSources, runtimeNow, selectedAccountViewId]);
+  ), [accountSources, runtimeNow, selectedAccountViewIds]);
   const visibleAccountRows = useMemo(() => accountStatusSort === "none"
     ? projectedAccountRows
     : sortAccountRows(projectedAccountRows, accountStatusSort), [accountStatusSort, projectedAccountRows]);
+  visibleAccountRowKeysRef.current = visibleAccountRows
+    .map((row) => accountRowBindings.get(row.id)?.rowKey)
+    .filter((rowKey): rowKey is string => Boolean(rowKey));
+  const accountRuntimeModel = useMemo<AccountWorkspaceViewModel["runtime"]>(() => {
+    const runtimeEntries = snapshot.accountRuntime || [];
+    const runtimeByAccountId = new Map(runtimeEntries.map((entry) => [`${entry.provider}:${entry.accountId}`, entry]));
+    const runtimeAccountIdCounts = new Map<string, number>();
+    for (const entry of runtimeEntries) {
+      runtimeAccountIdCounts.set(entry.accountId, (runtimeAccountIdCounts.get(entry.accountId) || 0) + 1);
+    }
+    const uniqueRuntimeByAccountId = new Map(runtimeEntries
+      .filter((entry) => runtimeAccountIdCounts.get(entry.accountId) === 1)
+      .map((entry) => [entry.accountId, entry]));
+    const projectedById = new Map(projectedAccountRows.map((row) => [row.id, row]));
+    const providerGroups = new Map<string, {
+      id: string;
+      label: string;
+      accountCount: number;
+      availableAccountCount: number;
+      activeDownloads: number;
+      dailyUsageBytes: number;
+    }>();
+    const stateLabels = {
+      ready: "Bereit",
+      active: "Aktiv",
+      checking: "Prüfung",
+      cooldown: "Cooldown",
+      disabled: "Deaktiviert",
+      daily_limit: "Tageslimit",
+      invalid: "Fehler"
+    } as const;
+    const stateTones = {
+      ready: "ok",
+      active: "active",
+      checking: "active",
+      cooldown: "warning",
+      disabled: "muted",
+      daily_limit: "warning",
+      invalid: "danger"
+    } as const;
+    const accounts = accountRows.map((row) => {
+      const viewId = accountRowViewId(row);
+      const projected = projectedById.get(viewId);
+      const runtimeId = row.accountId || `svc-${row.entry.provider}`;
+      const runtimeProvider = row.entry.provider === "megadebrid"
+        ? (row.modeLabel.toLocaleLowerCase("de-DE").includes("web") ? "megadebrid-web" : "megadebrid-api")
+        : row.entry.provider;
+      const runtime = runtimeByAccountId.get(`${runtimeProvider}:${runtimeId}`)
+        ?? uniqueRuntimeByAccountId.get(runtimeId);
+      const fallbackState = row.disabled
+        ? "disabled"
+        : row.dailyLimitBytes > 0 && row.dailyUsedBytes >= row.dailyLimitBytes
+          ? "daily_limit"
+          : projected?.problem
+            ? "invalid"
+            : "ready";
+      const state = runtime?.state || fallbackState;
+      const outcomes = (runtime?.successes || 0) + (runtime?.failures || 0);
+      const successRateText = outcomes > 0
+        ? `${Math.round(((runtime?.successes || 0) / outcomes) * 100)} % (${runtime?.successes || 0}/${outcomes})`
+        : "—";
+      const lastUsedAt = runtime?.lastUsedAt || null;
+      let lastUsedText = "Noch nicht in dieser Sitzung";
+      if (lastUsedAt) {
+        const ageSeconds = Math.max(0, Math.floor((runtimeNow - lastUsedAt) / 1000));
+        lastUsedText = ageSeconds < 60
+          ? "Gerade eben"
+          : ageSeconds < 3600
+            ? `vor ${Math.floor(ageSeconds / 60)} Min.`
+            : ageSeconds < 86400
+              ? `vor ${Math.floor(ageSeconds / 3600)} Std.`
+              : formatDateTime(lastUsedAt);
+      }
+      let cooldownText = "—";
+      if (runtime?.cooldownUntil && runtime.cooldownUntil > runtimeNow) {
+        const seconds = Math.max(1, Math.ceil((runtime.cooldownUntil - runtimeNow) / 1000));
+        const duration = seconds < 60
+          ? `${seconds} Sek.`
+          : seconds < 3600
+            ? `${Math.ceil(seconds / 60)} Min.`
+            : `${Math.ceil(seconds / 3600)} Std.`;
+        cooldownText = `${runtime.reason} · ${duration}`;
+      } else if (state === "disabled" || state === "daily_limit" || state === "invalid") {
+        cooldownText = runtime?.reason || stateLabels[state];
+      }
+      const providerKey = row.hosterLabel.toLocaleLowerCase("de-DE");
+      const providerGroup = providerGroups.get(providerKey) ?? {
+        id: providerKey,
+        label: row.hosterLabel,
+        accountCount: 0,
+        availableAccountCount: 0,
+        activeDownloads: 0,
+        dailyUsageBytes: 0
+      };
+      providerGroup.accountCount += 1;
+      providerGroup.availableAccountCount += state === "ready" || state === "active" || state === "checking" ? 1 : 0;
+      providerGroup.activeDownloads += runtime?.activeDownloads || 0;
+      providerGroup.dailyUsageBytes += runtime?.dailyUsageBytes ?? row.dailyUsedBytes;
+      providerGroups.set(providerKey, providerGroup);
+      return {
+        id: viewId,
+        providerLabel: row.hosterLabel,
+        modeLabel: row.modeLabel,
+        identity: projected?.username !== "—" ? projected?.username || "" : projected?.email || "",
+        stateLabel: stateLabels[state],
+        stateTone: stateTones[state],
+        activeDownloads: runtime?.activeDownloads || 0,
+        dailyUsageText: humanSize(runtime?.dailyUsageBytes ?? row.dailyUsedBytes),
+        successRateText,
+        lastUsedText,
+        cooldownText
+      };
+    });
+    return {
+      providers: [...providerGroups.values()]
+        .sort((left, right) => left.label.localeCompare(right.label, "de-DE", { sensitivity: "base" }))
+        .map((provider) => ({
+          id: provider.id,
+          label: provider.label,
+          accountCount: provider.accountCount,
+          availableAccountCount: provider.availableAccountCount,
+          activeDownloads: provider.activeDownloads,
+          dailyUsageText: humanSize(provider.dailyUsageBytes)
+        })),
+      accounts
+    };
+  }, [accountRows, projectedAccountRows, runtimeNow, snapshot.accountRuntime]);
   const routingEntries = useMemo(() => Object.entries(settingsDraft.hosterRouting || {}).sort(([left], [right]) => left.localeCompare(right)), [settingsDraft.hosterRouting]);
   const usedRoutingHosters = useMemo(() => new Set(routingEntries.map(([hosterId]) => hosterId)), [routingEntries]);
   const routingProviderOptions = useMemo(() => configuredProviders.map((provider) => ({
@@ -5073,11 +5816,26 @@ export function App(): ReactElement {
   const accountWorkspaceModel: AccountWorkspaceViewModel = {
     activePanel: accountManagementTab,
     rows: visibleAccountRows,
-    selectedIds: selectedAccountViewId ? [selectedAccountViewId] : [],
+    selectedIds: selectedAccountViewIds,
     busy: actionBusy || accountCheckBusy,
     statusSort: accountStatusSort,
+    runtime: accountRuntimeModel,
     rules: {
-      providerOrder: activeProviderOrder.map((provider) => providerLabelWithMode(provider, settingsDraft)),
+      providerOrder: activeProviderOrder.map((provider) => {
+        const entry = buildProviderOrderEntry(provider, settingsDraft);
+        if (!isAccountRuleProvider(provider)) return entry;
+        const rows = accountRows.filter((row) => row.entry.service === provider && row.accountId);
+        const rule = settingsDraft.accountUsageRules?.[provider];
+        const ids = reconcileAccountOrder(rule?.accountIds ?? [], rows.map((row) => row.accountId!));
+        return { ...entry, accountSelection: {
+          mode: rule?.mode ?? "automatic",
+          accounts: ids.map((id) => {
+            const row = rows.find((candidate) => candidate.accountId === id)!;
+            const runtime = accountRuntimeModel.accounts.find((account) => account.id === accountRowViewId(row));
+            return { id, label: row.username || row.dlKey?.label || row.entry.summary || id, mode: row.modeLabel, status: runtime?.stateLabel ?? (row.disabled ? "Deaktiviert" : "Bereit") };
+          })
+        } };
+      }),
       routing: routingEntries.map(([hosterId, provider]) => `${KNOWN_HOSTERS.find((hoster) => hoster.id === hosterId)?.label || hosterId} → ${providerLabelWithMode(provider, settingsDraft)}`),
       autoFallback: settingsDraft.autoProviderFallback,
       rememberCredentials: settingsDraft.rememberToken,
@@ -5106,12 +5864,41 @@ export function App(): ReactElement {
     setSettingsSaveState("dirty");
     setSettingsDraft((current) => ({ ...current, hosterRouting }));
   };
+  const updateAccountUsageRule = (provider: string, update: (rule: AccountUsageRule) => AccountUsageRule): void => {
+    if (!isAccountRuleProvider(provider)) return;
+    settingsDraftRevisionRef.current += 1;
+    panelDirtyRevisionRef.current += 1;
+    settingsDirtyRef.current = true;
+    setSettingsDirty(true);
+    setSettingsSaveState("dirty");
+    setSettingsDraft((current) => {
+      const previous = current.accountUsageRules?.[provider];
+      const rule = { mode: previous?.mode ?? "automatic", accountIds: reconcileAccountOrder(previous?.accountIds ?? [], accountRows.filter((row) => row.entry.service === provider && row.accountId).map((row) => row.accountId!)) };
+      return { ...current, accountUsageRules: { ...current.accountUsageRules, [provider]: update(rule) } };
+    });
+  };
   const accountWorkspaceActions: AccountWorkspaceActions = {
+    onAccountSelectionMode: (provider, mode) => updateAccountUsageRule(provider, (rule) => ({ ...rule, mode })),
+    onMovePriorityAccount: (provider, accountId, targetId) => updateAccountUsageRule(provider, (rule) => {
+      const accountIds = [...rule.accountIds];
+      const from = accountIds.indexOf(accountId);
+      const to = accountIds.indexOf(targetId);
+      if (from < 0 || to < 0 || from === to) return rule;
+      accountIds.splice(from, 1);
+      accountIds.splice(to, 0, accountId);
+      return { ...rule, accountIds };
+    }),
     onPanelChange: setAccountManagementTab,
-    onSelect: (rowId) => setSelectedAccountRowKey(accountRowBindings.get(rowId)?.rowKey ?? null),
-    onToggleEnabled: (rowId) => {
+    onSelect: (rowId, additive) => {
+      const rowKey = accountRowBindings.get(rowId)?.rowKey;
+      if (!rowKey) {
+        return;
+      }
+      setSelectedAccountRowKeys((current) => new Set(updateAccountRowSelection([...current], rowKey, additive)));
+    },
+    onToggleEnabled: (rowId, enabled) => {
       const row = accountRowBindings.get(rowId);
-      if (row) toggleAccountTableRow(row);
+      if (row) toggleAccountTableRow(row, enabled);
     },
     onEdit: (rowId) => {
       const row = accountRowBindings.get(rowId);
@@ -5121,12 +5908,20 @@ export function App(): ReactElement {
       const row = accountRowBindings.get(rowId);
       if (row) setAccountContextMenu({ x, y, rowId });
     },
+    onCopyIdentity: (label, value) => {
+      void window.rd.writeClipboardText(value)
+        .then(() => showToast(`${label} kopiert`))
+        .catch(() => showToast("Kopieren fehlgeschlagen"));
+    },
     onAdd: openCreateAccountDialog,
     onRemoveSelected: () => {
-      const row = selectedAccountViewId ? accountRowBindings.get(selectedAccountViewId) : null;
-      if (row) removeAccountTableRow(row);
+      const rows = selectedAccountViewIds
+        .map((rowId) => accountRowBindings.get(rowId))
+        .filter((row): row is AccountTableRow => Boolean(row));
+      removeAccountTableRows(rows);
     },
-    onCheckAll: () => { void checkAllAccounts(); },
+    onCheckActive: () => { void checkAccounts("active"); },
+    onCheckAll: () => { void checkAccounts("all"); },
     onStatusSort: cycleAccountStatusSort,
     onMoveProvider: (index, direction) => {
       const target = index + direction;
@@ -5165,8 +5960,7 @@ export function App(): ReactElement {
         : hosterId;
       if (!resolvedHosterId || settingsDraft.hosterRouting?.[resolvedHosterId] || !configuredProviders[0]) return;
       setHosterRouting({ ...(settingsDraft.hosterRouting || {}), [resolvedHosterId]: configuredProviders[0] });
-    },
-    onResetMegaDebridCooldowns: () => { void onResetMegaDebridCooldowns(); }
+    }
   };
 
   const settingsFormActions: SettingsViewActions["form"] = {
@@ -5197,6 +5991,7 @@ export function App(): ReactElement {
         const choice = value as SettingsThemeChoice;
         const next = resolveSettingsThemeChoice(choice, window.matchMedia("(prefers-color-scheme: light)").matches);
         setSettingsThemeChoice(choice);
+        setText("themePreference", choice);
         setText("theme", next);
         applyTheme(next);
         return;
@@ -5211,13 +6006,20 @@ export function App(): ReactElement {
         setBool(fieldId as keyof RendererSettingsDraft, value);
         return;
       }
+      const notificationNumber = normalizeNotificationNumberField(fieldId, value);
+      if (notificationNumber !== undefined) {
+        setNum(fieldId as keyof RendererSettingsDraft, notificationNumber);
+        return;
+      }
       const numericLimits: Partial<Record<keyof RendererSettingsDraft, [number, number, number]>> = {
         maxParallel: [1, 50, 1],
         retryLimit: [0, 99, 0],
         historyMaxEntries: [50, 100000, 500],
         historyMaxAgeDays: [0, 3650, 0],
         maxParallelExtract: [1, 8, 2],
-        reconnectWaitSeconds: [10, 600, 45]
+        reconnectWaitSeconds: [10, 600, 45],
+        proxyApiProxyIndex: [1, 100000, 1],
+        proxyConnectionsPerDownload: [2, 80, 32]
       };
       const bounds = numericLimits[fieldId as keyof RendererSettingsDraft];
       if (bounds) {
@@ -5281,6 +6083,13 @@ export function App(): ReactElement {
         });
         return;
       }
+      if (fieldId === "proxyListPath") {
+        void performQuickAction(async () => {
+          const selectedPath = await window.rd.pickProxyList();
+          if (selectedPath) setText("proxyListPath", selectedPath);
+        });
+        return;
+      }
       const targetKey = fieldId === "outputDir" ? "outputDir" : fieldId === "extractDir" ? "extractDir" : fieldId === "mkvLibraryDir" ? "mkvLibraryDir" : null;
       if (targetKey) {
         void performQuickAction(async () => {
@@ -5293,11 +6102,13 @@ export function App(): ReactElement {
   const settingsViewModel: SettingsViewModel = {
     section: settingsSubTab,
     saveState: settingsDirty && settingsSaveState === "clean" ? "dirty" : settingsSaveState,
+    saveInFlight: settingsSaveInFlight,
     form: settingsFormModel,
     accounts: accountWorkspaceModel
   };
   const settingsViewActions: SettingsViewActions = {
     onSectionChange: setSettingsSubTab,
+    onDiscard: discardSettingsChanges,
     onSave: () => { void onSaveSettings(); },
     form: settingsFormActions,
     accounts: accountWorkspaceActions
@@ -5311,7 +6122,7 @@ export function App(): ReactElement {
     description: option.pickerDescription,
     functionLabel: getAccountPickerFunctionLabel(option),
     filter: option.modeLabel === "API" ? "api" : "web",
-    multi: option.kind === "megadebrid-api" || option.kind === "megadebrid-web" || option.kind === "debridlink-api",
+    multi: option.kind === "realdebrid-api" || option.kind === "realdebrid-web" || option.kind === "megadebrid-api" || option.kind === "megadebrid-web" || option.kind === "debridlink-api",
     icon: ACCOUNT_SERVICE_ICONS[option.service]
   }));
   const accountAddFields = buildAccountAddFields(accountDialog);
@@ -5319,7 +6130,7 @@ export function App(): ReactElement {
     <AccountAddDialog
       actions={{
         onQueryChange: setAccountDialogSearch,
-        onFilterChange: setAccountDialogModeFilter,
+        onServiceFilterChange: setAccountDialogServiceFilter,
         onOptionSelect: (optionId) => updateAccountDialogKind(optionId as AccountKind),
         onFieldChange: (fieldId, value) => setAccountDialog((current) => current ? { ...current, [fieldId]: value } : current),
         onClose: closeAccountDialog,
@@ -5331,7 +6142,8 @@ export function App(): ReactElement {
       model={{
         open: Boolean(accountDialog),
         query: accountDialogSearch,
-        filter: accountDialogModeFilter,
+        serviceFilter: accountDialogServiceFilter,
+        serviceFilters: accountDialogServiceFilters,
         options: accountAddOptions,
         selectedOptionId: accountDialog?.kind ?? null,
         fields: accountAddFields,
@@ -5340,13 +6152,75 @@ export function App(): ReactElement {
       }}
     />
   );
+  const accountEditSecretRequest = accountEditDialog ? buildAccountSecretRequest(accountEditDialog.target) : null;
+  const accountEditHasStoredSecret = accountEditSecretRequest
+    ? snapshot.accounts.some((account) => account.kind === accountEditSecretRequest.kind
+      && account.accountId === accountEditSecretRequest.accountId
+      && account.hasSecret)
+    : false;
+  const toggleAccountEditSecret = async (fieldId: string): Promise<void> => {
+    if (fieldId !== "password" && fieldId !== "token") return;
+    const dialog = accountEditDialog;
+    if (!dialog) return;
+    if (accountEditSecretVisible[fieldId]) {
+      setAccountEditSecretVisible((current) => ({ ...current, [fieldId]: false }));
+      return;
+    }
+    if (dialog[fieldId]) {
+      setAccountEditSecretVisible((current) => ({ ...current, [fieldId]: true }));
+      return;
+    }
+    const request = buildAccountSecretRequest(dialog.target);
+    setAccountEditSecretBusy(fieldId);
+    try {
+      const result = await window.rd.revealAccountSecret(request);
+      setAccountEditDialog((current) => {
+        if (!current) return current;
+        const currentRequest = buildAccountSecretRequest(current.target);
+        if (currentRequest.kind !== request.kind || currentRequest.accountId !== request.accountId) return current;
+        return { ...current, [fieldId]: result.secret };
+      });
+      setAccountEditSecretVisible((current) => ({ ...current, [fieldId]: true }));
+    } catch (error) {
+      showToast(`Gespeicherter Zugang konnte nicht angezeigt werden: ${String(error)}`, 3200);
+    } finally {
+      setAccountEditSecretBusy((current) => current === fieldId ? null : current);
+    }
+  };
+  const copyAccountEditSecret = async (fieldId: string): Promise<void> => {
+    if (fieldId !== "password" && fieldId !== "token") return;
+    const secret = accountEditDialog?.[fieldId] || "";
+    if (!secret) return;
+    try {
+      const copied = await window.rd.writeClipboardText(secret);
+      showToast(copied ? "Zugang in die Zwischenablage kopiert" : "Zugang konnte nicht kopiert werden", 2200);
+    } catch (error) {
+      showToast(`Zugang konnte nicht kopiert werden: ${String(error)}`, 3200);
+    }
+  };
   const accountEditFields: AccountDialogField[] = accountEditDialog && accountEditOption ? [
     ...((accountEditDialog.target.type === "mega" || accountEditOption.needsCredentials) ? [
       { id: "login", label: "Login / E-Mail", type: "text" as const, value: accountEditDialog.login },
-      { id: "password", label: "Passwort", type: "password" as const, value: accountEditDialog.password }
+      {
+        id: "password",
+        label: "Passwort",
+        type: "password" as const,
+        value: accountEditDialog.password,
+        storedSecret: accountEditHasStoredSecret,
+        secretVisible: Boolean(accountEditSecretVisible.password),
+        secretBusy: accountEditSecretBusy === "password"
+      }
     ] : []),
     ...((accountEditDialog.target.type === "debridlink" || accountEditOption.needsToken) ? [
-      { id: "token", label: accountEditDialog.target.type === "debridlink" ? "API-Key" : "Token / API-Key", type: "password" as const, value: accountEditDialog.token }
+      {
+        id: "token",
+        label: accountEditDialog.target.type === "debridlink" ? "API-Key" : "Token / API-Key",
+        type: "password" as const,
+        value: accountEditDialog.token,
+        storedSecret: accountEditHasStoredSecret,
+        secretVisible: Boolean(accountEditSecretVisible.token),
+        secretBusy: accountEditSecretBusy === "token"
+      }
     ] : []),
     {
       id: "dailyLimitGb",
@@ -5365,11 +6239,17 @@ export function App(): ReactElement {
     }
     const editSnapshot = accountEditDialog;
     void performQuickAction(async () => {
-      if (editSnapshot.target.type === "mega" || editSnapshot.target.type === "debridlink") {
+      if (editSnapshot.target.type === "mega" || editSnapshot.target.type === "debridlink"
+        || editSnapshot.target.kind === "realdebrid-api" || editSnapshot.target.kind === "realdebrid-web") {
         const secret = editSnapshot.target.type === "mega" ? editSnapshot.password : editSnapshot.token;
+        const kind = editSnapshot.target.kind as "realdebrid-api" | "realdebrid-web" | "megadebrid-api" | "megadebrid-web" | "debridlink-api";
         const status = await window.rd.checkAccountCredentials({
-          kind: editSnapshot.target.kind,
-          accountId: editSnapshot.target.type === "mega" ? editSnapshot.target.accountId : editSnapshot.target.keyId,
+          kind,
+          accountId: editSnapshot.target.type === "mega"
+            ? editSnapshot.target.accountId
+            : editSnapshot.target.type === "debridlink"
+              ? editSnapshot.target.keyId
+              : editSnapshot.target.accountId,
           identity: secret ? editSnapshot.login : undefined,
           secret: secret || undefined
         });
@@ -5379,11 +6259,11 @@ export function App(): ReactElement {
       }
       const quickAction = getAccountQuickActionMeta(editSnapshot.target.kind);
       if (quickAction) {
-        await runAccountQuickAction(quickAction.action);
+        await runAccountQuickAction(quickAction.action, editSnapshot.target.type === "single" ? editSnapshot.target.accountId : null);
       } else {
         showToast("Für diesen Dienst ist keine direkte Statusprüfung verfügbar.", 2800);
       }
-    }, (error) => showToast(`Prüfung fehlgeschlagen: ${String(error)}`, 3200));
+    }, (error) => showToast(formatAccountOperationError("Prüfung fehlgeschlagen", error), 3600));
   };
   const accountEditDialogView = accountEditDialog && accountEditOption ? (
     <AccountEditDialog
@@ -5398,14 +6278,16 @@ export function App(): ReactElement {
           if (row) removeAccountTableRow(row);
         },
         onToggleEnabled: () => {
-          if (accountEditRow) toggleAccountTableRow(accountEditRow);
-        }
+          if (accountEditRow) toggleAccountTableRow(accountEditRow, accountEditRow.disabled);
+        },
+        onToggleSecret: (fieldId) => { void toggleAccountEditSecret(fieldId); },
+        onCopySecret: (fieldId) => { void copyAccountEditSecret(fieldId); }
       }}
       model={{
         open: true,
         hoster: accountEditOption.serviceLabel,
         mode: accountEditOption.modeLabel,
-        identity: resolveAccountUsername(accountEditRow?.username || accountEditDialog.login, accountEditStatus?.email),
+        identity: resolveAccountUsername(accountEditRow?.username || accountEditDialog.login, accountEditStatus?.username || accountEditStatus?.email),
         enabled: !accountEditRow?.disabled,
         fields: accountEditFields,
         error: "",
@@ -5413,6 +6295,38 @@ export function App(): ReactElement {
       }}
     />
   ) : null;
+
+  if (snapshotBootstrapStatus.phase !== "ready") {
+    const snapshotBootstrapFailed = snapshotBootstrapStatus.phase === "error";
+    return (
+      <main
+        aria-busy={!snapshotBootstrapFailed}
+        aria-labelledby="snapshot-bootstrap-title"
+        className="snapshot-bootstrap-root"
+      >
+        <section
+          aria-live={snapshotBootstrapFailed ? "assertive" : "polite"}
+          className={`snapshot-bootstrap-panel${snapshotBootstrapFailed ? " is-error" : ""}`}
+          role={snapshotBootstrapFailed ? "alert" : "status"}
+        >
+          {!snapshotBootstrapFailed ? <span aria-hidden="true" className="snapshot-bootstrap-spinner" /> : null}
+          <h1 id="snapshot-bootstrap-title">
+            {snapshotBootstrapFailed ? "Anwendungsdaten konnten nicht geladen werden" : "Anwendungsdaten werden geladen"}
+          </h1>
+          <p>
+            {snapshotBootstrapFailed
+              ? snapshotBootstrapStatus.message || "Der aktuelle Stand konnte nicht abgerufen werden."
+              : "Der aktuelle Stand wird sicher geladen."}
+          </p>
+          {snapshotBootstrapFailed ? (
+            <button className="snapshot-bootstrap-retry" onClick={() => retrySnapshotBootstrapRef.current()} type="button">
+              Erneut versuchen
+            </button>
+          ) : null}
+        </section>
+      </main>
+    );
+  }
 
   return (
     <div
@@ -5471,12 +6385,9 @@ export function App(): ReactElement {
               available={Boolean(availableUpdate)}
               currentVersion={availableUpdate?.currentVersion ?? appVersion}
               latestTag={availableUpdate?.latestTag ?? ""}
-              onClose={() => {
-                setUpdateDialogOpen(false);
-                setUpdateInstallProgress(null);
-              }}
+              onClose={dismissUpdatePrompt}
               onInstall={() => { void installUpdate(); }}
-              onLater={() => setUpdateDialogOpen(false)}
+              onLater={dismissUpdatePrompt}
               onOpen={() => setUpdateDialogOpen(true)}
               open={updateDialogOpen || updateInstallProgress !== null}
               progress={updateInstallProgress ? {
@@ -5691,8 +6602,8 @@ export function App(): ReactElement {
                   {...(openSubmenu !== "hilfe-remote" ? { inert: "" } : {})}
                   className={`menu-submenu-dropdown${openSubmenu === "hilfe-remote" ? " is-open" : ""}`}
                 >
-                    <button className="menu-dropdown-item" onClick={() => { void onOpenRemoteDiagnostics(); }}><span>Ferndiagnose …</span></button>
-                    <button className="menu-dropdown-item" disabled={supportBundleExporting} onClick={() => { void onExportSupportBundle(); }}><span>{supportBundleExporting ? "Support-Bundle wird erstellt …" : "Support-Bundle exportieren"}</span></button>
+                    <button className="menu-dropdown-item" onClick={() => { closeMenus(); setMcpOpen(true); }}><span>MCP-Fernzugriff …</span></button>
+                    <button className="menu-dropdown-item" onClick={() => { void onExportSupportBundle(); }}><span>Support-Bundle exportieren</span></button>
                     <button className="menu-dropdown-item" onClick={() => { void onToggleSupportTrace(); }}><span>{supportTraceEnabled ? "Support-Trace deaktivieren" : "Support-Trace aktivieren"}</span></button>
                 </div>
               </div>
@@ -5712,7 +6623,6 @@ export function App(): ReactElement {
                   className={`menu-submenu-dropdown${openSubmenu === "hilfe-diagnose" ? " is-open" : ""}`}
                 >
                     <button className="menu-dropdown-item" onClick={() => { void onRunDebugSetupCheck(); }}><span>Debug-Setup prüfen</span></button>
-                    <button className="menu-dropdown-item" onClick={() => { void onRotateDebugToken(); }}><span>Debug-Token rotieren</span></button>
                 </div>
               </div>
               <div className="menu-separator" />
@@ -5763,16 +6673,12 @@ export function App(): ReactElement {
         sidebarStatus={tab === "downloads" ? (
           <DownloadsSidebarStatus model={downloadsViewModel} />
         ) : tab === "collector" ? (
-          <>
-            <span>Sammlungen: {collectorViewModel.tabs.length}</span>
-            <span>Links: {collectorViewModel.tabs.reduce((sum, entry) => sum + entry.linkCount, 0)}</span>
-            <span>Zwischenablage: {snapshot.clipboardActive ? "An" : "Aus"}</span>
-          </>
+          <CollectorSidebarStatus model={collectorViewModel} />
         ) : tab === "history" ? (
           <>
-            <span>Einträge: {historyViewModel.totalCount}</span>
-            <span>Sichtbar: {historyViewModel.rows.length}</span>
-            <span>Ausgewählt: {historyViewModel.selectedIds.length}</span>
+            <span>{historyLoading ? "Verlauf wird geladen …" : historySidebarCounts.entries}</span>
+            {!historyLoading && <span>{historySidebarCounts.visible}</span>}
+            {!historyLoading && <span>{historySidebarCounts.selected}</span>}
           </>
         ) : tab === "statistics" ? (
           <StatisticsSidebarStatus model={statisticsViewModel} />
@@ -5787,14 +6693,14 @@ export function App(): ReactElement {
       >
       <main className="md-runtime-view-content">
         {tab === "collector" && (
-          <CollectorContent actions={collectorActions} model={collectorViewModel} />
+          <MemoizedCollectorContent actions={collectorActions} model={collectorViewModel} />
         )}
 
         {tab === "downloads" && <DownloadsContent actions={downloadsActions} model={downloadsViewModel} />}
 
-        {tab === "history" && (
+        <div className="history-persistent-panel" hidden={tab !== "history"}>
           <HistoryContent actions={historyActions} model={historyViewModel} />
-        )}
+        </div>
 
         {tab === "statistics" && (
           <StatisticsContent
@@ -5820,6 +6726,16 @@ export function App(): ReactElement {
         confirm={confirmPrompt ? (
           <Dialog actions={null} danger={confirmPrompt.danger} onClose={() => closeConfirmPrompt(false)} open title={confirmPrompt.title}>
             <p style={{ whiteSpace: "pre-line" }}>{confirmPrompt.message}</p>
+            {confirmPrompt.offlineScope && (
+              <OfflineRemovalScopeChoice
+                scope={confirmPrompt.offlineScope}
+                english={normalizeLanguage(settingsDraft.language) === "en"}
+                onChange={(scope) => {
+                  offlineRemovalScopeRef.current = scope;
+                  setConfirmPrompt((current) => current ? { ...current, offlineScope: scope } : current);
+                }}
+              />
+            )}
             {confirmPrompt.details && (
               <details className="modal-details">
                 <summary>{confirmPrompt.detailsLabel || "Details anzeigen"}</summary>
@@ -5852,8 +6768,8 @@ export function App(): ReactElement {
           >
             <p>
               {onlineBackupDialog.mode === "export"
-                ? "Dieser Schlüssel stellt deine Einstellungen inklusive gespeicherter Zugangsdaten wieder her. Bewahre ihn wie ein Passwort auf."
-                : "Füge den vollständigen MDD2-Schlüssel ein. Die aktuellen Einstellungen werden durch die gespeicherte Version ersetzt."}
+                ? "Dieser Schlüssel stellt deine Einstellungen inklusive gespeicherter Zugangsdaten und hinterlegter Proxy-Liste wieder her. Bewahre ihn wie ein Passwort auf. Eine verschlüsselte Schlüsselkopie ermöglicht dem Betreiber, den Schlüssel und damit die Sicherung wiederherzustellen."
+                : "Füge den vollständigen MDD2-Schlüssel ein. Einstellungen und eine enthaltene Proxy-Liste werden durch die gespeicherte Version ersetzt."}
             </p>
             {onlineBackupDialog.mode === "export" && onlineBackupDialog.busy && <div className="online-backup-status">Online-Sicherung wird verschlüsselt und gespeichert …</div>}
             {onlineBackupDialog.mode === "export" && onlineBackupDialog.key && (
@@ -5881,93 +6797,7 @@ export function App(): ReactElement {
           </Dialog>
         ) : null}
 
-        diagnostics={remoteDiagOpen ? (
-          <Dialog actions={null} onClose={() => setRemoteDiagOpen(false)} open title="Ferndiagnose">
-            <p>Ermöglicht einer vertrauenswürdigen Support-Stelle den geschützten Lesezugriff auf Status, Logs und Fehler. Der Verbindungscode enthält das Zugriffstoken und ist wie ein Passwort zu behandeln.</p>
-            <div className="rd-status-line">
-              <span className={`rd-dot${remoteDiag?.status.running ? " on" : ""}`} />
-              <span>
-                {remoteDiag?.status.running
-                  ? `Aktiv auf ${remoteDiag.status.host}:${remoteDiag.status.port}${remoteDiag.status.localOnly ? " (nur lokal)" : ` (Allowlist: ${remoteDiag.status.allowlistCount})`}`
-                  : "Inaktiv"}
-              </span>
-            </div>
-
-            <div className="rd-field">
-              <label>Sichtbarkeit</label>
-              <div className="rd-seg">
-                <button className={rdHostMode === "local" ? "active" : ""} onClick={() => setRdHostMode("local")}>Nur lokal</button>
-                <button className={rdHostMode === "network" ? "active" : ""} onClick={() => setRdHostMode("network")}>Im Netzwerk</button>
-              </div>
-              <span className="rd-hint">
-                {rdHostMode === "local"
-                  ? "Bindet nur an 127.0.0.1. Fernzugriff nur ueber einen Tunnel (z.B. Tailscale/SSH) - die sicherste Variante."
-                  : "Bindet an 0.0.0.0. Erreichbar im Netzwerk, erfordert eine Allowlist. Nur in vertrauenswuerdigen Netzen/VPN nutzen."}
-              </span>
-            </div>
-
-            <div className="rd-field">
-              <label>Oeffentliche Adresse (fuer den Verbindungscode)</label>
-              <input
-                value={rdPublicHost}
-                placeholder={rdHostMode === "local" ? "127.0.0.1 oder Tunnel-Adresse" : "Server-IP oder DNS-Name"}
-                onChange={(event) => setRdPublicHost(event.target.value)}
-              />
-              {remoteDiag && remoteDiag.suggestedHosts.length > 0 && (
-                <div className="rd-chips">
-                  {remoteDiag.suggestedHosts.map((host) => (
-                    <button key={host} className="rd-chip" onClick={() => setRdPublicHost(host)}>{host}</button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="rd-field rd-field-inline">
-              <div className="rd-field">
-                <label>Port</label>
-                <input value={rdPort} onChange={(event) => setRdPort(event.target.value.replace(/[^0-9]/g, ""))} />
-              </div>
-              <div className="rd-field">
-                <label>Name (optional)</label>
-                <input value={rdName} placeholder="z.B. Server-Berlin" onChange={(event) => setRdName(event.target.value)} />
-              </div>
-            </div>
-
-            {rdHostMode === "network" && (
-              <div className="rd-field">
-                <label>Allowlist - erlaubte IPs/CIDR (eine pro Zeile)</label>
-                <textarea
-                  value={rdAllowlist}
-                  placeholder={"203.0.113.5\n10.0.0.0/24"}
-                  onChange={(event) => setRdAllowlist(event.target.value)}
-                />
-                <span className="rd-hint">Pflicht im Netzwerkmodus. Nur diese Quell-IPs duerfen verbinden (zusaetzlich zum Token). Loopback ist immer erlaubt.</span>
-              </div>
-            )}
-
-            {remoteDiag?.status.running && remoteDiag.code && (
-              <div className="rd-field">
-                <label>Verbindungscode</label>
-                <div className="rd-code">{remoteDiag.code}</div>
-                <div className="rd-chips">
-                  <button className="btn" onClick={() => { void onCopyRemoteDiagnosticsCode(); }}>Kopieren</button>
-                  <button className="btn" onClick={() => { void onRotateRemoteDiagnosticsToken(); }} disabled={remoteDiagBusy}>Token neu (Code ungueltig machen)</button>
-                </div>
-                <span className="rd-hint">Enthaelt das Zugriffstoken - wie ein Passwort behandeln. Token neu = alter Code wird sofort ungueltig.</span>
-              </div>
-            )}
-
-            <div className="modal-actions">
-              <button className="btn" onClick={() => setRemoteDiagOpen(false)}>Schliessen</button>
-              {remoteDiag?.status.running && (
-                <button className="btn danger" onClick={() => { void onDisableRemoteDiagnostics(); }} disabled={remoteDiagBusy}>Deaktivieren</button>
-              )}
-              <button className="btn accent" onClick={() => { void onSubmitRemoteDiagnostics(); }} disabled={remoteDiagBusy}>
-                {remoteDiag?.status.running ? "Aktualisieren" : "Aktivieren"}
-              </button>
-            </div>
-          </Dialog>
-        ) : null}
+        diagnostics={mcpOpen ? <McpDialog onClose={() => setMcpOpen(false)} language={settingsDraft.language} /> : null}
 
         deleteConfirmation={deleteConfirm ? (() => {
         const itemCount = [...deleteConfirm.ids].filter((id) => snapshot.session.items[id]).length;
@@ -5983,25 +6813,21 @@ export function App(): ReactElement {
         if (pkgCount > 0) parts.push(`${pkgCount} Paket(e)`);
         if (itemCount > 0) parts.push(`${itemCount} Link(s)`);
         return (
-          <Dialog actions={null} danger onClose={() => setDeleteConfirm(null)} open title="Bist Du Dir sicher?">
-              <p>Möchtest Du wirklich diese Aufräumaktion(en) durchführen?<br />Ausgewählte Links löschen</p>
-              <p><strong>Zu erledigende Aufgaben:</strong><br />{parts.join(" + ")} löschen ? {totalRemaining} Link(s) verbleiben!</p>
-              <label className="toggle-line">
-                <input type="checkbox" checked={deleteConfirm.dontAsk} onChange={(e) => setDeleteConfirm((prev) => prev ? { ...prev, dontAsk: e.target.checked } : prev)} />
-                Nicht mehr anzeigen
-              </label>
-              <div className="modal-actions">
-                <button className="btn" onClick={() => setDeleteConfirm(null)}>Abbrechen</button>
-                <button className="btn danger" onClick={() => {
-                  if (deleteConfirm.dontAsk) {
-                    setSettingsDraft((prev) => ({ ...prev, confirmDeleteSelection: false }));
-                    void window.rd.updateSettings({ confirmDeleteSelection: false }).catch(() => {});
-                  }
-                  executeDeleteSelection(deleteConfirm.ids);
-                  setDeleteConfirm(null);
-                }}>Fortfahren</button>
-              </div>
-          </Dialog>
+          <DeleteConfirmationDialog
+            dontAsk={deleteConfirm.dontAsk}
+            parts={parts}
+            totalRemaining={totalRemaining}
+            onCancel={() => setDeleteConfirm(null)}
+            onConfirm={() => {
+              if (deleteConfirm.dontAsk) {
+                setSettingsDraft((prev) => ({ ...prev, confirmDeleteSelection: false }));
+                void window.rd.updateSettings({ confirmDeleteSelection: false }).catch(() => {});
+              }
+              executeDeleteSelection(deleteConfirm.ids);
+              setDeleteConfirm(null);
+            }}
+            onDontAskChange={(checked) => setDeleteConfirm((prev) => prev ? { ...prev, dontAsk: checked } : prev)}
+          />
         );
         })() : null}
 
@@ -6043,7 +6869,7 @@ export function App(): ReactElement {
 
         accountEdit={accountEditDialogView}
         accountCreate={accountAddDialog}
-        toast={<SupportBundleToast busy={supportBundleExporting} message={statusToast} />}
+        toast={<Toast message={statusToast} />}
         dropOverlay={dragOver ? <div className="drop-overlay md-drop-overlay">Links, .dlc oder Export-Dateien hier ablegen</div> : null}
         accountContextMenu={accountContextMenu && activeAccountContextRow ? (
         <ContextMenu
@@ -6056,8 +6882,7 @@ export function App(): ReactElement {
           y={accountContextMenu.y}
         >
           <div className="account-context-heading">
-            <strong>{activeAccountContextRow.hosterLabel}</strong>
-            <span>{activeAccountContextRow.modeLabel} · {activeAccountContextRow.username}</span>
+            <strong>{formatAccountContextHeading(activeAccountContextRow.hosterLabel, activeAccountContextRow.modeLabel)}</strong>
           </div>
           <div className="ctx-menu-sep" />
           <button className="ctx-menu-item" onClick={() => { setAccountContextMenu(null); openEditAccountDialog(activeAccountContextRow); }}>
@@ -6067,7 +6892,7 @@ export function App(): ReactElement {
             Account prüfen
           </button>
           {getAccountQuickActionMeta(activeAccountContextRow.entry.kind) && (
-            <button className="ctx-menu-item" onClick={() => { setAccountContextMenu(null); void onAccountRowQuickAction(activeAccountContextRow.entry); }}>
+            <button className="ctx-menu-item" onClick={() => { setAccountContextMenu(null); void onAccountRowQuickAction(activeAccountContextRow); }}>
               {getAccountQuickActionMeta(activeAccountContextRow.entry.kind)?.label}
             </button>
           )}
@@ -6089,18 +6914,30 @@ export function App(): ReactElement {
         const startableStatuses = new Set(["queued", "cancelled", "reconnect_wait"]);
         const hasStartableItems = actionableSelectedIds.some((id) => { const it = snapshot.session.items[id]; return it && startableStatuses.has(it.status); });
         const hasItems = selectedItemIds.length > 0;
+        const startSelected = (): void => {
+          const packageIds = selectedPackageIds;
+          const itemIds = selectedItemIds.filter((id) => { const item = snapshot.session.items[id]; return item && startableStatuses.has(item.status); });
+          void runDownloadStartAction(
+            snapshot.canStart,
+            async () => {
+              if (packageIds.length > 0) await window.rd.startPackages(packageIds);
+              if (itemIds.length > 0) await window.rd.startItems(itemIds);
+            },
+            () => showToast("Downloads können derzeit nicht gestartet werden", 2400),
+            (error) => showToast(`Start fehlgeschlagen: ${String(error)}`, 2800)
+          );
+          setContextMenu(null);
+        };
         return (
         <ContextMenu ariaLabel="Downloadaktionen" onClose={() => setContextMenu(null)} open ref={ctxMenuRef} x={contextMenu.x} y={contextMenu.y}>
-          {(hasPackages || hasStartableItems) && (
-            <button className="ctx-menu-item" onClick={() => {
-              const pkgIds = selectedPackageIds;
-              const itemIds = selectedItemIds.filter((id) => { const it = snapshot.session.items[id]; return it && startableStatuses.has(it.status); });
-              if (pkgIds.length > 0) void window.rd.startPackages(pkgIds).catch(() => {});
-              if (itemIds.length > 0) void window.rd.startItems(itemIds).catch(() => {});
-              setContextMenu(null);
-            }}>Ausgewählte Downloads starten{multi ? ` (${actionableSelectedIds.length})` : ""}</button>
-          )}
-          <button className="ctx-menu-item" onClick={() => { downloadsActions.onStartDownloads(); setContextMenu(null); }}>Alle Downloads starten</button>
+          <DownloadContextStartActions
+            actionBusy={actionBusy}
+            canStart={snapshot.canStart}
+            onStartAll={() => { downloadsActions.onStartDownloads(); setContextMenu(null); }}
+            onStartSelected={startSelected}
+            selectedLabel={`Ausgewählte Downloads starten${multi ? ` (${actionableSelectedIds.length})` : ""}`}
+            showSelected={hasPackages || hasStartableItems}
+          />
           <div className="ctx-menu-sep" />
           <button className="ctx-menu-item" onClick={() => showLinksPopup(contextMenu.packageId, contextMenu.itemId)}>Linkadressen anzeigen</button>
           {hasPackages && !contextMenu.itemId && (
@@ -6157,22 +6994,27 @@ export function App(): ReactElement {
               else { executeDeleteSelection(ids); }
             }}>Ausgewählte Dateien entfernen ({selectedItemIds.length})</button>
           )}
-          {hasPackages && !contextMenu.itemId && (
-            <button className="ctx-menu-item" disabled={resetBusy} onClick={() => {
-              void performReset(async () => {
-                for (const id of selectedPackageIds) {
-                  await window.rd.resetPackage(id);
-                }
-              });
-              setContextMenu(null);
-            }}>{resetBusy ? "Zurücksetzen läuft …" : `Zurücksetzen${multi ? ` (${selectedPackageIds.length})` : ""}`}</button>
-          )}
+          {hasPackages && !contextMenu.itemId && (() => {
+            const errorItemIds = getPackageErrorItemIds(selectedPackageIds, snapshot.session.packages, snapshot.session.items);
+            return (
+              <>
+                <button className="ctx-menu-item" disabled={errorItemIds.length === 0} onClick={() => {
+                  if (errorItemIds.length > 0) void window.rd.resetItems(errorItemIds).catch(() => {});
+                  setContextMenu(null);
+                }}>Nur fehlerhafte Dateien zurücksetzen</button>
+                <button className="ctx-menu-item" onClick={() => {
+                  for (const id of selectedPackageIds) void window.rd.resetPackage(id).catch(() => {});
+                  setContextMenu(null);
+                }}>{multi ? "Ausgewählte Pakete vollständig zurücksetzen" : "Gesamtes Paket zurücksetzen"}</button>
+              </>
+            );
+          })()}
           {contextMenu.itemId && (
-            <button className="ctx-menu-item" disabled={resetBusy} onClick={() => {
+            <button className="ctx-menu-item" onClick={() => {
               const itemIds = multi ? selectedItemIds : [contextMenu.itemId!];
-              void performReset(() => window.rd.resetItems(itemIds));
+              void window.rd.resetItems(itemIds).catch(() => {});
               setContextMenu(null);
-            }}>{resetBusy ? "Zurücksetzen läuft …" : `Zurücksetzen${multi ? ` (${selectedItemIds.length})` : ""}`}</button>
+            }}>Zurücksetzen{multi ? ` (${selectedItemIds.length})` : ""}</button>
           )}
           {hasPackages && !multi && (() => {
             const pkg = snapshot.session.packages[contextMenu.packageId];
@@ -6193,7 +7035,7 @@ export function App(): ReactElement {
                   const label = p === "high" ? "Hoch" : p === "low" ? "Niedrig" : "Standard";
                   const pkgIds = selectedPackageIds;
                   const allMatch = pkgIds.every((id) => (snapshot.session.packages[id]?.priority || "normal") === p);
-                  return <button key={p} className={`ctx-menu-item${allMatch ? " ctx-menu-active" : ""}`} onClick={() => { for (const id of pkgIds) void window.rd.setPackagePriority(id, p).catch(() => {}); setContextMenu(null); }}>{allMatch ? `[Aktiv] ${label}` : label}</button>;
+                  return <button key={p} className={`ctx-menu-item${allMatch ? " ctx-menu-active" : ""}`} disabled={allMatch} onClick={() => { for (const id of pkgIds) void window.rd.setPackagePriority(id, p).catch(() => {}); setContextMenu(null); }}>{allMatch ? `[Aktiv] ${label}` : label}</button>;
                 })}
               </div>
             </div>
@@ -6212,12 +7054,19 @@ export function App(): ReactElement {
               else { executeDeleteSelection(ids); }
             }}>{multi ? `Ausgewählte entfernen (${selectedPackageIds.length})` : "Paket entfernen"}</button>
           )}
+          <div className="ctx-menu-sep" />
+          <button
+            className="ctx-menu-item ctx-danger"
+            disabled={actionBusy || getPackagesWithOfflineLinks(snapshot.session.packageOrder, snapshot.session.packages, snapshot.session.items).length === 0}
+            onClick={requestRemoveOfflinePackages}
+          >{normalizeLanguage(snapshot.settings.language) === "en" ? "Remove packages with offline links …" : "Pakete mit Offline-Links entfernen …"}</button>
         </ContextMenu>
         );
         })() : null}
         columnContextMenu={colHeaderCtx ? (
         <ContextMenu
           ariaLabel="Spaltenauswahl"
+          className="md-column-context-menu"
           onClose={() => setColHeaderCtx(null)}
           open
           ref={colHeaderCtxRef}
@@ -6232,7 +7081,7 @@ export function App(): ReactElement {
             return (
               <button
                 key={col}
-                className={`ctx-menu-item${isRequired ? " ctx-menu-disabled" : ""}${isVisible ? " ctx-menu-active" : ""}`}
+                className={`ctx-menu-item${isRequired ? " ctx-menu-disabled" : ""}`}
                 disabled={isRequired}
                 onClick={() => {
                   if (isRequired) return;
@@ -6251,18 +7100,24 @@ export function App(): ReactElement {
                     }
                     newOrder.splice(insertAt, 0, col);
                   }
+                  persistColumnOrder(newOrder);
                   setColumnOrder(newOrder);
-                  void window.rd.updateSettings({ columnOrder: newOrder }).catch(() => {});
                 }}
               >
-                {isVisible ? "\u2713 " : "\u2003 "}{def.label}
+                <span aria-hidden="true" className="column-menu-check">{isVisible ? "\u2713" : ""}</span>
+                <span>{def.label}</span>
               </button>
             );
           })}
+          <div className="ctx-menu-sep" />
+          <button className="ctx-menu-item column-menu-reset" onClick={() => {
+            resetColumnLayout();
+            setColHeaderCtx(null);
+          }}>Spaltenlayout zurücksetzen</button>
         </ContextMenu>
         ) : null}
         historyContextMenu={historyCtxMenu ? (() => {
-        const selectedEntryIds = [...pruneHistoryIds(selectedHistoryIds, historyVisibleIdsRef.current)];
+        const selectedEntryIds = historyViewModel.selectedIds;
         const multi = selectedEntryIds.length > 1;
         const contextEntry = historyEntriesRef.current.find(e => e.id === historyCtxMenu.entryId);
         const hasUrls = (contextEntry?.urls?.length ?? 0) > 0;
@@ -6343,8 +7198,10 @@ export function App(): ReactElement {
                   <span className="col-links">RG Links</span>
                   <span className="col-action"></span>
                 </div>
-                {entry.debridLinkKeys.map((key, ki) => (
-                  <div key={key.id} className={`account-subkey-table-row${key.dailyLimitReached || (debridLinkHostLimits[key.id] && debridLinkHostLimits[key.id].state !== "ready") ? " warning" : ""}${key.disabled ? " disabled" : ""}`}>
+                {entry.debridLinkKeys.map((key, ki) => {
+                  const toggleRow = accountRows.find((candidate) => candidate.toggleKind === "dl" && candidate.dlKey?.id === key.id);
+                  const disabled = toggleRow ? toggleRow.disabled : entry.disabled || key.disabled;
+                  return <div key={key.id} className={`account-subkey-table-row${key.dailyLimitReached || (debridLinkHostLimits[key.id] && debridLinkHostLimits[key.id].state !== "ready") ? " warning" : ""}${disabled ? " disabled" : ""}`}>
                     {(() => {
                       const hostInfo = debridLinkHostLimits[key.id];
                       const statusDisplay = getDebridLinkKeyStatusDisplay(key, hostInfo);
@@ -6358,24 +7215,25 @@ export function App(): ReactElement {
                       title={`${key.masked}\nMaskierte Kennung kopieren`}
                       onClick={() => {
                         void window.rd.writeClipboardText(key.masked)
-                          .then(() => showToast("Maskierte Kennung kopiert", 1800))
+                          .then((copied) => copied ? showToast("Maskierte Kennung kopiert", 1800) : showToast("Kopieren fehlgeschlagen", 2200))
                           .catch(() => showToast("Kopieren fehlgeschlagen", 2200));
                       }}
                     >
                       {key.masked}
                     </button>
                     <span className="col-usage">{humanSize(key.dailyUsedBytes)}</span>
-                    <span className="col-limit">{key.disabled ? "Deaktiviert" : key.dailyLimitBytes > 0 ? humanSize(key.dailyLimitBytes) : "Kein Limit"}</span>
+                    <span className="col-limit">{disabled ? "Deaktiviert" : key.dailyLimitBytes > 0 ? humanSize(key.dailyLimitBytes) : "Kein Limit"}</span>
                     <span className={`col-status status-pill status-pill-${statusDisplay.tone}`} title={statusDisplay.title}>{statusDisplay.label}</span>
                     <span className="col-traffic" title={hostInfo?.note || ""}>{formatDebridLinkTraffic(hostInfo)}</span>
                     <span className="col-links" title={hostInfo?.note || ""}>{formatDebridLinkCountQuota(hostInfo)}</span>
                     <span className="col-action">
                       <button
-                        className={`btn btn-sm ${key.disabled ? "success" : "danger"}`}
-                        disabled={actionBusy}
-                        onClick={() => { void onToggleDebridLinkApiKeyEnabled(entry, key); }}
+                        className={`btn btn-sm ${disabled ? "success" : "danger"}`}
+                        onClick={() => {
+                          if (toggleRow) requestAccountToggle(toggleRow, toggleRow.disabled);
+                        }}
                       >
-                        {key.disabled ? "Aktivieren" : "Deaktivieren"}
+                        {disabled ? "Aktivieren" : "Deaktivieren"}
                       </button>
                       <button
                         className="btn btn-sm"
@@ -6388,8 +7246,8 @@ export function App(): ReactElement {
                         </>
                       );
                     })()}
-                  </div>
-                ))}
+                  </div>;
+                })}
               </div>
               <div className="modal-actions">
                 <button className="btn" onClick={() => setKeyStatsPopup(null)}>Schließen</button>
@@ -6405,37 +7263,18 @@ export function App(): ReactElement {
                 onClose={() => setCollectorInput(null)}
                 onCommit={commitCollectorInput}
                 open
-                tabName={collectorInput.tabName}
                 value={collectorInput.draft}
               />
             ) : null}
             {linkPopup ? (
-          <Dialog actions={null} className="link-popup" onClose={() => setLinkPopup(null)} open size="wide" title="Linkadressen anzeigen">
-            <p>{linkPopup.title}</p>
-            <div className="link-popup-list">
-              {linkPopup.links.map((link, i) => (
-                <div key={i} className="link-popup-row">
-                  <button aria-label={`${link.name} kopieren`} className="link-popup-name link-popup-click" type="button" title={`${link.name}\nKlicken zum Kopieren`} onClick={() => { void window.rd.writeClipboardText(link.name).then(() => showToast("Name kopiert")).catch(() => showToast("Kopieren fehlgeschlagen")); }}>{link.name}</button>
-                  <button aria-label="Link kopieren" className="link-popup-url link-popup-click" type="button" title={`${link.url}\nKlicken zum Kopieren`} onClick={() => { void window.rd.writeClipboardText(link.url).then(() => showToast("Link kopiert")).catch(() => showToast("Kopieren fehlgeschlagen")); }}>{link.url}</button>
-                </div>
-              ))}
-            </div>
-            <div className="modal-actions">
-              {linkPopup.isPackage && (
-                <button className="btn" onClick={() => {
-                  const text = linkPopup.links.map((l) => l.name).join("\n");
-                  void window.rd.writeClipboardText(text).then(() => showToast("Alle Namen kopiert")).catch(() => showToast("Kopieren fehlgeschlagen"));
-                }}>Alle Namen kopieren</button>
-              )}
-              {linkPopup.isPackage && (
-                <button className="btn" onClick={() => {
-                  const text = linkPopup.links.map((l) => l.url).join("\n");
-                  void window.rd.writeClipboardText(text).then(() => showToast("Alle Links kopiert")).catch(() => showToast("Kopieren fehlgeschlagen"));
-                }}>Alle Links kopieren</button>
-              )}
-              <button className="btn" onClick={() => setLinkPopup(null)}>Schließen</button>
-            </div>
-          </Dialog>
+              <LinkAddressesDialog
+                isPackage={linkPopup.isPackage}
+                links={linkPopup.links}
+                onClose={() => setLinkPopup(null)}
+                onToast={showToast}
+                title={linkPopup.title}
+                writeClipboardText={window.rd.writeClipboardText}
+              />
             ) : null}
           </>
         )}
@@ -6444,12 +7283,9 @@ export function App(): ReactElement {
             available={Boolean(availableUpdate)}
             currentVersion={availableUpdate?.currentVersion ?? appVersion}
             latestTag={availableUpdate?.latestTag ?? ""}
-            onClose={() => {
-              setUpdateDialogOpen(false);
-              setUpdateInstallProgress(null);
-            }}
+            onClose={dismissUpdatePrompt}
             onInstall={() => { void installUpdate(); }}
-            onLater={() => setUpdateDialogOpen(false)}
+            onLater={dismissUpdatePrompt}
             onOpen={() => setUpdateDialogOpen(true)}
             open={updateDialogOpen || updateInstallProgress !== null}
             progress={updateInstallProgress ? {

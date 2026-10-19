@@ -1,4 +1,16 @@
-import { useEffect, useState, type ChangeEvent, type MouseEvent, type ReactElement } from "react";
+import {
+  memo,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type KeyboardEvent,
+  type MouseEvent,
+  type PointerEvent,
+  type ReactElement,
+  type UIEvent
+} from "react";
 import {
   DataTable,
   DataTableBody,
@@ -7,7 +19,22 @@ import {
 } from "../../ui/DataTable";
 import { Toolbar, ToolbarGroup, ToolbarSearch } from "../../ui/Toolbar";
 import { SlidingSelection } from "../../ui/SlidingSelection";
-import { paginateHistoryRows, type HistoryFilter, type HistoryPage, type HistoryRow, type HistoryViewModel } from "./history-model";
+import {
+  createHistoryTableColumnWidths,
+  formatHistoryInteger,
+  formatHistoryDuration,
+  getHistoryPage,
+  getHistoryTableGridTemplate,
+  getHistoryTableMinWidth,
+  HISTORY_TABLE_COLUMN_IDS,
+  resizeHistoryTableColumn,
+  type HistoryFilter,
+  type HistoryPage,
+  type HistoryRow,
+  type HistoryTableColumnId,
+  type HistoryTableColumnWidths,
+  type HistoryViewModel
+} from "./history-model";
 import "./history.css";
 
 export interface HistoryViewActions {
@@ -22,6 +49,8 @@ export interface HistoryViewActions {
   onClearSelection: () => void;
   onClearHistory: () => void;
   onContextMenu: (entryId: string, x: number, y: number) => void;
+  onVisiblePageCountChange?: (count: number) => void;
+  onVisiblePageChange?: (ids: string[]) => void;
 }
 
 export interface HistoryViewProps {
@@ -35,22 +64,195 @@ const filterItems: Array<{ id: HistoryFilter; label: string }> = [
   { id: "week", label: "Letzte 7 Tage" },
   { id: "older", label: "Älter" },
   { id: "completed", label: "Fertig" },
+  { id: "partial", label: "Teilweise" },
+  { id: "cancelled", label: "Abgebrochen" },
   { id: "deleted", label: "Gelöscht" },
   { id: "failed", label: "Fehlgeschlagen" }
 ];
 
-function HistoryRowDetails({ row }: { row: HistoryRow }): ReactElement {
+const HISTORY_TABLE_COLUMNS = ["Paket / Datei", "Status", "Größe", "Hoster", "Gestartet", "Beendet"] as const;
+const HISTORY_TABLE_COLUMN_STORAGE_KEY = "mdd.history-table-columns.v1";
+const HISTORY_DISCLOSURE_DURATION_MS = 520;
+const useRendererLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+let historyTableResizeSession: { column: HistoryTableColumnId; startX: number; initial: HistoryTableColumnWidths } | null = null;
+
+function operationStatusLabel(status: "completed" | "failed" | "cancelled"): string {
+  if (status === "completed") return "Abgeschlossen";
+  if (status === "failed") return "Fehlgeschlagen";
+  return "Abgebrochen";
+}
+
+function loadHistoryTableColumnWidths(): HistoryTableColumnWidths {
+  try {
+    const stored = typeof window === "undefined" ? null : window.localStorage.getItem(HISTORY_TABLE_COLUMN_STORAGE_KEY);
+    return createHistoryTableColumnWidths(stored ? JSON.parse(stored) : undefined);
+  } catch {
+    return createHistoryTableColumnWidths();
+  }
+}
+
+function applyHistoryTableColumnWidths(source: HTMLElement, widths: HistoryTableColumnWidths): void {
+  const table = source.closest(".history-table");
+  if (!table) return;
+  const template = getHistoryTableGridTemplate(widths);
+  const minWidth = `${getHistoryTableMinWidth(widths)}px`;
+  table.querySelectorAll<HTMLElement>(".history-table-header-row, .history-row, .history-detail-row").forEach((row) => {
+    if (!row.classList.contains("history-detail-row")) {
+      row.style.gridTemplateColumns = template;
+    }
+    row.style.minWidth = minWidth;
+  });
+}
+
+function persistHistoryTableColumnWidths(widths: HistoryTableColumnWidths): void {
+  try {
+    window.localStorage.setItem(HISTORY_TABLE_COLUMN_STORAGE_KEY, JSON.stringify(widths));
+  } catch {
+  }
+}
+
+function syncHistoryTableScroll(event: UIEvent<HTMLDivElement>): void {
+  const header = event.currentTarget.parentElement?.querySelector<HTMLElement>(".history-table-header");
+  if (header) {
+    header.scrollLeft = event.currentTarget.scrollLeft;
+  }
+}
+
+function HistoryRowDetails({
+  row,
+  minWidth,
+  expanded,
+  animationsEnabled
+}: {
+  row: HistoryRow;
+  minWidth: number;
+  expanded: boolean;
+  animationsEnabled: boolean;
+}): ReactElement | null {
+  const [rendered, setRendered] = useState(expanded);
+  const [height, setHeight] = useState<number | null>(null);
+  const disclosureRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const detailRef = useRef<HTMLDivElement>(null);
+  const previousExpanded = useRef(expanded);
+
+  useRendererLayoutEffect(() => {
+    const wasExpanded = previousExpanded.current;
+    previousExpanded.current = expanded;
+    let moveTimer: ReturnType<typeof setTimeout> | null = null;
+    let settleTimer: ReturnType<typeof setTimeout> | null = null;
+
+    if (!animationsEnabled) {
+      setRendered(expanded);
+      setHeight(null);
+      return;
+    }
+
+    if (expanded) {
+      setRendered(true);
+      if (wasExpanded) {
+        setHeight(null);
+      } else {
+        const targetHeight = detailRef.current?.scrollHeight ?? contentRef.current?.scrollHeight ?? 0;
+        const currentHeight = disclosureRef.current?.getBoundingClientRect().height ?? 0;
+        setHeight(currentHeight);
+        moveTimer = setTimeout(() => setHeight(targetHeight), 20);
+        settleTimer = setTimeout(() => setHeight(null), HISTORY_DISCLOSURE_DURATION_MS + 40);
+      }
+    } else if (wasExpanded) {
+      const currentHeight = disclosureRef.current?.getBoundingClientRect().height
+        ?? detailRef.current?.scrollHeight
+        ?? contentRef.current?.scrollHeight
+        ?? 0;
+      setHeight(currentHeight);
+      moveTimer = setTimeout(() => setHeight(0), 20);
+      settleTimer = setTimeout(() => {
+        setRendered(false);
+        setHeight(null);
+      }, HISTORY_DISCLOSURE_DURATION_MS + 40);
+    }
+
+    return () => {
+      if (moveTimer) clearTimeout(moveTimer);
+      if (settleTimer) clearTimeout(settleTimer);
+    };
+  }, [animationsEnabled, expanded]);
+
+  if (!expanded && (!animationsEnabled || !rendered)) {
+    return null;
+  }
+
+  const animatedHeight = animationsEnabled && expanded && !rendered ? 0 : height;
   return (
-    <div className="history-detail-row" role="row">
-      <div className="history-detail-cell" role="cell">
-        <dl className="history-details-grid">
-          <div><dt>Provider</dt><dd>{row.providerLabel}</dd></div>
-          <div><dt>Dateien</dt><dd>{row.fileCount}</dd></div>
-          <div><dt>Dauer</dt><dd>{row.durationLabel}</dd></div>
-          <div><dt>Durchschnitt</dt><dd>{row.averageSpeedLabel}</dd></div>
-          <div className="history-detail-wide"><dt>Zielordner</dt><dd className="history-copyable">{row.outputDir || "—"}</dd></div>
-          <div className="history-detail-wide"><dt>URLs</dt><dd className="history-copyable">{row.urls?.length ? row.urls.join("\n") : "—"}</dd></div>
-        </dl>
+    <div
+      aria-hidden={!expanded}
+      className={`history-detail-disclosure ${expanded ? "is-expanded" : "is-collapsed"}${animationsEnabled ? "" : " is-history-motion-disabled"}`}
+      ref={disclosureRef}
+      style={{ height: animatedHeight === null ? undefined : `${animatedHeight}px`, minWidth }}
+    >
+      <div className="history-detail-clip" ref={contentRef}>
+        <div className="history-detail-row" ref={detailRef} role="row">
+          <div className="history-detail-cell" role="cell">
+            <dl className="history-details-grid">
+              <div><dt>Provider</dt><dd>{row.providerLabel}</dd></div>
+              <div><dt>Dateien</dt><dd>{formatHistoryInteger(row.fileCount, row.language)}</dd></div>
+              {row.hasStructuredLifecycle ? (
+                <>
+                  <div><dt>Download gestartet</dt><dd>{row.startedLabel}</dd></div>
+                  <div><dt>Download beendet</dt><dd>{row.downloadEndedLabel}</dd></div>
+                  <div><dt>Nachbearbeitung gestartet</dt><dd>{row.postProcessStartedLabel}</dd></div>
+                  <div><dt>Abgeschlossen</dt><dd>{row.completedLabel}</dd></div>
+                  <div><dt>Downloaddauer</dt><dd>{row.downloadDurationLabel}</dd></div>
+                  <div><dt>Entpackdauer</dt><dd>{row.extractionDurationLabel}</dd></div>
+                  <div><dt>Remuxdauer</dt><dd>{row.remuxDurationLabel}</dd></div>
+                  <div><dt>Nachbearbeitungsdauer</dt><dd>{row.postProcessDurationLabel}</dd></div>
+                  <div><dt>Gesamtdauer</dt><dd>{row.totalDurationLabel}</dd></div>
+                  <div><dt>Status</dt><dd>{row.statusLabel}</dd></div>
+                  <div><dt>Erfolgreich / Fehlgeschlagen / Abgebrochen</dt><dd>{formatHistoryInteger(row.successfulFiles ?? 0, row.language)} / {formatHistoryInteger(row.failedFiles ?? 0, row.language)} / {formatHistoryInteger(row.cancelledFiles ?? 0, row.language)}</dd></div>
+                  <div><dt>Archive / Parts / Ausgaben</dt><dd>{formatHistoryInteger(row.archiveCount ?? 0, row.language)} / {formatHistoryInteger(row.partCount ?? 0, row.language)} / {formatHistoryInteger(row.outputCount ?? 0, row.language)}</dd></div>
+                  <div><dt>Fehlerphase</dt><dd>{row.failurePhaseLabel}</dd></div>
+                  <div><dt>Fehlerkategorie</dt><dd>{row.errorCategory || "—"}</dd></div>
+                  <div><dt>Download / Offline / Entpacken / Remux / Cleanup / Nachbearbeitung</dt><dd>{row.failureCountsLabel}</dd></div>
+                </>
+              ) : (
+                <div><dt>Downloaddauer (Altbestand)</dt><dd>{row.durationLabel}</dd></div>
+              )}
+              <div><dt>Durchschnitt</dt><dd>{row.averageSpeedLabel}</dd></div>
+              <div className="history-detail-wide"><dt>Zielordner</dt><dd className="history-copyable">{row.outputDir || "—"}</dd></div>
+              <div className="history-detail-wide"><dt>URLs</dt><dd className="history-copyable">{row.urls?.length ? row.urls.join("\n") : "—"}</dd></div>
+            </dl>
+            {row.hasStructuredLifecycle ? (
+              <div className="history-operation-groups">
+                <section className="history-operation-group">
+                  <h3>Archivvorgänge</h3>
+                  {row.archiveOperations?.length ? (
+                    <ul>
+                      {row.archiveOperations.map((operation) => (
+                        <li key={operation.id}>
+                          <strong>{operation.name}</strong>
+                          <span>{formatHistoryInteger(operation.partCount, row.language)} Parts · {formatHistoryDuration(operation.durationMs / 1000)} · {operationStatusLabel(operation.status)}{operation.errorCategory ? ` · ${operation.errorCategory}` : ""}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : <p>Keine Archivvorgänge</p>}
+                </section>
+                <section className="history-operation-group">
+                  <h3>Remuxvorgänge</h3>
+                  {row.remuxOperations?.length ? (
+                    <ul>
+                      {row.remuxOperations.map((operation) => (
+                        <li key={operation.id}>
+                          <strong>{operation.fileName}</strong>
+                          <span>{formatHistoryDuration(operation.durationMs / 1000)} · {operationStatusLabel(operation.status)}{operation.errorCategory ? ` · ${operation.errorCategory}` : ""}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : <p>Keine Remuxvorgänge</p>}
+                </section>
+              </div>
+            ) : null}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -72,7 +274,7 @@ export function HistorySidebar({ model, actions }: HistoryViewProps): ReactEleme
             type="button"
           >
             <span>{item.label}</span>
-            <span>{model.counts[item.id]}</span>
+            <span>{model.loading ? "—" : formatHistoryInteger(model.counts[item.id], model.language)}</span>
           </button>
         ))}
       </SlidingSelection>
@@ -88,12 +290,10 @@ export function HistorySidebar({ model, actions }: HistoryViewProps): ReactEleme
 
 export function HistoryToolbar({ model, actions }: HistoryViewProps): ReactElement {
   const selectedIds = model.selectedIds;
-  const selectedSet = new Set(selectedIds);
-  const restorable = model.rows.some((row) => selectedSet.has(row.id) && (row.urls?.length ?? 0) > 0);
   return (
     <Toolbar className="history-workspace-toolbar" data-visual-region="history-toolbar" label="Verlaufsaktionen">
       <ToolbarGroup label="Einträge">
-        <button className="history-action" disabled={selectedIds.length === 0 || !restorable} onClick={() => actions.onRestore(selectedIds)} type="button">Erneut hinzufügen</button>
+        <button className="history-action" disabled={selectedIds.length === 0 || !model.restorableSelected} onClick={() => actions.onRestore(selectedIds)} type="button">Erneut hinzufügen</button>
         <button className="history-action" disabled={selectedIds.length !== 1} onClick={() => actions.onReveal(selectedIds[0])} type="button">Im Ordner zeigen</button>
         <button className="history-action history-action-danger" disabled={selectedIds.length === 0} onClick={() => actions.onRemove(selectedIds)} type="button">Entfernen</button>
         <button className="history-action" disabled={selectedIds.length === 0} onClick={actions.onClearSelection} type="button">Auswahl löschen</button>
@@ -110,7 +310,10 @@ export function HistoryToolbar({ model, actions }: HistoryViewProps): ReactEleme
 }
 
 export function historyPageStatusLabel(page: HistoryPage): string {
-  return `Seite ${page.page} von ${page.totalPages}`;
+  const language = page.language ?? "de";
+  return language === "en"
+    ? `Page ${formatHistoryInteger(page.page, language)} of ${formatHistoryInteger(page.totalPages, language)}`
+    : `Seite ${formatHistoryInteger(page.page, language)} von ${formatHistoryInteger(page.totalPages, language)}`;
 }
 
 export function HistoryPagination({
@@ -120,9 +323,10 @@ export function HistoryPagination({
   page: HistoryPage;
   onPageChange: (page: number) => void;
 }): ReactElement {
+  const language = page.language ?? "de";
   return (
     <nav aria-label="Verlaufsseiten" className="history-pagination" data-visual-region="history-pagination">
-      <span className="history-pagination-size">{page.pageSize} pro Seite</span>
+      <span className="history-pagination-size">{formatHistoryInteger(page.pageSize, language)} {language === "en" ? "per page" : "pro Seite"}</span>
       <div className="history-pagination-controls">
         <button
           aria-label="Vorherige Verlaufsseite"
@@ -145,6 +349,22 @@ export function HistoryPagination({
   );
 }
 
+export function reportHistoryVisiblePageCount(
+  actions: Pick<HistoryViewActions, "onVisiblePageCountChange">,
+  page: HistoryPage
+): void {
+  actions.onVisiblePageCountChange?.(page.rows.length);
+}
+
+export function reportHistoryVisiblePage(
+  actions: Pick<HistoryViewActions, "onVisiblePageChange" | "onVisiblePageCountChange">,
+  page: HistoryPage
+): void {
+  const ids = page.rows.map((row) => row.id);
+  actions.onVisiblePageCountChange?.(ids.length);
+  actions.onVisiblePageChange?.(ids);
+}
+
 interface HistoryContentPageProps extends HistoryViewProps {
   page: HistoryPage;
   onPageChange: (page: number) => void;
@@ -164,13 +384,42 @@ export function HistoryContentPage({ model, actions, page, onPageChange }: Histo
     : model.error
       ? { role: "alert" as const, live: "assertive" as const, message: `${model.error}. Öffne die Ansicht erneut, um es noch einmal zu versuchen.` }
       : null;
+  const columnWidths = loadHistoryTableColumnWidths();
+  const gridTemplateColumns = getHistoryTableGridTemplate(columnWidths);
+  const minWidth = getHistoryTableMinWidth(columnWidths);
+  const beginResize = (event: PointerEvent<HTMLButtonElement>, column: HistoryTableColumnId): void => {
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    historyTableResizeSession = { column, startX: event.clientX, initial: loadHistoryTableColumnWidths() };
+  };
+  const continueResize = (event: PointerEvent<HTMLButtonElement>): void => {
+    const active = historyTableResizeSession;
+    if (!active) return;
+    const next = resizeHistoryTableColumn(active.initial, active.column, event.clientX - active.startX);
+    applyHistoryTableColumnWidths(event.currentTarget, next);
+    persistHistoryTableColumnWidths(next);
+  };
+  const finishResize = (event: PointerEvent<HTMLButtonElement>): void => {
+    if (!historyTableResizeSession) return;
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    historyTableResizeSession = null;
+  };
+  const resizeWithKeyboard = (event: KeyboardEvent<HTMLButtonElement>, column: HistoryTableColumnId): void => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    event.stopPropagation();
+    const next = resizeHistoryTableColumn(loadHistoryTableColumnWidths(), column, event.key === "ArrowRight" ? 16 : -16);
+    applyHistoryTableColumnWidths(event.currentTarget, next);
+    persistHistoryTableColumnWidths(next);
+  };
 
   return (
     <section aria-label="Verlaufstabelle" className="history-content">
       <h1 className="history-main-title">Verlauf</h1>
       <DataTable className="history-table" label="Verlauf">
         <DataTableHeader className="history-table-header">
-          <div className="history-table-header-row" role="row">
+          <div className="history-table-header-row" role="row" style={{ gridTemplateColumns, minWidth }}>
             <span className="history-column-select" role="columnheader">
               <input
                 aria-label="Alle sichtbaren Einträge auswählen"
@@ -180,19 +429,31 @@ export function HistoryContentPage({ model, actions, page, onPageChange }: Histo
                 type="checkbox"
               />
             </span>
-            <span role="columnheader">Paket / Datei</span>
-            <span role="columnheader">Status</span>
-            <span role="columnheader">Größe</span>
-            <span role="columnheader">Hoster</span>
-            <span role="columnheader">Gestartet</span>
-            <span role="columnheader">Beendet</span>
+            {HISTORY_TABLE_COLUMNS.map((column, index) => (
+              <span className="history-resizable-header" key={column} role="columnheader">
+                {column}
+                <button
+                  aria-label={`${column} Spaltenbreite ändern`}
+                  aria-orientation="vertical"
+                  className="history-column-resizer"
+                  onClick={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => resizeWithKeyboard(event, HISTORY_TABLE_COLUMN_IDS[index])}
+                  onPointerCancel={finishResize}
+                  onPointerDown={(event) => beginResize(event, HISTORY_TABLE_COLUMN_IDS[index])}
+                  onPointerMove={continueResize}
+                  onPointerUp={finishResize}
+                  role="separator"
+                  type="button"
+                />
+              </span>
+            ))}
             <span role="columnheader">Aktion</span>
           </div>
         </DataTableHeader>
-        <DataTableBody className="history-table-body" data-visual-region="history-table-body">
+        <DataTableBody className="history-table-body" data-visual-region="history-table-body" onScroll={syncHistoryTableScroll}>
           {model.loading ? (
             <DataTableEmpty description="Die gespeicherten Einträge werden geladen." title="Verlauf wird geladen" />
-          ) : model.error ? (
+          ) : model.error && model.totalCount === 0 ? (
             <DataTableEmpty className="history-table-error" description="Öffne die Ansicht erneut, um es noch einmal zu versuchen." title={model.error} />
           ) : showEmpty ? (
             <DataTableEmpty description={emptyTitle === "Noch kein Verlauf" ? "Abgeschlossene und gelöschte Pakete erscheinen hier." : "Passe Filter oder Suche an."} title={emptyTitle} />
@@ -213,6 +474,7 @@ export function HistoryContentPage({ model, actions, page, onPageChange }: Histo
                     data-history-row-id={row.id}
                     onContextMenu={onContextMenu}
                     role="row"
+                    style={{ gridTemplateColumns, minWidth }}
                   >
                     <span className="history-column-select" role="cell">
                       <input
@@ -252,7 +514,12 @@ export function HistoryContentPage({ model, actions, page, onPageChange }: Histo
                       >⋮</button>
                     </span>
                   </div>
-                  {isExpanded ? <HistoryRowDetails row={row} /> : null}
+                  <HistoryRowDetails
+                    animationsEnabled={model.animationsEnabled}
+                    expanded={isExpanded}
+                    minWidth={minWidth}
+                    row={row}
+                  />
                 </div>
               );
             })
@@ -264,14 +531,18 @@ export function HistoryContentPage({ model, actions, page, onPageChange }: Histo
           {announcement.message}
         </div>
       ) : null}
-      <HistoryPagination onPageChange={onPageChange} page={page} />
+      {!model.loading && <HistoryPagination onPageChange={onPageChange} page={page} />}
     </section>
   );
 }
 
 function PaginatedHistoryContent({ model, actions }: HistoryViewProps): ReactElement {
   const [requestedPage, setRequestedPage] = useState(1);
-  const page = paginateHistoryRows(model.rows, requestedPage);
+  const page = getHistoryPage(model, requestedPage);
+
+  useEffect(() => {
+    reportHistoryVisiblePage(actions, page);
+  }, [actions.onVisiblePageChange, actions.onVisiblePageCountChange, page]);
 
   useEffect(() => {
     setRequestedPage((current) => current === page.page ? current : page.page);
@@ -287,9 +558,9 @@ function PaginatedHistoryContent({ model, actions }: HistoryViewProps): ReactEle
   );
 }
 
-export function HistoryContent({ model, actions }: HistoryViewProps): ReactElement {
+export const HistoryContent = memo(function HistoryContent({ model, actions }: HistoryViewProps): ReactElement {
   return <PaginatedHistoryContent actions={actions} key={`${model.filter}\u0000${model.query}`} model={model} />;
-}
+});
 
 export function HistoryFooter(_props: Pick<HistoryViewProps, "model">): null {
   return null;

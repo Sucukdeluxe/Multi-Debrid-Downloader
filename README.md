@@ -2,8 +2,8 @@
 
 Fast package-based downloading for Windows with multiple debrid services, automatic fallback, link availability checks, extraction, queue recovery, history, statistics, and built-in updates.
 
-[![Latest release](https://img.shields.io/github/v/release/Sucukdeluxe/multi-debrid-downloader?display_name=tag)](https://github.com/Sucukdeluxe/multi-debrid-downloader/releases/latest)
-[![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6)](https://github.com/Sucukdeluxe/multi-debrid-downloader/releases/latest)
+[![Latest release](https://img.shields.io/github/v/release/Sucukdeluxe/Multi-Debrid-Downloader?display_name=tag)](https://github.com/Sucukdeluxe/Multi-Debrid-Downloader/releases/latest)
+[![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6)](https://github.com/Sucukdeluxe/Multi-Debrid-Downloader/releases/latest)
 [![Electron](https://img.shields.io/badge/Electron-31-47848F)](https://www.electronjs.org/)
 [![License](https://img.shields.io/badge/license-MIT-2ea44f)](LICENSE)
 
@@ -17,12 +17,12 @@ The interface is available in English and German. New installations start in Eng
 
 ## Download
 
-The latest Windows release is available on the [GitHub Releases page](https://github.com/Sucukdeluxe/multi-debrid-downloader/releases/latest).
+The latest Windows release is available on the [GitHub Releases page](https://github.com/Sucukdeluxe/Multi-Debrid-Downloader/releases/latest).
 
 | Package | Recommended for |
 | --- | --- |
-| `Real-Debrid-Downloader-Setup-<version>.exe` | Normal installation with Start menu and optional desktop shortcut |
-| `Real-Debrid-Downloader-<version>-portable.exe` | Portable use without installation |
+| `Multi-Debrid-Downloader-Setup-<version>.exe` | Normal installation with Start menu and optional desktop shortcut |
+| `Multi-Debrid-Downloader-<version>-portable.exe` | Portable use without installation |
 | `SHA256SUMS.txt` | Verifying downloaded files |
 
 Windows 10 or Windows 11 is required. Release executables are currently unsigned, so Windows may show a SmartScreen warning on first launch.
@@ -38,14 +38,26 @@ Windows 10 or Windows 11 is required. Release executables are currently unsigned
 - Persistent sessions, history, all-time statistics, queue backup import/export, and recovery after restart.
 - English and German interface with localized dialogs, statuses, menus, settings, and update information.
 - Built-in GitHub update checks with release changelogs and installer download support.
+- Optional MCP remote diagnostics and controls, including separately authorized official updates with persistent jobs and restart/version verification.
+
+## MCP updates
+
+Publisher-signed direct installers can also be sent over MCP without publishing a release. The same local update permission is required. The transfer is bound to this installation and its current version, verifies the publisher signature and the complete SHA-256 digest, and creates a verified settings/session backup before the fixed installer starts. Use `mdd_update_upload_*` followed by `mdd_update_status`; no arbitrary remote commands or destination paths are exposed. See `services/mcp-relay/PROTOCOL.md` for the signed manifest and transfer contract.
+
+Enable MCP under Help → MCP remote access. The separate permission to install official updates without local confirmation is off by default and requires control permission. Existing connection codes remain valid; permissions cannot be expanded through remote settings tools. Deletions, restores and other critical actions retain their local confirmation.
+
+For the installed Windows edition using the official update repository, call `mdd_update_check`, then `mdd_update_install` with the exact `expectedVersion` and a unique `requestKey` containing 8–128 letters, digits, underscores or hyphens. Set `allowInterrupt: true` only when interrupting active downloads for installation is intended. Preparation and installer verification do not stop downloads. Query `mdd_update_status` for progress; the accepted job continues after the initiating MCP request ends. If a response is lost, query status or repeat the same request key rather than creating another job.
+
+The verified installer parks and persists the current queue before handoff and restarts the application. After reconnecting, require both `completed` and the matching `verifiedVersion`; losing a connection or launching an installer alone is not success. Failed or interrupted jobs are not retried automatically. Portable editions are explicitly unsupported for remote replacement. Update the application manually once to obtain this capability, then enable the new permission locally.
 
 ## Supported services
 
 | Service | Access modes |
 | --- | --- |
-| Real-Debrid | API token |
+| Real-Debrid | API token, browser login |
 | AllDebrid | API token, browser login |
 | BestDebrid | API token, cookie import |
+| Deepbrid | API key |
 | Debrid-Link | Multiple API keys |
 | Mega-Debrid | API, web login |
 | LinkSnappy | Account login |
@@ -59,7 +71,7 @@ Provider availability and supported hosters can change independently of the appl
 The Downloads workspace is optimized for large queues:
 
 - Compact package and file rows with progress, downloaded size, total size, hoster, service, priority, status, speed, and availability.
-- RapidGator and DDownload hoster icons with full names in tooltips.
+- RapidGator, 1Fichier, and DDownload hoster icons with full names in tooltips.
 - Online counters for packages and clear online, partial, checking, and offline states.
 - Drag-reorderable columns with a smooth full-column preview and persisted layout.
 - Green progress indicators, animated package expansion, and clear selected-row highlighting.
@@ -79,7 +91,6 @@ The Downloads workspace is optimized for large queues:
 
 - Manage several accounts or API keys for the same provider.
 - Enable or disable individual accounts without deleting their saved data.
-- Apply account changes to active queues without restarting the application and continue with the next usable account when an attempt fails.
 - Check account status, remaining traffic, username, expiry, and access type.
 - Configure primary, secondary, and tertiary provider fallback.
 - Route individual hosters through a specific provider.
@@ -94,7 +105,7 @@ The Downloads workspace is optimized for large queues:
 - Global or per-download speed limits and time-based bandwidth schedules.
 - Package speed, ETA, progress, and live bandwidth statistics.
 - Duplicate handling with keep, skip, or overwrite choices.
-- Optional scheduled queue start and automatic resume after restart.
+- Optional one-time or recurring daily queue starts with local-time scheduling and automatic resume after restart.
 
 ## Extraction and cleanup
 
@@ -121,11 +132,12 @@ The Downloads workspace is optimized for large queues:
 - Configurable download folder, queue behavior, history retention, notifications, extraction, cleanup, and bandwidth.
 - GitHub update checks with localized release notes and download actions.
 - Backup export/import for settings and optional queue data.
+- Discord webhook notifications for package and run results, remaining volume, confirmed stalls, and recovery.
 - Optional minimize-to-tray and desktop notifications.
 
 ## Getting started
 
-1. Download the installer or portable executable from [Releases](https://github.com/Sucukdeluxe/multi-debrid-downloader/releases/latest).
+1. Download the installer or portable executable from [Releases](https://github.com/Sucukdeluxe/Multi-Debrid-Downloader/releases/latest).
 2. Open **Settings → Accounts** and add at least one supported debrid account.
 3. Configure provider order and optional hoster routing under **Usage rules**.
 4. Add links from **Downloads** or prepare collections in **Link collector**.
@@ -187,16 +199,18 @@ src/shared               Shared types and contracts
 resources/extractor-jvm  Optional extraction runtime
 services/backup-api      Backup API service
 scripts                  Build and release verification tools
-tests                    Unit and integration tests
+tests                    Local-only unit and integration tests (not included in Git)
 ```
 
 ## Data, privacy, and diagnostics
 
 Configuration, credentials, queue state, history, and logs are stored locally in Electron's `userData` directory. Secrets are not included in public source or release archives. Provider credentials are only sent to the configured provider endpoints required for account and download operations.
 
-The application can generate a bounded support bundle that correlates account rotation, link conversion, download recovery, disk waiting, queue controls, and export phases with anonymous identifiers. Credentials, copied content, URLs, hostnames, local paths, package names, and filenames are redacted before diagnostic data is persisted and again when the archive is built.
+The application can generate support diagnostics and expose an optional authenticated local debug API. Remote access is disabled by default. Do not expose diagnostic endpoints publicly without a firewall, VPN, or reverse proxy, and always use a strong unique token.
 
-An optional authenticated local debug API is also available. Remote access is disabled by default. Do not expose diagnostic endpoints publicly without a firewall, VPN, or reverse proxy, and always use a strong unique token.
+Support bundles include actual native and JVM archive-password attempts with their archive, backend, timing, and result. Password values are encrypted locally with Electron SafeStorage and omitted when encryption is unavailable. The diagnostic history retains up to 5,000 events or 4 MiB and reports discarded events. It cannot reconstruct attempts made before this feature was installed.
+
+The desktop support export offers an unchecked **Include attempted archive passwords in plain text** option. Enabling it includes only available, actually attempted archive passwords in `overview/archive-password-attempts.json`, not account passwords or API keys. Share such ZIP files only with trusted recipients. Standard exports and the diagnostic HTTP endpoint include only metadata for these attempts; the encrypted local password store is never bundled.
 
 ## Updates and changelog
 

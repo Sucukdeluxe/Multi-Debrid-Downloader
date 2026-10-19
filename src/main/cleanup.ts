@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ARCHIVE_TEMP_EXTENSIONS, LINK_ARTIFACT_EXTENSIONS, MAX_LINK_ARTIFACT_BYTES, RAR_SPLIT_RE, SAMPLE_DIR_NAMES, SAMPLE_TOKEN_RE, SAMPLE_VIDEO_EXTENSIONS } from "./constants";
+import { isExtractionStagingDirectoryName } from "./extraction-output";
 
 async function yieldToLoop(): Promise<void> {
   await new Promise<void>((resolve) => {
@@ -31,6 +32,7 @@ export function cleanupCancelledPackageArtifacts(packageDir: string): number {
     let entries: fs.Dirent[] = [];
     try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { continue; }
     for (const entry of entries) {
+      if (isExtractionStagingDirectoryName(entry.name)) continue;
       const full = path.join(current, entry.name);
       if (entry.isDirectory() && !entry.isSymbolicLink()) {
         stack.push(full);
@@ -72,6 +74,7 @@ export async function cleanupCancelledPackageArtifactsAsync(
     }
 
     for (const entry of entries) {
+      if (isExtractionStagingDirectoryName(entry.name)) continue;
       if (options.shouldAbort?.()) {
         return removed;
       }
@@ -114,6 +117,7 @@ export async function removeDownloadLinkArtifacts(
     let entries: fs.Dirent[] = [];
     try { entries = await fs.promises.readdir(current, { withFileTypes: true }); } catch { continue; }
     for (const entry of entries) {
+      if (isExtractionStagingDirectoryName(entry.name)) continue;
       if (options.shouldAbort?.()) {
         return removed;
       }
@@ -182,6 +186,7 @@ export async function removeSampleArtifacts(
         continue;
       }
       for (const entry of entries) {
+        if (isExtractionStagingDirectoryName(entry.name)) continue;
         const full = path.join(current, entry.name);
         if (entry.isDirectory()) {
           try {
@@ -209,6 +214,7 @@ export async function removeSampleArtifacts(
     let entries: fs.Dirent[] = [];
     try { entries = await fs.promises.readdir(current, { withFileTypes: true }); } catch { continue; }
     for (const entry of entries) {
+      if (isExtractionStagingDirectoryName(entry.name)) continue;
       if (options.shouldAbort?.()) {
         return { files: removedFiles, dirs: removedDirs };
       }

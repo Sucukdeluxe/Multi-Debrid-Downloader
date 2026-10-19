@@ -1,11 +1,11 @@
-import type { AccountDeleteCommand, AccountReplaceCommand, DebridProvider, RendererAccount, RendererAccountKind } from "../shared/types";
+import type { AccountDeleteCommand, AccountReplaceCommand, AccountSecretRequest, DebridProvider, RendererAccount, RendererAccountKind } from "../shared/types";
 
-export type AccountService = "realdebrid" | "megadebrid-api" | "megadebrid-web" | "bestdebrid" | "alldebrid" | "ddownload" | "onefichier" | "debridlink" | "linksnappy";
+export type AccountService = "realdebrid" | "megadebrid-api" | "megadebrid-web" | "bestdebrid" | "alldebrid" | "deepbrid" | "ddownload" | "onefichier" | "debridlink" | "linksnappy";
 export type AccountKind = RendererAccountKind;
 export type SingleAccountKind = Exclude<AccountKind, "megadebrid-api" | "megadebrid-web" | "debridlink-api">;
 
 export type AccountEditTarget =
-  | { type: "single"; rowKey: string; kind: SingleAccountKind; service: AccountService; provider: DebridProvider }
+  | { type: "single"; rowKey: string; kind: SingleAccountKind; service: AccountService; provider: DebridProvider; accountId?: string }
   | { type: "mega"; rowKey: string; kind: "megadebrid-api" | "megadebrid-web"; service: "megadebrid-api" | "megadebrid-web"; accountId: string }
   | { type: "debridlink"; rowKey: string; kind: "debridlink-api"; service: "debridlink"; keyId: string };
 
@@ -37,7 +37,7 @@ function parseDailyLimit(value: string, originalBytes: number): number {
 function targetAccountId(target: AccountEditTarget): string {
   if (target.type === "mega") return target.accountId;
   if (target.type === "debridlink") return target.keyId;
-  return `svc-${target.provider}`;
+  return target.accountId || `svc-${target.provider}`;
 }
 
 export function createAccountEditState(target: AccountEditTarget, accounts: readonly RendererAccount[]): AccountEditState {
@@ -96,4 +96,8 @@ export function buildAccountReplaceCommand(state: AccountEditState): AccountRepl
 
 export function buildAccountDeleteCommand(target: AccountEditTarget): AccountDeleteCommand {
   return { action: "delete", kind: target.kind, accountId: targetAccountId(target) };
+}
+
+export function buildAccountSecretRequest(target: AccountEditTarget): AccountSecretRequest {
+  return { kind: target.kind, accountId: targetAccountId(target) };
 }

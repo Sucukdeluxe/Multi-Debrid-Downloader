@@ -7,13 +7,18 @@ export interface InstallResumeManager {
 
 export async function runInstallWithResume<T extends { started: boolean }>(
   manager: InstallResumeManager,
-  doInstall: () => Promise<T>
+  doInstall: (park: () => void) => Promise<T>,
+  deferParking = false
 ): Promise<T> {
-  const wasRunning = manager.isSessionRunning();
-  if (wasRunning) {
-    manager.stop({ parkForRestart: true });
-  }
-  manager.persistNowSync();
+  let wasRunning = false;
+  let parked = false;
+  const park = (): void => {
+    if (parked) return;
+    wasRunning = manager.isSessionRunning();
+    parked = true;
+    if (wasRunning) manager.stop({ parkForRestart: true });
+    manager.persistNowSync();
+  };
 
   const resumeIfParked = async (): Promise<void> => {
     if (wasRunning && !manager.isSessionRunning()) {
@@ -22,7 +27,8 @@ export async function runInstallWithResume<T extends { started: boolean }>(
   };
 
   try {
-    const result = await doInstall();
+    if (!deferParking) park();
+    const result = await doInstall(park);
     if (!result.started) {
       await resumeIfParked();
     }

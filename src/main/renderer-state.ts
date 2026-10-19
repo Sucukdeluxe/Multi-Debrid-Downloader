@@ -1,7 +1,9 @@
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
-import { getMegaDebridAccountsForMode, getMegaDebridAccountStatusId, getMegaDebridDisabledAccountIdsForMode } from "../shared/mega-debrid-accounts";
+import { getMegaDebridAccountsForMode, getMegaDebridDisabledAccountIdsForMode } from "../shared/mega-debrid-accounts";
+import { getRealDebridAccounts } from "../shared/real-debrid-accounts";
 import type { AppSettings, DebridAccountStatus, DebridProvider, RendererAccount, RendererAccountKind, RendererSettings } from "../shared/types";
 import { collectAccountStatusRedactionValues, sanitizeDebridAccountStatus } from "./account-status-sanitizer";
+import { nextDailyStartEpochMs } from "./daily-start-scheduler";
 
 function maskValue(value: string, keepStart = 3, keepEnd = 3): string {
   const trimmed = value.trim();
@@ -51,7 +53,24 @@ function singleAccount(
 export function createRendererAccounts(settings: AppSettings): RendererAccount[] {
   const accounts: RendererAccount[] = [];
   const redactions = collectAccountStatusRedactionValues(settings);
-  if (settings.realDebridUseWebLogin || settings.token.trim()) {
+  const realDebridAccounts = getRealDebridAccounts(settings);
+  for (const account of realDebridAccounts) {
+    const status = safeStatus(settings.debridAccountStatuses[account.id], redactions);
+    accounts.push({
+      accountId: account.id,
+      kind: account.kind === "web" ? "realdebrid-web" : "realdebrid-api",
+      provider: "realdebrid",
+      identity: status?.username || "",
+      maskedIdentity: account.maskedLogin,
+      hasSecret: true,
+      enabled: providerEnabled(settings, "realdebrid") && account.enabled,
+      dailyLimitBytes: settings.realDebridAccountDailyLimitBytes[account.id] || 0,
+      dailyUsageBytes: settings.realDebridAccountDailyUsageBytes[account.id] || 0,
+      totalUsageBytes: settings.realDebridAccountTotalUsageBytes[account.id] || 0,
+      status
+    });
+  }
+  if (realDebridAccounts.length === 0 && (settings.realDebridUseWebLogin || settings.token.trim())) {
     accounts.push(singleAccount(
       settings,
       settings.realDebridUseWebLogin ? "realdebrid-web" : "realdebrid-api",
@@ -78,7 +97,7 @@ export function createRendererAccounts(settings: AppSettings): RendererAccount[]
         dailyLimitBytes: settings.megaDebridAccountDailyLimitBytes[account.id] || 0,
         dailyUsageBytes: settings.megaDebridAccountDailyUsageBytes[account.id] || 0,
         totalUsageBytes: settings.megaDebridAccountTotalUsageBytes[account.id] || 0,
-        status: safeStatus(settings.debridAccountStatuses[getMegaDebridAccountStatusId(account.id, mode)], redactions)
+        status: safeStatus(settings.debridAccountStatuses[account.id], redactions)
       });
     }
   }
@@ -101,6 +120,13 @@ export function createRendererAccounts(settings: AppSettings): RendererAccount[]
       settings.allDebridUseWebLogin ? "Browser-Login" : maskValue(settings.allDebridToken),
       true
     ));
+  }
+  if (settings.deepbridApiKey.trim()) {
+    const status = safeStatus(settings.debridAccountStatuses["svc-deepbrid"], redactions);
+    accounts.push({
+      ...singleAccount(settings, "deepbrid-api", "deepbrid", status?.username || "", maskValue(settings.deepbridApiKey), true),
+      status
+    });
   }
   if (settings.ddownloadLogin.trim() && settings.ddownloadPassword) {
     accounts.push(singleAccount(settings, "ddownload-login", "ddownload", settings.ddownloadLogin.trim(), maskValue(settings.ddownloadLogin, 2, 4), true));
@@ -135,6 +161,10 @@ export function createRendererSettings(settings: AppSettings): RendererSettings 
   return {
     language: settings.language,
     realDebridUseWebLogin: settings.realDebridUseWebLogin,
+    realDebridDisabledAccountIds: [...settings.realDebridDisabledAccountIds],
+    realDebridAccountDailyLimitBytes: { ...settings.realDebridAccountDailyLimitBytes },
+    realDebridAccountDailyUsageBytes: { ...settings.realDebridAccountDailyUsageBytes },
+    realDebridAccountTotalUsageBytes: { ...settings.realDebridAccountTotalUsageBytes },
     megaDebridApiEnabled: settings.megaDebridApiEnabled,
     megaDebridWebEnabled: settings.megaDebridWebEnabled,
     megaDebridPreferApi: settings.megaDebridPreferApi,
@@ -144,11 +174,13 @@ export function createRendererSettings(settings: AppSettings): RendererSettings 
     rememberToken: settings.rememberToken,
     configuredProviders,
     providerOrder: [...settings.providerOrder],
+    accountUsageRules: structuredClone(settings.accountUsageRules ?? {}),
     providerPrimary: settings.providerPrimary,
     providerSecondary: settings.providerSecondary,
     providerTertiary: settings.providerTertiary,
     autoProviderFallback: settings.autoProviderFallback,
     outputDir: settings.outputDir,
+    createWorkDirectoriesOnStartup: settings.createWorkDirectoriesOnStartup,
     packageName: settings.packageName,
     autoExtract: settings.autoExtract,
     autoRename4sf4sj: settings.autoRename4sf4sj,
@@ -171,16 +203,24 @@ export function createRendererSettings(settings: AppSettings): RendererSettings 
     maxParallel: settings.maxParallel,
     maxParallelExtract: settings.maxParallelExtract,
     retryLimit: settings.retryLimit,
+    offlineSkipScope: settings.offlineSkipScope,
     speedLimitEnabled: settings.speedLimitEnabled,
     speedLimitKbps: settings.speedLimitKbps,
     speedLimitMode: settings.speedLimitMode,
+    proxyDownloadEnabled: settings.proxyDownloadEnabled,
+    proxyListPath: settings.proxyListPath,
+    proxyApiProxyIndex: settings.proxyApiProxyIndex,
+    proxyConnectionsPerDownload: settings.proxyConnectionsPerDownload,
     updateRepo: settings.updateRepo,
     autoUpdateCheck: settings.autoUpdateCheck,
     clipboardWatch: settings.clipboardWatch,
+    switchToCollectorOnClipboard: settings.switchToCollectorOnClipboard,
     minimizeToTray: settings.minimizeToTray,
     theme: settings.theme,
+    themePreference: settings.themePreference,
     logStorageLocation: settings.logStorageLocation,
     collapseNewPackages: settings.collapseNewPackages,
+    animatePackageDisclosure: settings.animatePackageDisclosure,
     historyRetentionMode: settings.historyRetentionMode,
     historyMaxEntries: settings.historyMaxEntries,
     historyMaxAgeDays: settings.historyMaxAgeDays,
@@ -197,6 +237,13 @@ export function createRendererSettings(settings: AppSettings): RendererSettings 
     notifyOnPackageCompleted: settings.notifyOnPackageCompleted,
     notifyOnPackageFailed: settings.notifyOnPackageFailed,
     notifyOnRunFinished: settings.notifyOnRunFinished,
+    notifyPackageSuccessMode: settings.notifyPackageSuccessMode,
+    notifyOnRemainingBelow: settings.notifyOnRemainingBelow,
+    notifyRemainingThresholdGb: settings.notifyRemainingThresholdGb,
+    notifyOnDownloadStall: settings.notifyOnDownloadStall,
+    notifyStallAfterSeconds: settings.notifyStallAfterSeconds,
+    notifyStallCooldownMinutes: settings.notifyStallCooldownMinutes,
+    notifyOnDownloadRecovery: settings.notifyOnDownloadRecovery,
     totalDownloadedAllTime: settings.totalDownloadedAllTime,
     totalCompletedFilesAllTime: settings.totalCompletedFilesAllTime,
     totalRuntimeAllTimeMs: settings.totalRuntimeAllTimeMs,
@@ -221,7 +268,14 @@ export function createRendererSettings(settings: AppSettings): RendererSettings 
     megaDebridAccountTotalUsageBytes: { ...settings.megaDebridAccountTotalUsageBytes },
     debridAccountStatuses: Object.fromEntries(Object.entries(settings.debridAccountStatuses).map(([id, status]) => [id, safeStatus(status, redactions)])),
     providerDailyUsageDay: settings.providerDailyUsageDay,
-    scheduledStartEpochMs: settings.scheduledStartEpochMs
+    dailyStartEnabled: settings.dailyStartEnabled,
+    dailyStartMinuteOfDay: settings.dailyStartMinuteOfDay,
+    dailyStartFirstLocalDate: settings.dailyStartFirstLocalDate,
+    dailyStartLastHandledLocalDate: settings.dailyStartLastHandledLocalDate,
+    dailyStartPendingLocalDate: settings.dailyStartPendingLocalDate,
+    dailyStartLastOutcome: settings.dailyStartLastOutcome,
+    scheduledStartEpochMs: settings.scheduledStartEpochMs,
+    nextDailyStartEpochMs: nextDailyStartEpochMs(settings)
   } as RendererSettings;
 }
 

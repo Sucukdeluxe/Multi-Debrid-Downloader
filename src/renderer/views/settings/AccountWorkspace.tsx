@@ -3,10 +3,13 @@ import {
   type DragEvent,
   type KeyboardEvent,
   type MouseEvent,
+  type PointerEvent,
   type ReactElement,
   type UIEvent
 } from "react";
 import { SlidingSelection } from "../../ui/SlidingSelection";
+import { AccountPriorityControls, type AccountPriorityModel } from "./AccountPriorityControls";
+import type { AccountSelectionMode } from "../../../shared/account-usage-rules";
 import {
   DataTable,
   DataTableBody,
@@ -16,18 +19,55 @@ import {
 import { Dialog } from "../../ui/Dialog";
 import {
   ACCOUNT_COLUMNS,
+  ACCOUNT_TABLE_COLUMN_IDS,
+  createAccountTableColumnWidths,
+  getAccountTableGridTemplate,
+  getAccountTableMinWidth,
   getSettingsSelectNavigationIndex,
-  type AccountAddFilter,
+  resizeAccountTableColumn,
   type AccountAddOption,
-  type AccountRowViewModel
+  type AccountRowViewModel,
+  type AccountTableColumnId,
+  type AccountTableColumnWidths
 } from "./settings-model";
 
-export type AccountWorkspacePanel = "overview" | "rules";
+export type AccountWorkspacePanel = "overview" | "rules" | "runtime";
 
 const ACCOUNT_WORKSPACE_PANELS: readonly { id: AccountWorkspacePanel; label: string }[] = [
   { id: "overview", label: "Übersicht" },
-  { id: "rules", label: "Verwendungsregeln" }
+  { id: "rules", label: "Verwendungsregeln" },
+  { id: "runtime", label: "Laufzeit" }
 ];
+
+const ACCOUNT_TABLE_COLUMN_STORAGE_KEY = "mdd.account-table-columns.v1";
+let accountTableResizeSession: { column: AccountTableColumnId; startX: number; initial: AccountTableColumnWidths } | null = null;
+
+function loadAccountTableColumnWidths(): AccountTableColumnWidths {
+  try {
+    const stored = typeof window === "undefined" ? null : window.localStorage.getItem(ACCOUNT_TABLE_COLUMN_STORAGE_KEY);
+    return createAccountTableColumnWidths(stored ? JSON.parse(stored) : undefined);
+  } catch {
+    return createAccountTableColumnWidths();
+  }
+}
+
+function applyAccountTableColumnWidths(source: HTMLElement, widths: AccountTableColumnWidths): void {
+  const table = source.closest(".settings-account-table");
+  if (!table) return;
+  const template = getAccountTableGridTemplate(widths);
+  const minWidth = `${getAccountTableMinWidth(widths)}px`;
+  table.querySelectorAll<HTMLElement>(".settings-account-table-grid, .settings-account-row").forEach((row) => {
+    row.style.gridTemplateColumns = template;
+    row.style.minWidth = minWidth;
+  });
+}
+
+function persistAccountTableColumnWidths(widths: AccountTableColumnWidths): void {
+  try {
+    window.localStorage.setItem(ACCOUNT_TABLE_COLUMN_STORAGE_KEY, JSON.stringify(widths));
+  } catch {
+  }
+}
 
 function getAccountPanelNavigationIndex(currentIndex: number, key: string): number | null {
   if (key === "ArrowRight") {
@@ -43,7 +83,7 @@ function getAccountPanelNavigationIndex(currentIndex: number, key: string): numb
 }
 
 export interface AccountRulesViewModel {
-  providerOrder: readonly string[];
+  providerOrder: readonly { id: string; label: string; icon: string; accountSelection?: AccountPriorityModel }[];
   routing: readonly string[];
   autoFallback: boolean;
   rememberCredentials?: boolean;
@@ -57,6 +97,34 @@ export interface AccountRulesViewModel {
   availableRoutingHosters?: readonly { value: string; label: string }[];
 }
 
+export interface AccountRuntimeProviderViewModel {
+  id: string;
+  label: string;
+  accountCount: number;
+  availableAccountCount: number;
+  activeDownloads: number;
+  dailyUsageText: string;
+}
+
+export interface AccountRuntimeRowViewModel {
+  id: string;
+  providerLabel: string;
+  modeLabel: string;
+  identity: string;
+  stateLabel: string;
+  stateTone: "ok" | "active" | "warning" | "danger" | "muted";
+  activeDownloads: number;
+  dailyUsageText: string;
+  successRateText: string;
+  lastUsedText: string;
+  cooldownText: string;
+}
+
+export interface AccountRuntimeViewModel {
+  providers: readonly AccountRuntimeProviderViewModel[];
+  accounts: readonly AccountRuntimeRowViewModel[];
+}
+
 export interface AccountWorkspaceViewModel {
   activePanel: AccountWorkspacePanel;
   rows: readonly AccountRowViewModel[];
@@ -65,19 +133,24 @@ export interface AccountWorkspaceViewModel {
   error?: string;
   statusSort?: "none" | "desc" | "asc";
   rules: AccountRulesViewModel;
+  runtime: AccountRuntimeViewModel;
 }
 
 export interface AccountWorkspaceActions {
   onPanelChange: (panel: AccountWorkspacePanel) => void;
-  onSelect: (rowId: string) => void;
-  onToggleEnabled: (rowId: string) => void;
+  onSelect: (rowId: string, additive: boolean) => void;
+  onToggleEnabled: (rowId: string, enabled: boolean) => void;
   onEdit: (rowId: string) => void;
   onContextMenu: (rowId: string, x: number, y: number) => void;
+  onCopyIdentity: (label: "Benutzername" | "E-Mail", value: string) => void;
   onAdd: () => void;
   onRemoveSelected: () => void;
+  onCheckActive: () => void;
   onCheckAll: () => void;
   onStatusSort?: () => void;
   onMoveProvider?: (index: number, direction: -1 | 1) => void;
+  onAccountSelectionMode?: (provider: string, mode: AccountSelectionMode) => void;
+  onMovePriorityAccount?: (provider: string, accountId: string, targetId: string) => void;
   onProviderDragStart?: (event: DragEvent<HTMLElement>, index: number) => void;
   onProviderDragOver?: (event: DragEvent<HTMLElement>, index: number) => void;
   onProviderDrop?: (event: DragEvent<HTMLElement>, index: number) => void;
@@ -87,7 +160,36 @@ export interface AccountWorkspaceActions {
   onRoutingProviderChange?: (hosterId: string, provider: string) => void;
   onRoutingRemove?: (hosterId: string) => void;
   onRoutingAdd?: (hosterId: string) => void;
-  onResetMegaDebridCooldowns?: () => void;
+}
+
+function renderAccountIdentityCell({
+  className,
+  label,
+  value,
+  onCopy
+}: {
+  className: string;
+  label: "Benutzername" | "E-Mail";
+  value: string;
+  onCopy: (label: "Benutzername" | "E-Mail", value: string) => void;
+}): ReactElement {
+  const copyable = value.trim() !== "" && value !== "—";
+  return (
+    <span className={className} role="cell" title={copyable ? "Klicken zum Kopieren" : value}>
+      {copyable ? (
+        <button
+          aria-label={`${label} kopieren`}
+          className="settings-account-copy-button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onCopy(label, value);
+          }}
+          onDoubleClick={(event) => event.stopPropagation()}
+          type="button"
+        >{value}</button>
+      ) : value}
+    </span>
+  );
 }
 
 export interface AccountWorkspaceProps {
@@ -102,12 +204,16 @@ export interface AccountDialogField {
   value: string;
   placeholder?: string;
   help?: string;
+  storedSecret?: boolean;
+  secretVisible?: boolean;
+  secretBusy?: boolean;
 }
 
 export interface AccountAddDialogModel {
   open: boolean;
   query: string;
-  filter: AccountAddFilter;
+  serviceFilter: string;
+  serviceFilters: readonly string[];
   options: readonly AccountAddOption[];
   selectedOptionId: string | null;
   fields: readonly AccountDialogField[];
@@ -117,7 +223,7 @@ export interface AccountAddDialogModel {
 
 export interface AccountAddDialogActions {
   onQueryChange: (value: string) => void;
-  onFilterChange: (filter: AccountAddFilter) => void;
+  onServiceFilterChange: (service: string) => void;
   onOptionSelect: (optionId: string) => void;
   onFieldChange: (fieldId: string, value: string) => void;
   onClose: () => void;
@@ -142,14 +248,20 @@ export interface AccountEditDialogActions {
   onSave: () => void;
   onRemove: () => void;
   onToggleEnabled: () => void;
+  onToggleSecret: (fieldId: string) => void;
+  onCopySecret: (fieldId: string) => void;
 }
 
 function AccountDialogFields({
   fields,
-  onChange
+  onChange,
+  onToggleSecret,
+  onCopySecret
 }: {
   fields: readonly AccountDialogField[];
   onChange: (fieldId: string, value: string) => void;
+  onToggleSecret?: (fieldId: string) => void;
+  onCopySecret?: (fieldId: string) => void;
 }): ReactElement {
   return (
     <div className="settings-account-dialog-fields">
@@ -164,6 +276,31 @@ function AccountDialogFields({
               rows={4}
               value={field.value}
             />
+          ) : field.storedSecret ? (
+            <span className="settings-account-secret-control">
+              <input
+                autoComplete="off"
+                className="settings-control"
+                onChange={(event) => onChange(field.id, event.target.value)}
+                placeholder="••••••••••••"
+                type={field.secretVisible ? "text" : "password"}
+                value={field.value}
+              />
+              <button
+                aria-label={`${field.label} ${field.secretVisible ? "ausblenden" : "anzeigen"}`}
+                className="settings-account-secret-button"
+                disabled={field.secretBusy}
+                onClick={() => onToggleSecret?.(field.id)}
+                type="button"
+              >{field.secretVisible ? "◉" : "◎"}</button>
+              <button
+                aria-label={`${field.label} kopieren`}
+                className="settings-account-secret-button"
+                disabled={!field.value || field.secretBusy}
+                onClick={() => onCopySecret?.(field.id)}
+                type="button"
+              >⧉</button>
+            </span>
           ) : (
             <input
               autoComplete={field.type === "password" ? "off" : undefined}
@@ -186,21 +323,25 @@ function AccountRow({
   row,
   selected,
   busy,
-  actions
+  actions,
+  gridTemplateColumns,
+  minWidth
 }: {
   row: AccountRowViewModel;
   selected: boolean;
   busy: boolean;
   actions: AccountWorkspaceActions;
+  gridTemplateColumns: string;
+  minWidth: number;
 }): ReactElement {
-  const selectRow = (): void => actions.onSelect(row.id);
-  const onClick = (): void => selectRow();
+  const selectRow = (additive = false): void => actions.onSelect(row.id, additive);
+  const onClick = (event: MouseEvent<HTMLDivElement>): void => selectRow(event.ctrlKey || event.metaKey);
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
     if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) {
       return;
     }
     event.preventDefault();
-    selectRow();
+    selectRow(event.ctrlKey || event.metaKey);
   };
   const openContextMenu = (event: MouseEvent<HTMLElement>): void => {
     event.preventDefault();
@@ -216,6 +357,7 @@ function AccountRow({
       onDoubleClick={() => actions.onEdit(row.id)}
       onKeyDown={onKeyDown}
       role="row"
+      style={{ gridTemplateColumns, minWidth }}
       tabIndex={0}
     >
       <span className="settings-account-column-enable" role="cell">
@@ -223,7 +365,7 @@ function AccountRow({
           aria-label={`${row.hoster} ${row.enabled ? "deaktivieren" : "aktivieren"}`}
           checked={row.enabled}
           disabled={busy}
-          onChange={() => actions.onToggleEnabled(row.id)}
+          onChange={(event) => actions.onToggleEnabled(row.id, event.target.checked)}
           onClick={(event) => event.stopPropagation()}
           onDoubleClick={(event) => event.stopPropagation()}
           type="checkbox"
@@ -238,10 +380,11 @@ function AccountRow({
       </span>
       <span className="settings-account-status" role="cell">
         <span className={`settings-account-status-badge is-${row.status.tone}`}>{row.status.text}</span>
+        {row.status.checkedAgo ? <small className="settings-account-status-checked"><span>Geprüft</span> {row.status.checkedAgo}</small> : null}
       </span>
       <span className="settings-account-traffic" role="cell">{row.traffic}</span>
-      <span className="settings-account-username settings-copyable" role="cell" title={row.username}>{row.username}</span>
-      <span className="settings-account-email settings-copyable" role="cell" title={row.email}>{row.email}</span>
+      {renderAccountIdentityCell({ className: "settings-account-username", label: "Benutzername", onCopy: actions.onCopyIdentity, value: row.username })}
+      {renderAccountIdentityCell({ className: "settings-account-email", label: "E-Mail", onCopy: actions.onCopyIdentity, value: row.email })}
       <span className="settings-account-expires" role="cell">{row.expires}</span>
       <span className="settings-account-credential" role="cell">{row.credential}</span>
       <span className="settings-account-column-actions" role="cell">
@@ -254,6 +397,7 @@ function AccountRow({
             const rect = event.currentTarget.getBoundingClientRect();
             actions.onContextMenu(row.id, rect.right, rect.bottom);
           }}
+          onDoubleClick={(event) => event.stopPropagation()}
           type="button"
         >⋯</button>
       </span>
@@ -270,22 +414,64 @@ function syncAccountTableScroll(event: UIEvent<HTMLDivElement>): void {
 
 function AccountOverview({ model, actions }: AccountWorkspaceProps): ReactElement {
   const selectedIds = new Set(model.selectedIds);
+  const columnWidths = loadAccountTableColumnWidths();
+  const gridTemplateColumns = getAccountTableGridTemplate(columnWidths);
+  const minWidth = getAccountTableMinWidth(columnWidths);
+  const beginResize = (event: PointerEvent<HTMLButtonElement>, column: AccountTableColumnId): void => {
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    accountTableResizeSession = { column, startX: event.clientX, initial: loadAccountTableColumnWidths() };
+  };
+  const continueResize = (event: PointerEvent<HTMLButtonElement>): void => {
+    const active = accountTableResizeSession;
+    if (!active) return;
+    const next = resizeAccountTableColumn(active.initial, active.column, event.clientX - active.startX);
+    applyAccountTableColumnWidths(event.currentTarget, next);
+    persistAccountTableColumnWidths(next);
+  };
+  const finishResize = (event: PointerEvent<HTMLButtonElement>): void => {
+    if (!accountTableResizeSession) return;
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    accountTableResizeSession = null;
+  };
+  const resizeWithKeyboard = (event: KeyboardEvent<HTMLButtonElement>, column: AccountTableColumnId): void => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    event.stopPropagation();
+    const next = resizeAccountTableColumn(loadAccountTableColumnWidths(), column, event.key === "ArrowRight" ? 16 : -16);
+    applyAccountTableColumnWidths(event.currentTarget, next);
+    persistAccountTableColumnWidths(next);
+  };
   return (
     <>
       <DataTable aria-busy={model.busy} className="settings-account-table" label="Accounts">
         <DataTableHeader className="settings-account-table-header">
-          <div className="settings-account-table-grid" role="row">
+          <div className="settings-account-table-grid" role="row" style={{ gridTemplateColumns, minWidth }}>
             <span aria-label="Aktiviert" className="settings-account-column-enable" role="columnheader" />
-            {ACCOUNT_COLUMNS.map((column) => (
-              <span key={column} role="columnheader">
+            {ACCOUNT_COLUMNS.map((column, index) => (
+              <span className="settings-account-resizable-header" key={column} role="columnheader">
                 {column === "Status" && actions.onStatusSort ? (
                   <button className="settings-account-sort" onClick={actions.onStatusSort} type="button">
                     {column}{model.statusSort === "desc" ? " ▼" : model.statusSort === "asc" ? " ▲" : ""}
                   </button>
                 ) : column}
+                <button
+                  aria-label={`${column} Spaltenbreite ändern`}
+                  aria-orientation="vertical"
+                  className="settings-account-column-resizer"
+                  onClick={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => resizeWithKeyboard(event, ACCOUNT_TABLE_COLUMN_IDS[index])}
+                  onPointerCancel={finishResize}
+                  onPointerDown={(event) => beginResize(event, ACCOUNT_TABLE_COLUMN_IDS[index])}
+                  onPointerMove={continueResize}
+                  onPointerUp={finishResize}
+                  role="separator"
+                  type="button"
+                />
               </span>
             ))}
-            <span aria-label="Aktionen" className="settings-account-column-actions" role="columnheader" />
+            <span className="settings-account-column-actions" role="columnheader">Aktion</span>
           </div>
         </DataTableHeader>
         <DataTableBody className="settings-account-table-body" data-visual-region="accounts-table-body" onScroll={syncAccountTableScroll}>
@@ -296,7 +482,7 @@ function AccountOverview({ model, actions }: AccountWorkspaceProps): ReactElemen
           ) : model.rows.length === 0 ? (
             <DataTableEmpty description="Füge einen Account hinzu, um Downloads über einen Anbieter zu starten." title="Noch keine Accounts" />
           ) : model.rows.map((row) => cloneElement(
-            AccountRow({ actions, busy: model.busy, row, selected: selectedIds.has(row.id) }),
+            AccountRow({ actions, busy: model.busy, gridTemplateColumns, minWidth, row, selected: selectedIds.has(row.id) }),
             { key: row.id }
           ))}
         </DataTableBody>
@@ -304,8 +490,9 @@ function AccountOverview({ model, actions }: AccountWorkspaceProps): ReactElemen
       <div className="settings-account-local-actions">
         <div>
           <button className="settings-button settings-button-secondary" disabled={model.busy} onClick={actions.onAdd} type="button">＋ Hinzufügen</button>
-          <button className="settings-button settings-button-secondary" disabled={model.busy || model.selectedIds.length === 0} onClick={actions.onRemoveSelected} type="button">− Entfernen</button>
-          <button className="settings-button settings-button-secondary" disabled={model.busy} onClick={actions.onCheckAll} type="button">↻ Aktualisieren</button>
+          <button className="settings-button settings-button-secondary" disabled={model.busy || model.selectedIds.length === 0} onClick={actions.onRemoveSelected} type="button">− Entfernen{model.selectedIds.length > 1 ? ` (${model.selectedIds.length})` : ""}</button>
+          <button className="settings-button settings-button-secondary" disabled={model.busy || !model.rows.some((row) => row.enabled && row.canCheck)} onClick={actions.onCheckActive} title="Prüft nur aktivierte Accounts." type="button">↻ Aktive aktualisieren</button>
+          <button className="settings-button settings-button-secondary" disabled={model.busy} onClick={actions.onCheckAll} title="Prüft alle angelegten Accounts, auch deaktivierte." type="button">↻ Alle aktualisieren</button>
         </div>
         <span>{model.rows.length} {model.rows.length === 1 ? "Account" : "Accounts"}</span>
       </div>
@@ -326,19 +513,23 @@ function AccountRules({ model, actions }: AccountWorkspaceProps): ReactElement {
             {model.rules.providerOrder.map((provider, index) => (
               <li
                 draggable={Boolean(actions.onProviderDragStart)}
-                key={`${provider}-${index}`}
+                key={provider.id}
                 onDragEnd={actions.onProviderDragEnd}
                 onDragOver={(event) => actions.onProviderDragOver?.(event, index)}
                 onDragStart={(event) => actions.onProviderDragStart?.(event, index)}
                 onDrop={(event) => actions.onProviderDrop?.(event, index)}
               >
-                <span>{provider}</span>
+                <span className="settings-provider-order-provider">
+                  <img alt="" aria-hidden="true" draggable={false} height="20" src={provider.icon} width="20" />
+                  <span>{provider.label}</span>
+                </span>
                 {actions.onMoveProvider ? (
                   <span className="settings-provider-order-actions">
-                    <button aria-label={`${provider} nach oben`} disabled={index === 0} onClick={() => actions.onMoveProvider?.(index, -1)} type="button">↑</button>
-                    <button aria-label={`${provider} nach unten`} disabled={index === model.rules.providerOrder.length - 1} onClick={() => actions.onMoveProvider?.(index, 1)} type="button">↓</button>
+                    <button aria-label={`${provider.label} nach oben`} disabled={index === 0} onClick={() => actions.onMoveProvider?.(index, -1)} type="button">↑</button>
+                    <button aria-label={`${provider.label} nach unten`} disabled={index === model.rules.providerOrder.length - 1} onClick={() => actions.onMoveProvider?.(index, 1)} type="button">↓</button>
                   </span>
                 ) : null}
+                {provider.accountSelection ? <AccountPriorityControls provider={provider.id} model={provider.accountSelection} busy={model.busy} onModeChange={actions.onAccountSelectionMode} onMove={actions.onMovePriorityAccount} /> : null}
               </li>
             ))}
           </ol>
@@ -415,15 +606,7 @@ function AccountRules({ model, actions }: AccountWorkspaceProps): ReactElement {
       </section>
       {model.rules.rotationEvents ? (
         <section className="settings-rule-section">
-          <div className="settings-rule-section-heading">
-            <h3>Rotations-Verlauf</h3>
-            <button
-              className="settings-button settings-button-secondary"
-              disabled={model.busy || !actions.onResetMegaDebridCooldowns}
-              onClick={actions.onResetMegaDebridCooldowns}
-              type="button"
-            >Cooldowns zurücksetzen</button>
-          </div>
+          <h3>Rotations-Verlauf</h3>
           {model.rules.rotationEvents.length === 0 ? (
             <span className="settings-rule-empty">Noch keine Rotations-Ereignisse.</span>
           ) : model.rules.rotationEvents.map((event) => (
@@ -434,6 +617,58 @@ function AccountRules({ model, actions }: AccountWorkspaceProps): ReactElement {
           ))}
         </section>
       ) : null}
+    </div>
+  );
+}
+
+function AccountRuntime({ model }: AccountWorkspaceProps): ReactElement {
+  return (
+    <div className="settings-account-runtime">
+      <section aria-label="Provider-Laufzeit" className="settings-runtime-provider-grid">
+        {model.runtime.providers.length === 0 ? (
+          <div className="settings-runtime-empty">Noch keine Accounts konfiguriert.</div>
+        ) : model.runtime.providers.map((provider) => (
+          <article className="settings-runtime-provider-card" key={provider.id}>
+            <header>
+              <h3>{provider.label}</h3>
+              <span>{provider.availableAccountCount} von {provider.accountCount} verfügbar</span>
+            </header>
+            <div>
+              <span><strong>{provider.activeDownloads}</strong>{provider.activeDownloads === 1 ? " aktiver Download" : " aktive Downloads"}</span>
+              <span><strong>{provider.dailyUsageText}</strong> heute</span>
+            </div>
+          </article>
+        ))}
+      </section>
+      <section aria-label="Account-Laufzeit" className="settings-runtime-table" role="table">
+        <div className="settings-runtime-table-scroll">
+          <div className="settings-runtime-row settings-runtime-header" role="row">
+            <span role="columnheader">Account</span>
+            <span role="columnheader">Zustand</span>
+            <span role="columnheader">Aktive Downloads</span>
+            <span role="columnheader">Heute</span>
+            <span role="columnheader">Erfolgsquote · Diese Sitzung</span>
+            <span role="columnheader">Zuletzt verwendet</span>
+            <span role="columnheader">Cooldown / Grund</span>
+          </div>
+          {model.runtime.accounts.length === 0 ? (
+            <div className="settings-runtime-empty">Noch keine Laufzeitdaten verfügbar.</div>
+          ) : model.runtime.accounts.map((account) => (
+            <div className="settings-runtime-row" key={account.id} role="row">
+              <span className="settings-runtime-account" role="cell">
+                <strong>{account.providerLabel}</strong>
+                <small>{account.modeLabel}{account.identity && account.identity !== "—" ? ` · ${account.identity}` : ""}</small>
+              </span>
+              <span role="cell"><span className={`settings-runtime-state is-${account.stateTone}`}>{account.stateLabel}</span></span>
+              <span role="cell">{account.activeDownloads}</span>
+              <span role="cell">{account.dailyUsageText}</span>
+              <span role="cell">{account.successRateText}</span>
+              <span role="cell">{account.lastUsedText}</span>
+              <span role="cell">{account.cooldownText}</span>
+            </div>
+          ))}
+        </div>
+      </section>
     </div>
   );
 }
@@ -494,6 +729,15 @@ export function AccountWorkspace({ model, actions }: AccountWorkspaceProps): Rea
       >
         {AccountRules({ actions, model })}
       </div>
+      <div
+        aria-labelledby="settings-account-runtime-tab"
+        className="settings-account-panel"
+        hidden={model.activePanel !== "runtime"}
+        id="settings-account-runtime"
+        role="tabpanel"
+      >
+        {AccountRuntime({ actions, model })}
+      </div>
     </div>
   );
 }
@@ -524,16 +768,34 @@ export function AccountAddDialog({
     >
       <div className="settings-account-picker-selector">
         <span>Dienst / Zugangstyp</span>
-        <input
-          aria-controls={model.options.length === 0 ? "settings-account-picker-empty" : "settings-account-picker-results"}
-          aria-describedby={model.options.length === 0 ? "settings-account-picker-empty" : undefined}
-          aria-label="Dienst oder Zugangstyp suchen"
-          className="settings-control"
-          onChange={(event) => actions.onQueryChange(event.target.value)}
-          placeholder="Dienst oder Zugangstyp suchen"
-          type="search"
-          value={model.query}
-        />
+        <div className="settings-account-picker-controls">
+          <input
+            aria-controls={model.options.length === 0 ? "settings-account-picker-empty" : "settings-account-picker-results"}
+            aria-describedby={model.options.length === 0 ? "settings-account-picker-empty" : undefined}
+            aria-label="Dienst oder Zugangstyp suchen"
+            className="settings-control"
+            onChange={(event) => actions.onQueryChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" || !model.options[0]) {
+                return;
+              }
+              event.preventDefault();
+              actions.onOptionSelect(model.options[0].id);
+            }}
+            placeholder="Zugangstyp suchen, z. B. API oder Web"
+            type="search"
+            value={model.query}
+          />
+          <select
+            aria-label="Dienst filtern"
+            className="settings-control settings-account-picker-service-filter"
+            onChange={(event) => actions.onServiceFilterChange(event.target.value)}
+            value={model.serviceFilter}
+          >
+            <option value="all">Alle Dienste</option>
+            {model.serviceFilters.map((service) => <option key={service} value={service}>{service}</option>)}
+          </select>
+        </div>
       </div>
       <div className="settings-account-picker-table">
         <div aria-hidden="true" className="settings-account-picker-header">
@@ -610,11 +872,18 @@ export function AccountEditDialog({
         <span>{model.hoster} · {model.mode}</span>
         <strong className="settings-copyable">{model.identity}</strong>
       </div>
-      <label className="settings-rule-toggle settings-account-edit-enabled">
-        <input checked={model.enabled} disabled={model.busy} onChange={actions.onToggleEnabled} type="checkbox" />
-        <span>Account aktiviert</span>
-      </label>
-      <AccountDialogFields fields={model.fields} onChange={actions.onFieldChange} />
+      <AccountDialogFields
+        fields={model.fields}
+        onChange={actions.onFieldChange}
+        onCopySecret={actions.onCopySecret}
+        onToggleSecret={actions.onToggleSecret}
+      />
+      <div className="settings-account-edit-enabled-row">
+        <label className="settings-rule-toggle settings-account-edit-enabled">
+          <input checked={model.enabled} disabled={model.busy} onChange={actions.onToggleEnabled} type="checkbox" />
+          <span>Account aktiviert</span>
+        </label>
+      </div>
       {model.error ? <p className="settings-account-dialog-error" role="alert">{model.error}</p> : null}
     </Dialog>
   );

@@ -2,144 +2,756 @@
 
 All notable changes to Multi-Debrid Downloader are documented in this file.
 
-## [2.0.35] - 2026-08-13
+## [Unreleased]
 
-### Settings reliability
+## [2.0.105] - 2026-10-18
 
-- Accepted omitted optional values inside nested account status records when saving a complete settings draft.
-- Prevented valid Debrid-Link and Mega-Debrid account states from triggering an invalid settings payload after account checks or provider changes.
+### Direct signed MCP updates
 
-### Release validation
+- Transfer publisher-signed installers directly through MCP without requiring a release lookup or public asset download.
+- Bind each signed manifest to the installation, current and target versions, size, SHA-256 digest, expiry and request key. Require the existing local control and updates permissions throughout the transfer and handoff.
+- Support bounded, retry-safe data blocks and verify the complete installer before launch. Keep fixed installer arguments, persistent update jobs and post-restart version verification.
+- Save and verify local settings/session backups before direct installation. Do not expose general shell commands, arbitrary executable paths or destination URLs.
 
-- Added a full renderer-settings regression fixture with a checked Debrid-Link account and an omitted optional e-mail field.
-- Verified account toggle sequencing, renderer settings validation, and the packaged main-process build.
+## [2.0.104] - 2026-10-18
 
-## [2.0.34] - 2026-08-13
+### Archive recovery and volume matching
 
-### Account recovery and rotation
+- Recover eligible RAR archives after a CRC failure using embedded recovery records and the installed RAR tool. Repair temporary copies, preserve originals and require successful verified extraction before publishing output.
+- Recognize uniquely matching episodic RAR continuation volumes with inconsistent title prefixes through temporary aliases. Wait for every related download to finish and reject ambiguous matches.
+- Preserve explicit missing-volume errors instead of replacing them with secondary checksum errors.
+- Clear stale extraction error details after a confirmed successful archive extraction.
 
-- Added a visible cooldown reset action for Mega-Debrid accounts that clears account cooldowns, shared Web-session backoff, Mega-Debrid provider circuit breakers, and affected queued retries without interrupting active downloads.
-- Treated ambiguous Mega-Debrid Web login and blocked-session responses as one shared session backoff instead of incorrectly cooling every configured account.
-- Prevented repeated account cycling while a shared Mega-Debrid Web session failure is active and allowed queued work to resume through the normal scheduler after recovery.
-- Attributed fallback failures and cooldowns to the provider that actually handled the failed attempt.
+Recovery depends on usable recovery data. Archives with damaged source data and no usable recovery record still require an intact source; integrity checks remain enabled.
 
-### Settings reliability
+## [2.0.103] - 2026-10-17
 
-- Accepted omitted optional settings fields during provider changes so adding a Debrid-Link account after disabling Mega-Debrid accounts no longer fails payload validation.
-- Added complete German and English interface feedback for cooldown reset success and failure states.
+### Download-server overload isolation
 
-### Release validation
+- Apply HTTP 503 backoff only to the affected download origin, shared across its active downloads. Other origins can use idle connection capacity without increasing the configured global limit.
+- Preserve global HTTP 429 backoff, bounded recovery after successful transfers, cooldown wakeups and full segment-integrity checks.
+- Include per-origin limits and active connection counts in lightweight MCP performance diagnostics.
 
-- Covered manual cooldown recovery, shared session backoff, provider fallback attribution, queue release, active-download preservation, settings validation, preload exposure, and interface behavior with regression tests.
-- Stabilized archive integration checks under concurrent test load and waited for asynchronous post-processing cleanup before asserting final folder removal.
+Controlled 640 MiB comparisons with an intermittently overloaded origin completed in approximately 6.3–6.5 seconds instead of 10.4–10.7 seconds, with identical final file hashes. The no-error control was approximately unchanged. This does not eliminate upstream HTTP 503 responses or guarantee constant live transfer rates.
 
-## [2.0.33] - 2026-08-13
+## [2.0.102] - 2026-10-17
 
-### Account and provider lifecycle
+### Transfer queues
 
-- Separated Mega-Debrid API and Web account status, rotation position, sticky selection, cooldowns, and reloaded status records.
-- Applied credential, access-mode, provider enable, routing, and account-pool changes to active link conversions without requiring an application restart.
-- Tracked the provider currently handling each fallback attempt so live provider changes abort the exact in-flight conversion before stale credentials can start a download.
-- Cleared stale provider cooldowns when accounts or providers are re-enabled and immediately retried affected queued work through the current routing rules.
-- Made Real-Debrid, AllDebrid, and BestDebrid Web conversions abortable even when a remote login callback does not observe cancellation.
-- Closed and discarded crashed Real-Debrid and AllDebrid login windows so a new login attempt starts with a clean browser session.
+- Wake queued segment requests when a proxy cooldown expires, even if another transfer remains open. Cancel unused wakeups and keep the configured connection budget enforced.
+- Raise the bounded disk-readback pool from two to eight checks so high-latency reads do not hold the entire segment-worker queue. Continue to verify every segment with SHA-256 before publishing the completed file.
+- Expose the next cooldown wakeup in lightweight MCP performance diagnostics.
 
-### Download and recovery reliability
+Controlled 1 GiB comparisons with four downloads and 32 connections completed faster under simulated read latency and shared disk contention, with identical final hashes. Provider errors and server conditions can still affect live transfer rates.
 
-- Bounded HTTP 416 clean-restart recovery across application restarts and preserved locked partial files without reporting false progress or looping indefinitely.
-- Updated disk reservations from the authoritative HTTP content length before writing data when a provider did not report the final file size.
-- Made post-header disk capacity checks abortable so Pause and Stop release the response and reservation queue even when a volume query stalls.
-- Preserved completed package totals and history values when automatic cleanup removes finished files or packages.
-- Kept failed and recovery-relevant queue entries represented in bounded support diagnostics even when large queues contain newer waiting items.
+## [2.0.101] - 2026-10-16
 
-### Interface and history consistency
+### MCP updates and transfer I/O
 
-- Kept context menus inside the current window bounds while the application is resized.
-- Shortened visible provider, archive extraction, and recovery errors while retaining their diagnostic details outside the compact status column.
-- Canonicalized RapidGator and rg.to history entries as one hoster.
-- Preserved mode-specific account status records across settings reloads.
-- Prevented automatic history cleanup failures from blocking startup, retained the previous retention setting when a requested cleanup fails, and surfaced manual deletion failures accurately.
+- Add persistent, idempotent MCP update jobs with an exact stable target version, mandatory installer digest verification, progress polling and target-version verification after restart. Installed Windows editions using the official update repository are supported; portable editions are not remotely replaced.
+- Offer a separate, disabled-by-default permission under Help → MCP remote access for installing official updates without a local prompt. Other destructive actions still require confirmation. Recheck permissions and key generation before installer launch.
+- Keep downloads running while preparing and verifying an update, then park and persist them at installer handoff. Resume the previous running session if launching fails; quit after a successful MCP installer launch so installation can proceed.
+- Batch proxy writes and readback checks into bounded 1 MiB buffers and limit concurrent readback checks to two. Preserve complete SHA-256 disk readback, range/length validation, suspicious-content checks, cancellation and final disk flush.
+- Expose connection occupancy, effective connection limits and readback queue/wait timings through lightweight MCP performance diagnostics. Connection settings, proxy-only routing and extraction behavior are unchanged.
 
-### Support privacy
+Controlled local I/O-contention tests show fewer disk operations and higher throughput with matching file hashes. Live server throughput and freeze behavior still require verification after installation; this release does not claim all speed drops are eliminated.
 
-- Removed configured account identifiers and credential-derived provider details from support summaries.
-- Redacted package and file names discovered inside embedded package and item logs before writing the support archive.
-- Redacted snapshot and runtime package and file names from current and rotated main downloader logs included in support archives.
-- Prioritized active, failed, and recovery-pending diagnostics while keeping support bundle collection bounded and responsive.
+## [2.0.97] - 2026-10-15
 
-## [2.0.32] - 2026-08-13
+### Proxy download recovery
+
+- Retry a segmented transfer once from the beginning when valid range responses report a changed total file size. Probe the size again instead of immediately falling back to the fixed single proxy.
+- Discard all bytes and roll back progress from the rejected attempt before retrying. Preserve exact range, length and disk-readback checks; persistently inconsistent responses still use the existing safe fallback.
+- Log the fresh size check and a dedicated technical error code for representation-size changes.
+
+Proxy-only routing, the fixed API proxy, connection limits, cancellation and archive extraction are unchanged. This addresses a specific fallback case; overall server throughput and reported application freezes still require live verification.
+
+## [2.0.96] - 2026-10-15
+
+### Download stability
+
+- Reuse bounded proxy connections for consecutive download segments instead of opening a new tunnel for every block. Keep proxy credentials, destination origins and TLS verification modes isolated.
+- Let downloads borrow otherwise unused connection slots while other files wait for their final segments, without raising the configured total connection limit or starving waiting downloads.
+- Include a sanitized technical error code when a segmented download falls back to the fixed proxy, making connection and range failures easier to diagnose.
+
+Proxy-only routing, the reserved API proxy, HTTP 429/503 backoff, the default of 32 connections and the maximum of 80 are unchanged. Archive extraction and download integrity checks are unchanged.
+
+## [2.0.95] - 2026-10-15
+
+### MCP remote access
+
+- Replace legacy remote support with an optional MCP connection under Help → MCP remote access. The running app connects through an authenticated HTTPS relay without opening an inbound port.
+- Provide 81 explicit tools for diagnostics, logs, queues, packages, accounts, settings, history, statistics, backups, updates and approved local files. Keep destructive operations behind expiring local confirmation.
+- Store installation credentials separately with local encryption, support rotation and revocation, and keep MCP credentials out of normal backups and support bundles. Secret access remains off by default.
+- Add complete-file transfers with a separate disabled-by-default permission, approved roots, bounded blocks, cancellation, expiry and source-change detection. The receiver supports resume, block and full-file SHA-256 checks, disk readback and no-overwrite publication.
+- Preserve proxy-only routing for relay traffic and reject access to protected app storage, credential files, raw diagnostic logs and filesystem links. Keep binary payloads out of text results and prevent accidental connection-code echoing.
+- Include connection/receiver helpers and the shared relay protocol documentation in the source distribution, plus complete production dependency license notices.
+
+Legacy remote support is disabled on upgrade and cannot be re-enabled by importing an old backup. Local support-bundle export remains available. Download and extraction algorithms are unchanged.
+
+## [2.0.94] - 2026-10-15
+
+### Fixed
+
+- Retry temporary API account-check connection failures and HTTP 408, 429, and server errors within a bounded time budget. Keep the configured fixed proxy and respect Retry-After and cancellation.
+- Preserve confirmed account validity and premium information when a check cannot complete. Explicit credential rejections still update the account status.
+- Recognize “Unable to fetch” and explain proxy access and source-IP allowlisting requirements in account error messages.
+- Keep Proxy-only enabled when importing an older online backup without an embedded proxy list. Network requests remain blocked until a valid list is configured.
+
+Current online backups continue to restore their proxy list and fixed API-proxy selection. Archive extraction is unchanged.
+
+## [2.0.93] - 2026-10-01
+
+### Fixed
+
+- Retry Real-Debrid download HTTP 429/503 responses per file, respecting Retry-After and resolving a new download link without interrupting healthy parallel transfers.
+- Prevent delayed state snapshots from reverting account activation checkboxes after saving.
+- Keep history loaded and updated across view changes, preserve its page and cached entries, and avoid transient zero counts while loading.
+- Correct the one-pixel offset of sliding selection highlights inside bordered containers.
+
+### Interface
+
+- Group download search and provider filtering above status rows with outline icons and compact count badges.
+- Move the red, centered Clear list button below Monitor clipboard while retaining the confirmation dialog.
+- Use Provider terminology in the download view, improve dropdown arrow spacing, add consistent sidebar borders, and normalize statistics sidebar typography.
+- Disable Tab/Shift+Tab focus navigation throughout the application and remove checkbox focus outlines; other keyboard shortcuts remain available.
+
+Archive extraction, proxy-only routing, and the lower sidebar status area are unchanged.
+
+## [2.0.90] - 2026-09-06
+
+### Account priorities
+
+- Choose automatic distribution or a fixed account order for Real-Debrid, Mega-Debrid API/Web, and Debrid-Link under Settings → Accounts → Usage rules. Automatic distribution remains the default for existing and new configurations.
+- Expand a provider and reorder its accounts using arrows or drag-and-drop, then save the settings. Account identity, access mode, and status remain visible.
+- Skip disabled accounts, exhausted daily limits, and active cooldowns. The preferred account becomes first choice again when available; existing provider fallback rules remain in effect.
+- In fixed-priority mode, Mega-Debrid uses the first free account conversion slot and waits cancellably when all slots are occupied. Already resolved downloads are not switched between accounts.
+- Preserve priorities across restarts, encrypted backups, and credential replacement. Append new accounts and remove deleted account references automatically.
+
+### Clipboard navigation
+
+- Make switching to the Link Collector after clipboard detection optional under Settings → General → Download behavior. The option is off by default, including for existing configurations without an explicit preference.
+- Continue collecting clipboard links in the background without changing the current tab or collector filters. Manual paste, drag-and-drop, and DLC imports keep their existing navigation.
+
+## [2.0.88] - 2026-09-05
+
+### Added
+
+- Add “Remove packages with offline links …” to the download context menu. The confirmation lists entire parent packages first and selects that option by default; affected archive sets are available as the second option. One offline part removes all parts of that archive while other episodes remain in archive-set mode. Both modes cover the entire queue regardless of filters or selection, keep downloaded files, and recheck the confirmed package IDs before removal.
+
+### Fixed
+
+- Remove queue entries and reposition the remaining rows immediately, without row or table-height animations, for both whole-package and archive-set cleanup.
+- Disable CSS row transitions as well as JavaScript animations during column sorting, so packages immediately jump to their sorted positions.
+- Keep the chosen package order stable while live snapshots and reorder confirmations arrive, preventing a brief jump back to the previous order when reversing a sort. Ignore failures from superseded reorder requests.
+
+## [2.0.87] - 2026-09-04
+
+### Availability sorting
+
+- Make the Availability column header sortable: the first click orders packages from fully online through partially available and unchecked down to fully offline, the second click reverses the order.
+- Rank packages by their online share first and by their offline share second, so `25/26 online` sorts above `6/7 online` and unchecked packages sit between partial and fully offline ones.
+- Show a package in the warning color as soon as at least one link is online and at least one is offline, even while other links are still unchecked; fully online stays green and fully offline stays red.
+- Switch the package order instantly when a column sort changes it instead of sliding rows up and down; manual moves keep their animation.
+- Keep offline links out of the package status error count, because the Availability column already shows them; genuine download failures still appear as errors.
+
+### Sidebar totals
+
+- Show remaining and total queue volume of one terabyte or more as grouped gigabytes with one decimal, such as `1.449,5 GB` in German and `1,449.5 GB` in English, instead of a five-decimal terabyte value.
+
+## [2.0.86] - 2026-09-02
+
+### Background availability refresh
+
+- Recheck stale queued Rapidgator, DDownload, and 1Fichier links in the background without requiring the download run to start.
+- Start after ten seconds, process the 40 oldest checks per pass with at most four concurrent hoster requests, and treat a result as stale after 30 minutes.
+- Apply the configured archive or package skip scope only after a definitive offline result while preserving the previous online state after proxy, timeout, rate-limit, or ambiguous server failures.
+- Persist availability check times, restore in-progress markers during shutdown, and keep idle background checks out of download-run outcomes.
+
+### Package availability display
+
+- Show package availability as a compact count such as `0/8 online` without a separate leading state symbol.
+- Keep item availability, extraction, password, and post-processing behavior unchanged.
+
+## [2.0.85] - 2026-09-02
+
+### Offline source detection
+
+- Mark permanent provider failures such as Real-Debrid `file_unavailable` as offline and directly recheck supported source hosters after ambiguous conversion or account-pool failures.
+- Preserve a terminal offline result when an older availability request finishes late, and throttle source rechecks to avoid tight retry loops.
+
+### Configurable skip scope
+
+- Add a General setting that skips either the affected multipart archive set or every unfinished item in the MDD package when a source link becomes unavailable.
+- Use the affected archive set by default, recognize RAR, ZIP, 7z, and generic split parts from any part number, and keep unrelated episodes running.
+- Preserve completed downloads in both modes and keep extraction, password, and post-processing behavior unchanged.
+
+## [2.0.84] - 2026-09-01
+
+### Work folders
+
+- Create missing configured work folders immediately when the enabled startup-folder setting is saved, without requiring an application restart.
+- Preserve existing contents and continue isolating an unavailable target from the remaining configured folders.
+
+### Proxy connection range
+
+- Raise the configurable global proxy-segment connection maximum from 40 to 80 for high-capacity testing while keeping 32 as the default for new settings.
+- Keep the existing fair cross-download budget, proxy scoring, cooldowns, and adaptive 429/503 backoff unchanged.
+
+## [2.0.83] - 2026-09-01
+
+### Bounded CRC recovery
+
+- Treat an extractor-confirmed CRC failure as a damaged download even when the file size and archive signature are valid.
+- Discard every affected archive part, clear the previous provider assignment, and request a fresh direct link for one clean automatic redownload.
+- Persist the one-redownload limit across application restarts so an upstream service repeatedly returning the same damaged content cannot create an endless download loop.
+- Clear the recovery limit on a manual item or package reset while continuing to leave valid signed archives untouched for wrong-password failures.
+- Keep extraction, password discovery, and extractor fallback behavior unchanged.
+
+## [2.0.82] - 2026-09-01
+
+### Startup work folders
+
+- Add a disabled-by-default General setting that recreates a missing download folder when the application starts.
+- Also recreate the configured extraction and video-library folders when their corresponding features are enabled.
+- Preserve every existing directory and file, and report an unavailable target without blocking the remaining startup folders or the application launch.
+
+### Settings and large queues
+
+- Rename the Speed settings category to Speed & Proxy so Proxy-only configuration is easier to locate.
+- Increase the visible precision of remaining sizes above one TiB so the Remaining counter visibly keeps pace with Session on very large queues while retaining the shared 750 ms snapshot cadence.
+- Keep download, extraction, password, and post-processing behavior unchanged.
+
+## [2.0.81] - 2026-08-31
+
+### Account management
+
+- Select every currently visible row in Settings → Accounts → Overview with Ctrl+A while preserving native text-field selection and the existing shortcuts in Downloads, Link Collector, and History.
+- Explain whether Proxy-only account operations are blocked by a missing, unreadable, empty, or invalid proxy list, an unavailable fixed list entry, or a fixed proxy transport failure.
+- Keep ordinary provider HTTP responses and invalid credentials separate from Proxy-only configuration errors.
+
+### Encrypted online proxy-list backup
+
+- Include the configured proxy-list content inside the existing client-side AES-256-GCM encrypted MDD2 online-backup payload without exposing proxy credentials or the master key to the storage service.
+- Restore the list atomically to a managed local runtime file and roll back both file and settings if the import cannot be completed.
+- Keep older MDD2 backups importable and disable Proxy-only when they contain no portable proxy list instead of retaining an unusable path from another machine.
+- Preserve local backup path behavior and keep extraction, password, and post-processing logic unchanged.
+
+## [2.0.80] - 2026-08-31
+
+### Consistent live speed
+
+- Use the same rolling one-second traffic window for file rows, package rows, the header, and the download sidebar.
+- Keep proxy segment bursts from leaving a stale short-window file speed that disagrees with the actual aggregate traffic.
+
+### Selective package reset
+
+- Split package reset into an error-only action and an explicit complete-package reset.
+- Reset failed downloads and extraction-error items without deleting successful or already extracted files.
+- Keep extraction, password, and post-processing behavior unchanged.
+
+## [2.0.79] - 2026-08-31
+
+### Proxy segment integrity hotfix
+
+- Read every completed proxy segment back from disk and compare its SHA-256 digest with the bytes received before accepting the segment.
+- Verify suspicious zero-filled ranges through a different proxy and reload the complete segment when the independent response differs.
+- Distinguish an actual manifest checksum pass from an integrity check skipped because no checksum was available.
+- Keep extraction and password handling unchanged.
+
+## [2.0.78] - 2026-08-31
+
+### Download presentation
+
+- Keep the sidebar session byte counter on the same live snapshot cadence as the remaining byte counter even when large-queue statistics are cached.
+
+### Proxy limit tuning
+
+- Increase the default global proxy connection budget for new settings from 20 to 32 and raise the configurable maximum from 32 to 40 while retaining fair sharing and adaptive 429/503 backoff.
+
+## [2.0.77] - 2026-08-31
+
+### Proxy throughput and fairness
+
+- Replace one long range per connection with a rolling queue of smaller chunks so fast proxies continue working instead of waiting for the slowest tail segment.
+- Split the process-wide connection budget dynamically and fairly between active segmented downloads; a total of 20 becomes 10/10 for two files and 5 each for four files, then returns freed capacity immediately.
+- Rank proxies by measured throughput and failures, periodically explore unused entries, cool down failed entries, and keep the fixed API proxy reserved.
+- Reduce the effective global connection budget in steps of two after origin HTTP 429 or 503 responses and restore capacity gradually after stable successful transfers.
+- Use 20 as the default global proxy connection budget for new settings while preserving existing saved values and the 2-to-32 range.
+
+### Download presentation
+
+- Calculate package progress from downloaded and total bytes when sizes are known so the percentage matches the package size meter for differently sized files.
+- Keep the existing extraction progress split and all extraction behavior unchanged.
+
+## [2.0.76] - 2026-08-31
+
+### Proxy concurrency hotfix
+
+- Treat the configured proxy connection count as one process-wide segment connection budget shared by all simultaneous downloads instead of multiplying it per file.
+- Coordinate proxy leases across downloads, prevent concurrent reuse of the same list entry, and reserve the fixed API proxy from segment traffic.
+- Preserve HTTP status codes returned by the download origin so reachable proxies receiving responses such as HTTP 503 are no longer reported as unavailable proxies.
+
+## [2.0.75] - 2026-08-31
+
+### Proxy-only networking
+
+- Add a fail-closed Proxy-only mode that routes API calls, account checks, link resolution, notifications, updates, web logins, and single-connection downloads through one fixed authenticated HTTP proxy selected by its valid list index.
+- Keep the fixed API proxy stable instead of silently rotating or falling back to the direct connection when it is unavailable.
+- Add parallel proxy-segment downloads for new files of at least 8 MiB with 2 to 32 exact HTTP range connections per download, authenticated proxy-list formats, per-segment proxy replacement, precise progress accounting, and atomic completion.
+- Preserve the existing resume, speed-limit, retry, integrity, extraction, and post-processing paths while ensuring their network fallback remains on the fixed proxy whenever Proxy-only is enabled.
+- Apply the fixed proxy to Electron provider sessions and provide credentials only for the exact matching proxy authentication challenge without exposing them to the renderer or logs.
+
+### Lifecycle and diagnostics reliability
+
+- Finish application shutdown when hidden provider windows remain after the main window closes, retain the synchronous collector handoff, and restore or recreate the main window for second-instance and activation events.
+- Add bounded shutdown and quit watchdogs while keeping daemon cleanup after the controller shutdown path.
+- Serialize debug-server start, stop, and restart operations so concurrent lifecycle requests cannot leave unmanaged listeners or reopen after shutdown.
+
+### Persistence and updater hardening
+
+- Distinguish valid empty storage from malformed settings and sessions, recover usable backups, and retain compatibility with sparse historical settings.
+- Keep pending hoster-metadata rename journals restart-safe and reject paths outside the exact package output directory.
+- Make asynchronous settings and session writes settle only after durable completion, propagate failures, and close coalescing, persistence-barrier, and replay races.
+- Harden update downloads around backpressure, idle timeouts, response cancellation, stream close ordering, late write failures, and atomic rename completion.
+
+## [2.0.74] - 2026-08-26
+
+### Package-based link collector
+
+- Restore the package-based collector with expandable packages, file metadata, exact sizes, hoster identity, progressive availability results, search, filtering, selection, removal, and explicit transfer to Downloads.
+- Keep DLC files dropped on the Downloads tab on the direct import path while reserving collector analysis for imports made inside the collector.
+- Persist packages, metadata, and collapsed state across restarts with primary/backup recovery, a synchronous shutdown handoff, and deterministic merging when the window closes before initial hydration finishes.
+- Collapse newly imported packages by default while preserving manual disclosure state across duplicate imports, metadata regrouping, and restarts.
+- Add visible select-all, mixed checkbox state, Ctrl+A, Escape, offline-link removal, queue-export JSON round trips, and complete German and English collector text.
+- Validate cumulative package, link, field-length, and 64 MiB persistence limits before mutating the interface, including metadata enrichment and late hydration.
+- Roll back the visible collector state after persistence failures, prune stale selection and disclosure state, and prevent rejected saves from being reported as successful.
+- Virtualize large package lists and disclosure transitions, cache stable regions, and reduce 20,000-link persistence updates to link-level deltas without rebuilding or serializing the complete collector.
+
+### Download queue and controls
+
+- Keep hidden extracted entries out of sidebar and queue totals without changing their package download size, completion count, or progress aggregates.
+- Distinguish a genuinely empty queue, a hidden-only queue, and an empty filter result, with matching guidance and correctly disabled disclosure actions.
+- Calculate remaining volume and ETA from the current run only, excluding unselected or disabled queue items while retaining explicit unknown-size handling.
+- Normalize stale provider filters, package lifecycle states, mixed extraction results, and locale-formatted sidebar counters.
+- Make toolbar and context-menu starts obey the same account, cooldown, busy, and action gates and report blocked or rejected starts instead of silently doing nothing.
+- Serialize pause and resume actions so rapid clicks produce one state transition and the renderer changes only after the main process confirms the result.
+- Add monotonic snapshot revisions so delayed initial snapshots, retries, full updates, and deltas cannot restore deleted rows or stale account and quota gates.
+- Split the header speed graph and numeric value into stable-width modules so changing one-, two-, or three-digit speeds no longer shifts the graph.
+
+### History and statistics
+
+- Paginate and lazily project history rows so a 100,000-entry history no longer rebuilds and formats the complete dataset every second.
+- Preserve selections across history pages, limit select-all and deselect-all to the current page, and keep context-menu actions from discarding selections on other pages.
+- Correct Last 7 Days to include all available data from today and the previous six calendar days without requiring a complete seven-day history.
+- Report the actual visible page count and clear stale rows, selection, expansion, and context state after a failed history load before performing a complete retry.
+- Recover readable history backups without failing startup, replace imported history atomically, and roll retention changes back if settings persistence fails.
+- Persist the start of rolling minute coverage so partial 24-hour datasets are described accurately rather than shown as complete.
+- Keep statistics resets consistent across ledger and settings writes, rebase manual provider-usage resets, and recover post-reset provider bytes without double counting.
+- Mark byte-only recovery days explicitly so unavailable file, error, speed, minute, and account details are not displayed as misleading zero values.
+
+### Settings, themes, and language
+
+- Store Light, Dark, and System as an authoritative theme preference in settings and backups while resolving System against the current Windows color scheme.
+- Prevent delayed initial loading from exposing editable default settings or empty statistics and add a visible retry state for snapshot failures.
+- Capture settings save intent before queued account operations so later edits remain unsaved instead of being overwritten by an older completed save.
+- Complete German and English localization for collector, download, history, statistics, theme, count, unit, duration, and mixed-status text.
+- Define the shared panel surface token for Dark, Light, and System themes and align standalone and shell sidebars consistently.
+
+### Persistence and recovery
+
+- Make full and settings-only backup imports transactional across settings, session, statistics, history, log storage, and remote diagnostics before changing runtime state.
+- Wait for remote diagnostics restart and restore the previous files, runtime settings, log configuration, and server state when restart fails.
+- Add a persistence barrier for imports and make asynchronous settings and session commits perform their final generation check and atomic rename without yielding, preventing older writes from overwriting sync saves, updates, or shutdown state.
+- Preserve the current live session during settings-only imports before releasing blocked persistence work.
+- Retry transient Windows rename failures in the Discord notification outbox for synchronous and asynchronous writes without preventing application startup.
+
+## [2.0.73] - 2026-08-25
+
+### Settings workflow
+
+- Highlight the primary save action and add a discard action that restores the last persisted settings without reverting account changes that were saved immediately.
+- Preserve edits made during an active save as unsaved changes and restore write-only extraction password values safely when pending edits are discarded.
+- Show provider icons and explicit access-mode labels in the configurable provider order.
+
+### Download queue presentation
+
+- Display remaining download volume with four decimal places above 1 TB and avoid rolling animations when the formatted value has not changed.
+- Extend package selection highlighting to visible child files while keeping package actions scoped to the selected package.
 
 ### Account controls
 
-- Prevented rapid account enable and disable interactions from opening the account editor.
-- Removed the redundant global account toggle so every configured account remains independently controlled.
+- Serialize rapid account enable and disable requests so the final click wins and stale validation or persistence results cannot reverse newer input.
+- Prevent checkbox double-clicks from opening the account editor and coordinate account updates with settings and backup mutations.
 
-## [2.0.31] - 2026-08-13
+## [2.0.72] - 2026-08-24
 
-### Account rotation and lifecycle
+### Package history telemetry
 
-- Applied active account and Debrid-Link key changes to running queues without requiring an application restart.
-- Isolated every provider attempt with its own cancellation and timeout boundary so a stalled account cannot block the next enabled account.
-- Preserved explicit Pause and Stop ownership while account settings, resets, or provider operations are changing concurrently.
-- Prevented late provider failures from surfacing as unhandled process rejections after an operation was already canceled.
+- Store separate download, extraction, remux, post-processing, and total durations for completed package generations.
+- Preserve accurate download file and byte totals while reporting archive groups, validated multipart counts, generated outputs, failure categories, and additive phase counters independently.
+- Track parallel and interrupted archive work across restarts, distinguish partial, failed, and cancelled package results, and add dedicated history filters for partial and cancelled entries.
+- Show detailed lifecycle timestamps, operation durations, result counts, failure phases, and sanitized error categories in expandable history rows and Discord notifications.
 
-### Download recovery and queue state
+### Download controls
 
-- Persisted bounded HTTP 416 recovery state and clean-restart decisions across application restarts.
-- Kept locked partial files pending until Windows confirms removal instead of starting a conflicting replacement request.
-- Reconciled resets with the authoritative queue snapshot and preserved known availability information.
-- Stabilized package ordering while active items start, finish, reset, or refresh in the background.
-- Coalesced all running state updates, including forced refreshes, into the shared 500 ms interface cadence.
+- Move the global package disclosure action into a responsive right-aligned toolbar group and disable it when the queue is empty.
+- Replace the decorative package heading with a compact neutral filter group and keep all-package actions independent from active filters and search results.
+- Coordinate package height and opacity transitions while continuing to honor the global animation setting and large-queue motion guard.
+- Open contextual help on pointer hover, keyboard focus, or click and close it only after both pointer and focus leave the shared region.
 
-### Support diagnostics
+### Deepbrid resume reliability
 
-- Correlated account rotation, link conversion, download recovery, disk waiting, Pause, Stop, Reset, and export events with anonymous attempt identifiers.
-- Added bounded disk-wait entry and resolution history to support bundles.
-- Recorded support bundle selection, cancellation, build, write, success, and failure phases without storing destination paths or filenames.
-- Added native clipboard operation diagnostics with byte counts and errors while never recording copied content.
-- Redacted credentials, account identities, URLs, hostnames, local paths, package names, and filenames at every persistent log boundary and again when building the support archive.
+- Resume Deepbrid downloads that return open-ended `Content-Range` responses instead of repeatedly renewing an otherwise valid direct link.
+- Prefer byte-exact HTTP totals over rounded provider metadata and preserve already complete archive files when a standard HTTP 416 response confirms their real size.
 
-## [2.0.30] - 2026-08-13
+## [2.0.71] - 2026-08-24
 
-### Rotation diagnostics
+### Deepbrid accounts
 
-- Recorded every real account conversion attempt in the affected file log, including masked TEST, FAILED, timeout, fallback, and successful outcome events.
-- Kept timeout-cooldown attempts visible as failures in the live rotation diagnostics without changing their technical event type.
-- Removed historical and current account masks, short credentials, URLs, and local paths from generated support bundles.
+- Add Deepbrid API-key accounts with encrypted credential storage, account validation, premium status, expiration details, usage counters, and explicit secret reveal controls.
+- Route downloads through Deepbrid in the normal provider order, hoster rules, daily limits, cooldown handling, and automatic fallback chain.
+- Validate API responses, retry only rate limits and temporary failures, reject unsafe download targets and filenames, and keep keys and provider responses out of logs and diagnostics.
+- Add the Deepbrid service icon and verified support for generating and downloading 1Fichier links.
 
-### Download recovery
+### Recurring daily starts
 
-- Persisted resumed-link recovery state across application restarts so repeated range rejection advances to one clean full download instead of restarting the same retry cycle.
-- Retried transient Windows file locks before discarding a partial download and prevented a new request until the old partial file is confirmed removed.
-- Reconciled Pause and Resume controls with the authoritative main-process snapshot after success, rejection, or a missing state event.
+- Add a persistent daily queue schedule using the local time zone with separate start-today and start-tomorrow choices.
+- Reconcile schedules after restarts, account changes, suspend, and resume while preventing duplicate starts for the same local calendar day.
+- Preserve existing one-time schedules during unrelated settings saves and show the next daily start as a live countdown.
 
-### Live interface cadence
+### Discord notifications
 
-- Limited large running queues and the live bandwidth chart to the same stable 500 ms refresh cadence used by the other active download telemetry.
+- Add detailed package and run results, grouped or individual success messages, remaining-volume thresholds, confirmed download stalls, and recovery notifications.
+- Persist notifications across restarts with bounded retries, rate-limit handling, FIFO delivery, shutdown recovery, and protection against transient disk-write failures.
+- Store and export only fixed failure categories so local paths, URLs, provider accounts, and raw errors are excluded from Discord messages and support bundles.
 
-## [2.0.29] - 2026-08-13
+### Hoster identification
 
-### Account and rotation reliability
+- Show local 1Fichier and DDownload hoster icons with full names in tooltips throughout the download queue.
 
-- Applied rapid account enable and disable changes immediately, persisted every click in order, and reconciled the final state without losing fast consecutive changes.
-- Refreshed Mega-Debrid API and Web account pools during active downloads without requiring an application restart.
-- Isolated account attempt cancellation and timeouts so a failed or stalled account can rotate to the next enabled account within the same link conversion.
-- Cleared stale account cooldowns, provider failures, API token work, and Web sessions when relevant credentials or enabled accounts change.
-- Added explicit TEST, OK, and FAILED account-rotation evidence with masked account identities to diagnostics and support bundles.
+## [2.0.70] - 2026-08-24
 
-### Download lifecycle
+### Real-Debrid browser accounts
 
-- Kept Pause and Stop responsive while other interface actions are running and canceled active requests cleanly when pausing.
-- Recovered persisted partial downloads by renewing expiring direct links and falling back to one clean full request after repeated range rejection.
-- Preserved known online availability when resetting packages or selected files.
-- Kept every start and resume path blocked when no usable download account is active.
-- Reduced active session, speed, sparkline, and bandwidth updates to a stable 500 ms interface cadence.
+- Generate unrestricted links through the authenticated Real-Debrid downloader form inside an isolated background browser session instead of routing browser accounts through the API-token path.
+- Keep browser sessions separated per account, avoid background login popups, and recover safely from cancellation, page-load stalls, timeouts, renderer crashes, account disablement, deletion, and shutdown.
+- Validate generated download URLs against Real-Debrid download hosts and preserve exact filenames and file sizes without accepting foreign or insecure targets.
+- Report website login and provider errors clearly, reject multi-file folder links instead of silently returning an incomplete result, and keep API-token accounts unchanged.
 
-### Diagnostics and desktop integration
+### Download table
 
-- Routed copy actions through Electron's native clipboard for reliable operation in hardened and Remote Desktop sessions.
-- Made support bundle creation visibly active from the save dialog through the final write, prevented duplicate exports, and saved completed bundles atomically.
-- Bounded support bundle queue data and recent log collection, kept the interface responsive during creation, and strengthened redaction for credentials, URLs, local paths, and account identifiers.
+- Restore header sorting without interfering with column dragging and add sorting for the Service column.
+- Sort packages from their currently visible rows and preserve definitive link availability across reset operations.
+- Keep active, integrity-checked, and completed downloads visibly online when no separate availability result has been stored yet.
+
+### Clipboard reliability
+
+- Route link names, URLs, package batches, backup keys, diagnostics, error details, and masked account identifiers through the validated Electron clipboard writer.
+- Support complete link-package copies up to one MiB and report failed clipboard writes instead of displaying false success messages.
+
+### Item diagnostics
+
+- Format new item-log start, event, and end timestamps as local `DD.MM.YYYY - HH:mm:ss` values while leaving machine-readable application, audit, package, and session logs unchanged.
+
+## [2.0.67] - 2026-08-24
+
+### Extraction stability
+
+- Return archive extraction and package-status behavior to the verified v2.0.54 baseline after regressions in later releases.
+- Keep the existing download, account, update, history, statistics, and backup capabilities from that stable baseline.
+
+### 1Fichier and DDownload metadata
+
+- Resolve public filenames, exact sizes, availability, and supported domain aliases before downloads start.
+- Keep resolved filenames when a debrid provider later returns a generic `download.bin` name.
+- Preserve partial-download resume paths while applying late metadata and safely rename completed files afterward.
+- Recover interrupted metadata renames through an item-bound journal without adopting unrelated same-name files.
+- Restrict DDownload redirects to HTTPS targets carrying the same file identity and keep challenge pages in an unknown state instead of marking them offline.
+
+### Windows appearance
+
+- Force the native Windows title bar to remain dark across local desktop, server, and Remote Desktop profiles.
+
+## [2.0.54] - 2026-08-21
+
+### Update validation
+
+- Published a controlled follow-up version so installations running v2.0.53 can verify the repaired in-app updater handoff end to end.
+
+## [2.0.53] - 2026-08-21
+
+### In-app updates
+
+- Started the verified NSIS installer directly before application shutdown so Windows Server and RDP process-job cleanup cannot terminate an intermediate PowerShell launcher.
+- Kept the running application open when Windows rejects the installer process instead of reporting a successful update and quitting without an installer.
+- Delegated the complete process handoff to the installer with a 60-second graceful wait and a verified post-termination wait before replacing application files.
+
+## [2.0.52] - 2026-08-21
+
+### Rolling account statistics
+
+- Added a true rolling Last 24 Hours range directly after Today in Statistics.
+- Attributed downloaded traffic to the exact Real-Debrid, Mega-Debrid, or Debrid-Link account that produced each direct link.
+- Displayed the known account username with its provider while retaining safe fallback labels for accounts without checked identity data.
+- Kept the rolling total accurate across midnight, account disablement, deletion, application restarts, and session-statistics resets.
+- Started exact rolling account collection after the upgrade without inventing historical account ownership from older daily totals.
+
+### Statistics precision and performance
+
+- Kept primary statistics data totals in gigabytes above 1 TB so large daily volumes remain precise, for example 1,250 GB instead of 1.2 TB.
+- Stored traffic in sparse minute buckets with a bounded 48-hour retention window.
+- Maintained the visible 24-hour aggregate incrementally and kept raw minute history out of frequent renderer snapshots.
+- Preserved full rolling history in encrypted full backups while removing account IDs and labels from support statistics.
+
+## [2.0.51] - 2026-08-21
+
+### In-app updates
+
+- Refreshed the latest release metadata immediately before every installer download instead of reusing a previous update check.
+- Read the running version from the installed package metadata so the displayed version cannot lag behind the installed application.
+- Added a release gate that rejects packaged main bundles built for an older version.
+- Kept a dismissed update prompt closed for the same target version until the next application start while still allowing newer releases and manual checks to appear.
+- Changed the Update available button from blue to green.
+
+### Release verification
+
+- Added real Windows process-order and installed-package version coverage for the complete update handoff.
+- Required a fresh application build after the release version changes before packaging the installer.
+
+## [2.0.50] - 2026-08-21
+
+### In-app updates
+
+- Deferred silent installer startup until the current application process has fully exited so the new version can acquire the single-instance lock.
+- Added an installer-level process handoff that also protects upgrades launched by v2.0.48 and v2.0.49.
+- Reduced the delay between a verified update download and application shutdown from five seconds to 250 milliseconds.
+- Added Windows process-order regression coverage and made the public release verifier require the update-safe NSIS include.
+
+## [2.0.49] - 2026-08-21
+
+### Download table
+
+- Added a right-click column menu with a one-step reset to the default column layout.
+- Clarified visible-column state with green checkmarks, normal menu text, and a centered reset action.
+- Kept availability labels aligned across one- and two-digit package counts while reducing excess spacing before the online state.
+
+### Account status
+
+- Added the last successful or failed account-check time directly below each stored status.
+- Updated relative check times automatically while the application remains open.
+- Changed expired premium access to the existing Free Account state instead of leaving stale Premium active text visible.
+
+### History
+
+- Updated an already open History view immediately after a completed or deleted package is stored without polling or repeatedly reloading the full history file.
+- Removed multi-selected history entries through one validated IPC request and one atomic history-file update.
+- Preserved configured history limits above 500 entries during single and bulk removal operations.
+
+### Remaining volume
+
+- Added a translated hover explanation when the remaining download volume contains files whose sizes are not known yet.
+- Kept fully known queues unchanged while exposing the same explanation to assistive technology.
+
+## [2.0.48] - 2026-08-20
+
+### Download table
+
+- Eliminated brief flicker and snap-back when moving download columns left or right.
+- Made column moves respond immediately while keeping transitions smooth and column widths stable.
+- Kept column move controls vertically centered throughout the animation.
+- Prevented live download updates, rapid repeated moves, and in-flight settings saves from reverting the selected column order.
+- Applied column changes instantly when animations are disabled.
+
+## [2.0.47] - 2026-08-20
+
+### Live updates
+
+- Standardized running download snapshots and progress metrics on a 750 ms cadence for every queue size.
+- Aligned session volume, remaining volume, speed, ETA, the header speed sparkline, and the bandwidth chart to the same refresh interval.
+- Removed the extra active-download renderer delay so the UI presents each completed snapshot immediately without stacking latency.
+- Prevented normal progress updates from retriggering rolling metric transitions before the previous transition can finish.
+
+## [2.0.46] - 2026-08-20
+
+### Archive passwords
+
+- Restored the saved archive password list automatically when the Extraction settings section is opened.
+- Kept the visible password list intact after settings saves, account updates, and live state refreshes.
+- Prevented late password-list loads from overwriting unsaved edits and invalidated stale loads during backup imports.
+- Kept archive passwords out of general renderer snapshots and exposed them only through a dedicated trusted IPC channel.
+
+## [2.0.45] - 2026-08-19
+
+### Account availability
+
+- Kept a configured Real-Debrid account pool authoritative when every account is disabled instead of reviving legacy browser-login fields.
+- Released stale in-memory Real-Debrid cooldown and sticky state when an account is explicitly re-enabled so the Start action becomes available without restarting the application.
+- Preserved configured per-account daily limits and usage while refreshing only transient runtime state.
+
+## [2.0.44] - 2026-08-17
+
+### Live updates
+
+- Reduced visible download, remaining-volume, speed, ETA, and availability refresh churn for queues with 250 or more items by using a calm 500 ms cadence.
+- Updated live speed sparklines and the bandwidth chart to redraw every 500 ms instead of every 250 ms.
+- Kept small queues responsive and retained the stronger 700 ms protection for queues with 1,500 or more items.
+
+## [2.0.43] - 2026-08-16
+
+### Product identity
+
+- Renamed the packaged application, installer, portable executable, support bundles, update repository, and public download references to Multi-Debrid-Downloader.
+- Migrated the legacy application data directory automatically so existing settings, accounts, queue state, history, statistics, and runtime logs remain available after the rename.
+- Preserved the existing Windows application identity to support in-place updates while retaining the legacy data directory as a safe fallback when Windows temporarily blocks the migration.
+- Updated diagnostics, exported link headers, host checks, user agents, release verification, and public documentation to use the current product name.
+
+### Account runtime
+
+- Added a Runtime tab to account management with provider summaries for available accounts, active downloads, and daily traffic.
+- Added per-account runtime details for current state, active downloads, daily traffic, session success rate, last use, and cooldown or skip reason.
+- Kept API and browser accounts with matching identifiers isolated by provider and access mode throughout runtime attribution.
+- Removed runtime counters for deleted accounts and limited renderer data to sanitized states and aggregate counters without credentials, API responses, or raw provider errors.
+
+## [2.0.42] - 2026-08-15
+
+### Real-Debrid accounts
+
+- Added support for multiple Real-Debrid API-token and browser-login accounts in the same account pool.
+- Kept every browser account in an isolated persistent or transient session so cookies, tokens, login windows, and queued actions cannot leak between accounts.
+- Added independent account activation, daily limits, daily usage, lifetime usage, status records, identity details, editing, removal, and credential reveal controls.
+- Migrated existing single-account Real-Debrid settings and browser sessions into the new pool without discarding saved credentials or account status.
+- Assigned opaque account identifiers and kept API tokens, browser tokens, cookies, and credential-derived fingerprints out of renderer state and diagnostics.
+
+### Rotation and recovery
+
+- Rotated eligible Real-Debrid API and browser accounts with fair ordering, sticky reuse, in-flight exclusion, account cooldowns, and daily-limit enforcement.
+- Continued within the same conversion request after account-specific authentication, rate-limit, timeout, and transport failures.
+- Kept provider-wide hoster failures and permanent link failures from cooling down or rotating otherwise healthy accounts.
+- Attributed downloaded traffic to the exact account that generated the unrestricted link while preserving provider-wide totals.
+- Rebuilt account rotation state immediately after live account, credential, enablement, or limit changes.
+
+### Account checks and login behavior
+
+- Refreshed an account before enabling it and rolled the toggle back when the account is invalid or cannot be checked.
+- Preserved Real-Debrid usernames and email addresses independently in browser-account status rows.
+- Prevented manually closed Real-Debrid login windows from reopening through queued or repeated work.
+- Restricted browser window creation to explicit login actions so activation, status checks, downloads, missing sessions, and fair-use failures remain noninteractive.
+- Cleaned up aborted, failed, deleted, and superseded browser sessions without allowing delayed probes to restore stale tokens or status records.
+
+### Interface and downloads
+
+- Added precise service filtering and alphabetical service ordering to the account-add dialog.
+- Kept Real-Debrid API and browser-login choices available after another Real-Debrid account has already been configured.
+- Continued link availability checks after downloads start so items cannot remain stuck on Checking while actively downloading.
+- Added account-specific login, check, edit, enable, disable, remove, and reveal actions throughout the settings interface.
+
+## [2.0.41] - 2026-08-15
+
+### Accounts
+
+- Split account refresh into active-account and all-account checks with matching result counts.
+- Show failed check results for disabled accounts when all configured accounts are refreshed.
+- Apply individual and bulk account enablement changes immediately while settings are saved, with automatic rollback after a failed save.
+- Re-enable parent providers and Mega-Debrid modes when an individual disabled account or API key is enabled.
+- Disable the active-account refresh action when no enabled checkable account exists.
+- Added Windows-style account selection with Ctrl or Command, selected-account counts, batch removal, and global Escape clearing.
+- Removed the redundant global account activation switch so individual account toggles remain authoritative.
+- Added persistent, resizable account-table columns and retained their widths across restarts.
+- Moved the account-enabled control below the daily limit field in the account editor.
+- Added an explicit reveal action for stored credentials while keeping secrets out of renderer snapshots, diagnostics, and copied account details.
+- Kept credential reveal requests scoped to the selected account and validated through the trusted application boundary.
+- Stored Debrid-Link usernames and email addresses separately and migrated legacy cached identities that placed usernames in the email column.
+- Kept missing Debrid-Link email addresses empty instead of duplicating another identity field.
+- Simplified username and email tooltips to show only the copy action while preserving accessible labels.
+- Added a dedicated Action column with stable edge alignment across window sizes and resizable table layouts.
+- Kept account selections visually distinct without leaving a stale focus outline after Escape.
+- Prevented double-clicking an account action button from opening the account editor behind its context menu.
+- Simplified account menu headings to one hoster and access-type label without dangling separators or empty identity fields.
+
+### Downloads and queue controls
+
+- Moved the Remaining metric above the all-time Total value in the download summary.
+- Kept the currently selected priority as a disabled no-op so choosing it does not close the package context menu.
+- Reordered high, standard, and low priority packages consistently while preserving stable order inside each priority group.
+- Added smooth package movement when priority changes and extended the reorder transition to three seconds for easier visual tracking.
+- Renamed the package-only motion preference to a general animation setting shared by package disclosure, priority movement, and history details.
+- Cancelled active package movement immediately when animations are disabled.
+- Removed phantom horizontal and vertical scrollbars from newly opened package context menus.
+- Moved the cleanup confirmation opt-out below the dialog actions and aligned the decision controls consistently.
+
+### Statistics
+
+- Added a durable daily statistics ledger for downloaded data, completed files, failed results, active transfer duration, and provider outcomes.
+- Made Today, Seven Days, and 30 Days aggregate every available day immediately instead of waiting for a complete calendar window.
+- Preserved existing all-time counters while extending totals with newly recorded success, failure, duration, and provider result metrics.
+- Added real file counts, success rates, average transfer speed, failure counts, and provider result totals to ranged statistics.
+- Kept daily statistics bounded and normalized during load, save, backup export, and restore.
+
+### History and interface
+
+- Rebuilt the history table around one shared resizable grid so headers, rows, expanded details, and horizontal scrolling stay aligned.
+- Persisted history column widths and kept them responsive across compact and wide windows.
+- Anchored the history Action column to the table edge and aligned size values directly below their header.
+- Reworked expanded history details into a cleaner grouped surface for provider, files, duration, average speed, target folder, and source URLs.
+- Added smooth history expand and collapse motion governed by the general animation preference.
+- Kept history disclosure immediate when animations are disabled.
+
+## [2.0.40] - 2026-08-15
+
+### Interface
+
+- Fixed package rows continuing to slide after package expand and collapse motion was disabled in Settings.
+- Applied the no-motion preference immediately to virtual row positions, heights, and opacity.
+
+## [2.0.39] - 2026-08-15
+
+### Settings
+
+- Fixed settings saves after upgrades when account status records or legacy renderer data omit optional fields.
+- Restored download starts and account actions that persist settings before continuing.
+
+## [2.0.38] - 2026-08-15
+
+### Interface
+
+- Added a general setting to disable package expand and collapse motion on remote or lower-performance systems while keeping it enabled by default.
+
+## [2.0.37] - 2026-08-14
+
+### Account status
+
+- Added persistent Real-Debrid API and browser-session account checks with premium status and account identity details.
+- Updated the Real-Debrid account row automatically after a successful browser login and preserved the result across settings saves and restarts.
+
+### Provider errors
+
+- Limited failed conversion messages to providers that were actually attempted.
+- Prevented aggregated fallback details from being mislabeled as a Debrid-Link failure.
+
+### Interface
+
+- Replaced the application and documentation artwork with the refreshed Multi-Debrid Downloader icon.
+- Made populated username and email cells copy their value to the clipboard with a single click while keeping empty cells inactive.
+
+### Downloads
+
+- Restored smooth package expand and collapse motion without disabling large-queue virtualization.
+- Kept package contents mounted throughout collapse transitions, including packages crossing the visible viewport boundary.
+- Added a Remaining metric for unfinished download volume, with a lower-bound indicator when some file sizes are still unknown.
+
+## [2.0.36] - 2026-08-14
+
+### Download performance
+
+- Restored the proven 2.0.28 download-processing baseline after later builds caused severe throughput drops and prolonged disk-wait states during large parallel queues.
+- Removed the per-chunk stream failure race that accumulated pending promise reactions throughout long-running downloads.
+- Preserved the startup reliability, credential protection, storage safeguards, large-queue virtualization, and updater behavior included in 2.0.28.
+
+### Release safety
+
+- Rebuilt the Windows installer and portable package from the verified rollback branch.
+- Revalidated the complete client and backup API test suites before publication.
 
 ## [2.0.28] - 2026-08-12
 

@@ -4,14 +4,42 @@ export interface NotifyPayload {
   title: string;
   message: string;
   mention?: string;
+  color?: number;
+  fields?: DiscordEmbedFieldPayload[];
+  timestamp?: number | string;
+}
+
+export interface DiscordEmbedFieldPayload {
+  name: string;
+  value: string;
+  inline?: boolean;
+}
+
+export interface DiscordEmbedPayload {
+  title: string;
+  description: string;
+  color: number;
+  fields: Array<{
+    name: string;
+    value: string;
+    inline: boolean;
+  }>;
+  timestamp?: string;
 }
 
 const NOTIFY_TIMEOUT_MS = 5000;
-const WEBHOOK_USERNAME = "Real-Debrid Downloader";
+const WEBHOOK_USERNAME = "Multi-Debrid Downloader";
 const MIN_SEND_GAP_MS = 450;
 const RETRY_DELAYS_MS = [1000, 2500];
 const RATE_LIMIT_MAX_WAIT_MS = 15_000;
 const CONTENT_MAX_CHARS = 2000;
+const EMBED_TITLE_MAX_CHARS = 256;
+const EMBED_DESCRIPTION_MAX_CHARS = 4096;
+const EMBED_FIELD_NAME_MAX_CHARS = 256;
+const EMBED_FIELD_VALUE_MAX_CHARS = 1024;
+const EMBED_FIELDS_MAX = 25;
+const EMBED_TOTAL_MAX_CHARS = 6000;
+const DEFAULT_EMBED_COLOR = 0x2f81f7;
 
 export function isNotifyUrlValid(url: string): boolean {
   return /^https?:\/\/\S+$/i.test(String(url || "").trim());
@@ -44,15 +72,67 @@ export function truncateContent(content: string, maxChars = CONTENT_MAX_CHARS): 
   return cut;
 }
 
+function normalizeTimestamp(value: number | string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
+}
+
+function normalizeEmbedColor(value: number | undefined): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_EMBED_COLOR;
+  }
+  return Math.max(0, Math.min(0xffffff, Math.floor(value as number)));
+}
+
+function buildDiscordEmbed(payload: NotifyPayload): DiscordEmbedPayload {
+  let remaining = EMBED_TOTAL_MAX_CHARS;
+  const title = truncateContent(String(payload.title || ""), Math.min(EMBED_TITLE_MAX_CHARS, remaining));
+  remaining -= title.length;
+  const description = truncateContent(String(payload.message || ""), Math.min(EMBED_DESCRIPTION_MAX_CHARS, remaining));
+  remaining -= description.length;
+  const fields: DiscordEmbedPayload["fields"] = [];
+  for (const field of (payload.fields || []).slice(0, EMBED_FIELDS_MAX)) {
+    if (remaining < 2) {
+      break;
+    }
+    const name = truncateContent(String(field.name || ""), Math.min(EMBED_FIELD_NAME_MAX_CHARS, remaining - 1));
+    if (!name) {
+      continue;
+    }
+    remaining -= name.length;
+    const value = truncateContent(String(field.value || ""), Math.min(EMBED_FIELD_VALUE_MAX_CHARS, remaining));
+    if (!value) {
+      remaining += name.length;
+      continue;
+    }
+    remaining -= value.length;
+    fields.push({ name, value, inline: Boolean(field.inline) });
+  }
+  const timestamp = normalizeTimestamp(payload.timestamp);
+  return {
+    title,
+    description,
+    color: normalizeEmbedColor(payload.color),
+    fields,
+    ...(timestamp ? { timestamp } : {})
+  };
+}
+
 export function buildNotifyRequest(url: string, payload: NotifyPayload): { url: string; init: RequestInit } {
   const mention = normalizeDiscordMention(payload.mention || "");
-  const content = truncateContent(`${mention ? `${mention} ` : ""}**${payload.title}**\n${payload.message}`);
   return {
     url: String(url || "").trim(),
     init: {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: WEBHOOK_USERNAME, content })
+      body: JSON.stringify({
+        username: WEBHOOK_USERNAME,
+        content: truncateContent(mention),
+        embeds: [buildDiscordEmbed(payload)]
+      })
     }
   };
 }

@@ -1,4 +1,5 @@
-import type { PackageEntry } from "../shared/types";
+import type { DownloadItem, PackageEntry } from "../shared/types";
+import { compareAvailabilitySummaries, getAvailabilitySummary } from "./views/downloads/DownloadsTable";
 
 export function reorderPackageOrderByDrop(order: string[], draggedPackageId: string, targetPackageId: string): string[] {
   const fromIndex = order.indexOf(draggedPackageId);
@@ -24,81 +25,54 @@ export function sortPackageOrderByName(order: string[], packages: Record<string,
   return sorted;
 }
 
+export function sortPackageOrderByAvailability(
+  order: string[],
+  packages: Record<string, PackageEntry>,
+  items: Record<string, DownloadItem>,
+  descending: boolean
+): string[] {
+  const summaries = new Map(order.map((packageId) => {
+    const packageItems = (packages[packageId]?.itemIds ?? []).map((id) => items[id]).filter((item): item is DownloadItem => Boolean(item));
+    return [packageId, getAvailabilitySummary(packageItems)] as const;
+  }));
+  const sorted = [...order];
+  sorted.sort((a, b) => {
+    const summaryA = summaries.get(a)!;
+    const summaryB = summaries.get(b)!;
+    const cmp = compareAvailabilitySummaries(summaryA, summaryB) || summaryB.total - summaryA.total;
+    return descending ? -cmp : cmp;
+  });
+  return sorted;
+}
+
 export function preservePackageOrderForDisplay(packages: PackageEntry[]): PackageEntry[] {
   return packages;
 }
 
-export type OptimisticPackageOrderStatus = "idle" | "pending" | "acknowledged" | "timed-out";
-
-export interface OptimisticPackageOrderReconciliation {
-  displayOrder: string[];
-  pendingOrder: string[] | null;
-  pendingAt: number;
-  status: OptimisticPackageOrderStatus;
-}
-
-function samePackageOrder(left: string[], right: string[]): boolean {
-  return left.length === right.length && left.every((packageId, index) => packageId === right[index]);
-}
-
-export function reconcileOptimisticPackageOrder(
-  authoritativeOrder: string[],
-  pendingOrder: string[] | null,
-  pendingAt: number,
-  now: number,
-  holdMs = 1_500
-): OptimisticPackageOrderReconciliation {
-  if (!pendingOrder) {
-    return {
-      displayOrder: authoritativeOrder,
-      pendingOrder: null,
-      pendingAt: 0,
-      status: "idle"
-    };
-  }
-  if (samePackageOrder(authoritativeOrder, pendingOrder)) {
-    return {
-      displayOrder: authoritativeOrder,
-      pendingOrder: null,
-      pendingAt: 0,
-      status: "acknowledged"
-    };
-  }
-  if (now - pendingAt >= holdMs) {
-    return {
-      displayOrder: authoritativeOrder,
-      pendingOrder: null,
-      pendingAt: 0,
-      status: "timed-out"
-    };
-  }
+export function createAvailabilitySortCycle() {
+  let phase: "off" | "online" | "offline" = "off";
+  let originalOrder: string[] = [];
   return {
-    displayOrder: pendingOrder,
-    pendingOrder,
-    pendingAt,
-    status: "pending"
+    reset(): void {
+      phase = "off";
+      originalOrder = [];
+    },
+    next(currentOrder: string[]): { descending: boolean | null; order: string[] } {
+      if (phase === "off") {
+        originalOrder = [...currentOrder];
+        phase = "online";
+        return { descending: false, order: currentOrder };
+      }
+      if (phase === "online") {
+        phase = "offline";
+        return { descending: true, order: currentOrder };
+      }
+      phase = "off";
+      const available = new Set(currentOrder);
+      const order = originalOrder.filter((id) => available.delete(id));
+      order.push(...available);
+      originalOrder = [];
+      return { descending: null, order };
+    }
   };
-}
-
-export function reconcileCollapsedPackageState(
-  previous: Record<string, boolean>,
-  packageOrder: string[],
-  packages: Record<string, PackageEntry>,
-  defaultCollapsed: boolean
-): Record<string, boolean> {
-  let changed = false;
-  const next = { ...previous };
-  for (const packageId of packageOrder) {
-    if (!(packageId in previous)) {
-      next[packageId] = defaultCollapsed;
-      changed = true;
-    }
-  }
-  for (const packageId of Object.keys(next)) {
-    if (!packages[packageId]) {
-      delete next[packageId];
-      changed = true;
-    }
-  }
-  return changed ? next : previous;
 }

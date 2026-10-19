@@ -1,4 +1,4 @@
-import type { AppSettings, SessionState, HistoryEntry } from "../shared/types";
+import type { AppSettings, SessionState, HistoryEntry, StatisticsLedger } from "../shared/types";
 
 export type BackupKind = "full" | "settings-only";
 
@@ -16,6 +16,7 @@ export interface BackupPayload {
   settings: AppSettings;
   session?: SessionState;
   history?: HistoryEntry[];
+  statistics?: StatisticsLedger;
   remoteDiagnostics?: BackupRemoteDiagnostics;
 }
 
@@ -26,6 +27,7 @@ export interface BuildBackupInput {
   /** Only bundled when includeDownloads is true. */
   session: SessionState;
   history: HistoryEntry[];
+  statistics?: StatisticsLedger;
   remoteDiagnostics?: BackupRemoteDiagnostics;
 }
 
@@ -47,6 +49,9 @@ export function buildBackupPayload(input: BuildBackupInput): BackupPayload {
   if (includeDownloads) {
     base.session = input.session;
     base.history = input.history;
+    if (input.statistics) {
+      base.statistics = input.statistics;
+    }
   }
   if (Boolean(input.settings.backupIncludeRemoteDiagnostics) && input.remoteDiagnostics) {
     base.remoteDiagnostics = sanitizeBackupRemoteDiagnostics(input.remoteDiagnostics);

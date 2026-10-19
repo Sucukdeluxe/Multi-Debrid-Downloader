@@ -24,6 +24,7 @@ export interface StatisticsViewProps {
 const rangeItems: Array<{ id: StatisticsRange; label: string }> = [
   { id: "session", label: "Sitzung" },
   { id: "today", label: "Heute" },
+  { id: "last24", label: "Letzte 24 Stunden" },
   { id: "week", label: "Sieben Tage" },
   { id: "month", label: "30 Tage" },
   { id: "all", label: "Gesamt" }
@@ -31,7 +32,7 @@ const rangeItems: Array<{ id: StatisticsRange; label: string }> = [
 
 const numberFormatter = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 1 });
 
-function formatBytes(bytes: number): string {
+function formatBytes(bytes: number, maximumUnitIndex = Number.POSITIVE_INFINITY): string {
   const safe = Math.max(0, Number.isFinite(bytes) ? bytes : 0);
   if (safe < 1024) {
     return `${Math.round(safe)} B`;
@@ -39,7 +40,7 @@ function formatBytes(bytes: number): string {
   const units = ["KB", "MB", "GB", "TB", "PB"];
   let value = safe / 1024;
   let unitIndex = 0;
-  while (value >= 1024 && unitIndex < units.length - 1) {
+  while (value >= 1024 && unitIndex < units.length - 1 && unitIndex < maximumUnitIndex) {
     value /= 1024;
     unitIndex += 1;
   }
@@ -51,7 +52,7 @@ function formatMetric(metric: StatisticsMetric, kind: "bytes" | "count" | "perce
     return "–";
   }
   if (kind === "bytes") {
-    return formatBytes(metric.value);
+    return formatBytes(metric.value, 2);
   }
   if (kind === "speed") {
     return `${formatBytes(metric.value)}/s`;
@@ -69,6 +70,15 @@ function providerScopeLabel(scope: StatisticsProviderScope | null): string {
   if (scope === "today") {
     return "Heute";
   }
+  if (scope === "last24") {
+    return "Letzte 24 Stunden";
+  }
+  if (scope === "week") {
+    return "Sieben Tage";
+  }
+  if (scope === "month") {
+    return "30 Tage";
+  }
   if (scope === "all") {
     return "Gesamt";
   }
@@ -81,6 +91,12 @@ function emptyProviderMessage(model: StatisticsViewModel): string {
   }
   if (model.providerScope === "today") {
     return "Heute wurden noch keine Providerbytes erfasst.";
+  }
+  if (model.providerScope === "last24") {
+    return "In den vergangenen 24 Stunden wurde noch kein Account-Traffic erfasst.";
+  }
+  if (model.providerScope === "week" || model.providerScope === "month") {
+    return "In diesem Zeitraum wurden noch keine Providerwerte erfasst.";
   }
   if (model.providerScope === "all") {
     return "Noch keine gespeicherten Providerbytes vorhanden.";
@@ -135,7 +151,7 @@ export function StatisticsSidebarStatus({ model }: Pick<StatisticsViewProps, "mo
     metrics.files.available ? `Dateien: ${formatMetric(metrics.files, "count")}` : null,
     metrics.successRate.available ? `Erfolg: ${formatMetric(metrics.successRate, "percent")}` : null,
     metrics.errors.available ? `Fehler: ${formatMetric(metrics.errors, "count")}` : null,
-    model.providerScope ? `Provider: ${model.providers.length}` : null
+    model.providerScope ? `${model.usageKind === "accounts" ? "Accounts" : "Provider"}: ${numberFormatter.format(model.providers.length)}` : null
   ].filter((value): value is string => value !== null);
   if (rows.length === 0) {
     return null;
@@ -148,6 +164,8 @@ export function StatisticsSidebarStatus({ model }: Pick<StatisticsViewProps, "mo
 }
 
 export function StatisticsContent({ model, actions, chart }: StatisticsViewProps): ReactElement {
+  const usageHeading = model.usageKind === "accounts" ? "Accounts" : "Provider";
+  const usageColumnHeading = model.usageKind === "accounts" ? "Account" : "Provider";
   return (
     <section aria-label="Statistik-Dashboard" className="statistics-content">
       <header className="statistics-heading">
@@ -186,12 +204,12 @@ export function StatisticsContent({ model, actions, chart }: StatisticsViewProps
 
         <section className="statistics-providers">
           <div className="statistics-section-heading">
-            <h3>Provider</h3>
+            <h3>{usageHeading}</h3>
             <span>{providerScopeLabel(model.providerScope)}</span>
           </div>
-          <div aria-label="Provider-Nutzung" className="statistics-provider-table" role="table">
+          <div aria-label={`${usageColumnHeading}-Nutzung`} className="statistics-provider-table" role="table">
             <div className="statistics-provider-header" role="row">
-              <span role="columnheader">Provider</span>
+              <span role="columnheader">{usageColumnHeading}</span>
               <span role="columnheader">Daten</span>
               <span role="columnheader">Ergebnisse</span>
             </div>
@@ -203,7 +221,7 @@ export function StatisticsContent({ model, actions, chart }: StatisticsViewProps
                   <span className={provider.failed && provider.failed > 0 ? "statistics-provider-errors" : undefined} role="cell">
                     {provider.completed === null || provider.failed === null
                       ? "–"
-                      : `${provider.completed} fertig · ${provider.failed} Fehler`}
+                      : `${numberFormatter.format(provider.completed)} fertig · ${numberFormatter.format(provider.failed)} Fehler`}
                   </span>
                 </div>
               )) : (

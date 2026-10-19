@@ -1,0 +1,8 @@
+{
+  "name": "media-apps-mcp-relay",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20.19" },
+  "scripts": { "start": "node src/server.mjs" }
+}

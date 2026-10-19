@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import zlib from "node:zlib";
 import type { AppSettings } from "../shared/types";
+import { MAX_ONLINE_PROXY_LIST_BYTES, validateOnlineProxyListContent } from "./online-proxy-list";
 
 const KEY_PREFIX = "MDD2-";
 const KEY_BODY_LENGTH = 70;
@@ -12,7 +13,8 @@ const AUTH_TAG_LENGTH = 16;
 const BLOB_VERSION = 1;
 const MAX_BLOB_BYTES = 256 * 1024;
 const MAX_RESPONSE_BYTES = 512 * 1024;
-const MAX_PLAINTEXT_BYTES = 512 * 1024;
+const MAX_SETTINGS_PLAINTEXT_BYTES = 512 * 1024;
+const MAX_PLAINTEXT_BYTES = 9 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 12_000;
 const KEY_CONTEXT = Buffer.from("MDD2-ONLINE-KEY-V1", "utf8");
 const AAD_CONTEXT = Buffer.from("MDD-ONLINE-BACKUP-V1", "utf8");
@@ -23,6 +25,10 @@ export interface OnlineSettingsPayload {
   appVersion: string;
   exportedAt: string;
   settings: AppSettings;
+  proxyList?: {
+    version: 1;
+    content: string;
+  };
 }
 
 export interface OnlineBackupRecord {
@@ -80,6 +86,13 @@ function validatePayload(value: unknown): OnlineSettingsPayload {
     || "history" in record
   ) {
     throw new Error("Online-Sicherung enthält keine gültigen Einstellungen");
+  }
+  if (record.proxyList !== undefined) {
+    const proxyList = record.proxyList as Record<string, unknown> | null;
+    if (!proxyList || Array.isArray(proxyList) || proxyList.version !== 1 || typeof proxyList.content !== "string"
+      || Buffer.byteLength(proxyList.content, "utf8") > MAX_ONLINE_PROXY_LIST_BYTES) {
+      throw new Error("Online-Sicherung enthält keine gültigen Einstellungen");
+    }
   }
   return record as unknown as OnlineSettingsPayload;
 }
@@ -152,22 +165,35 @@ export function parseOnlineBackupKey(key: string): ParsedOnlineBackupKey {
   return { id: idBytes.toString("base64url"), idBytes: Buffer.from(idBytes), masterKey: Buffer.from(masterKey) };
 }
 
-export function createOnlineBackup(settings: AppSettings, appVersion: string, exportedAt = new Date().toISOString()): CreatedOnlineBackup {
+export function createOnlineBackup(
+  settings: AppSettings,
+  appVersion: string,
+  exportedAt = new Date().toISOString(),
+  proxyListContent?: string
+): CreatedOnlineBackup {
+  if (proxyListContent !== undefined) validateOnlineProxyListContent(proxyListContent);
   const idBytes = crypto.randomBytes(RECORD_ID_LENGTH);
   const masterKey = crypto.randomBytes(MASTER_KEY_LENGTH);
   const key = encodeKey(idBytes, masterKey);
   const encryptionKey = deriveSecret(masterKey, idBytes, "ENCRYPTION");
   const nonce = crypto.randomBytes(NONCE_LENGTH);
+  const settingsSnapshot = JSON.parse(JSON.stringify(settings)) as AppSettings;
+  if (Buffer.byteLength(JSON.stringify(settingsSnapshot), "utf8") > MAX_SETTINGS_PLAINTEXT_BYTES) {
+    throw new Error("Einstellungen sind für eine Online-Sicherung zu groß");
+  }
   const payload: OnlineSettingsPayload = {
     version: 1,
     kind: "settings-only",
     appVersion,
     exportedAt,
-    settings: JSON.parse(JSON.stringify(settings)) as AppSettings
+    settings: settingsSnapshot,
+    ...(proxyListContent === undefined ? {} : { proxyList: { version: 1 as const, content: proxyListContent } })
   };
   const plaintext = Buffer.from(JSON.stringify(payload), "utf8");
   if (plaintext.length > MAX_PLAINTEXT_BYTES) {
-    throw new Error("Einstellungen sind für eine Online-Sicherung zu groß");
+    throw new Error(proxyListContent === undefined
+      ? "Einstellungen sind für eine Online-Sicherung zu groß"
+      : "Einstellungen und Proxy-Liste sind für eine Online-Sicherung zu groß");
   }
   const compressed = zlib.gzipSync(plaintext, { level: 9 });
   const cipher = crypto.createCipheriv("aes-256-gcm", encryptionKey, nonce, { authTagLength: AUTH_TAG_LENGTH });
@@ -175,7 +201,9 @@ export function createOnlineBackup(settings: AppSettings, appVersion: string, ex
   const ciphertext = Buffer.concat([cipher.update(compressed), cipher.final()]);
   const blobBytes = Buffer.concat([Buffer.from([BLOB_VERSION]), nonce, cipher.getAuthTag(), ciphertext]);
   if (blobBytes.length > MAX_BLOB_BYTES) {
-    throw new Error("Einstellungen sind für eine Online-Sicherung zu groß");
+    throw new Error(proxyListContent === undefined
+      ? "Einstellungen sind für eine Online-Sicherung zu groß"
+      : "Einstellungen und Proxy-Liste sind für eine Online-Sicherung zu groß");
   }
   const parsed = parseOnlineBackupKey(key);
   const deleteVerifier = crypto.createHash("sha256").update(deriveDeleteSecret(parsed)).digest("base64url");
@@ -222,11 +250,37 @@ export function restoreOnlineBackup(key: string, blob: string): OnlineSettingsPa
   }
 }
 
-export async function uploadOnlineBackup(record: OnlineBackupRecord, baseUrl: string): Promise<void> {
+export async function uploadOnlineBackup(record: OnlineBackupRecord, baseUrl: string, recoveryKey?: string): Promise<void> {
+  let recovery: { version: number; keyId: string; ciphertext: string } | undefined;
+  if (recoveryKey !== undefined) {
+    if (parseOnlineBackupKey(recoveryKey).id !== record.id) throw new Error("Online-Schlüssel passt nicht zur Sicherung");
+    restoreOnlineBackup(recoveryKey, record.blob);
+    const descriptorResponse = await request(endpoint(baseUrl, "/v1/backups/recovery-key"), { method: "POST" });
+    const descriptorBody = await readLimitedText(descriptorResponse);
+    if (descriptorResponse.status !== 200) throw new Error("Schlüsselwiederherstellung ist auf dem Sicherungsserver nicht eingerichtet");
+    try {
+      const descriptor = JSON.parse(descriptorBody);
+      if (descriptor.version !== 1 || typeof descriptor.publicKey !== "string" || !descriptor.publicKey.startsWith("-----BEGIN PUBLIC KEY-----")) throw new Error();
+      const publicKey = crypto.createPublicKey(descriptor.publicKey);
+      if (publicKey.asymmetricKeyType !== "rsa" || publicKey.asymmetricKeyDetails?.modulusLength !== 3072) throw new Error();
+      const keyId = crypto.createHash("sha256").update(publicKey.export({ type: "spki", format: "der" })).digest("base64url");
+      if (descriptor.keyId !== keyId) throw new Error();
+      const blobHash = crypto.createHash("sha256").update(record.blob).digest("base64url");
+      const ciphertext = crypto.publicEncrypt({
+        key: publicKey,
+        padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+        oaepHash: "sha256",
+        oaepLabel: Buffer.from(`MDD-RECOVERY-V1:${record.id}:${record.deleteVerifier}:${blobHash}`)
+      }, Buffer.from(recoveryKey.trim(), "utf8")).toString("base64url");
+      recovery = { version: 1, keyId, ciphertext };
+    } catch {
+      throw new Error("Wiederherstellungsschlüssel des Sicherungsservers ist ungültig");
+    }
+  }
   const response = await request(endpoint(baseUrl, "/v1/backups"), {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
-    body: JSON.stringify(record)
+    body: JSON.stringify({ ...record, ...(recovery ? { recovery } : {}) })
   });
   await readLimitedText(response);
   if (response.status !== 201) {

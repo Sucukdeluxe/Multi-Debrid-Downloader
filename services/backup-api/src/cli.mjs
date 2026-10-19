@@ -1,4 +1,5 @@
 import { resolve } from 'node:path'
+import { readFileSync } from 'node:fs'
 import { createBackupServer } from './server.mjs'
 
 const port = Number.parseInt(process.env.PORT ?? '8787', 10)
@@ -21,7 +22,10 @@ const trustedProxy = process.env.TRUST_PROXY === 'true'
 
 if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) throw new Error('Invalid PORT')
 
-const server = createBackupServer({ rootDir, allowedOrigins, rateLimit, uploadRateLimit, maxStorageBytes, trustedProxy })
+const recoveryPublicKey = process.env.RECOVERY_PUBLIC_KEY_FILE
+  ? readFileSync(resolve(process.env.RECOVERY_PUBLIC_KEY_FILE), 'utf8')
+  : undefined
+const server = createBackupServer({ rootDir, allowedOrigins, rateLimit, uploadRateLimit, maxStorageBytes, trustedProxy, recoveryPublicKey })
 
 server.listen(port, host, () => {
   process.stdout.write(`Backup API listening on ${host}:${port}\n`)

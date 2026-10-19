@@ -1,4 +1,4 @@
-import type { HTMLAttributes, ReactElement, ReactNode } from "react";
+import { forwardRef, type HTMLAttributes, type ReactElement, type ReactNode } from "react";
 
 export interface DataTableProps extends HTMLAttributes<HTMLDivElement> {
   label?: string;
@@ -44,18 +44,19 @@ export function DataTableHeader({ className, children, ...props }: DataTableSect
   );
 }
 
-export function DataTableBody({ className, children, ...props }: DataTableSectionProps): ReactElement {
+export const DataTableBody = forwardRef<HTMLDivElement, DataTableSectionProps>(function DataTableBody({ className, children, ...props }, ref): ReactElement {
   return (
     <div
       {...props}
       className={["ui-data-table-body", className].filter(Boolean).join(" ")}
       data-ui-region="table-body"
+      ref={ref}
       role="rowgroup"
     >
       {children}
     </div>
   );
-}
+});
 
 export function DataTableEmpty({
   title,

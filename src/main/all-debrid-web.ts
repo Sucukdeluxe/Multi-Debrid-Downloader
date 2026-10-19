@@ -3,6 +3,7 @@ import { AllDebridHostInfo } from "../shared/types";
 import { UnrestrictedLink } from "./realdebrid";
 import { filenameFromUrl, sleep } from "./utils";
 import { ALLDEBRID_LOGIN_HOSTS, applyRemoteLoginSecurity, createRemoteLoginWebPreferences } from "./browser-security";
+import { configureElectronProxySession } from "./network-proxy";
 
 const ALLDEBRID_BASE_URL = "https://alldebrid.com";
 const ALLDEBRID_LOGIN_URL = `${ALLDEBRID_BASE_URL}/register/?from=de`;
@@ -213,6 +214,7 @@ export class AllDebridWebFallback {
 
   public async getHostInfo(host: string): Promise<AllDebridHostInfo> {
     const currentSession = session.fromPartition(this.getPartition());
+    await configureElectronProxySession(currentSession);
     const response = await currentSession.fetch(ALLDEBRID_STATUS_URL, {
       headers: {
         Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -287,6 +289,7 @@ export class AllDebridWebFallback {
 
   private async ensureLoginWindow(): Promise<BrowserWindow> {
     const partition = this.getPartition();
+    await configureElectronProxySession(session.fromPartition(partition));
     const existing = this.loginWindow;
     if (existing && !existing.isDestroyed() && this.loginWindowPartition === partition) {
       return existing;
@@ -310,15 +313,6 @@ export class AllDebridWebFallback {
       externalHosts: ALLDEBRID_LOGIN_HOSTS
     });
     window.setMenuBarVisibility(false);
-    window.webContents.on("render-process-gone", () => {
-      if (this.loginWindow === window) {
-        this.loginWindow = null;
-        this.loginWindowPartition = "";
-      }
-      if (!window.isDestroyed()) {
-        window.close();
-      }
-    });
     window.on("closed", () => {
       if (this.loginWindow === window) {
         this.loginWindow = null;
@@ -338,6 +332,7 @@ export class AllDebridWebFallback {
     signal?: AbortSignal
   ): Promise<{ response: Response; text: string }> {
     const currentSession = session.fromPartition(this.getPartition());
+    await configureElectronProxySession(currentSession);
     const response = await currentSession.fetch(url, {
       method: "POST",
       headers: {

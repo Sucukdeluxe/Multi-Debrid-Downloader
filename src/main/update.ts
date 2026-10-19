@@ -14,7 +14,7 @@ const DOWNLOAD_BODY_IDLE_TIMEOUT_MS = 45_000;
 const RETRIES_PER_CANDIDATE = 3;
 const RETRY_DELAY_MS = 1_500;
 const MAX_DOWNLOAD_PASSES = 3;
-const USER_AGENT = `RD-Node-Downloader/${APP_VERSION}`;
+const USER_AGENT = `MDD-Node-Downloader/${APP_VERSION}`;
 
 type UpdateSource = {
   name: string;
@@ -340,12 +340,12 @@ async function verifyBinaryShape(filePath: string): Promise<void> {
   }
 }
 
-async function verifyDownloadedInstaller(filePath: string, digestRaw: string): Promise<void> {
+async function verifyDownloadedInstaller(filePath: string, digestRaw: string, requireDigest = false): Promise<void> {
   await verifyBinaryShape(filePath);
 
   const expected = parseExpectedDigest(digestRaw);
   if (!expected) {
-    if (String(process.env.RD_ALLOW_UNSIGNED_UPDATE || "").trim() === "1") {
+    if (!requireDigest && String(process.env.RD_ALLOW_UNSIGNED_UPDATE || "").trim() === "1") {
       logger.warn("Update-Asset ohne gültigen SHA-Digest (RD_ALLOW_UNSIGNED_UPDATE=1) - nur EXE-Basisprüfung durchgeführt");
       return;
     }
@@ -702,10 +702,134 @@ async function downloadFile(
   const tempPath = `${targetPath}.tmp`;
   const writeStream = fs.createWriteStream(tempPath);
   const reader = response.body.getReader();
-
+  let writeError: unknown = null;
   const idleMs = getBodyIdleTimeout();
+  const idleAbortController = new AbortController();
   let idleTimer: NodeJS.Timeout | null = null;
   let idleTimedOut = false;
+
+  const idleTimeoutError = (): Error => new Error(`Update Download Body Timeout nach ${Math.ceil(idleMs / 1000)}s`);
+
+  const onWriteError = (error: unknown): void => {
+    writeError = error;
+    void reader.cancel().catch(() => undefined);
+  };
+  const onWriteClose = (): void => {
+    writeStream.removeListener("error", onWriteError);
+  };
+  writeStream.on("error", onWriteError);
+  writeStream.once("close", onWriteClose);
+
+  const waitForDrain = async (): Promise<void> => {
+    if (writeError !== null) throw writeError;
+    if (idleTimedOut) throw idleTimeoutError();
+    if (shutdown?.aborted) throw new Error("aborted:update_shutdown");
+
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const cleanup = (): void => {
+        writeStream.removeListener("drain", onDrain);
+        writeStream.removeListener("error", onError);
+        idleAbortController.signal.removeEventListener("abort", onIdleTimeout);
+        shutdown?.removeEventListener("abort", onAbort);
+      };
+      const settle = (error?: unknown): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (error !== undefined) {
+          reject(error);
+        } else {
+          resolve();
+        }
+      };
+      const onDrain = (): void => settle();
+      const onError = (error: unknown): void => settle(error);
+      const onIdleTimeout = (): void => settle(idleTimeoutError());
+      const onAbort = (): void => settle(new Error("aborted:update_shutdown"));
+
+      writeStream.once("drain", onDrain);
+      writeStream.once("error", onError);
+      idleAbortController.signal.addEventListener("abort", onIdleTimeout, { once: true });
+      shutdown?.addEventListener("abort", onAbort, { once: true });
+
+      if (writeError !== null) {
+        settle(writeError);
+      } else if (idleTimedOut) {
+        onIdleTimeout();
+      } else if (shutdown?.aborted) {
+        onAbort();
+      }
+    });
+  };
+
+  const finishWriting = async (): Promise<void> => {
+    if (writeError !== null) throw writeError;
+    if (idleTimedOut) throw idleTimeoutError();
+    if (shutdown?.aborted) throw new Error("aborted:update_shutdown");
+
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let endSucceeded = false;
+      let closed = false;
+      const cleanup = (): void => {
+        writeStream.removeListener("error", onError);
+        writeStream.removeListener("close", onClose);
+        idleAbortController.signal.removeEventListener("abort", onIdleTimeout);
+        shutdown?.removeEventListener("abort", onAbort);
+      };
+      const settle = (error?: unknown): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (error !== undefined) {
+          reject(error);
+        } else {
+          resolve();
+        }
+      };
+      const onError = (error: unknown): void => settle(error);
+      const settleIfComplete = (): void => {
+        if (endSucceeded && closed) settle();
+      };
+      const onClose = (): void => {
+        closed = true;
+        if (writeError !== null) {
+          settle(writeError);
+          return;
+        }
+        settleIfComplete();
+      };
+      const onIdleTimeout = (): void => settle(idleTimeoutError());
+      const onAbort = (): void => settle(new Error("aborted:update_shutdown"));
+
+      writeStream.once("error", onError);
+      writeStream.once("close", onClose);
+      idleAbortController.signal.addEventListener("abort", onIdleTimeout, { once: true });
+      shutdown?.addEventListener("abort", onAbort, { once: true });
+
+      if (writeError !== null) {
+        settle(writeError);
+      } else if (idleTimedOut) {
+        onIdleTimeout();
+      } else if (shutdown?.aborted) {
+        onAbort();
+      } else {
+        try {
+          writeStream.end((error?: unknown) => {
+            if (error !== undefined && error !== null) {
+              settle(error);
+            } else {
+              endSucceeded = true;
+              settleIfComplete();
+            }
+          });
+        } catch (error) {
+          settle(error);
+        }
+      }
+    });
+  };
 
   const clearIdle = (): void => {
     if (idleTimer) {
@@ -719,7 +843,8 @@ async function downloadFile(
     if (idleMs > 0) {
       idleTimer = setTimeout(() => {
         idleTimedOut = true;
-        reader.cancel().catch(() => undefined);
+        idleAbortController.abort();
+        void reader.cancel().catch(() => undefined);
       }, idleMs);
     }
   };
@@ -728,39 +853,40 @@ async function downloadFile(
     resetIdle();
     for (;;) {
       if (shutdown?.aborted) {
-        await reader.cancel().catch(() => undefined);
+        void reader.cancel().catch(() => undefined);
         throw new Error("aborted:update_shutdown");
       }
       const { done, value } = await reader.read();
+      if (writeError !== null) throw writeError;
       if (done) break;
 
       const buf = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
       if (!writeStream.write(buf)) {
-        await new Promise<void>((resolve) => writeStream.once("drain", resolve));
+        await waitForDrain();
       }
+      if (writeError !== null) throw writeError;
       downloadedBytes += buf.byteLength;
       resetIdle();
       reportProgress(false);
     }
+
+    await finishWriting();
+    if (writeError !== null) throw writeError;
   } catch (error) {
     writeStream.destroy();
+    void reader.cancel().catch(() => undefined);
     await fs.promises.rm(tempPath, { force: true }).catch(() => {});
     if (idleTimedOut) {
-      throw new Error(`Update Download Body Timeout nach ${Math.ceil(idleMs / 1000)}s`);
+      throw idleTimeoutError();
     }
     throw error;
   } finally {
     clearIdle();
   }
 
-  await new Promise<void>((resolve, reject) => {
-    writeStream.end(() => resolve());
-    writeStream.on("error", reject);
-  });
-
   if (idleTimedOut) {
     await fs.promises.rm(tempPath, { force: true }).catch(() => {});
-    throw new Error(`Update Download Body Timeout nach ${Math.ceil(idleMs / 1000)}s`);
+    throw idleTimeoutError();
   }
 
   if (totalBytes && downloadedBytes !== totalBytes) {
@@ -831,20 +957,21 @@ async function downloadFromCandidates(
   throw lastError;
 }
 
-async function resolveAssetFromApi(repo: string, tag: string): Promise<{
+async function resolveAssetFromApi(repo: string, tag: string, pinned = false): Promise<{
   setupAssetUrl: string;
   setupAssetName: string;
   setupAssetDigest: string;
 } | null> {
   const endpoints = uniqueStrings([
     tag ? `releases/tags/${encodeURIComponent(tag)}` : "",
-    "releases/latest",
+    pinned ? "" : "releases/latest",
   ]);
 
   for (const ep of endpoints) {
     try {
       const { ok, payload } = await fetchRelease(repo, ep);
       if (!ok || !payload || isDraftOrPrerelease(payload)) continue;
+      if (pinned && payload.tag_name !== tag) continue;
       const setup = pickSetupAsset(readAssets(payload));
       if (!setup) continue;
       return {
@@ -858,16 +985,17 @@ async function resolveAssetFromApi(repo: string, tag: string): Promise<{
   return null;
 }
 
-async function resolveDigestFromYml(repo: string, tag: string, setupName: string): Promise<string> {
+async function resolveDigestFromYml(repo: string, tag: string, setupName: string, pinned = false): Promise<string> {
   const endpoints = uniqueStrings([
     tag ? `releases/tags/${encodeURIComponent(tag)}` : "",
-    "releases/latest",
+    pinned ? "" : "releases/latest",
   ]);
 
   for (const ep of endpoints) {
     try {
       const { ok, payload } = await fetchRelease(repo, ep);
       if (!ok || !payload || isDraftOrPrerelease(payload)) continue;
+      if (pinned && payload.tag_name !== tag) continue;
 
       const yml = pickLatestYml(readAssets(payload));
       if (!yml) continue;
@@ -929,6 +1057,7 @@ export async function installLatestUpdate(
   repo: string,
   prechecked?: UpdateCheckResult,
   onProgress?: UpdateProgressCallback,
+  options: { expectedVersion?: string; requireDigest?: boolean; beforeLaunch?: () => Promise<void> } = {},
 ): Promise<UpdateInstallResult> {
   if (activeAbortController && !activeAbortController.signal.aborted) {
     emitProgress(onProgress, {
@@ -964,6 +1093,11 @@ export async function installLatestUpdate(
     return { started: false, message: "Kein neues Update verfügbar" };
   }
 
+  if (options.expectedVersion && (!/^\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(options.expectedVersion) || check.latestVersion !== options.expectedVersion || check.latestTag !== `v${options.expectedVersion}`)) {
+    activeAbortController = null;
+    return { started: false, message: "Angebotene Update-Version stimmt nicht mit der angeforderten Zielversion überein." };
+  }
+
   let effective: UpdateCheckResult = {
     ...check,
     setupAssetUrl: String(check.setupAssetUrl || ""),
@@ -972,7 +1106,7 @@ export async function installLatestUpdate(
   };
 
   if (!effective.setupAssetUrl || !effective.setupAssetDigest) {
-    const refreshed = await resolveAssetFromApi(safeRepo, effective.latestTag);
+    const refreshed = await resolveAssetFromApi(safeRepo, effective.latestTag, Boolean(options.expectedVersion));
     if (refreshed) {
       effective = {
         ...effective,
@@ -984,7 +1118,7 @@ export async function installLatestUpdate(
   }
 
   if (!effective.setupAssetDigest && effective.setupAssetUrl) {
-    const digest = await resolveDigestFromYml(safeRepo, effective.latestTag, effective.setupAssetName || "");
+    const digest = await resolveDigestFromYml(safeRepo, effective.latestTag, effective.setupAssetName || "", Boolean(options.expectedVersion));
     if (digest) {
       effective = { ...effective, setupAssetDigest: digest };
       logger.info("Update-Integritätsdigest aus latest.yml übernommen");
@@ -1033,7 +1167,7 @@ export async function installLatestUpdate(
             message: `Prüfe Installer-Integrität (${i + 1}/${candidates.length})`,
           });
 
-          await verifyDownloadedInstaller(targetPath, String(effective.setupAssetDigest || ""));
+          await verifyDownloadedInstaller(targetPath, String(effective.setupAssetDigest || ""), options.requireDigest);
           verified = true;
           break;
         } catch (error) {
@@ -1056,7 +1190,7 @@ export async function installLatestUpdate(
 
       logger.warn(`Pass ${pass + 1} fehlgeschlagen (${integrityError ? "Integritätsfehler" : "HTTP 404"}), aktualisiere Kandidaten...`);
 
-      const refreshed = await resolveAssetFromApi(safeRepo, effective.latestTag);
+      const refreshed = await resolveAssetFromApi(safeRepo, effective.latestTag, Boolean(options.expectedVersion));
       if (refreshed) {
         effective = {
           ...effective,
@@ -1066,7 +1200,7 @@ export async function installLatestUpdate(
         };
       }
 
-      const ymlDigest = await resolveDigestFromYml(safeRepo, effective.latestTag, effective.setupAssetName || "");
+      const ymlDigest = await resolveDigestFromYml(safeRepo, effective.latestTag, effective.setupAssetName || "", Boolean(options.expectedVersion));
       if (ymlDigest) {
         effective = { ...effective, setupAssetDigest: ymlDigest };
         logger.info("Update-Integritätsdigest aus latest.yml aktualisiert");
@@ -1092,6 +1226,9 @@ export async function installLatestUpdate(
       throw integrityError || lastVerifyError || new Error("Update-Download fehlgeschlagen");
     }
 
+    await options.beforeLaunch?.();
+    if (abortCtrl.signal.aborted) throw new Error("aborted:update_shutdown");
+
     emitProgress(onProgress, {
       stage: "launching", percent: 100, downloadedBytes: 0, totalBytes: null,
       message: "Starte stille Update-Installation",
@@ -1102,8 +1239,12 @@ export async function installLatestUpdate(
       stdio: "ignore",
       windowsHide: true,
     });
-    child.once("error", (spawnError) => {
-      logger.error(`Update-Installer Start fehlgeschlagen: ${compactErrorText(spawnError)}`);
+    await new Promise<void>((resolve, reject) => {
+      child.once("spawn", resolve);
+      child.once("error", (spawnError) => {
+        logger.error(`Update-Installer Start fehlgeschlagen: ${compactErrorText(spawnError)}`);
+        reject(spawnError);
+      });
     });
     child.unref();
 
@@ -1136,4 +1277,35 @@ export async function installLatestUpdate(
 export function abortActiveUpdateDownload(): void {
   if (!activeAbortController || activeAbortController.signal.aborted) return;
   activeAbortController.abort("shutdown");
+}
+
+export async function installVerifiedLocalUpdate(
+  installerPath: string,
+  sha256: string,
+  expectedVersion: string,
+  onProgress: UpdateProgressCallback,
+  beforeLaunch: () => Promise<void>
+): Promise<UpdateInstallResult> {
+  if (activeAbortController && !activeAbortController.signal.aborted) return { started: false, message: "Ein Update läuft bereits." };
+  if (!/^[a-f0-9]{64}$/.test(sha256) || !/^\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(expectedVersion) || !isRemoteNewer(APP_VERSION, expectedVersion)) {
+    return { started: false, message: "Ungültige direkte Update-Version oder Prüfsumme." };
+  }
+  const abort = new AbortController();
+  activeAbortController = abort;
+  try {
+    emitProgress(onProgress, { stage: "verifying", percent: 100, downloadedBytes: 0, totalBytes: null, message: "Prüfe direkt übertragenes Installationspaket" });
+    await verifyDownloadedInstaller(installerPath, `sha256:${sha256}`, true);
+    abort.signal.throwIfAborted();
+    await beforeLaunch();
+    abort.signal.throwIfAborted();
+    const child = childProcess.spawn(installerPath, buildInstallerLaunchArgs(), { detached: true, stdio: "ignore", windowsHide: true });
+    await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+    child.unref();
+    emitProgress(onProgress, { stage: "done", percent: 100, downloadedBytes: 0, totalBytes: null, message: "Direkt übertragenes Update wird installiert" });
+    return { started: true, message: "Geprüfte direkte Update-Installation gestartet." };
+  } catch (error) {
+    return { started: false, message: compactErrorText(error) };
+  } finally {
+    if (activeAbortController === abort) activeAbortController = null;
+  }
 }

@@ -8,6 +8,10 @@ export const ICON_NAMES = [
   "statistics",
   "add",
   "search",
+  "layers",
+  "clock",
+  "check-circle",
+  "alert-circle",
   "play",
   "pause",
   "stop",
@@ -56,6 +60,14 @@ function IconDrawing({ name }: { name: IconName }): ReactElement {
       return <><path d="M12 5v14" /><path d="M5 12h14" /></>;
     case "search":
       return <><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></>;
+    case "layers":
+      return <><path d="m3 7 9-4 9 4-9 4-9-4Z" /><path d="m3 12 9 4 9-4M3 17l9 4 9-4" /></>;
+    case "clock":
+      return <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>;
+    case "check-circle":
+      return <><circle cx="12" cy="12" r="9" /><path d="m7 12 3 3 7-7" /></>;
+    case "alert-circle":
+      return <><circle cx="12" cy="12" r="9" /><path d="M12 7v6M12 17h.01" /></>;
     case "play":
       return <path d="m8 5 11 7-11 7Z" />;
     case "pause":

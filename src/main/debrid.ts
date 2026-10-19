@@ -1,21 +1,24 @@
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
+import { orderAccountsByRule } from "../shared/account-usage-rules";
 import { getMegaDebridAccountsForMode, mergeMegaDebridCredentialPools, parseMegaDebridAccounts, type MegaDebridAccountEntry, type MegaDebridAccountMode } from "../shared/mega-debrid-accounts";
+import { getRealDebridAccounts, type RealDebridAccountEntry } from "../shared/real-debrid-accounts";
 import { extractHosterFromUrl } from "../shared/hoster";
 import { AllDebridHostInfo, AppSettings, DebridFallbackProvider, DebridLinkHostLimitInfo, DebridProvider } from "../shared/types";
-import { isDebridLinkApiKeyDailyLimitReached, isMegaDebridAccountDisabled, isMegaDebridAccountDailyLimitReached, isProviderDailyLimitReached } from "../shared/provider-daily-limits";
+import { isDebridLinkApiKeyDailyLimitReached, isMegaDebridAccountDisabled, isMegaDebridAccountDailyLimitReached, isProviderDailyLimitReached, isRealDebridAccountDailyLimitReached } from "../shared/provider-daily-limits";
 import { isMegaDebridResolveFailure, germanMegaDebridResolveReason } from "../shared/mega-debrid-errors";
 import { APP_VERSION, REQUEST_RETRIES } from "./constants";
+import { DEEPBRID_ACCOUNT_ID, DeepbridClient } from "./deepbrid";
+import { pruneAccountRuntimeSession, recordAccountRuntimeAttempt, recordAccountRuntimeFailure, recordAccountRuntimeSuccess, resetAccountRuntimeSessionForProvider } from "./account-runtime";
 import { logger } from "./logger";
 import { logAccountRotation } from "./account-rotation-log";
 import { traceConversionPhase } from "./conversion-trace";
-import { sanitizeDiagnosticText, type DiagnosticRedactions } from "./diagnostic-sanitizer";
-import { RealDebridClient, UnrestrictedLink } from "./realdebrid";
+import { RealDebridApiError, RealDebridClient, UnrestrictedLink } from "./realdebrid";
 import { MEGA_DEBRID_NO_SERVER_RE } from "./mega-web-fallback";
 import { isMegaFileUrl, resolveMegaFilename } from "./mega-public-api";
 import { compactErrorText, filenameFromUrl, looksLikeOpaqueFilename, sleep } from "./utils";
 
 const API_TIMEOUT_MS = 30000;
-const DEBRID_USER_AGENT = `RD-Node-Downloader/${APP_VERSION}`;
+const DEBRID_USER_AGENT = `MDD-Node-Downloader/${APP_VERSION}`;
 const RAPIDGATOR_SCAN_MAX_BYTES = 512 * 1024;
 
 const BEST_DEBRID_API_BASE = "https://bestdebrid.com/api/v1";
@@ -25,11 +28,10 @@ const ALL_DEBRID_API_BASE_V41 = "https://api.alldebrid.com/v4.1";
 const MEGA_DEBRID_API_BASE = "https://www.mega-debrid.eu/api.php";
 
 const ONEFICHIER_API_BASE = "https://api.1fichier.com/v1";
-const ONEFICHIER_URL_RE = /^https?:\/\/(?:www\.)?(?:1fichier\.com|alterupload\.com|cjoint\.net|desfichiers\.com|dfichiers\.com|megadl\.fr|mesfichiers\.org|piecejointe\.net|pjointe\.com|tenvoi\.com|dl4free\.com)\/\?([a-z0-9]{5,20})$/i;
-
-function sanitizeProviderErrorText(error: unknown, redactions: DiagnosticRedactions = {}): string {
-  return sanitizeDiagnosticText(compactErrorText(error).replace(/^Error:\s*/i, ""), redactions);
-}
+const ONEFICHIER_CHECK_URL = "https://1fichier.com/check_links.pl";
+const ONEFICHIER_CHECK_BATCH_SIZE = 100;
+const ONEFICHIER_CHECK_BATCH_DELAY_MS = 1000;
+const ONEFICHIER_URL_RE = /^https?:\/\/(?:www\.)?(?:1fichier\.com|alterupload\.com|cjoint\.net|desfichiers\.(?:com|net)|dfichiers\.com|megadl\.fr|mesfichiers\.org|piecejointe\.net|pjointe\.com|tenvoi\.com|dl4free\.com)\/\?([a-z0-9]{5,20})$/i;
 
 const DEBRID_LINK_API_BASE = "https://debrid-link.com/api/v2";
 const DEBRID_LINK_KEY_QUOTA_ERRORS = new Set(["maxLink", "maxData"]);
@@ -70,6 +72,7 @@ export function resetDebridLinkRuntimeStateForTests(): void {
   debridLinkKeyRuntimeStatuses.clear();
   debridLinkKeyHostCooldowns.clear();
   debridLinkKeyHostCooldownDetails.clear();
+  resetAccountRuntimeSessionForProvider("debridlink");
 }
 
 export function pruneDebridLinkRuntimeStateForKeys(activeKeyIds: Set<string>): void {
@@ -296,7 +299,6 @@ const megaDebridAccountCooldowns = new Map<string, MegaDebridCooldownDetail>();
 const MEGA_DEBRID_ACCOUNT_COOLDOWN_MS = 120_000;
 const MEGA_DEBRID_SLOW_LINK_RETRY_MS = 120_000;
 const MEGA_DEBRID_INVALID_ACCOUNT_COOLDOWN_MS = 60 * 60 * 1000;
-const MEGA_DEBRID_ACCOUNT_ATTEMPT_TIMEOUT_MS_DEFAULT = 120_000;
 
 // A Mega-Web account abort (the shared unrestrict timeout firing while this
 // account ran) only cools the account down — so the next attempt rotates on —
@@ -310,13 +312,9 @@ function getMegaDebridAbortMinRunMs(): number {
 
 const megaDebridEmptyResponseStreaks = new Map<string, number>();
 export const MEGA_DEBRID_EMPTY_STREAK_UNTIL_RESTART = 10;
-const MEGA_DEBRID_WEB_SESSION_BACKOFF_MS = 20_000;
-let megaDebridWebSessionBackoffUntil = 0;
 
-const megaDebridRotationState: Record<"api" | "web", { cursor: number; stickyCount: number }> = {
-  api: { cursor: 0, stickyCount: 0 },
-  web: { cursor: 0, stickyCount: 0 }
-};
+let megaDebridRotationCursor = 0;
+let megaDebridStickyCount = 0;
 // Mega-Web cacht Sessions pro Account (~20 Min). Wuerde jede Link-Aufloesung den
 // Account wechseln (reines Round-Robin), zahlte JEDER Link einen kalten Login in
 // die serielle Single-Flight-Queue → minutenlanger Vorlauf. Stattdessen bleibt die
@@ -342,65 +340,14 @@ export function clearMegaDebridEmptyResponseStreak(accountId: string): void {
   megaDebridEmptyResponseStreaks.delete(accountId);
 }
 
-function clearDebridLinkRuntimeStateForKeys(keyIds: Set<string>): void {
-  for (const keyId of keyIds) {
-    debridLinkKeyCooldowns.delete(keyId);
-    debridLinkKeyCooldownDetails.delete(keyId);
-    debridLinkKeyRuntimeStatuses.delete(keyId);
-  }
-  for (const stateKey of [...debridLinkKeyHostCooldowns.keys()]) {
-    const separator = stateKey.indexOf("|");
-    const keyId = separator >= 0 ? stateKey.slice(0, separator) : stateKey;
-    if (keyIds.has(keyId)) {
-      debridLinkKeyHostCooldowns.delete(stateKey);
-      debridLinkKeyHostCooldownDetails.delete(stateKey);
-    }
-  }
-}
-
-export function getMegaDebridAccountAttemptTimeoutMs(): number {
-  const fromEnv = Number(process.env.RD_MEGA_ACCOUNT_ATTEMPT_TIMEOUT_MS ?? NaN);
-  return Number.isFinite(fromEnv) && fromEnv >= 10 && fromEnv <= 10 * 60 * 1000
-    ? Math.floor(fromEnv)
-    : MEGA_DEBRID_ACCOUNT_ATTEMPT_TIMEOUT_MS_DEFAULT;
-}
-
-export function clearMegaDebridAccountRuntimeStates(accountKeys: Iterable<string>): void {
-  for (const accountKey of accountKeys) {
-    megaDebridAccountCooldowns.delete(accountKey);
-    megaDebridEmptyResponseStreaks.delete(accountKey);
-  }
-}
-
-export function clearAllMegaDebridAccountRuntimeCooldowns(): number {
-  const cleared = megaDebridAccountCooldowns.size + (megaDebridWebSessionBackoffUntil > Date.now() ? 1 : 0);
-  megaDebridAccountCooldowns.clear();
-  megaDebridEmptyResponseStreaks.clear();
-  megaDebridWebSessionBackoffUntil = 0;
-  return cleared;
-}
-
 export function resetMegaDebridRuntimeStateForTests(): void {
   megaDebridAccountCooldowns.clear();
   megaDebridEmptyResponseStreaks.clear();
-  megaDebridRotationState.api = { cursor: 0, stickyCount: 0 };
-  megaDebridRotationState.web = { cursor: 0, stickyCount: 0 };
+  megaDebridRotationCursor = 0;
+  megaDebridStickyCount = 0;
+  resetAccountRuntimeSessionForProvider("megadebrid-api");
+  resetAccountRuntimeSessionForProvider("megadebrid-web");
   megaDebridInFlight.clear();
-  megaDebridWebSessionBackoffUntil = 0;
-}
-
-function getMegaDebridWebSessionBackoffRemaining(now = Date.now()): number {
-  const remaining = megaDebridWebSessionBackoffUntil - now;
-  if (remaining <= 0) {
-    megaDebridWebSessionBackoffUntil = 0;
-    return 0;
-  }
-  return remaining;
-}
-
-function startMegaDebridWebSessionBackoff(now = Date.now()): number {
-  megaDebridWebSessionBackoffUntil = Math.max(megaDebridWebSessionBackoffUntil, now + MEGA_DEBRID_WEB_SESSION_BACKOFF_MS);
-  return getMegaDebridWebSessionBackoffRemaining(now);
 }
 
 export function getMegaDebridInFlightCountForMode(mode: "api" | "web"): number {
@@ -516,6 +463,17 @@ export interface ProviderRuntimeCooldown {
 
 export interface ProviderRuntimeSnapshot {
   capturedAtMs: number;
+  realDebrid: {
+    rotationCursor: number;
+    stickyCount: number;
+    cooldownCount: number;
+    inFlightCount: number;
+    accounts: Array<{
+      accountId: string;
+      cooldown: ProviderRuntimeCooldown | null;
+      inFlight: number;
+    }>;
+  };
   megaDebrid: {
     rotationCursor: number;
     stickyCount: number;
@@ -537,6 +495,25 @@ export interface ProviderRuntimeSnapshot {
 }
 
 export function getProviderRuntimeSnapshot(now = Date.now()): ProviderRuntimeSnapshot {
+  const realDebridAccountIds = new Set<string>([
+    ...realDebridAccountCooldowns.keys(),
+    ...realDebridInFlight.keys()
+  ]);
+  const realDebridAccounts = [...realDebridAccountIds].sort().map((accountId) => {
+    const detail = realDebridAccountCooldowns.get(accountId);
+    return {
+      accountId,
+      cooldown: detail
+        ? {
+            untilMs: detail.until,
+            remainingMs: Math.max(0, detail.until - now),
+            message: detail.message,
+            category: detail.category
+          }
+        : null,
+      inFlight: realDebridInFlight.get(accountId) ?? 0
+    };
+  });
   const megaKeys = new Set<string>([
     ...megaDebridAccountCooldowns.keys(),
     ...megaDebridInFlight.keys(),
@@ -597,9 +574,16 @@ export function getProviderRuntimeSnapshot(now = Date.now()): ProviderRuntimeSna
 
   return {
     capturedAtMs: now,
+    realDebrid: {
+      rotationCursor: realDebridRotationCursor,
+      stickyCount: realDebridStickyCount,
+      cooldownCount: [...realDebridAccountCooldowns.values()].filter((entry) => entry.until > now).length,
+      inFlightCount: [...realDebridInFlight.values()].reduce((total, count) => total + count, 0),
+      accounts: realDebridAccounts
+    },
     megaDebrid: {
-      rotationCursor: Math.max(megaDebridRotationState.api.cursor, megaDebridRotationState.web.cursor),
-      stickyCount: Math.max(megaDebridRotationState.api.stickyCount, megaDebridRotationState.web.stickyCount),
+      rotationCursor: megaDebridRotationCursor,
+      stickyCount: megaDebridStickyCount,
       accounts: megaAccounts
     },
     debridLink: { keys: dlKeys, hostCooldowns: dlHostCooldowns }
@@ -615,6 +599,7 @@ const PROVIDER_LABELS: Record<DebridProvider, string> = {
   "megadebrid-web": "Mega-Debrid Web",
   bestdebrid: "BestDebrid",
   alldebrid: "AllDebrid",
+  deepbrid: "Deepbrid",
   ddownload: "DDownload",
   onefichier: "1Fichier",
   debridlink: "Debrid-Link",
@@ -628,7 +613,7 @@ interface ProviderUnrestrictedLink extends UnrestrictedLink {
 
 export type MegaWebUnrestrictor = (link: string, signal?: AbortSignal, account?: { login: string; password: string }) => Promise<UnrestrictedLink | null>;
 export type AllDebridWebUnrestrictor = (link: string, signal?: AbortSignal) => Promise<UnrestrictedLink | null>;
-export type RealDebridWebUnrestrictor = (link: string, signal?: AbortSignal) => Promise<UnrestrictedLink | null>;
+export type RealDebridWebUnrestrictor = (accountId: string, link: string, signal?: AbortSignal) => Promise<UnrestrictedLink | null>;
 export type BestDebridWebUnrestrictor = (link: string, signal?: AbortSignal) => Promise<UnrestrictedLink | null>;
 
 interface DebridServiceOptions {
@@ -649,6 +634,11 @@ function cloneSettings(settings: AppSettings): AppSettings {
     debridLinkApiKeyDailyLimitBytes: { ...(settings.debridLinkApiKeyDailyLimitBytes || {}) },
     debridLinkApiKeyDailyUsageBytes: { ...(settings.debridLinkApiKeyDailyUsageBytes || {}) },
     debridLinkApiKeyTotalUsageBytes: { ...(settings.debridLinkApiKeyTotalUsageBytes || {}) },
+    realDebridWebAccountIds: [...(settings.realDebridWebAccountIds || [])],
+    realDebridDisabledAccountIds: [...(settings.realDebridDisabledAccountIds || [])],
+    realDebridAccountDailyLimitBytes: { ...(settings.realDebridAccountDailyLimitBytes || {}) },
+    realDebridAccountDailyUsageBytes: { ...(settings.realDebridAccountDailyUsageBytes || {}) },
+    realDebridAccountTotalUsageBytes: { ...(settings.realDebridAccountTotalUsageBytes || {}) },
     megaDebridDisabledAccountIds: [...(settings.megaDebridDisabledAccountIds || [])],
     megaDebridApiDisabledAccountIds: [...(settings.megaDebridApiDisabledAccountIds || [])],
     megaDebridWebDisabledAccountIds: [...(settings.megaDebridWebDisabledAccountIds || [])],
@@ -674,6 +664,157 @@ export function getAvailableMegaDebridAccounts(settings: AppSettings, mode: Mega
   );
 }
 
+type RealDebridCooldownCategory = "invalid" | "rate_limit" | "quota" | "temporary";
+type RealDebridFailureClassification = {
+  rotateAccount: true;
+  cooldownMs: number;
+  category: RealDebridCooldownCategory;
+  message: string;
+} | {
+  rotateAccount: false;
+  cooldownMs: 0;
+  category: "provider_or_link";
+  message: string;
+};
+type RealDebridCooldownDetail = { until: number; message: string; category: RealDebridCooldownCategory };
+const realDebridAccountCooldowns = new Map<string, RealDebridCooldownDetail>();
+const realDebridInFlight = new Map<string, number>();
+let realDebridRotationCursor = 0;
+let realDebridStickyAccountId = "";
+let realDebridStickyCount = 0;
+export const REAL_DEBRID_STICKY_LINKS = 4;
+
+export function getRealDebridAccountAttemptTimeoutMs(): number {
+  const timeoutMsRaw = Number(process.env.RD_REALDEBRID_ACCOUNT_TIMEOUT_MS || 35_000);
+  return Number.isFinite(timeoutMsRaw) ? Math.max(1000, Math.floor(timeoutMsRaw)) : 35_000;
+}
+
+export function resetRealDebridRuntimeStateForTests(): void {
+  realDebridAccountCooldowns.clear();
+  realDebridInFlight.clear();
+  realDebridRotationCursor = 0;
+  realDebridStickyAccountId = "";
+  realDebridStickyCount = 0;
+  resetAccountRuntimeSessionForProvider("realdebrid");
+}
+
+export function pruneRealDebridRuntimeStateForAccounts(activeAccountIds: Set<string>): void {
+  for (const accountId of realDebridAccountCooldowns.keys()) {
+    if (!activeAccountIds.has(accountId)) {
+      realDebridAccountCooldowns.delete(accountId);
+    }
+  }
+  for (const accountId of realDebridInFlight.keys()) {
+    if (!activeAccountIds.has(accountId)) {
+      realDebridInFlight.delete(accountId);
+    }
+  }
+  if (realDebridStickyAccountId && !activeAccountIds.has(realDebridStickyAccountId)) {
+    realDebridStickyAccountId = "";
+    realDebridStickyCount = 0;
+  }
+  if (activeAccountIds.size === 0) {
+    realDebridRotationCursor = 0;
+  } else {
+    realDebridRotationCursor %= activeAccountIds.size;
+  }
+}
+
+export function releaseRealDebridAccountCooldown(accountId: string): boolean {
+  const removed = realDebridAccountCooldowns.delete(accountId);
+  if (realDebridStickyAccountId === accountId) {
+    realDebridStickyAccountId = "";
+    realDebridStickyCount = 0;
+  }
+  return removed;
+}
+
+export function pruneExpiredRealDebridRuntimeState(now = Date.now()): number {
+  let removed = 0;
+  for (const [accountId, detail] of realDebridAccountCooldowns) {
+    if (detail.until <= now) {
+      realDebridAccountCooldowns.delete(accountId);
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
+export function primeRealDebridRuntimeCooldownForTests(
+  accountId: string,
+  cooldownMs: number,
+  message = "Real-Debrid Account im Cooldown",
+  category: RealDebridCooldownCategory = "temporary"
+): void {
+  setRealDebridAccountCooldown(accountId, cooldownMs, message, category);
+}
+
+function setRealDebridAccountCooldown(
+  accountId: string,
+  cooldownMs: number,
+  message: string,
+  category: RealDebridCooldownCategory
+): void {
+  realDebridAccountCooldowns.set(accountId, {
+    until: Date.now() + Math.max(1000, Math.floor(cooldownMs)),
+    message,
+    category
+  });
+}
+
+function getRealDebridAccountCooldown(accountId: string, now = Date.now()): RealDebridCooldownDetail | null {
+  const detail = realDebridAccountCooldowns.get(accountId);
+  if (!detail) {
+    return null;
+  }
+  if (detail.until <= now) {
+    realDebridAccountCooldowns.delete(accountId);
+    return null;
+  }
+  return detail;
+}
+
+export function isRealDebridAccountBlockedForStart(accountId: string, now = Date.now()): boolean {
+  const cooldown = getRealDebridAccountCooldown(accountId, now);
+  return Boolean(cooldown && cooldown.category !== "temporary");
+}
+
+export function getAvailableRealDebridAccounts(settings: AppSettings, now = Date.now()): RealDebridAccountEntry[] {
+  return getConfiguredRealDebridAccounts(settings).filter((account) => account.enabled
+    && !isRealDebridAccountDailyLimitReached(settings, account.id, now)
+    && !getRealDebridAccountCooldown(account.id, now));
+}
+
+function getConfiguredRealDebridAccounts(settings: AppSettings): RealDebridAccountEntry[] {
+  const accounts = getRealDebridAccounts(settings);
+  if (accounts.length > 0) {
+    return accounts;
+  }
+  const legacy: RealDebridAccountEntry[] = [];
+  if (settings.realDebridUseWebLogin) {
+    legacy.push({
+      id: "rdw_legacy",
+      kind: "web",
+      index: 0,
+      label: "Browser-Login 1",
+      maskedLogin: "Geschützter Browser-Login",
+      enabled: true
+    });
+  }
+  if (settings.token.trim()) {
+    legacy.push({
+      id: "rda_legacy_1",
+      kind: "api",
+      index: 0,
+      label: "API-Token 1",
+      maskedLogin: "Geschützter API-Token",
+      enabled: true,
+      token: settings.token.trim()
+    });
+  }
+  return legacy;
+}
+
 function getMegaDebridAccountList(settings: AppSettings, mode: MegaDebridAccountMode): MegaDebridAccountEntry[] {
   const multiAccounts = getMegaDebridAccountsForMode(settings, mode);
   if (multiAccounts.length > 0) {
@@ -691,16 +832,12 @@ function hasMegaDebridCredentials(settings: AppSettings): boolean {
 }
 
 function isMegaDebridModeEnabled(settings: AppSettings, mode: "api" | "web"): boolean {
-  const hasDedicatedPoolCredentials = Boolean(
-    String(settings.megaDebridApiCredentials || "").trim()
-    || String(settings.megaDebridWebCredentials || "").trim()
-  );
   if (mode === "api") {
     return settings.megaDebridApiEnabled
-      || (!hasDedicatedPoolCredentials && hasMegaDebridCredentials(settings) && !settings.megaDebridApiEnabled && !settings.megaDebridWebEnabled && settings.megaDebridPreferApi);
+      || (hasMegaDebridCredentials(settings) && !settings.megaDebridApiEnabled && !settings.megaDebridWebEnabled && settings.megaDebridPreferApi);
   }
   return settings.megaDebridWebEnabled
-    || (!hasDedicatedPoolCredentials && hasMegaDebridCredentials(settings) && !settings.megaDebridApiEnabled && !settings.megaDebridWebEnabled && !settings.megaDebridPreferApi);
+    || (hasMegaDebridCredentials(settings) && !settings.megaDebridApiEnabled && !settings.megaDebridWebEnabled && !settings.megaDebridPreferApi);
 }
 
 function resolveMegaDebridProvider(settings: AppSettings, provider: DebridProvider): DebridProvider {
@@ -812,33 +949,6 @@ async function sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void> 
     };
 
     signal.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
-function waitForPromiseWithSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) {
-    return promise;
-  }
-  if (signal.aborted) {
-    void promise.catch(() => {});
-    return Promise.reject(new Error("aborted:debrid"));
-  }
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = (): void => {
-      signal.removeEventListener("abort", onAbort);
-      reject(new Error("aborted:debrid"));
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    void promise.then(
-      (value) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      (error: unknown) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(error);
-      }
-    );
   });
 }
 
@@ -1132,10 +1242,9 @@ async function requestDebridLinkPayloadWithKey(
       const responseText = await response.text();
       const payload = parseJsonSafe(responseText);
       if (!payload) {
-        const rawDescription = looksLikeHtmlResponse(response.headers.get("content-type") || "", responseText)
+        const description = looksLikeHtmlResponse(response.headers.get("content-type") || "", responseText)
           ? `Debrid-Link lieferte HTML statt JSON (HTTP ${response.status})`
           : compactErrorText(responseText) || `Debrid-Link lieferte kein JSON (HTTP ${response.status})`;
-        const description = sanitizeDiagnosticText(rawDescription, { secretValues: [apiKey.token] });
         const error = new DebridLinkApiError(
           response.status,
           "requestError",
@@ -1151,14 +1260,10 @@ async function requestDebridLinkPayloadWithKey(
       }
 
       if (!response.ok || !parseDebridLinkSuccess(payload)) {
-        const description = sanitizeDiagnosticText(
-          parseDebridLinkErrorDescription(payload) || `HTTP ${response.status}`,
-          { secretValues: [apiKey.token] }
-        );
         const error = new DebridLinkApiError(
           response.status,
           parseDebridLinkErrorCode(payload) || `HTTP ${response.status}`,
-          description,
+          parseDebridLinkErrorDescription(payload) || `HTTP ${response.status}`,
           parseRetryAfterMs(response.headers.get("retry-after")),
           payload
         );
@@ -1174,9 +1279,9 @@ async function requestDebridLinkPayloadWithKey(
       if (error instanceof DebridLinkApiError) {
         throw error;
       }
-      lastTransportError = sanitizeProviderErrorText(error, { secretValues: [apiKey.token] });
+      lastTransportError = compactErrorText(error);
       if (signal?.aborted || (/aborted/i.test(lastTransportError) && !/timeout/i.test(lastTransportError))) {
-        throw new Error(lastTransportError);
+        throw error;
       }
       if (attempt >= maxAttempts || !isRetryableErrorText(lastTransportError)) {
         throw new Error(lastTransportError || "Debrid-Link Request fehlgeschlagen");
@@ -1595,6 +1700,18 @@ export function normalizeResolvedFilename(value: string): string {
   return candidate;
 }
 
+function normalizePublicHosterFilename(value: string): string {
+  const candidate = decodeHtmlEntities(String(value || ""))
+    .replace(/<[^>]*>/g, " ")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/^['"]+|['"]+$/g, "")
+    .trim();
+  const fileName = candidate.split(/[\\/]/).pop()?.trim() || "";
+  if (!fileName || fileName === "." || fileName === ".." || fileName.length > 260 || looksLikeOpaqueFilename(fileName)) return "";
+  return fileName;
+}
+
 export function filenameFromRapidgatorUrlPath(link: string): string {
   try {
     const parsed = new URL(link);
@@ -1884,6 +2001,102 @@ export async function checkRapidgatorOnline(
   return null;
 }
 
+export interface OneFichierCheckResult {
+  online: boolean;
+  fileName: string;
+  fileSizeBytes: number | null;
+  accessRestricted: boolean;
+}
+
+export function isOneFichierLink(link: string): boolean {
+  return ONEFICHIER_URL_RE.test(String(link || "").trim());
+}
+
+function getOneFichierLinkId(link: string): string {
+  return String(link || "").trim().match(ONEFICHIER_URL_RE)?.[1]?.toLowerCase() || "";
+}
+
+function parseOneFichierCheckResponse(responseText: string, linksById: Map<string, string[]>): Map<string, OneFichierCheckResult> {
+  const results = new Map<string, OneFichierCheckResult>();
+  for (const rawLine of String(responseText || "").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const id = line.match(/\?([a-z0-9]{5,20})(?:;|$)/i)?.[1]?.toLowerCase() || "";
+    const requestedLinks = linksById.get(id);
+    if (!requestedLinks?.length) continue;
+
+    let result: OneFichierCheckResult | null = null;
+    if (/;;;(?:NOT FOUND|BAD LINK)\s*$/i.test(line)) {
+      result = { online: false, fileName: "", fileSizeBytes: null, accessRestricted: false };
+    } else if (/;;;PRIVATE\s*$/i.test(line)) {
+      result = { online: true, fileName: "", fileSizeBytes: null, accessRestricted: true };
+    } else {
+      const firstSeparator = line.indexOf(";");
+      const lastSeparator = line.lastIndexOf(";");
+      const fileName = decodeHtmlEntities(firstSeparator >= 0 && lastSeparator > firstSeparator ? line.slice(firstSeparator + 1, lastSeparator) : "").trim();
+      const fileSizeBytes = Number(lastSeparator >= 0 ? line.slice(lastSeparator + 1).trim() : NaN);
+      if (fileName && Number.isSafeInteger(fileSizeBytes) && fileSizeBytes >= 0) {
+        result = { online: true, fileName, fileSizeBytes, accessRestricted: false };
+      }
+    }
+
+    if (result) {
+      for (const link of requestedLinks) results.set(link, result);
+    }
+  }
+  return results;
+}
+
+export async function checkOneFichierLinks(links: string[], signal?: AbortSignal): Promise<Map<string, OneFichierCheckResult>> {
+  const supportedLinks = Array.from(new Set(links.map((link) => String(link || "").trim()).filter(isOneFichierLink)));
+  const results = new Map<string, OneFichierCheckResult>();
+
+  for (let offset = 0; offset < supportedLinks.length; offset += ONEFICHIER_CHECK_BATCH_SIZE) {
+    if (offset > 0) await sleepWithSignal(ONEFICHIER_CHECK_BATCH_DELAY_MS, signal);
+    const batch = supportedLinks.slice(offset, offset + ONEFICHIER_CHECK_BATCH_SIZE);
+    const linksById = new Map<string, string[]>();
+    const body = new URLSearchParams();
+    for (const link of batch) {
+      body.append("links[]", link);
+      const id = getOneFichierLinkId(link);
+      const existing = linksById.get(id) ?? [];
+      existing.push(link);
+      linksById.set(id, existing);
+    }
+
+    for (let attempt = 1; attempt <= REQUEST_RETRIES + 1; attempt += 1) {
+      try {
+        if (signal?.aborted) throw new Error("aborted:debrid");
+        const response = await fetch(ONEFICHIER_CHECK_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body,
+          signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
+        });
+        if (!response.ok) {
+          try { await response.body?.cancel(); } catch { }
+          if (response.status === 429) break;
+          if (shouldRetryStatus(response.status) && attempt <= REQUEST_RETRIES) {
+            await sleepWithSignal(retryDelayForResponse(response, attempt), signal);
+            continue;
+          }
+          break;
+        }
+        const parsed = parseOneFichierCheckResponse(await readResponseTextLimited(response, RAPIDGATOR_SCAN_MAX_BYTES, signal), linksById);
+        for (const [link, result] of parsed) results.set(link, result);
+        break;
+      } catch (error) {
+        const errorText = compactErrorText(error);
+        if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) throw error;
+        if (attempt > REQUEST_RETRIES || !isRetryableErrorText(errorText)) break;
+        await sleepWithSignal(retryDelay(attempt), signal);
+      }
+    }
+  }
+
+  return results;
+}
+
 function buildBestDebridRequests(link: string, token: string): BestDebridRequest[] {
   const linkParam = encodeURIComponent(link);
   const safeToken = String(token || "").trim();
@@ -1907,47 +2120,31 @@ class MegaDebridClient {
 
   private allowApiFallback: boolean;
 
-  private static cachedApiTokens = new Map<string, { token: string; at: number; generation: number }>();
+  private static cachedApiTokens = new Map<string, { token: string; at: number }>();
 
-  private static pendingConnects = new Map<string, { generation: number; promise: Promise<string | null> }>();
-
-  private static credentialGenerations = new Map<string, number>();
-
-  private static getCredentialGeneration(key: string): number {
-    return MegaDebridClient.credentialGenerations.get(key) ?? 0;
-  }
-
-  private static invalidateCredential(key: string): void {
-    MegaDebridClient.credentialGenerations.set(key, MegaDebridClient.getCredentialGeneration(key) + 1);
-    MegaDebridClient.cachedApiTokens.delete(key);
-    MegaDebridClient.pendingConnects.delete(key);
-  }
-
-  private static invalidateCredentialIfCurrent(key: string, generation: number): void {
-    if (MegaDebridClient.getCredentialGeneration(key) === generation) {
-      MegaDebridClient.invalidateCredential(key);
-    }
-  }
+  private static pendingConnects = new Map<string, Promise<string | null>>();
 
   public static pruneCachedTokensNotIn(activeLogins: Iterable<string>): void {
     const keep = new Set<string>();
     for (const login of activeLogins) {
       keep.add(String(login || "").toLowerCase());
     }
-    const knownLogins = new Set<string>([
-      ...MegaDebridClient.cachedApiTokens.keys(),
-      ...MegaDebridClient.pendingConnects.keys()
-    ]);
-    for (const login of knownLogins) {
+    for (const login of MegaDebridClient.cachedApiTokens.keys()) {
       if (!keep.has(login)) {
-        MegaDebridClient.invalidateCredential(login);
+        MegaDebridClient.cachedApiTokens.delete(login);
+      }
+    }
+    for (const login of MegaDebridClient.pendingConnects.keys()) {
+      if (!keep.has(login)) {
+        MegaDebridClient.pendingConnects.delete(login);
       }
     }
   }
 
   public static clearCachedApiToken(login: string): void {
     const key = String(login || "").toLowerCase();
-    MegaDebridClient.invalidateCredential(key);
+    MegaDebridClient.cachedApiTokens.delete(key);
+    MegaDebridClient.pendingConnects.delete(key);
   }
 
   public constructor(login: string, password: string, mode: "api" | "web", allowApiFallback: boolean, megaWebUnrestrict?: MegaWebUnrestrictor) {
@@ -1964,46 +2161,40 @@ class MegaDebridClient {
 
   private async connectApi(signal?: AbortSignal): Promise<string | null> {
     const key = this.cacheKey;
-    const generation = MegaDebridClient.getCredentialGeneration(key);
     const cached = MegaDebridClient.cachedApiTokens.get(key);
-    if (cached && cached.generation === generation && cached.token && Date.now() - cached.at < 20 * 60 * 1000) {
+    if (cached && cached.token && Date.now() - cached.at < 20 * 60 * 1000) {
       traceConversionPhase({ phase: "token", provider: "megadebrid-api", tokenState: `cached(${Math.floor((Date.now() - cached.at) / 1000)}s)`, outcome: "ok" });
-      return waitForPromiseWithSignal(Promise.resolve(cached.token), signal);
+      return cached.token;
     }
 
     const pending = MegaDebridClient.pendingConnects.get(key);
-    if (pending && pending.generation === generation) {
+    if (pending) {
       traceConversionPhase({ phase: "token", provider: "megadebrid-api", tokenState: "pending-join", outcome: "ok" });
-      return waitForPromiseWithSignal(pending.promise, signal);
+      return pending;
     }
 
-    const promise = this.doConnectApi(key, generation);
-    const entry = { generation, promise };
-    MegaDebridClient.pendingConnects.set(key, entry);
-    const clearPending = (): void => {
-      if (MegaDebridClient.pendingConnects.get(key) === entry) {
-        MegaDebridClient.pendingConnects.delete(key);
-      }
-    };
-    void promise.then(clearPending, clearPending);
-    return waitForPromiseWithSignal(promise, signal);
+    const promise = this.doConnectApi(signal).finally(() => {
+      MegaDebridClient.pendingConnects.delete(key);
+    });
+    MegaDebridClient.pendingConnects.set(key, promise);
+    return promise;
   }
 
   private clearTokenCache(): void {
     MegaDebridClient.cachedApiTokens.delete(this.cacheKey);
   }
 
-  private async doConnectApi(cacheKey: string, generation: number): Promise<string | null> {
+  private async doConnectApi(signal?: AbortSignal): Promise<string | null> {
     const connectStartedAt = Date.now();
     const url = `${MEGA_DEBRID_API_BASE}?action=connectUser&login=${encodeURIComponent(this.login)}&password=${encodeURIComponent(this.password)}`;
     const response = await fetch(url, {
       headers: { "User-Agent": DEBRID_USER_AGENT },
-      signal: AbortSignal.timeout(API_TIMEOUT_MS)
+      signal: withTimeoutSignal(signal, API_TIMEOUT_MS)
     });
     const text = await response.text();
     if (!response.ok) {
       if (response.status === 401 || response.status === 403) {
-        MegaDebridClient.invalidateCredentialIfCurrent(cacheKey, generation);
+        this.clearTokenCache();
       }
       traceConversionPhase({ phase: "token", provider: "megadebrid-api", tokenState: "fresh-login", workMs: Date.now() - connectStartedAt, outcome: "error", detail: `HTTP ${response.status}` });
       return null;
@@ -2011,13 +2202,9 @@ class MegaDebridClient {
     const payload = parseJsonSafe(text);
     if (!payload || payload.response_code !== "ok") {
       if (payload && String(payload.response_code || "").toLowerCase().includes("token")) {
-        MegaDebridClient.invalidateCredentialIfCurrent(cacheKey, generation);
+        this.clearTokenCache();
       }
-      const detail = sanitizeDiagnosticText(`response_code=${payload?.response_code || "?"} ${String(payload?.response_text || "").slice(0, 80)}`.trim(), {
-        accountValues: [this.login],
-        secretValues: [this.password]
-      });
-      traceConversionPhase({ phase: "token", provider: "megadebrid-api", tokenState: "fresh-login", workMs: Date.now() - connectStartedAt, outcome: "error", detail });
+      traceConversionPhase({ phase: "token", provider: "megadebrid-api", tokenState: "fresh-login", workMs: Date.now() - connectStartedAt, outcome: "error", detail: `response_code=${payload?.response_code || "?"} ${String(payload?.response_text || "").slice(0, 80)}`.trim() });
       return null;
     }
     const token = String(payload.token || "").trim();
@@ -2025,10 +2212,7 @@ class MegaDebridClient {
       traceConversionPhase({ phase: "token", provider: "megadebrid-api", tokenState: "fresh-login", workMs: Date.now() - connectStartedAt, outcome: "error", detail: "leeres Token" });
       return null;
     }
-    if (MegaDebridClient.getCredentialGeneration(cacheKey) !== generation) {
-      return null;
-    }
-    MegaDebridClient.cachedApiTokens.set(cacheKey, { token, at: Date.now(), generation });
+    MegaDebridClient.cachedApiTokens.set(this.cacheKey, { token, at: Date.now() });
     traceConversionPhase({ phase: "token", provider: "megadebrid-api", tokenState: "fresh-login", workMs: Date.now() - connectStartedAt, outcome: "ok" });
     return token;
   }
@@ -2064,10 +2248,7 @@ class MegaDebridClient {
       if (tokenInvalidated) {
         this.clearTokenCache();
       }
-      const errorText = sanitizeDiagnosticText(String(payload?.response_text || "").trim(), {
-        accountValues: [this.login],
-        secretValues: [this.password, token]
-      });
+      const errorText = String(payload?.response_text || "").trim();
       traceConversionPhase({ phase: "api-getlink", provider: "megadebrid-api", workMs: Date.now() - getLinkStartedAt, outcome: "error", detail: `response_code=${payload?.response_code || "?"}${tokenInvalidated ? " (token-cache-geleert)" : ""} ${errorText}`.trim() });
       if (errorText) {
         throw new Error(`Mega-Debrid API: ${errorText}`);
@@ -2121,7 +2302,7 @@ class MegaDebridClient {
       if (!lastError) {
         lastError = "Mega-Web Antwort leer";
       }
-      if (/permanent ungültig|hosternotavailable|file.?not.?found|file.?unavailable|link.?is.?dead|mega-web login ung(?:ü|u)ltig oder session blockiert/i.test(lastError) || MEGA_DEBRID_NO_SERVER_RE.test(lastError)) {
+      if (/permanent ungültig|hosternotavailable|file.?not.?found|file.?unavailable|link.?is.?dead/i.test(lastError) || MEGA_DEBRID_NO_SERVER_RE.test(lastError)) {
         break;
       }
       if (attempt < REQUEST_RETRIES) {
@@ -2173,13 +2354,6 @@ class MegaDebridClient {
       throw new Error("Mega-Debrid: Kein aktiver Account verfuegbar (deaktiviert oder am Tageslimit)");
     }
 
-    if (mode === "web") {
-      const sessionBackoffMs = getMegaDebridWebSessionBackoffRemaining();
-      if (sessionBackoffMs > 0) {
-        throw new Error(`mega_debrid_session_backoff:${sessionBackoffMs}:Mega-Web Login vorübergehend blockiert`);
-      }
-    }
-
     const failures: string[] = [];
     let usableAccountSeen = false;
     const cooldownFailures: string[] = [];
@@ -2194,8 +2368,7 @@ class MegaDebridClient {
     // Checks bleiben. Der Cursor wird erst im Erfolgszweig weitergesetzt — nach einem
     // Schwung erfolgreicher Umwandlungen (MEGA_DEBRID_STICKY_LINKS) — sodass aufeinander
     // folgende Links auf demselben warmen Account laufen statt jeweils neu einzuloggen.
-    const rotationState = megaDebridRotationState[mode];
-    const startOffset = ((rotationState.cursor % accounts.length) + accounts.length) % accounts.length;
+    const startOffset = ((megaDebridRotationCursor % accounts.length) + accounts.length) % accounts.length;
     const cursorOrder: { account: MegaDebridAccountEntry; idx: number }[] = [];
     for (let step = 0; step < accounts.length; step += 1) {
       const idx = (startOffset + step) % accounts.length;
@@ -2208,17 +2381,35 @@ class MegaDebridClient {
     // Reihenfolge == cursorOrder => bleibt klebrig beim warmen Account.
     const inFlightDepth = (entry: { account: MegaDebridAccountEntry }): number =>
       megaDebridInFlight.get(`${entry.account.id}:${mode}`) ?? 0;
-    const orderedEntries = cursorOrder
+    const automaticEntries = cursorOrder
       .map((entry, position) => ({ entry, position }))
       .sort((a, b) => (inFlightDepth(a.entry) - inFlightDepth(b.entry)) || (a.position - b.position))
       .map((wrapped) => wrapped.entry);
-
+    const accountRule = settings.accountUsageRules?.[mode === "api" ? "megadebrid-api" : "megadebrid-web"];
+    const orderedEntries = accountRule?.mode === "priority"
+      ? orderAccountsByRule(accounts, accountRule).map((account) => ({ account, idx: accounts.findIndex((candidate) => candidate.id === account.id) }))
+      : automaticEntries;
     for (let orderPos = 0; orderPos < orderedEntries.length; orderPos += 1) {
+      if (accountRule?.mode === "priority") {
+        const usableEntries = orderedEntries.slice(orderPos).filter(({ account }) => !isMegaDebridAccountDisabled(settings, account.id, mode)
+          && !isMegaDebridAccountDailyLimitReached(settings, account.id)
+          && !getMegaDebridAccountCooldownState(`${account.id}:${mode}`));
+        const freeEntry = usableEntries.find(({ account }) => (megaDebridInFlight.get(`${account.id}:${mode}`) ?? 0) === 0);
+        if (freeEntry) {
+          const freeIndex = orderedEntries.indexOf(freeEntry);
+          orderedEntries.splice(freeIndex, 1);
+          orderedEntries.splice(orderPos, 0, freeEntry);
+        } else if (usableEntries.length > 0) {
+          await sleepWithSignal(50, signal);
+          orderPos -= 1;
+          continue;
+        }
+      }
       const entry = orderedEntries[orderPos];
       const account = entry.account;
       const idx = entry.idx;
-      const accountLabel = ` (${account.label}/${totalAccounts})`;
-      const rotationLabel = `${account.label}/${totalAccounts}`;
+      const accountLabel = ` (${account.label}/${totalAccounts}, ${account.maskedLogin})`;
+      const rotationLabel = `${account.label}/${totalAccounts} (${account.maskedLogin})`;
 
       if (isMegaDebridAccountDisabled(settings, account.id, mode)) {
         logger.info(`Mega-Debrid${accountLabel}: uebersprungen (manuell deaktiviert), pruefe naechsten Account`);
@@ -2258,27 +2449,25 @@ class MegaDebridClient {
       logAccountRotation("INFO", providerName, rotationLabel, "TEST", {
         link: linkShort
       });
+      const runtimeProvider: DebridProvider = mode === "api" ? "megadebrid-api" : "megadebrid-web";
+      recordAccountRuntimeAttempt(runtimeProvider, account.id);
       const testStartedAt = Date.now();
 
       usableAccountSeen = true;
       megaDebridInFlight.set(cooldownKey, (megaDebridInFlight.get(cooldownKey) ?? 0) + 1);
-      const accountAttemptTimeoutSignal = AbortSignal.timeout(getMegaDebridAccountAttemptTimeoutMs());
-      const accountAttemptSignal = signal
-        ? AbortSignal.any([signal, accountAttemptTimeoutSignal])
-        : accountAttemptTimeoutSignal;
       try {
         const client = new MegaDebridClient(account.login, account.password, mode, allowApiFallback, megaWebUnrestrict);
-        const result = await waitForPromiseWithSignal(client.unrestrictLink(link, accountAttemptSignal), accountAttemptSignal);
+        const result = await client.unrestrictLink(link, signal);
         clearMegaDebridAccountCooldownState(cooldownKey);
         clearMegaDebridEmptyResponseStreak(cooldownKey);
         const elapsedMs = Date.now() - testStartedAt;
         traceConversionPhase({ phase: "mega-account", provider: providerName.includes("API") ? "megadebrid-api" : "megadebrid-web", account: rotationLabel, workMs: elapsedMs, outcome: "ok" });
-        rotationState.stickyCount += 1;
-        if (rotationState.stickyCount >= MEGA_DEBRID_STICKY_LINKS) {
-          rotationState.cursor = idx + 1;
-          rotationState.stickyCount = 0;
+        megaDebridStickyCount += 1;
+        if (megaDebridStickyCount >= MEGA_DEBRID_STICKY_LINKS) {
+          megaDebridRotationCursor = idx + 1;
+          megaDebridStickyCount = 0;
         } else {
-          rotationState.cursor = idx;
+          megaDebridRotationCursor = idx;
         }
         logger.info(`Mega-Debrid${accountLabel}: Unrestrict OK nach ${elapsedMs}ms -> ${result.fileName || "?"}`);
         logAccountRotation("INFO", providerName, rotationLabel, "OK", {
@@ -2286,6 +2475,7 @@ class MegaDebridClient {
           fileName: result.fileName || "",
           link: linkShort
         });
+        recordAccountRuntimeSuccess(runtimeProvider, account.id);
         return {
           ...result,
           sourceLabel: `${result.sourceLabel ? `${result.sourceLabel} ` : ""}${account.label}`,
@@ -2294,11 +2484,7 @@ class MegaDebridClient {
         };
       } catch (error) {
         const elapsedMs = Date.now() - testStartedAt;
-        const redactions = { accountValues: [account.login], secretValues: [account.password] };
-        const abortText = sanitizeProviderErrorText(error, redactions);
-        if (signal?.aborted) {
-          throw new Error(abortText);
-        }
+        const abortText = compactErrorText(error).replace(/^Error:\s*/i, "");
         // Timeout/abort on THIS account (the shared unrestrict timeout fired). The
         // account-wide cooldown exists ONLY to make the retry rotate to another
         // account — so it is set only when another usable account actually exists.
@@ -2308,8 +2494,7 @@ class MegaDebridClient {
         // we park just this link (mega_debrid_slow_link) and leave the account free
         // for other items. A quick user-cancel (below the min run) parks nothing.
         if (/aborted/i.test(abortText) && !/timeout/i.test(abortText)) {
-          const accountAttemptTimedOut = accountAttemptTimeoutSignal.aborted;
-          const ranLongEnough = accountAttemptTimedOut || elapsedMs >= getMegaDebridAbortMinRunMs();
+          const ranLongEnough = elapsedMs >= getMegaDebridAbortMinRunMs();
           const otherUsableAccounts = orderedEntries.reduce((count, candidate) => {
             if (candidate.account.id === account.id) {
               return count;
@@ -2342,25 +2527,15 @@ class MegaDebridClient {
             elapsedMs,
             reason: abortText,
             cooldownSec: rotateToAnotherAccount ? Math.ceil(MEGA_DEBRID_ACCOUNT_COOLDOWN_MS / 1000) : 0,
-            next: rotateToAnotherAccount ? "naechster Account im selben Versuch" : "Einzel-Retry (Account bleibt fuer andere Items frei)"
+            next: rotateToAnotherAccount ? "naechster Account beim Retry" : "Einzel-Retry (Account bleibt fuer andere Items frei)"
           });
-          if (rotateToAnotherAccount) {
-            continue;
-          }
           if (ranLongEnough && !rotateToAnotherAccount) {
             throw new Error(`mega_debrid_slow_link:${MEGA_DEBRID_SLOW_LINK_RETRY_MS}:Mega-Debrid${accountLabel}: ${abortText}`);
           }
           throw new Error(`Mega-Debrid${accountLabel}: ${abortText}`);
         }
-        const failure = MegaDebridClient.classifyAccountFailure(error, redactions);
-        if (mode === "web" && /mega-web login ung(?:ü|u)ltig oder session blockiert/i.test(failure.message)) {
-          const sessionBackoffMs = startMegaDebridWebSessionBackoff();
-          logAccountRotation("WARN", providerName, rotationLabel, "SESSION_BACKOFF", {
-            reason: failure.message,
-            cooldownSec: Math.ceil(sessionBackoffMs / 1000)
-          });
-          throw new Error(`mega_debrid_session_backoff:${sessionBackoffMs}:${failure.message}`);
-        }
+        const failure = MegaDebridClient.classifyAccountFailure(error);
+        recordAccountRuntimeFailure(runtimeProvider, account.id);
         traceConversionPhase({
           phase: "mega-account",
           provider: providerName.includes("API") ? "megadebrid-api" : "megadebrid-web",
@@ -2408,7 +2583,7 @@ class MegaDebridClient {
         for (let nextPos = orderPos + 1; nextPos < orderedEntries.length; nextPos += 1) {
           const nextAcc = orderedEntries[nextPos].account;
           if (!isMegaDebridAccountDisabled(settings, nextAcc.id, mode) && !isMegaDebridAccountDailyLimitReached(settings, nextAcc.id) && !getMegaDebridAccountCooldownState(`${nextAcc.id}:${mode}`)) {
-            nextLabel = `${nextAcc.label}/${totalAccounts}`;
+            nextLabel = `${nextAcc.label}/${totalAccounts} (${nextAcc.maskedLogin})`;
             break;
           }
         }
@@ -2446,17 +2621,12 @@ class MegaDebridClient {
   }
 
   static classifyAccountFailure(
-    error: unknown,
-    redactions: DiagnosticRedactions = {}
+    error: unknown
   ): { fatal: boolean; cooldownMs: number; message: string; category: MegaDebridCooldownCategory; limitSignal?: boolean } {
-    const errorText = sanitizeProviderErrorText(error, redactions);
+    const errorText = compactErrorText(error).replace(/^Error:\s*/i, "");
 
     if (/aborted/i.test(errorText) && !/timeout/i.test(errorText)) {
       return { fatal: true, cooldownMs: 0, message: errorText, category: "temporary" };
-    }
-
-    if (/mega-web login ung(?:ü|u)ltig oder session blockiert/i.test(errorText)) {
-      return { fatal: false, cooldownMs: 0, message: errorText, category: "temporary" };
     }
 
     if (/token.?error|please log.?in/i.test(errorText)) {
@@ -2989,15 +3159,16 @@ class DebridLinkClient {
     let earliestCooldownUntil = 0;
     const attemptedKeyFailures: Array<{ message: string; cooldownMs: number; category?: DebridLinkCooldownCategory }> = [];
     let consecutiveTransportFailures = 0;
-    const totalKeys = this.apiKeys.length;
+    const apiKeys = orderAccountsByRule(this.apiKeys, settings.accountUsageRules?.debridlink);
+    const totalKeys = apiKeys.length;
     const providerName = "Debrid-Link";
     const linkShort = String(link || "").slice(0, 80);
     const linkHoster = extractHosterFromUrl(link);
 
-    for (let keyIdx = 0; keyIdx < this.apiKeys.length; keyIdx += 1) {
-      const apiKey = this.apiKeys[keyIdx];
-      const keyLabel = ` (${apiKey.label}/${totalKeys})`;
-      const rotationLabel = `${apiKey.label}/${totalKeys}`;
+    for (let keyIdx = 0; keyIdx < apiKeys.length; keyIdx += 1) {
+      const apiKey = apiKeys[keyIdx];
+      const keyLabel = ` (${apiKey.label}/${totalKeys}, ${apiKey.masked})`;
+      const rotationLabel = `${apiKey.label}/${totalKeys} (${apiKey.masked})`;
       if (isDebridLinkApiKeyDisabled(settings, apiKey.id)) {
         logger.info(`Debrid-Link${keyLabel}: uebersprungen (manuell deaktiviert), pruefe naechsten Key`);
         logAccountRotation("INFO", providerName, rotationLabel, "SKIP_DISABLED", { reason: "manually disabled" });
@@ -3042,6 +3213,7 @@ class DebridLinkClient {
 
       logger.info(`Debrid-Link${keyLabel}: TESTE Key fuer Link-Generierung...`);
       logAccountRotation("INFO", providerName, rotationLabel, "TEST", { link: linkShort });
+      recordAccountRuntimeAttempt("debridlink", apiKey.id);
       const testStartedAt = Date.now();
 
       usableKeySeen = true;
@@ -3056,6 +3228,7 @@ class DebridLinkClient {
           fileName: result.fileName || "",
           link: linkShort
         });
+        recordAccountRuntimeSuccess("debridlink", apiKey.id);
         return {
           ...result,
           sourceLabel: apiKey.label,
@@ -3065,7 +3238,7 @@ class DebridLinkClient {
       } catch (error) {
         const failure = await this.classifyKeyFailure(error, apiKey, link, signal);
         const elapsedMs = Date.now() - testStartedAt;
-        const abortText = sanitizeProviderErrorText(error, { secretValues: [apiKey.token] });
+        const abortText = compactErrorText(error).replace(/^Error:\s*/i, "");
         if (/aborted/i.test(abortText) && !/timeout/i.test(abortText)) {
           const ranLongEnough = elapsedMs >= getMegaDebridAbortMinRunMs();
           if (ranLongEnough) {
@@ -3082,6 +3255,7 @@ class DebridLinkClient {
           });
           throw new Error(`Debrid-Link${keyLabel}: ${abortText}`);
         }
+        recordAccountRuntimeFailure("debridlink", apiKey.id);
         attemptedKeyFailures.push({
           message: `Debrid-Link${keyLabel}: ${failure.message}`,
           cooldownMs: failure.cooldownMs,
@@ -3143,10 +3317,10 @@ class DebridLinkClient {
           throw new Error(`debrid_link_cooldown:${cascadeCooldownMs}:Debrid-Link: Transport-Kaskade (${consecutiveTransportFailures}x)`);
         }
         let nextLabel = "ENDE";
-        for (let nextIdx = keyIdx + 1; nextIdx < this.apiKeys.length; nextIdx += 1) {
-          const nextKey = this.apiKeys[nextIdx];
+        for (let nextIdx = keyIdx + 1; nextIdx < apiKeys.length; nextIdx += 1) {
+          const nextKey = apiKeys[nextIdx];
           if (!isDebridLinkApiKeyDisabled(settings, nextKey.id) && !isDebridLinkApiKeyDailyLimitReached(settings, nextKey.id) && !getDebridLinkKeyCooldownState(nextKey.id)) {
-            nextLabel = `${nextKey.label}/${totalKeys}`;
+            nextLabel = `${nextKey.label}/${totalKeys} (${nextKey.masked})`;
             break;
           }
         }
@@ -3319,18 +3493,16 @@ class DebridLinkClient {
     link: string,
     signal?: AbortSignal
   ): Promise<{ fatal: boolean; cooldownMs: number; message: string; category?: DebridLinkCooldownCategory; providerWide?: boolean; hostOnly?: boolean; hoster?: string }> {
-    const redactions = { secretValues: [apiKey.token] };
-    const errorText = sanitizeProviderErrorText(error, redactions);
+    const errorText = compactErrorText(error).replace(/^Error:\s*/i, "");
     if (error instanceof DebridLinkApiError) {
       const code = String(error.code || "").trim() || `HTTP ${error.status}`;
-      const safeCode = sanitizeDiagnosticText(code, redactions);
-      const description = sanitizeDiagnosticText(error.message || code, redactions);
+      const description = error.message || code;
 
       if (DEBRID_LINK_INVALID_TOKEN_ERRORS.has(code)) {
         return {
           fatal: false,
           cooldownMs: DEBRID_LINK_INVALID_KEY_COOLDOWN_MS,
-          message: `ungueltiger oder deaktivierter API-Key (${safeCode}: ${description})`,
+          message: `ungueltiger oder deaktivierter API-Key (${code}: ${description})`,
           category: "invalid"
         };
       }
@@ -3338,7 +3510,7 @@ class DebridLinkClient {
         return {
           fatal: false,
           cooldownMs: error.retryAfterMs || DEBRID_LINK_RATE_LIMIT_COOLDOWN_MS,
-          message: `API-Rate-Limit erreicht (${safeCode}: ${description})`,
+          message: `API-Rate-Limit erreicht (${code}: ${description})`,
           category: "rate_limit"
         };
       }
@@ -3349,7 +3521,7 @@ class DebridLinkClient {
         return {
           fatal: false,
           cooldownMs,
-          message: `Quota erreicht fuer ${hosterLabel} (${safeCode}: ${description})`,
+          message: `Quota erreicht fuer ${hosterLabel} (${code}: ${description})`,
           category: "quota",
           hostOnly: true,
           hoster: hosterRaw
@@ -3360,7 +3532,7 @@ class DebridLinkClient {
         return {
           fatal: false,
           cooldownMs,
-          message: `Quota erreicht (${safeCode}: ${description})`,
+          message: `Quota erreicht (${code}: ${description})`,
           category: "quota"
         };
       }
@@ -3368,7 +3540,7 @@ class DebridLinkClient {
         return {
           fatal: false,
           cooldownMs: DEBRID_LINK_KEY_COOLDOWN_MS,
-          message: `Link kann aktuell nicht generiert werden (${safeCode}: ${description})`,
+          message: `Link kann aktuell nicht generiert werden (${code}: ${description})`,
           category: "temporary",
           providerWide: true
         };
@@ -3377,7 +3549,7 @@ class DebridLinkClient {
         return {
           fatal: false,
           cooldownMs: 0,
-          message: `Key kann Link aktuell nicht verarbeiten (${safeCode}: ${description})`,
+          message: `Key kann Link aktuell nicht verarbeiten (${code}: ${description})`,
           category: "skip"
         };
       }
@@ -3393,7 +3565,7 @@ class DebridLinkClient {
         return {
           fatal: false,
           cooldownMs: DEBRID_LINK_KEY_COOLDOWN_MS,
-          message: `temporärer API-Fehler (${safeCode}: ${description})`
+          message: `temporärer API-Fehler (${code}: ${description})`
         };
       }
       return {
@@ -3638,9 +3810,130 @@ class OneFichierClient {
   }
 }
 
-const DDOWNLOAD_URL_RE = /^https?:\/\/(?:www\.)?(?:ddownload\.com|ddl\.to)\/([a-z0-9]+)/i;
+const DDOWNLOAD_URL_RE = /^https?:\/\/(?:www\.)?(?:ddownload\.com|ddl\.to)\/([a-z0-9]{8,20})(?:\/|$)/i;
 const DDOWNLOAD_WEB_BASE = "https://ddownload.com";
 const DDOWNLOAD_WEB_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
+const DDOWNLOAD_SCAN_MAX_BYTES = 512 * 1024;
+const DDOWNLOAD_FILE_NOT_FOUND_RE = /(?:File Not Found|No such file|file was removed|file was banned|Unavailable for legal reasons)/i;
+
+export interface DdownloadCheckResult {
+  online: boolean;
+  fileName: string;
+  fileSizeBytes: number | null;
+}
+
+export function isDdownloadLink(link: string): boolean {
+  return DDOWNLOAD_URL_RE.test(String(link || "").trim());
+}
+
+function getDdownloadFileCode(link: string): string {
+  return String(link || "").trim().match(DDOWNLOAD_URL_RE)?.[1]?.toLowerCase() || "";
+}
+
+export function filenameFromDdownloadUrlPath(link: string): string {
+  if (!isDdownloadLink(link)) return "";
+  try {
+    const parts = new URL(link).pathname.split("/").filter(Boolean);
+    for (let index = parts.length - 1; index >= 1; index -= 1) {
+      const normalized = normalizePublicHosterFilename(safeDecode(parts[index]).replace(/\.html?$/i, ""));
+      if (normalized) return normalized;
+    }
+  } catch {
+  }
+  return "";
+}
+
+export function extractDdownloadFilenameFromHtml(html: string): string {
+  const patterns = [
+    /class=["'][^"']*dk-dl-icon[^"']*["'][^>]*data-fn=["']([^"']+)["']/i,
+    /data-fn=["']([^"']+)["'][^>]*class=["'][^"']*dk-dl-icon[^"']*["']/i,
+    /<h2[^>]*class=["'][^"']*dk-dl-name[^"']*["'][^>]*>([^<]+)<\/h2>/i,
+    /class=["'][^"']*file-info-name[^"']*["'][^>]*>([^<]+)</i
+  ];
+  for (const pattern of patterns) {
+    const normalized = normalizePublicHosterFilename(html.match(pattern)?.[1] || "");
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
+export function parseDdownloadFileSize(value: string | null | undefined): number | null {
+  return parseRapidgatorFileSize(value);
+}
+
+export async function checkDdownloadOnline(link: string, signal?: AbortSignal): Promise<DdownloadCheckResult | null> {
+  if (!isDdownloadLink(link)) return null;
+  const originalFileCode = getDdownloadFileCode(link);
+  const originalProtocol = new URL(link).protocol.toLowerCase();
+  const headers = {
+    "User-Agent": DDOWNLOAD_WEB_UA,
+    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9,de;q=0.8"
+  };
+
+  let requestUrl = link;
+  let redirectCount = 0;
+  for (let attempt = 1; attempt <= REQUEST_RETRIES + 1; attempt += 1) {
+    try {
+      if (signal?.aborted) throw new Error("aborted:debrid");
+      const response = await fetch(requestUrl, { method: "GET", redirect: "manual", headers, signal: withTimeoutSignal(signal, API_TIMEOUT_MS) });
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get("location");
+        try { await response.body?.cancel(); } catch { }
+        if (!location || redirectCount >= 3) return null;
+        let nextUrl = "";
+        try {
+          nextUrl = new URL(location, requestUrl).toString();
+        } catch {
+          return null;
+        }
+        if (!isDdownloadLink(nextUrl) || getDdownloadFileCode(nextUrl) !== originalFileCode) return null;
+        if (originalProtocol === "https:" && new URL(nextUrl).protocol.toLowerCase() !== "https:") return null;
+        requestUrl = nextUrl;
+        redirectCount += 1;
+        attempt -= 1;
+        continue;
+      }
+      if (response.status === 404) {
+        try { await response.body?.cancel(); } catch { }
+        return { online: false, fileName: "", fileSizeBytes: null };
+      }
+      if (!response.ok) {
+        try { await response.body?.cancel(); } catch { }
+        if (response.status === 429) return null;
+        if (shouldRetryStatus(response.status) && attempt <= REQUEST_RETRIES) {
+          await sleepWithSignal(retryDelayForResponse(response, attempt), signal);
+          continue;
+        }
+        return null;
+      }
+      const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+      const contentLength = Number(response.headers.get("content-length") || NaN);
+      if (contentType && !contentType.includes("text/html") && !contentType.includes("application/xhtml") && !contentType.includes("text/plain")) {
+        try { await response.body?.cancel(); } catch { }
+        return null;
+      }
+      if (!contentType && Number.isFinite(contentLength) && contentLength > DDOWNLOAD_SCAN_MAX_BYTES) {
+        try { await response.body?.cancel(); } catch { }
+        return null;
+      }
+      const html = await readResponseTextLimited(response, DDOWNLOAD_SCAN_MAX_BYTES, signal);
+      const pageName = extractDdownloadFilenameFromHtml(html);
+      const hasFilePage = Boolean(pageName) || /\bdk-dl-(?:icon|name|size)\b/i.test(html) || /Your file is ready to download|Regular Download via DDownload/i.test(html);
+      if (!hasFilePage && DDOWNLOAD_FILE_NOT_FOUND_RE.test(html)) return { online: false, fileName: "", fileSizeBytes: null };
+      if (!hasFilePage) return null;
+      const sizeMatch = html.match(/class=["'][^"']*dk-dl-size[^"']*["'][^>]*>([^<]+)</i)
+        || html.match(/(?:File\s*size|Dateigröße)\s*[:\-]?\s*<[^>]*>([^<]+)</i);
+      return { online: true, fileName: pageName || filenameFromDdownloadUrlPath(link), fileSizeBytes: parseDdownloadFileSize(sizeMatch?.[1]) };
+    } catch (error) {
+      const errorText = compactErrorText(error);
+      if (signal?.aborted || (/aborted/i.test(errorText) && !/timeout/i.test(errorText))) throw error;
+      if (attempt > REQUEST_RETRIES || !isRetryableErrorText(errorText)) return null;
+    }
+    if (attempt <= REQUEST_RETRIES) await sleepWithSignal(retryDelay(attempt), signal);
+  }
+  return null;
+}
 
 class DdownloadClient {
   private login: string;
@@ -3740,8 +4033,7 @@ class DdownloadClient {
 
         const idVal = html.match(/name="id" value="([^"]+)"/)?.[1] || fileCode;
         const randVal = html.match(/name="rand" value="([^"]+)"/)?.[1] || "";
-        const fileNameMatch = html.match(/class="file-info-name"[^>]*>([^<]+)</);
-        const fileName = fileNameMatch?.[1]?.trim() || filenameFromUrl(link);
+        const fileName = extractDdownloadFilenameFromHtml(html) || filenameFromDdownloadUrlPath(link) || filenameFromUrl(link);
 
         const dlBody = new URLSearchParams({
           op: "download2",
@@ -3837,19 +4129,7 @@ export class DebridService {
     const prev = this.settings;
     this.settings = cloneSettings(next);
 
-    const previousDebridLinkDisabled = new Set(prev.debridLinkDisabledKeyIds || []);
-    const nextDebridLinkDisabled = new Set(next.debridLinkDisabledKeyIds || []);
-    const changedDebridLinkKeys = new Set<string>();
-    for (const keyId of new Set([...previousDebridLinkDisabled, ...nextDebridLinkDisabled])) {
-      if (previousDebridLinkDisabled.has(keyId) !== nextDebridLinkDisabled.has(keyId)) {
-        changedDebridLinkKeys.add(keyId);
-      }
-    }
-    if (changedDebridLinkKeys.size > 0) {
-      clearDebridLinkRuntimeStateForKeys(changedDebridLinkKeys);
-    }
-
-    if (prev.debridLinkApiKeys !== next.debridLinkApiKeys || changedDebridLinkKeys.size > 0) {
+    if (prev.debridLinkApiKeys !== next.debridLinkApiKeys) {
       this.cachedDebridLinkClient = null;
       this.cachedDebridLinkKey = "";
     }
@@ -3879,6 +4159,14 @@ export class DebridService {
     }
     const nextDebridLinkKeyIds = new Set<string>(parseDebridLinkApiKeys(next.debridLinkApiKeys || "").map((entry) => entry.id));
     pruneDebridLinkRuntimeStateForKeys(nextDebridLinkKeyIds);
+    const nextRealDebridAccountIds = new Set(this.getConfiguredRealDebridAccounts(next).map((account) => account.id));
+    pruneRealDebridRuntimeStateForAccounts(nextRealDebridAccountIds);
+    const validRuntimeKeys = new Set<string>();
+    for (const accountId of nextRealDebridAccountIds) validRuntimeKeys.add(`realdebrid:${accountId}`);
+    for (const account of getMegaDebridAccountsForMode(next, "api")) validRuntimeKeys.add(`megadebrid-api:${account.id}`);
+    for (const account of getMegaDebridAccountsForMode(next, "web")) validRuntimeKeys.add(`megadebrid-web:${account.id}`);
+    for (const keyId of nextDebridLinkKeyIds) validRuntimeKeys.add(`debridlink:${keyId}`);
+    pruneAccountRuntimeSession(validRuntimeKeys);
   }
 
   private getDebridLinkClient(apiKeysRaw: string): DebridLinkClient {
@@ -3976,8 +4264,14 @@ export class DebridService {
     return clean;
   }
 
-  private shouldUseRealDebridWeb(settings: AppSettings): boolean {
-    return Boolean(settings.realDebridUseWebLogin && this.options.realDebridWebUnrestrict);
+  private getConfiguredRealDebridAccounts(settings: AppSettings): RealDebridAccountEntry[] {
+    return getConfiguredRealDebridAccounts(settings).filter((account) => account.kind === "api" || Boolean(this.options.realDebridWebUnrestrict));
+  }
+
+  private getAvailableRealDebridAccounts(settings: AppSettings, now = Date.now()): RealDebridAccountEntry[] {
+    return this.getConfiguredRealDebridAccounts(settings).filter((account) => account.enabled
+      && !isRealDebridAccountDailyLimitReached(settings, account.id, now)
+      && !getRealDebridAccountCooldown(account.id, now));
   }
 
   private shouldUseAllDebridWeb(settings: AppSettings): boolean {
@@ -3990,6 +4284,12 @@ export class DebridService {
 
   private isProviderDailyLimited(settings: AppSettings, provider: DebridProvider): boolean {
     const effectiveProvider = resolveMegaDebridProvider(settings, provider);
+    if (effectiveProvider === "realdebrid") {
+      const configuredAccounts = this.getConfiguredRealDebridAccounts(settings).filter((account) => account.enabled);
+      if (configuredAccounts.length > 0 && this.getAvailableRealDebridAccounts(settings).length === 0) {
+        return true;
+      }
+    }
     if (effectiveProvider === "debridlink") {
       const configuredKeys = parseDebridLinkApiKeys(settings.debridLinkApiKeys);
       if (configuredKeys.length > 0 && getAvailableDebridLinkApiKeys(settings).length === 0) {
@@ -4012,6 +4312,11 @@ export class DebridService {
 
   private formatProviderLimitMessage(settings: AppSettings, provider: DebridProvider): string {
     const effectiveProvider = resolveMegaDebridProvider(settings, provider);
+    if (effectiveProvider === "realdebrid"
+      && this.getConfiguredRealDebridAccounts(settings).some((account) => account.enabled)
+      && this.getAvailableRealDebridAccounts(settings).length === 0) {
+      return "Real-Debrid nicht verfügbar (alle aktiven Accounts deaktiviert, im Cooldown oder ausgeschöpft)";
+    }
     if (effectiveProvider === "debridlink" && parseDebridLinkApiKeys(settings.debridLinkApiKeys).length > 0 && getAvailableDebridLinkApiKeys(settings).length === 0) {
       return "Debrid-Link nicht verfuegbar (alle aktiven API-Keys deaktiviert oder ausgeschopft)";
     }
@@ -4024,13 +4329,7 @@ export class DebridService {
     return `${PROVIDER_LABELS[effectiveProvider]} Tageslimit erreicht`;
   }
 
-  public async unrestrictLink(
-    link: string,
-    signal?: AbortSignal,
-    settingsSnapshot?: AppSettings,
-    preferredLeadProvider?: DebridProvider | null,
-    onProviderAttempt?: (provider: DebridProvider) => void
-  ): Promise<ProviderUnrestrictedLink> {
+  public async unrestrictLink(link: string, signal?: AbortSignal, settingsSnapshot?: AppSettings, preferredLeadProvider?: DebridProvider | null): Promise<ProviderUnrestrictedLink> {
     const settings = settingsSnapshot ? cloneSettings(settingsSnapshot) : cloneSettings(this.settings);
 
     const routing = settings.hosterRouting || {};
@@ -4040,7 +4339,6 @@ export class DebridService {
       if (this.isProviderSelectableFor(settings, routedProvider)) {
         logger.info(`Hoster-Zuordnung: ${hosterKey} → ${PROVIDER_LABELS[routedProvider]}`);
         try {
-          onProviderAttempt?.(routedProvider);
           const result = await this.unrestrictViaProvider(settings, routedProvider, link, signal);
           let fileName = result.fileName;
           if (isRapidgatorLink(link) && looksLikeOpaqueFilename(fileName || filenameFromUrl(link))) {
@@ -4072,7 +4370,6 @@ export class DebridService {
 
     if (ONEFICHIER_URL_RE.test(link) && this.isProviderSelectableFor(settings, "onefichier")) {
       try {
-        onProviderAttempt?.("onefichier");
         const result = await this.unrestrictViaProvider(settings, "onefichier", link, signal);
         return {
           ...result,
@@ -4092,7 +4389,6 @@ export class DebridService {
 
     if (DDOWNLOAD_URL_RE.test(link) && this.isProviderSelectableFor(settings, "ddownload")) {
       try {
-        onProviderAttempt?.("ddownload");
         const result = await this.unrestrictViaProvider(settings, "ddownload", link, signal);
         return {
           ...result,
@@ -4127,7 +4423,6 @@ export class DebridService {
         throw new Error(this.formatProviderLimitMessage(settings, primary));
       }
       try {
-        onProviderAttempt?.(selectedProvider);
         const result = await this.unrestrictViaProvider(settings, selectedProvider, link, signal);
         let fileName = result.fileName;
         if (isRapidgatorLink(link) && looksLikeOpaqueFilename(fileName || filenameFromUrl(link))) {
@@ -4152,8 +4447,8 @@ export class DebridService {
     }
 
     let configuredFound = false;
-    let limitReachedFound = false;
     const attempts: string[] = [];
+    const unavailableProviders: string[] = [];
 
     for (const provider of order) {
       if (!this.isProviderConfiguredFor(settings, provider)) {
@@ -4161,16 +4456,14 @@ export class DebridService {
       }
       configuredFound = true;
       if (this.isProviderDailyLimited(settings, provider)) {
-        limitReachedFound = true;
         logger.info(`Provider-Kette: ${PROVIDER_LABELS[provider]} uebersprungen (${this.formatProviderLimitMessage(settings, provider)})`);
-        attempts.push(this.formatProviderLimitMessage(settings, provider));
+        unavailableProviders.push(this.formatProviderLimitMessage(settings, provider));
         continue;
       }
 
       const providerStartedAt = Date.now();
       try {
         logger.info(`Provider-Kette: versuche ${PROVIDER_LABELS[provider]}`);
-        onProviderAttempt?.(provider);
         traceConversionPhase({ phase: "chain-try", provider });
         const result = await this.unrestrictViaProvider(settings, provider, link, signal);
         traceConversionPhase({ phase: "chain-ok", provider, workMs: Date.now() - providerStartedAt, outcome: "ok" });
@@ -4213,8 +4506,10 @@ export class DebridService {
     if (!configuredFound) {
       throw new Error("Kein Debrid-Provider konfiguriert");
     }
-    if (limitReachedFound && attempts.every((entry) => /Tageslimit erreicht$/i.test(entry))) {
-      throw new Error("Alle konfigurierten Provider haben ihr Tageslimit erreicht");
+    if (attempts.length === 0 && unavailableProviders.length > 0) {
+      throw new Error(unavailableProviders.length === 1
+        ? unavailableProviders[0]
+        : `Alle konfigurierten Provider sind nicht verfügbar: ${unavailableProviders.join(" | ")}`);
     }
 
     throw new Error(`Unrestrict fehlgeschlagen: ${attempts.join(" | ")}`);
@@ -4224,7 +4519,7 @@ export class DebridService {
     const effectiveProvider = resolveMegaDebridProvider(settings, provider);
     if ((settings.disabledProviders || []).includes(provider) || (settings.disabledProviders || []).includes(effectiveProvider)) return false;
     if (effectiveProvider === "realdebrid") {
-      return Boolean(this.shouldUseRealDebridWeb(settings) || settings.token.trim());
+      return this.getConfiguredRealDebridAccounts(settings).some((account) => account.enabled);
     }
     if (effectiveProvider === "megadebrid-api") {
       return Boolean(hasMegaDebridCredentials(settings) && isMegaDebridModeEnabled(settings, "api"));
@@ -4234,6 +4529,9 @@ export class DebridService {
     }
     if (effectiveProvider === "alldebrid") {
       return Boolean(this.shouldUseAllDebridWeb(settings) || settings.allDebridToken.trim());
+    }
+    if (effectiveProvider === "deepbrid") {
+      return Boolean(settings.deepbridApiKey.trim());
     }
     if (effectiveProvider === "ddownload") {
       return Boolean(settings.ddownloadLogin.trim() && settings.ddownloadPassword.trim());
@@ -4250,20 +4548,135 @@ export class DebridService {
     return Boolean(this.shouldUseBestDebridWeb(settings) || settings.bestToken.trim());
   }
 
-  private async unrestrictViaProvider(settings: AppSettings, provider: DebridProvider, link: string, signal?: AbortSignal): Promise<UnrestrictedLink> {
-    const effectiveProvider = resolveMegaDebridProvider(settings, provider);
-    if (effectiveProvider === "realdebrid") {
-      if (this.shouldUseRealDebridWeb(settings) && this.options.realDebridWebUnrestrict) {
-        const result = await waitForPromiseWithSignal(this.options.realDebridWebUnrestrict(link, signal), signal);
+  private selectRealDebridAccount(accounts: RealDebridAccountEntry[]): RealDebridAccountEntry {
+    const minimumInFlight = Math.min(...accounts.map((account) => realDebridInFlight.get(account.id) || 0));
+    const leastBusy = accounts.filter((account) => (realDebridInFlight.get(account.id) || 0) === minimumInFlight);
+    const sticky = leastBusy.find((account) => account.id === realDebridStickyAccountId);
+    if (sticky && realDebridStickyCount < REAL_DEBRID_STICKY_LINKS) {
+      return sticky;
+    }
+    const selected = leastBusy[realDebridRotationCursor % leastBusy.length];
+    return selected;
+  }
+
+  private classifyRealDebridFailure(error: unknown): RealDebridFailureClassification {
+    const message = compactErrorText(error);
+    const status = error instanceof RealDebridApiError ? error.status : 0;
+    const apiError = error instanceof RealDebridApiError ? error.apiError.toLowerCase() : "";
+    if (status === 401 || /^(bad_token|invalid_token|token_expired)$/.test(apiError) || /HTTP\s*401|bad[ _-]?token|invalid.*token|unauthorized/i.test(message)) {
+      return { rotateAccount: true, cooldownMs: 60 * 60 * 1000, category: "invalid", message };
+    }
+    if (status === 429 || /^(too_many_requests|slow_down)$/.test(apiError) || /HTTP\s*429|rate.?limit|too[ _-]?many[ _-]?requests/i.test(message)) {
+      return { rotateAccount: true, cooldownMs: 15 * 60 * 1000, category: "rate_limit", message };
+    }
+    if (/^(file_unavailable|invalid_link|bad_link|unsupported_hoster|hoster_unsupported|hoster_not_supported|hoster_unavailable|hoster_maintenance|hoster_temporarily_unavailable|service_unavailable)$/.test(apiError)
+      || /file[ _-]?unavailable|invalid[ _-]?link|bad[ _-]?link|unsupported[ _-]?hoster|hoster.*not.*supported|hoster[ _-]?(unavailable|maintenance|temporarily[ _-]?unavailable)|service[ _-]?unavailable/i.test(message)) {
+      return { rotateAccount: false, cooldownMs: 0, category: "provider_or_link", message };
+    }
+    if (status === 403
+      || /^(permission_denied|traffic_exhausted|account_locked|account_not_activated|invalid_login|invalid_password|hoster_limit_reached|too_many_active_downloads|ip_not_allowed)$/.test(apiError)
+      || /HTTP\s*403|traffic|quota|premium/i.test(message)) {
+      return { rotateAccount: true, cooldownMs: 30 * 60 * 1000, category: "quota", message };
+    }
+    if (status === 400
+      || status === 404
+      || (error instanceof RealDebridApiError && status >= 500)) {
+      return { rotateAccount: false, cooldownMs: 0, category: "provider_or_link", message };
+    }
+    if (/timeout|timed out|aborted|network|fetch failed|econnreset|etimedout/i.test(message)) {
+      return { rotateAccount: true, cooldownMs: 2 * 60 * 1000, category: "temporary", message };
+    }
+    return { rotateAccount: true, cooldownMs: 30 * 1000, category: "temporary", message };
+  }
+
+  private async unrestrictWithRealDebridAccounts(
+    settings: AppSettings,
+    link: string,
+    signal?: AbortSignal
+  ): Promise<UnrestrictedLink> {
+    const failures: string[] = [];
+    const attempted = new Set<string>();
+    while (true) {
+      if (signal?.aborted) {
+        throw new Error(`aborted:${String(signal.reason || "caller")}`);
+      }
+      const available = this.getAvailableRealDebridAccounts(settings).filter((account) => !attempted.has(account.id));
+      if (available.length === 0) {
+        break;
+      }
+      const account = settings.accountUsageRules?.realdebrid?.mode === "priority"
+        ? orderAccountsByRule(available, settings.accountUsageRules.realdebrid)[0]
+        : this.selectRealDebridAccount(available);
+      attempted.add(account.id);
+      realDebridInFlight.set(account.id, (realDebridInFlight.get(account.id) || 0) + 1);
+      recordAccountRuntimeAttempt("realdebrid", account.id);
+      const timeoutMs = getRealDebridAccountAttemptTimeoutMs();
+      const timeoutSignal = AbortSignal.timeout(timeoutMs);
+      const accountSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+      try {
+        const result = account.kind === "api"
+          ? await new RealDebridClient(account.token).unrestrictLink(link, accountSignal)
+          : await this.options.realDebridWebUnrestrict?.(account.id, link, accountSignal);
         if (!result) {
           throw new Error("Real-Debrid-Web-Fallback nicht verfügbar");
         }
-        result.sourceLabel = "Web";
-        return result;
+        realDebridAccountCooldowns.delete(account.id);
+        if (realDebridStickyAccountId === account.id) {
+          realDebridStickyCount += 1;
+        } else {
+          realDebridStickyAccountId = account.id;
+          realDebridStickyCount = 1;
+        }
+        const accountIndex = available.findIndex((candidate) => candidate.id === account.id);
+        if (realDebridStickyCount >= REAL_DEBRID_STICKY_LINKS && accountIndex >= 0) {
+          realDebridRotationCursor = (accountIndex + 1) % available.length;
+        }
+        recordAccountRuntimeSuccess("realdebrid", account.id);
+        return {
+          ...result,
+          sourceLabel: account.kind === "api" ? "API" : "Web",
+          sourceAccountId: account.id,
+          sourceAccountLabel: account.label
+        };
+      } catch (error) {
+        if (signal?.aborted) {
+          throw error;
+        }
+        const failure = this.classifyRealDebridFailure(error);
+        recordAccountRuntimeFailure("realdebrid", account.id);
+        if (!failure.rotateAccount) {
+          throw error;
+        }
+        const enabledAccountCount = this.getConfiguredRealDebridAccounts(settings).filter((candidate) => candidate.enabled).length;
+        if (failure.category !== "temporary" || enabledAccountCount > 1) {
+          setRealDebridAccountCooldown(account.id, failure.cooldownMs, failure.message, failure.category);
+        }
+        failures.push(`${account.label}: ${failure.message}`);
+        realDebridStickyAccountId = "";
+        realDebridStickyCount = 0;
+        const accountIndex = available.findIndex((candidate) => candidate.id === account.id);
+        if (accountIndex >= 0) {
+          realDebridRotationCursor = accountIndex % Math.max(1, available.length - 1);
+        }
+      } finally {
+        const remaining = (realDebridInFlight.get(account.id) || 1) - 1;
+        if (remaining > 0) {
+          realDebridInFlight.set(account.id, remaining);
+        } else {
+          realDebridInFlight.delete(account.id);
+        }
       }
-      const result = await new RealDebridClient(settings.token).unrestrictLink(link, signal);
-      result.sourceLabel = "API";
-      return result;
+    }
+    if (failures.length > 0) {
+      throw new Error(`Real-Debrid Account-Pool fehlgeschlagen: ${failures.join(" | ")}`);
+    }
+    throw new Error("Real-Debrid nicht verfügbar (alle aktiven Accounts deaktiviert, im Cooldown oder ausgeschöpft)");
+  }
+
+  private async unrestrictViaProvider(settings: AppSettings, provider: DebridProvider, link: string, signal?: AbortSignal): Promise<UnrestrictedLink> {
+    const effectiveProvider = resolveMegaDebridProvider(settings, provider);
+    if (effectiveProvider === "realdebrid") {
+      return this.unrestrictWithRealDebridAccounts(settings, link, signal);
     }
     if (effectiveProvider === "megadebrid-api") {
       return MegaDebridClient.unrestrictWithAccounts(settings, "api", provider === "megadebrid" && settings.megaDebridPreferApi, link, this.options.megaWebUnrestrict, signal);
@@ -4273,7 +4686,7 @@ export class DebridService {
     }
     if (effectiveProvider === "alldebrid") {
       if (this.shouldUseAllDebridWeb(settings) && this.options.allDebridWebUnrestrict) {
-        const result = await waitForPromiseWithSignal(this.options.allDebridWebUnrestrict(link, signal), signal);
+        const result = await this.options.allDebridWebUnrestrict(link, signal);
         if (!result) {
           throw new Error("AllDebrid-Web-Fallback nicht verfügbar");
         }
@@ -4283,6 +4696,15 @@ export class DebridService {
       const adResult = await new AllDebridClient(settings.allDebridToken).unrestrictLink(link, signal);
       adResult.sourceLabel = "API";
       return adResult;
+    }
+    if (effectiveProvider === "deepbrid") {
+      const result = await new DeepbridClient(settings.deepbridApiKey).unrestrictLink(link, signal);
+      return {
+        ...result,
+        sourceLabel: "API",
+        sourceAccountId: DEEPBRID_ACCOUNT_ID,
+        sourceAccountLabel: "Deepbrid API"
+      };
     }
     if (effectiveProvider === "ddownload") {
       return this.getDdownloadClient(settings.ddownloadLogin, settings.ddownloadPassword).unrestrictLink(link, signal);
@@ -4299,7 +4721,7 @@ export class DebridService {
       return this.getLinkSnappyClient(settings.linkSnappyLogin, settings.linkSnappyPassword).unrestrictLink(link, signal);
     }
     if (this.shouldUseBestDebridWeb(settings) && this.options.bestDebridWebUnrestrict) {
-      const bdResult = await waitForPromiseWithSignal(this.options.bestDebridWebUnrestrict(link, signal), signal);
+      const bdResult = await this.options.bestDebridWebUnrestrict(link, signal);
       if (!bdResult) {
         throw new Error("BestDebrid-Web-Fallback nicht verfügbar");
       }

@@ -1,14 +1,21 @@
 import path from "node:path";
+import fs from "node:fs";
 import os from "node:os";
 import v8 from "node:v8";
+import { randomUUID } from "node:crypto";
 import { app } from "electron";
 import {
+  OfflineSkipScope,
   AddLinksPayload,
+  AccountCheckScope,
   AllDebridHostInfo,
   AppSettings,
   AccountCommand,
   AccountCommandResult,
   AccountCredentialCheckInput,
+  AccountSecretRequest,
+  AccountSecretResult,
+  ArchivePasswordListResult,
   DebridAccountStatus,
   DebridProvider,
   DuplicatePolicy,
@@ -30,24 +37,33 @@ import { importDlcContainers } from "./container";
 import { APP_VERSION, ONLINE_BACKUP_API_URL } from "./constants";
 import { DownloadManager } from "./download-manager";
 import { fetchAllDebridHostInfo, fetchDebridLinkHostLimits } from "./debrid";
-import { checkAllDebridAccounts, checkDebridLinkKey, checkMegaDebridAccount } from "./account-check";
+import { checkAllDebridAccounts, checkDebridLinkKey, checkDeepbridAccount, checkMegaDebridAccount, checkRealDebridAccount, retainConfiguredRealDebridStatuses } from "./account-check";
 import { parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
 import { getMegaDebridAccountsForMode } from "../shared/mega-debrid-accounts";
 import { parseDebridLinkApiKeys } from "../shared/debrid-link-keys";
-import { applyAccountCommand } from "./account-commands";
+import { getRealDebridAccounts, isRealDebridWebAccountId, type RealDebridWebAccountEntry } from "../shared/real-debrid-accounts";
+import type { RealDebridLoginRequest } from "../shared/preload-api";
+import { applyAccountCommand, resolveStoredAccountSecret } from "./account-commands";
 import { collectAccountStatusRedactionValues, sanitizeDebridAccountStatus, sanitizeDebridAccountStatuses } from "./account-status-sanitizer";
 import { createRendererState } from "./renderer-state";
 import { parseCollectorInput } from "./link-parser";
+import { enrichCollectorPackages, prepareCollectorContainers, prepareCollectorText } from "./collector-inspection";
+import type {
+  CollectorEnrichmentRequest,
+  CollectorInspectionResult,
+  CollectorTextPreparationRequest
+} from "../shared/collector";
 import { configureLogger, flushLoggerSync, getLogFilePath, logger } from "./logger";
 import { AllDebridWebFallback } from "./all-debrid-web";
 import { BestDebridWebFallback } from "./bestdebrid-web";
 import { RealDebridWebFallback } from "./realdebrid-web";
-import { getItemLogPath, initItemLogs, shutdownItemLogs } from "./item-log";
-import { getPackageLogPath, initPackageLogs, shutdownPackageLogs } from "./package-log";
-import { initSessionLog, getSessionLogPath, shutdownSessionLog } from "./session-log";
+import { flushItemLogs, getItemLogPath, initItemLogs, shutdownItemLogs } from "./item-log";
+import { flushPackageLogs, getPackageLogPath, initPackageLogs, shutdownPackageLogs } from "./package-log";
+import { flushSessionLog, initSessionLog, getSessionLogPath, shutdownSessionLog } from "./session-log";
+import { flushDiagnosticLogWrites } from "./diagnostic-log-writer";
 import { MegaWebFallback } from "./mega-web-fallback";
-import { addHistoryEntry, addHistoryEntryForRetention, cancelPendingAsyncSaves, clearHistory, createStoragePaths, loadHistory, loadHistoryForRetention, loadSessionWithStatus, loadSettings, normalizeHistoryEntry, normalizeLoadedSession, normalizeLoadedSessionTransientFields, normalizeSettings, removeHistoryEntry, resetHistoryForRetention, saveHistory, saveSession, saveSettings } from "./storage";
-import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate } from "./update";
+import { acquirePersistenceBarrier, addHistoryEntry, addHistoryEntryForRetention, cancelPendingAsyncSaves, clearHistory, createFileRollback, createHistoryRollback, createStoragePaths, loadHistory, loadHistoryForRetention, loadSessionWithStatus, loadSettings, normalizeHistoryEntry, normalizeLoadedSession, normalizeLoadedSessionTransientFields, normalizeSettings, removeHistoryEntries, replaceHistory, resetHistoryForRetention, saveHistory, saveSession, saveSettings } from "./storage";
+import { abortActiveUpdateDownload, checkGitHubUpdate, installLatestUpdate, installVerifiedLocalUpdate } from "./update";
 import { runInstallWithResume } from "./update-install-flow";
 import { rotateDebugToken, startDebugServer, stopDebugServer, restartDebugServer, getDebugServerRuntimeStatus, getActiveDebugToken, getDebugAllowlist, writeDebugServerConfig, clearDebugToken } from "./debug-server";
 import { encodeConnectionCode, loadRemoteMeta, saveRemoteMeta } from "./connection-code";
@@ -61,14 +77,24 @@ import { getDebugSetupCheck } from "./debug-setup";
 import { buildLinkExportSelection, serializeLinkExportText } from "./link-export";
 import { getRenameLogPath, initRenameLog, shutdownRenameLog } from "./rename-log";
 import { getDesktopRenameLogPath, initDesktopRenameLogAt, shutdownDesktopRenameLog } from "./desktop-rename-log";
-import { buildAccountSummary, diffAccountSummary } from "./support-data";
+import { buildAccountSummary, buildNotificationSupportPayload, diffAccountSummary, type NotificationSupportPayload } from "./support-data";
 import { buildSupportBundle, getSupportBundleDefaultFileName } from "./support-bundle";
-import type { SupportBundleExportLifecycleEvent } from "./support-bundle";
 import { getTraceConfig, getTraceLogPath, initTraceLog, logTraceEvent, setTraceEnabled, shutdownTraceLog } from "./trace-log";
+import { CollectorStore } from "./collector-store";
+import type { CollectorPersistenceState } from "../shared/collector";
 import type { DebugSetupCheckResult, SupportTraceConfig } from "../shared/types";
 import { createOnlineBackup, downloadOnlineBackup, uploadOnlineBackup } from "./online-backup";
+import { captureOnlineProxyList, getManagedOnlineProxyListPath, writeImportedOnlineProxyList } from "./online-proxy-list";
 import { overlayLiveUsageCounters } from "./settings-live-overlay";
 import { getLegacyDesktopLogDirectory, migrateLogDirectories, prepareLogDirectory, resolveLogDirectory } from "./log-storage";
+import { normalizeStatisticsLedger, saveStatisticsLedger } from "./statistics-ledger";
+import { NotificationOutbox } from "./notification-outbox";
+import { sendNotification } from "./notify";
+import { DownloadHealthMonitor } from "./download-health-monitor";
+import { ensureStartupWorkDirectories } from "./startup-work-directories";
+import { shouldDeferAutoResumeToDailyStart } from "./daily-start-scheduler";
+import { configureNetworkProxy, getNetworkProxyState, shutdownNetworkProxy } from "./network-proxy";
+import { createProxyOnlyAccountError, resolveProxyOnlyAccountErrorCode } from "./proxy-account-errors";
 
 function sanitizeSettingsPatch(partial: Partial<AppSettings>): Partial<AppSettings> {
   const entries = Object.entries(partial || {}).filter(([, value]) => value !== undefined);
@@ -79,14 +105,39 @@ function settingsFingerprint(settings: AppSettings): string {
   return JSON.stringify(normalizeSettings(settings));
 }
 
+const WORK_DIRECTORY_SETTING_KEYS = new Set<keyof AppSettings>([
+  "createWorkDirectoriesOnStartup",
+  "outputDir",
+  "autoExtract",
+  "extractDir",
+  "collectMkvToLibrary",
+  "mkvLibraryDir"
+]);
+
+function touchesWorkDirectorySettings(partial: Partial<AppSettings>): boolean {
+  return Object.keys(partial).some((key) => WORK_DIRECTORY_SETTING_KEYS.has(key as keyof AppSettings));
+}
+
+type PendingRealDebridWebAccount = {
+  generation: number;
+  dailyLimitBytes: number;
+};
+
 export class AppController {
+  private legacyRemoteRetired = false;
   private settings: AppSettings;
 
   private manager: DownloadManager;
 
   private megaWebFallback: MegaWebFallback;
 
-  private realDebridWebFallback: RealDebridWebFallback;
+  private realDebridWebFallbacks = new Map<string, RealDebridWebFallback>();
+
+  private pendingRealDebridWebAccountIds = new Map<string, PendingRealDebridWebAccount>();
+
+  private realDebridWebGenerations = new Map<string, number>();
+
+  private realDebridWebAuthenticationTasks = new Map<string, Promise<void>>();
 
   private allDebridWebFallback: AllDebridWebFallback;
 
@@ -98,9 +149,22 @@ export class AppController {
 
   private storagePaths = createStoragePaths(path.join(app.getPath("userData"), "runtime"));
 
+  private collectorStore = new CollectorStore(this.storagePaths.collectorFile);
+
+  private notificationOutbox: NotificationOutbox;
+
+  private downloadHealthMonitor: DownloadHealthMonitor;
+
+  private downloadHealthTimer: NodeJS.Timeout | null = null;
+
+  private downloadHealthEvaluation: Promise<void> | null = null;
+  private settingsLogUpdate: Promise<unknown> = Promise.resolve();
+
   private logDirectory = this.storagePaths.baseDir;
 
   private onStateHandler: ((snapshot: UiSnapshot) => void) | null = null;
+
+  private onHistoryEntryAddedHandler: ((entry: HistoryEntry) => void) | null = null;
 
   private autoResumePending = false;
   private runtimeStatsTimer: NodeJS.Timeout | null = null;
@@ -126,31 +190,61 @@ export class AppController {
         this.logDirectory
       );
     }
+    this.applyNetworkProxyConfiguration();
     this.initializeLogStorage();
-    resetHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode);
+    this.ensureConfiguredWorkDirectories(this.settings, "beim Start");
+    this.runHistoryLifecycleCleanup("Start", () => resetHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode));
     const loadResult = loadSessionWithStatus(this.storagePaths);
     const session = loadResult.session;
+    this.notificationOutbox = new NotificationOutbox({
+      filePath: this.storagePaths.notificationOutboxFile,
+      autoDrain: true,
+      send: (event) => sendNotification(this.settings.notifyUrl, {
+        title: event.payload.title,
+        message: event.payload.description || "",
+        mention: this.settings.notifyMention,
+        color: event.payload.color ?? (event.priority === "error" ? 0xe74c3c : 0x2ecc71),
+        fields: event.payload.fields,
+        timestamp: event.createdAt
+      }),
+      onDelivered: (event, deliveredAt) => {
+        return this.downloadHealthMonitor?.acknowledgeDelivery(
+          event,
+          deliveredAt,
+          this.settings.notifyStallCooldownMinutes * 60_000
+        );
+      }
+    });
+    this.downloadHealthMonitor = new DownloadHealthMonitor(this.storagePaths.notificationHealthFile);
+    void this.notificationOutbox.drain().catch((error) => {
+      logger.warn(`Notification-Outbox konnte nicht gestartet werden: ${String(error)}`);
+    });
     this.megaWebFallback = new MegaWebFallback(() => ({
       login: this.settings.megaLogin,
       password: this.settings.megaPassword
     }));
-    this.realDebridWebFallback = new RealDebridWebFallback(() => this.settings.rememberToken);
     this.allDebridWebFallback = new AllDebridWebFallback(() => this.settings.rememberToken);
     this.bestDebridWebFallback = new BestDebridWebFallback(() => this.settings.rememberToken);
     this.manager = new DownloadManager(this.settings, session, this.storagePaths, {
       megaWebUnrestrict: (link: string, signal?: AbortSignal, account?: { login: string; password: string }) => this.megaWebFallback.unrestrict(link, signal, account),
       allDebridWebUnrestrict: (link: string, signal?: AbortSignal) => this.allDebridWebFallback.unrestrict(link, signal),
-      realDebridWebUnrestrict: (link: string, signal?: AbortSignal) => this.realDebridWebFallback.unrestrict(link, signal),
+      realDebridWebUnrestrict: (accountId: string, link: string, signal?: AbortSignal) => this.unrestrictRealDebridWebAccount(accountId, link, signal),
       bestDebridWebUnrestrict: (link: string, signal?: AbortSignal) => this.bestDebridWebFallback.unrestrict(link, signal),
       invalidateMegaSession: () => this.megaWebFallback.invalidateSession(),
       protectEmptyClobber: loadResult.status === "empty-unreadable",
+      enqueueNotification: (event) => this.notificationOutbox.enqueue(event),
       onHistoryEntry: (entry: HistoryEntry) => {
-        addHistoryEntryForRetention(this.storagePaths, this.settings.historyRetentionMode, entry, this.historyLimits());
+        this.recordHistoryEntry(entry);
       }
     });
     this.manager.on("state", (snapshot: UiSnapshot) => {
       this.onStateHandler?.(snapshot);
     });
+    void this.evaluateDownloadHealth();
+    this.downloadHealthTimer = setInterval(() => {
+      void this.evaluateDownloadHealth();
+    }, 15_000);
+    this.downloadHealthTimer.unref?.();
     logger.info(`App gestartet v${APP_VERSION}`);
     logger.info(`Log-Datei: ${getLogFilePath()}`);
     logAuditEvent("INFO", "App gestartet", {
@@ -185,7 +279,7 @@ export class AppController {
     } catch (err) {
       logger.warn(`Health-Check uebersprungen (Fehler): ${String((err as Error).message || err)}`);
     }
-    startDebugServer(this.manager, this.storagePaths.baseDir);
+    startDebugServer(this.manager, this.storagePaths.baseDir, () => this.getNotificationSupportPayload());
     this.runtimeStatsTimer = setInterval(() => {
       this.manager.persistRuntimeStats();
       this.settings = this.manager.getSettings();
@@ -193,10 +287,17 @@ export class AppController {
     }, 60_000);
     this.runtimeStatsTimer.unref?.();
 
-    if (this.settings.autoResumeOnStart) {
-      void this.manager.waitForStartupRecovery().then(() => {
-        this.prepareAutoResume();
-      }).catch((err) => logger.warn(`Auto-Resume Startup-Recovery Fehler: ${String(err)}`));
+    if (this.settings.autoResumeOnStart && !shouldDeferAutoResumeToDailyStart(this.settings, loadResult.wasRunning)) {
+      const snapshot = this.manager.getSnapshot();
+      const hasPending = Object.values(snapshot.session.items).some((item) => item.status === "queued" || item.status === "reconnect_wait");
+      if (hasPending && this.hasAnyProviderToken(this.settings)) {
+        if (this.onStateHandler) {
+          this.beginAutoResume();
+        } else {
+          this.autoResumePending = true;
+          logger.info("Auto-Resume beim Start vorgemerkt");
+        }
+      }
     }
   }
 
@@ -228,33 +329,18 @@ export class AppController {
     }
   }
 
-  private prepareAutoResume(): void {
-    const snapshot = this.manager.getSnapshot();
-    const items = Object.values(snapshot.session.items);
-    const pendingCount = items.filter((item) => item.status === "queued" || item.status === "reconnect_wait").length;
-    if (pendingCount === 0) {
-      this.audit("INFO", "Auto-Resume übersprungen", {
-        reason: "no_pending",
-        itemCount: items.length
-      });
-      return;
-    }
-    if (!snapshot.canStart) {
-      this.audit("WARN", "Auto-Resume übersprungen", {
-        reason: "cannot_start",
-        pendingCount,
-        running: snapshot.session.running,
-        paused: snapshot.session.paused,
-        configuredAccounts: snapshot.accounts.length
-      });
-      return;
-    }
-    if (this.onStateHandler) {
-      this.beginAutoResume();
-      return;
-    }
-    this.autoResumePending = true;
-    logger.info("Auto-Resume beim Start vorgemerkt");
+  private hasAnyProviderToken(settings: AppSettings): boolean {
+    return Boolean(
+      settings.token.trim()
+      || settings.realDebridUseWebLogin
+      || (settings.megaLogin.trim() && settings.megaPassword.trim())
+      || settings.bestToken.trim()
+      || settings.bestDebridUseWebLogin
+      || settings.allDebridUseWebLogin
+      || settings.allDebridToken.trim()
+      || (settings.ddownloadLogin.trim() && settings.ddownloadPassword.trim())
+      || settings.oneFichierApiKey.trim()
+    );
   }
 
   public get onState(): ((snapshot: UiSnapshot) => void) | null {
@@ -364,6 +450,7 @@ export class AppController {
   }
 
   public async enableRemoteDiagnostics(input: EnableRemoteDiagnosticsInput): Promise<RemoteDiagnosticsInfo> {
+    if (this.legacyRemoteRetired) throw new Error("Die alte Ferndiagnose wurde durch MCP-Fernzugriff ersetzt.");
     const baseDir = this.storagePaths.baseDir;
     const port = input.port && Number.isInteger(input.port) && input.port >= 1024 && input.port <= 65535
       ? input.port
@@ -397,20 +484,47 @@ export class AppController {
   }
 
   public async rotateRemoteDiagnosticsToken(): Promise<RemoteDiagnosticsInfo> {
+    if (this.legacyRemoteRetired) throw new Error("Die alte Ferndiagnose wurde durch MCP-Fernzugriff ersetzt.");
     rotateDebugToken(this.storagePaths.baseDir);
     await restartDebugServer();
     this.audit("WARN", "Ferndiagnose-Token rotiert");
     return this.getRemoteDiagnostics();
   }
 
-  private restoreRemoteDiagnosticsFromBackup(section: unknown, restartNow: boolean): void {
+  private persistRemoteDiagnosticsFromBackup(section: unknown): ReturnType<typeof resolveRemoteDiagnosticsRestore> {
+    if (this.legacyRemoteRetired) return null;
     const restore = resolveRemoteDiagnosticsRestore(section);
+    if (!restore) {
+      return null;
+    }
+    writeDebugServerConfig({ host: restore.host, port: restore.port, allowlist: restore.allowlist });
+    return restore;
+  }
+
+  public retireLegacyRemoteDiagnostics(): void {
+    this.legacyRemoteRetired = true;
+    stopDebugServer();
+    clearDebugToken();
+  }
+
+  private async restartRemoteDiagnosticsRestore(
+    restore: ReturnType<typeof resolveRemoteDiagnosticsRestore>,
+    restartNow: boolean
+  ): Promise<void> {
     if (!restore) {
       return;
     }
-    writeDebugServerConfig({ host: restore.host, port: restore.port, allowlist: restore.allowlist });
     if (restartNow) {
-      void restartDebugServer().catch(() => {});
+      await restartDebugServer();
+    }
+  }
+
+  private auditRemoteDiagnosticsRestore(
+    restore: ReturnType<typeof resolveRemoteDiagnosticsRestore>,
+    restartNow: boolean
+  ): void {
+    if (!restore) {
+      return;
     }
     this.audit("INFO", "Ferndiagnose-Einstellungen aus Backup wiederhergestellt", {
       port: restore.port ?? null,
@@ -429,6 +543,17 @@ export class AppController {
     logTraceEvent(level, "audit", message, fields);
   }
 
+  private assertProxyOnlyAccountSetup(): void {
+    const code = resolveProxyOnlyAccountErrorCode(this.settings, getNetworkProxyState());
+    if (code) throw createProxyOnlyAccountError(code);
+  }
+
+  private throwProxyOnlyAccountFailure(failureText: string, checkFailure?: DebridAccountStatus["checkFailure"]): void {
+    if (checkFailure === "aborted") return;
+    const code = resolveProxyOnlyAccountErrorCode(this.settings, getNetworkProxyState(), checkFailure === "transport" ? "network" : failureText);
+    if (code) throw createProxyOnlyAccountError(code);
+  }
+
   public setTraceEnabled(enabled: boolean, note = "", durationMs?: number): SupportTraceConfig {
     const next = setTraceEnabled(enabled, note, durationMs);
     this.audit("INFO", enabled ? "Support-Trace aktiviert" : "Support-Trace deaktiviert", { note });
@@ -444,46 +569,197 @@ export class AppController {
     overlayLiveUsageCounters(target, liveSettings, this.manager.getLiveTotalRuntimeMs());
   }
 
-  private applySettingsOnlyBackup(importedSettings: AppSettings, remoteDiagnostics?: unknown, restoreRemoteDiagnostics = false): void {
-    let restoredSettings = normalizeSettings(importedSettings);
-    if (this.settings.logStorageLocation !== restoredSettings.logStorageLocation
-      && !this.reconfigureLogStorage(restoredSettings.logStorageLocation)) {
-      restoredSettings = normalizeSettings({
-        ...restoredSettings,
-        logStorageLocation: this.settings.logStorageLocation
-      });
+  public set onHistoryEntryAdded(handler: ((entry: HistoryEntry) => void) | null) {
+    this.onHistoryEntryAddedHandler = handler;
+  }
+
+  private prepareImportedLogStorage(restoredSettings: AppSettings): AppSettings {
+    if (this.settings.logStorageLocation === restoredSettings.logStorageLocation) {
+      return restoredSettings;
     }
-    this.overlayLiveUsageCounters(restoredSettings);
-    this.settings = restoredSettings;
-    saveSettings(this.storagePaths, this.settings);
-    this.manager.setSettings(this.settings, { settingsOnlyImport: true });
-    if (restoreRemoteDiagnostics) {
-      this.restoreRemoteDiagnosticsFromBackup(remoteDiagnostics, true);
+    const nextDirectory = resolveLogDirectory(
+      this.storagePaths.baseDir,
+      this.getDesktopDirectory(),
+      restoredSettings.logStorageLocation
+    );
+    return prepareLogDirectory(nextDirectory)
+      ? restoredSettings
+      : normalizeSettings({ ...restoredSettings, logStorageLocation: this.settings.logStorageLocation });
+  }
+
+  private createBackupImportRollback(includeDownloads: boolean, additionalFiles: readonly string[] = []): () => void {
+    const baseDir = this.storagePaths.baseDir;
+    const files = [
+      this.storagePaths.configFile,
+      `${this.storagePaths.configFile}.bak`,
+      `${this.storagePaths.configFile}.tmp`,
+      `${this.storagePaths.configFile}.bak.tmp`,
+      path.join(baseDir, "debug_host.txt"),
+      path.join(baseDir, "debug_port.txt"),
+      path.join(baseDir, "debug_allowlist.txt"),
+      ...additionalFiles
+    ];
+    if (includeDownloads) {
+      files.push(
+        this.storagePaths.sessionFile,
+        `${this.storagePaths.sessionFile}.bak`,
+        `${this.storagePaths.sessionFile}.sync.tmp`,
+        `${this.storagePaths.sessionFile}.async.tmp`,
+        this.storagePaths.historyFile,
+        `${this.storagePaths.historyFile}.bak`,
+        `${this.storagePaths.historyFile}.tmp`,
+        `${this.storagePaths.historyFile}.bak.tmp`,
+        this.storagePaths.statisticsFile,
+        `${this.storagePaths.statisticsFile}.tmp`
+      );
     }
+    return createFileRollback([...new Set(files)]);
+  }
+
+  private rollbackImportPersistence(rollback: () => void, context: string): void {
+    try {
+      rollback();
+    } catch (error) {
+      logger.error(`Backup-Import konnte nach ${context} nicht zurückgerollt werden: ${String(error)}`);
+    }
+  }
+
+  private async restoreLogStorageAfterFailedImport(location: AppSettings["logStorageLocation"]): Promise<void> {
+    try {
+      await this.flushLogs();
+      this.reconfigureLogStorage(location);
+    } catch (error) {
+      logger.error(`Log-Speicherort konnte nach fehlgeschlagenem Backup-Import nicht wiederhergestellt werden: ${String(error)}`);
+    }
+  }
+
+  private async applySettingsOnlyBackup(
+    importedSettings: AppSettings,
+    remoteDiagnostics?: unknown,
+    restoreRemoteDiagnostics = false,
+    onlineProxyListContent?: string | null
+  ): Promise<{ proxyListRestored: boolean; proxyListRequired: boolean }> {
+    const barrier = await acquirePersistenceBarrier();
+    const previousSettings = this.settings;
+    let restoredSettings: AppSettings | null = null;
+    let rollback: (() => void) | null = null;
+    let remoteRestore: ReturnType<typeof resolveRemoteDiagnosticsRestore> = null;
+    let logStorageChanged = false;
+    let runtimeApplied = false;
+    let proxyListRestored = false;
+    let proxyListRequired = false;
+    try {
+      restoredSettings = this.prepareImportedLogStorage(normalizeSettings(importedSettings));
+      if (typeof onlineProxyListContent === "string") {
+        restoredSettings = normalizeSettings({
+          ...restoredSettings,
+          proxyListPath: getManagedOnlineProxyListPath(this.storagePaths.baseDir)
+        });
+      } else if (onlineProxyListContent === null) {
+        proxyListRequired = restoredSettings.proxyDownloadEnabled;
+        restoredSettings = normalizeSettings({
+          ...restoredSettings,
+          proxyListPath: ""
+        });
+      }
+      this.overlayLiveUsageCounters(restoredSettings);
+      const managedProxyListPath = typeof onlineProxyListContent === "string"
+        ? getManagedOnlineProxyListPath(this.storagePaths.baseDir)
+        : null;
+      rollback = this.createBackupImportRollback(false, managedProxyListPath ? [managedProxyListPath] : []);
+      if (typeof onlineProxyListContent === "string") {
+        writeImportedOnlineProxyList(this.storagePaths.baseDir, onlineProxyListContent);
+        proxyListRestored = true;
+      }
+      saveSettings(this.storagePaths, restoredSettings);
+      remoteRestore = restoreRemoteDiagnostics
+        ? this.persistRemoteDiagnosticsFromBackup(remoteDiagnostics)
+        : null;
+      if (previousSettings.logStorageLocation !== restoredSettings.logStorageLocation) {
+        await this.flushLogs();
+        if (!this.reconfigureLogStorage(restoredSettings.logStorageLocation)) {
+          throw new Error("Log-Speicherort konnte nicht wiederhergestellt werden");
+        }
+        logStorageChanged = true;
+      }
+      await this.restartRemoteDiagnosticsRestore(remoteRestore, restoreRemoteDiagnostics);
+      this.overlayLiveUsageCounters(restoredSettings);
+      saveSettings(this.storagePaths, restoredSettings);
+      this.settings = restoredSettings;
+      this.applyNetworkProxyConfiguration();
+      runtimeApplied = true;
+      this.manager.setSettings(this.settings, { settingsOnlyImport: true });
+      this.manager.persistNowSync();
+      await barrier.release({ replayBlocked: false });
+    } catch (error) {
+      if (rollback) {
+        this.rollbackImportPersistence(rollback, "fehlgeschlagenem Settings-Import");
+      }
+      this.settings = previousSettings;
+      this.applyNetworkProxyConfiguration();
+      if (runtimeApplied) {
+        try {
+          this.manager.setSettings(previousSettings, { settingsOnlyImport: true });
+        } catch (runtimeError) {
+          logger.error(`Backup-Import konnte die vorherigen Laufzeiteinstellungen nicht wiederherstellen: ${String(runtimeError)}`);
+        }
+      }
+      if (logStorageChanged) {
+        await this.restoreLogStorageAfterFailedImport(previousSettings.logStorageLocation);
+      }
+      if (remoteRestore && restoreRemoteDiagnostics) {
+        try {
+          await restartDebugServer();
+        } catch (runtimeError) {
+          logger.error(`Ferndiagnose konnte nach fehlgeschlagenem Backup-Import nicht wiederhergestellt werden: ${String(runtimeError)}`);
+        }
+      }
+      try {
+        await barrier.release({ replayBlocked: true });
+      } catch (releaseError) {
+        logger.error(`Blockierte Persistenz konnte nach fehlgeschlagenem Backup-Import nicht fortgesetzt werden: ${String(releaseError)}`);
+      }
+      throw error;
+    }
+    this.auditRemoteDiagnosticsRestore(remoteRestore, restoreRemoteDiagnostics);
+    return { proxyListRestored, proxyListRequired };
+  }
+
+  private ensureConfiguredWorkDirectories(settings: AppSettings, trigger: "beim Start" | "nach dem Speichern"): void {
+    const workDirectories = ensureStartupWorkDirectories(settings);
+    if (workDirectories.created.length > 0) {
+      logger.info(`Arbeitsordner ${trigger} angelegt: ${workDirectories.created.map((entry) => entry.kind).join(", ")}`);
+    }
+    for (const failure of workDirectories.failures) {
+      logger.warn(`Arbeitsordner konnte ${trigger} nicht angelegt werden (${failure.kind}): ${failure.error}`);
+    }
+  }
+
+  public updateSettingsWithLogs(partial: Partial<AppSettings>): Promise<AppSettings> {
+    const update = (this.settingsLogUpdate ?? Promise.resolve()).then(async () => {
+      if (partial.logStorageLocation && partial.logStorageLocation !== this.settings.logStorageLocation) await this.flushLogs();
+      return this.updateSettings(partial);
+    });
+    this.settingsLogUpdate = update.catch(() => {});
+    return update;
   }
 
   public updateSettings(partial: Partial<AppSettings>): AppSettings {
     const sanitizedPatch = sanitizeSettingsPatch(partial);
     const previousSettings = this.settings;
+    const ensureWorkDirectoriesAfterSave = touchesWorkDirectorySettings(sanitizedPatch);
     let nextSettings = normalizeSettings({
       ...previousSettings,
       ...sanitizedPatch
     });
 
     if (settingsFingerprint(nextSettings) === settingsFingerprint(previousSettings)) {
+      if (ensureWorkDirectoriesAfterSave) {
+        this.ensureConfiguredWorkDirectories(previousSettings, "nach dem Speichern");
+      }
       return previousSettings;
     }
 
-    const retentionChanged = previousSettings.historyRetentionMode !== nextSettings.historyRetentionMode;
-    const historyLimitsChanged = previousSettings.historyMaxEntries !== nextSettings.historyMaxEntries
-      || previousSettings.historyMaxAgeDays !== nextSettings.historyMaxAgeDays;
-    if (retentionChanged && !resetHistoryForRetention(this.storagePaths, nextSettings.historyRetentionMode)) {
-      this.audit("ERROR", "Verlaufseinstellung nicht geändert", {
-        requestedMode: nextSettings.historyRetentionMode,
-        activeMode: previousSettings.historyRetentionMode
-      });
-      return previousSettings;
-    }
     if (previousSettings.logStorageLocation !== nextSettings.logStorageLocation
       && !this.reconfigureLogStorage(nextSettings.logStorageLocation)) {
       nextSettings = normalizeSettings({
@@ -492,20 +768,42 @@ export class AppController {
       });
     }
     this.overlayLiveUsageCounters(nextSettings);
-    this.settings = nextSettings;
-    if (historyLimitsChanged && this.settings.historyRetentionMode !== "never") {
-      saveHistory(this.storagePaths, loadHistory(this.storagePaths), this.historyLimits());
+    const retentionChanged = previousSettings.historyRetentionMode !== nextSettings.historyRetentionMode;
+    const historyLimitsChanged = previousSettings.historyMaxEntries !== nextSettings.historyMaxEntries
+      || previousSettings.historyMaxAgeDays !== nextSettings.historyMaxAgeDays;
+    const rollbackHistory = retentionChanged || historyLimitsChanged ? createHistoryRollback(this.storagePaths) : null;
+    try {
+      if (retentionChanged) {
+        resetHistoryForRetention(this.storagePaths, nextSettings.historyRetentionMode);
+      } else if (historyLimitsChanged && nextSettings.historyRetentionMode !== "never") {
+        saveHistory(this.storagePaths, loadHistory(this.storagePaths), {
+          maxEntries: nextSettings.historyMaxEntries,
+          maxAgeDays: nextSettings.historyMaxAgeDays
+        });
+      }
+      saveSettings(this.storagePaths, nextSettings);
+    } catch (error) {
+      this.rollbackHistoryAfterFailure(rollbackHistory, "fehlgeschlagener Einstellungsänderung");
+      throw error;
     }
-    saveSettings(this.storagePaths, this.settings);
+    this.settings = nextSettings;
+    this.applyNetworkProxyConfiguration();
     this.manager.setSettings(this.settings);
+    if (ensureWorkDirectoriesAfterSave) {
+      this.ensureConfiguredWorkDirectories(this.settings, "nach dem Speichern");
+    }
     this.audit("INFO", "Einstellungen aktualisiert", {
       changedKeys: Object.keys(sanitizedPatch),
       accountChanges: diffAccountSummary(previousSettings, this.settings)
     });
+    this.pruneRealDebridWebFallbacks(previousSettings, this.settings);
     if (previousSettings.rememberToken && !this.settings.rememberToken) {
-      void this.realDebridWebFallback.clearSessions().catch((error) => {
-        logger.warn(`Real-Debrid Web-Session konnte nicht gelöscht werden: ${String(error)}`);
-      });
+      const accountIds = new Set([...this.settings.realDebridWebAccountIds, ...this.realDebridWebFallbacks.keys()]);
+      for (const accountId of accountIds) {
+        void this.cleanupRealDebridWebAccount(accountId, true).catch((error) => {
+          logger.warn(`Real-Debrid Web-Session konnte nicht gelöscht werden (${accountId}): ${String(error)}`);
+        });
+      }
       void this.allDebridWebFallback.clearSessions().catch((error) => {
         logger.warn(`AllDebrid Web-Session konnte nicht gelöscht werden: ${String(error)}`);
       });
@@ -516,27 +814,43 @@ export class AppController {
     return this.settings;
   }
 
-  public async executeAccountCommand(command: AccountCommand): Promise<AccountCommandResult> {
+  public async executeAccountCommand(command: AccountCommand, signal?: AbortSignal): Promise<AccountCommandResult> {
+    signal?.throwIfAborted();
+    const originalSettings = signal ? settingsFingerprint(this.settings) : null;
     const applied = applyAccountCommand(this.settings, command);
     let checkedStatus: DebridAccountStatus | null = null;
     const redactions = collectAccountStatusRedactionValues(applied.settings, command);
+    if (command.action !== "delete" && ["megadebrid-api", "megadebrid-web", "debridlink-api", "realdebrid-api", "deepbrid-api"].includes(command.kind)) {
+      this.assertProxyOnlyAccountSetup();
+    }
     if (command.action !== "delete" && applied.response.accountId && (command.kind === "megadebrid-api" || command.kind === "megadebrid-web")) {
       const mode = command.kind === "megadebrid-web" ? "web" : "api";
       const account = getMegaDebridAccountsForMode(applied.settings, mode).find((entry) => entry.id === applied.response.accountId);
       if (!account) throw new Error("Account-Payload ist ungültig");
-      checkedStatus = await checkMegaDebridAccount(account);
+      checkedStatus = await checkMegaDebridAccount(account, signal);
     }
     if (command.action !== "delete" && applied.response.accountId && command.kind === "debridlink-api") {
       const key = parseDebridLinkApiKeys(applied.settings.debridLinkApiKeys).find((entry) => entry.id === applied.response.accountId);
       if (!key) throw new Error("Account-Payload ist ungültig");
-      checkedStatus = await checkDebridLinkKey(key);
+      checkedStatus = await checkDebridLinkKey(key, signal);
+    }
+    if (command.action !== "delete" && applied.response.accountId && command.kind === "realdebrid-api") {
+      const account = getRealDebridAccounts(applied.settings).find((entry) => entry.id === applied.response.accountId && entry.kind === "api");
+      if (!account) throw new Error("Account-Payload ist ungültig");
+      checkedStatus = await checkRealDebridAccount(account, signal);
+    }
+    if (command.action !== "delete" && applied.response.accountId && command.kind === "deepbrid-api") {
+      checkedStatus = await checkDeepbridAccount(applied.settings.deepbridApiKey, signal);
     }
     if (checkedStatus) {
       checkedStatus = sanitizeDebridAccountStatus(checkedStatus, redactions);
     }
     if (checkedStatus && !checkedStatus.valid) {
+      this.throwProxyOnlyAccountFailure(checkedStatus.message || "", checkedStatus.checkFailure);
       throw new Error(checkedStatus.message || "Zugangsdaten ungültig");
     }
+    signal?.throwIfAborted();
+    if (originalSettings !== null && originalSettings !== settingsFingerprint(this.settings)) throw new Error("Einstellungen wurden während der Account-Prüfung geändert. Vorgang erneut prüfen.");
     this.updateSettings(applied.settings);
     if (checkedStatus) this.manager.applyDebridAccountStatuses([checkedStatus]);
     const state = createRendererState(this.settings);
@@ -544,23 +858,89 @@ export class AppController {
     return { ...applied.response, ...state };
   }
 
-  public async checkAccountCredentials(input: AccountCredentialCheckInput): Promise<DebridAccountStatus> {
+  public revealAccountSecret(request: AccountSecretRequest): AccountSecretResult {
+    const secret = resolveStoredAccountSecret(this.settings, request);
+    this.audit("INFO", "Gespeicherter Account-Zugang explizit angezeigt", { kind: request.kind });
+    return { secret };
+  }
+
+  public getArchivePasswordList(): ArchivePasswordListResult {
+    const passwords = this.settings.archivePasswordList;
+    const entryCount = passwords.split(/\r?\n/).filter((entry) => entry.trim().length > 0).length;
+    this.audit("INFO", "Archiv-Passwortliste explizit angezeigt", { entryCount });
+    return { passwords };
+  }
+
+  public async checkAccountCredentials(input: AccountCredentialCheckInput, signal?: AbortSignal): Promise<DebridAccountStatus> {
+    signal?.throwIfAborted();
+    this.assertProxyOnlyAccountSetup();
     const redactions = collectAccountStatusRedactionValues(this.settings, input);
+    if (input.kind === "deepbrid-api") {
+      const key = input.secret?.trim() || this.settings.deepbridApiKey.trim();
+      if (!key) throw new Error("Account-Payload ist ungültig");
+      const status = sanitizeDebridAccountStatus(await checkDeepbridAccount(key, signal), redactions);
+      signal?.throwIfAborted();
+      if (!status.valid) this.throwProxyOnlyAccountFailure(status.message || "", status.checkFailure);
+      if (!status.checkFailure && !input.secret && input.accountId === "svc-deepbrid" && this.settings.deepbridApiKey.trim()) {
+        this.manager.applyDebridAccountStatuses([status]);
+      }
+      return status;
+    }
+    if (input.kind === "realdebrid-api" || input.kind === "realdebrid-web") {
+      const useWebLogin = input.kind === "realdebrid-web";
+      const account = input.secret?.trim() && !useWebLogin
+        ? {
+          id: `rda_${randomUUID().replace(/-/g, "")}`,
+          kind: "api" as const,
+          index: 0,
+          label: "Real-Debrid",
+          maskedLogin: "Geschützter API-Token",
+          enabled: true,
+          token: input.secret.trim()
+        }
+        : getRealDebridAccounts(this.settings).find((entry) => entry.id === input.accountId && entry.kind === (useWebLogin ? "web" : "api"));
+      if (!account) throw new Error("Account-Payload ist ungültig");
+      const status = sanitizeDebridAccountStatus(
+        await checkRealDebridAccount(
+          account,
+          signal,
+          Date.now(),
+          useWebLogin ? (signal) => this.getRealDebridWebFallback(account.id).probeLoginState(signal) : undefined
+        ),
+        redactions
+      );
+      signal?.throwIfAborted();
+      if (!status.valid) this.throwProxyOnlyAccountFailure(status.message || "", status.checkFailure);
+      if (!status.checkFailure && !input.secret && getRealDebridAccounts(this.settings).some((entry) => entry.id === status.accountId)) {
+        this.manager.applyDebridAccountStatuses([status]);
+      }
+      return status;
+    }
     if (input.kind === "megadebrid-api" || input.kind === "megadebrid-web") {
       const mode = input.kind === "megadebrid-web" ? "web" : "api";
       const account = input.identity?.trim() && input.secret
         ? parseMegaDebridAccounts(`${input.identity.trim()}:${input.secret}`)[0]
         : getMegaDebridAccountsForMode(this.settings, mode).find((entry) => entry.id === input.accountId);
       if (!account) throw new Error("Account-Payload ist ungültig");
-      const status = await checkMegaDebridAccount(account);
-      return sanitizeDebridAccountStatus(status, redactions);
+      const status = sanitizeDebridAccountStatus(await checkMegaDebridAccount(account, signal), redactions);
+      signal?.throwIfAborted();
+      if (!status.valid) this.throwProxyOnlyAccountFailure(status.message || "", status.checkFailure);
+      if (!status.checkFailure && !input.secret && getMegaDebridAccountsForMode(this.settings, mode).some((entry) => entry.id === status.accountId)) {
+        this.manager.applyDebridAccountStatuses([status]);
+      }
+      return status;
     }
     const key = input.secret?.trim()
       ? parseDebridLinkApiKeys(input.secret)[0]
       : parseDebridLinkApiKeys(this.settings.debridLinkApiKeys).find((entry) => entry.id === input.accountId);
     if (!key) throw new Error("Account-Payload ist ungültig");
-    const status = await checkDebridLinkKey(key);
-    return sanitizeDebridAccountStatus(status, redactions);
+    const status = sanitizeDebridAccountStatus(await checkDebridLinkKey(key, signal), redactions);
+    signal?.throwIfAborted();
+    if (!status.valid) this.throwProxyOnlyAccountFailure(status.message || "", status.checkFailure);
+    if (!status.checkFailure && !input.secret && parseDebridLinkApiKeys(this.settings.debridLinkApiKeys).some((entry) => entry.id === status.accountId)) {
+      this.manager.applyDebridAccountStatuses([status]);
+    }
+    return status;
   }
 
   public resetProviderDailyUsage(provider: DebridProvider): AppSettings {
@@ -569,8 +949,23 @@ export class AppController {
       ...liveSettings,
       ...resetProviderDailyUsage(liveSettings, provider)
     });
+    const rollback = createFileRollback([
+      this.storagePaths.configFile,
+      `${this.storagePaths.configFile}.bak`,
+      this.storagePaths.statisticsFile,
+      `${this.storagePaths.statisticsFile}.tmp`
+    ]);
+    try {
+      saveSettings(this.storagePaths, nextSettings);
+      this.manager.rebaseStatisticsProviderDailyUsage(
+        provider,
+        nextSettings.providerDailyUsageBytes[provider] ?? 0
+      );
+    } catch (error) {
+      this.rollbackImportPersistence(rollback, "fehlgeschlagener Provider-Nutzungsrücksetzung");
+      throw error;
+    }
     this.settings = nextSettings;
-    saveSettings(this.storagePaths, this.settings);
     this.manager.setSettings(this.settings);
     this.audit("INFO", "Provider-Tagesnutzung zurückgesetzt", { provider });
     return this.settings;
@@ -589,18 +984,201 @@ export class AppController {
     return this.settings;
   }
 
-  public resetMegaDebridCooldowns(): { cleared: number } {
-    const cleared = this.manager.resetMegaDebridCooldowns();
-    this.audit("INFO", "Mega-Debrid-Cooldowns manuell zurückgesetzt", { cleared });
-    return { cleared };
+  private getRealDebridWebPartition(accountId: string): string {
+    return accountId === "rdw_legacy"
+      ? "persist:realdebrid-web"
+      : `persist:realdebrid-web-${accountId}`;
   }
 
-  public async openRealDebridLoginWindow(): Promise<void> {
-    this.audit("INFO", "Real-Debrid Login-Fenster geöffnet");
-    await this.realDebridWebFallback.openLoginWindow();
+  private getRealDebridWebFallback(accountId: string): RealDebridWebFallback {
+    if (!isRealDebridWebAccountId(accountId)) {
+      throw new Error("Account-Payload ist ungültig");
+    }
+    const existing = this.realDebridWebFallbacks.get(accountId);
+    if (existing) {
+      return existing;
+    }
+    const fallback = new RealDebridWebFallback(
+      this.getRealDebridWebPartition(accountId),
+      () => this.settings.rememberToken,
+      () => this.queueRealDebridWebAuthentication(accountId),
+      () => this.handleRealDebridWebWindowClosed(accountId)
+    );
+    this.realDebridWebFallbacks.set(accountId, fallback);
+    return fallback;
+  }
+
+  private queueRealDebridWebAuthentication(accountId: string): void {
+    if (this.realDebridWebAuthenticationTasks.has(accountId)) {
+      return;
+    }
+    const generation = this.realDebridWebGenerations.get(accountId) || 0;
+    const task = this.refreshRealDebridWebStatus(accountId, generation)
+      .catch((error) => logger.warn(`Real-Debrid Web-Status konnte nicht aktualisiert werden (${accountId}): ${String(error)}`))
+      .finally(() => {
+        if (this.realDebridWebAuthenticationTasks.get(accountId) === task) {
+          this.realDebridWebAuthenticationTasks.delete(accountId);
+        }
+      });
+    this.realDebridWebAuthenticationTasks.set(accountId, task);
+  }
+
+  private handleRealDebridWebWindowClosed(accountId: string): void {
+    if (!this.pendingRealDebridWebAccountIds.has(accountId)) {
+      return;
+    }
+    void Promise.resolve().then(async () => {
+      const authenticationTask = this.realDebridWebAuthenticationTasks.get(accountId);
+      if (authenticationTask) {
+        await authenticationTask;
+      }
+      if (!this.pendingRealDebridWebAccountIds.has(accountId)
+        || this.settings.realDebridWebAccountIds.includes(accountId)) {
+        return;
+      }
+      await this.cleanupRealDebridWebAccount(accountId, true);
+    }).catch((error) => {
+      logger.warn(`Abgebrochener Real-Debrid Web-Login konnte nicht bereinigt werden (${accountId}): ${String(error)}`);
+    });
+  }
+
+  private async cleanupRealDebridWebAccount(accountId: string, clearStorage: boolean): Promise<void> {
+    const nextGeneration = (this.realDebridWebGenerations.get(accountId) || 0) + 1;
+    this.realDebridWebGenerations.set(accountId, nextGeneration);
+    this.pendingRealDebridWebAccountIds.delete(accountId);
+    const existing = this.realDebridWebFallbacks.get(accountId);
+    this.realDebridWebFallbacks.delete(accountId);
+    const fallback = existing || new RealDebridWebFallback(
+      this.getRealDebridWebPartition(accountId),
+      () => this.settings.rememberToken
+    );
+    if (clearStorage) {
+      await fallback.clearSessions();
+    } else {
+      fallback.dispose();
+    }
+  }
+
+  private pruneRealDebridWebFallbacks(previous: AppSettings, current: AppSettings): void {
+    const currentIds = new Set(current.realDebridWebAccountIds);
+    const previouslyDisabled = new Set(previous.realDebridDisabledAccountIds || []);
+    const currentlyDisabled = new Set(current.realDebridDisabledAccountIds || []);
+    for (const accountId of previous.realDebridWebAccountIds) {
+      if (currentIds.has(accountId)) {
+        if (!previouslyDisabled.has(accountId) && currentlyDisabled.has(accountId)) {
+          const existing = this.realDebridWebFallbacks.get(accountId);
+          if (existing) {
+            this.realDebridWebFallbacks.delete(accountId);
+            existing.dispose();
+          }
+        }
+        continue;
+      }
+      void this.cleanupRealDebridWebAccount(accountId, true).catch((error) => {
+        logger.warn(`Real-Debrid Web-Session konnte nicht gelöscht werden (${accountId}): ${String(error)}`);
+      });
+    }
+  }
+
+  public async openRealDebridLoginWindow(request: RealDebridLoginRequest): Promise<void> {
+    this.assertProxyOnlyAccountSetup();
+    const accountId = String(request.accountId || "").trim();
+    if (!isRealDebridWebAccountId(accountId)) {
+      throw new Error("Account-Payload ist ungültig");
+    }
+    const existing = getRealDebridAccounts(this.settings).find((entry) => entry.id === accountId && entry.kind === "web");
+    if (request.create && existing) {
+      throw new Error("Account-Payload ist ungültig");
+    }
+    if (!request.create && !existing && accountId !== "rdw_legacy") {
+      throw new Error("Account wurde nicht gefunden");
+    }
+    if (!existing) {
+      const generation = (this.realDebridWebGenerations.get(accountId) || 0) + 1;
+      this.realDebridWebGenerations.set(accountId, generation);
+      this.pendingRealDebridWebAccountIds.set(accountId, {
+        generation,
+        dailyLimitBytes: request.create ? Math.floor(request.dailyLimitBytes || 0) : 0
+      });
+    }
+    this.audit("INFO", "Real-Debrid Login-Fenster geöffnet", { accountId, create: !existing });
+    try {
+      await this.getRealDebridWebFallback(accountId).openLoginWindow();
+    } catch (error) {
+      if (!existing) {
+        await this.cleanupRealDebridWebAccount(accountId, true);
+      }
+      throw error;
+    }
+  }
+
+  public probeRealDebridWebAccount(accountId: string, signal?: AbortSignal) {
+    return this.getRealDebridWebFallback(accountId).probeLoginState(signal);
+  }
+
+  public unrestrictRealDebridWebAccount(accountId: string, link: string, signal?: AbortSignal) {
+    return this.getRealDebridWebFallback(accountId).unrestrict(link, signal);
+  }
+
+  public async clearRealDebridWebAccount(accountId: string): Promise<void> {
+    await this.cleanupRealDebridWebAccount(accountId, true);
+  }
+
+  private async refreshRealDebridWebStatus(accountId: string, generation = this.realDebridWebGenerations.get(accountId) || 0): Promise<void> {
+    const account = getRealDebridAccounts(this.settings)
+      .filter((entry): entry is RealDebridWebAccountEntry => entry.kind === "web")
+      .find((entry) => entry.id === accountId);
+    const checkedAccount: RealDebridWebAccountEntry = account || {
+      id: accountId,
+      kind: "web",
+      index: this.settings.realDebridWebAccountIds.length,
+      label: `Browser-Login ${this.settings.realDebridWebAccountIds.length + 1}`,
+      maskedLogin: "Geschützter Browser-Login",
+      enabled: true
+    };
+    const status = sanitizeDebridAccountStatus(
+      await checkRealDebridAccount(
+        checkedAccount,
+        undefined,
+        Date.now(),
+        (signal) => this.getRealDebridWebFallback(accountId).probeLoginState(signal)
+      ),
+      collectAccountStatusRedactionValues(this.settings)
+    );
+    if (!status.valid) {
+      return;
+    }
+    if ((this.realDebridWebGenerations.get(accountId) || 0) !== generation) {
+      return;
+    }
+    const currentAccount = getRealDebridAccounts(this.settings).find((entry) => entry.id === accountId && entry.kind === "web");
+    if (account && !currentAccount) {
+      return;
+    }
+    if (!account) {
+      const pending = this.pendingRealDebridWebAccountIds.get(accountId);
+      if (!pending || pending.generation !== generation) {
+        return;
+      }
+      const applied = applyAccountCommand(this.settings, {
+        action: "create",
+        kind: "realdebrid-web",
+        identity: accountId,
+        secret: "",
+        dailyLimitBytes: pending.dailyLimitBytes
+      });
+      this.pendingRealDebridWebAccountIds.delete(accountId);
+      this.updateSettings(applied.settings);
+    }
+    this.manager.applyDebridAccountStatuses([status]);
+    const fallback = this.realDebridWebFallbacks.get(accountId);
+    if (fallback) {
+      fallback.closeLoginWindow();
+    }
   }
 
   public async openAllDebridLoginWindow(): Promise<void> {
+    this.assertProxyOnlyAccountSetup();
     this.audit("INFO", "AllDebrid Login-Fenster geöffnet");
     await this.allDebridWebFallback.openLoginWindow();
   }
@@ -629,14 +1207,30 @@ export class AppController {
     return fetchDebridLinkHostLimits(this.settings.debridLinkApiKeys, host);
   }
 
-public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
-    const statuses = sanitizeDebridAccountStatuses(
-      await checkAllDebridAccounts(this.settings),
+  public async checkDebridAccounts(scope: AccountCheckScope = "active", signal?: AbortSignal): Promise<DebridAccountStatus[]> {
+    signal?.throwIfAborted();
+    this.assertProxyOnlyAccountSetup();
+    const checkedStatuses = sanitizeDebridAccountStatuses(
+      await checkAllDebridAccounts(
+        this.settings,
+        signal,
+        (accountId, signal) => this.getRealDebridWebFallback(accountId).probeLoginState(signal),
+        scope
+      ),
       collectAccountStatusRedactionValues(this.settings)
     );
+    signal?.throwIfAborted();
+    const statuses = retainConfiguredRealDebridStatuses(this.settings, checkedStatuses);
+    const proxyFailure = statuses.find((status) => !status.valid && resolveProxyOnlyAccountErrorCode(
+      this.settings,
+      getNetworkProxyState(),
+      status.checkFailure === "transport" ? "network" : status.checkFailure === "aborted" ? "" : status.message || ""
+    ));
     this.manager.applyDebridAccountStatuses(statuses);
+    if (proxyFailure) this.throwProxyOnlyAccountFailure(proxyFailure.message || "", proxyFailure.checkFailure);
     this.audit("INFO", "Debrid-Accounts geprueft", {
       total: statuses.length,
+      scope,
       valid: statuses.filter((s) => s.valid).length,
       premium: statuses.filter((s) => s.isPremium).length
     });
@@ -651,20 +1245,38 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     return result;
   }
 
-  public async installUpdate(onProgress?: (progress: UpdateInstallProgress) => void): Promise<UpdateInstallResult> {
-    const cacheAgeMs = Date.now() - this.lastUpdateCheckAt;
-    const cached = this.lastUpdateCheck && !this.lastUpdateCheck.error && cacheAgeMs <= 10 * 60 * 1000
-      ? this.lastUpdateCheck
-      : undefined;
+  public async installUpdate(onProgress?: (progress: UpdateInstallProgress) => void, options?: { expectedVersion?: string; beforeLaunch?: () => Promise<void> }): Promise<UpdateInstallResult> {
     const result = await runInstallWithResume(
       this.manager,
-      () => installLatestUpdate(this.settings.updateRepo, cached, onProgress)
+      park => installLatestUpdate(this.settings.updateRepo, undefined, onProgress, {
+        expectedVersion: options?.expectedVersion,
+        requireDigest: Boolean(options?.expectedVersion),
+        beforeLaunch: async () => { await options?.beforeLaunch?.(); park(); }
+      }),
+      true
     );
     if (result.started) {
       this.lastUpdateCheck = null;
       this.lastUpdateCheckAt = 0;
     }
     return result;
+  }
+
+  public async installDirectUpdate(file: string, sha256: string, expectedVersion: string, progress: (value: UpdateInstallProgress) => void, beforeLaunch: () => Promise<void>): Promise<UpdateInstallResult> {
+    return runInstallWithResume(this.manager, park => installVerifiedLocalUpdate(file, sha256, expectedVersion, progress, async () => {
+      await beforeLaunch();
+      park();
+      const directory = path.join(this.storagePaths.baseDir, "mcp", "update-backups");
+      await fs.promises.mkdir(directory, { recursive: true });
+      const backup = await fs.promises.mkdtemp(path.join(directory, "direct-"));
+      for (const source of [this.storagePaths.configFile, this.storagePaths.sessionFile]) {
+        const destination = path.join(backup, path.basename(source));
+        await fs.promises.copyFile(source, destination, fs.constants.COPYFILE_EXCL);
+        const [original, saved] = await Promise.all([fs.promises.readFile(source), fs.promises.readFile(destination)]);
+        if (!original.equals(saved)) throw new Error("Update-Sicherung konnte nicht verifiziert werden.");
+      }
+      await beforeLaunch();
+    }), true);
   }
 
   public addLinks(payload: AddLinksPayload): { addedPackages: number; addedLinks: number; invalidCount: number } {
@@ -682,6 +1294,36 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
       requestedPackages: parsed.length
     });
     return { ...result, invalidCount: 0 };
+  }
+
+  public prepareCollectorText(request: CollectorTextPreparationRequest): CollectorInspectionResult {
+    return prepareCollectorText(request);
+  }
+
+  public getCollectorState(): CollectorPersistenceState {
+    return this.collectorStore.getState();
+  }
+
+  public saveCollectorState(state: CollectorPersistenceState): CollectorPersistenceState {
+    this.collectorStore.update(state);
+    return this.collectorStore.getState();
+  }
+
+  public saveCollectorStateSync(state: CollectorPersistenceState): CollectorPersistenceState {
+    this.collectorStore.update(state);
+    this.collectorStore.flushSync();
+    return this.collectorStore.getState();
+  }
+
+  public prepareCollectorContainers(filePaths: string[], addedAt: number): Promise<CollectorInspectionResult> {
+    return prepareCollectorContainers(filePaths, addedAt);
+  }
+
+  public enrichCollectorPackages(
+    request: CollectorEnrichmentRequest,
+    onProgress?: (result: CollectorInspectionResult) => void
+  ): Promise<CollectorInspectionResult> {
+    return enrichCollectorPackages(request, this.settings, {}, onProgress);
   }
 
   public async addContainers(filePaths: string[]): Promise<{ addedPackages: number; addedLinks: number }> {
@@ -729,39 +1371,14 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
   }
 
   public stop(): void {
-    const before = this.manager.getSnapshot();
-    const startedAt = Date.now();
-    this.audit("INFO", "Session-Stopp angefordert", this.sessionControlFields(before));
+    this.audit("INFO", "Session-Stopp ausgelöst");
     this.manager.stop();
-    this.audit("INFO", "Session-Stopp angewendet", {
-      ...this.sessionControlFields(this.manager.getSnapshot()),
-      durationMs: Date.now() - startedAt
-    });
   }
 
   public togglePause(): boolean {
-    const before = this.manager.getSnapshot();
-    const startedAt = Date.now();
-    this.audit("INFO", "Pause angefordert", this.sessionControlFields(before));
     const paused = this.manager.togglePause();
-    this.audit("INFO", "Pause angewendet", {
-      ...this.sessionControlFields(this.manager.getSnapshot()),
-      paused,
-      durationMs: Date.now() - startedAt
-    });
+    this.audit("INFO", "Pause umgeschaltet", { paused });
     return paused;
-  }
-
-  private sessionControlFields(snapshot: UiSnapshot): Record<string, unknown> {
-    const items = Object.values(snapshot.session.items);
-    return {
-      running: snapshot.session.running,
-      paused: snapshot.session.paused,
-      packageCount: Object.keys(snapshot.session.packages).length,
-      itemCount: items.length,
-      activeItemCount: items.filter((item) => item.status === "validating" || item.status === "downloading").length,
-      queuedItemCount: items.filter((item) => item.status === "queued" || item.status === "reconnect_wait").length
-    };
   }
 
   public retryExtraction(packageId: string): void {
@@ -774,20 +1391,15 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     this.manager.extractNow(packageId);
   }
 
-  public async resetPackage(packageId: string): Promise<void> {
-    const startedAt = Date.now();
-    this.audit("INFO", "Paket-Reset angefordert", { packageId });
-    try {
-      await this.manager.resetPackage(packageId);
-      this.audit("INFO", "Paket-Reset abgeschlossen", { packageId, durationMs: Date.now() - startedAt });
-    } catch (error) {
-      this.audit("ERROR", "Paket-Reset fehlgeschlagen", {
-        packageId,
-        durationMs: Date.now() - startedAt,
-        error: error instanceof Error ? error.message : String(error)
-      });
-      throw error;
-    }
+  public resetPackage(packageId: string): void {
+    this.audit("INFO", "Paket zurückgesetzt", { packageId });
+    this.manager.resetPackage(packageId);
+  }
+
+  public removeOfflinePackages(packageIds: string[], scope: OfflineSkipScope = "archive"): number {
+    const removed = this.manager.removeOfflinePackages(packageIds, scope);
+    this.audit("WARN", "Offline-Bereinigung der Queue", { affectedPackages: removed, scope });
+    return removed;
   }
 
   public cancelPackage(packageId: string): void {
@@ -817,7 +1429,7 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
 
   public exportPackageSelection(packageIds: string[]): { text: string; defaultFileName: string; packageCount: number; linkCount: number } {
     const selection = buildLinkExportSelection(this.manager.getSnapshot(), packageIds, []);
-    this.audit("INFO", "Paket-Auswahl für Export vorbereitet", {
+    this.audit("INFO", "Paket-Auswahl exportiert", {
       packageCount: selection.packageCount,
       linkCount: selection.linkCount,
       packageIds
@@ -832,7 +1444,7 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
 
   public exportItemSelection(itemIds: string[]): { text: string; defaultFileName: string; packageCount: number; linkCount: number } {
     const selection = buildLinkExportSelection(this.manager.getSnapshot(), [], itemIds);
-    this.audit("INFO", "Item-Auswahl für Export vorbereitet", {
+    this.audit("INFO", "Item-Auswahl exportiert", {
       packageCount: selection.packageCount,
       linkCount: selection.linkCount,
       itemIds
@@ -886,6 +1498,7 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
       exportedAt: new Date().toISOString(),
       session: this.manager.getSession(),
       history: loadHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode, this.historyLimits()),
+      statistics: this.manager.getStatisticsLedgerForBackup(),
       remoteDiagnostics
     });
     const encrypted = encryptBackup(JSON.stringify(payloadObj), passphrase);
@@ -899,65 +1512,58 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
   }
 
   public async exportOnlineBackup(): Promise<{ key: string }> {
-    const created = createOnlineBackup({ ...this.settings }, APP_VERSION);
-    await uploadOnlineBackup(created.record, ONLINE_BACKUP_API_URL);
-    this.audit("INFO", "Online-Sicherung erstellt", { kind: "settings-only" });
+    const proxyListContent = captureOnlineProxyList(this.settings);
+    const created = createOnlineBackup({ ...this.settings }, APP_VERSION, undefined, proxyListContent);
+    await uploadOnlineBackup(created.record, ONLINE_BACKUP_API_URL, created.key);
+    this.audit("INFO", "Online-Sicherung erstellt", { kind: "settings-only", proxyListIncluded: proxyListContent !== undefined });
     return { key: created.key };
   }
 
   public async importOnlineBackup(key: string): Promise<{ restored: boolean; relaunch: false; message: string }> {
     const payload = await downloadOnlineBackup(key, ONLINE_BACKUP_API_URL);
-    this.applySettingsOnlyBackup(payload.settings);
+    const result = await this.applySettingsOnlyBackup(payload.settings, undefined, false, payload.proxyList?.content ?? null);
     this.audit("INFO", "Online-Sicherung importiert", {
       kind: "settings-only",
+      proxyListRestored: result.proxyListRestored,
+      proxyListRequired: result.proxyListRequired,
       accountSummary: buildAccountSummary(this.settings)
     });
-    return { restored: true, relaunch: false, message: "Einstellungen aus Online-Sicherung wiederhergestellt" };
+    const message = result.proxyListRestored
+      ? "Einstellungen und Proxy-Liste aus Online-Sicherung wiederhergestellt"
+      : result.proxyListRequired
+        ? "Einstellungen wiederhergestellt; Proxy-only bleibt aktiv. Die Online-Sicherung enthält keine Proxy-Liste. Hinterlege sie unter Einstellungen → Geschwindigkeit & Proxy."
+        : "Einstellungen aus Online-Sicherung wiederhergestellt";
+    return { restored: true, relaunch: false, message };
   }
 
-  public async exportSupportBundle(): Promise<{ buffer: Buffer; defaultFileName: string }> {
-    const buffer = await buildSupportBundle(this.manager, this.storagePaths.baseDir, {
-      hostDiagnosticsMode: "cached",
-      debugSetupMode: "deferred"
+  public async exportSupportBundle(options: { includeArchivePasswords?: boolean } = {}): Promise<{ buffer: Buffer; defaultFileName: string }> {
+    this.audit("INFO", "Support-Bundle exportiert");
+    logTraceEvent("INFO", "support", "Support-Bundle erstellt", {
+      packageCount: Object.keys(this.manager.getSnapshot().session.packages).length,
+      itemCount: Object.keys(this.manager.getSnapshot().session.items).length
     });
     return {
-      buffer,
+      buffer: await buildSupportBundle(this.manager, this.storagePaths.baseDir, {
+        hostDiagnosticsMode: "cached",
+        notificationStatus: this.getNotificationSupportPayload(),
+        includeArchivePasswords: options.includeArchivePasswords === true
+      }),
       defaultFileName: getSupportBundleDefaultFileName()
     };
-  }
-
-  public recordSupportBundleExportSelected(): void {
-    const snapshot = this.manager.getSnapshot();
-    const items = Object.values(snapshot.session.items);
-    const fields = {
-      phase: "selected",
-      running: snapshot.session.running,
-      paused: snapshot.session.paused,
-      packageCount: Object.keys(snapshot.session.packages).length,
-      itemCount: items.length,
-      activeItemCount: items.filter((item) => item.status === "validating" || item.status === "downloading").length
-    };
-    this.audit("INFO", "Support-Bundle-Ziel ausgewählt", fields);
-  }
-
-  public recordSupportBundleExportLifecycle(event: SupportBundleExportLifecycleEvent): void {
-    const messages: Record<SupportBundleExportLifecycleEvent["phase"], string> = {
-      busy: "Support-Bundle-Export bereits aktiv",
-      cancel: "Support-Bundle-Export abgebrochen",
-      build: "Support-Bundle aufgebaut",
-      write: "Support-Bundle geschrieben",
-      success: "Support-Bundle-Export abgeschlossen",
-      failure: "Support-Bundle-Export fehlgeschlagen"
-    };
-    const level = event.phase === "failure" ? "ERROR" : event.phase === "busy" ? "WARN" : "INFO";
-    this.audit(level, messages[event.phase], { ...event });
   }
 
   public getSupportBundleDefaultFileName(): string {
     return getSupportBundleDefaultFileName();
   }
 
-  public importBackup(data: Buffer, passphrase?: string): { restored: boolean; relaunch: boolean; message: string } {
+  public getNotificationSupportPayload(): NotificationSupportPayload {
+    return buildNotificationSupportPayload(
+      this.notificationOutbox.getStatus(),
+      this.downloadHealthMonitor.getState()
+    );
+  }
+
+  public async importBackup(data: Buffer, passphrase?: string): Promise<{ restored: boolean; relaunch: boolean; message: string }> {
     let parsed: Record<string, unknown>;
     try {
       const json = decryptBackup(data, passphrase);
@@ -975,13 +1581,22 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
       return { restored: false, relaunch: false, message: plan.message };
     }
     const hasSession = plan.restoreDownloads;
+    let restoredHistory: HistoryEntry[] | undefined;
+    if (Array.isArray(parsed.history)) {
+      restoredHistory = (parsed.history as unknown[])
+        .map((raw, idx) => normalizeHistoryEntry(raw, idx))
+        .filter((entry): entry is HistoryEntry => entry !== null);
+      if (parsed.history.length > 0 && restoredHistory.length === 0) {
+        return { restored: false, relaunch: false, message: "Backup-Verlauf enthält keine gültigen Einträge" };
+      }
+    }
 
     const importedSettings = parsed.settings as AppSettings;
     const importedSettingsRecord = importedSettings as unknown as Record<string, unknown>;
     const currentSettingsRecord = this.settings as unknown as Record<string, unknown>;
     const SENSITIVE_KEYS: (keyof AppSettings)[] = [
       "token", "megaLogin", "megaPassword", "bestToken", "allDebridToken",
-      "ddownloadLogin", "ddownloadPassword", "oneFichierApiKey",
+      "deepbridApiKey", "ddownloadLogin", "ddownloadPassword", "oneFichierApiKey",
       "debridLinkApiKeys", "linkSnappyLogin", "linkSnappyPassword",
       "notifyUrl"
     ];
@@ -1000,7 +1615,7 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     // policy still governs FUTURE completions through the normal path. Do NOT stop the
     // manager, wipe the session, block persistence or relaunch.
     if (!hasSession) {
-      this.applySettingsOnlyBackup(restoredSettings, parsed.remoteDiagnostics, true);
+      await this.applySettingsOnlyBackup(restoredSettings, parsed.remoteDiagnostics, true);
       this.audit("INFO", "Backup importiert (nur Einstellungen)", {
         accountSummary: buildAccountSummary(this.settings)
       });
@@ -1011,43 +1626,78 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
       };
     }
 
-    if (this.settings.logStorageLocation !== restoredSettings.logStorageLocation
-      && !this.reconfigureLogStorage(restoredSettings.logStorageLocation)) {
-      restoredSettings = normalizeSettings({
-        ...restoredSettings,
-        logStorageLocation: this.settings.logStorageLocation
-      });
-    }
-    this.settings = restoredSettings;
-    saveSettings(this.storagePaths, this.settings);
-    this.manager.setSettings(this.settings);
-
-    this.manager.stop();
-    this.manager.abortAllPostProcessing();
-    this.manager.clearPersistTimer();
-    cancelPendingAsyncSaves();
-
-    const restoredSession = normalizeLoadedSessionTransientFields(
-      normalizeLoadedSession(parsed.session)
-    );
-    saveSession(this.storagePaths, restoredSession);
-
-    if (Array.isArray(parsed.history) && parsed.history.length > 0) {
-      const normalizedHistory = (parsed.history as unknown[])
-        .map((raw, idx) => normalizeHistoryEntry(raw, idx))
-        .filter((entry): entry is HistoryEntry => entry !== null);
-      if (normalizedHistory.length > 0) {
-        saveHistory(this.storagePaths, normalizedHistory);
-        logger.info(`Backup: ${normalizedHistory.length} History-Einträge wiederhergestellt`);
+    restoredSettings = this.prepareImportedLogStorage(restoredSettings);
+    const barrier = await acquirePersistenceBarrier();
+    const previousSettings = this.settings;
+    const previousLogStorageLocation = this.settings.logStorageLocation;
+    const previousSkipShutdownPersist = this.manager.skipShutdownPersist;
+    const previousBlockAllPersistence = this.manager.blockAllPersistence;
+    let rollbackPersistence: (() => void) | null = null;
+    let remoteRestore: ReturnType<typeof resolveRemoteDiagnosticsRestore> = null;
+    let logStorageChanged = false;
+    let runtimeApplied = false;
+    try {
+      rollbackPersistence = this.createBackupImportRollback(true);
+      if (restoredHistory) {
+        replaceHistory(this.storagePaths, restoredHistory);
       }
+      saveSettings(this.storagePaths, restoredSettings);
+      const restoredSession = normalizeLoadedSessionTransientFields(
+        normalizeLoadedSession(parsed.session)
+      );
+      saveSession(this.storagePaths, restoredSession);
+
+      if (parsed.statistics) {
+        saveStatisticsLedger(this.storagePaths.statisticsFile, normalizeStatisticsLedger(parsed.statistics));
+      }
+      resetHistoryForRetention(this.storagePaths, restoredSettings.historyRetentionMode);
+      remoteRestore = this.persistRemoteDiagnosticsFromBackup(parsed.remoteDiagnostics);
+      if (previousLogStorageLocation !== restoredSettings.logStorageLocation) {
+        await this.flushLogs();
+        if (!this.reconfigureLogStorage(restoredSettings.logStorageLocation)) {
+          throw new Error("Log-Speicherort konnte nicht wiederhergestellt werden");
+        }
+        logStorageChanged = true;
+      }
+      this.manager.skipShutdownPersist = true;
+      this.manager.blockAllPersistence = true;
+      this.settings = restoredSettings;
+      this.applyNetworkProxyConfiguration();
+      runtimeApplied = true;
+      this.manager.setSettings(this.settings);
+      this.manager.stop();
+      this.manager.abortAllPostProcessing();
+      this.manager.clearPersistTimer();
+      await barrier.release({ replayBlocked: false });
+    } catch (error) {
+      if (rollbackPersistence) {
+        this.rollbackImportPersistence(rollbackPersistence, "fehlgeschlagenem Full-Backup-Import");
+      }
+      this.manager.skipShutdownPersist = previousSkipShutdownPersist;
+      this.manager.blockAllPersistence = previousBlockAllPersistence;
+      this.settings = previousSettings;
+      this.applyNetworkProxyConfiguration();
+      if (runtimeApplied) {
+        try {
+          this.manager.setSettings(previousSettings, { settingsOnlyImport: true });
+        } catch (runtimeError) {
+          logger.error(`Full-Backup-Import konnte die vorherigen Laufzeiteinstellungen nicht wiederherstellen: ${String(runtimeError)}`);
+        }
+      }
+      if (logStorageChanged) {
+        await this.restoreLogStorageAfterFailedImport(previousLogStorageLocation);
+      }
+      try {
+        await barrier.release({ replayBlocked: true });
+      } catch (releaseError) {
+        logger.error(`Blockierte Persistenz konnte nach fehlgeschlagenem Full-Backup-Import nicht fortgesetzt werden: ${String(releaseError)}`);
+      }
+      throw error;
     }
-
-    resetHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode);
-
-    this.restoreRemoteDiagnosticsFromBackup(parsed.remoteDiagnostics, false);
-
-    this.manager.skipShutdownPersist = true;
-    this.manager.blockAllPersistence = true;
+    if (restoredHistory) {
+      logger.info(`Backup: ${restoredHistory.length} History-Einträge wiederhergestellt`);
+    }
+    this.auditRemoteDiagnosticsRestore(remoteRestore, false);
     logger.info("Backup wiederhergestellt — App startet automatisch neu");
     this.audit("WARN", "Backup importiert", {
       historyEntries: Array.isArray(parsed.history) ? parsed.history.length : 0,
@@ -1072,27 +1722,123 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     return this.manager.getItemLogPath(itemId) || getItemLogPath(itemId);
   }
 
-  public shutdown(): void {
+  private evaluateDownloadHealth(): Promise<void> {
+    if (this.downloadHealthEvaluation) {
+      return this.downloadHealthEvaluation;
+    }
+    const now = Date.now();
+    const task = this.downloadHealthMonitor.sample(
+      this.manager.getDownloadHealthSnapshot(now),
+      now,
+      {
+        stallAfterMs: this.settings.notifyStallAfterSeconds * 1000,
+        cooldownMs: this.settings.notifyStallCooldownMinutes * 60_000,
+        notifyOnStall: this.settings.notifyOnDownloadStall && Boolean(String(this.settings.notifyUrl || "").trim()),
+        notifyOnRecovery: this.settings.notifyOnDownloadRecovery && Boolean(String(this.settings.notifyUrl || "").trim())
+      },
+      (event) => this.notificationOutbox.enqueue(event)
+    ).then(() => undefined).catch((error) => {
+      logger.warn(`Download-Health-Monitor konnte nicht ausgewertet werden: ${String(error)}`);
+    }).finally(() => {
+      if (this.downloadHealthEvaluation === task) {
+        this.downloadHealthEvaluation = null;
+      }
+    });
+    this.downloadHealthEvaluation = task;
+    return task;
+  }
+
+  public async shutdown(): Promise<void> {
+    const deadlineAt = Date.now() + 3000;
+    if (this.downloadHealthTimer) {
+      clearInterval(this.downloadHealthTimer);
+      this.downloadHealthTimer = null;
+    }
+    this.manager.suspendDownloadHealthMonitoring?.();
     if (this.runtimeStatsTimer) {
       clearInterval(this.runtimeStatsTimer);
       this.runtimeStatsTimer = null;
     }
     stopDebugServer();
     abortActiveUpdateDownload();
+    try {
+      this.collectorStore?.flushSync();
+    } catch (error) {
+      logger.warn(`Linksammler konnte beim Beenden nicht gespeichert werden: ${String(error)}`);
+    }
     cancelPendingAsyncSaves();
-    this.manager.prepareForShutdown();
+    let persistenceBarrier: Awaited<ReturnType<typeof acquirePersistenceBarrier>> | null = null;
+    let acceptingBarrier = true;
+    const persistenceReady = acquirePersistenceBarrier().then(async (barrier) => {
+      if (acceptingBarrier) persistenceBarrier = barrier;
+      else await barrier.release({ replayBlocked: false });
+    }).catch((error) => logger.warn(`Laufende Speicherung konnte vor dem Beenden nicht abgeschlossen werden: ${String(error)}`));
+    await this.waitForShutdownTask(persistenceReady, Math.min(deadlineAt, Date.now() + 1000));
+    acceptingBarrier = false;
+    try {
+      this.manager.prepareForShutdown();
+    } finally {
+      const barrier = persistenceBarrier as Awaited<ReturnType<typeof acquirePersistenceBarrier>> | null;
+      if (barrier) await barrier.release({ replayBlocked: false });
+    }
+    if (this.downloadHealthEvaluation) {
+      await this.waitForShutdownTask(this.downloadHealthEvaluation, deadlineAt);
+    }
+    if (this.downloadHealthMonitor && Date.now() < deadlineAt) {
+      await this.waitForShutdownTask(this.evaluateDownloadHealth(), deadlineAt);
+    }
+    const notificationFlush = this.manager.flushNotificationsForShutdown?.();
+    if (notificationFlush && Date.now() < deadlineAt) {
+      await this.waitForShutdownTask(notificationFlush, deadlineAt);
+    }
+    await this.notificationOutbox.drainForShutdown(Math.max(0, deadlineAt - Date.now())).catch((error) => {
+      logger.warn(`Notification-Outbox konnte beim Beenden nicht geleert werden: ${String(error)}`);
+    });
     this.megaWebFallback.dispose();
-    this.realDebridWebFallback.dispose();
+    for (const fallback of this.realDebridWebFallbacks.values()) {
+      fallback.dispose();
+    }
+    this.realDebridWebFallbacks.clear();
+    this.pendingRealDebridWebAccountIds.clear();
     this.allDebridWebFallback.dispose();
     this.bestDebridWebFallback.dispose();
+    await shutdownNetworkProxy();
+    if (this.settings.historyRetentionMode === "session") {
+      this.runHistoryLifecycleCleanup("Beenden", () => clearHistory(this.storagePaths));
+    }
+    await this.waitForShutdownTask(this.flushLogs(), deadlineAt);
     this.shutdownLogStorage();
     this.audit("INFO", "App beendet");
     shutdownTraceLog();
     shutdownAccountRotationLog();
     shutdownConversionLog();
     shutdownAuditLog();
-    resetHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode === "session" ? "session" : "permanent");
+    await this.waitForShutdownTask(flushDiagnosticLogWrites(), deadlineAt);
     logger.info("App beendet");
+  }
+
+  private applyNetworkProxyConfiguration(): void {
+    const state = configureNetworkProxy(this.settings);
+    if (state.status === "active") {
+      logger.info(`Proxy-only aktiv: fester API-Proxy ${state.selectedIndex}/${state.proxyCount}`);
+    } else if (state.status === "blocked") {
+      logger.warn(`Proxy-only blockiert Netzwerkanfragen: ${state.reason}`);
+    }
+  }
+
+  private async waitForShutdownTask(task: Promise<unknown>, deadlineAt: number): Promise<void> {
+    const remainingMs = Math.max(0, deadlineAt - Date.now());
+    if (remainingMs <= 0) {
+      return;
+    }
+    let timer: NodeJS.Timeout | null = null;
+    const timeout = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, remainingMs);
+    });
+    await Promise.race([task.then(() => undefined, () => undefined), timeout]);
+    if (timer) {
+      clearTimeout(timer);
+    }
   }
 
   private getDesktopDirectory(): string | null {
@@ -1114,6 +1860,11 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     initRenameLog(this.logDirectory);
     initDesktopRenameLogAt(this.logDirectory);
     initTraceLog(this.logDirectory);
+  }
+
+  public async flushLogs(filePath?: string): Promise<void> {
+    await Promise.all([flushSessionLog(filePath), flushPackageLogs(filePath), flushItemLogs(filePath)]);
+    await flushDiagnosticLogWrites(filePath);
   }
 
   private shutdownLogStorage(): void {
@@ -1155,21 +1906,43 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     return { maxEntries: this.settings.historyMaxEntries, maxAgeDays: this.settings.historyMaxAgeDays };
   }
 
+  private runHistoryLifecycleCleanup(phase: "Start" | "Beenden", cleanup: () => void): void {
+    try {
+      cleanup();
+    } catch (error) {
+      logger.warn(`Verlauf konnte beim ${phase} nicht bereinigt werden: ${String(error)}`);
+    }
+  }
+
+  private rollbackHistoryAfterFailure(rollback: (() => void) | null, context: string): void {
+    if (!rollback) {
+      return;
+    }
+    try {
+      rollback();
+    } catch (error) {
+      logger.error(`Verlauf konnte nach ${context} nicht zurückgerollt werden: ${String(error)}`);
+    }
+  }
+
+  private recordHistoryEntry(entry: HistoryEntry): void {
+    try {
+      const entries = addHistoryEntryForRetention(this.storagePaths, this.settings.historyRetentionMode, entry, this.historyLimits());
+      if (entries[0]?.id === entry.id) {
+        this.onHistoryEntryAddedHandler?.(entry);
+      }
+    } catch (error) {
+      logger.error(`Verlaufseintrag konnte nicht gespeichert werden: ${String(error)}`);
+    }
+  }
+
   public getHistory(): HistoryEntry[] {
     return loadHistoryForRetention(this.storagePaths, this.settings.historyRetentionMode, this.historyLimits());
   }
 
   public clearHistory(): void {
-    try {
-      clearHistory(this.storagePaths);
-      this.audit("WARN", "Verlauf geleert");
-    } catch (error) {
-      const code = error && typeof error === "object" && "code" in error
-        ? String((error as NodeJS.ErrnoException).code || "UNKNOWN")
-        : "UNKNOWN";
-      this.audit("ERROR", "Verlauf konnte nicht geleert werden", { code });
-      throw error;
-    }
+    this.audit("WARN", "Verlauf geleert");
+    clearHistory(this.storagePaths);
   }
 
   public setPackagePriority(packageId: string, priority: PackagePriority): void {
@@ -1182,30 +1955,18 @@ public async checkDebridAccounts(): Promise<DebridAccountStatus[]> {
     this.manager.skipItems(itemIds);
   }
 
-  public async resetItems(itemIds: string[]): Promise<void> {
-    const startedAt = Date.now();
-    this.audit("INFO", "Item-Reset angefordert", { itemIds, itemCount: itemIds.length });
-    try {
-      await this.manager.resetItems(itemIds);
-      this.audit("INFO", "Item-Reset abgeschlossen", {
-        itemIds,
-        itemCount: itemIds.length,
-        durationMs: Date.now() - startedAt
-      });
-    } catch (error) {
-      this.audit("ERROR", "Item-Reset fehlgeschlagen", {
-        itemIds,
-        itemCount: itemIds.length,
-        durationMs: Date.now() - startedAt,
-        error: error instanceof Error ? error.message : String(error)
-      });
-      throw error;
-    }
+  public resetItems(itemIds: string[]): void {
+    this.audit("INFO", "Items zurückgesetzt", { itemIds });
+    this.manager.resetItems(itemIds);
   }
 
   public removeHistoryEntry(entryId: string): void {
-    this.audit("INFO", "Verlaufseintrag entfernt", { entryId });
-    removeHistoryEntry(this.storagePaths, entryId);
+    this.removeHistoryEntries([entryId]);
+  }
+
+  public removeHistoryEntries(entryIds: string[]): void {
+    this.audit("INFO", "Verlaufseinträge entfernt", { count: entryIds.length });
+    removeHistoryEntries(this.storagePaths, entryIds, this.historyLimits());
   }
 
   public addToHistory(entry: HistoryEntry): void {

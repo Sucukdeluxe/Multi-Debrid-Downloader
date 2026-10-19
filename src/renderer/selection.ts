@@ -13,6 +13,50 @@ export function shouldClearDownloadSelectionOnEscape(tagName: string, inputType 
   return ["checkbox", "radio", "button"].includes(inputType.toLowerCase());
 }
 
+export function resolveSelectAllSelectionScope(
+  view: string,
+  settingsSection: string,
+  accountPanel: string,
+  tagName: string,
+  inputType = ""
+): "downloads" | "collector" | "history" | "accounts" | null {
+  const normalizedTag = tagName.toUpperCase();
+  if (view === "settings" && settingsSection === "accounts" && accountPanel === "overview") {
+    if (normalizedTag === "TEXTAREA") return null;
+    if (normalizedTag === "INPUT" && !["checkbox", "radio", "button"].includes(inputType.toLowerCase())) return null;
+    return "accounts";
+  }
+  if (normalizedTag === "INPUT" || normalizedTag === "TEXTAREA") {
+    return null;
+  }
+  return view === "downloads" || view === "collector" || view === "history" ? view : null;
+}
+
+export function resolveEscapeSelectionScope(
+  view: string,
+  settingsSection: string,
+  tagName: string,
+  inputType = ""
+): "downloads" | "collector" | "history" | "accounts" | null {
+  if (!shouldClearDownloadSelectionOnEscape(tagName, inputType)) {
+    return null;
+  }
+  if (view === "downloads" || view === "collector" || view === "history") {
+    return view;
+  }
+  return view === "settings" && settingsSection === "accounts" ? "accounts" : null;
+}
+
+export function releaseAccountSelectionFocus(
+  activeElement: { closest: (selector: string) => unknown; blur: () => void } | null
+): boolean {
+  if (!activeElement?.closest(".settings-account-row")) {
+    return false;
+  }
+  activeElement.blur();
+  return true;
+}
+
 /**
  * Drop selected ids whose package OR item no longer exists in the session.
  * The selection set mixes package and item ids; when entries vanish (delta

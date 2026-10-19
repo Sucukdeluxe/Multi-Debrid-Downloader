@@ -88,7 +88,7 @@ export function buildLinkExportSelection(snapshot: UiSnapshot, packageIds: strin
 export function serializeLinkExportText(packages: ParsedPackageInput[]): string {
   const lines: string[] = [
     "# rd-link-export: 1",
-    "# Re-import in Real-Debrid-Downloader keeps package names and optional file names.",
+    "# Re-import in Multi-Debrid-Downloader keeps package names and optional file names.",
     ""
   ];
 

@@ -6,6 +6,7 @@ export const ACCOUNT_SERVICE_ICONS = {
   "megadebrid-web": "./provider-icons/mega-debrid.png",
   bestdebrid: "./provider-icons/bestdebrid.ico",
   alldebrid: "./provider-icons/alldebrid.png",
+  deepbrid: "./provider-icons/deepbrid.png",
   ddownload: "./provider-icons/ddownload.ico",
   onefichier: "./provider-icons/onefichier.png",
   debridlink: "./provider-icons/debrid-link.ico",

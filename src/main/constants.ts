@@ -3,9 +3,10 @@ import os from "node:os";
 import { AppSettings } from "../shared/types";
 import { getProviderUsageDayKey } from "../shared/provider-daily-limits";
 import packageJson from "../../package.json";
+import { resolveRuntimeAppVersion } from "./app-version";
 
 export const APP_NAME = "Multi Debrid Downloader";
-export const APP_VERSION: string = packageJson.version;
+export const APP_VERSION: string = resolveRuntimeAppVersion(packageJson.version);
 export const API_BASE_URL = "https://api.real-debrid.com/rest/1.0";
 
 export const DCRYPT_UPLOAD_URL = "https://dcrypt.it/decrypt/upload";
@@ -37,7 +38,7 @@ export const MAX_LINK_ARTIFACT_BYTES = 256 * 1024;
 export const SPEED_WINDOW_SECONDS = 1;
 export const CLIPBOARD_POLL_INTERVAL_MS = 2000;
 
-export const DEFAULT_UPDATE_REPO = "Sucukdeluxe/multi-debrid-downloader";
+export const DEFAULT_UPDATE_REPO = "Sucukdeluxe/Multi-Debrid-Downloader";
 export const ONLINE_BACKUP_API_URL = "https://downloader.24-music.de/backup-api";
 
 export function defaultSettings(): AppSettings {
@@ -46,6 +47,12 @@ export function defaultSettings(): AppSettings {
     language: "en",
     token: "",
     realDebridUseWebLogin: false,
+    realDebridApiTokens: "",
+    realDebridWebAccountIds: [],
+    realDebridDisabledAccountIds: [],
+    realDebridAccountDailyLimitBytes: {},
+    realDebridAccountDailyUsageBytes: {},
+    realDebridAccountTotalUsageBytes: {},
     megaLogin: "",
     megaPassword: "",
     megaCredentials: "",
@@ -58,6 +65,7 @@ export function defaultSettings(): AppSettings {
     bestDebridUseWebLogin: false,
     allDebridToken: "",
     allDebridUseWebLogin: false,
+    deepbridApiKey: "",
     ddownloadLogin: "",
     ddownloadPassword: "",
     oneFichierApiKey: "",
@@ -68,11 +76,13 @@ export function defaultSettings(): AppSettings {
     archivePasswordList: "",
     rememberToken: true,
     providerOrder: ["realdebrid", "megadebrid-api", "bestdebrid"],
+    accountUsageRules: {},
     providerPrimary: "realdebrid",
     providerSecondary: "megadebrid-api",
     providerTertiary: "bestdebrid",
     autoProviderFallback: true,
     outputDir: baseDir,
+    createWorkDirectoriesOnStartup: false,
     packageName: "",
     autoExtract: true,
     autoRename4sf4sj: false,
@@ -95,16 +105,24 @@ export function defaultSettings(): AppSettings {
     maxParallel: 4,
     maxParallelExtract: 2,
     retryLimit: 0,
+    offlineSkipScope: "archive" as const,
     speedLimitEnabled: false,
     speedLimitKbps: 0,
     speedLimitMode: "global",
+    proxyDownloadEnabled: false,
+    proxyListPath: "",
+    proxyApiProxyIndex: 1,
+    proxyConnectionsPerDownload: 32,
     updateRepo: DEFAULT_UPDATE_REPO,
     autoUpdateCheck: true,
     clipboardWatch: false,
+    switchToCollectorOnClipboard: false,
     minimizeToTray: false,
     theme: "dark" as const,
+    themePreference: "dark" as const,
     logStorageLocation: "appdata",
     collapseNewPackages: true,
+    animatePackageDisclosure: true,
     historyRetentionMode: "permanent",
     historyMaxEntries: 500,
     historyMaxAgeDays: 0,
@@ -120,6 +138,13 @@ export function defaultSettings(): AppSettings {
     notifyOnPackageCompleted: false,
     notifyOnPackageFailed: false,
     notifyOnRunFinished: false,
+    notifyPackageSuccessMode: "digest",
+    notifyOnRemainingBelow: false,
+    notifyRemainingThresholdGb: 50,
+    notifyOnDownloadStall: false,
+    notifyStallAfterSeconds: 90,
+    notifyStallCooldownMinutes: 10,
+    notifyOnDownloadRecovery: true,
     totalDownloadedAllTime: 0,
     totalCompletedFilesAllTime: 0,
     totalRuntimeAllTimeMs: 0,
@@ -144,6 +169,12 @@ export function defaultSettings(): AppSettings {
     megaDebridAccountTotalUsageBytes: {},
     debridAccountStatuses: {},
     providerDailyUsageDay: getProviderUsageDayKey(),
+    dailyStartEnabled: false,
+    dailyStartMinuteOfDay: 0,
+    dailyStartFirstLocalDate: "",
+    dailyStartLastHandledLocalDate: "",
+    dailyStartPendingLocalDate: "",
+    dailyStartLastOutcome: "",
     scheduledStartEpochMs: 0
   };
 }

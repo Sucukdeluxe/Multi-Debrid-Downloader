@@ -1,4 +1,4 @@
-import { Children, Fragment, isValidElement, useId, type ReactElement, type ReactNode } from "react";
+import { Children, Fragment, isValidElement, useId, useRef, type ReactElement, type ReactNode } from "react";
 import { Icon } from "./Icon";
 
 export interface ContextInfoButtonProps {
@@ -37,19 +37,45 @@ export function ContextInfoButton({
   onOpenChange
 }: ContextInfoButtonProps): ReactElement | null {
   const regionId = useId();
+  const pointerInside = useRef(false);
+  const focusInside = useRef(false);
 
   if (!hasRenderableContent(content)) {
     return null;
   }
 
   return (
-    <div className="ui-context-info">
+    <div
+      className="ui-context-info"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          focusInside.current = false;
+          if (!pointerInside.current) {
+            onOpenChange(false);
+          }
+        }
+      }}
+      onFocus={() => {
+        focusInside.current = true;
+        onOpenChange(true);
+      }}
+      onPointerEnter={() => {
+        pointerInside.current = true;
+        onOpenChange(true);
+      }}
+      onPointerLeave={() => {
+        pointerInside.current = false;
+        if (!focusInside.current) {
+          onOpenChange(false);
+        }
+      }}
+    >
       <button
         aria-controls={regionId}
         aria-expanded={open}
         aria-label="Informationen"
         className="ui-context-info-trigger"
-        onClick={() => onOpenChange(!open)}
+        onClick={() => onOpenChange(true)}
         title="Informationen"
         type="button"
       >

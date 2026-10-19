@@ -4,12 +4,13 @@ import { ACCOUNT_SERVICE_ICONS } from "../../account-service-icons";
 
 export type SettingsSection = "allgemein" | "accounts" | "extract" | "speed" | "cleanup" | "updates";
 export type SettingsSaveState = "clean" | "dirty" | "saving" | "saved" | "error";
+export type SettingsThemeChoice = RendererSettings["themePreference"];
 
 export const SETTINGS_SECTIONS: readonly { id: SettingsSection; label: string }[] = [
   { id: "allgemein", label: "Allgemein" },
   { id: "accounts", label: "Accounts" },
   { id: "extract", label: "Entpacken" },
-  { id: "speed", label: "Geschwindigkeit" },
+  { id: "speed", label: "Geschwindigkeit & Proxy" },
   { id: "cleanup", label: "Bereinigung" },
   { id: "updates", label: "Updates" }
 ];
@@ -23,6 +24,58 @@ export const ACCOUNT_COLUMNS = [
   "Verfallsdatum",
   "Passwort/Zugang"
 ] as const;
+
+export const ACCOUNT_TABLE_COLUMN_IDS = [
+  "hoster",
+  "status",
+  "traffic",
+  "username",
+  "email",
+  "expires",
+  "credential"
+] as const;
+
+export type AccountTableColumnId = typeof ACCOUNT_TABLE_COLUMN_IDS[number];
+export type AccountTableColumnWidths = Record<AccountTableColumnId, number>;
+
+const ACCOUNT_TABLE_COLUMN_LIMITS: Record<AccountTableColumnId, { initial: number; min: number; max: number }> = {
+  hoster: { initial: 210, min: 140, max: 520 },
+  status: { initial: 250, min: 120, max: 520 },
+  traffic: { initial: 210, min: 150, max: 420 },
+  username: { initial: 170, min: 120, max: 420 },
+  email: { initial: 200, min: 140, max: 480 },
+  expires: { initial: 150, min: 120, max: 280 },
+  credential: { initial: 170, min: 130, max: 320 }
+};
+
+export function createAccountTableColumnWidths(value?: unknown): AccountTableColumnWidths {
+  const raw = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  return Object.fromEntries(ACCOUNT_TABLE_COLUMN_IDS.map((id) => {
+    const limits = ACCOUNT_TABLE_COLUMN_LIMITS[id];
+    const candidate = typeof raw[id] === "number" && Number.isFinite(raw[id]) ? Math.round(raw[id]) : limits.initial;
+    return [id, Math.max(limits.min, Math.min(limits.max, candidate))];
+  })) as AccountTableColumnWidths;
+}
+
+export function resizeAccountTableColumn(
+  widths: AccountTableColumnWidths,
+  column: AccountTableColumnId,
+  delta: number
+): AccountTableColumnWidths {
+  return createAccountTableColumnWidths({ ...widths, [column]: widths[column] + delta });
+}
+
+export function getAccountTableGridTemplate(widths: AccountTableColumnWidths): string {
+  return `42px ${ACCOUNT_TABLE_COLUMN_IDS.map((id) => `${widths[id]}px`).join(" ")} minmax(64px, 1fr)`;
+}
+
+export function getAccountTableMinWidth(widths: AccountTableColumnWidths): number {
+  return 42 + 64 + ACCOUNT_TABLE_COLUMN_IDS.reduce((sum, id) => sum + widths[id], 0);
+}
+
+export function formatAccountContextHeading(hoster: string, mode: string): string {
+  return `${hoster} | ${mode}`;
+}
 
 export function getSettingsSaveLabel(state: SettingsSaveState): string {
   switch (state) {
@@ -88,10 +141,13 @@ export interface AccountRowSource {
     state: AccountStatusSourceState;
     message: string;
     premiumUntilMs: number | null;
+    checkedAt?: number;
+    username?: string;
     email?: string;
   };
   dailyLimitBytes?: number;
   dailyUsageBytes?: number;
+  totalUsageBytes?: number;
   username: string;
   credentialKind: "password" | "api-key" | "protected";
   canCheck: boolean;
@@ -108,6 +164,7 @@ export interface AccountRowViewModel {
   status: {
     tone: AccountStatusTone;
     text: string;
+    checkedAgo: string;
   };
   traffic: string;
   username: string;
@@ -178,8 +235,8 @@ export interface SettingsSwitchFieldViewModel extends SettingsFieldBase {
 
 export interface SettingsThemeFieldViewModel extends SettingsFieldBase {
   kind: "theme";
-  value: string;
-  options: readonly { value: string; label: string }[];
+  value: SettingsThemeChoice;
+  options: readonly { value: SettingsThemeChoice; label: string }[];
 }
 
 export interface SettingsActionFieldViewModel extends SettingsFieldBase {
@@ -212,7 +269,23 @@ export interface SettingsFormProjectionInput {
   section: SettingsSection;
   speedLimitInput: string;
   scheduleSpeedInputs: Readonly<Record<string, string>>;
-  themeChoice?: "light" | "dark" | "system";
+  themeChoice?: SettingsThemeChoice;
+}
+
+const NOTIFICATION_NUMBER_LIMITS = {
+  notifyRemainingThresholdGb: { min: 1, max: 100000, fallback: 50 },
+  notifyStallAfterSeconds: { min: 60, max: 3600, fallback: 90 },
+  notifyStallCooldownMinutes: { min: 5, max: 1440, fallback: 10 }
+} as const;
+
+export function normalizeNotificationNumberField(fieldId: string, value: unknown): number | undefined {
+  const limits = NOTIFICATION_NUMBER_LIMITS[fieldId as keyof typeof NOTIFICATION_NUMBER_LIMITS];
+  if (!limits) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  const normalized = Number.isFinite(parsed) ? Math.floor(parsed) : limits.fallback;
+  return Math.max(limits.min, Math.min(limits.max, normalized));
 }
 
 export function buildSettingsFormViewModel({
@@ -220,7 +293,7 @@ export function buildSettingsFormViewModel({
   section,
   speedLimitInput,
   scheduleSpeedInputs,
-  themeChoice = settings.theme
+  themeChoice = settings.themePreference
 }: SettingsFormProjectionInput): SettingsFormViewModel {
   if (section === "extract") {
     return {
@@ -319,8 +392,8 @@ export function buildSettingsFormViewModel({
       };
     });
     return {
-      title: "Geschwindigkeit",
-      description: "Tempo, Wiederverbindung und zeitgesteuerte Bandbreitenregeln.",
+      title: "Geschwindigkeit & Proxy",
+      description: "Tempo, Proxy, Wiederverbindung und zeitgesteuerte Bandbreitenregeln.",
       groups: [
         {
           id: "speed-limit",
@@ -347,6 +420,50 @@ export function buildSettingsFormViewModel({
           fields: [
             { id: "autoReconnect", kind: "switch", label: "Automatisch neu verbinden", value: settings.autoReconnect },
             { id: "reconnectWaitSeconds", kind: "number", label: "Wartezeit vor neuem Versuch (Sek.)", value: String(settings.reconnectWaitSeconds), min: 10, max: 600 }
+          ]
+        },
+        {
+          id: "speed-proxy",
+          title: "Proxy-only",
+          description: "Leitet API-, Login- und Link-Anfragen über einen festen HTTP-Proxy. Downloads verwenden zusätzlich mehrere Proxys parallel. Bei aktivem Modus gibt es keinen direkten Rückfall über deine echte Verbindung.",
+          fields: [
+            {
+              id: "proxyDownloadEnabled",
+              kind: "switch",
+              label: "Proxy-only aktivieren",
+              value: settings.proxyDownloadEnabled,
+              help: "Ist der feste API-Proxy nicht erreichbar oder ungültig, schlagen Netzwerkanfragen geschlossen fehl. Es wird nie ungefragt direkt verbunden."
+            },
+            {
+              id: "proxyListPath",
+              kind: "path",
+              label: "Proxy-Liste",
+              value: settings.proxyListPath,
+              placeholder: "Textdatei mit einem Proxy pro Zeile",
+              actionLabel: "Datei wählen",
+              disabled: !settings.proxyDownloadEnabled,
+              help: "Unterstützt unter anderem Benutzer:Passwort@Host:Port. Zugangsdaten werden nicht protokolliert."
+            },
+            {
+              id: "proxyApiProxyIndex",
+              kind: "number",
+              label: "Fester API-Proxy (gültiger Listeneintrag)",
+              value: String(settings.proxyApiProxyIndex),
+              min: 1,
+              max: 100000,
+              disabled: !settings.proxyDownloadEnabled,
+              help: "Dieser 1-basierte Eintrag bleibt für API, Login und Link-Auflösung fest. Ist er offline, wird nicht automatisch ein anderer Proxy oder die direkte Verbindung verwendet."
+            },
+            {
+              id: "proxyConnectionsPerDownload",
+              kind: "number",
+              label: "Proxy-Verbindungen insgesamt",
+              value: String(settings.proxyConnectionsPerDownload),
+              min: 2,
+              max: 80,
+              disabled: !settings.proxyDownloadEnabled,
+              help: `Dieses Gesamtlimit wird fair zwischen allen gleichzeitigen Segmentdownloads geteilt. Bei ${settings.maxParallel} aktiven Downloads laufen zusammen höchstens ${settings.proxyConnectionsPerDownload} Segmentverbindungen; 32 ist der Standardwert, 80 das Maximum. Langsame und ausgefallene Proxys werden automatisch zurückgestuft. Kleine Dateien, Teil-Downloads und aktive Geschwindigkeitslimits laufen über den festen API-Proxy.`
+            }
           ]
         },
         ...scheduleGroups,
@@ -466,6 +583,13 @@ export function buildSettingsFormViewModel({
         title: "Speicherort",
         fields: [
           { id: "outputDir", kind: "path", label: "Download-Ordner", value: settings.outputDir, actionLabel: "Wählen", help: "Zielordner für heruntergeladene Dateien." },
+          {
+            id: "createWorkDirectoriesOnStartup",
+            kind: "switch",
+            label: "Fehlende Arbeitsordner beim Start anlegen",
+            value: settings.createWorkDirectoriesOnStartup,
+            help: "Erstellt fehlende Download-, Entpack- und Videosammelordner sofort beim Speichern sowie bei jedem Programmstart. Optionale Ordner werden nur bei aktiver Funktion angelegt; vorhandene Inhalte bleiben unverändert."
+          },
           { id: "packageName", kind: "text", label: "Paketname (optional)", value: settings.packageName },
           {
             id: "logStorageLocation",
@@ -487,8 +611,24 @@ export function buildSettingsFormViewModel({
         fields: [
           { id: "maxParallel", kind: "number", label: "Max. gleichzeitige Downloads", value: String(settings.maxParallel), min: 1, max: 50 },
           { id: "retryLimit", kind: "number", label: "Automatische Wiederholungen", value: String(settings.retryLimit), min: 0, max: 99 },
+          {
+            id: "offlineSkipScope",
+            kind: "select",
+            label: "Wenn ein Quelllink offline geht",
+            value: settings.offlineSkipScope,
+            options: [
+              { value: "archive", label: "Betroffenen Archivsatz überspringen" },
+              { value: "package", label: "Gesamtes Paket überspringen" }
+            ],
+            help: "Beim Archivsatz werden alle noch offenen Teile desselben Mehrteil-Archivs übersprungen. Bereits abgeschlossene Downloads bleiben erhalten."
+          },
           { id: "autoResumeOnStart", kind: "switch", label: "Beim Start automatisch fortsetzen", value: settings.autoResumeOnStart },
-          { id: "clipboardWatch", kind: "switch", label: "Zwischenablage überwachen", value: settings.clipboardWatch }
+          { id: "clipboardWatch", kind: "switch", label: "Zwischenablage überwachen", value: settings.clipboardWatch },
+          {
+            id: "switchToCollectorOnClipboard", kind: "switch", label: "Bei erkannten Zwischenablage-Links zum Linksammler wechseln",
+            value: settings.switchToCollectorOnClipboard,
+            help: "Standardmäßig aus: Links werden im Hintergrund gesammelt, ohne den aktuellen Tab zu wechseln. Gilt nur bei aktivierter Zwischenablage-Überwachung."
+          }
         ]
       },
       {
@@ -519,18 +659,18 @@ export function buildSettingsFormViewModel({
         title: "Oberfläche und Bedienung",
         fields: [
           { id: "collapseNewPackages", kind: "switch", label: "Neue Pakete eingeklappt zeigen", value: settings.collapseNewPackages },
+          { id: "animatePackageDisclosure", kind: "switch", label: "Animationen", value: settings.animatePackageDisclosure },
           { id: "minimizeToTray", kind: "switch", label: "In den Infobereich minimieren", value: settings.minimizeToTray },
           { id: "confirmDeleteSelection", kind: "switch", label: "Vor dem Löschen nachfragen", value: settings.confirmDeleteSelection },
           { id: "backupIncludeDownloads", kind: "switch", label: "Download-Liste mitsichern", value: settings.backupIncludeDownloads },
-          { id: "backupIncludeRemoteDiagnostics", kind: "switch", label: "Ferndiagnose-Einstellungen mitsichern", value: settings.backupIncludeRemoteDiagnostics },
           {
             id: "theme",
             kind: "theme",
             label: "Theme",
             value: themeChoice,
             options: [
-              { value: "light", label: "Light" },
-              { value: "dark", label: "Dark" },
+              { value: "light", label: "Hell" },
+              { value: "dark", label: "Dunkel" },
               { value: "system", label: "System" }
             ]
           }
@@ -544,7 +684,24 @@ export function buildSettingsFormViewModel({
           { id: "notifyMention", kind: "text", label: "Discord-Erwähnung (optional)", value: settings.notifyMention },
           { id: "notifyOnPackageCompleted", kind: "switch", label: "Melden, wenn ein Paket fertig ist", value: settings.notifyOnPackageCompleted },
           { id: "notifyOnPackageFailed", kind: "switch", label: "Melden, wenn ein Paket fehlschlägt", value: settings.notifyOnPackageFailed },
-          { id: "notifyOnRunFinished", kind: "switch", label: "Melden, wenn alles fertig ist", value: settings.notifyOnRunFinished }
+          {
+            id: "notifyPackageSuccessMode",
+            kind: "select",
+            label: "Erfolgsmeldungen senden",
+            value: settings.notifyPackageSuccessMode,
+            disabled: !settings.notifyOnPackageCompleted,
+            options: [
+              { value: "digest", label: "Gesammelt (alle 2 Minuten)" },
+              { value: "individual", label: "Jedes Paket einzeln" }
+            ]
+          },
+          { id: "notifyOnRunFinished", kind: "switch", label: "Melden, wenn der gesamte Lauf fertig ist", value: settings.notifyOnRunFinished },
+          { id: "notifyOnRemainingBelow", kind: "switch", label: "Melden, wenn die Restmenge unterschritten wird", value: settings.notifyOnRemainingBelow },
+          { id: "notifyRemainingThresholdGb", kind: "number", label: "Restmengenschwelle (GB)", value: String(settings.notifyRemainingThresholdGb), min: 1, max: 100000, disabled: !settings.notifyOnRemainingBelow },
+          { id: "notifyOnDownloadStall", kind: "switch", label: "Melden, wenn Downloads stillstehen", value: settings.notifyOnDownloadStall },
+          { id: "notifyStallAfterSeconds", kind: "number", label: "Stillstand bestätigen nach (Sek.)", value: String(settings.notifyStallAfterSeconds), min: 60, max: 3600, disabled: !settings.notifyOnDownloadStall },
+          { id: "notifyStallCooldownMinutes", kind: "number", label: "Frühestens erneut melden nach (Min.)", value: String(settings.notifyStallCooldownMinutes), min: 5, max: 1440, disabled: !settings.notifyOnDownloadStall },
+          { id: "notifyOnDownloadRecovery", kind: "switch", label: "Melden, wenn Downloads wieder laufen", value: settings.notifyOnDownloadRecovery, disabled: !settings.notifyOnDownloadStall }
         ]
       }
     ]
@@ -565,12 +722,15 @@ function formatBytes(bytes: number): string {
   return `${new Intl.NumberFormat("de-DE", { maximumFractionDigits: value >= 100 ? 0 : value >= 10 ? 1 : 2 }).format(value)} ${units[unitIndex]}`;
 }
 
-function formatTraffic(limitBytes?: number, usageBytes?: number): string {
+function formatTraffic(limitBytes?: number, usageBytes?: number, totalUsageBytes?: number): string {
+  const total = Number.isFinite(totalUsageBytes) && totalUsageBytes && totalUsageBytes > 0
+    ? ` · Gesamt ${formatBytes(totalUsageBytes)}`
+    : "";
   if (!Number.isFinite(limitBytes) || !limitBytes || limitBytes <= 0) {
-    return "Unbeschränkt";
+    return `Unbeschränkt${total}`;
   }
   const safeUsage = Number.isFinite(usageBytes) && usageBytes && usageBytes > 0 ? usageBytes : 0;
-  return `${formatBytes(Math.max(0, limitBytes - safeUsage))} von ${formatBytes(limitBytes)} übrig`;
+  return `${formatBytes(Math.max(0, limitBytes - safeUsage))} von ${formatBytes(limitBytes)} übrig${total}`;
 }
 
 function formatExpiry(premiumUntilMs: number | null): string {
@@ -578,6 +738,26 @@ function formatExpiry(premiumUntilMs: number | null): string {
     return "—";
   }
   return new Intl.DateTimeFormat("de-DE").format(new Date(premiumUntilMs));
+}
+
+function formatCheckedAgo(checkedAt: number | undefined, nowMs: number): string {
+  if (!checkedAt || !Number.isFinite(checkedAt) || checkedAt <= 0) {
+    return "";
+  }
+  const deltaMs = Math.max(0, nowMs - checkedAt);
+  const minutes = Math.floor(deltaMs / 60_000);
+  if (minutes < 1) {
+    return "gerade eben";
+  }
+  if (minutes < 60) {
+    return `vor ${minutes} Min`;
+  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return `vor ${hours} Std`;
+  }
+  const days = Math.floor(hours / 24);
+  return `vor ${days} Tag${days === 1 ? "" : "en"}`;
 }
 
 function projectStatus(source: AccountRowSource): { tone: AccountStatusTone; text: string } {
@@ -605,8 +785,9 @@ function projectCredential(kind: AccountRowSource["credentialKind"]): string {
   return kind === "password" ? "••••••" : "Geschützter Zugang";
 }
 
-function projectAccountIdentity(username: string, checkedEmail?: string): { username: string; email: string } {
-  const stored = username.trim();
+function projectAccountIdentity(username: string, checkedUsername?: string, checkedEmail?: string): { username: string; email: string } {
+  const verifiedUsername = checkedUsername?.trim() || "";
+  const stored = verifiedUsername || username.trim();
   const verifiedEmail = checkedEmail?.trim() || "";
   const storedIsEmail = stored.includes("@");
   return {
@@ -627,7 +808,7 @@ export function projectAccountRows(
     const premiumUntilMs = source.status.premiumUntilMs && source.status.premiumUntilMs > nowMs
       ? source.status.premiumUntilMs
       : null;
-    const identity = projectAccountIdentity(source.username, source.status.email);
+    const identity = projectAccountIdentity(source.username, source.status.username, source.status.email);
     return {
       id,
       service: source.service,
@@ -636,8 +817,8 @@ export function projectAccountRows(
       icon: ACCOUNT_SERVICE_ICONS[source.service],
       enabled: source.enabled,
       selected: selected.has(id),
-      status,
-      traffic: formatTraffic(source.dailyLimitBytes, source.dailyUsageBytes),
+      status: { ...status, checkedAgo: formatCheckedAgo(source.status.checkedAt, nowMs) },
+      traffic: formatTraffic(source.dailyLimitBytes, source.dailyUsageBytes, source.totalUsageBytes),
       username: identity.username,
       email: identity.email,
       expires: formatExpiry(source.status.premiumUntilMs),

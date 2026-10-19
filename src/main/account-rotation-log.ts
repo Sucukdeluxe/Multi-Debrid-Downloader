@@ -1,48 +1,36 @@
 import fs from "node:fs";
+import { appendDiagnosticLog, finishDiagnosticLog, hasPendingDiagnosticLogWrites } from "./diagnostic-log-writer";
 import { logTimestamp } from "./log-timestamp";
 import path from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { RotationEvent } from "../shared/types";
-import { sanitizeDiagnosticAccountLabel, sanitizeDiagnosticFields, sanitizeDiagnosticText } from "./diagnostic-sanitizer";
 
-export interface RotationCorrelationContext {
-  attemptId?: string;
-  itemId?: string;
-  packageId?: string;
-}
+export type RotationItemSink = (event: RotationEvent) => void;
+const rotationItemContext = new AsyncLocalStorage<RotationItemSink>();
 
-export type CorrelatedRotationEvent = RotationEvent & RotationCorrelationContext;
-export type RotationItemSink = (event: CorrelatedRotationEvent) => void;
-
-interface RotationItemContext extends RotationCorrelationContext {
-  sink: RotationItemSink;
-}
-
-const rotationItemContext = new AsyncLocalStorage<RotationItemContext>();
-
-export function runWithRotationItemSink<T>(
-  sink: RotationItemSink,
-  fn: () => Promise<T>,
-  correlation: RotationCorrelationContext = {}
-): Promise<T> {
-  return rotationItemContext.run({ ...correlation, sink }, fn);
+export function runWithRotationItemSink<T>(sink: RotationItemSink, fn: () => Promise<T>): Promise<T> {
+  return rotationItemContext.run(sink, fn);
 }
 
 type RotationLevel = "INFO" | "WARN" | "ERROR";
 
 const ROTATION_EVENT_RING_MAX = 60;
-const rotationEventRing: CorrelatedRotationEvent[] = [];
+const rotationEventRing: RotationEvent[] = [];
 let rotationEventSeq = 0;
-let rotationEventListener: ((event: CorrelatedRotationEvent) => void) | null = null;
+let rotationEventListener: ((event: RotationEvent) => void) | null = null;
 
-export function setRotationEventListener(listener: ((event: CorrelatedRotationEvent) => void) | null): void {
+export function setRotationEventListener(listener: ((event: RotationEvent) => void) | null): void {
   rotationEventListener = listener;
 }
 
-export function getRecentRotationEvents(limit = ROTATION_EVENT_RING_MAX): CorrelatedRotationEvent[] {
+export function getRecentRotationEvents(limit = ROTATION_EVENT_RING_MAX): RotationEvent[] {
   const slice = rotationEventRing.slice(-limit);
   slice.reverse();
   return slice;
+}
+
+function isUiRelevantRotationEvent(event: string): boolean {
+  return event !== "TEST";
 }
 
 function pushRotationEvent(
@@ -52,10 +40,9 @@ function pushRotationEvent(
   event: string,
   fields?: Record<string, unknown>,
   at = Date.now()
-): CorrelatedRotationEvent {
+): void {
   rotationEventSeq += 1;
-  const context = rotationItemContext.getStore();
-  const entry: CorrelatedRotationEvent = {
+  const entry: RotationEvent = {
     id: `rot_${at}_${rotationEventSeq}`,
     at,
     level,
@@ -65,33 +52,30 @@ function pushRotationEvent(
     reason: fields && fields.reason != null ? String(fields.reason) : undefined,
     category: fields && fields.category != null ? String(fields.category) : undefined,
     cooldownSec: fields && fields.cooldownSec != null ? Number(fields.cooldownSec) || 0 : undefined,
-    next: fields && fields.next != null ? String(fields.next) : undefined,
-    attemptId: context?.attemptId ? sanitizeDiagnosticText(context.attemptId) : undefined,
-    itemId: context?.itemId ? sanitizeDiagnosticText(context.itemId) : undefined,
-    packageId: context?.packageId ? sanitizeDiagnosticText(context.packageId) : undefined
+    next: fields && fields.next != null ? String(fields.next) : undefined
   };
 
-  if (context) {
+  const itemSink = rotationItemContext.getStore();
+  if (itemSink) {
     try {
-      context.sink(entry);
+      itemSink(entry);
     } catch {
     }
   }
 
-  const uiEntry = event === "TIMEOUT_COOLDOWN"
-    ? { ...entry, reason: entry.reason ? `Versuch fehlgeschlagen: ${entry.reason}` : "Versuch fehlgeschlagen" }
-    : entry;
-  rotationEventRing.push(uiEntry);
+  if (!isUiRelevantRotationEvent(event)) {
+    return;
+  }
+  rotationEventRing.push(entry);
   if (rotationEventRing.length > ROTATION_EVENT_RING_MAX) {
     rotationEventRing.splice(0, rotationEventRing.length - ROTATION_EVENT_RING_MAX);
   }
   if (rotationEventListener) {
     try {
-      rotationEventListener(uiEntry);
+      rotationEventListener(entry);
     } catch {
     }
   }
-  return entry;
 }
 
 const ROTATION_LOG_MAX_FILE_BYTES = Number(process.env.RD_ACCOUNT_ROTATION_LOG_MAX_BYTES || 5 * 1024 * 1024);
@@ -104,13 +88,13 @@ function sanitizeFieldValue(value: unknown): string {
     return "";
   }
   if (typeof value === "string") {
-    return sanitizeDiagnosticText(value);
+    return value.replace(/\r?\n/g, "\\n");
   }
   if (typeof value === "number" || typeof value === "boolean") {
     return String(value);
   }
   try {
-    return sanitizeDiagnosticText(JSON.stringify(value));
+    return JSON.stringify(value).replace(/\r?\n/g, "\\n");
   } catch {
     return String(value);
   }
@@ -183,36 +167,19 @@ export function logAccountRotation(
   event: string,
   fields?: Record<string, unknown>
 ): void {
-  const safeProvider = sanitizeDiagnosticText(provider);
-  const safeAccountLabel = sanitizeDiagnosticAccountLabel(accountLabel);
-  const safeEvent = sanitizeDiagnosticText(event);
-  const safeFields = sanitizeDiagnosticFields(fields);
-  const entry = pushRotationEvent(level, safeProvider, safeAccountLabel, safeEvent, safeFields);
+  pushRotationEvent(level, provider, accountLabel, event, fields);
   if (!rotationLogPath) {
     return;
   }
-  try {
-    rotateIfNeeded(rotationLogPath);
-    if (!fs.existsSync(rotationLogPath)) {
-      fs.writeFileSync(rotationLogPath, "", "utf8");
-    }
-    const head = `${logTimestamp()} [${level}] ${safeProvider} | ${safeAccountLabel} | ${safeEvent}`;
-    const logFields = {
-      ...safeFields,
-      ...(entry.attemptId ? { attemptId: entry.attemptId } : {}),
-      ...(entry.itemId ? { itemId: entry.itemId } : {}),
-      ...(entry.packageId ? { packageId: entry.packageId } : {})
-    };
-    fs.appendFileSync(rotationLogPath, `${head}${formatFields(logFields)}\n`, "utf8");
-  } catch {
-  }
+  const head = `${logTimestamp()} [${level}] ${provider} | ${accountLabel} | ${event}`;
+  void appendDiagnosticLog(rotationLogPath, `${head}${formatFields(fields)}\n`, ROTATION_LOG_MAX_FILE_BYTES);
 }
 
 export function getAccountRotationLogPath(): string | null {
   if (!rotationLogPath) {
     return null;
   }
-  return fs.existsSync(rotationLogPath) ? rotationLogPath : null;
+  return hasPendingDiagnosticLogWrites(rotationLogPath) || fs.existsSync(rotationLogPath) ? rotationLogPath : null;
 }
 
 export function shutdownAccountRotationLog(): void {
@@ -220,10 +187,9 @@ export function shutdownAccountRotationLog(): void {
     return;
   }
   try {
-    fs.appendFileSync(
+    void finishDiagnosticLog(
       rotationLogPath,
-      `=== Account-Rotation Log Ende: ${logTimestamp()} ===\n`,
-      "utf8"
+      `=== Account-Rotation Log Ende: ${logTimestamp()} ===\n`
     );
   } catch {
   }

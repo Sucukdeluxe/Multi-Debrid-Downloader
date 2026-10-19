@@ -22,11 +22,8 @@ export function getRollingMetricDirection(previous: number, next: number): Rolli
   return "none";
 }
 
-export function shouldAnimateRollingMetric(
-  direction: RollingMetricDirection,
-  reducedMotion: boolean
-): direction is Exclude<RollingMetricDirection, "none"> {
-  return direction !== "none" && !reducedMotion;
+export function shouldAnimateRollingMetric(previousValue: string, nextValue: string): boolean {
+  return previousValue !== nextValue;
 }
 
 export function RollingMetricValue({ numericValue, value }: RollingMetricValueProps): ReactElement {
@@ -38,13 +35,10 @@ export function RollingMetricValue({ numericValue, value }: RollingMetricValuePr
 
   useMetricLayoutEffect(() => {
     const previous = previousRef.current;
-    if (previous.value === value && previous.numericValue === numericValue) return;
     previousRef.current = { numericValue, value };
+    if (!shouldAnimateRollingMetric(previous.value, value)) return;
     const direction = getRollingMetricDirection(previous.numericValue, numericValue);
-    const reducedMotion = typeof window !== "undefined"
-      && typeof window.matchMedia === "function"
-      && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (!shouldAnimateRollingMetric(direction, reducedMotion)) {
+    if (direction === "none") {
       setTransition(null);
       return;
     }

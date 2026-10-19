@@ -1,18 +1,38 @@
-import type { AppSettings, DebridAccountStatus } from "../shared/types";
-import { getMegaDebridAccountsForMode, getMegaDebridAccountStatusId, type MegaDebridAccountEntry } from "../shared/mega-debrid-accounts";
+import type { AccountCheckScope, AppSettings, DebridAccountStatus, DebridProvider } from "../shared/types";
+import { getMegaDebridAccountsForMode, getMegaDebridDisabledAccountIdsForMode, parseMegaDebridAccounts, type MegaDebridAccountEntry } from "../shared/mega-debrid-accounts";
 import { parseDebridLinkApiKeys, type DebridLinkApiKeyEntry } from "../shared/debrid-link-keys";
+import { getRealDebridAccounts, type RealDebridAccountEntry } from "../shared/real-debrid-accounts";
+import { DEEPBRID_ACCOUNT_ID, DeepbridApiError, DeepbridClient } from "./deepbrid";
 import { logger } from "./logger";
 import { compactErrorText } from "./utils";
+import { fetchAccountCheck, isAccountTransportFailure } from "./account-check-request";
 
 const MEGA_DEBRID_API = "https://www.mega-debrid.eu/api.php";
 const DEBRID_LINK_API = "https://debrid-link.com/api/v2";
+const REAL_DEBRID_USER_API = "https://api.real-debrid.com/rest/1.0/user";
 const CHECK_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
-const CHECK_TIMEOUT_MS = 20000;
 
-function timeoutSignal(signal: AbortSignal | undefined, ms: number): AbortSignal {
-  const timeout = AbortSignal.timeout(ms);
-  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+export const REAL_DEBRID_STATUS_ID = "svc-realdebrid";
+
+export interface RealDebridSessionProbeResult {
+  valid: boolean;
+  isPremium?: boolean;
+  premiumUntilMs?: number | null;
+  username?: string;
+  email?: string;
+  message?: string;
+}
+
+export type RealDebridSessionProbe = (signal?: AbortSignal) => Promise<RealDebridSessionProbeResult>;
+export type RealDebridSessionProbeResolver = (accountId: string, signal?: AbortSignal) => Promise<RealDebridSessionProbeResult>;
+
+export function retainConfiguredRealDebridStatuses(settings: AppSettings, statuses: readonly DebridAccountStatus[]): DebridAccountStatus[] {
+  const accountIds = new Set(getRealDebridAccounts(settings).map((account) => account.id));
+  if (accountIds.size === 0 && (settings.realDebridUseWebLogin || settings.token.trim())) {
+    accountIds.add(REAL_DEBRID_STATUS_ID);
+  }
+  return statuses.filter((status) => status.provider !== "realdebrid" || accountIds.has(status.accountId));
 }
 
 function parseJsonSafe(text: string): Record<string, unknown> | null {
@@ -43,13 +63,169 @@ function formatRemaining(premiumUntilMs: number | null, now: number): string {
   return `Premium noch ${hours} Std`;
 }
 
+function maskSecret(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (trimmed.length <= 6) {
+    return "*".repeat(trimmed.length);
+  }
+  return `${trimmed.slice(0, 3)}${"*".repeat(Math.max(4, trimmed.length - 6))}${trimmed.slice(-3)}`;
+}
+
+export async function checkRealDebridAccount(
+  accountOrSettings: RealDebridAccountEntry | AppSettings,
+  signal?: AbortSignal,
+  now = Date.now(),
+  probeWebSession?: RealDebridSessionProbe
+): Promise<DebridAccountStatus> {
+  const isAccount = typeof (accountOrSettings as RealDebridAccountEntry).kind === "string";
+  const account = isAccount
+    ? accountOrSettings as RealDebridAccountEntry
+    : {
+      id: REAL_DEBRID_STATUS_ID,
+      kind: (accountOrSettings as AppSettings).realDebridUseWebLogin ? "web" as const : "api" as const,
+      index: 0,
+      label: "Real-Debrid",
+      maskedLogin: (accountOrSettings as AppSettings).realDebridUseWebLogin ? "Browser-Login" : maskSecret(String((accountOrSettings as AppSettings).token || "")),
+      enabled: true,
+      ...((accountOrSettings as AppSettings).realDebridUseWebLogin ? {} : { token: String((accountOrSettings as AppSettings).token || "").trim() })
+    } as RealDebridAccountEntry;
+  const token = account.kind === "api" ? account.token.trim() : "";
+  const useWebLogin = account.kind === "web";
+  const base: DebridAccountStatus = {
+    accountId: account.id,
+    provider: "realdebrid",
+    label: account.label,
+    maskedLogin: account.maskedLogin,
+    valid: false,
+    isPremium: false,
+    premiumUntilMs: null,
+    message: "",
+    checkedAt: now
+  };
+
+  if (useWebLogin) {
+    if (!probeWebSession) {
+      return { ...base, checkFailure: "service", message: "Browser-Sitzung ist nicht prüfbar" };
+    }
+    try {
+      const result = await probeWebSession(signal);
+      if (!result.valid) {
+        return { ...base, ...(isAccountTransportFailure(result.message) ? { checkFailure: "transport" as const } : {}), message: result.message || "Browser-Sitzung abgelaufen" };
+      }
+      const premiumUntilMs = typeof result.premiumUntilMs === "number" ? result.premiumUntilMs : null;
+      return {
+        ...base,
+        valid: true,
+        isPremium: Boolean(result.isPremium),
+        premiumUntilMs,
+        username: String(result.username || "").trim() || undefined,
+        email: String(result.email || "").trim() || undefined,
+        message: result.message || (result.isPremium ? formatRemaining(premiumUntilMs, now) : "Kein Premium (Free)")
+      };
+    } catch (error) {
+      const errText = compactErrorText(error);
+      return { ...base, checkFailure: signal?.aborted ? "aborted" : "transport", message: signal?.aborted ? "Prüfung abgebrochen" : `Prüfung fehlgeschlagen: ${errText}` };
+    }
+  }
+
+  if (!token) {
+    return { ...base, message: "Kein API-Token hinterlegt" };
+  }
+
+  try {
+    const { response, text } = await fetchAccountCheck(REAL_DEBRID_USER_API, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "User-Agent": CHECK_USER_AGENT
+      }
+    }, signal);
+    const payload = parseJsonSafe(text);
+    if (!response.ok || !payload) {
+      if (response.status === 401 || response.status === 403) {
+        return { ...base, message: "Ungültiger API-Token" };
+      }
+      return { ...base, checkFailure: response.status === 407 ? "transport" : "service", message: `Prüfung fehlgeschlagen (HTTP ${response.status})` };
+    }
+    const expiration = Date.parse(String(payload.expiration || ""));
+    const premiumUntilMs = Number.isFinite(expiration) ? expiration : null;
+    const isPremium = String(payload.type || "").toLowerCase() === "premium"
+      && (premiumUntilMs == null || premiumUntilMs > now);
+    return {
+      ...base,
+      valid: true,
+      isPremium,
+      premiumUntilMs,
+      username: String(payload.username || "").trim() || undefined,
+      email: String(payload.email || "").trim() || undefined,
+      message: isPremium ? formatRemaining(premiumUntilMs, now) : "Kein Premium (Free)"
+    };
+  } catch (error) {
+    const errText = compactErrorText(error);
+    return { ...base, checkFailure: signal?.aborted ? "aborted" : "transport", message: signal?.aborted ? "Prüfung abgebrochen" : `Prüfung fehlgeschlagen: ${errText}` };
+  }
+}
+
+export async function checkDeepbridAccount(
+  apiKey: string,
+  signal?: AbortSignal,
+  now = Date.now()
+): Promise<DebridAccountStatus> {
+  const key = apiKey.trim();
+  const base: DebridAccountStatus = {
+    accountId: DEEPBRID_ACCOUNT_ID,
+    provider: "deepbrid",
+    label: "Deepbrid",
+    maskedLogin: maskSecret(key),
+    valid: false,
+    isPremium: false,
+    premiumUntilMs: null,
+    message: "",
+    checkedAt: now
+  };
+  if (!key) {
+    return { ...base, message: "Kein API-Key hinterlegt" };
+  }
+  try {
+    const user = await new DeepbridClient(key).getUser(signal);
+    const expiration = Date.parse(user.expiration);
+    const premiumUntilMs = Number.isFinite(expiration) ? expiration : null;
+    const isPremium = user.type.trim().toLowerCase() === "premium"
+      && premiumUntilMs !== null
+      && premiumUntilMs > now;
+    return {
+      ...base,
+      valid: true,
+      isPremium,
+      premiumUntilMs,
+      username: user.username.trim() || undefined,
+      email: user.email.trim() || undefined,
+      message: isPremium
+        ? formatRemaining(premiumUntilMs, now)
+        : user.type.trim().toLowerCase() === "premium" && premiumUntilMs !== null
+          ? formatRemaining(premiumUntilMs, now)
+          : "Kein Premium (Free)"
+    };
+  } catch (error) {
+    if (signal?.aborted) {
+      return { ...base, checkFailure: "aborted", message: "Prüfung abgebrochen" };
+    }
+    if (error instanceof DeepbridApiError && error.classification === "auth") {
+      return { ...base, message: error.status === 403 ? "Deepbrid API-Key gesperrt" : "Ungültiger Deepbrid API-Key" };
+    }
+    return { ...base, checkFailure: error instanceof DeepbridApiError ? "service" : "transport", message: "Prüfung fehlgeschlagen" };
+  }
+}
+
 export async function checkMegaDebridAccount(
   account: MegaDebridAccountEntry,
   signal?: AbortSignal,
   now = Date.now()
 ): Promise<DebridAccountStatus> {
   const base: DebridAccountStatus = {
-    accountId: account.mode ? getMegaDebridAccountStatusId(account.id, account.mode) : account.id,
+    accountId: account.id,
     provider: "megadebrid",
     label: account.label,
     maskedLogin: account.maskedLogin,
@@ -61,18 +237,16 @@ export async function checkMegaDebridAccount(
   };
   try {
     const url = `${MEGA_DEBRID_API}?action=connectUser&login=${encodeURIComponent(account.login)}&password=${encodeURIComponent(account.password)}`;
-    const response = await fetch(url, {
-      headers: { "User-Agent": CHECK_USER_AGENT },
-      signal: timeoutSignal(signal, CHECK_TIMEOUT_MS)
-    });
-    const text = await response.text();
+    const { response, text } = await fetchAccountCheck(url, {
+      headers: { "User-Agent": CHECK_USER_AGENT }
+    }, signal);
     const payload = parseJsonSafe(text);
     if (!response.ok || !payload) {
-      return { ...base, message: `Login fehlgeschlagen (HTTP ${response.status})` };
+      return { ...base, checkFailure: response.status === 407 ? "transport" : "service", message: `Login fehlgeschlagen (HTTP ${response.status})` };
     }
     if (payload.response_code !== "ok") {
       const reason = String(payload.response_text || payload.response_code || "Login abgelehnt");
-      return { ...base, message: `Ungueltiger Login: ${reason}` };
+      return { ...base, message: `Ungültiger Login: ${reason}` };
     }
     const vipEndRaw = Number(payload.vip_end || 0);
     const premiumUntilMs = Number.isFinite(vipEndRaw) && vipEndRaw > 0 ? vipEndRaw * 1000 : 0;
@@ -88,10 +262,10 @@ export async function checkMegaDebridAccount(
     };
   } catch (error) {
     const errText = compactErrorText(error);
-    const aborted = signal?.aborted || /aborted/i.test(errText);
     return {
       ...base,
-      message: aborted ? "Pruefung abgebrochen" : `Pruefung fehlgeschlagen: ${errText}`
+      checkFailure: signal?.aborted ? "aborted" : "transport",
+      message: signal?.aborted ? "Prüfung abgebrochen" : `Prüfung fehlgeschlagen: ${errText}`
     };
   }
 }
@@ -113,24 +287,22 @@ export async function checkDebridLinkKey(
     checkedAt: now
   };
   try {
-    const response = await fetch(`${DEBRID_LINK_API}/account/infos`, {
+    const { response, text } = await fetchAccountCheck(`${DEBRID_LINK_API}/account/infos`, {
       headers: {
         Authorization: `Bearer ${key.token}`,
         "User-Agent": CHECK_USER_AGENT
-      },
-      signal: timeoutSignal(signal, CHECK_TIMEOUT_MS)
-    });
-    const text = await response.text();
+      }
+    }, signal);
     const payload = parseJsonSafe(text);
     if (!response.ok || !payload) {
       if (response.status === 401 || response.status === 403) {
-        return { ...base, message: "Ungueltiger API-Key (nicht autorisiert)" };
+        return { ...base, message: "Ungültiger API-Key (nicht autorisiert)" };
       }
-      return { ...base, message: `Pruefung fehlgeschlagen (HTTP ${response.status})` };
+      return { ...base, checkFailure: response.status === 407 ? "transport" : "service", message: `Prüfung fehlgeschlagen (HTTP ${response.status})` };
     }
     if (payload.success === false) {
       const reason = String(payload.error || "Key abgelehnt");
-      return { ...base, message: `Ungueltiger API-Key: ${reason}` };
+      return { ...base, message: `Ungültiger API-Key: ${reason}` };
     }
     const value = (payload.value && typeof payload.value === "object" ? payload.value : payload) as Record<string, unknown>;
     const premiumLeftSec = Number(value.premiumLeft || 0);
@@ -138,43 +310,92 @@ export async function checkDebridLinkKey(
     const premiumUntilMs = Number.isFinite(premiumLeftSec) && premiumLeftSec > 0 ? now + premiumLeftSec * 1000 : 0;
     const isPremium = premiumUntilMs > now || accountType > 0;
     const username = String(value.username || "").trim() || undefined;
+    const email = String(value.email || "").trim() || undefined;
     return {
       ...base,
       valid: true,
       isPremium,
       premiumUntilMs: premiumUntilMs > 0 ? premiumUntilMs : (accountType > 0 ? null : 0),
-      email: username,
+      username,
+      email,
       message: premiumUntilMs > 0
         ? formatRemaining(premiumUntilMs, now)
         : (accountType > 0 ? "Premium aktiv" : "Kein Premium (Free)")
     };
   } catch (error) {
     const errText = compactErrorText(error);
-    const aborted = signal?.aborted || /aborted/i.test(errText);
     return {
       ...base,
-      message: aborted ? "Pruefung abgebrochen" : `Pruefung fehlgeschlagen: ${errText}`
+      checkFailure: signal?.aborted ? "aborted" : "transport",
+      message: signal?.aborted ? "Prüfung abgebrochen" : `Prüfung fehlgeschlagen: ${errText}`
     };
   }
 }
 
 export async function checkAllDebridAccounts(
   settings: AppSettings,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  probeRealDebridWebSession?: RealDebridSessionProbeResolver,
+  scope: AccountCheckScope = "all"
 ): Promise<DebridAccountStatus[]> {
   const now = Date.now();
-  const megaAccounts = (["api", "web"] as const)
-    .flatMap((mode) => getMegaDebridAccountsForMode(settings, mode));
-  const debridLinkKeys = parseDebridLinkApiKeys(settings.debridLinkApiKeys || "");
+  const providerEnabled = (provider: DebridProvider): boolean => !(settings.disabledProviders || []).includes(provider);
+  const configuredMegaAccounts = parseMegaDebridAccounts(settings.megaCredentials || "", settings.megaPassword || "");
+  const activeMegaAccounts = (["api", "web"] as const).flatMap((mode) => {
+    const provider: DebridProvider = mode === "api" ? "megadebrid-api" : "megadebrid-web";
+    const modeEnabled = mode === "api" ? settings.megaDebridApiEnabled : settings.megaDebridWebEnabled;
+    if (!modeEnabled || !providerEnabled(provider) || !providerEnabled("megadebrid")) {
+      return [];
+    }
+    const disabledIds = new Set(getMegaDebridDisabledAccountIdsForMode(settings, mode));
+    return getMegaDebridAccountsForMode(settings, mode).filter((account) => !disabledIds.has(account.id));
+  });
+  const megaAccounts = scope === "all"
+    ? configuredMegaAccounts
+    : [...new Map(activeMegaAccounts.map((account) => [account.id, account])).values()];
+  const configuredDebridLinkKeys = parseDebridLinkApiKeys(settings.debridLinkApiKeys || "");
+  const debridLinkKeys = scope === "all"
+    ? configuredDebridLinkKeys
+    : providerEnabled("debridlink")
+      ? configuredDebridLinkKeys.filter((key) => !(settings.debridLinkDisabledKeyIds || []).includes(key.id))
+      : [];
+  const configuredRealDebridAccounts = getRealDebridAccounts(settings);
+  const legacyRealDebridAccounts: RealDebridAccountEntry[] = configuredRealDebridAccounts.length === 0
+    && (settings.realDebridUseWebLogin || String(settings.token || "").trim())
+    ? [{
+      id: REAL_DEBRID_STATUS_ID,
+      kind: settings.realDebridUseWebLogin ? "web" : "api",
+      index: 0,
+      label: "Real-Debrid",
+      maskedLogin: settings.realDebridUseWebLogin ? "Browser-Login" : maskSecret(settings.token),
+      enabled: true,
+      ...(settings.realDebridUseWebLogin ? {} : { token: settings.token.trim() })
+    } as RealDebridAccountEntry]
+    : [];
+  const allRealDebridAccounts = configuredRealDebridAccounts.length > 0 ? configuredRealDebridAccounts : legacyRealDebridAccounts;
+  const realDebridAccounts = scope === "all"
+    ? allRealDebridAccounts
+    : providerEnabled("realdebrid") ? allRealDebridAccounts.filter((account) => account.enabled) : [];
+  const deepbridApiKey = String(settings.deepbridApiKey || "").trim();
+  const checkDeepbrid = Boolean(deepbridApiKey) && (scope === "all" || providerEnabled("deepbrid"));
 
   const taskFns: Array<() => Promise<DebridAccountStatus>> = [
+    ...realDebridAccounts.map((account) => () => checkRealDebridAccount(
+      account,
+      signal,
+      now,
+      account.kind === "web" && probeRealDebridWebSession
+        ? (probeSignal) => probeRealDebridWebSession(account.id, probeSignal)
+        : undefined
+    )),
     ...megaAccounts.map((account) => () => checkMegaDebridAccount(account, signal, now)),
-    ...debridLinkKeys.map((key) => () => checkDebridLinkKey(key, signal, now))
+    ...debridLinkKeys.map((key) => () => checkDebridLinkKey(key, signal, now)),
+    ...(checkDeepbrid ? [() => checkDeepbridAccount(deepbridApiKey, signal, now)] : [])
   ];
 
   const results = await runWithConcurrency(taskFns, CHECK_CONCURRENCY);
   logger.info(
-    `Account-Check abgeschlossen: ${results.length} Accounts geprueft ` +
+    `Account-Check abgeschlossen: scope=${scope}, ${results.length} Accounts geprueft ` +
     `(${results.filter((r) => r.valid).length} gueltig, ${results.filter((r) => r.isPremium).length} premium)`
   );
   return results;

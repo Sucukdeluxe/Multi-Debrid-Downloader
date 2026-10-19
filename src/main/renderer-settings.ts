@@ -1,7 +1,17 @@
 import type { AppSettings, RendererSettingsUpdate } from "../shared/types";
 import { createRendererSettings } from "./renderer-state";
+import { isAccountRuleProvider } from "../shared/account-usage-rules";
+import { isValidLocalDate } from "./daily-start-scheduler";
 
-const DERIVED_KEYS = new Set(["archivePasswordListConfigured", "notifyUrlConfigured", "configuredProviders"]);
+const DERIVED_KEYS = new Set([
+  "archivePasswordListConfigured",
+  "notifyUrlConfigured",
+  "configuredProviders",
+  "dailyStartLastHandledLocalDate",
+  "dailyStartPendingLocalDate",
+  "dailyStartLastOutcome",
+  "nextDailyStartEpochMs"
+]);
 const WRITE_ONLY_KEYS = new Set(["archivePasswordList", "notifyUrl"]);
 const MAX_SETTINGS_PAYLOAD_BYTES = 1_000_000;
 
@@ -80,6 +90,30 @@ export function validateRendererSettingsUpdate(value: unknown, current: AppSetti
       continue;
     }
     if (!(key in safe)) {
+      invalid();
+    }
+    if (key === "accountUsageRules") {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) invalid();
+      for (const [provider, rule] of Object.entries(entry)) {
+        if (!isAccountRuleProvider(provider) || !rule || typeof rule !== "object" || Array.isArray(rule)) invalid();
+        if (Object.keys(rule).some((field) => field !== "mode" && field !== "accountIds")) invalid();
+        if (rule.mode !== "automatic" && rule.mode !== "priority") invalid();
+        if (!Array.isArray(rule.accountIds) || rule.accountIds.length > 10000 || rule.accountIds.some((id: unknown) => typeof id !== "string" || id.length === 0 || id.length > 256)) invalid();
+      }
+    }
+    if (key === "notifyPackageSuccessMode" && entry !== "digest" && entry !== "individual") {
+      invalid();
+    }
+    if (key === "themePreference" && entry !== "light" && entry !== "dark" && entry !== "system") {
+      invalid();
+    }
+    if (key === "offlineSkipScope" && entry !== "archive" && entry !== "package") {
+      invalid();
+    }
+    if (key === "dailyStartMinuteOfDay" && (!Number.isInteger(entry) || (entry as number) < 0 || (entry as number) > 1_439)) {
+      invalid();
+    }
+    if (key === "dailyStartFirstLocalDate" && entry !== "" && (typeof entry !== "string" || !isValidLocalDate(entry))) {
       invalid();
     }
     validateTopLevelType(entry, safe[key]);

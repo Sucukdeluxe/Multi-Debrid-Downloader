@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, safeStorage, shell, Tray, type IpcMainEvent, type IpcMainInvokeEvent } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, powerMonitor, safeStorage, shell, Tray, type IpcMainEvent, type IpcMainInvokeEvent } from "electron";
 import { AddLinksPayload, AppSettings, DebridProvider, EnableRemoteDiagnosticsInput, RendererSettingsUpdate, UpdateInstallProgress } from "../shared/types";
 import { AppController } from "./app-controller";
 import { IPC_CHANNELS } from "../shared/ipc";
@@ -15,14 +15,30 @@ import { revealHistoryEntry } from "./history-reveal";
 import { DEV_SERVER_URL } from "./dev-server-url";
 import { resolveAppIconPath } from "./app-icon";
 import { configureCredentialProtector } from "./credential-protection";
+import { configureArchivePasswordDiagnostics, flushArchivePasswordDiagnostics } from "./archive-password-diagnostics";
+import { getSupportBundleExportDialogOptions } from "./support-bundle-dialog";
 import { isMdd2Backup } from "./backup-crypto";
-import { validateAccountCommand, validateAccountCredentialCheckInput } from "./account-commands";
+import { validateAccountCommand, validateAccountCredentialCheckInput, validateAccountSecretRequest } from "./account-commands";
 import { createRendererSettings } from "./renderer-state";
 import { validateRendererSettingsUpdate } from "./renderer-settings";
 import { applyMainWindowSecurity, createMainWindowWebPreferences, MAIN_WINDOW_EXTERNAL_HOSTS, openAllowedExternalUrl } from "./browser-security";
 import { assertTrustedIpcSender, type TrustedIpcOptions } from "./ipc-security";
-import { createSupportBundleExportRunner, writeSupportBundleAtomically } from "./support-bundle";
-import { writeClipboardTextFromIpc } from "./clipboard-ipc";
+import { validateRealDebridLoginRequest } from "../shared/preload-api";
+import { migrateProductUserDataDirectory } from "./storage";
+import { forceDarkNativeTheme } from "./native-theme";
+import { validateClipboardWriteText } from "./clipboard-write";
+import { DailyStartScheduler, hasDailyStartRulePatch, prepareDailyStartSettingsPatch } from "./daily-start-scheduler";
+import {
+  validateCollectorContainerPreparationRequest,
+  validateCollectorEnrichmentRequest,
+  validateCollectorPersistenceState,
+  validateCollectorTextPreparationRequest
+} from "../shared/collector";
+import { getProxyAuthentication } from "./network-proxy";
+import { McpService } from "./mcp/service";
+import { runtimePerformance } from "./runtime-performance";
+
+forceDarkNativeTheme(nativeTheme);
 
 function validateString(value: unknown, name: string): string {
   if (typeof value !== "string") {
@@ -46,11 +62,17 @@ const RESETTABLE_PROVIDER_KEYS = new Set<DebridProvider>([
   "megadebrid-web",
   "bestdebrid",
   "alldebrid",
+  "deepbrid",
   "ddownload",
   "onefichier",
   "debridlink",
   "linksnappy"
 ]);
+
+if (app.isPackaged && !process.argv.some((arg) => arg === "--user-data-dir" || arg.startsWith("--user-data-dir="))) {
+  app.setPath("userData", migrateProductUserDataDirectory(app.getPath("appData")));
+}
+
 function validateStringArray(value: unknown, name: string): string[] {
   if (!Array.isArray(value) || !value.every(v => typeof v === "string")) {
     throw new Error(`${name} muss ein String-Array sein`);
@@ -82,13 +104,231 @@ let tray: Tray | null = null;
 let clipboardTimer: ReturnType<typeof setInterval> | null = null;
 let updateQuitTimer: ReturnType<typeof setTimeout> | null = null;
 let scheduledStartTimer: ReturnType<typeof setTimeout> | null = null;
+let dailyStartScheduler: DailyStartScheduler | null = null;
 let lastClipboardText = "";
 let controller: AppController;
+let mcpService: McpService | null = null;
+let applicationStarted = false;
+let appShutdownStarted = false;
 let pendingBackupImport: Buffer | null = null;
 const CLIPBOARD_MAX_TEXT_CHARS = 50_000;
+export const APP_SHUTDOWN_TIMEOUT_MS = 10_000;
+export const APP_QUIT_CONFIRM_TIMEOUT_MS = 2_000;
+
+function reconcileDailyStart(source: string): void {
+  void dailyStartScheduler?.reconcile().catch((error) => {
+    logger.warn(`Täglicher Start konnte nach ${source} nicht abgeglichen werden: ${String(error)}`);
+  });
+}
+
+function handlePowerSuspend(): void {
+  reconcileDailyStart("Suspend");
+}
+
+function handlePowerResume(): void {
+  reconcileDailyStart("Resume");
+}
+
+export function cleanupSchedulerLifecycle(
+  scheduler: Pick<DailyStartScheduler, "end"> | null,
+  legacyTimer: ReturnType<typeof setTimeout> | null
+): void {
+  scheduler?.end();
+  if (legacyTimer !== null) {
+    clearTimeout(legacyTimer);
+  }
+  powerMonitor.removeListener("suspend", handlePowerSuspend);
+  powerMonitor.removeListener("resume", handlePowerResume);
+}
+
+export interface BeforeQuitHandlerOptions {
+  cleanup: () => void;
+  shutdown: () => Promise<void>;
+  continueQuit: () => void;
+  forceQuit: () => void;
+  onError: (error: unknown) => void;
+  onTimeout: () => void;
+  timeoutMs: number;
+}
+
+export function createBeforeQuitHandler(options: BeforeQuitHandlerOptions): (event: { preventDefault: () => void }) => void {
+  let shutdownStarted = false;
+  let quitAllowed = false;
+  let shutdownTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const finish = (forced: boolean): void => {
+    if (quitAllowed) {
+      return;
+    }
+    quitAllowed = true;
+    if (shutdownTimer !== null) {
+      clearTimeout(shutdownTimer);
+      shutdownTimer = null;
+    }
+    if (forced) {
+      try {
+        options.onTimeout();
+      } finally {
+        options.forceQuit();
+      }
+    } else {
+      options.continueQuit();
+    }
+  };
+
+  return (event) => {
+    if (quitAllowed) {
+      return;
+    }
+    event.preventDefault();
+    if (shutdownStarted) {
+      return;
+    }
+    shutdownStarted = true;
+    shutdownTimer = setTimeout(() => finish(true), options.timeoutMs);
+    let shutdown: Promise<void>;
+    try {
+      options.cleanup();
+      shutdown = options.shutdown();
+    } catch (error) {
+      shutdown = Promise.reject(error);
+    }
+    void shutdown.catch((error) => {
+      options.onError(error);
+    }).finally(() => {
+      finish(false);
+    });
+  };
+}
+
+export interface MainWindowActivationTarget {
+  isDestroyed: () => boolean;
+  isMinimized: () => boolean;
+  restore: () => void;
+  show: () => void;
+  focus: () => void;
+}
+
+export function restoreOrCreateMainWindow<T extends MainWindowActivationTarget>(
+  currentWindow: T | null,
+  create: () => T,
+  bind: (window: T) => void
+): { window: T; created: boolean } {
+  let window = currentWindow;
+  let created = false;
+  if (!window || window.isDestroyed()) {
+    window = create();
+    bind(window);
+    created = true;
+  }
+  if (window.isMinimized()) {
+    window.restore();
+  }
+  window.show();
+  window.focus();
+  return { window, created };
+}
+
+export interface MainWindowClosedHandlerOptions {
+  isCurrentWindow: () => boolean;
+  clearCurrentWindow: () => void;
+  isShutdownStarted: () => boolean;
+  quit: () => void;
+  platform?: NodeJS.Platform;
+}
+
+export function createMainWindowClosedHandler(options: MainWindowClosedHandlerOptions): () => void {
+  return () => {
+    if (!options.isCurrentWindow()) {
+      return;
+    }
+    options.clearCurrentWindow();
+    if ((options.platform ?? process.platform) !== "darwin" && !options.isShutdownStarted()) {
+      options.quit();
+    }
+  };
+}
+
+export interface MainWindowCloseHandlerOptions {
+  isShutdownStarted: () => boolean;
+  shouldMinimizeToTray: () => boolean;
+  hide: () => void;
+}
+
+export function createMainWindowCloseHandler(options: MainWindowCloseHandlerOptions): (event: { preventDefault: () => void }) => void {
+  return (event) => {
+    if (options.isShutdownStarted()) {
+      return;
+    }
+    if (options.shouldMinimizeToTray()) {
+      event.preventDefault();
+      options.hide();
+    }
+  };
+}
+
+export interface ConfirmedQuitHandlerOptions {
+  requestQuit: () => void;
+  forceQuit: () => void;
+  onQuit: (listener: () => void) => void;
+  onTimeout: () => void;
+  timeoutMs: number;
+}
+
+export function createConfirmedQuitHandler(options: ConfirmedQuitHandlerOptions): () => void {
+  let requested = false;
+  return () => {
+    if (requested) {
+      return;
+    }
+    requested = true;
+    let completed = false;
+    const timer = setTimeout(() => {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      try {
+        options.onTimeout();
+      } finally {
+        options.forceQuit();
+      }
+    }, options.timeoutMs);
+    options.onQuit(() => {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      clearTimeout(timer);
+    });
+    options.requestQuit();
+  };
+}
+
+export function createRelaunchScheduler(relaunch: () => void): () => boolean {
+  let scheduled = false;
+  return () => {
+    if (scheduled) {
+      return false;
+    }
+    scheduled = true;
+    relaunch();
+    return true;
+  };
+}
+
+const scheduleApplicationRelaunch = createRelaunchScheduler(() => app.relaunch());
 
 function isDevMode(): boolean {
   return process.env.NODE_ENV === "development";
+}
+
+function validateHistoryEntryIds(value: unknown): string[] {
+  const entryIds = validateStringArray(value, "entryIds");
+  if (entryIds.length > 100_000 || entryIds.some((entryId) => entryId.length === 0 || entryId.length > 4_096)) {
+    throw new Error("entryIds ist ungültig");
+  }
+  return [...new Set(entryIds)];
 }
 
 function getRendererFileUrl(): string {
@@ -119,6 +359,32 @@ function onTrusted<TArgs extends unknown[]>(channel: string, listener: (event: I
     assertTrustedIpcSender(event, getTrustedIpcOptions());
     listener(event, ...(args as TArgs));
   });
+}
+
+export function saveCollectorStateFromSyncIpc(
+  target: Pick<AppController, "saveCollectorStateSync">,
+  event: Pick<IpcMainEvent, "returnValue">,
+  value: unknown
+): void {
+  try {
+    target.saveCollectorStateSync(validateCollectorPersistenceState(value));
+    event.returnValue = true;
+  } catch (error) {
+    logger.warn(`Linksammler-Abschlussspeicherung fehlgeschlagen: ${String(error)}`);
+    event.returnValue = false;
+  }
+}
+
+export function getCollectorStateFromSyncIpc(
+  target: Pick<AppController, "getCollectorState">,
+  event: Pick<IpcMainEvent, "returnValue">
+): void {
+  try {
+    event.returnValue = validateCollectorPersistenceState(target.getCollectorState());
+  } catch (error) {
+    logger.warn(`Synchrones Laden des Linksammlers fehlgeschlagen: ${String(error)}`);
+    event.returnValue = null;
+  }
 }
 
 // Single owner of the scheduled-start timer. startOnPast: a past time entered
@@ -218,19 +484,27 @@ function allowRendererReload(): boolean {
 }
 
 function bindMainWindowLifecycle(window: BrowserWindow): void {
-  window.on("close", (event) => {
-    const settings = controller.getSettings();
-    if (settings.minimizeToTray && tray) {
-      event.preventDefault();
-      window.hide();
+  const requestQuit = (): void => {
+    if (appShutdownStarted) {
+      return;
     }
-  });
+    appShutdownStarted = true;
+    logger.info("Hauptfenster geschlossen – Anwendung wird beendet");
+    app.quit();
+  };
 
-  window.on("closed", () => {
-    if (mainWindow === window) {
-      mainWindow = null;
-    }
-  });
+  window.on("close", createMainWindowCloseHandler({
+    isShutdownStarted: () => appShutdownStarted,
+    shouldMinimizeToTray: () => controller.getSettings().minimizeToTray && tray !== null,
+    hide: () => window.hide()
+  }));
+
+  window.on("closed", createMainWindowClosedHandler({
+    isCurrentWindow: () => mainWindow === window,
+    clearCurrentWindow: () => { mainWindow = null; },
+    isShutdownStarted: () => appShutdownStarted,
+    quit: requestQuit
+  }));
 
   window.webContents.on("render-process-gone", (_event, details) => {
     logger.error(`Renderer-Prozess beendet: reason=${details.reason} exitCode=${details.exitCode ?? "?"}`);
@@ -376,6 +650,20 @@ function updateTray(): void {
 }
 
 function registerIpcHandlers(): void {
+  handleTrusted(IPC_CHANNELS.MCP_STATUS, () => mcpService?.getStatus());
+  handleTrusted(IPC_CHANNELS.MCP_CONFIGURE, async (_event, configuration: unknown) => {
+    if (!mcpService) throw new Error("MCP ist noch nicht initialisiert.");
+    return mcpService.configure(configuration);
+  });
+  handleTrusted(IPC_CHANNELS.MCP_ROTATE, async () => {
+    if (!mcpService) throw new Error("MCP ist noch nicht initialisiert.");
+    const { enabled, relayUrl, name, scopes, extraRoots } = mcpService.getStatus();
+    return mcpService.configure({ enabled, relayUrl, name, scopes, extraRoots }, true);
+  });
+  handleTrusted(IPC_CHANNELS.MCP_CONNECTION_CODE, () => {
+    if (!mcpService) throw new Error("MCP ist noch nicht initialisiert.");
+    return mcpService.connectionCode();
+  });
   handleTrusted(IPC_CHANNELS.GET_SNAPSHOT, () => controller.getSnapshot());
   handleTrusted(IPC_CHANNELS.GET_VERSION, () => controller.getVersion());
   handleTrusted(IPC_CHANNELS.CHECK_UPDATES, async () => controller.checkUpdates());
@@ -389,20 +677,26 @@ function registerIpcHandlers(): void {
     if (result.started) {
       updateQuitTimer = setTimeout(() => {
         app.quit();
-      }, 5000);
+      }, 250);
     }
     return result;
   });
   handleTrusted(IPC_CHANNELS.OPEN_EXTERNAL, async (_event: IpcMainInvokeEvent, rawUrl: string) => {
     return openAllowedExternalUrl(String(rawUrl || "").trim(), MAIN_WINDOW_EXTERNAL_HOSTS);
   });
-  handleTrusted(IPC_CHANNELS.UPDATE_SETTINGS, (_event: IpcMainInvokeEvent, partial: RendererSettingsUpdate) => {
-    const validated = validateRendererSettingsUpdate(partial ?? {}, controller.getSettings());
-    const result = controller.updateSettings(validated as Partial<AppSettings>);
+  handleTrusted(IPC_CHANNELS.UPDATE_SETTINGS, async (_event: IpcMainInvokeEvent, partial: RendererSettingsUpdate) => {
+    const currentSettings = controller.getSettings();
+    const validated = validateRendererSettingsUpdate(partial ?? {}, currentSettings);
+    const result = await controller.updateSettingsWithLogs(prepareDailyStartSettingsPatch(validated, currentSettings) as Partial<AppSettings>);
     updateClipboardWatcher();
     updateTray();
     armScheduledStart(result.scheduledStartEpochMs || 0, { startOnPast: true });
-    return createRendererSettings(result);
+    if (hasDailyStartRulePatch(validated)) {
+      await dailyStartScheduler?.reconcile();
+    } else {
+      reconcileDailyStart("Einstellungsänderung");
+    }
+    return createRendererSettings(controller.getSettings());
   });
   handleTrusted(IPC_CHANNELS.RESET_PROVIDER_DAILY_USAGE, (_event: IpcMainInvokeEvent, provider: string) => {
     const validatedProvider = validateString(provider, "provider") as DebridProvider;
@@ -418,31 +712,42 @@ function registerIpcHandlers(): void {
     }
     return createRendererSettings(controller.resetDebridLinkApiKeyDailyUsage(validatedKeyId));
   });
-  handleTrusted(IPC_CHANNELS.RESET_MEGA_DEBRID_COOLDOWNS, () => controller.resetMegaDebridCooldowns());
 
-  handleTrusted(IPC_CHANNELS.CREATE_ACCOUNT, (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
+  handleTrusted(IPC_CHANNELS.CREATE_ACCOUNT, async (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
     const command = validateAccountCommand(rawCommand);
     if (command.action !== "create") throw new Error("Account-Payload ist ungültig");
-    return controller.executeAccountCommand(command);
+    const result = await controller.executeAccountCommand(command);
+    reconcileDailyStart("Accountänderung");
+    return result;
   });
 
-  handleTrusted(IPC_CHANNELS.REPLACE_ACCOUNT, (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
+  handleTrusted(IPC_CHANNELS.REPLACE_ACCOUNT, async (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
     const command = validateAccountCommand(rawCommand);
     if (command.action !== "replace") throw new Error("Account-Payload ist ungültig");
-    return controller.executeAccountCommand(command);
+    const result = await controller.executeAccountCommand(command);
+    reconcileDailyStart("Accountänderung");
+    return result;
   });
 
-  handleTrusted(IPC_CHANNELS.UPDATE_ACCOUNT_SECRET, (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
+  handleTrusted(IPC_CHANNELS.UPDATE_ACCOUNT_SECRET, async (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
     const command = validateAccountCommand(rawCommand);
     if (command.action !== "update-secret") throw new Error("Account-Payload ist ungültig");
-    return controller.executeAccountCommand(command);
+    const result = await controller.executeAccountCommand(command);
+    reconcileDailyStart("Accountänderung");
+    return result;
   });
 
-  handleTrusted(IPC_CHANNELS.DELETE_ACCOUNT, (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
+  handleTrusted(IPC_CHANNELS.DELETE_ACCOUNT, async (_event: IpcMainInvokeEvent, rawCommand: unknown) => {
     const command = validateAccountCommand(rawCommand);
     if (command.action !== "delete") throw new Error("Account-Payload ist ungültig");
-    return controller.executeAccountCommand(command);
+    const result = await controller.executeAccountCommand(command);
+    reconcileDailyStart("Accountänderung");
+    return result;
   });
+  handleTrusted(IPC_CHANNELS.REVEAL_ACCOUNT_SECRET, (_event: IpcMainInvokeEvent, rawRequest: unknown) => {
+    return controller.revealAccountSecret(validateAccountSecretRequest(rawRequest));
+  });
+  handleTrusted(IPC_CHANNELS.GET_ARCHIVE_PASSWORD_LIST, () => controller.getArchivePasswordList());
   handleTrusted(IPC_CHANNELS.ADD_LINKS, (_event: IpcMainInvokeEvent, payload: AddLinksPayload) => {
     validatePlainObject(payload ?? {}, "payload");
     validateString(payload?.rawText, "rawText");
@@ -458,6 +763,31 @@ function registerIpcHandlers(): void {
     const validPaths = validateStringArray(filePaths ?? [], "filePaths");
     const safePaths = validPaths.filter((p) => path.isAbsolute(p));
     return controller.addContainers(safePaths);
+  });
+  handleTrusted(IPC_CHANNELS.PREPARE_COLLECTOR_TEXT, (_event: IpcMainInvokeEvent, value: unknown) => {
+    return controller.prepareCollectorText(validateCollectorTextPreparationRequest(value));
+  });
+  handleTrusted(IPC_CHANNELS.PREPARE_COLLECTOR_CONTAINERS, (_event: IpcMainInvokeEvent, filePaths: unknown, addedAt: unknown) => {
+    const request = validateCollectorContainerPreparationRequest({ filePaths, addedAt });
+    return controller.prepareCollectorContainers(request.filePaths, request.addedAt);
+  });
+  handleTrusted(IPC_CHANNELS.ENRICH_COLLECTOR_PACKAGES, (event: IpcMainInvokeEvent, value: unknown) => {
+    const request = validateCollectorEnrichmentRequest(value);
+    return controller.enrichCollectorPackages(request, (result) => {
+      if (!event.sender.isDestroyed()) {
+        event.sender.send(IPC_CHANNELS.COLLECTOR_ENRICHMENT_PROGRESS, { requestId: request.requestId, result });
+      }
+    });
+  });
+  handleTrusted(IPC_CHANNELS.GET_COLLECTOR_STATE, () => controller.getCollectorState());
+  onTrusted(IPC_CHANNELS.GET_COLLECTOR_STATE_SYNC, (event: IpcMainEvent) => {
+    getCollectorStateFromSyncIpc(controller, event);
+  });
+  handleTrusted(IPC_CHANNELS.SAVE_COLLECTOR_STATE, (_event: IpcMainInvokeEvent, value: unknown) => {
+    return controller.saveCollectorState(validateCollectorPersistenceState(value));
+  });
+  onTrusted(IPC_CHANNELS.SAVE_COLLECTOR_STATE_SYNC, (event: IpcMainEvent, value: unknown) => {
+    saveCollectorStateFromSyncIpc(controller, event, value);
   });
   handleTrusted(IPC_CHANNELS.GET_START_CONFLICTS, () => controller.getStartConflicts());
   handleTrusted(IPC_CHANNELS.RESOLVE_START_CONFLICT, (_event: IpcMainInvokeEvent, packageId: string, policy: "keep" | "skip" | "overwrite") => {
@@ -490,6 +820,10 @@ function registerIpcHandlers(): void {
   handleTrusted(IPC_CHANNELS.CANCEL_PACKAGE, (_event: IpcMainInvokeEvent, packageId: string) => {
     validateString(packageId, "packageId");
     return controller.cancelPackage(packageId);
+  });
+  handleTrusted(IPC_CHANNELS.REMOVE_OFFLINE_PACKAGES, (_event: IpcMainInvokeEvent, packageIds: string[], scope: unknown = "archive") => {
+    if (scope !== "archive" && scope !== "package") throw new Error("Ungültiger Bereich für Offline-Bereinigung");
+    return controller.removeOfflinePackages(validateStringArray(packageIds, "packageIds"), scope);
   });
   handleTrusted(IPC_CHANNELS.RENAME_PACKAGE, (_event: IpcMainInvokeEvent, packageId: string, newName: string) => {
     validateString(packageId, "packageId");
@@ -579,6 +913,9 @@ function registerIpcHandlers(): void {
     validateString(entryId, "entryId");
     return controller.removeHistoryEntry(entryId);
   });
+  handleTrusted(IPC_CHANNELS.REMOVE_HISTORY_ENTRIES, (_event: IpcMainInvokeEvent, entryIds: unknown) => {
+    return controller.removeHistoryEntries(validateHistoryEntryIds(entryIds));
+  });
   handleTrusted(IPC_CHANNELS.REVEAL_HISTORY_ENTRY, (_event: IpcMainInvokeEvent, entryId: unknown) => {
     return revealHistoryEntry({ entryId }, {
       loadHistory: () => controller.getHistory(),
@@ -614,12 +951,31 @@ function registerIpcHandlers(): void {
     updateClipboardWatcher();
     return next;
   });
-  ipcMain.handle(IPC_CHANNELS.WRITE_CLIPBOARD_TEXT, (event, text: unknown) => (
-    writeClipboardTextFromIpc(event, text, getTrustedIpcOptions())
-  ));
+  handleTrusted(IPC_CHANNELS.WRITE_CLIPBOARD_TEXT, (_event: IpcMainInvokeEvent, rawText: unknown) => {
+    const text = validateClipboardWriteText(rawText);
+    const bytes = Buffer.byteLength(text, "utf8");
+    try {
+      clipboard.writeText(text);
+      return true;
+    } catch (error) {
+      logger.warn(`Zwischenablage-Schreibfehler: bytes=${bytes}, error=${String(error)}`);
+      throw error;
+    }
+  });
   handleTrusted(IPC_CHANNELS.PICK_FOLDER, async () => {
     const options = {
       properties: ["openDirectory", "createDirectory"] as Array<"openDirectory" | "createDirectory">
+    };
+    const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+    return result.canceled ? null : result.filePaths[0] || null;
+  });
+  handleTrusted(IPC_CHANNELS.PICK_PROXY_LIST, async () => {
+    const options = {
+      properties: ["openFile"] as Array<"openFile">,
+      filters: [
+        { name: "Proxy-Listen", extensions: ["txt", "list"] },
+        { name: "Alle Dateien", extensions: ["*"] }
+      ]
     };
     const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
     return result.canceled ? null : result.filePaths[0] || null;
@@ -640,7 +996,7 @@ function registerIpcHandlers(): void {
   handleTrusted(IPC_CHANNELS.RESET_DOWNLOAD_STATS, () => controller.resetDownloadStats());
 
   handleTrusted(IPC_CHANNELS.RESTART, () => {
-    app.relaunch();
+    scheduleApplicationRelaunch();
     app.quit();
   });
 
@@ -673,22 +1029,24 @@ function registerIpcHandlers(): void {
     return controller.importOnlineBackup(key);
   });
 
-  const runSupportBundleExport = createSupportBundleExportRunner({
-    chooseFile: async () => {
-      const options = {
-        defaultPath: controller.getSupportBundleDefaultFileName(),
-        filters: [{ name: "Support Bundle", extensions: ["zip"] }]
-      };
-      const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
-      return result.canceled || !result.filePath ? null : result.filePath;
-    },
-    onStart: () => controller.recordSupportBundleExportSelected(),
-    build: async () => (await controller.exportSupportBundle()).buffer,
-    write: writeSupportBundleAtomically,
-    onLifecycle: (event) => controller.recordSupportBundleExportLifecycle(event)
+  handleTrusted(IPC_CHANNELS.EXPORT_SUPPORT_BUNDLE, async () => {
+    const diagnosticOptions = getSupportBundleExportDialogOptions(controller.getSettings().language);
+    const selection = mainWindow
+      ? await dialog.showMessageBox(mainWindow, diagnosticOptions)
+      : await dialog.showMessageBox(diagnosticOptions);
+    if (selection.response !== 0) return { saved: false };
+    const options = {
+      defaultPath: controller.getSupportBundleDefaultFileName(),
+      filters: [{ name: "Support Bundle", extensions: ["zip"] }]
+    };
+    const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
+    if (result.canceled || !result.filePath) {
+      return { saved: false };
+    }
+    const exported = await controller.exportSupportBundle({ includeArchivePasswords: selection.checkboxChecked === true });
+    await fs.promises.writeFile(result.filePath, exported.buffer);
+    return { saved: true, filePath: result.filePath };
   });
-
-  handleTrusted(IPC_CHANNELS.EXPORT_SUPPORT_BUNDLE, () => runSupportBundleExport());
 
   handleTrusted(IPC_CHANNELS.OPEN_LOG, async () => {
     const logPath = getLogFilePath();
@@ -702,6 +1060,7 @@ function registerIpcHandlers(): void {
   handleTrusted(IPC_CHANNELS.OPEN_AUDIT_LOG, async () => {
     const logPath = controller.getAuditLogPath();
     if (logPath) {
+      await controller.flushLogs(logPath);
       await shell.openPath(logPath);
     }
   });
@@ -716,6 +1075,7 @@ function registerIpcHandlers(): void {
   handleTrusted(IPC_CHANNELS.OPEN_SESSION_LOG, async () => {
     const logPath = controller.getSessionLogPath();
     if (logPath) {
+      await controller.flushLogs(logPath);
       await shell.openPath(logPath);
     }
   });
@@ -731,6 +1091,7 @@ function registerIpcHandlers(): void {
     validateString(packageId, "packageId");
     const logPath = controller.getPackageLogPath(packageId);
     if (logPath) {
+      await controller.flushLogs(logPath);
       await shell.openPath(logPath);
     }
   });
@@ -799,12 +1160,13 @@ function registerIpcHandlers(): void {
     validateString(itemId, "itemId");
     const logPath = controller.getItemLogPath(itemId);
     if (logPath) {
+      await controller.flushLogs(logPath);
       await shell.openPath(logPath);
     }
   });
 
-  handleTrusted(IPC_CHANNELS.OPEN_REALDEBRID_LOGIN, async () => {
-    await controller.openRealDebridLoginWindow();
+  handleTrusted(IPC_CHANNELS.OPEN_REALDEBRID_LOGIN, async (_event: IpcMainInvokeEvent, rawRequest: unknown) => {
+    await controller.openRealDebridLoginWindow(validateRealDebridLoginRequest(rawRequest));
   });
 
   handleTrusted(IPC_CHANNELS.OPEN_ALLDEBRID_LOGIN, async () => {
@@ -834,8 +1196,12 @@ function registerIpcHandlers(): void {
     return controller.getDebridLinkHostLimits();
   });
 
-  handleTrusted(IPC_CHANNELS.CHECK_DEBRID_ACCOUNTS, async () => {
-    return controller.checkDebridAccounts();
+  handleTrusted(IPC_CHANNELS.CHECK_DEBRID_ACCOUNTS, async (_event, rawScope: unknown) => {
+    const scope = rawScope === undefined ? "active" : validateString(rawScope, "scope");
+    if (scope !== "active" && scope !== "all") {
+      throw new Error("scope ist ungültig");
+    }
+    return controller.checkDebridAccounts(scope);
   });
 
   handleTrusted(IPC_CHANNELS.CHECK_ACCOUNT_CREDENTIALS, async (_event, rawInput: unknown) => {
@@ -878,13 +1244,13 @@ function registerIpcHandlers(): void {
       return { restored: false, relaunch: false, message: "Keine Backup-Datei ausgewählt" };
     }
     const passphrase = typeof rawPassphrase === "string" ? rawPassphrase : undefined;
-    const importResult = controller.importBackup(data, passphrase);
+    const importResult = await controller.importBackup(data, passphrase);
     // Only a full restore (queue swapped) needs the auto-relaunch. A settings-
     // only import applied live — relaunching would be pointless and would drop
     // the running queue.
     if (importResult.restored && importResult.relaunch) {
       setTimeout(() => {
-        app.relaunch();
+        scheduleApplicationRelaunch();
         app.quit();
       }, 1500);
     }
@@ -904,6 +1270,12 @@ function registerIpcHandlers(): void {
       return;
     }
     mainWindow.webContents.send(IPC_CHANNELS.STATE_UPDATE, snapshot);
+  };
+  controller.onHistoryEntryAdded = (entry) => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return;
+    }
+    mainWindow.webContents.send(IPC_CHANNELS.HISTORY_ENTRY_ADDED, entry);
   };
 }
 
@@ -932,6 +1304,13 @@ function formatRendererErrorReport(rawReport: unknown): string {
   return parts.join(" ");
 }
 
+app.on("login", (event, _webContents, _requestDetails, authInfo, callback) => {
+  const credentials = getProxyAuthentication(authInfo);
+  if (!credentials) return;
+  event.preventDefault();
+  callback(credentials.username, credentials.password);
+});
+
 app.on("child-process-gone", (_event, details) => {
   const killed = details.reason !== "clean-exit" && details.reason !== "killed";
   const line = `Subprozess beendet: type=${details.type} reason=${details.reason} exitCode=${details.exitCode ?? "?"}${details.name ? ` name=${details.name}` : ""}${details.serviceName ? ` service=${details.serviceName}` : ""}`;
@@ -943,34 +1322,93 @@ app.on("child-process-gone", (_event, details) => {
 });
 
 app.on("second-instance", () => {
-  if (mainWindow) {
-    if (mainWindow.isMinimized()) {
-      mainWindow.restore();
-    }
-    mainWindow.show();
-    mainWindow.focus();
+  if (!applicationStarted) {
+    return;
   }
+  if (appShutdownStarted) {
+    if (scheduleApplicationRelaunch()) {
+      logger.info("Zweite Instanz während des Beendens erkannt – Neustart wird eingeplant");
+    }
+    return;
+  }
+  const result = restoreOrCreateMainWindow(mainWindow, createWindow, bindMainWindowLifecycle);
+  mainWindow = result.window;
+  logger.info(result.created
+    ? "Zweite Instanz erkannt – Hauptfenster neu erstellt"
+    : "Zweite Instanz erkannt – Hauptfenster wiederhergestellt");
 });
 
 app.whenReady().then(() => {
   configureCredentialProtector(safeStorage);
+  configureArchivePasswordDiagnostics(path.join(app.getPath("userData"), "runtime"), safeStorage);
   controller = new AppController();
+  runtimePerformance.start((sample) => logger.warn(`Hauptthread verzögert: maxDelayMs=${sample.maxDelayMs}, timerDelayMs=${sample.timerDelayMs}, cpuPercent=${sample.cpuPercent}`));
+  controller.retireLegacyRemoteDiagnostics();
+  dailyStartScheduler = new DailyStartScheduler(controller);
   cleanupStaleSubstDrives();
   registerIpcHandlers();
   mainWindow = createWindow();
   bindMainWindowLifecycle(mainWindow);
+  mcpService = new McpService({
+    controller,
+    baseDir: path.join(app.getPath("userData"), "runtime"),
+    start: async () => {
+      if (scheduledStartTimer !== null) {
+        clearTimeout(scheduledStartTimer);
+        scheduledStartTimer = null;
+        controller.updateSettings({ scheduledStartEpochMs: 0 });
+      }
+      await controller.start();
+    },
+    accountsChanged: () => reconcileDailyStart("MCP-Accountänderung"),
+    updateSettings: async partial => {
+      const current = controller.getSettings();
+      const validated = validateRendererSettingsUpdate(partial, current);
+      const result = await controller.updateSettingsWithLogs(prepareDailyStartSettingsPatch(validated, current) as Partial<AppSettings>);
+      updateClipboardWatcher();
+      updateTray();
+      armScheduledStart(result.scheduledStartEpochMs || 0, { startOnPast: true });
+      await dailyStartScheduler?.reconcile();
+      return createRendererSettings(controller.getSettings());
+    },
+    restart: () => { if (scheduleApplicationRelaunch()) app.quit(); },
+    quit: () => app.quit(),
+    confirm: async (tool, summary, digest, signal) => {
+      const english = controller.getSettings().language === "en";
+      const options: Electron.MessageBoxOptions = {
+        type: "warning",
+        title: english ? "Confirm MCP action" : "MCP-Aktion bestätigen",
+        message: english ? "Allow this remote action?" : "Diese Fernsteuerungsaktion erlauben?",
+        detail: `${tool}\n${JSON.stringify(summary, null, 2).slice(0, 6000)}\n\n${english ? "Action reference" : "Aktionsreferenz"}: ${digest.slice(0, 16)}`,
+        buttons: english ? ["Cancel", "Allow this action"] : ["Abbrechen", "Diese Aktion erlauben"],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+        signal: AbortSignal.any([signal, AbortSignal.timeout(60_000)])
+      };
+      const result = mainWindow && !mainWindow.isDestroyed() ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options);
+      return !signal.aborted && result.response === 1;
+    }
+  });
+  applicationStarted = true;
   updateClipboardWatcher();
   updateTray();
   // A scheduled start persists in the settings but its timer lived only in this
   // process — without re-arming it here, any restart (auto-update, reboot,
   // crash) silently swallowed the planned run.
   armScheduledStart(controller.getSettings().scheduledStartEpochMs || 0, { startOnPast: false });
+  dailyStartScheduler.begin((error) => {
+    logger.warn(`Täglicher Start konnte nicht abgeglichen werden: ${String(error)}`);
+  });
+  powerMonitor.on("suspend", handlePowerSuspend);
+  powerMonitor.on("resume", handlePowerResume);
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      mainWindow = createWindow();
-      bindMainWindowLifecycle(mainWindow);
+    if (!applicationStarted || appShutdownStarted) {
+      return;
     }
+    const result = restoreOrCreateMainWindow(mainWindow, createWindow, bindMainWindowLifecycle);
+    mainWindow = result.window;
   });
 }).catch((error) => {
   logger.error(`App-Start fehlgeschlagen: ${String(error?.stack || error)}`);
@@ -985,16 +1423,49 @@ app.on("window-all-closed", () => {
   }
 });
 
-app.on("before-quit", () => {
-  if (updateQuitTimer) { clearTimeout(updateQuitTimer); updateQuitTimer = null; }
-  stopClipboardWatcher();
-  destroyTray();
-  shutdownDaemon();
-  if (controller) {
-    try {
-      controller.shutdown();
-    } catch (error) {
-      logger.error(`Fehler beim Shutdown: ${String(error)}`);
-    }
-  }
+const confirmApplicationQuit = createConfirmedQuitHandler({
+  requestQuit: () => app.quit(),
+  forceQuit: () => {
+    shutdownDaemon();
+    app.exit(0);
+  },
+  onQuit: (listener) => app.once("quit", listener),
+  onTimeout: () => {
+    logger.error(`Fenster blockieren das Beenden seit ${APP_QUIT_CONFIRM_TIMEOUT_MS} ms – Prozess wird beendet`);
+  },
+  timeoutMs: APP_QUIT_CONFIRM_TIMEOUT_MS
 });
+
+app.on("before-quit", createBeforeQuitHandler({
+  cleanup: () => {
+    appShutdownStarted = true;
+    if (updateQuitTimer) { clearTimeout(updateQuitTimer); updateQuitTimer = null; }
+    cleanupSchedulerLifecycle(dailyStartScheduler, scheduledStartTimer);
+    scheduledStartTimer = null;
+    stopClipboardWatcher();
+    destroyTray();
+  },
+  shutdown: async () => {
+    try {
+      await mcpService?.shutdown();
+      if (controller) {
+        await controller.shutdown();
+      }
+    } finally {
+      shutdownDaemon();
+      await flushArchivePasswordDiagnostics();
+    }
+  },
+  continueQuit: confirmApplicationQuit,
+  forceQuit: () => {
+    shutdownDaemon();
+    app.exit(0);
+  },
+  onError: (error) => {
+    logger.error(`Fehler beim Shutdown: ${String(error)}`);
+  },
+  onTimeout: () => {
+    logger.error(`Shutdown nach ${APP_SHUTDOWN_TIMEOUT_MS} ms erzwungen`);
+  },
+  timeoutMs: APP_SHUTDOWN_TIMEOUT_MS
+}));

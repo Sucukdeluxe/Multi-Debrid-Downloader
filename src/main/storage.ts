@@ -1,22 +1,44 @@
 import fs from "node:fs";
+import { normalizeConfiguredAccountRules } from "./account-usage-rules";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { getDebridLinkApiKeyIds } from "../shared/debrid-link-keys";
-import { getMegaDebridAccountIds, getMegaDebridAccountStatusId, mergeMegaDebridCredentialPools, parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
-import { AppSettings, AudioStripSummary, BandwidthScheduleEntry, DebridAccountStatus, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, HistoryEntry, HistoryRetentionMode, LogStorageLocation, PackageEntry, PackagePriority, SessionState } from "../shared/types";
+import { getMegaDebridAccountIds, mergeMegaDebridCredentialPools, parseMegaDebridAccounts } from "../shared/mega-debrid-accounts";
+import { AppSettings, AppTheme, ArchiveOperationMetric, AudioStripSummary, BandwidthScheduleEntry, DailyStartOutcome, DebridAccountStatus, DebridFallbackProvider, DebridProvider, DownloadItem, DownloadStatus, FailurePhase, HistoryEntry, HistoryRetentionMode, LogStorageLocation, PackageEntry, PackagePriority, RemuxOperationMetric, SessionState, ThemePreference } from "../shared/types";
 import { getProviderUsageDayKey } from "../shared/provider-daily-limits";
+import { getRealDebridAccountIds, normalizeRealDebridWebAccountIds, parseRealDebridApiAccounts, serializeRealDebridApiAccounts } from "../shared/real-debrid-accounts";
 import { defaultSettings } from "./constants";
 import { needsPersistedSettingsRewrite, protectPersistedSettings, restorePersistedSettings } from "./credential-protection";
 import { logger } from "./logger";
+import { isValidLocalDate } from "./daily-start-scheduler";
+import { projectPackageFailureCategory } from "./package-telemetry";
+import { waitForStatisticsLedgerSaves } from "./statistics-ledger";
+import { runtimePerformance } from "./runtime-performance";
 
-const VALID_PRIMARY_PROVIDERS = new Set(["realdebrid", "megadebrid-api", "megadebrid-web", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink", "linksnappy"]);
-const VALID_FALLBACK_PROVIDERS = new Set(["none", "realdebrid", "megadebrid-api", "megadebrid-web", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink", "linksnappy"]);
+export function migrateProductUserDataDirectory(appDataPath: string): string {
+  const legacyPath = path.join(appDataPath, "Real-Debrid-Downloader");
+  const targetPath = path.join(appDataPath, "Multi-Debrid-Downloader");
+  if (fs.existsSync(targetPath) || !fs.existsSync(legacyPath)) {
+    return targetPath;
+  }
+  try {
+    fs.renameSync(legacyPath, targetPath);
+    return targetPath;
+  } catch {
+    return legacyPath;
+  }
+}
+
+const VALID_PRIMARY_PROVIDERS = new Set(["realdebrid", "megadebrid-api", "megadebrid-web", "bestdebrid", "alldebrid", "deepbrid", "ddownload", "onefichier", "debridlink", "linksnappy"]);
+const VALID_FALLBACK_PROVIDERS = new Set(["none", "realdebrid", "megadebrid-api", "megadebrid-web", "bestdebrid", "alldebrid", "deepbrid", "ddownload", "onefichier", "debridlink", "linksnappy"]);
 const VALID_CLEANUP_MODES = new Set(["none", "trash", "delete"]);
 const VALID_CONFLICT_MODES = new Set(["overwrite", "skip", "rename", "ask"]);
 const VALID_FINISHED_POLICIES = new Set(["never", "immediate", "on_start", "package_done"]);
 const VALID_SPEED_MODES = new Set(["global", "per_download"]);
-const VALID_THEMES = new Set(["dark", "light"]);
+const VALID_THEMES = new Set<AppTheme>(["dark", "light"]);
+const VALID_THEME_PREFERENCES = new Set<ThemePreference>(["dark", "light", "system"]);
 const VALID_EXTRACT_CPU_PRIORITIES = new Set(["high", "middle", "low"]);
 const VALID_HISTORY_RETENTION_MODES = new Set<HistoryRetentionMode>(["never", "session", "permanent"]);
 const VALID_LOG_STORAGE_LOCATIONS = new Set<LogStorageLocation>(["appdata", "desktop"]);
@@ -24,9 +46,13 @@ const VALID_PACKAGE_PRIORITIES = new Set<string>(["high", "normal", "low"]);
 const VALID_DOWNLOAD_STATUSES = new Set<DownloadStatus>([
   "queued", "validating", "downloading", "paused", "reconnect_wait", "extracting", "integrity_check", "completed", "failed", "cancelled"
 ]);
-const VALID_ITEM_PROVIDERS = new Set<DebridProvider>(["realdebrid", "megadebrid", "megadebrid-api", "megadebrid-web", "bestdebrid", "alldebrid", "ddownload", "onefichier", "debridlink"]);
+const VALID_ITEM_PROVIDERS = new Set<DebridProvider>(["realdebrid", "megadebrid", "megadebrid-api", "megadebrid-web", "bestdebrid", "alldebrid", "deepbrid", "ddownload", "onefichier", "debridlink"]);
 const VALID_ONLINE_STATUSES = new Set(["online", "offline", "checking"]);
+const VALID_OPERATION_STATUSES = new Set(["completed", "failed", "cancelled"]);
+const VALID_HISTORY_STATUSES = new Set(["completed", "partial", "failed", "cancelled", "deleted"]);
+const VALID_FAILURE_PHASES = new Set(["download", "extract", "remux", "cleanup", "postprocess"]);
 const SAFE_SESSION_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
+const SAFE_OUTPUT_SIGNATURE_RE = /^[a-f0-9]{64}$/;
 
 function asText(value: unknown): string {
   return String(value ?? "").trim();
@@ -61,6 +87,20 @@ function normalizeSessionTargetPath(value: unknown, packageOutputDir: string): s
     return "";
   }
   return path.resolve(targetPath);
+}
+
+function normalizeSessionMetadataRenameTargetPath(value: unknown, packageOutputDir: string): string {
+  if (!path.isAbsolute(packageOutputDir)) {
+    return "";
+  }
+  const targetPath = normalizeSessionTargetPath(value, packageOutputDir);
+  if (!targetPath) {
+    return "";
+  }
+  const resolvedOutputDir = path.resolve(packageOutputDir);
+  const normalizedTargetPath = process.platform === "win32" ? targetPath.toLowerCase() : targetPath;
+  const normalizedOutputDir = process.platform === "win32" ? resolvedOutputDir.toLowerCase() : resolvedOutputDir;
+  return normalizedTargetPath === normalizedOutputDir ? "" : targetPath;
 }
 
 function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
@@ -269,35 +309,49 @@ function normalizeNamedByteMap(raw: unknown, allowedKeys: readonly string[]): Re
 function normalizeDebridAccountStatuses(
   value: unknown,
   megaIds: string[],
-  debridLinkIds: string[]
+  debridLinkIds: string[],
+  realDebridIds: string[],
+  legacyRealDebridTargetId: string | null,
+  deepbridConfigured: boolean
 ): Record<string, DebridAccountStatus> {
-  const allowed = new Set([
-    ...megaIds,
-    ...megaIds.flatMap((accountId) => [
-      getMegaDebridAccountStatusId(accountId, "api"),
-      getMegaDebridAccountStatusId(accountId, "web")
-    ]),
-    ...debridLinkIds
-  ]);
+  const allowed = new Set([...megaIds, ...debridLinkIds, ...realDebridIds, ...(deepbridConfigured ? ["svc-deepbrid"] : [])]);
   const result: Record<string, DebridAccountStatus> = {};
   if (value && typeof value === "object" && !Array.isArray(value)) {
-    for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
-      if (!allowed.has(key) || !raw || typeof raw !== "object") {
+    for (const [storedKey, raw] of Object.entries(value as Record<string, unknown>)) {
+      const key = storedKey === "svc-realdebrid" ? legacyRealDebridTargetId : storedKey;
+      if (!key || !allowed.has(key) || !raw || typeof raw !== "object") {
+        continue;
+      }
+      if (storedKey === "svc-realdebrid" && result[key]) {
         continue;
       }
       const entry = raw as Partial<DebridAccountStatus>;
       if (typeof entry.accountId !== "string" || typeof entry.checkedAt !== "number") {
         continue;
       }
+      const provider = key === "svc-deepbrid"
+        ? "deepbrid"
+        : entry.provider === "debridlink"
+          ? "debridlink"
+          : entry.provider === "realdebrid"
+            ? "realdebrid"
+            : "megadebrid";
+      let username = typeof entry.username === "string" ? entry.username : undefined;
+      let email = typeof entry.email === "string" ? entry.email : undefined;
+      if (provider === "debridlink" && !username && email && !email.includes("@")) {
+        username = email;
+        email = undefined;
+      }
       result[key] = {
-        accountId: entry.accountId,
-        provider: entry.provider === "debridlink" ? "debridlink" : "megadebrid",
+        accountId: key,
+        provider,
         label: String(entry.label || ""),
         maskedLogin: String(entry.maskedLogin || ""),
         valid: Boolean(entry.valid),
         isPremium: Boolean(entry.isPremium),
         premiumUntilMs: typeof entry.premiumUntilMs === "number" ? entry.premiumUntilMs : null,
-        email: typeof entry.email === "string" ? entry.email : undefined,
+        username,
+        email,
         message: String(entry.message || ""),
         checkedAt: entry.checkedAt
       };
@@ -380,7 +434,7 @@ const DEPRECATED_UPDATE_REPO_NAMES = new Set([
 function migrateUpdateRepo(raw: string, fallback: string): string {
   const trimmed = raw.trim();
   const repoName = trimmed.split("/").filter(Boolean).pop()?.replace(/\.git$/i, "").toLowerCase() || "";
-  if (!trimmed || (DEPRECATED_UPDATE_REPO_NAMES.has(repoName) && trimmed.toLowerCase() !== fallback.toLowerCase())) {
+  if (!trimmed || (DEPRECATED_UPDATE_REPO_NAMES.has(repoName) && trimmed !== fallback)) {
     return fallback;
   }
   return trimmed;
@@ -388,7 +442,13 @@ function migrateUpdateRepo(raw: string, fallback: string): string {
 
 export function normalizeSettings(settings: AppSettings): AppSettings {
   const defaults = defaultSettings();
+  const theme = VALID_THEMES.has(settings.theme) ? settings.theme : defaults.theme;
+  const themePreference = VALID_THEME_PREFERENCES.has(settings.themePreference) ? settings.themePreference : theme;
   const directorySettings = migrateLegacyDefaultDirectories(settings, defaults);
+  const legacySuccessMode = settings.notifyOnPackageCompleted === true ? "individual" : "digest";
+  const notifyPackageSuccessMode = settings.notifyPackageSuccessMode === "individual" || settings.notifyPackageSuccessMode === "digest"
+    ? settings.notifyPackageSuccessMode
+    : legacySuccessMode;
   const currentUsageDay = getProviderUsageDayKey();
   const legacyMegaLogin = asText(settings.megaLogin);
   const legacyMegaPassword = asText(settings.megaPassword);
@@ -433,11 +493,35 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     ? normalizeStringList(settings.megaDebridWebDisabledAccountIds, megaDebridWebAccountIds)
     : legacyMegaDisabledAccountIds.filter((id) => megaDebridWebAccountIds.includes(id));
   const megaDebridDisabledAccountIds = [...new Set([...megaDebridApiDisabledAccountIds, ...megaDebridWebDisabledAccountIds])];
+  const legacyRealDebridToken = asText(settings.token);
+  const hasRealDebridApiPool = Object.prototype.hasOwnProperty.call(settings, "realDebridApiTokens");
+  const rawRealDebridApiAccounts = hasRealDebridApiPool
+    ? parseRealDebridApiAccounts(String(settings.realDebridApiTokens ?? ""))
+    : legacyRealDebridToken ? parseRealDebridApiAccounts(legacyRealDebridToken) : [];
+  const realDebridApiTokens = serializeRealDebridApiAccounts(rawRealDebridApiAccounts.map((account) => ({
+    id: account.id.startsWith("rda_legacy_") ? `rda_${randomUUID().replace(/-/g, "")}` : account.id,
+    token: account.token
+  })));
+  const hasRealDebridWebPool = Object.prototype.hasOwnProperty.call(settings, "realDebridWebAccountIds");
+  let realDebridWebAccountIds = normalizeRealDebridWebAccountIds(settings.realDebridWebAccountIds);
+  if (!hasRealDebridWebPool && Boolean(settings.realDebridUseWebLogin)) {
+    realDebridWebAccountIds = ["rdw_legacy"];
+  }
+  const realDebridAccountIds = getRealDebridAccountIds({
+    realDebridApiTokens,
+    realDebridWebAccountIds,
+    realDebridDisabledAccountIds: []
+  });
+  const realDebridDisabledAccountIds = normalizeStringList(settings.realDebridDisabledAccountIds, realDebridAccountIds);
+  const legacyRealDebridTargetId = Boolean(settings.realDebridUseWebLogin) && realDebridWebAccountIds.includes("rdw_legacy")
+    ? "rdw_legacy"
+    : (parseRealDebridApiAccounts(realDebridApiTokens)[0]?.id || realDebridWebAccountIds[0] || null);
   const providerDailyUsageDayRaw = asText(settings.providerDailyUsageDay);
   const providerDailyUsageDay = /^\d{4}-\d{2}-\d{2}$/.test(providerDailyUsageDayRaw)
     ? providerDailyUsageDayRaw
     : currentUsageDay;
   const debridLinkApiKeyIds = getDebridLinkApiKeyIds(String(settings.debridLinkApiKeys ?? ""));
+  const deepbridApiKey = asText(settings.deepbridApiKey);
   const providerDailyUsageBytes = normalizeProviderByteMap(
     settings.providerDailyUsageBytes,
     megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled,
@@ -461,10 +545,19 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     debridLinkApiKeyIds
   );
   const debridLinkDisabledKeyIds = normalizeStringList(settings.debridLinkDisabledKeyIds, debridLinkApiKeyIds);
+  const validDailyStartOutcomes = new Set<DailyStartOutcome>(["", "started", "already_active", "empty_queue", "missing_account", "start_failed", "missed"]);
   const normalized: AppSettings = {
     language: settings.language === "de" ? "de" : "en",
     token: asText(settings.token),
     realDebridUseWebLogin: Boolean(settings.realDebridUseWebLogin),
+    realDebridApiTokens,
+    realDebridWebAccountIds,
+    realDebridDisabledAccountIds,
+    realDebridAccountDailyLimitBytes: normalizeNamedByteMap(settings.realDebridAccountDailyLimitBytes, realDebridAccountIds),
+    realDebridAccountDailyUsageBytes: providerDailyUsageDay === currentUsageDay
+      ? normalizeNamedByteMap(settings.realDebridAccountDailyUsageBytes, realDebridAccountIds)
+      : {},
+    realDebridAccountTotalUsageBytes: normalizeNamedByteMap(settings.realDebridAccountTotalUsageBytes, realDebridAccountIds),
     megaLogin,
     megaPassword,
     megaCredentials,
@@ -477,6 +570,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     bestDebridUseWebLogin: Boolean(settings.bestDebridUseWebLogin),
     allDebridToken: asText(settings.allDebridToken),
     allDebridUseWebLogin: Boolean(settings.allDebridUseWebLogin),
+    deepbridApiKey,
     ddownloadLogin: asText(settings.ddownloadLogin),
     ddownloadPassword: asText(settings.ddownloadPassword),
     oneFichierApiKey: asText(settings.oneFichierApiKey),
@@ -486,6 +580,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     linkSnappyPassword: asText(settings.linkSnappyPassword),
     archivePasswordList: String(settings.archivePasswordList ?? "").replace(/\r\n|\r/g, "\n"),
     rememberToken: Boolean(settings.rememberToken),
+    accountUsageRules: {},
     providerOrder: normalizeProviderOrder(
       settings.providerOrder,
       megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled,
@@ -496,6 +591,9 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     providerTertiary: normalizeFallbackProvider(settings.providerTertiary, megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled),
     autoProviderFallback: Boolean(settings.autoProviderFallback),
     outputDir: normalizeAbsoluteDir(directorySettings.outputDir, defaults.outputDir),
+    createWorkDirectoriesOnStartup: settings.createWorkDirectoriesOnStartup !== undefined
+      ? Boolean(settings.createWorkDirectoriesOnStartup)
+      : defaults.createWorkDirectoriesOnStartup,
     packageName: asText(settings.packageName),
     autoExtract: Boolean(settings.autoExtract),
     autoRename4sf4sj: Boolean(settings.autoRename4sf4sj),
@@ -516,19 +614,26 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     maxParallel: clampNumber(settings.maxParallel, defaults.maxParallel, 1, 50),
     maxParallelExtract: clampNumber(settings.maxParallelExtract, defaults.maxParallelExtract, 1, 8),
     retryLimit: clampNumber(settings.retryLimit, defaults.retryLimit, 0, 99),
+    offlineSkipScope: settings.offlineSkipScope === "package" ? "package" : "archive",
     reconnectWaitSeconds: clampNumber(settings.reconnectWaitSeconds, defaults.reconnectWaitSeconds, 10, 600),
     completedCleanupPolicy: settings.completedCleanupPolicy,
     speedLimitEnabled: Boolean(settings.speedLimitEnabled),
     speedLimitKbps: clampNumber(settings.speedLimitKbps, defaults.speedLimitKbps, 0, 500000),
     speedLimitMode: settings.speedLimitMode,
+    proxyDownloadEnabled: Boolean(settings.proxyDownloadEnabled),
+    proxyListPath: asText(settings.proxyListPath).slice(0, 4096),
+    proxyApiProxyIndex: clampNumber(settings.proxyApiProxyIndex, defaults.proxyApiProxyIndex, 1, 100000),
+    proxyConnectionsPerDownload: clampNumber(settings.proxyConnectionsPerDownload, defaults.proxyConnectionsPerDownload, 2, 80),
     autoUpdateCheck: Boolean(settings.autoUpdateCheck),
     updateRepo: migrateUpdateRepo(asText(settings.updateRepo), defaults.updateRepo),
     clipboardWatch: Boolean(settings.clipboardWatch),
+    switchToCollectorOnClipboard: settings.switchToCollectorOnClipboard === true,
     minimizeToTray: Boolean(settings.minimizeToTray),
     logStorageLocation: VALID_LOG_STORAGE_LOCATIONS.has(settings.logStorageLocation)
       ? settings.logStorageLocation
       : defaults.logStorageLocation,
     collapseNewPackages: settings.collapseNewPackages !== undefined ? Boolean(settings.collapseNewPackages) : defaults.collapseNewPackages,
+    animatePackageDisclosure: settings.animatePackageDisclosure !== undefined ? Boolean(settings.animatePackageDisclosure) : defaults.animatePackageDisclosure,
     historyRetentionMode: VALID_HISTORY_RETENTION_MODES.has(settings.historyRetentionMode)
       ? settings.historyRetentionMode
       : defaults.historyRetentionMode,
@@ -548,10 +653,18 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     notifyOnPackageCompleted: settings.notifyOnPackageCompleted !== undefined ? Boolean(settings.notifyOnPackageCompleted) : defaults.notifyOnPackageCompleted,
     notifyOnPackageFailed: settings.notifyOnPackageFailed !== undefined ? Boolean(settings.notifyOnPackageFailed) : defaults.notifyOnPackageFailed,
     notifyOnRunFinished: settings.notifyOnRunFinished !== undefined ? Boolean(settings.notifyOnRunFinished) : defaults.notifyOnRunFinished,
+    notifyPackageSuccessMode,
+    notifyOnRemainingBelow: settings.notifyOnRemainingBelow !== undefined ? Boolean(settings.notifyOnRemainingBelow) : defaults.notifyOnRemainingBelow,
+    notifyRemainingThresholdGb: clampNumber(settings.notifyRemainingThresholdGb, 50, 1, 100000),
+    notifyOnDownloadStall: settings.notifyOnDownloadStall !== undefined ? Boolean(settings.notifyOnDownloadStall) : defaults.notifyOnDownloadStall,
+    notifyStallAfterSeconds: clampNumber(settings.notifyStallAfterSeconds, 90, 60, 3600),
+    notifyStallCooldownMinutes: clampNumber(settings.notifyStallCooldownMinutes, 10, 5, 1440),
+    notifyOnDownloadRecovery: settings.notifyOnDownloadRecovery !== undefined ? Boolean(settings.notifyOnDownloadRecovery) : defaults.notifyOnDownloadRecovery,
     totalDownloadedAllTime: typeof settings.totalDownloadedAllTime === "number" && settings.totalDownloadedAllTime >= 0 ? settings.totalDownloadedAllTime : defaults.totalDownloadedAllTime,
     totalCompletedFilesAllTime: typeof settings.totalCompletedFilesAllTime === "number" && settings.totalCompletedFilesAllTime >= 0 ? settings.totalCompletedFilesAllTime : defaults.totalCompletedFilesAllTime,
     totalRuntimeAllTimeMs: typeof settings.totalRuntimeAllTimeMs === "number" && settings.totalRuntimeAllTimeMs >= 0 ? settings.totalRuntimeAllTimeMs : defaults.totalRuntimeAllTimeMs,
-    theme: VALID_THEMES.has(settings.theme) ? settings.theme : defaults.theme,
+    theme,
+    themePreference,
     bandwidthSchedules: normalizeBandwidthSchedules(settings.bandwidthSchedules),
     columnOrder: normalizeColumnOrder(settings.columnOrder, settings.columnOrderVersion),
     columnOrderVersion: 3,
@@ -577,11 +690,25 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
       ? normalizeNamedByteMap(settings.megaDebridAccountDailyUsageBytes, megaDebridAccountIds)
       : {},
     megaDebridAccountTotalUsageBytes: normalizeNamedByteMap(settings.megaDebridAccountTotalUsageBytes, megaDebridAccountIds),
-    debridAccountStatuses: normalizeDebridAccountStatuses(settings.debridAccountStatuses, megaDebridAccountIds, debridLinkApiKeyIds),
+    debridAccountStatuses: normalizeDebridAccountStatuses(
+      settings.debridAccountStatuses,
+      megaDebridAccountIds,
+      debridLinkApiKeyIds,
+      realDebridAccountIds,
+      legacyRealDebridTargetId,
+      Boolean(deepbridApiKey)
+    ),
     providerDailyUsageDay: providerDailyUsageDay === currentUsageDay ? providerDailyUsageDay : currentUsageDay,
+    dailyStartEnabled: settings.dailyStartEnabled !== undefined ? Boolean(settings.dailyStartEnabled) : defaults.dailyStartEnabled,
+    dailyStartMinuteOfDay: clampNumber(settings.dailyStartMinuteOfDay, defaults.dailyStartMinuteOfDay, 0, 1_439),
+    dailyStartFirstLocalDate: isValidLocalDate(asText(settings.dailyStartFirstLocalDate)) ? asText(settings.dailyStartFirstLocalDate) : "",
+    dailyStartLastHandledLocalDate: isValidLocalDate(asText(settings.dailyStartLastHandledLocalDate)) ? asText(settings.dailyStartLastHandledLocalDate) : "",
+    dailyStartPendingLocalDate: isValidLocalDate(asText(settings.dailyStartPendingLocalDate)) ? asText(settings.dailyStartPendingLocalDate) : "",
+    dailyStartLastOutcome: validDailyStartOutcomes.has(settings.dailyStartLastOutcome) ? settings.dailyStartLastOutcome : "",
     scheduledStartEpochMs: clampNumber(settings.scheduledStartEpochMs, defaults.scheduledStartEpochMs, 0, Number.MAX_SAFE_INTEGER)
   };
 
+  normalized.accountUsageRules = normalizeConfiguredAccountRules({ ...normalized, accountUsageRules: settings.accountUsageRules });
   if (!VALID_PRIMARY_PROVIDERS.has(normalized.providerPrimary)) {
     normalized.providerPrimary = defaults.providerPrimary;
   }
@@ -621,6 +748,10 @@ export interface StoragePaths {
   configFile: string;
   sessionFile: string;
   historyFile: string;
+  statisticsFile: string;
+  notificationOutboxFile: string;
+  notificationHealthFile: string;
+  collectorFile: string;
 }
 
 export function createStoragePaths(baseDir: string): StoragePaths {
@@ -628,7 +759,43 @@ export function createStoragePaths(baseDir: string): StoragePaths {
     baseDir,
     configFile: path.join(baseDir, "rd_downloader_config.json"),
     sessionFile: path.join(baseDir, "rd_session_state.json"),
-    historyFile: path.join(baseDir, "rd_history.json")
+    historyFile: path.join(baseDir, "rd_history.json"),
+    statisticsFile: path.join(baseDir, "rd_statistics.json"),
+    notificationOutboxFile: path.join(baseDir, "rd_notification_outbox.json"),
+    notificationHealthFile: path.join(baseDir, "rd_notification_health.json"),
+    collectorFile: path.join(baseDir, "rd_collector_state.json")
+  };
+}
+
+export function createFileRollback(filePaths: readonly string[]): () => void {
+  const snapshots = [...new Set(filePaths)].map((filePath) => ({
+    filePath,
+    payload: fs.existsSync(filePath) ? fs.readFileSync(filePath) : null
+  }));
+  return () => {
+    let firstError: unknown = null;
+    for (const snapshot of snapshots) {
+      try {
+        if (snapshot.payload === null) {
+          fs.rmSync(snapshot.filePath, { force: true });
+          continue;
+        }
+        fs.mkdirSync(path.dirname(snapshot.filePath), { recursive: true });
+        const tempPath = `${snapshot.filePath}.${process.pid}.${randomUUID()}.rollback.tmp`;
+        try {
+          fs.writeFileSync(tempPath, snapshot.payload);
+          syncRenameWithExdevFallback(tempPath, snapshot.filePath);
+        } catch (error) {
+          try { fs.rmSync(tempPath, { force: true }); } catch { }
+          throw error;
+        }
+      } catch (error) {
+        firstError ??= error;
+      }
+    }
+    if (firstError) {
+      throw firstError;
+    }
   };
 }
 
@@ -689,6 +856,73 @@ function normalizeAudioStripSummary(raw: unknown): AudioStripSummary | undefined
   };
 }
 
+function normalizeFailureCategory(phase: FailurePhase, detail: unknown): string {
+  const value = asText(detail);
+  return value ? projectPackageFailureCategory(phase, value) : "";
+}
+
+function normalizeArchiveOperations(raw: unknown): ArchiveOperationMetric[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.slice(0, 10_000).flatMap((value) => {
+    const operation = asRecord(value);
+    if (!operation) {
+      return [];
+    }
+    const id = normalizeSessionId(operation.id);
+    const status = asText(operation.status);
+    if (!id || !VALID_OPERATION_STATUSES.has(status)) {
+      return [];
+    }
+    return [{
+      id,
+      name: asText(operation.name),
+      itemIds: Array.isArray(operation.itemIds)
+        ? operation.itemIds.map(normalizeSessionId).filter(Boolean).slice(0, 100_000)
+        : [],
+      partCount: clampNumber(operation.partCount, 0, 0, 100_000),
+      startedAt: clampNumber(operation.startedAt, 0, 0, Number.MAX_SAFE_INTEGER),
+      completedAt: clampNumber(operation.completedAt, 0, 0, Number.MAX_SAFE_INTEGER),
+      durationMs: clampNumber(operation.durationMs, 0, 0, Number.MAX_SAFE_INTEGER),
+      status: status as ArchiveOperationMetric["status"],
+      errorCategory: normalizeFailureCategory("extract", operation.errorCategory)
+    }];
+  });
+}
+
+function normalizeRemuxOperations(raw: unknown): RemuxOperationMetric[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.slice(0, 10_000).flatMap((value) => {
+    const operation = asRecord(value);
+    if (!operation) {
+      return [];
+    }
+    const id = normalizeSessionId(operation.id);
+    const status = asText(operation.status);
+    if (!id || !VALID_OPERATION_STATUSES.has(status)) {
+      return [];
+    }
+    return [{
+      id,
+      fileName: asText(operation.fileName),
+      startedAt: clampNumber(operation.startedAt, 0, 0, Number.MAX_SAFE_INTEGER),
+      completedAt: clampNumber(operation.completedAt, 0, 0, Number.MAX_SAFE_INTEGER),
+      durationMs: clampNumber(operation.durationMs, 0, 0, Number.MAX_SAFE_INTEGER),
+      status: status as RemuxOperationMetric["status"],
+      errorCategory: normalizeFailureCategory("remux", operation.errorCategory)
+    }];
+  });
+}
+
+function optionalClampedNumber(record: Record<string, unknown>, key: string, max = Number.MAX_SAFE_INTEGER): number | undefined {
+  return Object.prototype.hasOwnProperty.call(record, key)
+    ? clampNumber(record[key], 0, 0, max)
+    : undefined;
+}
+
 function migrateLegacyMegaEnableFlags(parsed: AppSettings): AppSettings {
   if (parsed.megaDebridApiEnabled !== undefined || parsed.megaDebridWebEnabled !== undefined) {
     return parsed;
@@ -704,14 +938,26 @@ function migrateLegacyMegaEnableFlags(parsed: AppSettings): AppSettings {
   return { ...parsed, megaDebridApiEnabled: preferApi, megaDebridWebEnabled: !preferApi };
 }
 
+const PERSISTED_SETTINGS_KEYS = new Set(Object.keys(defaultSettings()));
+
+function isPersistedSettingsEnvelope(value: unknown): boolean {
+  const parsed = asRecord(value);
+  return Boolean(parsed && Object.keys(parsed).some((key) => PERSISTED_SETTINGS_KEYS.has(key)));
+}
+
 interface LoadedSettingsFile {
   settings: AppSettings;
   needsCredentialRewrite: boolean;
 }
 
-function readSettingsFile(filePath: string): LoadedSettingsFile | null {
+function readSettingsFile(filePath: string, contents?: string): LoadedSettingsFile | null {
   try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as AppSettings;
+    const raw = JSON.parse(contents ?? fs.readFileSync(filePath, "utf8")) as unknown;
+    if (!isPersistedSettingsEnvelope(raw)) {
+      logger.error(`Settings-Datei beschädigt (Struktur ungültig): ${filePath}`);
+      return null;
+    }
+    const parsed = raw as AppSettings;
     const needsCredentialRewrite = needsPersistedSettingsRewrite(parsed);
     const restored = restorePersistedSettings(parsed);
     const migratedLanguage = (restored as Partial<AppSettings>).language === undefined ? "de" : restored.language;
@@ -720,6 +966,9 @@ function readSettingsFile(filePath: string): LoadedSettingsFile | null {
       ...defaultSettings(),
       ...migrated,
       language: migratedLanguage,
+      themePreference: Object.prototype.hasOwnProperty.call(parsed, "themePreference")
+        ? migrated.themePreference
+        : VALID_THEMES.has(migrated.theme) ? migrated.theme : defaultSettings().themePreference,
       columnOrderVersion: parsed.columnOrderVersion
     } as AppSettings;
     if (!Object.prototype.hasOwnProperty.call(parsed, "megaDebridApiDisabledAccountIds")) {
@@ -727,6 +976,15 @@ function readSettingsFile(filePath: string): LoadedSettingsFile | null {
     }
     if (!Object.prototype.hasOwnProperty.call(parsed, "megaDebridWebDisabledAccountIds")) {
       delete (mergedInput as Partial<AppSettings>).megaDebridWebDisabledAccountIds;
+    }
+    if (!Object.prototype.hasOwnProperty.call(parsed, "realDebridApiTokens")) {
+      delete (mergedInput as Partial<AppSettings>).realDebridApiTokens;
+    }
+    if (!Object.prototype.hasOwnProperty.call(parsed, "realDebridWebAccountIds")) {
+      delete (mergedInput as Partial<AppSettings>).realDebridWebAccountIds;
+    }
+    if (!Object.prototype.hasOwnProperty.call(parsed, "notifyPackageSuccessMode")) {
+      delete (mergedInput as Partial<AppSettings>).notifyPackageSuccessMode;
     }
     const merged = normalizeSettings(mergedInput);
     return { settings: merged, needsCredentialRewrite };
@@ -769,8 +1027,6 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
     const providerRaw = asText(item.provider) as DebridProvider;
 
     const onlineStatusRaw = asText(item.onlineStatus);
-    const lastError = asText(item.lastError);
-    const legacyResumeFailureCount = /^(?:range_ignored_on_resume:|range_mismatch_on_resume:|resume_download_underflow:)/i.test(lastError) ? 1 : 0;
 
     itemsById[id] = {
       id,
@@ -788,15 +1044,18 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
       progressPercent: clampNumber(item.progressPercent, 0, 0, 100),
       fileName: asText(item.fileName) || "download.bin",
       targetPath: asText(item.targetPath),
+      metadataRenameTargetPath: asText(item.metadataRenameTargetPath) || undefined,
       resumable: item.resumable === undefined ? true : Boolean(item.resumable),
       attempts: clampNumber(item.attempts, 0, 0, 10_000),
-      lastError,
+      archiveRecoveryRedownloads: item.archiveRecoveryRedownloads === undefined
+        ? undefined
+        : clampNumber(item.archiveRecoveryRedownloads, 0, 0, 1),
+      lastError: asText(item.lastError),
       fullStatus: asText(item.fullStatus),
-      resumeLinkRenewalFailures: clampNumber(item.resumeLinkRenewalFailures, legacyResumeFailureCount, 0, 1_000_000) || undefined,
-      resumeHardResetUsed: Boolean(item.resumeHardResetUsed) || undefined,
-      resumeResetPending: Boolean(item.resumeResetPending) || undefined,
-      http416FreshRestarts: clampNumber(item.http416FreshRestarts, 0, 0, 100) || undefined,
       onlineStatus: VALID_ONLINE_STATUSES.has(onlineStatusRaw) ? onlineStatusRaw as "online" | "offline" | "checking" : undefined,
+      onlineCheckedAt: item.onlineCheckedAt === undefined
+        ? undefined
+        : clampNumber(item.onlineCheckedAt, 0, 0, now),
       createdAt: clampNumber(item.createdAt, now, 0, Number.MAX_SAFE_INTEGER),
       updatedAt: clampNumber(item.updatedAt, now, 0, Number.MAX_SAFE_INTEGER)
     };
@@ -841,6 +1100,20 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
         : [],
       downloadStartedAt: clampNumber(pkg.downloadStartedAt, 0, 0, Number.MAX_SAFE_INTEGER),
       downloadCompletedAt: clampNumber(pkg.downloadCompletedAt, 0, 0, Number.MAX_SAFE_INTEGER),
+      downloadEndedAt: clampNumber(pkg.downloadEndedAt, 0, 0, Number.MAX_SAFE_INTEGER),
+      postProcessQueuedAt: clampNumber(pkg.postProcessQueuedAt, 0, 0, Number.MAX_SAFE_INTEGER),
+      postProcessStartedAt: clampNumber(pkg.postProcessStartedAt, 0, 0, Number.MAX_SAFE_INTEGER),
+      postProcessCompletedAt: clampNumber(pkg.postProcessCompletedAt, 0, 0, Number.MAX_SAFE_INTEGER),
+      terminalAt: clampNumber(pkg.terminalAt, 0, 0, Number.MAX_SAFE_INTEGER),
+      archiveOperations: normalizeArchiveOperations(pkg.archiveOperations),
+      remuxOperations: normalizeRemuxOperations(pkg.remuxOperations),
+      outputCount: clampNumber(pkg.outputCount, 0, 0, 1_000_000),
+      outputBaselineSignatures: Array.isArray(pkg.outputBaselineSignatures)
+        ? [...new Set(pkg.outputBaselineSignatures.map((value) => asText(value).toLowerCase()).filter((value) => SAFE_OUTPUT_SIGNATURE_RE.test(value)))].slice(0, 1_000_000)
+        : undefined,
+      cleanupErrorCategory: normalizeFailureCategory("cleanup", pkg.cleanupErrorCategory),
+      postProcessErrorCategory: normalizeFailureCategory("postprocess", pkg.postProcessErrorCategory),
+      resultGeneration: clampNumber(pkg.resultGeneration, 1, 1, Number.MAX_SAFE_INTEGER),
       createdAt: clampNumber(pkg.createdAt, now, 0, Number.MAX_SAFE_INTEGER),
       updatedAt: clampNumber(pkg.updatedAt, now, 0, Number.MAX_SAFE_INTEGER)
     };
@@ -858,6 +1131,7 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
   }
 
   let droppedUnsafeTargetPathCount = 0;
+  let droppedUnsafeMetadataRenameTargetPathCount = 0;
   for (const item of Object.values(itemsById)) {
     const pkg = packagesById[item.packageId];
     if (!pkg) {
@@ -868,9 +1142,22 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
       droppedUnsafeTargetPathCount += 1;
     }
     item.targetPath = safeTargetPath;
+    const metadataRenameTargetPath = asText(item.metadataRenameTargetPath);
+    const safeMetadataRenameTargetPath = normalizeSessionMetadataRenameTargetPath(metadataRenameTargetPath, pkg.outputDir);
+    if (metadataRenameTargetPath && !safeMetadataRenameTargetPath) {
+      droppedUnsafeMetadataRenameTargetPathCount += 1;
+    }
+    if (safeMetadataRenameTargetPath) {
+      item.metadataRenameTargetPath = safeMetadataRenameTargetPath;
+    } else {
+      delete item.metadataRenameTargetPath;
+    }
   }
   if (droppedUnsafeTargetPathCount > 0) {
     logger.warn(`normalizeLoadedSession: ${droppedUnsafeTargetPathCount} unsichere targetPath-Eintraege verworfen`);
+  }
+  if (droppedUnsafeMetadataRenameTargetPathCount > 0) {
+    logger.warn(`normalizeLoadedSession: ${droppedUnsafeMetadataRenameTargetPathCount} unsichere metadataRenameTargetPath-Einträge verworfen`);
   }
 
   for (const pkg of Object.values(packagesById)) {
@@ -917,13 +1204,12 @@ export function normalizeLoadedSession(raw: unknown): SessionState {
 
 export function loadSettings(paths: StoragePaths): AppSettings {
   ensureBaseDir(paths.baseDir);
-  if (!fs.existsSync(paths.configFile)) {
-    return defaultSettings();
-  }
-  const loaded = readSettingsFile(paths.configFile);
+  const primaryExists = fs.existsSync(paths.configFile);
+  const backupFile = `${paths.configFile}.bak`;
+  const backupExists = fs.existsSync(backupFile);
+  const loaded = primaryExists ? readSettingsFile(paths.configFile) : null;
   if (loaded) {
-    const backupFile = `${paths.configFile}.bak`;
-    const backupNeedsCredentialRewrite = fs.existsSync(backupFile)
+    const backupNeedsCredentialRewrite = backupExists
       ? needsSettingsFileCredentialRewrite(backupFile)
       : false;
     if (loaded.needsCredentialRewrite || backupNeedsCredentialRewrite) {
@@ -932,15 +1218,18 @@ export function loadSettings(paths: StoragePaths): AppSettings {
     return loaded.settings;
   }
 
-  const backupFile = `${paths.configFile}.bak`;
-  const backupLoaded = fs.existsSync(backupFile) ? readSettingsFile(backupFile) : null;
+  const backupLoaded = backupExists ? readSettingsFile(backupFile) : null;
   if (backupLoaded) {
-    logger.warn("Konfiguration defekt, Backup-Datei wird verwendet");
+    logger.warn(primaryExists
+      ? "Konfiguration defekt, Backup-Datei wird verwendet"
+      : "Konfiguration fehlt, Backup-Datei wird verwendet");
     rewriteProtectedSettings(paths, backupLoaded.settings);
     return backupLoaded.settings;
   }
 
-  logger.error("Konfiguration konnte nicht geladen werden (auch Backup fehlgeschlagen)");
+  if (primaryExists || backupExists) {
+    logger.error("Konfiguration konnte nicht geladen werden (auch Backup fehlgeschlagen)");
+  }
   return defaultSettings();
 }
 
@@ -958,7 +1247,7 @@ function syncRenameWithExdevFallback(tempPath: string, targetPath: string): void
 }
 
 function settingsPayload(settings: AppSettings): string {
-  return JSON.stringify(protectPersistedSettings(normalizeSettings(settings)), safeJsonReplacer, 2);
+  return runtimePerformance.measureSync("settings.encode", () => JSON.stringify(protectPersistedSettings(normalizeSettings(settings)), safeJsonReplacer, 2));
 }
 
 interface SettingsSavePayloads {
@@ -970,8 +1259,7 @@ function credentialFreeSettingsPayload(settings: AppSettings): string {
   return settingsPayload({ ...settings, rememberToken: false });
 }
 
-function createSettingsSavePayloads(paths: StoragePaths, settings: AppSettings): SettingsSavePayloads {
-  const previous = readSettingsFile(paths.configFile);
+function createSettingsSavePayloads(paths: StoragePaths, settings: AppSettings, previous = readSettingsFile(paths.configFile)): SettingsSavePayloads {
   const backup = previous
     ? settingsPayload({ ...previous.settings, rememberToken: settings.rememberToken })
     : credentialFreeSettingsPayload(settings);
@@ -1051,7 +1339,22 @@ function sleepSyncMs(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-function readSessionFile(filePath: string): SessionState | null {
+interface LoadedSessionFile {
+  session: SessionState;
+  wasRunning: boolean;
+}
+
+function isPersistedSessionEnvelope(value: unknown): boolean {
+  const parsed = asRecord(value);
+  return Boolean(
+    parsed
+    && Array.isArray(parsed.packageOrder)
+    && asRecord(parsed.packages)
+    && asRecord(parsed.items)
+  );
+}
+
+function readSessionFile(filePath: string): LoadedSessionFile | null {
   let raw: string | null = null;
   const maxAttempts = 5;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -1079,11 +1382,17 @@ function readSessionFile(filePath: string): SessionState | null {
   }
   try {
     const parsed = JSON.parse(raw) as unknown;
-    const session = normalizeLoadedSessionTransientFields(normalizeLoadedSession(parsed));
+    if (!isPersistedSessionEnvelope(parsed)) {
+      logger.error(`Session-Datei beschädigt (Struktur ungültig): ${filePath}`);
+      return null;
+    }
+    const normalized = normalizeLoadedSession(parsed);
+    const wasRunning = normalized.running;
+    const session = normalizeLoadedSessionTransientFields(normalized);
     const pkgCount = Object.keys(session.packages).length;
     const itemCount = Object.keys(session.items).length;
     logger.info(`Session geladen: ${filePath} (${pkgCount} Pakete, ${itemCount} Items)`);
-    return session;
+    return { session, wasRunning };
   } catch (error) {
     logger.error(`Session-Datei beschädigt (JSON ungültig): ${filePath}: ${String(error)}`);
     return null;
@@ -1098,21 +1407,42 @@ export function saveSettings(paths: StoragePaths, settings: AppSettings): void {
   writeSettingsFileAtomically(paths.configFile, payloads.primary);
 }
 
-let asyncSettingsSaveRunning = false;
-let asyncSettingsSaveQueued: { paths: StoragePaths; settings: AppSettings; generation: number } | null = null;
+interface AsyncSaveWaiter {
+  resolve: () => void;
+  reject: (error: unknown) => void;
+}
+
+interface QueuedSettingsSave {
+  paths: StoragePaths;
+  settings: AppSettings;
+  generation: number;
+  waiters: AsyncSaveWaiter[];
+}
+
+let asyncSettingsSaveQueued: QueuedSettingsSave | null = null;
 let syncSettingsSaveGeneration = 0;
+let activeSettingsSave: Promise<void> | null = null;
 
 async function writeSettingsPayload(paths: StoragePaths, settings: AppSettings, generation: number): Promise<void> {
   await fs.promises.mkdir(paths.baseDir, { recursive: true });
-  const payloads = createSettingsSavePayloads(paths, settings);
+  let previous: LoadedSettingsFile | null = null;
+  try {
+    previous = readSettingsFile(paths.configFile, await runtimePerformance.measure("settings.read", () => fsp.readFile(paths.configFile, "utf8")));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      logger.warn(`Settings-Datei nicht lesbar: ${paths.configFile}: ${String(error)}`);
+    }
+  }
+  if (generation < syncSettingsSaveGeneration) return;
+  const payloads = createSettingsSavePayloads(paths, settings, previous);
   const tempPath = `${paths.configFile}.settings.tmp`;
-  await fsp.writeFile(tempPath, payloads.primary, "utf8");
+  await runtimePerformance.measure("settings.write", () => fsp.writeFile(tempPath, payloads.primary, "utf8"));
   if (generation < syncSettingsSaveGeneration) {
     await fsp.rm(tempPath, { force: true }).catch(() => {});
     return;
   }
   const backupTempPath = `${paths.configFile}.bak.settings.tmp`;
-  await fsp.writeFile(backupTempPath, payloads.backup, "utf8");
+  await runtimePerformance.measure("settings.write", () => fsp.writeFile(backupTempPath, payloads.backup, "utf8"));
   if (generation < syncSettingsSaveGeneration) {
     await Promise.all([
       fsp.rm(tempPath, { force: true }).catch(() => {}),
@@ -1121,56 +1451,74 @@ async function writeSettingsPayload(paths: StoragePaths, settings: AppSettings, 
     return;
   }
   try {
-    await fsp.rename(backupTempPath, `${paths.configFile}.bak`);
-  } catch (renameError: unknown) {
-    if (renameError && typeof renameError === "object" && "code" in renameError && (renameError as NodeJS.ErrnoException).code === "EXDEV") {
-      await fsp.copyFile(backupTempPath, `${paths.configFile}.bak`);
-      await fsp.rm(backupTempPath, { force: true }).catch(() => {});
-    } else {
-      await fsp.rm(backupTempPath, { force: true }).catch(() => {});
-      throw renameError;
-    }
-  }
-  try {
-    await fsp.rename(tempPath, paths.configFile);
-  } catch (renameError: unknown) {
-    if (renameError && typeof renameError === "object" && "code" in renameError && (renameError as NodeJS.ErrnoException).code === "EXDEV") {
-      if (generation < syncSettingsSaveGeneration) {
-        await fsp.rm(tempPath, { force: true }).catch(() => {});
-        return;
-      }
-      await fsp.copyFile(tempPath, paths.configFile);
-      await fsp.rm(tempPath, { force: true }).catch(() => {});
-    } else {
-      await fsp.rm(tempPath, { force: true }).catch(() => {});
-      throw renameError;
-    }
+    runtimePerformance.measureSync("settings.commit", () => {
+      syncRenameWithExdevFallback(backupTempPath, `${paths.configFile}.bak`);
+      syncRenameWithExdevFallback(tempPath, paths.configFile);
+    });
+  } catch (error) {
+    await Promise.all([
+      fsp.rm(backupTempPath, { force: true }).catch(() => {}),
+      fsp.rm(tempPath, { force: true }).catch(() => {})
+    ]);
+    throw error;
   }
 }
 
-async function saveSettingsPayloadAsync(paths: StoragePaths, settings: AppSettings, generation: number): Promise<void> {
-  if (asyncSettingsSaveRunning) {
-    asyncSettingsSaveQueued = { paths, settings, generation };
+function startSettingsSaveDrain(): void {
+  if (activeSettingsSave) {
     return;
   }
-  asyncSettingsSaveRunning = true;
-  try {
-    await writeSettingsPayload(paths, settings, generation);
-  } catch (error) {
-    logger.error(`Async Settings-Save fehlgeschlagen: ${String(error)}`);
-  } finally {
-    asyncSettingsSaveRunning = false;
-    if (asyncSettingsSaveQueued) {
-      const queued = asyncSettingsSaveQueued;
+  let operation: Promise<void>;
+  operation = (async () => {
+    while (asyncSettingsSaveQueued) {
+      const current = asyncSettingsSaveQueued;
       asyncSettingsSaveQueued = null;
-      void saveSettingsPayloadAsync(queued.paths, queued.settings, queued.generation);
+      try {
+        await writeSettingsPayload(current.paths, current.settings, current.generation);
+        current.waiters.forEach((waiter) => waiter.resolve());
+      } catch (error) {
+        current.waiters.forEach((waiter) => waiter.reject(error));
+        const pending = asyncSettingsSaveQueued as QueuedSettingsSave | null;
+        asyncSettingsSaveQueued = null;
+        pending?.waiters.forEach((waiter) => waiter.reject(error));
+        logger.error(`Async Settings-Save fehlgeschlagen: ${String(error)}`);
+        throw error;
+      }
     }
-  }
+  })().finally(() => {
+    if (activeSettingsSave === operation) {
+      activeSettingsSave = null;
+    }
+    if (asyncSettingsSaveQueued) {
+      startSettingsSaveDrain();
+    }
+  });
+  activeSettingsSave = operation;
+  void operation.catch(() => {});
+}
+
+function saveSettingsPayloadAsync(paths: StoragePaths, settings: AppSettings, generation: number): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const waiter = { resolve, reject };
+    if (asyncSettingsSaveQueued) {
+      asyncSettingsSaveQueued.paths = paths;
+      asyncSettingsSaveQueued.settings = settings;
+      asyncSettingsSaveQueued.generation = generation;
+      asyncSettingsSaveQueued.waiters.push(waiter);
+    } else {
+      asyncSettingsSaveQueued = { paths, settings, generation, waiters: [waiter] };
+    }
+    startSettingsSaveDrain();
+  });
 }
 
 export async function saveSettingsAsync(paths: StoragePaths, settings: AppSettings): Promise<void> {
+  const captured = captureSettings(settings);
+  if (activePersistenceBarrier) {
+    return blockSettingsSave(activePersistenceBarrier, paths, captured);
+  }
   const generation = syncSettingsSaveGeneration;
-  await saveSettingsPayloadAsync(paths, captureSettings(settings), generation);
+  await saveSettingsPayloadAsync(paths, captured, generation);
 }
 
 export function emptySession(): SessionState {
@@ -1200,6 +1548,7 @@ export type SessionLoadStatus =
 export interface SessionLoadResult {
   session: SessionState;
   status: SessionLoadStatus;
+  wasRunning: boolean;
 }
 
 export function loadSessionWithStatus(paths: StoragePaths): SessionLoadResult {
@@ -1214,7 +1563,7 @@ export function loadSessionWithStatus(paths: StoragePaths): SessionLoadResult {
   if (!primaryExists) {
     if (!backupExists && !anyTempExists) {
       logger.info("Keine Session-Datei vorhanden, starte mit leerer Session");
-      return { session: emptySession(), status: "empty-fresh" };
+      return { session: emptySession(), status: "empty-fresh", wasRunning: false };
     }
     logger.warn("Session-Primaerdatei fehlt, aber Backup/Temp vorhanden — Wiederherstellung wird versucht");
   }
@@ -1222,60 +1571,43 @@ export function loadSessionWithStatus(paths: StoragePaths): SessionLoadResult {
   const primary = primaryExists ? readSessionFile(paths.sessionFile) : null;
 
   if (primary) {
-    const primaryPkgCount = Object.keys(primary.packages).length;
-    if (primaryPkgCount === 0 && backupExists) {
-      const backup = readSessionFile(backupFile);
-      if (backup) {
-        const backupPkgCount = Object.keys(backup.packages).length;
-        if (backupPkgCount > 0) {
-          logger.warn(`Session-Datei ist leer (0 Pakete), aber Backup hat ${backupPkgCount} Pakete — verwende Backup`);
-          try {
-            const payload = JSON.stringify({ ...backup, updatedAt: Date.now() }, safeJsonReplacer);
-            fs.writeFileSync(syncTempFile, payload, "utf8");
-            syncRenameWithExdevFallback(syncTempFile, paths.sessionFile);
-          } catch {
-          }
-          return { session: backup, status: "recovered-backup" };
-        }
-      }
-    }
-    return { session: primary, status: "ok" };
+    return { session: primary.session, status: "ok", wasRunning: primary.wasRunning };
   }
 
   const backup = backupExists ? readSessionFile(backupFile) : null;
   if (backup) {
     logger.warn("Session defekt, Backup-Datei wird verwendet");
     try {
-      const payload = JSON.stringify({ ...backup, updatedAt: Date.now() }, safeJsonReplacer);
+      const payload = JSON.stringify({ ...backup.session, updatedAt: Date.now() }, safeJsonReplacer);
       fs.writeFileSync(syncTempFile, payload, "utf8");
       syncRenameWithExdevFallback(syncTempFile, paths.sessionFile);
     } catch {
     }
-    return { session: backup, status: "recovered-backup" };
+    return { session: backup.session, status: "recovered-backup", wasRunning: backup.wasRunning };
   }
 
   for (const kind of ["sync", "async"] as const) {
     const tmpPath = sessionTempPath(paths.sessionFile, kind);
     if (fs.existsSync(tmpPath)) {
       const tmpSession = readSessionFile(tmpPath);
-      if (tmpSession && Object.keys(tmpSession.packages).length > 0) {
-        logger.warn(`Session aus temporaerer Datei wiederhergestellt: ${tmpPath} (${Object.keys(tmpSession.packages).length} Pakete)`);
+      if (tmpSession && Object.keys(tmpSession.session.packages).length > 0) {
+        logger.warn(`Session aus temporaerer Datei wiederhergestellt: ${tmpPath} (${Object.keys(tmpSession.session.packages).length} Pakete)`);
         try {
-          const payload = JSON.stringify({ ...tmpSession, updatedAt: Date.now() }, safeJsonReplacer);
+          const payload = JSON.stringify({ ...tmpSession.session, updatedAt: Date.now() }, safeJsonReplacer);
           fs.writeFileSync(paths.sessionFile, payload, "utf8");
         } catch {
         }
-        return { session: tmpSession, status: "recovered-temp" };
+        return { session: tmpSession.session, status: "recovered-temp", wasRunning: tmpSession.wasRunning };
       }
     }
   }
 
   if (primaryExists || backupExists || anyTempExists) {
     logger.error("Session konnte nicht geladen werden (Primary, Backup und Temp-Dateien fehlgeschlagen) — Schutz gegen leeres Ueberschreiben aktiv");
-    return { session: emptySession(), status: "empty-unreadable" };
+    return { session: emptySession(), status: "empty-unreadable", wasRunning: false };
   }
 
-  return { session: emptySession(), status: "empty-fresh" };
+  return { session: emptySession(), status: "empty-fresh", wasRunning: false };
 }
 
 export function loadSession(paths: StoragePaths): SessionState {
@@ -1308,18 +1640,25 @@ export function saveSession(paths: StoragePaths, session: SessionState): void {
   }
 }
 
-let asyncSaveRunning = false;
-let asyncSaveQueued: { paths: StoragePaths; payload: string; generation: number } | null = null;
+interface QueuedSessionSave {
+  paths: StoragePaths;
+  payload: string;
+  generation: number;
+  waiters: AsyncSaveWaiter[];
+}
+
+let asyncSaveQueued: QueuedSessionSave | null = null;
 let syncSaveGeneration = 0;
+let activeSessionSave: Promise<void> | null = null;
 
 async function writeSessionPayload(paths: StoragePaths, payload: string, generation: number): Promise<void> {
   await fs.promises.mkdir(paths.baseDir, { recursive: true });
-  await fsp.copyFile(paths.sessionFile, sessionBackupPath(paths.sessionFile)).catch(() => {});
   const tempPath = sessionTempPath(paths.sessionFile, "async");
+  const backupTempPath = `${paths.sessionFile}.async.backup.tmp`;
   const handle = await fsp.open(tempPath, "w");
   try {
-    await handle.writeFile(payload, "utf8");
-    await handle.sync();
+    await runtimePerformance.measure("session.write", () => handle.writeFile(payload, "utf8"));
+    await runtimePerformance.measure("session.sync", () => handle.sync());
   } finally {
     await handle.close();
   }
@@ -1327,53 +1666,315 @@ async function writeSessionPayload(paths: StoragePaths, payload: string, generat
     await fsp.rm(tempPath, { force: true }).catch(() => {});
     return;
   }
+  let backupReady = false;
   try {
-    await fsp.rename(tempPath, paths.sessionFile);
-  } catch (renameError: unknown) {
-    if (renameError && typeof renameError === "object" && "code" in renameError && (renameError as NodeJS.ErrnoException).code === "EXDEV") {
-      if (generation < syncSaveGeneration) {
-        await fsp.rm(tempPath, { force: true }).catch(() => {});
-        return;
-      }
-      await fsp.copyFile(tempPath, paths.sessionFile);
-      await fsp.rm(tempPath, { force: true }).catch(() => {});
-    } else {
-      await fsp.rm(tempPath, { force: true }).catch(() => {});
-      throw renameError;
+    await runtimePerformance.measure("session.backup", () => fsp.copyFile(paths.sessionFile, backupTempPath));
+    backupReady = true;
+  } catch {
+    await fsp.rm(backupTempPath, { force: true }).catch(() => {});
+  }
+  if (generation < syncSaveGeneration) {
+    await Promise.all([
+      fsp.rm(tempPath, { force: true }).catch(() => {}),
+      fsp.rm(backupTempPath, { force: true }).catch(() => {})
+    ]);
+    return;
+  }
+  let backupCleanup: Promise<void> | null = null;
+  if (backupReady) {
+    try {
+      runtimePerformance.measureSync("session.commit", () => syncRenameWithExdevFallback(backupTempPath, sessionBackupPath(paths.sessionFile)));
+    } catch {
+      backupCleanup = fsp.rm(backupTempPath, { force: true }).catch(() => {});
     }
+  }
+  try {
+    runtimePerformance.measureSync("session.commit", () => syncRenameWithExdevFallback(tempPath, paths.sessionFile));
+  } catch (error) {
+    await fsp.rm(tempPath, { force: true }).catch(() => {});
+    throw error;
+  } finally {
+    await backupCleanup;
   }
 }
 
-async function saveSessionPayloadAsync(paths: StoragePaths, payload: string, generation: number): Promise<void> {
-  if (asyncSaveRunning) {
-    asyncSaveQueued = { paths, payload, generation };
+function startSessionSaveDrain(): void {
+  if (activeSessionSave) {
     return;
   }
-  asyncSaveRunning = true;
-  try {
-    await writeSessionPayload(paths, payload, generation);
-  } catch (error) {
-    logger.error(`Async Session-Save fehlgeschlagen: ${String(error)}`);
-  } finally {
-    asyncSaveRunning = false;
-    if (asyncSaveQueued) {
-      const queued = asyncSaveQueued;
+  let operation: Promise<void>;
+  operation = (async () => {
+    while (asyncSaveQueued) {
+      const current = asyncSaveQueued;
       asyncSaveQueued = null;
-      void saveSessionPayloadAsync(queued.paths, queued.payload, queued.generation);
+      try {
+        await writeSessionPayload(current.paths, current.payload, current.generation);
+        current.waiters.forEach((waiter) => waiter.resolve());
+      } catch (error) {
+        current.waiters.forEach((waiter) => waiter.reject(error));
+        const pending = asyncSaveQueued as QueuedSessionSave | null;
+        asyncSaveQueued = null;
+        pending?.waiters.forEach((waiter) => waiter.reject(error));
+        logger.error(`Async Session-Save fehlgeschlagen: ${String(error)}`);
+        throw error;
+      }
+    }
+  })().finally(() => {
+    if (activeSessionSave === operation) {
+      activeSessionSave = null;
+    }
+    if (asyncSaveQueued) {
+      startSessionSaveDrain();
+    }
+  });
+  activeSessionSave = operation;
+  void operation.catch(() => {});
+}
+
+function saveSessionPayloadAsync(paths: StoragePaths, payload: string, generation: number): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const waiter = { resolve, reject };
+    if (asyncSaveQueued) {
+      asyncSaveQueued.paths = paths;
+      asyncSaveQueued.payload = payload;
+      asyncSaveQueued.generation = generation;
+      asyncSaveQueued.waiters.push(waiter);
+    } else {
+      asyncSaveQueued = { paths, payload, generation, waiters: [waiter] };
+    }
+    startSessionSaveDrain();
+  });
+}
+
+interface BlockedSettingsSave {
+  paths: StoragePaths;
+  settings: AppSettings;
+  waiters: Array<{ resolve: () => void; reject: (error: unknown) => void }>;
+}
+
+interface BlockedSessionSave {
+  paths: StoragePaths;
+  payload: string;
+  waiters: Array<{ resolve: () => void; reject: (error: unknown) => void }>;
+}
+
+interface PersistenceBarrierState {
+  blockedSettings: BlockedSettingsSave | null;
+  blockedSession: BlockedSessionSave | null;
+  released: Promise<void>;
+  resolveReleased: () => void;
+}
+
+export interface PersistenceBarrier {
+  release: (options: { replayBlocked: boolean }) => Promise<void>;
+}
+
+let activePersistenceBarrier: PersistenceBarrierState | null = null;
+
+interface DetachedAsyncSaves {
+  settings: QueuedSettingsSave | null;
+  session: QueuedSessionSave | null;
+}
+
+function detachPendingAsyncSaves(): DetachedAsyncSaves {
+  const detached = {
+    settings: asyncSettingsSaveQueued,
+    session: asyncSaveQueued
+  };
+  asyncSettingsSaveQueued = null;
+  asyncSaveQueued = null;
+  return detached;
+}
+
+function rejectDetachedAsyncSaves(detached: DetachedAsyncSaves, error: unknown): void {
+  detached.settings?.waiters.forEach((waiter) => waiter.reject(error));
+  detached.session?.waiters.forEach((waiter) => waiter.reject(error));
+}
+
+function requeueDetachedAsyncSaves(detached: DetachedAsyncSaves): void {
+  if (detached.settings) {
+    detached.settings.generation = syncSettingsSaveGeneration;
+    if (asyncSettingsSaveQueued) {
+      asyncSettingsSaveQueued.waiters.unshift(...detached.settings.waiters);
+    } else {
+      asyncSettingsSaveQueued = detached.settings;
+    }
+    startSettingsSaveDrain();
+  }
+  if (detached.session) {
+    detached.session.generation = syncSaveGeneration;
+    if (asyncSaveQueued) {
+      asyncSaveQueued.waiters.unshift(...detached.session.waiters);
+    } else {
+      asyncSaveQueued = detached.session;
+    }
+    startSessionSaveDrain();
+  }
+}
+
+function blockSettingsSave(state: PersistenceBarrierState, paths: StoragePaths, settings: AppSettings): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const waiter = { resolve, reject };
+    if (state.blockedSettings) {
+      state.blockedSettings.paths = paths;
+      state.blockedSettings.settings = settings;
+      state.blockedSettings.waiters.push(waiter);
+    } else {
+      state.blockedSettings = { paths, settings, waiters: [waiter] };
+    }
+  });
+}
+
+function blockSessionSave(state: PersistenceBarrierState, paths: StoragePaths, payload: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const waiter = { resolve, reject };
+    if (state.blockedSession) {
+      state.blockedSession.paths = paths;
+      state.blockedSession.payload = payload;
+      state.blockedSession.waiters.push(waiter);
+    } else {
+      state.blockedSession = { paths, payload, waiters: [waiter] };
+    }
+  });
+}
+
+async function replayBlockedSaves(state: PersistenceBarrierState): Promise<void> {
+  let firstError: unknown;
+  let failed = false;
+  while (state.blockedSettings || state.blockedSession) {
+    const blockedSettings = state.blockedSettings;
+    const blockedSession = state.blockedSession;
+    state.blockedSettings = null;
+    state.blockedSession = null;
+    const [settingsResult, sessionResult] = await Promise.allSettled([
+      blockedSettings
+        ? saveSettingsPayloadAsync(blockedSettings.paths, blockedSettings.settings, syncSettingsSaveGeneration)
+        : Promise.resolve(),
+      blockedSession
+        ? saveSessionPayloadAsync(blockedSession.paths, blockedSession.payload, syncSaveGeneration)
+        : Promise.resolve()
+    ]);
+    if (blockedSettings) {
+      if (settingsResult.status === "fulfilled") {
+        blockedSettings.waiters.forEach((waiter) => waiter.resolve());
+      } else {
+        blockedSettings.waiters.forEach((waiter) => waiter.reject(settingsResult.reason));
+        if (!failed) {
+          firstError = settingsResult.reason;
+          failed = true;
+        }
+      }
+    }
+    if (blockedSession) {
+      if (sessionResult.status === "fulfilled") {
+        blockedSession.waiters.forEach((waiter) => waiter.resolve());
+      } else {
+        blockedSession.waiters.forEach((waiter) => waiter.reject(sessionResult.reason));
+        if (!failed) {
+          firstError = sessionResult.reason;
+          failed = true;
+        }
+      }
     }
   }
+  if (failed) {
+    throw firstError;
+  }
+}
+
+function rejectBlockedSaves(state: PersistenceBarrierState, error: unknown): void {
+  state.blockedSettings?.waiters.forEach((waiter) => waiter.reject(error));
+  state.blockedSession?.waiters.forEach((waiter) => waiter.reject(error));
+  state.blockedSettings = null;
+  state.blockedSession = null;
+}
+
+function resolveBlockedSaves(state: PersistenceBarrierState): void {
+  state.blockedSettings?.waiters.forEach((waiter) => waiter.resolve());
+  state.blockedSession?.waiters.forEach((waiter) => waiter.resolve());
+  state.blockedSettings = null;
+  state.blockedSession = null;
+}
+
+export async function acquirePersistenceBarrier(): Promise<PersistenceBarrier> {
+  while (activePersistenceBarrier) {
+    await activePersistenceBarrier.released;
+  }
+  let resolveReleased = () => {};
+  const released = new Promise<void>((resolve) => { resolveReleased = resolve; });
+  const state: PersistenceBarrierState = {
+    blockedSettings: null,
+    blockedSession: null,
+    released,
+    resolveReleased
+  };
+  activePersistenceBarrier = state;
+  const detachedSaves = detachPendingAsyncSaves();
+  const activeWriteResults = await Promise.allSettled([
+    activeSettingsSave ?? Promise.resolve(),
+    activeSessionSave ?? Promise.resolve(),
+    waitForStatisticsLedgerSaves()
+  ]);
+  const activeWriteFailure = activeWriteResults.find((result) => result.status === "rejected");
+  if (activeWriteFailure?.status === "rejected") {
+    rejectBlockedSaves(state, activeWriteFailure.reason);
+    if (activePersistenceBarrier === state) {
+      activePersistenceBarrier = null;
+    }
+    requeueDetachedAsyncSaves(detachedSaves);
+    state.resolveReleased();
+    throw activeWriteFailure.reason;
+  }
+  rejectDetachedAsyncSaves(detachedSaves, new Error("Persistenzbarriere hat ausstehenden Save verworfen"));
+  let finished = false;
+  return {
+    release: async ({ replayBlocked }) => {
+      if (finished) return;
+      finished = true;
+      let replayError: unknown;
+      let replayFailed = false;
+      try {
+        if (replayBlocked) {
+          do {
+            try {
+              await replayBlockedSaves(state);
+            } catch (error) {
+              if (!replayFailed) {
+                replayError = error;
+                replayFailed = true;
+              }
+            }
+          } while (state.blockedSettings || state.blockedSession);
+        } else {
+          resolveBlockedSaves(state);
+        }
+        if (replayFailed) {
+          throw replayError;
+        }
+      } finally {
+        if (activePersistenceBarrier === state) {
+          activePersistenceBarrier = null;
+        }
+        state.resolveReleased();
+      }
+    }
+  };
 }
 
 export function cancelPendingAsyncSaves(): void {
-  asyncSaveQueued = null;
-  asyncSettingsSaveQueued = null;
-  syncSaveGeneration += 1;
   syncSettingsSaveGeneration += 1;
+  syncSaveGeneration += 1;
+  const detached = detachPendingAsyncSaves();
+  detached.session?.waiters.forEach((waiter) => waiter.resolve());
+  detached.settings?.waiters.forEach((waiter) => waiter.resolve());
 }
 
 export async function saveSessionAsync(paths: StoragePaths, session: SessionState): Promise<void> {
+  const payload = runtimePerformance.measureSync("session.encode", () => JSON.stringify({ ...session, updatedAt: Date.now() }, safeJsonReplacer));
+  if (activePersistenceBarrier) {
+    return blockSessionSave(activePersistenceBarrier, paths, payload);
+  }
   const generation = syncSaveGeneration;
-  const payload = JSON.stringify({ ...session, updatedAt: Date.now() }, safeJsonReplacer);
   await saveSessionPayloadAsync(paths, payload, generation);
 }
 
@@ -1403,6 +2004,30 @@ export function normalizeHistoryEntry(raw: unknown, index: number): HistoryEntry
   const id = asText(entry.id) || `hist-${Date.now().toString(36)}-${index}`;
   const name = asText(entry.name) || "Unbenannt";
   const providerRaw = asText(entry.provider);
+  const statusRaw = asText(entry.status);
+  const failurePhaseRaw = entry.failurePhase === null ? null : asText(entry.failurePhase);
+  const optionalFields = {
+    startedAt: optionalClampedNumber(entry, "startedAt"),
+    downloadEndedAt: optionalClampedNumber(entry, "downloadEndedAt"),
+    postProcessStartedAt: optionalClampedNumber(entry, "postProcessStartedAt"),
+    downloadDurationSeconds: optionalClampedNumber(entry, "downloadDurationSeconds"),
+    extractionDurationSeconds: optionalClampedNumber(entry, "extractionDurationSeconds"),
+    remuxDurationSeconds: optionalClampedNumber(entry, "remuxDurationSeconds"),
+    postProcessDurationSeconds: optionalClampedNumber(entry, "postProcessDurationSeconds"),
+    totalDurationSeconds: optionalClampedNumber(entry, "totalDurationSeconds"),
+    successfulFiles: optionalClampedNumber(entry, "successfulFiles", 1_000_000),
+    failedFiles: optionalClampedNumber(entry, "failedFiles", 1_000_000),
+    cancelledFiles: optionalClampedNumber(entry, "cancelledFiles", 1_000_000),
+    archiveCount: optionalClampedNumber(entry, "archiveCount", 100_000),
+    partCount: optionalClampedNumber(entry, "partCount", 1_000_000),
+    outputCount: optionalClampedNumber(entry, "outputCount", 1_000_000),
+    downloadFailures: optionalClampedNumber(entry, "downloadFailures", 1_000_000),
+    offlineFailures: optionalClampedNumber(entry, "offlineFailures", 1_000_000),
+    extractionFailures: optionalClampedNumber(entry, "extractionFailures", 1_000_000),
+    remuxFailures: optionalClampedNumber(entry, "remuxFailures", 1_000_000),
+    cleanupFailures: optionalClampedNumber(entry, "cleanupFailures", 1_000_000),
+    postProcessFailures: optionalClampedNumber(entry, "postProcessFailures", 1_000_000)
+  };
 
   return {
     id,
@@ -1413,45 +2038,118 @@ export function normalizeHistoryEntry(raw: unknown, index: number): HistoryEntry
     provider: VALID_ITEM_PROVIDERS.has(providerRaw as DebridProvider) ? providerRaw as DebridProvider : null,
     completedAt: clampNumber(entry.completedAt, Date.now(), 0, Number.MAX_SAFE_INTEGER),
     durationSeconds: clampNumber(entry.durationSeconds, 0, 0, Number.MAX_SAFE_INTEGER),
-    status: entry.status === "deleted" ? "deleted" : "completed",
+    status: VALID_HISTORY_STATUSES.has(statusRaw) ? statusRaw as HistoryEntry["status"] : "completed",
     outputDir: asText(entry.outputDir),
-    urls: Array.isArray(entry.urls) ? (entry.urls as unknown[]).map(String).filter(Boolean) : undefined
+    urls: Array.isArray(entry.urls) ? (entry.urls as unknown[]).map(String).filter(Boolean) : undefined,
+    ...Object.fromEntries(Object.entries(optionalFields).filter(([, value]) => value !== undefined)),
+    ...(failurePhaseRaw === null || VALID_FAILURE_PHASES.has(failurePhaseRaw)
+      ? { failurePhase: failurePhaseRaw as FailurePhase }
+      : {}),
+    ...(asText(entry.errorCategory)
+      ? { errorCategory: normalizeFailureCategory(failurePhaseRaw !== null && VALID_FAILURE_PHASES.has(failurePhaseRaw) ? failurePhaseRaw as FailurePhase : null, entry.errorCategory) }
+      : {}),
+    ...(Array.isArray(entry.archiveOperations) ? { archiveOperations: normalizeArchiveOperations(entry.archiveOperations) } : {}),
+    ...(Array.isArray(entry.remuxOperations) ? { remuxOperations: normalizeRemuxOperations(entry.remuxOperations) } : {})
   };
 }
 
-export function loadHistory(paths: StoragePaths, limits?: HistoryLimits): HistoryEntry[] {
-  ensureBaseDir(paths.baseDir);
-  if (!fs.existsSync(paths.historyFile)) {
-    return [];
-  }
-
+function readHistoryFile(filePath: string): HistoryEntry[] | null {
   try {
-    const raw = JSON.parse(fs.readFileSync(paths.historyFile, "utf8")) as unknown;
-    if (!Array.isArray(raw)) return [];
+    const raw = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+    if (!Array.isArray(raw)) return null;
 
     const entries: HistoryEntry[] = [];
     for (let i = 0; i < raw.length && entries.length < HISTORY_HARD_CAP; i++) {
       const normalized = normalizeHistoryEntry(raw[i], i);
       if (normalized) entries.push(normalized);
     }
-    return pruneHistoryEntries(entries, limits);
+    return entries;
   } catch {
-    return [];
+    return null;
   }
+}
+
+function writeHistoryPayload(filePath: string, payload: string): void {
+  const tempPath = `${filePath}.tmp`;
+  try {
+    fs.writeFileSync(tempPath, payload, "utf8");
+    syncRenameWithExdevFallback(tempPath, filePath);
+  } catch (error) {
+    try { fs.rmSync(tempPath, { force: true }); } catch { }
+    throw error;
+  }
+}
+
+export function loadHistory(paths: StoragePaths, limits?: HistoryLimits): HistoryEntry[] {
+  ensureBaseDir(paths.baseDir);
+  const backupFile = `${paths.historyFile}.bak`;
+  const primaryExists = fs.existsSync(paths.historyFile);
+  const backupExists = fs.existsSync(backupFile);
+  const primary = primaryExists ? readHistoryFile(paths.historyFile) : null;
+  if (primary) return pruneHistoryEntries(primary, limits);
+  const backup = backupExists ? readHistoryFile(backupFile) : null;
+  if (backup) {
+    try {
+      writeHistoryPayload(paths.historyFile, JSON.stringify(backup, safeJsonReplacer, 2));
+    } catch (error) {
+      logger.warn(`Verlauf konnte aus dem Backup gelesen, aber nicht repariert werden: ${String(error)}`);
+    }
+    return pruneHistoryEntries(backup, limits);
+  }
+  if (primaryExists || backupExists) {
+    throw new Error("Verlaufsspeicher ist beschädigt");
+  }
+  return [];
 }
 
 export function saveHistory(paths: StoragePaths, entries: HistoryEntry[], limits?: HistoryLimits): void {
   ensureBaseDir(paths.baseDir);
   const trimmed = pruneHistoryEntries(entries, limits);
   const payload = JSON.stringify(trimmed, safeJsonReplacer, 2);
-  const tempPath = `${paths.historyFile}.tmp`;
+  const previous = fs.existsSync(paths.historyFile) ? readHistoryFile(paths.historyFile) : null;
+  if (previous) {
+    writeHistoryPayload(`${paths.historyFile}.bak`, JSON.stringify(previous, safeJsonReplacer, 2));
+  }
+  writeHistoryPayload(paths.historyFile, payload);
+}
+
+function restoreHistoryPayload(filePath: string, payload: string | null): void {
+  if (payload === null) {
+    fs.rmSync(`${filePath}.tmp`, { force: true });
+    fs.rmSync(filePath, { force: true });
+    return;
+  }
+  writeHistoryPayload(filePath, payload);
+}
+
+export function createHistoryRollback(paths: StoragePaths): () => void {
+  ensureBaseDir(paths.baseDir);
+  const backupFile = `${paths.historyFile}.bak`;
+  const previousPrimary = fs.existsSync(paths.historyFile) ? fs.readFileSync(paths.historyFile, "utf8") : null;
+  const previousBackup = fs.existsSync(backupFile) ? fs.readFileSync(backupFile, "utf8") : null;
+  return () => {
+    restoreHistoryPayload(backupFile, previousBackup);
+    restoreHistoryPayload(paths.historyFile, previousPrimary);
+  };
+}
+
+export function replaceHistory(paths: StoragePaths, entries: HistoryEntry[], limits?: HistoryLimits): () => void {
+  ensureBaseDir(paths.baseDir);
+  const payload = JSON.stringify(pruneHistoryEntries(entries, limits), safeJsonReplacer, 2);
+  const backupFile = `${paths.historyFile}.bak`;
+  const rollback = createHistoryRollback(paths);
+  writeHistoryPayload(backupFile, payload);
   try {
-    fs.writeFileSync(tempPath, payload, "utf8");
-    syncRenameWithExdevFallback(tempPath, paths.historyFile);
+    writeHistoryPayload(paths.historyFile, payload);
   } catch (error) {
-    try { fs.rmSync(tempPath, { force: true }); } catch {  }
+    try {
+      rollback();
+    } catch (rollbackError) {
+      logger.error(`Verlauf-Backup konnte nach fehlgeschlagener Ersetzung nicht zurückgerollt werden: ${String(rollbackError)}`);
+    }
     throw error;
   }
+  return rollback;
 }
 
 export function addHistoryEntry(paths: StoragePaths, entry: HistoryEntry, limits?: HistoryLimits): HistoryEntry[] {
@@ -1472,32 +2170,33 @@ export function addHistoryEntryForRetention(paths: StoragePaths, retentionMode: 
   return addHistoryEntry(paths, entry, limits);
 }
 
-export function resetHistoryForRetention(paths: StoragePaths, retentionMode: HistoryRetentionMode): boolean {
+export function resetHistoryForRetention(paths: StoragePaths, retentionMode: HistoryRetentionMode): void {
   if (retentionMode === "permanent") {
-    return true;
+    return;
   }
-  try {
-    clearHistory(paths);
-    return true;
-  } catch (error) {
-    const code = error && typeof error === "object" && "code" in error
-      ? String((error as NodeJS.ErrnoException).code || "UNKNOWN")
-      : "UNKNOWN";
-    logger.warn(`Automatische Verlaufbereinigung fehlgeschlagen (${code})`);
-    return false;
-  }
+  clearHistory(paths);
 }
 
-export function removeHistoryEntry(paths: StoragePaths, entryId: string): HistoryEntry[] {
-  const existing = loadHistory(paths);
-  const updated = existing.filter(e => e.id !== entryId);
-  saveHistory(paths, updated);
+export function removeHistoryEntries(paths: StoragePaths, entryIds: readonly string[], limits?: HistoryLimits): HistoryEntry[] {
+  const existing = loadHistory(paths, limits);
+  const removedIds = new Set(entryIds);
+  if (removedIds.size === 0) {
+    return existing;
+  }
+  const updated = existing.filter((entry) => !removedIds.has(entry.id));
+  if (updated.length !== existing.length) {
+    saveHistory(paths, updated, limits);
+  }
   return updated;
+}
+
+export function removeHistoryEntry(paths: StoragePaths, entryId: string, limits?: HistoryLimits): HistoryEntry[] {
+  return removeHistoryEntries(paths, [entryId], limits);
 }
 
 export function clearHistory(paths: StoragePaths): void {
   ensureBaseDir(paths.baseDir);
-  if (fs.existsSync(paths.historyFile)) {
-    fs.unlinkSync(paths.historyFile);
+  for (const filePath of [`${paths.historyFile}.bak.tmp`, `${paths.historyFile}.tmp`, `${paths.historyFile}.bak`, paths.historyFile]) {
+    fs.rmSync(filePath, { force: true });
   }
 }

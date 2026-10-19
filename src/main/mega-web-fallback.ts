@@ -230,8 +230,6 @@ export class MegaWebFallback {
 
   private sessionGeneration = 0;
 
-  private invalidationController = new AbortController();
-
   public constructor(getCredentials: () => MegaCredentials) {
     this.getCredentials = getCredentials;
   }
@@ -241,11 +239,7 @@ export class MegaWebFallback {
     signal?: AbortSignal,
     account?: { login: string; password: string }
   ): Promise<UnrestrictedLink | null> {
-    const invalidationSignal = this.invalidationController.signal;
-    const requestSignal = signal
-      ? AbortSignal.any([signal, invalidationSignal])
-      : invalidationSignal;
-    const overallSignal = withTimeoutSignal(requestSignal, 180000);
+    const overallSignal = withTimeoutSignal(signal, 180000);
     const creds = (account && account.login.trim() && account.password.trim())
       ? account
       : this.getCredentials();
@@ -257,18 +251,12 @@ export class MegaWebFallback {
     return this.runExclusive(async () => {
       throwIfAborted(overallSignal);
       let cookie = await this.ensureSession(key, creds.login, creds.password, overallSignal, sessionGeneration);
-      throwIfAborted(overallSignal);
 
       let generated = await this.generate(link, cookie, overallSignal);
-      throwIfAborted(overallSignal);
       if (!generated) {
-        if (sessionGeneration === this.sessionGeneration) {
-          this.sessions.delete(key);
-        }
+        this.sessions.delete(key);
         cookie = await this.ensureSession(key, creds.login, creds.password, overallSignal, sessionGeneration);
-        throwIfAborted(overallSignal);
         generated = await this.generate(link, cookie, overallSignal);
-        throwIfAborted(overallSignal);
         if (!generated) {
           return null;
         }
@@ -302,10 +290,7 @@ export class MegaWebFallback {
 
   public invalidateSession(): void {
     this.sessionGeneration += 1;
-    this.invalidationController.abort("session_invalidated");
-    this.invalidationController = new AbortController();
     this.sessions.clear();
-    this.queues.clear();
   }
 
   private async runExclusive<T>(job: () => Promise<T>, key: string, signal?: AbortSignal): Promise<T> {
@@ -332,13 +317,7 @@ export class MegaWebFallback {
     };
     const prev = this.queues.get(key) ?? Promise.resolve();
     const run = prev.then(guardedJob, guardedJob);
-    const tail = run.then(() => undefined, () => undefined);
-    this.queues.set(key, tail);
-    void tail.finally(() => {
-      if (this.queues.get(key) === tail) {
-        this.queues.delete(key);
-      }
-    });
+    this.queues.set(key, run.then(() => undefined, () => undefined));
     return raceWithAbort(run, signal, () =>
       workStarted
         ? abortError()
@@ -482,9 +461,7 @@ export class MegaWebFallback {
   }
 
   public dispose(): void {
-    this.invalidationController.abort("dispose");
     this.sessions.clear();
-    this.queues.clear();
   }
 }
 

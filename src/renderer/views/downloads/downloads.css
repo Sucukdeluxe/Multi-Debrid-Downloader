@@ -39,18 +39,29 @@
   padding: 14px 12px 6px;
 }
 
-.downloads-mode-title {
-  display: flex;
-  min-height: 36px;
-  align-items: center;
-  justify-content: center;
-  padding: 0 10px;
+.downloads-filter-group {
+  padding: 4px;
   border: 1px solid var(--ui-border);
   border-radius: 6px;
-  color: #0a0f1a;
-  background: #90cdf4;
-  text-align: center;
-  font-weight: 700;
+  background: var(--ui-input);
+  flex-shrink: 0;
+}
+
+.downloads-filter-controls {
+  display: grid;
+  gap: 12px;
+  flex-shrink: 0;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--ui-border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--ui-input) 40%, var(--ui-surface));
+}
+
+.downloads-filter-controls input,
+.downloads-filter-controls select {
+  width: 100%;
+  min-width: 0;
 }
 
 .downloads-sidebar nav button,
@@ -64,7 +75,6 @@
 }
 
 .downloads-sidebar nav button:not(.is-active):hover,
-.downloads-sidebar-actions button:hover:not(:disabled),
 .downloads-clipboard-toggle:hover {
   border-color: var(--ui-border);
   background: var(--ui-hover);
@@ -88,6 +98,41 @@
   align-items: center;
   justify-content: space-between;
   padding: 0 10px;
+  gap: 8px;
+  border-color: var(--ui-border);
+}
+
+.downloads-filter-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.downloads-filter-label .ui-icon {
+  flex-shrink: 0;
+  color: var(--ui-text-muted);
+}
+
+.downloads-sidebar nav button.is-active .ui-icon {
+  color: currentColor;
+}
+
+.downloads-sidebar nav button b {
+  flex-shrink: 0;
+  min-width: 25px;
+  padding: 3px 7px;
+  border-radius: 5px;
+  background: var(--ui-surface);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+  text-align: center;
+}
+
+.downloads-sidebar nav button.is-active b {
+  background: color-mix(in srgb, var(--ui-accent) 85%, #fff);
 }
 
 .downloads-provider-filter,
@@ -116,10 +161,17 @@
 }
 
 .downloads-sidebar-actions button {
-  border: 1px solid var(--ui-border);
-  background: var(--ui-input);
+  border: 1px solid color-mix(in srgb, var(--ui-danger) 65%, #000);
+  background: color-mix(in srgb, var(--ui-danger) 65%, #000);
+  color: #fff;
+  text-align: center;
   padding: 0 10px;
   cursor: pointer;
+}
+
+.downloads-sidebar-actions button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--ui-danger) 75%, #000);
+  background: color-mix(in srgb, var(--ui-danger) 75%, #000);
 }
 
 .downloads-sidebar-actions button:disabled {
@@ -153,6 +205,21 @@
   gap: 10px;
   color: var(--ui-text-muted);
   font-size: 12px;
+}
+
+.downloads-sidebar-status .has-tooltip {
+  cursor: help;
+}
+
+.downloads-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  border: 0;
+  white-space: nowrap;
 }
 
 .downloads-sidebar-status strong {
@@ -189,8 +256,10 @@
 .downloads-toolbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   min-height: 52px;
+  overflow-x: hidden;
   padding: 8px 10px;
   border-bottom: 1px solid var(--ui-border);
   background: var(--ui-surface);
@@ -222,22 +291,60 @@
   background: var(--ui-border);
 }
 
+.downloads-toolbar-tail {
+  display: flex;
+  flex: 1 0 auto;
+  justify-content: flex-end;
+  margin-left: auto;
+}
+
+.downloads-schedule-slot {
+  display: grid;
+  grid-template-columns: 0fr;
+  min-width: 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition: grid-template-columns 180ms ease, opacity 140ms ease;
+}
+
+.downloads-schedule-slot.is-open {
+  grid-template-columns: 1fr;
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .downloads-schedule-controls {
   display: flex;
   align-items: center;
   gap: 5px;
+  min-width: 0;
+  width: max-content;
+  overflow: hidden;
+  white-space: nowrap;
+  transform: translateX(-10px);
+  transition: transform 180ms ease;
 }
 
-.downloads-schedule-controls input {
+.downloads-schedule-slot.is-open .downloads-schedule-controls {
+  transform: translateX(0);
+}
+
+.downloads-schedule-slot.is-motion-disabled,
+.downloads-schedule-slot.is-motion-disabled .downloads-schedule-controls {
+  transition: none !important;
+}
+
+.downloads-schedule-controls input,
+.downloads-schedule-controls select {
   height: 36px;
 }
 
-.downloads-sidebar-search span {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
+.downloads-search-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 18px;
 }
 
 .downloads-content {
@@ -281,6 +388,12 @@
   text-transform: uppercase;
 }
 
+.downloads-table-header,
+.downloads-package-row,
+.downloads-item-row {
+  transition-property: none;
+}
+
 .downloads-table-body {
   overflow: visible;
   contain: layout style;
@@ -290,6 +403,7 @@
   position: relative;
   height: var(--downloads-virtual-total-height);
   min-height: 0;
+  transition: height 1500ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .downloads-virtual-row {
@@ -297,10 +411,21 @@
   inset: 0 0 auto 0;
   height: var(--downloads-virtual-row-height);
   transform: translateY(var(--downloads-virtual-row-top));
+  overflow: hidden;
+  transition: height 1500ms cubic-bezier(0.22, 1, 0.36, 1), transform 1500ms cubic-bezier(0.22, 1, 0.36, 1), opacity 1500ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.downloads-table-body.is-download-motion-disabled .downloads-virtual-spacer,
+.downloads-table-body.is-download-motion-disabled .downloads-virtual-row {
+  transition: none !important;
 }
 
 .downloads-virtual-row > .downloads-package-card {
   height: var(--downloads-virtual-row-height);
+}
+
+.downloads-disclosure-item-group {
+  width: 100%;
 }
 
 .downloads-package-card {
@@ -340,7 +465,7 @@
   min-height: 0;
 }
 
-.downloads-view :where(button, input, select):focus-visible {
+.downloads-view :where(button, input:not([type="checkbox"]), select):focus-visible {
   outline: 1px solid #7B8492;
   outline-offset: 1px;
 }
@@ -575,19 +700,26 @@
   box-shadow: inset 2px 0 0 color-mix(in srgb, var(--ui-text-muted) 58%, transparent), inset -2px 0 0 color-mix(in srgb, var(--ui-text-muted) 58%, transparent);
 }
 
-.downloads-table.is-column-drag-settling [data-download-column] {
-  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .downloads-table.is-column-drag-active [data-download-column],
-  .downloads-table.is-column-drag-settling [data-download-column] {
+  .downloads-virtual-spacer {
+    transition-duration: 1500ms !important;
+  }
+
+  .downloads-virtual-row {
+    transition-duration: 1500ms, 1500ms, 1500ms !important;
+  }
+
+  .downloads-table.is-column-drag-active [data-download-column] {
     transition-duration: 220ms !important;
   }
 
   .downloads-table.is-column-drag-active [data-column-dragging="true"] {
     transition-duration: 0s !important;
   }
+}
+
+.downloads-table.is-column-drag-motion-disabled.is-column-drag-active [data-download-column] {
+  transition: none !important;
 }
 
 .downloads-column-sort {
@@ -678,7 +810,7 @@
 
 .downloads-availability.has-counts {
   display: grid;
-  grid-template-columns: 16px 4ch 1ch 4ch auto;
+  grid-template-columns: max-content max-content max-content max-content;
   font-variant-numeric: tabular-nums;
 }
 
@@ -702,7 +834,7 @@
 }
 
 .downloads-availability-label {
-  padding-left: 4px;
+  padding-left: 3px;
   text-align: left;
 }
 
@@ -869,7 +1001,6 @@
 }
 
 @media (max-width: 1120px) {
-  .downloads-toolbar,
   .downloads-footer {
     overflow-x: auto;
   }

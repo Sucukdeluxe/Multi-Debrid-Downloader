@@ -12,7 +12,7 @@ import { getSessionLogPath } from "./session-log";
 import { getPackageLogPath as getPersistedPackageLogPath } from "./package-log";
 import { getRenameLogPath } from "./rename-log";
 import { createStoragePaths, loadHistory, loadSettings } from "./storage";
-import { buildAccountSummary, buildRedactedSettingsPayload, buildStatsPayload, summarizeHistoryEntry } from "./support-data";
+import { buildAccountSummary, buildRedactedSettingsPayload, buildStatsPayload, normalizeNotificationSupportPayload, summarizeHistoryEntry, type NotificationSupportPayload } from "./support-data";
 import { buildSupportBundle, getSupportBundleDefaultFileName } from "./support-bundle";
 import { getTraceConfig, getTraceConfigPath, getTraceLogPath, logTraceEvent, setTraceEnabled, updateTraceConfig } from "./trace-log";
 import { getConversionLogPath } from "./conversion-trace";
@@ -57,6 +57,7 @@ const DEBUG_ENDPOINTS: DebugEndpointDescriptor[] = [
   { method: "GET", path: "/accounts", description: "Returns a redacted account/provider configuration summary." },
   { method: "GET", path: "/providers", description: "Live provider runtime state: per-account/key cooldowns (until/remaining/reason/category), in-flight depth, Mega rotation cursor, empty-response streaks. The 'why is it cooling down right now' view." },
   { method: "GET", path: "/stats", description: "Returns live session stats plus persisted all-time totals." },
+  { method: "GET", path: "/notifications", description: "Returns safe notification delivery and incident aggregates." },
   { method: "GET", path: "/history", queryExample: "limit=50&status=completed", description: "Returns history entries with optional filters." },
   { method: "GET", path: "/status", description: "Returns a live high-level status overview." },
   { method: "GET", path: "/packages", queryExample: "package=Release&includeItems=1", description: "Lists packages and optional per-item detail." },
@@ -74,6 +75,10 @@ let bindPort = DEFAULT_PORT;
 let runtimeBaseDir = "";
 let allowlist: string[] = [];
 let requestLimits = new Map<string, { startedAt: number; count: number }>();
+let notificationStatusProvider: (() => NotificationSupportPayload) | null = null;
+let serverLifecycleQueue: Promise<void> = Promise.resolve();
+let serverLifecycleGeneration = 0;
+let debugServerEnabled = false;
 
 export interface DebugServerRuntimeStatus {
   running: boolean;
@@ -94,6 +99,10 @@ function readSupportSettings() {
 
 function readSupportHistory() {
   return loadHistory(getStoragePaths());
+}
+
+function readNotificationStatus(): NotificationSupportPayload {
+  return normalizeNotificationSupportPayload(notificationStatusProvider?.());
 }
 
 function extractDebugClientIp(req: http.IncomingMessage): string {
@@ -926,6 +935,11 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     return;
   }
 
+  if (pathname === "/notifications") {
+    jsonResponse(res, 200, readNotificationStatus());
+    return;
+  }
+
   if (pathname === "/history") {
     const entries = readSupportHistory();
     const limit = normalizeLinesParam(url.searchParams.get("limit"), 50);
@@ -1046,7 +1060,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
       return;
     }
     const fileName = getSupportBundleDefaultFileName();
-    buildSupportBundle(manager, runtimeBaseDir)
+    buildSupportBundle(manager, runtimeBaseDir, { notificationStatus: readNotificationStatus(), includeArchivePasswords: false })
       .then((body) => {
         logTraceEvent("INFO", "support", "Support-Bundle über Debug-Server heruntergeladen", {
           fileName,
@@ -1089,6 +1103,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
       status: buildStatusPayload(snapshot),
       settings: buildRedactedSettingsPayload(readSupportSettings()),
       stats: buildStatsPayload(snapshot),
+      notifications: readNotificationStatus(),
       accounts: buildAccountSummary(readSupportSettings()),
       providers: getProviderRuntimeSnapshot(),
       history: {
@@ -1165,6 +1180,12 @@ function openServerSocket(): Promise<void> {
         resolve();
       }
     };
+    srv.once("close", () => {
+      if (server === srv) {
+        server = null;
+      }
+      settle();
+    });
     srv.on("error", (err: NodeJS.ErrnoException) => {
       if (err.code === "EADDRINUSE") {
         logger.warn(`Debug-Server: Port ${bindPort} belegt (EADDRINUSE) - Server nicht gestartet`);
@@ -1184,33 +1205,80 @@ function openServerSocket(): Promise<void> {
   });
 }
 
-export function startDebugServer(mgr: DownloadManager, baseDir: string): void {
+function enqueueServerLifecycle(operation: () => Promise<void>): Promise<void> {
+  const pending = serverLifecycleQueue.then(operation, operation);
+  serverLifecycleQueue = pending.catch(() => undefined);
+  return pending;
+}
+
+function closeServerSocket(): Promise<void> {
+  const current = server;
+  if (!current) {
+    return Promise.resolve();
+  }
+  server = null;
+  return new Promise((resolve) => {
+    let settled = false;
+    let timeout: NodeJS.Timeout | null = null;
+    const done = (): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+      resolve();
+    };
+    try {
+      current.close(() => done());
+    } catch {
+      done();
+    }
+    try {
+      current.closeAllConnections?.();
+    } catch {
+    }
+    if (!settled) {
+      timeout = setTimeout(done, 1500);
+    }
+  });
+}
+
+export function startDebugServer(
+  mgr: DownloadManager,
+  baseDir: string,
+  readCurrentNotificationStatus?: () => NotificationSupportPayload
+): void {
   runtimeBaseDir = baseDir;
   manager = mgr;
-  void openServerSocket();
+  notificationStatusProvider = readCurrentNotificationStatus || null;
+  debugServerEnabled = true;
+  const generation = ++serverLifecycleGeneration;
+  void enqueueServerLifecycle(async () => {
+    if (!debugServerEnabled || generation !== serverLifecycleGeneration) {
+      return;
+    }
+    await closeServerSocket();
+    if (!debugServerEnabled || generation !== serverLifecycleGeneration) {
+      return;
+    }
+    await openServerSocket();
+  });
 }
 
 export async function restartDebugServer(): Promise<DebugServerRuntimeStatus> {
-  const old = server;
-  if (old) {
-    server = null;
-    await new Promise<void>((resolve) => {
-      let settled = false;
-      const done = (): void => {
-        if (!settled) {
-          settled = true;
-          resolve();
-        }
-      };
-      old.close(() => done());
-      try {
-        old.closeAllConnections?.();
-      } catch {
-      }
-      setTimeout(done, 1500);
-    });
-  }
-  await openServerSocket();
+  const generation = serverLifecycleGeneration;
+  await enqueueServerLifecycle(async () => {
+    if (!debugServerEnabled || generation !== serverLifecycleGeneration) {
+      return;
+    }
+    await closeServerSocket();
+    if (!debugServerEnabled || generation !== serverLifecycleGeneration) {
+      return;
+    }
+    await openServerSocket();
+  });
   return getDebugServerRuntimeStatus();
 }
 
@@ -1256,14 +1324,21 @@ export function clearDebugToken(): void {
 }
 
 export function stopDebugServer(): void {
-  if (server) {
-    server.close();
+  debugServerEnabled = false;
+  serverLifecycleGeneration += 1;
+  notificationStatusProvider = null;
+  const current = server;
+  server = null;
+  requestLimits = new Map();
+  if (current) {
     try {
-      server.closeAllConnections?.();
+      current.close();
     } catch {
     }
-    server = null;
-    requestLimits = new Map();
+    try {
+      current.closeAllConnections?.();
+    } catch {
+    }
     logger.info("Debug-Server gestoppt");
   }
 }

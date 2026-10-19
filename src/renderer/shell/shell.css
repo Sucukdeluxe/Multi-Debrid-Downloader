@@ -128,7 +128,10 @@
   background: transparent;
 }
 
-.md-shell-navigation-item:focus-visible,
+.md-shell-navigation-item:focus {
+  outline: none;
+}
+
 .md-shell-header-actions button:focus-visible,
 .md-shell-sidebar-toggle:focus-visible,
 .md-avatar-menu-action:focus-visible {
@@ -164,7 +167,7 @@
   justify-content: center;
   border: 0;
   border-radius: 6px;
-  background: var(--ui-update);
+  background: var(--ui-success);
   color: var(--ui-update-text);
   cursor: pointer;
   font-size: 14px;
@@ -174,7 +177,7 @@
 }
 
 .md-update-trigger:hover {
-  background: var(--ui-update-hover);
+  background: color-mix(in srgb, var(--ui-success) 82%, #000);
 }
 
 .md-update-trigger:focus-visible,
@@ -472,8 +475,28 @@
   padding: 0;
 }
 
-.md-shell-sidebar-scroll .collector-sidebar-select {
-  padding: 0 10px;
+.md-shell-sidebar-scroll :is(.settings-sidebar-item, .collector-sidebar-filter, .history-filter, .statistics-range, .downloads-filter-group button) {
+  border: 1px solid var(--ui-border);
+  border-radius: 4px;
+  min-height: 36px;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.md-shell-sidebar-scroll :is(.settings-sidebar-item, .collector-sidebar-filter, .history-filter, .statistics-range, .downloads-filter-group button):hover {
+  border-color: var(--ui-text-muted);
+}
+
+.md-shell-sidebar-scroll select.collector-sidebar-select,
+.md-shell-sidebar-scroll .downloads-provider-filter select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 0 38px 0 10px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='m3 4.5 3 3 3-3' fill='none' stroke='%23808080' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  background-size: 12px;
+  user-select: none;
 }
 
 .md-shell-sidebar-status {
@@ -762,7 +785,7 @@
   background: var(--ui-surface);
 }
 
-.md-dialog :where(button, summary, input, select, textarea):focus-visible,
+.md-dialog :where(button, summary, input:not([type="checkbox"]), select, textarea):focus-visible,
 .md-context-menu [role="menuitem"]:focus-visible {
   outline: 2px solid var(--ui-focus);
   outline-offset: 2px;
@@ -794,6 +817,33 @@
 
 .md-context-menu .ctx-menu-sep {
   background: var(--ui-border);
+}
+
+.md-column-context-menu .ctx-menu-item {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  gap: 4px;
+}
+
+.md-column-context-menu .ctx-menu-item:not(.ctx-menu-disabled) {
+  color: var(--ui-text);
+}
+
+.md-column-context-menu .ctx-menu-disabled {
+  color: var(--ui-text);
+  opacity: 1;
+}
+
+.md-column-context-menu .column-menu-check {
+  color: var(--ui-success-text);
+  font-weight: 700;
+  text-align: center;
+}
+
+.md-column-context-menu .column-menu-reset {
+  display: block;
+  text-align: center;
 }
 
 .md-toast {

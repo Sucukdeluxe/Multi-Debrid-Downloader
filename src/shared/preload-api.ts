@@ -1,7 +1,11 @@
 import type {
   AddLinksPayload,
+  AccountCheckScope,
   AccountCommandResult,
   AccountCredentialCheckInput,
+  AccountSecretRequest,
+  AccountSecretResult,
+  ArchivePasswordListResult,
   AccountCreateCommand,
   AccountDeleteCommand,
   AccountReplaceCommand,
@@ -29,8 +33,51 @@ import type {
   UpdateInstallProgress,
   UpdateInstallResult
 } from "./types";
+import { isRealDebridWebAccountId } from "./real-debrid-accounts";
+import type { OfflineSkipScope } from "./types";
+import type { McpConfiguration, McpStatus } from "./mcp";
+import type {
+  CollectorEnrichmentRequest,
+  CollectorEnrichmentProgress,
+  CollectorInspectionResult,
+  CollectorPersistenceState,
+  CollectorTextPreparationRequest
+} from "./collector";
+
+export interface RealDebridLoginRequest {
+  accountId: string;
+  create?: boolean;
+  dailyLimitBytes?: number;
+}
+
+export function validateRealDebridLoginRequest(value: unknown): Required<RealDebridLoginRequest> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Account-Payload ist ungültig");
+  }
+  const raw = value as Record<string, unknown>;
+  if (Object.keys(raw).some((key) => key !== "accountId" && key !== "create" && key !== "dailyLimitBytes")
+    || typeof raw.accountId !== "string"
+    || !isRealDebridWebAccountId(raw.accountId)
+    || (raw.create !== undefined && typeof raw.create !== "boolean")
+    || (raw.dailyLimitBytes !== undefined && (typeof raw.dailyLimitBytes !== "number"
+      || !Number.isFinite(raw.dailyLimitBytes)
+      || raw.dailyLimitBytes < 0
+      || raw.dailyLimitBytes > Number.MAX_SAFE_INTEGER))) {
+    throw new Error("Account-Payload ist ungültig");
+  }
+  const create = raw.create === true;
+  const dailyLimitBytes = Math.floor(Number(raw.dailyLimitBytes) || 0);
+  if (!create && dailyLimitBytes !== 0) {
+    throw new Error("Account-Payload ist ungültig");
+  }
+  return { accountId: raw.accountId.trim(), create, dailyLimitBytes: create ? dailyLimitBytes : 0 };
+}
 
 export interface ElectronApi {
+  getMcpStatus(): Promise<McpStatus>;
+  configureMcp(configuration: McpConfiguration): Promise<McpStatus>;
+  rotateMcp(): Promise<McpStatus>;
+  getMcpConnectionCode(): Promise<string>;
   getSnapshot: () => Promise<UiSnapshot>;
   getVersion: () => Promise<string>;
   checkUpdates: () => Promise<UpdateCheckResult>;
@@ -39,13 +86,21 @@ export interface ElectronApi {
   updateSettings: (settings: RendererSettingsUpdate) => Promise<RendererSettings>;
   resetProviderDailyUsage: (provider: DebridProvider) => Promise<RendererSettings>;
   resetDebridLinkApiKeyDailyUsage: (keyId: string) => Promise<RendererSettings>;
-  resetMegaDebridCooldowns: () => Promise<{ cleared: number }>;
   createAccount: (command: AccountCreateCommand) => Promise<AccountCommandResult>;
   replaceAccount: (command: AccountReplaceCommand) => Promise<AccountCommandResult>;
   updateAccountSecret: (command: AccountUpdateSecretCommand) => Promise<AccountCommandResult>;
   deleteAccount: (command: AccountDeleteCommand) => Promise<AccountCommandResult>;
   addLinks: (payload: AddLinksPayload) => Promise<{ addedPackages: number; addedLinks: number; invalidCount: number }>;
   addContainers: (filePaths: string[]) => Promise<{ addedPackages: number; addedLinks: number }>;
+  prepareCollectorText: (request: CollectorTextPreparationRequest) => Promise<CollectorInspectionResult>;
+  prepareCollectorContainers: (filePaths: string[], addedAt: number) => Promise<CollectorInspectionResult>;
+  enrichCollectorPackages: (request: CollectorEnrichmentRequest) => Promise<CollectorInspectionResult>;
+  onCollectorEnrichmentProgress: (callback: (progress: CollectorEnrichmentProgress) => void) => () => void;
+  getCollectorState: () => Promise<CollectorPersistenceState>;
+  getCollectorStateSync: () => CollectorPersistenceState | null;
+  saveCollectorState: (state: CollectorPersistenceState) => Promise<CollectorPersistenceState>;
+  saveCollectorStateSync: (state: CollectorPersistenceState) => boolean;
+  getPathForDroppedFile: (file: File) => string;
   getStartConflicts: () => Promise<StartConflictEntry[]>;
   resolveStartConflict: (packageId: string, policy: DuplicatePolicy) => Promise<StartConflictResolutionResult>;
   clearAll: () => Promise<void>;
@@ -54,6 +109,7 @@ export interface ElectronApi {
   stop: () => Promise<void>;
   togglePause: () => Promise<boolean>;
   cancelPackage: (packageId: string) => Promise<void>;
+  removeOfflinePackages: (packageIds: string[], scope?: OfflineSkipScope) => Promise<number>;
   renamePackage: (packageId: string, newName: string) => Promise<void>;
   reorderPackages: (packageIds: string[]) => Promise<void>;
   removeItem: (itemId: string) => Promise<void>;
@@ -65,6 +121,7 @@ export interface ElectronApi {
   toggleClipboard: () => Promise<boolean>;
   writeClipboardText: (text: string) => Promise<boolean>;
   pickFolder: () => Promise<string | null>;
+  pickProxyList: () => Promise<string | null>;
   pickContainers: () => Promise<string[]>;
   getSessionStats: () => Promise<SessionStats>;
   resetSessionStats: () => Promise<void>;
@@ -77,7 +134,7 @@ export interface ElectronApi {
   cancelBackupImport: () => Promise<void>;
   exportOnlineBackup: () => Promise<{ key: string }>;
   importOnlineBackup: (key: string) => Promise<{ restored: boolean; relaunch: false; message: string }>;
-  exportSupportBundle: () => Promise<{ saved: boolean; filePath?: string; busy?: boolean }>;
+  exportSupportBundle: () => Promise<{ saved: boolean; filePath?: string }>;
   openLog: () => Promise<void>;
   openLogDirectory: () => Promise<void>;
   openAuditLog: () => Promise<void>;
@@ -96,19 +153,23 @@ export interface ElectronApi {
   enableRemoteDiagnostics: (input: EnableRemoteDiagnosticsInput) => Promise<RemoteDiagnosticsInfo>;
   disableRemoteDiagnostics: () => Promise<RemoteDiagnosticsInfo>;
   rotateRemoteDiagnosticsToken: () => Promise<RemoteDiagnosticsInfo>;
-  openRealDebridLogin: () => Promise<void>;
+  openRealDebridLogin: (request?: RealDebridLoginRequest) => Promise<void>;
   openAllDebridLogin: () => Promise<void>;
   importBestDebridCookies: () => Promise<number>;
   getAllDebridHostInfo: () => Promise<AllDebridHostInfo>;
   getDebridLinkHostLimits: () => Promise<DebridLinkHostLimitInfo[]>;
-  checkDebridAccounts: () => Promise<DebridAccountStatus[]>;
+  checkDebridAccounts: (scope?: AccountCheckScope) => Promise<DebridAccountStatus[]>;
   checkAccountCredentials: (input: AccountCredentialCheckInput) => Promise<DebridAccountStatus>;
+  revealAccountSecret: (input: AccountSecretRequest) => Promise<AccountSecretResult>;
+  getArchivePasswordList: () => Promise<ArchivePasswordListResult>;
   retryExtraction: (packageId: string) => Promise<void>;
   extractNow: (packageId: string) => Promise<void>;
   resetPackage: (packageId: string) => Promise<void>;
   getHistory: () => Promise<HistoryEntry[]>;
+  onHistoryEntryAdded: (callback: (entry: HistoryEntry) => void) => () => void;
   clearHistory: () => Promise<void>;
   removeHistoryEntry: (entryId: string) => Promise<void>;
+  removeHistoryEntries: (entryIds: string[]) => Promise<void>;
   revealHistoryEntry: (entryId: string) => Promise<HistoryRevealResult>;
   setPackagePriority: (packageId: string, priority: PackagePriority) => Promise<void>;
   skipItems: (itemIds: string[]) => Promise<void>;
