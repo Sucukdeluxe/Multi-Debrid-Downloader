@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { logTimestamp } from "./log-timestamp";
 import path from "node:path";
+import { appendDiagnosticLog, finishDiagnosticLog, hasPendingDiagnosticLogWrites } from "./diagnostic-log-writer";
 
 type RenameLogLevel = "INFO" | "WARN" | "ERROR";
 
@@ -86,25 +87,14 @@ export function logRenameEvent(level: RenameLogLevel, message: string, fields?: 
   if (!renameLogPath) {
     return;
   }
-  try {
-    rotateIfNeeded(renameLogPath);
-    if (!fs.existsSync(renameLogPath)) {
-      fs.writeFileSync(renameLogPath, "", "utf8");
-    }
-    fs.appendFileSync(
-      renameLogPath,
-      `${logTimestamp()} [${level}] ${message}${formatFields(fields)}\n`,
-      "utf8"
-    );
-  } catch {
-  }
+  void appendDiagnosticLog(renameLogPath, `${logTimestamp()} [${level}] ${message}${formatFields(fields)}\n`, RENAME_LOG_MAX_FILE_BYTES);
 }
 
 export function getRenameLogPath(): string | null {
   if (!renameLogPath) {
     return null;
   }
-  return fs.existsSync(renameLogPath) ? renameLogPath : null;
+  return hasPendingDiagnosticLogWrites(renameLogPath) || fs.existsSync(renameLogPath) ? renameLogPath : null;
 }
 
 export function shutdownRenameLog(): void {
@@ -112,7 +102,7 @@ export function shutdownRenameLog(): void {
     return;
   }
   try {
-    fs.appendFileSync(renameLogPath, `=== Rename-Log Ende: ${logTimestamp()} ===\n`, "utf8");
+    void finishDiagnosticLog(renameLogPath, `=== Rename-Log Ende: ${logTimestamp()} ===\n`);
   } catch {
   }
   renameLogPath = null;

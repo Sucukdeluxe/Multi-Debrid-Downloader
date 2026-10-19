@@ -1,3 +1,4 @@
+import { setMaxListeners } from "node:events";
 import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
@@ -159,6 +160,7 @@ interface ProxyLeaseOutcome {
   succeeded: boolean;
   transferredBytes?: number;
   durationMs?: number;
+  reason?: string;
 }
 
 interface ProxyLease {
@@ -201,6 +203,9 @@ export class SharedProxyCoordinator {
   private cooldownWakeAt: number | null = null;
   private readonly groupOrigins = new Map<string, string>();
   private readonly originThrottle = new Map<string, { limit: number; lastThrottleAt: number; successes: number }>();
+  private readonly failureReasons = new Map<string, number>();
+  private leaseSuccesses = 0;
+  private leaseFailures = 0;
 
   public snapshot() {
     return {
@@ -211,8 +216,20 @@ export class SharedProxyCoordinator {
       downloadGroups: this.registeredGroups.size,
       cooldownWakeAt: this.cooldownWakeAt,
       throttledAt: Math.max(this.lastThrottleAt, ...Array.from(this.originThrottle.values(), state => state.lastThrottleAt)) || null,
-      originLimits: Array.from(this.originThrottle, ([origin, state]) => ({ origin, limit: state.limit, active: this.activeForOrigin(origin), throttledAt: state.lastThrottleAt }))
+      originLimits: Array.from(this.originThrottle, ([origin, state]) => ({ origin, limit: state.limit, active: this.activeForOrigin(origin), throttledAt: state.lastThrottleAt })),
+      coolingProxies: this.countCoolingProxies(),
+      measuredProxies: this.performance.size,
+      leaseSuccesses: this.leaseSuccesses,
+      leaseFailures: this.leaseFailures,
+      failureReasons: Object.fromEntries(this.failureReasons)
     };
+  }
+
+  private countCoolingProxies(): number {
+    const now = Date.now();
+    let cooling = 0;
+    for (const until of this.cooldownUntil.values()) if (until > now) cooling += 1;
+    return cooling;
   }
 
   public setConnectionLimit(limit: number): void {
@@ -407,6 +424,7 @@ export class SharedProxyCoordinator {
         released = true;
         releaseCapacity();
         if (outcome.succeeded) {
+          this.leaseSuccesses += 1;
           this.cooldownUntil.delete(key);
           if ((outcome.transferredBytes || 0) > 0 && (outcome.durationMs || 0) > 0) {
             const sample = ((outcome.transferredBytes || 0) * 1_000) / Math.max(1, outcome.durationMs || 1);
@@ -421,6 +439,9 @@ export class SharedProxyCoordinator {
             this.restoreAdaptiveCapacity(this.groupOrigins.get(groupId));
           }
         } else {
+          this.leaseFailures += 1;
+          const reason = String(outcome.reason || "unknown").slice(0, 60);
+          if (this.failureReasons.has(reason) || this.failureReasons.size < 40) this.failureReasons.set(reason, (this.failureReasons.get(reason) || 0) + 1);
           this.cooldownUntil.set(key, Date.now() + 30_000);
           const previous = this.performance.get(key);
           this.performance.set(key, {
@@ -943,7 +964,7 @@ async function probeRangeSupport(
         lastErrorCode = "proxy_probe_range_mismatch";
         opened.dispose();
         opened = null;
-        lease.release({ succeeded: false });
+        lease.release({ succeeded: false, reason: lastErrorCode });
         lease = null;
         continue;
       }
@@ -960,7 +981,7 @@ async function probeRangeSupport(
       lastErrorCode = proxyFailureCode(error);
       opened?.dispose();
       opened = null;
-      lease?.release({ succeeded: signal.aborted });
+      lease?.release({ succeeded: signal.aborted, reason: lastErrorCode });
       lease = null;
       if (signal.aborted) {
         throw abortError();
@@ -970,7 +991,7 @@ async function probeRangeSupport(
       }
     } finally {
       opened?.dispose();
-      lease?.release({ succeeded: false });
+      lease?.release({ succeeded: false, reason: lastErrorCode || "proxy_probe_incomplete" });
     }
   }
   if (lastHttpStatus > 0) {
@@ -1389,6 +1410,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
     const cascadeAbort = (): void => segmentController.abort("parent_abort");
     options.signal.addEventListener("abort", cascadeAbort, { once: true });
     const signal = AbortSignal.any([options.signal, segmentController.signal]);
+    setMaxListeners(0, signal);
 
     const downloadSegment = async (segment: Segment): Promise<number> => {
       const excluded = new Set<string>();
@@ -1483,7 +1505,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
           return outcome.bytes;
         } catch (error) {
           const originError = error instanceof OriginHttpError;
-          lease?.release({ succeeded: originError || signal.aborted });
+          lease?.release({ succeeded: originError || signal.aborted, reason: proxyFailureCode(error) });
           lease = null;
           if (originError) {
             sharedProxyCoordinator.reportOriginStatus(error.statusCode, target.origin);
