@@ -26,6 +26,7 @@ export type HostResourceReport = {
   computer: unknown;
   os: unknown;
   ec2: unknown;
+  defender: unknown;
   physicalDisks: unknown;
   volumes: unknown;
   intervals: HostResourceInterval[];
@@ -61,6 +62,11 @@ try {
     availabilityZone = Invoke-RestMethod -Uri 'http://169.254.169.254/latest/meta-data/placement/availability-zone' -Headers $headers -TimeoutSec 2
   }
 } catch { $result.ec2 = $null }
+try {
+  $status = Get-MpComputerStatus
+  $preference = Get-MpPreference
+  $result.defender = [ordered]@{ realTimeProtectionEnabled = $status.RealTimeProtectionEnabled; antivirusEnabled = $status.AntivirusEnabled; onAccessProtectionEnabled = $status.OnAccessProtectionEnabled; exclusionPaths = @($preference.ExclusionPath); exclusionProcesses = @($preference.ExclusionProcess); scanAvgCpuLoadFactor = $preference.ScanAvgCPULoadFactor }
+} catch { $result.defender = $null }
 $samples = New-Object System.Collections.ArrayList
 $deadline = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + ${seconds * 1000}
 do {
@@ -202,13 +208,14 @@ export function summarizeHostResourceIntervals(intervals: HostResourceInterval[]
 
 async function collect(seconds: number): Promise<HostResourceReport> {
   const startedAt = Date.now();
-  const report: HostResourceReport = { supported: process.platform === "win32", collectedAt: new Date().toISOString(), durationMs: 0, computer: null, os: null, ec2: null, physicalDisks: [], volumes: [], intervals: [], summary: {}, errors: [] };
+  const report: HostResourceReport = { supported: process.platform === "win32", collectedAt: new Date().toISOString(), durationMs: 0, computer: null, os: null, ec2: null, defender: null, physicalDisks: [], volumes: [], intervals: [], summary: {}, errors: [] };
   if (!report.supported) return report;
   try {
     const parsed = JSON.parse(await runPowerShell(buildScript(seconds), seconds * 1000 + 20_000)) as Record<string, unknown>;
     report.computer = parsed.computer ?? null;
     report.os = parsed.os ?? null;
     report.ec2 = parsed.ec2 ?? null;
+    report.defender = parsed.defender ?? null;
     report.physicalDisks = parsed.physicalDisks ?? [];
     report.volumes = parsed.volumes ?? [];
     report.errors.push(...list(parsed.errors as string[] | string | undefined).map(String));

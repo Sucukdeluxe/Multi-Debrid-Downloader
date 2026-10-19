@@ -22,6 +22,7 @@ interface OperationSample {
   durationMs: number;
   synchronous: boolean;
   failed: boolean;
+  callSite?: string[];
 }
 
 interface LoopSample {
@@ -36,6 +37,20 @@ interface LoopSample {
 }
 
 const rounded = (value: number) => Math.round(value * 100) / 100;
+
+const INTERNAL_FRAME = /RuntimePerformance\.|captureCallSite|\bwrapped\b|node:internal|\(node:|^Error:?$/;
+
+export function captureCallSite(): string[] {
+  const limit = Error.stackTraceLimit;
+  Error.stackTraceLimit = 16;
+  const stack = new Error().stack || "";
+  Error.stackTraceLimit = limit;
+  return stack.split(/\r?\n/)
+    .map(line => line.trim().replace(/^at /, ""))
+    .filter(line => line && !INTERNAL_FRAME.test(line))
+    .slice(0, 4)
+    .map(line => line.replace(/\((?:.*[\\/])?([^\\/()]+:\d+:\d+)\)$/, "($1)").replace(/^.*[\\/]([^\\/()]+:\d+:\d+)$/, "$1").slice(0, 200));
+}
 
 export class RuntimePerformance {
   private timer: NodeJS.Timeout | null = null;
@@ -92,7 +107,7 @@ export class RuntimePerformance {
     this.histogram = null;
   }
 
-  private finish(operation: RuntimeOperation, startedAt: number, clock: number, synchronous: boolean, failed: boolean): void {
+  private finish(operation: RuntimeOperation, startedAt: number, clock: number, synchronous: boolean, failed: boolean, callSite?: () => string[]): void {
     const durationMs = performance.now() - clock;
     const entry = this.operations.get(operation) ?? { count: 0, failures: 0, totalMs: 0, maxMs: 0 };
     entry.count += 1;
@@ -101,7 +116,8 @@ export class RuntimePerformance {
     entry.maxMs = Math.max(entry.maxMs, durationMs);
     this.operations.set(operation, entry);
     if (durationMs >= 100) {
-      const sample = { operation, startedAt, durationMs: rounded(durationMs), synchronous, failed };
+      const sample: OperationSample = { operation, startedAt, durationMs: rounded(durationMs), synchronous, failed };
+      if (synchronous && callSite) sample.callSite = callSite();
       this.slowOperations.push(sample);
       if (this.slowOperations.length > 64) this.slowOperations.shift();
       if (synchronous) {
@@ -121,7 +137,7 @@ export class RuntimePerformance {
       failed = false;
       return result;
     } finally {
-      this.finish(operation, startedAt, clock, true, failed);
+      this.finish(operation, startedAt, clock, true, failed, captureCallSite);
     }
   }
 

@@ -10721,14 +10721,14 @@ export class DownloadManager extends EventEmitter {
           directHost = "";
         }
         try {
-          fs.mkdirSync(pkg.outputDir, { recursive: true });
+          await fs.promises.mkdir(pkg.outputDir, { recursive: true });
         } catch (mkdirError) {
           throw new Error(`Zielordner kann nicht erstellt werden: ${compactErrorText(mkdirError)}`);
         }
         const existingTargetPath = String(item.targetPath || "").trim();
         const canReuseExistingTarget = existingTargetPath
           && isPathInsideDir(existingTargetPath, pkg.outputDir)
-          && (item.downloadedBytes > 0 || fs.existsSync(existingTargetPath));
+          && (item.downloadedBytes > 0 || await fs.promises.access(existingTargetPath).then(() => true, () => false));
         const preferredTargetPath = canReuseExistingTarget
           ? existingTargetPath
           : path.join(pkg.outputDir, item.fileName);

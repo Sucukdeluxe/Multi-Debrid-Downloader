@@ -18,6 +18,7 @@ import { configureCredentialProtector } from "./credential-protection";
 import { configureArchivePasswordDiagnostics, flushArchivePasswordDiagnostics } from "./archive-password-diagnostics";
 import { getSupportBundleExportDialogOptions } from "./support-bundle-dialog";
 import { isMdd2Backup } from "./backup-crypto";
+import { relaunchWithThreadpoolSize } from "./threadpool-relaunch";
 import { validateAccountCommand, validateAccountCredentialCheckInput, validateAccountSecretRequest } from "./account-commands";
 import { createRendererSettings } from "./renderer-state";
 import { validateRendererSettingsUpdate } from "./renderer-settings";
@@ -79,6 +80,11 @@ function validateStringArray(value: unknown, name: string): string[] {
     throw new Error(`${name} muss ein String-Array sein`);
   }
   return value as string[];
+}
+
+if (relaunchWithThreadpoolSize(app)) {
+  app.exit(0);
+  process.exit(0);
 }
 
 const gotLock = app.requestSingleInstanceLock();
