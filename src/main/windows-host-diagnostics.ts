@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 
 export interface WindowsHostEvent {
   timeCreated: string;
@@ -163,8 +163,7 @@ function pushHints(diagnostics: WindowsHostDiagnostics): void {
   }
 }
 
-function loadFromPowerShell(): WindowsHostDiagnostics {
-  const script = String.raw`
+const HOST_DIAGNOSTICS_SCRIPT = String.raw`
 $ErrorActionPreference = "SilentlyContinue"
 
 function Convert-EventRecord($eventRecord) {
@@ -261,7 +260,28 @@ foreach ($dir in @("C:\Windows\Minidump", "C:\Windows\Minidumps")) {
 } | ConvertTo-Json -Depth 6 -Compress
 `;
 
-  const raw = runPowerShellJson(script);
+function runPowerShellJsonAsync(script: string): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], { encoding: "utf8", timeout: 20_000, windowsHide: true }, (error, stdout, stderr) => {
+      if (error) {
+        reject(new Error(String(stderr || stdout || error.message).trim()));
+        return;
+      }
+      const text = String(stdout || "").trim();
+      try {
+        resolve(text ? JSON.parse(text) as unknown : null);
+      } catch (parseError) {
+        reject(parseError);
+      }
+    });
+  });
+}
+
+function loadFromPowerShell(): WindowsHostDiagnostics {
+  return fromRaw(runPowerShellJson(HOST_DIAGNOSTICS_SCRIPT));
+}
+
+function fromRaw(raw: unknown): WindowsHostDiagnostics {
   const parsed = asRecord(raw);
   const diagnostics = createEmptyDiagnostics();
   diagnostics.crashControl = normalizeCrashControl(parsed?.CrashControl ?? null);
@@ -300,6 +320,35 @@ export function getWindowsHostDiagnostics(forceRefresh = false): WindowsHostDiag
     cachedValue = diagnostics;
     return diagnostics;
   }
+}
+
+let pendingAsync: Promise<WindowsHostDiagnostics> | null = null;
+
+export function getWindowsHostDiagnosticsAsync(forceRefresh = false): Promise<WindowsHostDiagnostics> {
+  if (!forceRefresh && cachedValue && Date.now() - cachedAt < CACHE_TTL_MS) {
+    return Promise.resolve(cachedValue);
+  }
+  if (process.platform !== "win32") {
+    return Promise.resolve(getWindowsHostDiagnostics(forceRefresh));
+  }
+  if (!pendingAsync) {
+    pendingAsync = runPowerShellJsonAsync(HOST_DIAGNOSTICS_SCRIPT)
+      .then(fromRaw, (error) => {
+        const diagnostics = createEmptyDiagnostics();
+        diagnostics.errors.push(String(error instanceof Error ? error.message : error));
+        diagnostics.assessmentHints.push("Host-Diagnose konnte nicht vollstaendig geladen werden.");
+        return diagnostics;
+      })
+      .then((diagnostics) => {
+        cachedAt = Date.now();
+        cachedValue = diagnostics;
+        return diagnostics;
+      })
+      .finally(() => {
+        pendingAsync = null;
+      });
+  }
+  return pendingAsync;
 }
 
 export function getCachedWindowsHostDiagnostics(): WindowsHostDiagnostics | null {
