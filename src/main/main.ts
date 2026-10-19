@@ -107,6 +107,7 @@ let updateQuitTimer: ReturnType<typeof setTimeout> | null = null;
 let scheduledStartTimer: ReturnType<typeof setTimeout> | null = null;
 let dailyStartScheduler: DailyStartScheduler | null = null;
 let lastClipboardText = "";
+let clipboardReadInFlight = false;
 let controller: AppController;
 let mcpService: McpService | null = null;
 let applicationStarted = false;
@@ -606,23 +607,41 @@ function startClipboardWatcher(): void {
   if (clipboardTimer) {
     return;
   }
-  lastClipboardText = normalizeClipboardText(clipboard.readText());
-  clipboardTimer = setInterval(() => {
-    let text: string;
-    try {
-      text = normalizeClipboardText(clipboard.readText());
-    } catch {
+  let baselineReady = false;
+  const timer = setInterval(() => {
+    if (!baselineReady || clipboardReadInFlight) {
       return;
     }
-    if (text === lastClipboardText || !text.trim()) {
-      return;
-    }
-    lastClipboardText = text;
-    const links = extractLinksFromText(text);
-    if (links.length > 0 && mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send(IPC_CHANNELS.CLIPBOARD_DETECTED, links);
-    }
+    clipboardReadInFlight = true;
+    void clipboard.readText()
+      .then((raw) => {
+        if (clipboardTimer !== timer) {
+          return;
+        }
+        const text = normalizeClipboardText(raw);
+        if (text === lastClipboardText || !text.trim()) {
+          return;
+        }
+        lastClipboardText = text;
+        const links = extractLinksFromText(text);
+        if (links.length > 0 && mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send(IPC_CHANNELS.CLIPBOARD_DETECTED, links);
+        }
+      }, () => undefined)
+      .finally(() => {
+        clipboardReadInFlight = false;
+      });
   }, 2000);
+  clipboardTimer = timer;
+  void clipboard.readText()
+    .then((raw) => {
+      if (clipboardTimer === timer) {
+        lastClipboardText = normalizeClipboardText(raw);
+      }
+    }, () => undefined)
+    .finally(() => {
+      baselineReady = true;
+    });
 }
 
 function stopClipboardWatcher(): void {
@@ -952,11 +971,11 @@ function registerIpcHandlers(): void {
     updateClipboardWatcher();
     return next;
   });
-  handleTrusted(IPC_CHANNELS.WRITE_CLIPBOARD_TEXT, (_event: IpcMainInvokeEvent, rawText: unknown) => {
+  handleTrusted(IPC_CHANNELS.WRITE_CLIPBOARD_TEXT, async (_event: IpcMainInvokeEvent, rawText: unknown) => {
     const text = validateClipboardWriteText(rawText);
     const bytes = Buffer.byteLength(text, "utf8");
     try {
-      clipboard.writeText(text);
+      await clipboard.writeText(text);
       return true;
     } catch (error) {
       logger.warn(`Zwischenablage-Schreibfehler: bytes=${bytes}, error=${String(error)}`);
