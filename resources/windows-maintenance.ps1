@@ -67,14 +67,16 @@ try {
     if ($request.sourceJobId -notmatch '^[a-fA-F0-9-]{36}$') { throw 'Invalid source job.' }
     $sourcePath = Join-Path (Join-Path $root $request.sourceJobId) 'status.json'
     $source = Get-Content -LiteralPath $sourcePath -Raw | ConvertFrom-Json
-    if ($source.state -ne 'installing' -or -not $source.pid -or -not $source.result.servicesBefore) { throw 'Only an active installing job can be aborted.' }
-    Restore-Services $source.result.servicesBefore
+    $serviceSource = $source
+    if ($request.scanId -match '^[a-fA-F0-9-]{36}$') { $serviceSource = Get-Content -LiteralPath (Join-Path (Join-Path $root $request.scanId) 'status.json') -Raw | ConvertFrom-Json }
+    if ($source.state -ne 'installing' -or -not $source.pid -or -not $serviceSource.result.servicesBefore) { throw 'Only an active installing job can be aborted.' }
+    Restore-Services $serviceSource.result.servicesBefore
     $sourceState = [ordered]@{ id=$source.id; action=$source.action; state='aborted'; startedAt=$source.startedAt; updatedAt=[DateTime]::UtcNow.ToString('o'); result=$source.result; abortReason='No status progress for more than 30 minutes; process tree stopped by explicit maintenance request.' }
     $temporary = Join-Path (Split-Path $sourcePath) 'status.abort.tmp'
     [IO.File]::WriteAllText($temporary, ($sourceState | ConvertTo-Json -Depth 16), [Text.UTF8Encoding]::new($false))
     [IO.File]::Replace($temporary, $sourcePath, [NullString]::Value)
     Stop-Process -Id ([int]$source.pid) -Force -ErrorAction SilentlyContinue
-    Save-State 'completed' @{ abortedJob=$request.sourceJobId; services=$source.result.servicesBefore }
+    Save-State 'completed' @{ abortedJob=$request.sourceJobId; services=$serviceSource.result.servicesBefore }
     return
   }
   if ($request.action -eq 'reboot') {

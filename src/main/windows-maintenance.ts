@@ -30,7 +30,8 @@ function validate(request: MaintenanceRequest) {
       keys.add(update.id.toLowerCase());
     }
   }
-  if (["reboot", "restore", "abort"].includes(request.action) && (!uuid.test(request.sourceJobId || "") || request.scanId || request.updates)) throw Error("Ausgangsauftrag fehlt.");
+  if (["reboot", "restore"].includes(request.action) && (!uuid.test(request.sourceJobId || "") || request.scanId || request.updates)) throw Error("Ausgangsauftrag fehlt.");
+  if (request.action === "abort" && (!uuid.test(request.sourceJobId || "") || (request.scanId && !uuid.test(request.scanId)) || request.updates)) throw Error("Abbruchauftrag fehlt.");
 }
 
 export function launchMaintenance(directory: string): Promise<void> {
@@ -90,7 +91,8 @@ export class WindowsMaintenance {
     }
     if (["restore", "abort"].includes(request.action)) {
       const source = await this.get(request.sourceJobId);
-      if (!("result" in source) || !source.result?.servicesBefore || (request.action === "abort" && source.state !== "installing")) throw Error("Kein passender Wartungsauftrag vorhanden.");
+      const serviceSource = request.action === "abort" && request.scanId ? await this.get(request.scanId) : source;
+      if (!("result" in source) || !("result" in serviceSource) || !serviceSource.result?.servicesBefore || (request.action === "abort" && source.state !== "installing")) throw Error("Kein passender Wartungsauftrag vorhanden.");
     }
     const id = crypto.randomUUID();
     const directory = path.join(this.options.root, id);
