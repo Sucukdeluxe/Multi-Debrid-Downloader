@@ -498,6 +498,18 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+async function collectArchiveCleanupTargetsAsync(sourceArchivePath: string): Promise<string[]> {
+  let directoryFiles: string[];
+  try {
+    directoryFiles = (await fs.promises.readdir(path.dirname(sourceArchivePath), { withFileTypes: true }))
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name);
+  } catch {
+    return [sourceArchivePath];
+  }
+  return collectArchiveCleanupTargets(sourceArchivePath, directoryFiles);
+}
+
 export function collectArchiveCleanupTargets(sourceArchivePath: string, directoryFiles?: string[]): string[] {
   const targets = new Set<string>([sourceArchivePath]);
   const dir = path.dirname(sourceArchivePath);
@@ -2965,7 +2977,7 @@ async function extractZipArchive(archivePath: string, targetDir: string, conflic
 async function estimateArchivesTotalBytes(candidates: string[]): Promise<number> {
   let total = 0;
   for (const archivePath of candidates) {
-    const parts = collectArchiveCleanupTargets(archivePath);
+    const parts = await collectArchiveCleanupTargetsAsync(archivePath);
     for (const part of parts) {
       try {
         total += (await fs.promises.stat(part)).size;
@@ -3026,7 +3038,7 @@ async function shouldPreferExternalZip(archivePath: string): Promise<boolean> {
 
 async function computeExtractTimeoutMs(archivePath: string): Promise<number> {
   try {
-    const relatedFiles = collectArchiveCleanupTargets(archivePath);
+    const relatedFiles = await collectArchiveCleanupTargetsAsync(archivePath);
     let totalBytes = 0;
     for (const filePath of relatedFiles) {
       try {

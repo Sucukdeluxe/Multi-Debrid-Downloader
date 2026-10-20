@@ -1,7 +1,8 @@
-import { monitorEventLoopDelay, performance, type IntervalHistogram } from "node:perf_hooks";
+import { monitorEventLoopDelay, performance, PerformanceObserver, type IntervalHistogram } from "node:perf_hooks";
 
 export type RuntimeOperation =
   | `io.${string}`
+  | `gc.${string}`
   | "log.write"
   | "settings.read" | "settings.encode" | "settings.write" | "settings.commit"
   | "session.encode" | "session.write" | "session.sync" | "session.backup" | "session.commit"
@@ -61,6 +62,7 @@ export class RuntimePerformance {
   private operations = new Map<RuntimeOperation, OperationSummary>();
   private active = new Map<number, { operation: RuntimeOperation; startedAt: number; clock: number }>();
   private sequence = 0;
+  private gcObserver: PerformanceObserver | null = null;
 
   public start(onDelay?: (sample: LoopSample) => void, intervalMs = 5000): void {
     if (this.timer) return;
@@ -98,9 +100,24 @@ export class RuntimePerformance {
       }
     }, interval);
     this.timer.unref();
+    try {
+      const kinds: Record<number, string> = { 1: "minor", 2: "major", 4: "incremental", 8: "weakcb" };
+      this.gcObserver = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          const kind = kinds[Number((entry as { detail?: { kind?: number } }).detail?.kind)] || "other";
+          const clock = performance.now() - entry.duration;
+          this.finish(`gc.${kind}`, Date.now() - entry.duration, clock, true, false);
+        }
+      });
+      this.gcObserver.observe({ entryTypes: ["gc"] });
+    } catch {
+      this.gcObserver = null;
+    }
   }
 
   public stop(): void {
+    this.gcObserver?.disconnect();
+    this.gcObserver = null;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     this.histogram?.disable();
