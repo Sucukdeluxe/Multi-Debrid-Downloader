@@ -9,6 +9,7 @@ import type { IncomingMessage } from "node:http";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { runtimePerformance } from "./runtime-performance";
 import { ProxyReadbackLimiter } from "./proxy-readback-limiter";
+import { markFileSparse } from "./sparse-file";
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 const DEFAULT_IDLE_TIMEOUT_MS = 45_000;
@@ -537,9 +538,10 @@ export class SharedProxyCoordinator {
 
 const sharedProxyCoordinator = new SharedProxyCoordinator();
 const sharedReadbackLimiter = new ProxyReadbackLimiter(8);
+const sparseAllocations = { ok: 0, failed: 0 };
 
 export function getProxyTransferSnapshot() {
-  return { ...sharedProxyCoordinator.snapshot(), readback: sharedReadbackLimiter.snapshot() };
+  return { ...sharedProxyCoordinator.snapshot(), readback: sharedReadbackLimiter.snapshot(), sparseAllocations: { ...sparseAllocations } };
 }
 
 interface ProxyConnectionEntry {
@@ -1400,6 +1402,8 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
     const initialHandle = await fs.promises.open(tempPath, "wx");
     tempCreated = true;
     try {
+      if (await markFileSparse(tempPath)) sparseAllocations.ok += 1;
+      else sparseAllocations.failed += 1;
       await runtimePerformance.measure("proxy.allocate", () => initialHandle.truncate(probe.totalBytes));
     } finally {
       await initialHandle.close();
