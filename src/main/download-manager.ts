@@ -7509,6 +7509,13 @@ export class DownloadManager extends EventEmitter {
         continue;
       }
 
+      if ((pkg.terminalAt || 0) > 0 && (pkg.postProcessCompletedAt || 0) > 0 && this.areAllPackageItemRefsFinished(pkg)) {
+        const result = finalizePackageResult({ package: pkg, items });
+        pkg.status = result.status === "partial" || items.some((item) => isExtractErrorLabel(item.fullStatus || ""))
+          ? "failed" : result.status;
+        continue;
+      }
+
       const success = items.filter((item) => item.status === "completed").length;
       const failed = items.filter((item) => item.status === "failed").length;
       const cancelled = items.filter((item) => item.status === "cancelled").length;
