@@ -15,6 +15,7 @@ import { getConversionLogPath } from "../conversion-trace";
 import { getNetworkProxyState } from "../network-proxy";
 import { getWindowsHostDiagnosticsAsync } from "../windows-host-diagnostics";
 import { sampleHostResources } from "../host-resources";
+import { startStorageProbe, getStorageProbe, cancelStorageProbe } from "../storage-probe";
 import { extractionLimiter } from "../extraction-limiter";
 import { rendererPerformance } from "../renderer-performance";
 import { getProcessingBudget, setProcessingBudget } from "../processing-budget";
@@ -118,6 +119,10 @@ export function createMcpTools(deps: McpToolDependencies): McpTool[] {
   read("diagnostics", "Run the existing local diagnostic checks. Does not change downloads.", object(), () => c.getDebugSetupCheck());
   read("host_diagnostics", "Read bounded Windows crash and host diagnostic information.", object(), () => getWindowsHostDiagnosticsAsync());
   read("host_resources", "Sample Windows disk, network, memory and CPU counters for a bounded number of seconds, plus EC2 instance metadata when available. Read-only.", object({ seconds: integer(90, 1) }, []), args => sampleHostResources(Number(args.seconds || 15)));
+  read("storage_inspect", "Start a bounded background read-only inspection of Windows storage drivers, recent disk errors, memory policy and filters. Poll storage_probe_get. No arbitrary commands.", object(), () => startStorageProbe("inspect"));
+  write("storage_file_test", "Start a bounded background test using only new temporary files: 128 MiB sequential and strided writes, explicit flush and full hash readback. Cleans its own files only. Poll storage_probe_get.", object(), () => startStorageProbe("file-test"));
+  read("storage_probe_get", "Read the latest bounded storage inspection or temporary-file test result.", object(), () => getStorageProbe());
+  write("storage_probe_cancel", "Request cancellation of the current storage probe and cleanup of its own temporary files.", object(), () => cancelStorageProbe(), { idempotent: true });
   read("notifications", "Read notification queue and incident status without webhook credentials.", object(), () => c.getNotificationSupportPayload());
   read("trace_get", "Read temporary diagnostic trace configuration.", object(), () => c.getTraceConfig());
   write("trace_set", "Enable a time-limited diagnostic trace or disable it.", object({ enabled: { type: "boolean" }, minutes: integer(120, 1) }, ["enabled"]), args => c.setTraceEnabled(Boolean(args.enabled), "MCP", Number(args.minutes || 15) * 60_000), { idempotent: true });

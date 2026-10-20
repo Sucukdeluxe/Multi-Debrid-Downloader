@@ -1,6 +1,6 @@
 {
   "name": "multi-debrid-downloader",
-  "version": "2.0.133",
+  "version": "2.0.134",
   "description": "Desktop downloader",
   "main": "build/main/main/main.js",
   "author": "Sucukdeluxe",
@@ -74,6 +74,10 @@
       "package.json"
     ],
     "extraResources": [
+      {
+        "from": "resources/storage-probe-worker.cjs",
+        "to": "storage-probe-worker.cjs"
+      },
       {
         "from": "resources/licenses",
         "to": "licenses"
