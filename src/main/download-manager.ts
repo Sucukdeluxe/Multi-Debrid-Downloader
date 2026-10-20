@@ -8174,7 +8174,30 @@ export class DownloadManager extends EventEmitter {
     source: string,
     errorText = ""
   ): boolean {
-    const diskState = inspectPackageItemDiskState(pkg, item);
+    return this.finalizeItemFromDiskState(pkg, item, source, errorText, inspectPackageItemDiskState(pkg, item));
+  }
+
+  private async tryFinalizeItemFromDiskAsync(
+    pkg: PackageEntry,
+    item: DownloadItem,
+    source: string,
+    errorText = ""
+  ): Promise<boolean> {
+    const statusBefore = item.status;
+    const diskState = await inspectPackageItemDiskStateAsync(pkg, item);
+    if (this.session.items[item.id] !== item || item.status !== statusBefore) {
+      return false;
+    }
+    return this.finalizeItemFromDiskState(pkg, item, source, errorText, diskState);
+  }
+
+  private finalizeItemFromDiskState(
+    pkg: PackageEntry,
+    item: DownloadItem,
+    source: string,
+    errorText: string,
+    diskState: PackageItemDiskState
+  ): boolean {
     const normalizedError = compactErrorText(errorText).replace(/^Error:\s*/i, "");
     const knownShortfall = item.totalBytes != null && item.totalBytes > 0
       ? Math.max(0, item.totalBytes - diskState.size)
@@ -10626,7 +10649,7 @@ export class DownloadManager extends EventEmitter {
       try {
         const preflightReason = `${item.fullStatus || ""} ${item.lastError || ""}`.trim();
         if (shouldPreflightFinalizeItemFromDisk(item)
-          && this.tryFinalizeItemFromDisk(pkg, item, "Process-Preflight", preflightReason)) {
+          && await this.tryFinalizeItemFromDiskAsync(pkg, item, "Process-Preflight", preflightReason)) {
           this.retryStateByItem.delete(item.id);
           return;
         }
@@ -11140,7 +11163,7 @@ export class DownloadManager extends EventEmitter {
             item.retries += 1;
             if (item.downloadedBytes > 0) {
               const targetFile = this.claimedTargetPathByItem.get(item.id) || "";
-              if (this.tryFinalizeItemFromDisk(pkg, item, "Stall-Recovery", stallErrorText)) {
+              if (await this.tryFinalizeItemFromDiskAsync(pkg, item, "Stall-Recovery", stallErrorText)) {
                 return;
               }
               if (targetFile) {
@@ -11176,7 +11199,7 @@ export class DownloadManager extends EventEmitter {
           this.retryStateByItem.delete(item.id);
         } else {
           const errorText = compactErrorText(error);
-          if (this.tryFinalizeItemFromDisk(pkg, item, "Error-Recovery", errorText)) {
+          if (await this.tryFinalizeItemFromDiskAsync(pkg, item, "Error-Recovery", errorText)) {
             return;
           }
           const diskWaitReason = getDiskWriteWaitReason(error);
@@ -11223,7 +11246,7 @@ export class DownloadManager extends EventEmitter {
             const exhaustedReason = compactErrorText(directLinkRetryMatch[1] || errorText).replace(/^Error:\s*/i, "");
             if (item.provider === "debridlink") {
               await sleep(450);
-              if (this.tryFinalizeItemFromDisk(pkg, item, "DebridLink-Settle-Recovery", exhaustedReason)) {
+              if (await this.tryFinalizeItemFromDiskAsync(pkg, item, "DebridLink-Settle-Recovery", exhaustedReason)) {
                 return;
               }
             }
@@ -12784,7 +12807,7 @@ export class DownloadManager extends EventEmitter {
         if (canFinalizeFromDisk) {
           const recoveryReason = `${item.fullStatus || ""} ${item.lastError || ""}`.trim();
           if (shouldPreflightFinalizeItemFromDisk(item)
-            && this.tryFinalizeItemFromDisk(pkg, item, `Recovery-${trigger}`, recoveryReason)) {
+            && await this.tryFinalizeItemFromDiskAsync(pkg, item, `Recovery-${trigger}`, recoveryReason)) {
             finalized += 1;
             touchedPackages.add(pkg.id);
             this.retryAfterByItem.delete(item.id);
