@@ -9155,6 +9155,11 @@ export class DownloadManager extends EventEmitter {
       const failed = items.filter((item) => item.status === "failed").length;
       const cancelled = items.filter((item) => item.status === "cancelled").length;
       const allDone = this.areAllPackageItemRefsFinished(pkg);
+      if (allDone && (pkg.terminalAt || 0) > 0 && (pkg.postProcessCompletedAt || 0) > 0
+        && (pkg.status === "completed" || pkg.status === "failed")
+        && !items.some((item) => item.status === "completed" && shouldAutoRetryExtraction(item.fullStatus))) {
+        continue;
+      }
       if (!allDone && success + failed + cancelled >= items.length) {
         logger.warn(
           `Post-Processing wartet trotz gefiltert fertiger Items: ` +
