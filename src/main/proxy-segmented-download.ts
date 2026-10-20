@@ -23,9 +23,9 @@ const PROXY_PROBE_END = 1;
 const MAX_REDIRECTS = 5;
 const MAX_SEGMENTS = 4_096;
 const MAX_PROXY_FILE_BYTES = 8 * 1024 * 1024;
-const SEGMENT_READBACK_BUFFER_BYTES = 1024 * 1024;
-const SEGMENT_WRITE_BUFFER_BYTES = 1024 * 1024;
-const SEGMENT_WRITE_FLUSH_INTERVAL_MS = 100;
+const SEGMENT_READBACK_BUFFER_BYTES = 16 * 1024 * 1024;
+const SEGMENT_WRITE_BUFFER_BYTES = 4 * 1024 * 1024;
+const SEGMENT_WRITE_FLUSH_INTERVAL_MS = 500;
 const SUSPICIOUS_ZERO_RUN_BYTES = 1024;
 const MAX_ZERO_RUN_VERIFICATIONS_PER_SEGMENT = 4;
 const ZERO_RUN_SENTINEL = Buffer.alloc(SUSPICIOUS_ZERO_RUN_BYTES);
@@ -1249,7 +1249,12 @@ async function downloadSegmentOnce(
     if (!bufferedBytes) return;
     if (signal.aborted) throw abortError();
     const length = bufferedBytes;
-    await runtimePerformance.measure("proxy.write", () => writeBufferAt(handle, writeBuffer.subarray(0, length), segment.start + writtenBytes));
+    response.setTimeout(0);
+    try {
+      await runtimePerformance.measure("proxy.write", () => writeBufferAt(handle, writeBuffer.subarray(0, length), segment.start + writtenBytes));
+    } finally {
+      if (!response.destroyed) response.setTimeout(options.idleTimeoutMs);
+    }
     writtenBytes += length;
     bufferedBytes = 0;
     lastFlushAt = performance.now();
