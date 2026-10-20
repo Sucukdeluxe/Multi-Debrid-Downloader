@@ -972,6 +972,7 @@ const emptySnapshot = (): UiSnapshot => ({
     columnOrderVersion: 3,
     autoExtractWhenStopped: true,
     downloadDiskReserveGb: 50,
+    failedExtractionCleanupMinutes: 10,
     disabledProviders: [],
     hosterRouting: {},
     providerDailyLimitBytes: {},
@@ -6023,7 +6024,8 @@ export function App(): ReactElement {
         reconnectWaitSeconds: [10, 600, 45],
         proxyApiProxyIndex: [1, 100000, 1],
         proxyConnectionsPerDownload: [2, 80, 32],
-        downloadDiskReserveGb: [0, 2000, 50]
+        downloadDiskReserveGb: [0, 2000, 50],
+        failedExtractionCleanupMinutes: [0, 1440, 10]
       };
       const bounds = numericLimits[fieldId as keyof RendererSettingsDraft];
       if (bounds) {

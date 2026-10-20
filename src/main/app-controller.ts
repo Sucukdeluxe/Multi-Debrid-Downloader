@@ -156,6 +156,7 @@ export class AppController {
   private downloadHealthMonitor: DownloadHealthMonitor;
 
   private downloadHealthTimer: NodeJS.Timeout | null = null;
+  private failedExtractionCleanupTimer: NodeJS.Timeout | null = null;
 
   private downloadHealthEvaluation: Promise<void> | null = null;
   private settingsLogUpdate: Promise<unknown> = Promise.resolve();
@@ -246,6 +247,10 @@ export class AppController {
       void this.evaluateDownloadHealth();
     }, 15_000);
     this.downloadHealthTimer.unref?.();
+    this.failedExtractionCleanupTimer = setInterval(() => {
+      void this.manager.cleanupFailedExtractionArchives().catch((error) => logger.warn(`Entpack-Fehler-Bereinigung fehlgeschlagen: ${String(error)}`));
+    }, 60_000);
+    this.failedExtractionCleanupTimer.unref?.();
     logger.info(`App gestartet v${APP_VERSION}`);
     logger.info(`Log-Datei: ${getLogFilePath()}`);
     logAuditEvent("INFO", "App gestartet", {
@@ -1760,6 +1765,10 @@ export class AppController {
     if (this.downloadHealthTimer) {
       clearInterval(this.downloadHealthTimer);
       this.downloadHealthTimer = null;
+    }
+    if (this.failedExtractionCleanupTimer) {
+      clearInterval(this.failedExtractionCleanupTimer);
+      this.failedExtractionCleanupTimer = null;
     }
     this.manager.suspendDownloadHealthMonitoring?.();
     if (this.runtimeStatsTimer) {

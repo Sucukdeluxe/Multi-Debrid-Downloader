@@ -155,6 +155,7 @@ export function defaultSettings(): AppSettings {
     extractCpuPriority: "high",
     autoExtractWhenStopped: true,
     downloadDiskReserveGb: 50,
+    failedExtractionCleanupMinutes: 10,
     disabledProviders: [],
     hosterRouting: {},
     providerDailyLimitBytes: {},

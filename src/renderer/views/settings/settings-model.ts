@@ -364,6 +364,10 @@ export function buildSettingsFormViewModel({
             { id: "hybridExtract", kind: "switch", label: "Hybrid-Entpacken", value: settings.hybridExtract },
             { id: "maxParallelExtract", kind: "number", label: "Gleichzeitige Entpackungen", value: String(settings.maxParallelExtract), min: 1, max: 8 },
             {
+              id: "failedExtractionCleanupMinutes", kind: "number", label: "Archiv nach Entpack-Fehler löschen nach (Minuten)", value: String(settings.failedExtractionCleanupMinutes), min: 0, max: 1440,
+              help: "Löscht die Archivteile eines fehlgeschlagenen Entpackvorgangs nach dieser Wartezeit vom Datenträger, sobald kein Teil desselben Archivs mehr lädt oder entpackt wird. Der Eintrag bleibt als „Entpack-Fehler - gelöscht“ in der Liste; erneutes Entpacken ist danach nicht mehr möglich. 0 schaltet das Löschen ab."
+            },
+            {
               id: "extractCpuPriority",
               kind: "select",
               label: "CPU-Priorität beim Entpacken",

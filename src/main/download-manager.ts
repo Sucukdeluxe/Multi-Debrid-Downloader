@@ -1067,6 +1067,15 @@ function pathKey(filePath: string): string {
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
+export function archiveSetStem(fileName: string): string {
+  return String(fileName || "")
+    .toLowerCase()
+    .replace(/\.part\d+\.rar$/, "")
+    .replace(/\.(?:rar|r\d{2,3}|zip|z\d{2,3}|7z(?:\.\d{3})?|\d{3})$/, "");
+}
+
+export const DELETED_EXTRACT_FAILURE_PREFIX = "Entpack-Fehler - gelöscht";
+
 function isPathInsideDir(filePath: string, dirPath: string): boolean {
   const file = pathKey(filePath);
   const dir = pathKey(dirPath);
@@ -3303,6 +3312,51 @@ export class DownloadManager extends EventEmitter {
     this.session.packageOrder = [...valid, ...remaining];
     this.persistSoon();
     this.emitState(true);
+  }
+
+  public async cleanupFailedExtractionArchives(now = nowMs()): Promise<number> {
+    const minutes = this.settings.failedExtractionCleanupMinutes;
+    if (!(minutes > 0) || this.failedExtractionCleanupRunning) return 0;
+    this.failedExtractionCleanupRunning = true;
+    let deleted = 0;
+    try {
+      for (const item of Object.values(this.session.items)) {
+        const status = item.fullStatus || "";
+        if (item.status !== "completed" || !/^Entpack-Fehler\b/.test(status) || status.startsWith(DELETED_EXTRACT_FAILURE_PREFIX)) continue;
+        if (now - (item.updatedAt || 0) < minutes * 60_000) continue;
+        const pkg = this.session.packages[item.packageId];
+        const targetPath = String(item.targetPath || "");
+        if (!pkg || !targetPath || !isPathInsideDir(targetPath, pkg.outputDir)) continue;
+        if (this.activeTasks.has(item.id) || this.retryAfterByItem.has(item.id) || this.packagePostProcessTasks.has(pkg.id)) continue;
+        const stem = archiveSetStem(item.fileName || path.basename(targetPath));
+        const archiveStillInUse = pkg.itemIds.some((id) => {
+          const other = this.session.items[id];
+          return Boolean(other && other.id !== item.id && !isFinishedStatus(other.status) && archiveSetStem(other.fileName || path.basename(other.targetPath || "")) === stem);
+        });
+        if (archiveStillInUse) continue;
+        try {
+          await fs.promises.rm(targetPath, { force: true });
+        } catch (error) {
+          this.logPackageForItem(item, "WARN", "Archivteil nach Entpack-Fehler konnte nicht gelöscht werden", { targetPath, error: compactErrorText(error) });
+          continue;
+        }
+        if (this.packagePostProcessTasks.has(pkg.id) || item.status !== "completed") continue;
+        item.fullStatus = status.replace(/^Entpack-Fehler\b/, DELETED_EXTRACT_FAILURE_PREFIX);
+        item.updatedAt = nowMs();
+        this.diskLeasesByOwner.get(item.id)?.release();
+        this.diskLeasesByOwner.delete(item.id);
+        this.logPackageForItem(item, "WARN", "Archivteil nach Entpack-Fehler gelöscht", { targetPath, waitedMinutes: minutes });
+        deleted += 1;
+      }
+    } finally {
+      this.failedExtractionCleanupRunning = false;
+    }
+    if (deleted > 0) {
+      logger.warn(`Entpack-Fehler-Bereinigung: ${deleted} Archivteil(e) gelöscht`);
+      this.persistSoon();
+      this.emitState(true);
+    }
+    return deleted;
   }
 
   public removeFailedExtractions(itemIds: string[]): { removed: number; filesPreserved: true } {
@@ -13489,6 +13543,8 @@ export class DownloadManager extends EventEmitter {
   private cachedSpeedLimitAt = 0;
 
   private globalSpeedLimitNextAt = 0;
+
+  private failedExtractionCleanupRunning = false;
 
   private globalSpeedLimitGeneration = 0;
 

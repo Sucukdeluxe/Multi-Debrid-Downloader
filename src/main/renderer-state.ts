@@ -253,6 +253,7 @@ export function createRendererSettings(settings: AppSettings): RendererSettings 
     extractCpuPriority: settings.extractCpuPriority,
     autoExtractWhenStopped: settings.autoExtractWhenStopped,
     downloadDiskReserveGb: settings.downloadDiskReserveGb,
+    failedExtractionCleanupMinutes: settings.failedExtractionCleanupMinutes,
     disabledProviders: [...settings.disabledProviders],
     hosterRouting: { ...settings.hosterRouting },
     providerDailyLimitBytes: { ...settings.providerDailyLimitBytes },

@@ -165,6 +165,7 @@ export function buildRedactedSettingsPayload(settings: AppSettings): Record<stri
       autoExtract: settings.autoExtract,
       autoExtractWhenStopped: settings.autoExtractWhenStopped,
       downloadDiskReserveGb: settings.downloadDiskReserveGb,
+      failedExtractionCleanupMinutes: settings.failedExtractionCleanupMinutes,
       hybridExtract: settings.hybridExtract,
       createExtractSubfolder: settings.createExtractSubfolder,
       cleanupMode: settings.cleanupMode,
