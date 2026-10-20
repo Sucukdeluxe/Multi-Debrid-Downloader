@@ -8327,7 +8327,7 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
-  private buildHybridArchiveRetryMarker(pkg: PackageEntry, items: DownloadItem[], archiveKey: string): string {
+  private async buildHybridArchiveRetryMarker(pkg: PackageEntry, items: DownloadItem[], archiveKey: string): Promise<string> {
     const archiveName = path.basename(archiveKey);
     const archiveItems = resolveArchiveItemsFromList(archiveName, items)
       .slice()
@@ -8337,8 +8337,8 @@ export class DownloadManager extends EventEmitter {
         return leftName.localeCompare(rightName);
       });
 
-    const itemStates = archiveItems.map((item) => {
-      const diskState = inspectPackageItemDiskState(pkg, item);
+    const itemStates = await Promise.all(archiveItems.map(async (item) => {
+      const diskState = await inspectPackageItemDiskStateAsync(pkg, item);
       return [
         (item.fileName || item.id || "").toLowerCase(),
         item.status,
@@ -8347,7 +8347,7 @@ export class DownloadManager extends EventEmitter {
         diskState.reason,
         diskState.size
       ].join("|");
-    });
+    }));
 
     return JSON.stringify({
       archiveName: archiveName.toLowerCase(),
@@ -13711,7 +13711,7 @@ export class DownloadManager extends EventEmitter {
       if (hasActiveArchiveItem) {
         continue;
       }
-      const allArchiveItemsReadyOnDisk = archiveItems.every((item) => inspectPackageItemDiskState(pkg, item).reason === "ok");
+      const allArchiveItemsReadyOnDisk = (await Promise.all(archiveItems.map((item) => inspectPackageItemDiskStateAsync(pkg, item)))).every((state) => state.reason === "ok");
       if (!allArchiveItemsReadyOnDisk) {
         continue;
       }
@@ -13903,7 +13903,7 @@ export class DownloadManager extends EventEmitter {
 
         const archiveItems = resolveArchiveItemsFromList(path.basename(archiveKey), completedItems);
         const allItemsStillInError = archiveItems.length > 0 && archiveItems.every((item) => isExtractErrorLabel(item.fullStatus));
-        const retryMarker = this.buildHybridArchiveRetryMarker(pkg, items, archiveKey);
+        const retryMarker = await this.buildHybridArchiveRetryMarker(pkg, items, archiveKey);
         if (!allItemsStillInError || previousFailure.marker !== retryMarker) {
           continue;
         }
@@ -14006,7 +14006,7 @@ export class DownloadManager extends EventEmitter {
     const readyArchiveMarkers = new Map<string, string>();
     for (const archiveKey of readyArchives) {
       readyArchiveKeyByName.set(path.basename(archiveKey).toLowerCase(), archiveKey);
-      readyArchiveMarkers.set(archiveKey, this.buildHybridArchiveRetryMarker(pkg, items, archiveKey));
+      readyArchiveMarkers.set(archiveKey, await this.buildHybridArchiveRetryMarker(pkg, items, archiveKey));
     }
 
     const autoRecoveredArchives = new Set<string>();
