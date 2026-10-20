@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { NotificationEvent } from "./notification-outbox";
+import { formatSpeed } from "../shared/speed-format";
 
 export type DownloadHealthStatus =
   | "idle"
@@ -182,7 +183,7 @@ function recoveryEvent(
       fields: [
         { name: "Incident-Dauer", value: durationText(Math.max(0, now - state.incidentStartedAt)), inline: true },
         { name: "Aktive Downloads", value: String(snapshot.activeTasks), inline: true },
-        { name: "Aktuelle Geschwindigkeit", value: `${byteText(snapshot.currentSpeedBps)}/s`, inline: true }
+        { name: "Aktuelle Geschwindigkeit", value: formatSpeed(snapshot.currentSpeedBps), inline: true }
       ]
     }
   };

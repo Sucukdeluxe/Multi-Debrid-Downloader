@@ -1325,8 +1325,9 @@ const BandwidthChart = memo(function BandwidthChart({ running, paused, speedHist
     for (const point of history) {
       if (point.speed > maxSpeed) maxSpeed = point.speed;
     }
-    maxSpeed = Math.max(maxSpeed, 1024 * 1024);
-    const niceMax = Math.pow(2, Math.ceil(Math.log2(maxSpeed)));
+    maxSpeed = Math.max(maxSpeed, 1_000_000);
+    const magnitude = Math.pow(10, Math.floor(Math.log10(maxSpeed)));
+    const niceMax = [1, 2, 5, 10].map((step) => step * magnitude).find((candidate) => candidate >= maxSpeed) ?? 10 * magnitude;
 
     ctx.font = `11px ${palette.fontFamily}`;
     let maxLabelWidth = 0;
@@ -1625,7 +1626,7 @@ const ALL_COLUMN_KEYS = ["name", "size", "progress", "hoster", "account", "prio"
 const COLUMN_DEFS = downloadColumnDefinitions;
 
 function formatMbpsInputFromKbps(kbps: number): string {
-  const mbps = Math.max(0, Number(kbps) || 0) / 1024;
+  const mbps = Math.max(0, Number(kbps) || 0) / 1000;
   return String(Number(mbps.toFixed(2)));
 }
 
@@ -4310,7 +4311,7 @@ export function App(): ReactElement {
     settingsDirtyRef.current = true;
     setSettingsDirty(true);
     setSettingsSaveState("dirty");
-    setSettingsDraft((prev) => ({ ...prev, speedLimitKbps: Math.floor(mbps * 1024) }));
+    setSettingsDraft((prev) => ({ ...prev, speedLimitKbps: Math.round(mbps * 1000) }));
   };
 
   const performQuickAction = async (
@@ -6043,7 +6044,7 @@ export function App(): ReactElement {
           setScheduleSpeedInputs((current) => ({ ...current, [key]: formatMbpsInputFromKbps(schedule.speedLimitKbps) }));
           return;
         }
-        const nextKbps = Math.floor(parsed * 1024);
+        const nextKbps = Math.round(parsed * 1000);
         setScheduleSpeedInputs((current) => ({ ...current, [key]: formatMbpsInputFromKbps(nextKbps) }));
         updateSchedule(index, "speedLimitKbps", nextKbps);
         return;
@@ -6055,7 +6056,7 @@ export function App(): ReactElement {
           return;
         }
         setSpeedLimitMbps(parsed);
-        setSpeedLimitInput(formatMbpsInputFromKbps(Math.floor(parsed * 1024)));
+        setSpeedLimitInput(formatMbpsInputFromKbps(Math.round(parsed * 1000)));
       }
     },
     onAction: (fieldId) => {
@@ -6530,7 +6531,7 @@ export function App(): ReactElement {
                         setSpeedLimitInput(formatMbpsInputFromKbps(settingsDraft.speedLimitKbps));
                         return;
                       }
-                      const kbps = Math.floor(parsed * 1024);
+                      const kbps = Math.round(parsed * 1000);
                       settingsDirtyRef.current = true;
                       const rev = ++settingsDraftRevisionRef.current;
                       setSettingsDraft((prev) => ({ ...prev, speedLimitKbps: kbps }));

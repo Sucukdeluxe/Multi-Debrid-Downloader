@@ -68,6 +68,7 @@ function releaseTlsSkip(): void {
 import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 import { planDownloadCompletion, reconcileFinalizedSize, validateDownloadedFileCompletion } from "./download-completion";
 import { downloadWithProxySegments, type ProxyFallbackReason } from "./proxy-segmented-download";
+import { formatSpeed, speedLimitBytesPerSecond } from "../shared/speed-format";
 import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkDdownloadOnline, checkOneFichierLinks, checkRapidgatorOnline, fetchAllDebridHostInfo, filenameFromDdownloadUrlPath, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, isDdownloadLink, isOneFichierLink, isRealDebridAccountBlockedForStart, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown, type DdownloadCheckResult, type OneFichierCheckResult } from "./debrid";
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractionActivityLabel, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo, type ExtractProgressUpdate } from "./extractor";
 import { planRarVolumeAliases } from "./archive-volume-names";
@@ -2951,7 +2952,7 @@ export class DownloadManager extends EventEmitter {
       session: snapshotSession,
       summary: snapshotSummary,
       stats: this.getStats(now),
-      speedText: `Geschwindigkeit: ${humanSize(Math.max(0, Math.floor(speedBps)))}/s`,
+      speedText: `Geschwindigkeit: ${formatSpeed(speedBps)}`,
       etaText: paused || !this.session.running ? "ETA: --" : `ETA: ${formatEta(eta)}`,
       canStart: (!this.session.running || paused) && this.hasUsableDownloadAccount(),
       canStop: this.session.running,
@@ -13623,7 +13624,7 @@ export class DownloadManager extends EventEmitter {
     if (limitKbps <= 0) {
       return;
     }
-    const bytesPerSecond = limitKbps * 1024;
+    const bytesPerSecond = speedLimitBytesPerSecond(limitKbps);
     const now = nowMs();
     const elapsed = Math.max((now - localWindowStarted) / 1000, 0.1);
     if (this.settings.speedLimitMode === "per_download") {
@@ -15386,7 +15387,7 @@ export class DownloadManager extends EventEmitter {
       durationSeconds: duration,
       averageSpeedBps: avgSpeed
     };
-    this.session.summaryText = `Summary: Dauer ${duration}s, Ø Speed ${humanSize(avgSpeed)}/s, Erfolg ${success}/${total}`;
+    this.session.summaryText = `Summary: Dauer ${duration}s, Ø Speed ${formatSpeed(avgSpeed)}, Erfolg ${success}/${total}`;
     const runContext = total > 0 ? this.finishActiveRunContext(this.runPackageIds, runStartedAt) : null;
     this.runItemIds.clear();
     this.runPackageIds.clear();

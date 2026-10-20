@@ -440,6 +440,13 @@ function migrateUpdateRepo(raw: string, fallback: string): string {
   return trimmed;
 }
 
+const DECIMAL_SPEED_UNIT_VERSION = 2;
+
+function toDecimalSpeedKbps(value: unknown, unitVersion: unknown): number {
+  const numeric = Number(value) || 0;
+  return unitVersion === DECIMAL_SPEED_UNIT_VERSION ? numeric : Math.round(numeric * 1000 / 1024);
+}
+
 export function normalizeSettings(settings: AppSettings): AppSettings {
   const defaults = defaultSettings();
   const theme = VALID_THEMES.has(settings.theme) ? settings.theme : defaults.theme;
@@ -618,7 +625,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     reconnectWaitSeconds: clampNumber(settings.reconnectWaitSeconds, defaults.reconnectWaitSeconds, 10, 600),
     completedCleanupPolicy: settings.completedCleanupPolicy,
     speedLimitEnabled: Boolean(settings.speedLimitEnabled),
-    speedLimitKbps: clampNumber(settings.speedLimitKbps, defaults.speedLimitKbps, 0, 500000),
+    speedLimitKbps: clampNumber(toDecimalSpeedKbps(settings.speedLimitKbps, settings.speedUnitVersion), defaults.speedLimitKbps, 0, 500000),
     speedLimitMode: settings.speedLimitMode,
     proxyDownloadEnabled: Boolean(settings.proxyDownloadEnabled),
     proxyListPath: asText(settings.proxyListPath).slice(0, 4096),
@@ -665,7 +672,8 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     totalRuntimeAllTimeMs: typeof settings.totalRuntimeAllTimeMs === "number" && settings.totalRuntimeAllTimeMs >= 0 ? settings.totalRuntimeAllTimeMs : defaults.totalRuntimeAllTimeMs,
     theme,
     themePreference,
-    bandwidthSchedules: normalizeBandwidthSchedules(settings.bandwidthSchedules),
+    bandwidthSchedules: normalizeBandwidthSchedules(settings.bandwidthSchedules).map((entry) => ({ ...entry, speedLimitKbps: toDecimalSpeedKbps(entry.speedLimitKbps, settings.speedUnitVersion) })),
+    speedUnitVersion: DECIMAL_SPEED_UNIT_VERSION,
     columnOrder: normalizeColumnOrder(settings.columnOrder, settings.columnOrderVersion),
     columnOrderVersion: 3,
     extractCpuPriority: settings.extractCpuPriority,
@@ -970,7 +978,8 @@ function readSettingsFile(filePath: string, contents?: string): LoadedSettingsFi
       themePreference: Object.prototype.hasOwnProperty.call(parsed, "themePreference")
         ? migrated.themePreference
         : VALID_THEMES.has(migrated.theme) ? migrated.theme : defaultSettings().themePreference,
-      columnOrderVersion: parsed.columnOrderVersion
+      columnOrderVersion: parsed.columnOrderVersion,
+      speedUnitVersion: parsed.speedUnitVersion
     } as AppSettings;
     if (!Object.prototype.hasOwnProperty.call(parsed, "megaDebridApiDisabledAccountIds")) {
       delete (mergedInput as Partial<AppSettings>).megaDebridApiDisabledAccountIds;

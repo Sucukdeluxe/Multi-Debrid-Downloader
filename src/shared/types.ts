@@ -254,6 +254,7 @@ export interface AppSettings extends DailyStartSettings, ProxyDownloadSettings {
   bandwidthSchedules: BandwidthScheduleEntry[];
   columnOrder: string[];
   columnOrderVersion?: number;
+  speedUnitVersion?: number;
   extractCpuPriority: ExtractCpuPriority;
   autoExtractWhenStopped: boolean;
   downloadDiskReserveGb: number;
@@ -395,6 +396,7 @@ export interface RendererSettings extends DailyStartSettings, ProxyDownloadSetti
   bandwidthSchedules: BandwidthScheduleEntry[];
   columnOrder: string[];
   columnOrderVersion?: number;
+  speedUnitVersion?: number;
   extractCpuPriority: ExtractCpuPriority;
   autoExtractWhenStopped: boolean;
   downloadDiskReserveGb: number;

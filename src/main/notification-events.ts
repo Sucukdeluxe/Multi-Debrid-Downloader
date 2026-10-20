@@ -11,6 +11,7 @@ import type {
   NotificationPriority
 } from "./notification-outbox";
 import { projectPackageFailureCategory } from "./package-telemetry";
+import { formatSpeed } from "../shared/speed-format";
 
 export interface PackageResultEnvelope {
   generation: number;
@@ -203,7 +204,7 @@ export function buildPackageNotificationEvent(
     { name: "Dateien", value: `${result.successfulFiles} erfolgreich · ${result.failedFiles} fehlgeschlagen · ${result.cancelledFiles} abgebrochen`, inline: false },
     { name: "Downloadgröße", value: `${formatBytes(result.downloadedBytes)} / ${formatBytes(result.totalBytes)}`, inline: true },
     { name: "Zeiten", value: `Download ${formatDuration(result.downloadDurationSeconds)} · Entpacken ${formatDuration(result.extractionDurationSeconds)} · Remux ${formatDuration(result.remuxDurationSeconds)} · Nachbearbeitung ${formatDuration(result.postProcessDurationSeconds)} · Gesamt ${formatDuration(result.totalDurationSeconds)}`, inline: false },
-    { name: "Aktive Downloadgeschwindigkeit", value: result.averageDownloadSpeedBps > 0 ? `${formatBytes(result.averageDownloadSpeedBps)}/s` : "—", inline: true },
+    { name: "Aktive Downloadgeschwindigkeit", value: result.averageDownloadSpeedBps > 0 ? formatSpeed(result.averageDownloadSpeedBps) : "—", inline: true },
     { name: "Archive", value: `${result.archiveCount} Gruppen · ${result.partCount} Parts · ${result.outputCount} Ausgaben`, inline: true }
   ];
   if (result.failurePhase) {
@@ -325,7 +326,7 @@ export function buildRunNotificationEvent(result: RunResult): NotificationEvent 
       { name: "Dateien", value: `${result.successfulFiles} erfolgreich · ${result.failedFiles} fehlgeschlagen · ${result.cancelledFiles} abgebrochen`, inline: false },
       { name: "Dauer", value: `Download ${formatDuration(result.downloadDurationSeconds)} · Entpacken ${formatDuration(result.extractionDurationSeconds)} · Remux ${formatDuration(result.remuxDurationSeconds)} · Nachbearbeitung ${formatDuration(result.postProcessDurationSeconds)} · Gesamt ${formatDuration(result.totalDurationSeconds)}`, inline: false },
       { name: "Downloadgröße", value: `${formatBytes(result.downloadedBytes)} / ${formatBytes(result.totalBytes)}`, inline: true },
-      { name: "Aktive Downloadgeschwindigkeit", value: result.averageDownloadSpeedBps > 0 ? `${formatBytes(result.averageDownloadSpeedBps)}/s` : "—", inline: true },
+      { name: "Aktive Downloadgeschwindigkeit", value: result.averageDownloadSpeedBps > 0 ? formatSpeed(result.averageDownloadSpeedBps) : "—", inline: true },
       { name: "Entpackfehler", value: String(result.extractionFailures), inline: true },
       { name: "Remuxfehler", value: String(result.remuxFailures), inline: true },
       { name: "Downloadfehler", value: String(result.downloadFailures), inline: true },
@@ -355,7 +356,7 @@ export function buildRemainingThresholdNotificationEvent(
       { name: "Restmenge", value: formatBytes(snapshot.remainingBytes), inline: true },
       { name: "Offene Pakete", value: String(snapshot.openPackages), inline: true },
       { name: "Offene Dateien", value: String(snapshot.openItems), inline: true },
-      { name: "Geschwindigkeit", value: snapshot.speedBps > 0 ? `${formatBytes(snapshot.speedBps)}/s` : "—", inline: true },
+      { name: "Geschwindigkeit", value: snapshot.speedBps > 0 ? formatSpeed(snapshot.speedBps) : "—", inline: true },
       { name: "ETA", value: snapshot.etaSeconds >= 0 ? formatDuration(snapshot.etaSeconds) : "—", inline: true }
     ]
   );

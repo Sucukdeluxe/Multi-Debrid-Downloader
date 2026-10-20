@@ -151,6 +151,7 @@ export function defaultSettings(): AppSettings {
     bandwidthSchedules: [],
     columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed", "availability"],
     columnOrderVersion: 3,
+    speedUnitVersion: 2,
     extractCpuPriority: "high",
     autoExtractWhenStopped: true,
     downloadDiskReserveGb: 50,

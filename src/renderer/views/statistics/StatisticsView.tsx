@@ -6,6 +6,7 @@ import type {
   StatisticsViewModel
 } from "./statistics-model";
 import { SlidingSelection } from "../../ui/SlidingSelection";
+import { formatSpeed } from "../../../shared/speed-format";
 import "./statistics.css";
 
 export interface StatisticsViewActions {
@@ -55,7 +56,7 @@ function formatMetric(metric: StatisticsMetric, kind: "bytes" | "count" | "perce
     return formatBytes(metric.value, 2);
   }
   if (kind === "speed") {
-    return `${formatBytes(metric.value)}/s`;
+    return formatSpeed(metric.value);
   }
   if (kind === "percent") {
     return `${numberFormatter.format(metric.value)} %`;
