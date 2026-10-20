@@ -541,7 +541,7 @@ const sharedReadbackLimiter = new ProxyReadbackLimiter(8);
 const sparseAllocations = { ok: 0, failed: 0 };
 
 export function getProxyTransferSnapshot() {
-  return { ...sharedProxyCoordinator.snapshot(), readback: sharedReadbackLimiter.snapshot(), sparseAllocations: { ...sparseAllocations } };
+  return { ...sharedProxyCoordinator.snapshot(), readback: sharedReadbackLimiter.snapshot(), sparseAllocations: { ...sparseAllocations }, representationChanges: representationChanges.map(entry => ({ ...entry })) };
 }
 
 interface ProxyConnectionEntry {
@@ -767,6 +767,13 @@ function parseContentRange(value: string | undefined): ParsedRange | null {
     return null;
   }
   return { start, end, total };
+}
+
+const representationChanges: Array<{ at: number; host: string; proxyId: number; expectedTotal: number; receivedTotal: number; rangeStart: number; rangeEnd: number; kind: string }> = [];
+
+function recordRepresentationChange(kind: string, target: URL, proxy: ProxyEndpoint, expectedTotal: number, range: ParsedRange): void {
+  representationChanges.push({ at: Date.now(), host: target.host, proxyId: proxy.id, expectedTotal, receivedTotal: range.total, rangeStart: range.start, rangeEnd: range.end, kind });
+  if (representationChanges.length > 20) representationChanges.shift();
 }
 
 function isChangedRepresentation(status: number, range: ParsedRange | null, start: number, end: number, total: number, contentLength: number): boolean {
@@ -1140,6 +1147,7 @@ async function readRangeOnce(
   const contentRange = parseContentRange(response.headers["content-range"]);
   const contentLength = Number(response.headers["content-length"] || 0);
   if (isChangedRepresentation(status, contentRange, range.start, range.end, totalBytes, contentLength)) {
+    recordRepresentationChange("verification", target, proxy, totalBytes, contentRange!);
     opened.dispose();
     throw new Error("proxy_representation_changed");
   }
@@ -1208,6 +1216,7 @@ async function downloadSegmentOnce(
   const range = parseContentRange(response.headers["content-range"]);
   const contentLength = Number(response.headers["content-length"] || 0);
   if (isChangedRepresentation(status, range, segment.start, segment.end, totalBytes, contentLength)) {
+    recordRepresentationChange("segment", target, proxy, totalBytes, range!);
     opened.dispose();
     throw new Error("proxy_representation_changed");
   }
