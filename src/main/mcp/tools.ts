@@ -12,7 +12,7 @@ import { getRecentErrors } from "../error-ring";
 import { getLogFilePath } from "../logger";
 import { getSessionLogPath } from "../session-log";
 import { getConversionLogPath } from "../conversion-trace";
-import { getNetworkProxyState } from "../network-proxy";
+import { getNetworkProxyProbe, getNetworkProxyState } from "../network-proxy";
 import { getWindowsHostDiagnosticsAsync } from "../windows-host-diagnostics";
 import { sampleHostResources } from "../host-resources";
 import { startStorageProbe, getStorageProbe, cancelStorageProbe } from "../storage-probe";
@@ -104,7 +104,7 @@ export function createMcpTools(deps: McpToolDependencies): McpTool[] {
   }
   read("status", "Read application version, transfer status and counts without returning the whole queue.", object(), () => {
     const current = snapshot();
-    return { version: c.getVersion(), session: { ...current.session, packages: undefined, items: undefined }, packageCount: Object.keys(current.session.packages).length, itemCount: Object.keys(current.session.items).length, stats: c.getSessionStats(), proxy: getNetworkProxyState() };
+    return { version: c.getVersion(), session: { ...current.session, packages: undefined, items: undefined }, packageCount: Object.keys(current.session.packages).length, itemCount: Object.keys(current.session.items).length, stats: c.getSessionStats(), proxy: { ...getNetworkProxyState(), probe: getNetworkProxyProbe() } };
   });
   read("packages_list", "List packages with bounded pagination. Use IDs for actions.", object(page, []), args => paginate(Object.values(snapshot().session.packages), args));
   read("items_list", "List individual downloads, filtered by package or status, with bounded pagination.", object({ ...page, packageId: str(), status: str(50) }, []), args => paginate(Object.values(snapshot().session.items).filter(item => (!args.packageId || item.packageId === args.packageId) && (!args.status || item.status === args.status)), args));
