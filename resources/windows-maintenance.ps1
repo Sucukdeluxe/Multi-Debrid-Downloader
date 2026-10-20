@@ -32,8 +32,74 @@ function Get-UpdateDescription($update) {
   }
 }
 function Is-RebootPending {
-  $system = New-Object -ComObject Microsoft.Update.SystemInfo
-  return [bool]$system.RebootRequired
+  if (Test-Path -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') { return $true }
+  try {
+    $system = New-Object -ComObject Microsoft.Update.SystemInfo
+    return [bool]$system.RebootRequired
+  } catch { return $false }
+}
+function Install-Package($package) {
+  if ([string]$package.url -notmatch '^https://catalog\.s\.download\.windowsupdate\.com/[a-z]/msdownload/update/software/[a-z]+/[0-9]{4}/[0-9]{2}/windows10\.0-kb([0-9]{7})-x64_([0-9a-f]{40})\.msu$') { throw 'Invalid package.' }
+  $kb = "KB$($Matches[1])"
+  $sha1 = $Matches[2]
+  $size = [long]$package.size
+  if ($kb -ne $package.kb -or [string]$package.sha256 -notmatch '^[0-9a-f]{64}$' -or $size -lt 1 -or $size -gt 4294967296) { throw 'Invalid package.' }
+  if (@(Get-Process -Name 'TiWorker','dism','DismHost','wusa' -ErrorAction SilentlyContinue).Count -gt 0) { throw 'Windows component servicing is still active.' }
+  if (Is-RebootPending) {
+    Save-State 'failed' @{ kb=$kb; stage='preflight'; rebootRequired=$true; pendingBefore=$true }
+    return
+  }
+  if ([IO.DriveInfo]::new($env:SystemDrive).AvailableFreeSpace -lt (15GB + $size)) { throw 'Not enough free space on the system drive.' }
+  $target = Join-Path $directory 'package.msu'
+  try {
+    Save-State 'downloading' @{ kb=$kb; bytes=0; size=$size }
+    Add-Type -AssemblyName System.Net.Http
+    $handler = [Net.Http.HttpClientHandler]::new()
+    $handler.AllowAutoRedirect = $false
+    $client = [Net.Http.HttpClient]::new($handler)
+    $client.Timeout = [TimeSpan]::FromHours(3)
+    $response = $client.GetAsync([string]$package.url, [Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+    [void]$response.EnsureSuccessStatusCode()
+    $stream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+    $output = [IO.File]::Open($target, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try {
+      $buffer = New-Object byte[] 1048576
+      $total = 0L
+      $reported = [DateTime]::UtcNow
+      while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+        $total += $read
+        if ($total -gt $size) { throw 'Package is larger than expected.' }
+        $output.Write($buffer, 0, $read)
+        if (([DateTime]::UtcNow - $reported).TotalSeconds -ge 15) {
+          Save-State 'downloading' @{ kb=$kb; bytes=$total; size=$size }
+          $reported = [DateTime]::UtcNow
+        }
+      }
+      $output.Flush($true)
+    } finally {
+      $output.Dispose()
+      $stream.Dispose()
+      $client.Dispose()
+    }
+    Save-State 'verifying' @{ kb=$kb; bytes=$total; size=$size }
+    if ((Get-Item -LiteralPath $target).Length -ne $size) { throw 'Package size mismatch.' }
+    $sha256 = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($sha256 -ne $package.sha256 -or (Get-FileHash -LiteralPath $target -Algorithm SHA1).Hash.ToLowerInvariant() -ne $sha1) { throw 'Package hash mismatch.' }
+    $signature = Get-AuthenticodeSignature -LiteralPath $target
+    if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '^CN=Microsoft Corporation, O=Microsoft Corporation,') { throw 'Package signature is not a valid Microsoft signature.' }
+    $log = Join-Path $directory 'dism.log'
+    $info = [Diagnostics.ProcessStartInfo]::new("$env:SystemRoot\System32\dism.exe", "/Online /Add-Package `"/PackagePath:$target`" /Quiet /NoRestart `"/LogPath:$log`"")
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $process = [Diagnostics.Process]::Start($info)
+    Save-State 'installing' @{ kb=$kb; sha256=$sha256; signer=$signature.SignerCertificate.Thumbprint; dismPid=$process.Id; installStartedAt=[DateTime]::UtcNow.ToString('o') }
+    $process.WaitForExit()
+    $exitCode = $process.ExitCode
+    $result = @{ kb=$kb; sha256=$sha256; exitCode=$exitCode; rebootRequired=(($exitCode -eq 3010) -or (Is-RebootPending)); osBuild=(Get-CimInstance Win32_OperatingSystem).Version; ubr=(Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').UBR }
+    if ($exitCode -in @(0, 3010)) { Save-State 'completed' $result } else { Save-State 'failed' $result }
+  } finally {
+    if (Test-Path -LiteralPath $target) { [IO.File]::Delete($target) }
+  }
 }
 function Restore-Services($services) {
   foreach ($service in @($services)) {
@@ -47,13 +113,17 @@ function Restore-Services($services) {
 }
 $serviceBackup = @()
 try {
-  $lock = [IO.File]::Open((Join-Path $root 'maintenance.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+  if ($request.action -ne 'abort') { $lock = [IO.File]::Open((Join-Path $root 'maintenance.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
   Save-State 'preflight'
   $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
   if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Windows maintenance requires an elevated application.' }
   $osInfo = Get-CimInstance Win32_OperatingSystem
   if ($request.backupConfirmed -ne $true -or $request.expectedBuild -ne '20348' -or $osInfo.BuildNumber -ne '20348' -or $osInfo.ProductType -eq 1) { throw 'Expected Windows Server 2022 and confirmed VM backup.' }
-  if ($request.action -notin @('scan', 'install', 'restore', 'abort', 'reboot')) { throw 'Invalid action.' }
+  if ($request.action -notin @('scan', 'install', 'package', 'restore', 'abort', 'reboot')) { throw 'Invalid action.' }
+  if ($request.action -eq 'package') {
+    Install-Package $request.package
+    return
+  }
   if ($request.action -eq 'restore') {
     if ($request.sourceJobId -notmatch '^[a-fA-F0-9-]{36}$') { throw 'Invalid source job.' }
     $sourcePath = Join-Path (Join-Path $root $request.sourceJobId) 'status.json'
@@ -82,7 +152,7 @@ try {
   if ($request.action -eq 'reboot') {
     if ($request.sourceJobId -notmatch '^[a-fA-F0-9-]{36}$') { throw 'Invalid installation job.' }
     $source = Get-Content -LiteralPath (Join-Path (Join-Path $root $request.sourceJobId) 'status.json') -Raw | ConvertFrom-Json
-    if ($source.action -ne 'install' -or $source.state -notin @('completed','failed') -or $source.result.rebootRequired -ne $true -or -not (Is-RebootPending)) { throw 'No completed installation requiring a restart.' }
+    if ($source.action -notin @('install', 'package') -or $source.state -notin @('completed','failed') -or $source.result.rebootRequired -ne $true -or -not (Is-RebootPending)) { throw 'No completed installation requiring a restart.' }
     $processing = @(Get-Process -Name '7z','7za','unrar','ffmpeg','ffprobe' -ErrorAction SilentlyContinue)
     if ($processing.Count -gt 0) { throw 'Extraction or media processing is still running.' }
     Save-State 'awaiting-reboot' @{ rebootRequired = $true; forced = $false }

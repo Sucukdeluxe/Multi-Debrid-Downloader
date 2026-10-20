@@ -6,22 +6,29 @@ import { Worker } from "node:worker_threads";
 
 type UpdateIdentity = { id: string; revision: number };
 export type MaintenanceRequest = {
-  action: "scan" | "install" | "restore" | "abort" | "reboot";
+  action: "scan" | "install" | "package" | "restore" | "abort" | "reboot";
   requestKey: string;
   expectedBuild: string;
   backupConfirmed: boolean;
   scanId?: string;
   updates?: UpdateIdentity[];
   sourceJobId?: string;
+  package?: { kb: string; url: string; sha256: string; size: number };
 };
 type Job = { id: string; action: MaintenanceRequest["action"]; state: string; startedAt: string; pid?: number; bootAt?: number; error?: string; result?: { updates?: UpdateIdentity[]; rebootRequired?: boolean; [key: string]: unknown } };
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const terminal = new Set(["completed", "failed"]);
+const packageUrl = /^https:\/\/catalog\.s\.download\.windowsupdate\.com\/[a-z]\/msdownload\/update\/software\/[a-z]+\/\d{4}\/\d{2}\/windows10\.0-kb(\d{7})-x64_[0-9a-f]{40}\.msu$/;
 
 function validate(request: MaintenanceRequest) {
-  if (!request || Object.keys(request).some(key => !["action", "requestKey", "expectedBuild", "backupConfirmed", "scanId", "updates", "sourceJobId"].includes(key))) throw Error("Ungültige Wartungsparameter.");
-  if (!["scan", "install", "restore", "abort", "reboot"].includes(request.action) || request.expectedBuild !== "20348" || request.backupConfirmed !== true || !/^[a-zA-Z0-9_-]{1,100}$/.test(request.requestKey)) throw Error("Wartung erfordert Windows Server 2022 und eine bestätigte VM-Sicherung.");
+  if (!request || Object.keys(request).some(key => !["action", "requestKey", "expectedBuild", "backupConfirmed", "scanId", "updates", "sourceJobId", "package"].includes(key))) throw Error("Ungültige Wartungsparameter.");
+  if (!["scan", "install", "package", "restore", "abort", "reboot"].includes(request.action) || request.expectedBuild !== "20348" || request.backupConfirmed !== true || !/^[a-zA-Z0-9_-]{1,100}$/.test(request.requestKey)) throw Error("Wartung erfordert Windows Server 2022 und eine bestätigte VM-Sicherung.");
   if (request.action === "scan" && (request.updates || request.scanId || request.sourceJobId)) throw Error("Ungültiger Suchauftrag.");
+  if (request.action === "package") {
+    const item = request.package;
+    const match = packageUrl.exec(item?.url || "");
+    if (!item || typeof item !== "object" || Object.keys(item).some(key => !["kb", "url", "sha256", "size"].includes(key)) || !match || item.kb !== `KB${match[1]}` || !/^[0-9a-f]{64}$/.test(item.sha256) || !Number.isSafeInteger(item.size) || item.size < 1 || item.size > 4294967296 || request.scanId || request.updates || request.sourceJobId) throw Error("Ungültiges Updatepaket.");
+  } else if (request.package !== undefined) throw Error("Ungültige Wartungsparameter.");
   if (request.action === "install") {
     if (!uuid.test(request.scanId || "") || request.sourceJobId || !Array.isArray(request.updates) || !request.updates.length || request.updates.length > 100) throw Error("Konkrete Updateauswahl fehlt.");
     const keys = new Set<string>();
@@ -87,7 +94,7 @@ export class WindowsMaintenance {
     }
     if (request.action === "reboot") {
       const source = await this.get(request.sourceJobId);
-      if (!("action" in source) || source.action !== "install" || !terminal.has(source.state) || source.result?.rebootRequired !== true) throw Error("Keine abgeschlossene Installation mit erforderlichem Neustart.");
+      if (!("action" in source) || !["install", "package"].includes(source.action) || !terminal.has(source.state) || source.result?.rebootRequired !== true) throw Error("Keine abgeschlossene Installation mit erforderlichem Neustart.");
     }
     if (["restore", "abort"].includes(request.action)) {
       const source = await this.get(request.sourceJobId);
