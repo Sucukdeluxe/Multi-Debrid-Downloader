@@ -11738,137 +11738,141 @@ export class DownloadManager extends EventEmitter {
 
       if (!proxyAttempted && attempt === 1 && existingBytes === 0 && this.settings.proxyDownloadEnabled) {
         proxyAttempted = true;
-        if (this.settings.speedLimitEnabled) {
-          logAttemptEvent("INFO", "Proxy-Segmentierung wegen aktivem Geschwindigkeitslimit übersprungen; fester Proxy wird verwendet", {
-            attempt
-          });
-        } else {
-          const proxyReasonLabels: Record<ProxyFallbackReason, string> = {
-            proxy_file_unavailable: "Proxy-Liste nicht verfügbar",
-            no_valid_proxies: "Keine gültigen Proxys in der Liste",
-            range_unsupported: "Server unterstützt keine Byte-Bereiche",
-            file_too_small: "Datei ist für mehrere Segmente zu klein",
-            not_enough_proxies: "Zu wenige Proxys neben dem reservierten API-Proxy",
-            proxy_unavailable: "Proxys nicht erreichbar",
-            origin_http_error: "Downloadserver hat die Segmentanfrage abgelehnt",
-            segment_failed: "Proxy-Segmente konnten nicht vollständig geladen werden"
-          };
-          let lastProxyUiEmitAt = 0;
-          item.fullStatus = `Proxy-Download startet (Gesamtlimit ${this.settings.proxyConnectionsPerDownload})`;
-          item.updatedAt = nowMs();
-          this.emitState();
-          logAttemptEvent("INFO", "Proxy-Segmentdownload startet", {
-            attempt,
-            totalConnectionLimit: this.settings.proxyConnectionsPerDownload,
-            proxyListConfigured: Boolean(this.settings.proxyListPath)
-          });
-          const proxyResult = await downloadWithProxySegments({
-            directUrl,
-            targetPath: effectiveTargetPath,
-            proxyListPath: this.settings.proxyListPath,
-            connections: this.settings.proxyConnectionsPerDownload,
-            totalConnectionLimit: this.settings.proxyConnectionsPerDownload,
-            downloadId: active.itemId,
-            reservedProxyIndex: this.settings.proxyApiProxyIndex,
-            signal: active.abortController.signal,
-            skipTlsVerify,
-            onDiskActivity: (blocked) => {
-              active.blockedOnDiskWrite = blocked;
-              active.blockedOnDiskSince = blocked ? nowMs() : 0;
-            },
-            waitWhilePaused: async () => {
-              while (this.session.paused && this.session.running && !active.abortController.signal.aborted) {
-                item.status = "paused";
-                item.fullStatus = "Pausiert";
-                item.updatedAt = nowMs();
-                this.emitState();
-                await sleep(120);
-              }
-              if (active.abortController.signal.aborted) {
-                throw new Error(`aborted:${active.abortReason}`);
-              }
-            },
-            onTrafficBytes: (bytes) => {
-              this.recordProviderDownloadedBytes(
-                item.provider,
-                bytes,
-                item.providerAccountId,
-                item.providerAccountLabel
-              );
-              this.recordSpeed(bytes, item.packageId, active.itemId);
-            },
-            onProgress: (deltaBytes, downloadedBytes, totalBytes) => {
-              this.session.totalDownloadedBytes = Math.max(0, this.session.totalDownloadedBytes + deltaBytes);
-              this.sessionDownloadedBytes = Math.max(0, this.sessionDownloadedBytes + deltaBytes);
-              this.settings.totalDownloadedAllTime = Math.max(0, Number(this.settings.totalDownloadedAllTime || 0) + deltaBytes);
-              this.itemContributedBytes.set(
-                active.itemId,
-                Math.max(0, (this.itemContributedBytes.get(active.itemId) || 0) + deltaBytes)
-              );
-              const nowTick = nowMs();
-              item.status = this.session.paused ? "paused" : "downloading";
-              item.downloadedBytes = downloadedBytes;
-              item.totalBytes = totalBytes;
-              item.progressPercent = Math.max(0, Math.min(100, Math.floor((downloadedBytes / totalBytes) * 100)));
-              item.speedBps = this.session.paused
-                ? 0
-                : Math.floor((this.speedBytesPerItem.get(active.itemId) ?? 0) / SPEED_WINDOW_SECONDS);
-              item.fullStatus = this.session.paused
-                ? "Pausiert"
-                : `Proxy-Download läuft (Gesamtlimit ${this.settings.proxyConnectionsPerDownload})`;
-              if (nowTick - lastProxyUiEmitAt >= DOWNLOAD_LIVE_UPDATE_INTERVAL_MS || deltaBytes < 0) {
-                item.updatedAt = nowTick;
-                this.emitState();
-                lastProxyUiEmitAt = nowTick;
-              }
-            },
-            onRepresentationRetry: () => {
-              logAttemptEvent("WARN", "Dateigröße zwischen Proxy-Antworten geändert; Segmentdownload wird einmal vollständig neu geprüft", {
-                attempt
-              });
-            },
-            onValidationRetry: (event) => {
-              logAttemptEvent("WARN", "Proxy-Segmentprüfung fehlgeschlagen, Segment wird neu geladen", {
-                reason: event.reason,
-                rangeStart: event.rangeStart,
-                rangeEnd: event.rangeEnd,
-                segmentStart: event.segmentStart,
-                segmentEnd: event.segmentEnd
-              });
+        const proxyReasonLabels: Record<ProxyFallbackReason, string> = {
+          proxy_file_unavailable: "Proxy-Liste nicht verfügbar",
+          no_valid_proxies: "Keine gültigen Proxys in der Liste",
+          range_unsupported: "Server unterstützt keine Byte-Bereiche",
+          file_too_small: "Datei ist für mehrere Segmente zu klein",
+          not_enough_proxies: "Zu wenige Proxys neben dem reservierten API-Proxy",
+          proxy_unavailable: "Proxys nicht erreichbar",
+          origin_http_error: "Downloadserver hat die Segmentanfrage abgelehnt",
+          segment_failed: "Proxy-Segmente konnten nicht vollständig geladen werden"
+        };
+        let lastProxyUiEmitAt = 0;
+        item.fullStatus = `Proxy-Download startet (Gesamtlimit ${this.settings.proxyConnectionsPerDownload})`;
+        item.updatedAt = nowMs();
+        this.emitState();
+        logAttemptEvent("INFO", "Proxy-Segmentdownload startet", {
+          attempt,
+          totalConnectionLimit: this.settings.proxyConnectionsPerDownload,
+          proxyListConfigured: Boolean(this.settings.proxyListPath)
+        });
+        let limitWindowBytes = 0;
+        let limitWindowStarted = nowMs();
+        const proxyResult = await downloadWithProxySegments({
+          directUrl,
+          targetPath: effectiveTargetPath,
+          proxyListPath: this.settings.proxyListPath,
+          connections: this.settings.proxyConnectionsPerDownload,
+          totalConnectionLimit: this.settings.proxyConnectionsPerDownload,
+          downloadId: active.itemId,
+          reservedProxyIndex: this.settings.proxyApiProxyIndex,
+          signal: active.abortController.signal,
+          skipTlsVerify,
+          onDiskActivity: (blocked) => {
+            active.blockedOnDiskWrite = blocked;
+            active.blockedOnDiskSince = blocked ? nowMs() : 0;
+          },
+          waitWhilePaused: async () => {
+            while (this.session.paused && this.session.running && !active.abortController.signal.aborted) {
+              item.status = "paused";
+              item.fullStatus = "Pausiert";
+              item.updatedAt = nowMs();
+              this.emitState();
+              await sleep(120);
             }
-          });
-          if (proxyResult.status === "completed") {
-            active.resumable = true;
-            item.status = "downloading";
-            item.downloadedBytes = proxyResult.totalBytes;
-            item.totalBytes = proxyResult.totalBytes;
-            item.progressPercent = 100;
-            item.speedBps = 0;
-            item.fullStatus = "Finalisierend...";
-            item.updatedAt = nowMs();
-            this.emitState();
-            logAttemptEvent("INFO", "Proxy-Segmentdownload abgeschlossen", {
-              attempt,
-              connections: proxyResult.connections,
-              totalBytes: proxyResult.totalBytes,
-              targetPath: effectiveTargetPath
+            if (active.abortController.signal.aborted) {
+              throw new Error(`aborted:${active.abortReason}`);
+            }
+          },
+          throttle: async (bytes) => {
+            await this.applySpeedLimit(bytes, limitWindowBytes, limitWindowStarted, active);
+            limitWindowBytes += bytes;
+            if (nowMs() - limitWindowStarted >= 500) {
+              limitWindowStarted = nowMs();
+              limitWindowBytes = 0;
+            }
+          },
+          onTrafficBytes: (bytes) => {
+            this.recordProviderDownloadedBytes(
+              item.provider,
+              bytes,
+              item.providerAccountId,
+              item.providerAccountLabel
+            );
+            this.recordSpeed(bytes, item.packageId, active.itemId);
+          },
+          onProgress: (deltaBytes, downloadedBytes, totalBytes) => {
+            this.session.totalDownloadedBytes = Math.max(0, this.session.totalDownloadedBytes + deltaBytes);
+            this.sessionDownloadedBytes = Math.max(0, this.sessionDownloadedBytes + deltaBytes);
+            this.settings.totalDownloadedAllTime = Math.max(0, Number(this.settings.totalDownloadedAllTime || 0) + deltaBytes);
+            this.itemContributedBytes.set(
+              active.itemId,
+              Math.max(0, (this.itemContributedBytes.get(active.itemId) || 0) + deltaBytes)
+            );
+            const nowTick = nowMs();
+            item.status = this.session.paused ? "paused" : "downloading";
+            item.downloadedBytes = downloadedBytes;
+            item.totalBytes = totalBytes;
+            item.progressPercent = Math.max(0, Math.min(100, Math.floor((downloadedBytes / totalBytes) * 100)));
+            item.speedBps = this.session.paused
+              ? 0
+              : Math.floor((this.speedBytesPerItem.get(active.itemId) ?? 0) / SPEED_WINDOW_SECONDS);
+            item.fullStatus = this.session.paused
+              ? "Pausiert"
+              : `Proxy-Download läuft (Gesamtlimit ${this.settings.proxyConnectionsPerDownload})`;
+            if (nowTick - lastProxyUiEmitAt >= DOWNLOAD_LIVE_UPDATE_INTERVAL_MS || deltaBytes < 0) {
+              item.updatedAt = nowTick;
+              this.emitState();
+              lastProxyUiEmitAt = nowTick;
+            }
+          },
+          onRepresentationRetry: () => {
+            logAttemptEvent("WARN", "Dateigröße zwischen Proxy-Antworten geändert; Segmentdownload wird einmal vollständig neu geprüft", {
+              attempt
             });
-            return { resumable: true };
+          },
+          onValidationRetry: (event) => {
+            logAttemptEvent("WARN", "Proxy-Segmentprüfung fehlgeschlagen, Segment wird neu geladen", {
+              reason: event.reason,
+              rangeStart: event.rangeStart,
+              rangeEnd: event.rangeEnd,
+              segmentStart: event.segmentStart,
+              segmentEnd: event.segmentEnd
+            });
           }
+        });
+        if (proxyResult.status === "completed") {
+          active.resumable = true;
           item.status = "downloading";
-          item.downloadedBytes = 0;
-          item.progressPercent = 0;
+          item.downloadedBytes = proxyResult.totalBytes;
+          item.totalBytes = proxyResult.totalBytes;
+          item.progressPercent = 100;
           item.speedBps = 0;
-          item.fullStatus = "Einzel-Proxy-Download wird gestartet";
+          item.fullStatus = "Finalisierend...";
           item.updatedAt = nowMs();
           this.emitState();
-          logAttemptEvent("WARN", "Proxy-Segmentdownload nicht verwendet, fester Einzel-Proxy folgt", {
+          logAttemptEvent("INFO", "Proxy-Segmentdownload abgeschlossen", {
             attempt,
-            reason: proxyReasonLabels[proxyResult.reason],
-            ...(proxyResult.errorCode ? { segmentError: proxyResult.errorCode } : {}),
-            ...(proxyResult.httpStatus ? { originHttpStatus: proxyResult.httpStatus } : {})
+            connections: proxyResult.connections,
+            totalBytes: proxyResult.totalBytes,
+            targetPath: effectiveTargetPath
           });
+          return { resumable: true };
         }
+        item.status = "downloading";
+        item.downloadedBytes = 0;
+        item.progressPercent = 0;
+        item.speedBps = 0;
+        item.fullStatus = "Einzel-Proxy-Download wird gestartet";
+        item.updatedAt = nowMs();
+        this.emitState();
+        logAttemptEvent("WARN", "Proxy-Segmentdownload nicht verwendet, fester Einzel-Proxy folgt", {
+          attempt,
+          reason: proxyReasonLabels[proxyResult.reason],
+          ...(proxyResult.errorCode ? { segmentError: proxyResult.errorCode } : {}),
+          ...(proxyResult.httpStatus ? { originHttpStatus: proxyResult.httpStatus } : {})
+        });
       }
 
       let response: Response;

@@ -93,6 +93,7 @@ export interface ProxySegmentedDownloadOptions {
   idleTimeoutMs?: number;
   proxyAttempts?: number;
   waitWhilePaused?: () => Promise<void>;
+  throttle?: (bytes: number) => Promise<void>;
   onTrafficBytes?: (bytes: number) => void;
   onProgress?: (deltaBytes: number, downloadedBytes: number, totalBytes: number) => void;
   onValidationRetry?: (event: ProxySegmentValidationRetry) => void;
@@ -1192,7 +1193,7 @@ async function downloadSegmentOnce(
   proxy: ProxyEndpoint,
   signal: AbortSignal,
   options: Required<Pick<ProxySegmentedDownloadOptions, "skipTlsVerify" | "connectTimeoutMs" | "idleTimeoutMs">>,
-  callbacks: Pick<ProxySegmentedDownloadOptions, "waitWhilePaused" | "onTrafficBytes" | "onProgress"> & { onTransferWritten?: () => void; withDiskActivity: DiskOperation },
+  callbacks: Pick<ProxySegmentedDownloadOptions, "waitWhilePaused" | "throttle" | "onTrafficBytes" | "onProgress"> & { onTransferWritten?: () => void; withDiskActivity: DiskOperation },
   totalBytes: number,
   currentProgress: () => number
 ): Promise<SegmentDownloadOutcome> {
@@ -1238,15 +1239,18 @@ async function downloadSegmentOnce(
   let bufferedBytes = 0;
   let writtenBytes = 0;
   let lastFlushAt = performance.now();
+  const setIdleTimeout = (ms: number): void => {
+    if (response.socket && !response.destroyed) response.setTimeout(ms);
+  };
   const flushBuffered = async (): Promise<void> => {
     if (!bufferedBytes) return;
     if (signal.aborted) throw abortError();
     const length = bufferedBytes;
-    response.setTimeout(0);
+    setIdleTimeout(0);
     try {
       await callbacks.withDiskActivity(() => withProcessingBudget("downloadWrites", signal, () => runtimePerformance.measure("proxy.write", () => writeBufferAt(handle, writeBuffer.subarray(0, length), segment.start + writtenBytes))));
     } finally {
-      if (!response.destroyed) response.setTimeout(options.idleTimeoutMs);
+      setIdleTimeout(options.idleTimeoutMs);
     }
     writtenBytes += length;
     bufferedBytes = 0;
@@ -1264,9 +1268,14 @@ async function downloadSegmentOnce(
         throw new Error("proxy_segment_overflow");
       }
       if (callbacks.waitWhilePaused) {
-        response.setTimeout(0);
+        setIdleTimeout(0);
         await callbacks.waitWhilePaused();
-        response.setTimeout(options.idleTimeoutMs);
+        setIdleTimeout(options.idleTimeoutMs);
+      }
+      if (callbacks.throttle) {
+        setIdleTimeout(0);
+        await callbacks.throttle(chunk.length);
+        setIdleTimeout(options.idleTimeoutMs);
       }
       receivedHash.update(chunk);
       trailingZeros = collectSuspiciousZeroRanges(
@@ -1454,6 +1463,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
             normalized,
             {
               waitWhilePaused: options.waitWhilePaused,
+              throttle: options.throttle,
               withDiskActivity,
               onTrafficBytes: options.onTrafficBytes,
               onTransferWritten: () => {
