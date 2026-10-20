@@ -6,7 +6,7 @@ import { Worker } from "node:worker_threads";
 
 type UpdateIdentity = { id: string; revision: number };
 export type MaintenanceRequest = {
-  action: "scan" | "install" | "reboot";
+  action: "scan" | "install" | "reboot" | "restore";
   requestKey: string;
   expectedBuild: string;
   backupConfirmed: boolean;
@@ -20,7 +20,7 @@ const terminal = new Set(["completed", "failed"]);
 
 function validate(request: MaintenanceRequest) {
   if (!request || Object.keys(request).some(key => !["action", "requestKey", "expectedBuild", "backupConfirmed", "scanId", "updates", "sourceJobId"].includes(key))) throw Error("Ungültige Wartungsparameter.");
-  if (!["scan", "install", "reboot"].includes(request.action) || request.expectedBuild !== "20348" || request.backupConfirmed !== true || !/^[a-zA-Z0-9_-]{1,100}$/.test(request.requestKey)) throw Error("Wartung erfordert Windows Server 2022 und eine bestätigte VM-Sicherung.");
+  if (!["scan", "install", "reboot", "restore"].includes(request.action) || request.expectedBuild !== "20348" || request.backupConfirmed !== true || !/^[a-zA-Z0-9_-]{1,100}$/.test(request.requestKey)) throw Error("Wartung erfordert Windows Server 2022 und eine bestätigte VM-Sicherung.");
   if (request.action === "scan" && (request.updates || request.scanId || request.sourceJobId)) throw Error("Ungültiger Suchauftrag.");
   if (request.action === "install") {
     if (!uuid.test(request.scanId || "") || request.sourceJobId || !Array.isArray(request.updates) || !request.updates.length || request.updates.length > 100) throw Error("Konkrete Updateauswahl fehlt.");
@@ -30,7 +30,7 @@ function validate(request: MaintenanceRequest) {
       keys.add(update.id.toLowerCase());
     }
   }
-  if (request.action === "reboot" && (!uuid.test(request.sourceJobId || "") || request.scanId || request.updates)) throw Error("Installationsauftrag für Neustart fehlt.");
+  if (["reboot", "restore"].includes(request.action) && (!uuid.test(request.sourceJobId || "") || request.scanId || request.updates)) throw Error("Ausgangsauftrag fehlt.");
 }
 
 export function launchMaintenance(directory: string): Promise<void> {
@@ -86,6 +86,10 @@ export class WindowsMaintenance {
     if (request.action === "reboot") {
       const source = await this.get(request.sourceJobId);
       if (!("action" in source) || source.action !== "install" || !terminal.has(source.state) || source.result?.rebootRequired !== true) throw Error("Keine abgeschlossene Installation mit erforderlichem Neustart.");
+    }
+    if (request.action === "restore") {
+      const source = await this.get(request.sourceJobId);
+      if (!("result" in source) || !source.result?.servicesBefore) throw Error("Kein gesicherter Dienstzustand vorhanden.");
     }
     const id = crypto.randomUUID();
     const directory = path.join(this.options.root, id);

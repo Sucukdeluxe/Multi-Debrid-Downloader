@@ -35,6 +35,17 @@ function Is-RebootPending {
   $system = New-Object -ComObject Microsoft.Update.SystemInfo
   return [bool]$system.RebootRequired
 }
+function Restore-Services($services) {
+  foreach ($service in @($services)) {
+    try {
+      $startup = switch ($service.startMode) { 'Auto' { 'Automatic' } 'Manual' { 'Manual' } 'Disabled' { 'Disabled' } default { $null } }
+      if ($startup) { Set-Service -Name $service.name -StartupType $startup }
+      if ($service.state -eq 'Running') { Start-Service -Name $service.name -ErrorAction SilentlyContinue }
+      else { Stop-Service -Name $service.name -Force -ErrorAction SilentlyContinue }
+    } catch {}
+  }
+}
+$serviceBackup = @()
 try {
   $lock = [IO.File]::Open((Join-Path $root 'maintenance.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
   Save-State 'preflight'
@@ -42,7 +53,16 @@ try {
   if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Windows maintenance requires an elevated application.' }
   $osInfo = Get-CimInstance Win32_OperatingSystem
   if ($request.backupConfirmed -ne $true -or $request.expectedBuild -ne '20348' -or $osInfo.BuildNumber -ne '20348' -or $osInfo.ProductType -eq 1) { throw 'Expected Windows Server 2022 and confirmed VM backup.' }
-  if ($request.action -notin @('scan', 'install', 'reboot')) { throw 'Invalid action.' }
+  if ($request.action -notin @('scan', 'install', 'reboot', 'restore')) { throw 'Invalid action.' }
+  if ($request.action -eq 'restore') {
+    if ($request.sourceJobId -notmatch '^[a-fA-F0-9-]{36}$') { throw 'Invalid source job.' }
+    $sourcePath = Join-Path (Join-Path $root $request.sourceJobId) 'status.json'
+    $source = Get-Content -LiteralPath $sourcePath -Raw | ConvertFrom-Json
+    if (-not $source.result.servicesBefore) { throw 'No service backup found.' }
+    Restore-Services $source.result.servicesBefore
+    Save-State 'completed' @{ restoredFrom=$request.sourceJobId; services=$source.result.servicesBefore }
+    return
+  }
   if ($request.action -eq 'reboot') {
     if ($request.sourceJobId -notmatch '^[a-fA-F0-9-]{36}$') { throw 'Invalid installation job.' }
     $source = Get-Content -LiteralPath (Join-Path (Join-Path $root $request.sourceJobId) 'status.json') -Raw | ConvertFrom-Json
@@ -120,5 +140,6 @@ try {
   $state | Add-Member -NotePropertyName error -NotePropertyValue $_.Exception.Message -Force
   Save-State 'failed'
 } finally {
+  if ($serviceBackup.Count -gt 0) { Restore-Services $serviceBackup }
   if ($null -ne $lock) { $lock.Dispose() }
 }
