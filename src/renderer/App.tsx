@@ -971,6 +971,7 @@ const emptySnapshot = (): UiSnapshot => ({
     columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed", "availability"],
     columnOrderVersion: 3,
     autoExtractWhenStopped: true,
+    downloadDiskReserveGb: 50,
     disabledProviders: [],
     hosterRouting: {},
     providerDailyLimitBytes: {},
@@ -6019,7 +6020,8 @@ export function App(): ReactElement {
         maxParallelExtract: [1, 8, 2],
         reconnectWaitSeconds: [10, 600, 45],
         proxyApiProxyIndex: [1, 100000, 1],
-        proxyConnectionsPerDownload: [2, 80, 32]
+        proxyConnectionsPerDownload: [2, 80, 32],
+        downloadDiskReserveGb: [0, 2000, 50]
       };
       const bounds = numericLimits[fieldId as keyof RendererSettingsDraft];
       if (bounds) {

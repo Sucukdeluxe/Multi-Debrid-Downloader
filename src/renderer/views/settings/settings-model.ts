@@ -462,7 +462,7 @@ export function buildSettingsFormViewModel({
               min: 2,
               max: 80,
               disabled: !settings.proxyDownloadEnabled,
-              help: `Dieses Gesamtlimit wird fair zwischen allen gleichzeitigen Segmentdownloads geteilt. Bei ${settings.maxParallel} aktiven Downloads laufen zusammen höchstens ${settings.proxyConnectionsPerDownload} Segmentverbindungen; 32 ist der Standardwert, 80 das Maximum. Langsame und ausgefallene Proxys werden automatisch zurückgestuft. Kleine Dateien, Teil-Downloads und aktive Geschwindigkeitslimits laufen über den festen API-Proxy.`
+              help: `Dieses Gesamtlimit wird fair zwischen allen gleichzeitigen Segmentdownloads geteilt. Bei ${settings.maxParallel} aktiven Downloads laufen zusammen höchstens ${settings.proxyConnectionsPerDownload} Segmentverbindungen; 32 ist der Standardwert, 80 das Maximum. Langsame und ausgefallene Proxys werden automatisch zurückgestuft. Kleine Dateien und Teil-Downloads laufen über den festen API-Proxy.`
             }
           ]
         },
@@ -611,6 +611,10 @@ export function buildSettingsFormViewModel({
         fields: [
           { id: "maxParallel", kind: "number", label: "Max. gleichzeitige Downloads", value: String(settings.maxParallel), min: 1, max: 50 },
           { id: "retryLimit", kind: "number", label: "Automatische Wiederholungen", value: String(settings.retryLimit), min: 0, max: 99 },
+          {
+            id: "downloadDiskReserveGb", kind: "number", label: "Speicherpuffer für Entpacken (GB)", value: String(settings.downloadDiskReserveGb), min: 0, max: 2000,
+            help: "Neue Downloads starten erst, wenn neben der Dateigröße noch so viel Platz frei bleibt. Entpacken und Tonspur-Bearbeitung dürfen diesen Puffer nutzen, damit fertige Pakete auch bei fast voller Platte weiterverarbeitet werden. 0 schaltet den Puffer ab."
+          },
           {
             id: "offlineSkipScope",
             kind: "select",

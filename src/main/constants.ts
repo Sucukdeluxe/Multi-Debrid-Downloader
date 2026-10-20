@@ -153,6 +153,7 @@ export function defaultSettings(): AppSettings {
     columnOrderVersion: 3,
     extractCpuPriority: "high",
     autoExtractWhenStopped: true,
+    downloadDiskReserveGb: 50,
     disabledProviders: [],
     hosterRouting: {},
     providerDailyLimitBytes: {},

@@ -670,6 +670,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     columnOrderVersion: 3,
     extractCpuPriority: settings.extractCpuPriority,
     autoExtractWhenStopped: settings.autoExtractWhenStopped !== undefined ? Boolean(settings.autoExtractWhenStopped) : defaults.autoExtractWhenStopped,
+    downloadDiskReserveGb: clampNumber(settings.downloadDiskReserveGb, defaults.downloadDiskReserveGb, 0, 2000),
     disabledProviders: normalizeDisabledProviders(settings.disabledProviders),
     hosterRouting: normalizeHosterRouting(settings.hosterRouting, megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled),
     providerDailyLimitBytes: normalizeProviderByteMap(

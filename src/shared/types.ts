@@ -256,6 +256,7 @@ export interface AppSettings extends DailyStartSettings, ProxyDownloadSettings {
   columnOrderVersion?: number;
   extractCpuPriority: ExtractCpuPriority;
   autoExtractWhenStopped: boolean;
+  downloadDiskReserveGb: number;
   disabledProviders: DebridProvider[];
   hosterRouting: Record<string, DebridProvider>;
   providerDailyLimitBytes: Partial<Record<DebridProvider, number>>;
@@ -396,6 +397,7 @@ export interface RendererSettings extends DailyStartSettings, ProxyDownloadSetti
   columnOrderVersion?: number;
   extractCpuPriority: ExtractCpuPriority;
   autoExtractWhenStopped: boolean;
+  downloadDiskReserveGb: number;
   disabledProviders: DebridProvider[];
   hosterRouting: Record<string, DebridProvider>;
   providerDailyLimitBytes: Partial<Record<DebridProvider, number>>;

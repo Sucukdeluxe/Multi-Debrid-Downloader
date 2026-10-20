@@ -10843,7 +10843,8 @@ export class DownloadManager extends EventEmitter {
             ownerId: item.id,
             targetPath: item.targetPath,
             requiredBytes: item.totalBytes,
-            alreadyPresentBytes: item.downloadedBytes
+            alreadyPresentBytes: item.downloadedBytes,
+            headroomBytes: this.settings.downloadDiskReserveGb * 1024 * 1024 * 1024
           });
           this.diskLeasesByOwner.get(item.id)?.release();
           this.diskLeasesByOwner.set(item.id, diskLease);

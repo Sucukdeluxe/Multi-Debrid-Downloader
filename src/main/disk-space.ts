@@ -16,6 +16,7 @@ export type DiskReservationRequest = {
   targetPath: string;
   requiredBytes: number | null;
   alreadyPresentBytes?: number;
+  headroomBytes?: number;
 };
 
 export type DiskWaitEvent = {
@@ -91,7 +92,7 @@ export class DiskReservationCoordinator {
   private readonly now: () => number;
   private readonly statVolume: (targetPath: string) => Promise<DiskVolumeStats>;
   private readonly reservedByVolume = new Map<string, number>();
-  private readonly leases = new Map<string, { volumeKey: string; reservedBytes: number; targetPath: string }>();
+  private readonly leases = new Map<string, { volumeKey: string; reservedBytes: number; targetPath: string; phase: DiskReservationPhase; safetyBytes: number }>();
   private queue = Promise.resolve();
 
   public constructor(options: DiskReservationCoordinatorOptions = {}) {
@@ -104,10 +105,11 @@ export class DiskReservationCoordinator {
   public async reserve(request: DiskReservationRequest): Promise<DiskReservationLease> {
     return this.enqueue(async () => {
       const requiredBytes = calculateRemainingReservationBytes(request.requiredBytes, request.alreadyPresentBytes ?? 0);
-      if (requiredBytes === null) return this.createLease(request.ownerId, request.targetPath, null, 0);
+      if (requiredBytes === null) return this.createLease(request.ownerId, request.targetPath, null, 0, request.phase, this.safetyBytes);
+      const safetyBytes = Math.max(this.safetyBytes, Math.floor(request.headroomBytes ?? 0));
       const volume = await this.statVolume(request.targetPath);
       const reserved = this.reservedByVolume.get(volume.volumeKey) ?? 0;
-      const availableBytes = Math.max(0, Math.floor(volume.freeBytes) - reserved - this.safetyBytes);
+      const availableBytes = Math.max(0, Math.floor(volume.freeBytes) - reserved - safetyBytes);
       if (requiredBytes > availableBytes) {
         throw new DiskCapacityError({
           phase: request.phase,
@@ -116,11 +118,11 @@ export class DiskReservationCoordinator {
           requiredBytes,
           availableBytes,
           deficitBytes: requiredBytes - availableBytes,
-          safetyBytes: this.safetyBytes,
+          safetyBytes,
           retryAt: this.now() + this.retryDelayMs
         });
       }
-      return this.createLease(request.ownerId, request.targetPath, volume.volumeKey, requiredBytes);
+      return this.createLease(request.ownerId, request.targetPath, volume.volumeKey, requiredBytes, request.phase, safetyBytes);
     });
   }
 
@@ -128,11 +130,11 @@ export class DiskReservationCoordinator {
     return new Map(this.reservedByVolume);
   }
 
-  private createLease(ownerId: string, targetPath: string, volumeKey: string | null, reservedBytes: number): DiskReservationLease {
+  private createLease(ownerId: string, targetPath: string, volumeKey: string | null, reservedBytes: number, phase: DiskReservationPhase, safetyBytes: number): DiskReservationLease {
     const leaseId = `${ownerId}:${Math.random().toString(16).slice(2)}`;
     const coordinator = this;
     if (volumeKey) {
-      this.leases.set(leaseId, { volumeKey, reservedBytes, targetPath });
+      this.leases.set(leaseId, { volumeKey, reservedBytes, targetPath, phase, safetyBytes });
       this.reservedByVolume.set(volumeKey, (this.reservedByVolume.get(volumeKey) ?? 0) + reservedBytes);
     }
     let released = false;
@@ -150,8 +152,8 @@ export class DiskReservationCoordinator {
           const delta = nextBytes - lease.reservedBytes;
           if (delta > 0) {
             const volume = await coordinator.statVolume(lease.targetPath);
-            const available = Math.max(0, Math.floor(volume.freeBytes) - (coordinator.reservedByVolume.get(volumeKey) ?? 0) - coordinator.safetyBytes);
-            if (delta > available) throw new DiskCapacityError({ phase: "download", ownerId, volumeKey, requiredBytes: nextBytes, availableBytes: available, deficitBytes: delta - available, safetyBytes: coordinator.safetyBytes, retryAt: coordinator.now() + coordinator.retryDelayMs });
+            const available = Math.max(0, Math.floor(volume.freeBytes) - (coordinator.reservedByVolume.get(volumeKey) ?? 0) - lease.safetyBytes);
+            if (delta > available) throw new DiskCapacityError({ phase: lease.phase, ownerId, volumeKey, requiredBytes: nextBytes, availableBytes: available, deficitBytes: delta - available, safetyBytes: lease.safetyBytes, retryAt: coordinator.now() + coordinator.retryDelayMs });
           }
           lease.reservedBytes = nextBytes;
           coordinator.reservedByVolume.set(volumeKey, Math.max(0, (coordinator.reservedByVolume.get(volumeKey) ?? 0) + delta));
