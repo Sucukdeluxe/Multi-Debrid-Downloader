@@ -1,4 +1,4 @@
-import type { RendererSettings } from "../../../shared/types";
+import type { NetworkProxyProbe, RendererSettings } from "../../../shared/types";
 import type { AccountService } from "../../account-edit";
 import { ACCOUNT_SERVICE_ICONS } from "../../account-service-icons";
 
@@ -251,10 +251,16 @@ export type SettingsFieldViewModel =
   | SettingsThemeFieldViewModel
   | SettingsActionFieldViewModel;
 
+export interface SettingsGroupStatusViewModel {
+  tone: "neutral" | "ok" | "error";
+  text: string;
+}
+
 export interface SettingsFormGroupViewModel {
   id: string;
   title: string;
   description?: string;
+  status?: SettingsGroupStatusViewModel;
   fields: readonly SettingsFieldViewModel[];
 }
 
@@ -270,6 +276,17 @@ export interface SettingsFormProjectionInput {
   speedLimitInput: string;
   scheduleSpeedInputs: Readonly<Record<string, string>>;
   themeChoice?: SettingsThemeChoice;
+  proxyProbe?: NetworkProxyProbe | null;
+}
+
+export function describeProxyProbe(probe: NetworkProxyProbe | null | undefined, enabled: boolean): SettingsGroupStatusViewModel | undefined {
+  if (!enabled || !probe) return undefined;
+  const proxy = `Fester API-Proxy ${probe.proxy}`;
+  if (probe.status === "checking") return { tone: "neutral", text: `${proxy} wird geprüft …` };
+  if (probe.status === "reachable") return { tone: "ok", text: `${proxy} ist erreichbar.` };
+  if (probe.status === "auth_required") return { tone: "error", text: `${proxy} verlangt eine Anmeldung (HTTP 407). Zugangsdaten in der Liste oder die IP-Freigabe beim Proxy-Anbieter prüfen.` };
+  if (probe.status === "rejected") return { tone: "error", text: `${proxy} lehnt die Verbindung ab (HTTP ${probe.httpStatus ?? "?"}).` };
+  return { tone: "error", text: `${proxy} ist nicht erreichbar (${probe.code || "keine Antwort"}). Proxy offline, Port gesperrt oder Adresse falsch.` };
 }
 
 const NOTIFICATION_NUMBER_LIMITS = {
@@ -293,7 +310,8 @@ export function buildSettingsFormViewModel({
   section,
   speedLimitInput,
   scheduleSpeedInputs,
-  themeChoice = settings.themePreference
+  themeChoice = settings.themePreference,
+  proxyProbe
 }: SettingsFormProjectionInput): SettingsFormViewModel {
   if (section === "extract") {
     return {
@@ -426,6 +444,7 @@ export function buildSettingsFormViewModel({
           id: "speed-proxy",
           title: "Proxy-only",
           description: "Leitet API-, Login- und Link-Anfragen über einen festen HTTP-Proxy. Downloads verwenden zusätzlich mehrere Proxys parallel. Bei aktivem Modus gibt es keinen direkten Rückfall über deine echte Verbindung.",
+          status: describeProxyProbe(proxyProbe, settings.proxyDownloadEnabled),
           fields: [
             {
               id: "proxyDownloadEnabled",

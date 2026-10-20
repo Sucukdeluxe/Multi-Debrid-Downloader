@@ -7720,6 +7720,10 @@ export class DownloadManager extends EventEmitter {
     saveStatisticsLedger(this.storagePaths.statisticsFile, this.statisticsLedger);
   }
 
+  public refreshState(): void {
+    this.emitState(true);
+  }
+
   private emitState(force = false): void {
     this.evaluateRemainingNotification();
     const now = nowMs();

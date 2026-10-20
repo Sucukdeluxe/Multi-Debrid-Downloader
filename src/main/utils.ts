@@ -15,8 +15,72 @@ const WINDOWS_RESERVED_BASENAMES = new Set([
   "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"
 ]);
 
+type NetworkErrorContext = () => string | null;
+let networkErrorContext: NetworkErrorContext | null = null;
+
+export function setNetworkErrorContext(provider: NetworkErrorContext | null): void {
+  networkErrorContext = provider;
+}
+
+const NETWORK_ERROR_CODE = /^(ECONNREFUSED|ECONNRESET|ECONNABORTED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|EPIPE|UND_ERR_[A-Z_]+|ERR_TLS_[A-Z_]+|CERT_[A-Z_]+|DEPTH_ZERO_SELF_SIGNED_CERT|UNABLE_TO_VERIFY_LEAF_SIGNATURE)$/;
+const PROXY_ONLY_REASONS: Record<string, string> = {
+  proxy_file_unavailable: "Proxy-Liste nicht verfügbar",
+  no_valid_proxies: "keine gültigen Proxys in der Liste",
+  proxy_index_unavailable: "der feste API-Proxy-Eintrag fehlt in der Liste"
+};
+
+function withoutCredentials(text: string): string {
+  return text.replace(/(\/\/)[^\s/@:]+:[^\s/@]+@/g, "$1");
+}
+
+function describeErrorCause(cause: unknown): { text: string; network: boolean } {
+  const code = cause && typeof cause === "object" && "code" in cause ? String((cause as { code: unknown }).code || "") : "";
+  const message = cause instanceof Error ? cause.message : String(cause ?? "");
+  const tunnel = /^Proxy response \((\d{3})\)/i.exec(message);
+  if (tunnel) {
+    const status = tunnel[1];
+    return { text: status === "407" ? "Proxy antwortet mit HTTP 407 (Zugangsdaten oder IP-Freigabe prüfen)" : `Proxy antwortet mit HTTP ${status}`, network: true };
+  }
+  const blocked = /^proxy_only_blocked:([a-z_]+)/.exec(message);
+  if (blocked) {
+    return { text: `Proxy-only blockiert: ${PROXY_ONLY_REASONS[blocked[1]] || blocked[1]}`, network: true };
+  }
+  const network = NETWORK_ERROR_CODE.test(code);
+  const text = code && !message.includes(code) ? `${code}: ${message}` : message || code;
+  return { text, network };
+}
+
+function errorCauseChain(error: Error): { causes: string[]; network: boolean } {
+  const causes: string[] = [];
+  const seen = new Set<unknown>([error]);
+  let network = false;
+  const queue: unknown[] = [(error as { cause?: unknown }).cause];
+  if (error instanceof AggregateError) queue.push(...error.errors.slice(0, 3));
+  while (queue.length && causes.length < 4) {
+    const cause = queue.shift();
+    if (!cause || seen.has(cause)) continue;
+    seen.add(cause);
+    const described = describeErrorCause(cause);
+    network ||= described.network;
+    if (described.text && !causes.includes(described.text)) causes.push(described.text);
+    if (cause instanceof AggregateError) queue.push(...cause.errors.slice(0, 3));
+    queue.push((cause as { cause?: unknown }).cause);
+  }
+  return { causes, network };
+}
+
+function describeError(message: unknown): string {
+  if (!(message instanceof Error)) return String(message ?? "");
+  const own = describeErrorCause(message);
+  const { causes, network } = errorCauseChain(message);
+  const proxyRelated = /fetch failed/i.test(message.message) || own.text.startsWith("Proxy");
+  const proxy = proxyRelated && (network || own.network) ? networkErrorContext?.() ?? null : null;
+  if (proxy) return `Verbindung über Proxy fehlgeschlagen: ${proxy} – ${(causes.length ? causes : [own.text]).join("; ")}`;
+  return causes.length ? `${String(message)} (${causes.join("; ")})` : String(message);
+}
+
 export function compactErrorText(message: unknown, maxLen = 220): string {
-  const raw = String(message ?? "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  const raw = withoutCredentials(describeError(message)).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
   if (!raw) {
     return "Unbekannter Fehler";
   }

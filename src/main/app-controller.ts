@@ -93,7 +93,7 @@ import { sendNotification } from "./notify";
 import { DownloadHealthMonitor } from "./download-health-monitor";
 import { ensureStartupWorkDirectories } from "./startup-work-directories";
 import { shouldDeferAutoResumeToDailyStart } from "./daily-start-scheduler";
-import { configureNetworkProxy, getNetworkProxyState, shutdownNetworkProxy } from "./network-proxy";
+import { configureNetworkProxy, getNetworkProxyProbe, getNetworkProxyState, onNetworkProxyProbe, shutdownNetworkProxy } from "./network-proxy";
 import { createProxyOnlyAccountError, resolveProxyOnlyAccountErrorCode } from "./proxy-account-errors";
 
 function sanitizeSettingsPatch(partial: Partial<AppSettings>): Partial<AppSettings> {
@@ -238,8 +238,9 @@ export class AppController {
       }
     });
     this.manager.on("state", (snapshot: UiSnapshot) => {
-      this.onStateHandler?.(snapshot);
+      this.onStateHandler?.({ ...snapshot, networkProxyProbe: getNetworkProxyProbe() });
     });
+    onNetworkProxyProbe(() => this.manager.refreshState());
     void this.evaluateDownloadHealth();
     this.downloadHealthTimer = setInterval(() => {
       void this.evaluateDownloadHealth();
@@ -375,7 +376,7 @@ export class AppController {
   }
 
   public getSnapshot(): UiSnapshot {
-    return this.manager.getSnapshot();
+    return { ...this.manager.getSnapshot(), networkProxyProbe: getNetworkProxyProbe() };
   }
 
   public getVersion(): string {

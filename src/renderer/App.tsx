@@ -5633,8 +5633,9 @@ export function App(): ReactElement {
     section: settingsSubTab,
     speedLimitInput,
     scheduleSpeedInputs,
-    themeChoice: settingsThemeChoice
-  }), [scheduleSpeedInputs, settingsDraft, settingsSubTab, settingsThemeChoice, speedLimitInput]);
+    themeChoice: settingsThemeChoice,
+    proxyProbe: snapshot.networkProxyProbe
+  }), [scheduleSpeedInputs, settingsDraft, settingsSubTab, settingsThemeChoice, speedLimitInput, snapshot.networkProxyProbe]);
 
   const accountRowViewId = (row: AccountTableRow): string => buildAccountRowId(
     row.entry.service,

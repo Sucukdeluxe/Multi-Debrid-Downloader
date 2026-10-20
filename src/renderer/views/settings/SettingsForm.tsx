@@ -314,6 +314,7 @@ export function SettingsForm({ model, actions }: SettingsFormProps): ReactElemen
           <header>
             <h3>{group.title}</h3>
             {group.description ? <p>{group.description}</p> : null}
+            {group.status ? <p className="settings-group-status" data-tone={group.status.tone} role="status">{group.status.text}</p> : null}
           </header>
           <div className="settings-form-fields">
             {group.fields.map((field) => cloneElement(SettingsField({ actions, field }), { key: field.id }))}

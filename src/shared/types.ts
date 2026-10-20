@@ -705,6 +705,14 @@ export interface AccountRuntimeEntry {
   dailyUsageBytes: number;
 }
 
+export interface NetworkProxyProbe {
+  status: "checking" | "reachable" | "auth_required" | "rejected" | "unreachable";
+  proxy: string;
+  checkedAt: number;
+  httpStatus?: number;
+  code?: string;
+}
+
 export interface UiSnapshot {
   settings: RendererSettings;
   accounts: RendererAccount[];
@@ -738,6 +746,7 @@ export interface UiSnapshot {
   removedPackageIds?: string[];
   rotationEvents?: RotationEvent[];
   accountRuntime?: AccountRuntimeEntry[];
+  networkProxyProbe?: NetworkProxyProbe | null;
 }
 
 export interface AddLinksPayload {
