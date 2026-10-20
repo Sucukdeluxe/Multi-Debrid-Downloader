@@ -43,7 +43,7 @@ const REDISTRIBUTION_FILES = Object.freeze([
   Object.freeze({
     sourcePath: "resources/licenses/RUNTIME_LICENSES.txt",
     packagedPath: "resources/licenses/RUNTIME_LICENSES.txt",
-    sha256: "fd261e5a486cadd833013d7794218e94d29a97f299bd912727e84986cc2077b5"
+    sha256: "8acd89bf9a93d9bda68ff774e384f77a67776e9002d9a03bd28f4790733f45c2"
   }),
   Object.freeze({
     sourcePath: "resources/extractor-jvm/licenses/LGPL-2.1.txt",
