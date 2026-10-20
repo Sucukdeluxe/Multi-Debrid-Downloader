@@ -3,20 +3,31 @@ import { execFile } from "node:child_process";
 export type HostResourceInterval = {
   at: number;
   cpuPercent: number | null;
+  cpuAvailablePercent: number | null;
+  totalMemoryBytes: number | null;
+  usedMemoryBytes: number | null;
+  memoryUsedPercent: number | null;
+  pagesInputPerSec: number | null;
+  pageReadsPerSec: number | null;
   availableMemoryBytes: number | null;
   modifiedPageListBytes: number | null;
   standbyBytes: number | null;
   processes: Array<{ name: string; readMBps: number; writeMBps: number; pageFaultsPerSec: number }>;
+  processCounts: Record<string, number>;
   disks: Array<{
     name: string;
     readMBps: number;
     writeMBps: number;
+    totalMBps: number;
+    cumulativeReadBytes: number;
+    cumulativeWriteBytes: number;
     readIops: number;
     writeIops: number;
     avgReadMs: number | null;
     avgWriteMs: number | null;
     queueLength: number | null;
     busyPercent: number | null;
+    idlePercent: number | null;
   }>;
   network: Array<{ name: string; receivedMBps: number; sentMBps: number; bandwidthMbps: number | null }>;
 };
@@ -35,6 +46,7 @@ export type HostResourceReport = {
   intervals: HostResourceInterval[];
   summary: Record<string, unknown>;
   errors: string[];
+  measurementNotes: string[];
 };
 
 type RawDisk = Record<string, number | string | null>;
@@ -82,6 +94,9 @@ do {
   $processes = @(Get-CimInstance Win32_PerfRawData_PerfProc_Process | Where-Object { $_.Name -match '^(Multi|UnRAR|Rar|7z|java|ffmpeg|mkvmerge|MsMpEng|System$|node|electron)' } | ForEach-Object { [ordered]@{ name = $_.Name; read = [double]$_.IOReadBytesPersec; write = [double]$_.IOWriteBytesPersec; pageFaults = [double]$_.PageFaultsPersec; workingSet = [double]$_.WorkingSet; perfTime = [double]$_.Timestamp_PerfTime; perfFrequency = [double]$_.Frequency_PerfTime } })
   $cpu = (Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'").PercentProcessorTime
   [void]$samples.Add([ordered]@{ at = $started; disks = $disks; network = $network; memory = [ordered]@{ availableBytes = [double]$memory.AvailableBytes; modifiedPageListBytes = [double]$memory.ModifiedPageListBytes; standbyBytes = [double]$memory.StandbyCacheNormalPriorityBytes + [double]$memory.StandbyCacheReserveBytes + [double]$memory.StandbyCacheCoreBytes }; processes = $processes; cpu = [double]$cpu })
+  $samples[$samples.Count - 1].memory.totalBytes = $result.computer.totalPhysicalMemoryBytes
+  $samples[$samples.Count - 1].memory.pagesInputPerSec = $memory.PagesInputPersec
+  $samples[$samples.Count - 1].memory.pageReadsPerSec = $memory.PageReadsPersec
   $wait = 1000 - ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $started)
   if ($wait -gt 0 -and $started + 1000 -lt $deadline) { Start-Sleep -Milliseconds $wait }
 } while ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -lt $deadline)
@@ -154,12 +169,16 @@ export function computeHostResourceIntervals(samples: RawSample[]): HostResource
         name: String(disk.name),
         readMBps: round((num(disk.readBytes) - num(before.readBytes)) / seconds / 1e6),
         writeMBps: round((num(disk.writeBytes) - num(before.writeBytes)) / seconds / 1e6),
+        totalMBps: round((num(disk.readBytes) - num(before.readBytes) + num(disk.writeBytes) - num(before.writeBytes)) / seconds / 1e6),
+        cumulativeReadBytes: num(disk.readBytes),
+        cumulativeWriteBytes: num(disk.writeBytes),
         readIops: round(reads / seconds, 1),
         writeIops: round(writes / seconds, 1),
         avgReadMs: readBase > 0 ? round((num(disk.readTime) - num(before.readTime)) / frequency / readBase * 1000) : null,
         avgWriteMs: writeBase > 0 ? round((num(disk.writeTime) - num(before.writeTime)) / frequency / writeBase * 1000) : null,
         queueLength: Number.isFinite(num(disk.queue)) ? num(disk.queue) : null,
-        busyPercent: sysTicks > 0 ? round(Math.min(100, Math.max(0, 100 - idleTicks / sysTicks * 100)), 1) : null
+        busyPercent: sysTicks > 0 ? round(Math.min(100, Math.max(0, 100 - idleTicks / sysTicks * 100)), 1) : null,
+        idlePercent: sysTicks > 0 ? round(Math.min(100, Math.max(0, idleTicks / sysTicks * 100)), 1) : null
       }];
     });
     const previousNetwork = new Map(list(previous.network).map(entry => [String(entry.name), entry]));
@@ -178,10 +197,23 @@ export function computeHostResourceIntervals(samples: RawSample[]): HostResource
     intervals.push({
       at: num(current.at),
       cpuPercent: current.cpu === undefined || current.cpu === null ? null : num(current.cpu),
+      cpuAvailablePercent: current.cpu == null ? null : Math.max(0, 100 - num(current.cpu)),
+      totalMemoryBytes: current.memory?.totalBytes ?? null,
+      usedMemoryBytes: current.memory?.totalBytes != null && current.memory?.availableBytes != null
+        ? Math.max(0, current.memory.totalBytes - current.memory.availableBytes) : null,
+      memoryUsedPercent: current.memory?.totalBytes && current.memory?.availableBytes != null
+        ? round(Math.max(0, current.memory.totalBytes - current.memory.availableBytes) / current.memory.totalBytes * 100) : null,
+      pagesInputPerSec: current.memory?.pagesInputPerSec ?? null,
+      pageReadsPerSec: current.memory?.pageReadsPerSec ?? null,
       availableMemoryBytes: current.memory?.availableBytes ?? null,
       modifiedPageListBytes: current.memory?.modifiedPageListBytes ?? null,
       standbyBytes: current.memory?.standbyBytes ?? null,
       processes: processDeltas(previous, current),
+      processCounts: list(current.processes).reduce<Record<string, number>>((counts, entry) => {
+        const name = String(entry.name).replace(/#\d+$/, "");
+        counts[name] = (counts[name] || 0) + 1;
+        return counts;
+      }, {}),
       disks,
       network
     });
@@ -211,6 +243,10 @@ export function summarizeHostResourceIntervals(intervals: HostResourceInterval[]
   const pick = <T extends { name: string }>(entries: T[], name: string): T | undefined => entries.find(entry => entry.name === name);
   return {
     cpuPercent: stats(intervals.map(interval => interval.cpuPercent ?? Number.NaN)),
+    memoryUsedPercent: stats(intervals.map(interval => interval.memoryUsedPercent ?? Number.NaN)),
+    availableMemoryBytes: stats(intervals.map(interval => interval.availableMemoryBytes ?? Number.NaN)),
+    pagesInputPerSec: stats(intervals.map(interval => interval.pagesInputPerSec ?? Number.NaN)),
+    pageReadsPerSec: stats(intervals.map(interval => interval.pageReadsPerSec ?? Number.NaN)),
     disks: Object.fromEntries(diskNames.map(name => {
       const entries = intervals.map(interval => pick(interval.disks, name)).filter(Boolean) as HostResourceInterval["disks"];
       return [name, {
@@ -237,7 +273,11 @@ export function summarizeHostResourceIntervals(intervals: HostResourceInterval[]
 
 async function collect(seconds: number): Promise<HostResourceReport> {
   const startedAt = Date.now();
-  const report: HostResourceReport = { supported: process.platform === "win32", collectedAt: new Date().toISOString(), durationMs: 0, computer: null, os: null, ec2: null, defender: null, license: null, physicalDisks: [], volumes: [], intervals: [], summary: {}, errors: [] };
+  const report: HostResourceReport = { supported: process.platform === "win32", collectedAt: new Date().toISOString(), durationMs: 0, computer: null, os: null, ec2: null, defender: null, license: null, physicalDisks: [], volumes: [], intervals: [], summary: {}, errors: [], measurementNotes: [
+    "Process I/O includes file, network and device I/O; it is not physical disk throughput.",
+    "Process page faults include soft faults. PagesInputPerSec and PageReadsPerSec describe system-wide hard-fault disk reads, not exclusively pagefile activity.",
+    "Disk busy percentage describes the guest-visible device, not guaranteed remaining bandwidth or the physical NVMe backend."
+  ] };
   if (!report.supported) return report;
   try {
     const parsed = JSON.parse(await runPowerShell(buildScript(seconds), seconds * 1000 + 20_000)) as Record<string, unknown>;

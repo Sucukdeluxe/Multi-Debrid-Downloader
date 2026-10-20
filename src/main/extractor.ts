@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import AdmZip from "adm-zip";
 import { CleanupMode, ConflictMode } from "../shared/types";
 import { logger } from "./logger";
+import { extractionLimiter } from "./extraction-limiter";
 import { removeDownloadLinkArtifacts, removeSampleArtifacts } from "./cleanup";
 import { isExtractionStagingDirectoryName, isVerifiedExtractionOutput, withStagedExtraction } from "./extraction-output";
 import { recordArchivePasswordAttempt } from "./archive-password-diagnostics";
@@ -3332,6 +3333,15 @@ export async function extractPackageArchives(options: ExtractOptions): Promise<{
   let lastArchiveFinishedAt: number | null = null;
 
   const extractSingleArchive = async (archivePath: string): Promise<void> => {
+    const release = await extractionLimiter.acquire(maxParallel, options.signal);
+    try {
+      await extractSingleArchiveWithSlot(archivePath);
+    } finally {
+      release();
+    }
+  };
+
+  const extractSingleArchiveWithSlot = async (archivePath: string): Promise<void> => {
     if (options.signal?.aborted) {
       throw new Error("aborted:extract");
     }

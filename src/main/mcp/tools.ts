@@ -15,6 +15,7 @@ import { getConversionLogPath } from "../conversion-trace";
 import { getNetworkProxyState } from "../network-proxy";
 import { getWindowsHostDiagnosticsAsync } from "../windows-host-diagnostics";
 import { sampleHostResources } from "../host-resources";
+import { extractionLimiter } from "../extraction-limiter";
 import { runtimePerformance } from "../runtime-performance";
 import { getProxyTransferSnapshot } from "../proxy-segmented-download";
 import type { AddLinksPayload, DebridProvider, PackagePriority, RendererSettingsUpdate } from "../../shared/types";
@@ -107,7 +108,7 @@ export function createMcpTools(deps: McpToolDependencies): McpTool[] {
   read("settings_get", "Read non-secret settings. Secret values are never returned.", object(), () => createRendererSettings(c.getSettings()));
   read("accounts_list", "Read accounts and their known validation and usage status; credentials remain masked.", object(page, []), args => paginate(createRendererAccounts(c.getSettings()), args));
   read("providers", "Read provider runtime cooldowns, capacity and routing information.", object(), () => getProviderRuntimeSnapshot());
-  read("performance", "Read bounded main-thread delay, CPU, memory, disk timings and connection/readback queue occupancy from memory without running host commands.", object(), () => ({ ...runtimePerformance.snapshot(), threadpoolSize: Number(process.env.UV_THREADPOOL_SIZE) || 4, proxyTransfers: getProxyTransferSnapshot() }));
+  read("performance", "Read bounded main-thread delay, CPU, memory, disk timings and connection/readback/extraction queue occupancy from memory without running host commands.", object(), () => ({ ...runtimePerformance.snapshot(), threadpoolSize: Number(process.env.UV_THREADPOOL_SIZE) || 4, proxyTransfers: getProxyTransferSnapshot(), extraction: extractionLimiter.snapshot() }));
   read("errors", "Read the latest application warnings and errors.", object({ limit: integer(500, 1) }, []), args => getRecentErrors().slice(-Number(args.limit || 100)));
   read("diagnostics", "Run the existing local diagnostic checks. Does not change downloads.", object(), () => c.getDebugSetupCheck());
   read("host_diagnostics", "Read bounded Windows crash and host diagnostic information.", object(), () => getWindowsHostDiagnosticsAsync());
