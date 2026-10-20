@@ -7870,6 +7870,29 @@ export class DownloadManager extends EventEmitter {
     return fallbackPath;
   }
 
+  private async claimTargetPathAsync(itemId: string, preferredPath: string, allowExistingFile = false): Promise<string> {
+    const existingClaim = this.claimedTargetPathByItem.get(itemId);
+    if (existingClaim && pathKey(existingClaim) === pathKey(preferredPath) && this.reservedTargetPaths.get(pathKey(existingClaim)) === itemId) {
+      return existingClaim;
+    }
+    const owner = this.reservedTargetPaths.get(pathKey(preferredPath));
+    if (owner && owner !== itemId) {
+      return this.claimTargetPath(itemId, preferredPath, allowExistingFile);
+    }
+    const existsOnDisk = await fs.promises.access(preferredPath).then(() => true, () => false);
+    const ownerAfter = this.reservedTargetPaths.get(pathKey(preferredPath));
+    if ((!ownerAfter || ownerAfter === itemId) && (!existsOnDisk || allowExistingFile)) {
+      const previous = this.claimedTargetPathByItem.get(itemId);
+      if (previous && this.reservedTargetPaths.get(pathKey(previous)) === itemId) {
+        this.reservedTargetPaths.delete(pathKey(previous));
+      }
+      this.reservedTargetPaths.set(pathKey(preferredPath), itemId);
+      this.claimedTargetPathByItem.set(itemId, preferredPath);
+      return preferredPath;
+    }
+    return this.claimTargetPath(itemId, preferredPath, allowExistingFile);
+  }
+
   private releaseTargetPath(itemId: string): void {
     const claimedPath = this.claimedTargetPathByItem.get(itemId);
     if (!claimedPath) {
@@ -10800,7 +10823,7 @@ export class DownloadManager extends EventEmitter {
         const preferredTargetPath = canReuseExistingTarget
           ? existingTargetPath
           : path.join(pkg.outputDir, item.fileName);
-        item.targetPath = this.claimTargetPath(item.id, preferredTargetPath, Boolean(canReuseExistingTarget));
+        item.targetPath = await this.claimTargetPathAsync(item.id, preferredTargetPath, Boolean(canReuseExistingTarget));
         item.totalBytes = mergeKnownTotalBytes(item.totalBytes, unrestricted.fileSize);
         try {
           const diskLease = await this.diskReservations.reserve({
@@ -11977,7 +12000,7 @@ export class DownloadManager extends EventEmitter {
             const pkg = this.session.packages[item.packageId];
             if (pkg) {
               this.releaseTargetPath(item.id);
-              effectiveTargetPath = this.claimTargetPath(item.id, path.join(pkg.outputDir, fromHeader));
+              effectiveTargetPath = await this.claimTargetPathAsync(item.id, path.join(pkg.outputDir, fromHeader));
               item.fileName = fromHeader;
               item.targetPath = effectiveTargetPath;
               item.updatedAt = nowMs();
