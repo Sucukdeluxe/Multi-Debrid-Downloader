@@ -1,8 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { spawn, execFile, type ChildProcess } from "node:child_process";
-import { promisify } from "node:util";
+import { spawnHosted, execFileHosted, type HostedChildProcess, type HostedExecOptions } from "./process-host";
 import AdmZip from "adm-zip";
 import { CleanupMode, ConflictMode } from "../shared/types";
 import { logger } from "./logger";
@@ -261,7 +260,9 @@ interface DaemonRequest {
 }
 
 const activeSubstDrives = new Set<string>();
-const runSubst = promisify(execFile);
+const runSubst = (file: string, args: string[], options: HostedExecOptions): Promise<{ stdout: string; stderr: string }> => new Promise((resolve, reject) => {
+  execFileHosted(file, args, options, (error, stdout, stderr) => error ? reject(Object.assign(error, { stdout, stderr })) : resolve({ stdout, stderr }));
+});
 
 async function findFreeSubstDrive(): Promise<string | null> {
   if (process.platform !== "win32") return null;
@@ -1389,7 +1390,7 @@ function killProcessTree(child: { pid?: number; kill: () => void }): void {
 
   if (process.platform === "win32") {
     try {
-      const killer = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
+      const killer = spawnHosted("taskkill", ["/PID", String(pid), "/T", "/F"], {
         windowsHide: true,
         stdio: "ignore"
       });
@@ -1456,9 +1457,9 @@ function runExtractCommand(
     let settled = false;
     let output = "";
     let diagnosticOutput = "";
-    const child = spawn(command, args, { windowsHide: true });
+    const child = spawnHosted(command, args, { windowsHide: true });
     const activePasswordAttempt = passwordAttempt ? beginPasswordAttempt(passwordAttempt) : undefined;
-    lowerExtractProcessPriority(child.pid, currentExtractCpuPriority);
+    child.once("spawn", () => lowerExtractProcessPriority(child.pid, currentExtractCpuPriority));
     let timeoutId: NodeJS.Timeout | null = null;
     let timedOutByWatchdog = false;
     let abortedBySignal = false;
@@ -1719,7 +1720,7 @@ function parseJvmLine(
   }
 }
 
-let daemonProcess: ChildProcess | null = null;
+let daemonProcess: HostedChildProcess | null = null;
 let daemonReady = false;
 let daemonBusy = false;
 let daemonCurrentRequest: DaemonRequest | null = null;
@@ -1860,11 +1861,11 @@ function startDaemon(layout: JvmExtractorLayout): boolean {
   ];
 
   try {
-    const child = spawn(layout.javaCommand, args, {
+    const child = spawnHosted(layout.javaCommand, args, {
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"]
     });
-    lowerExtractProcessPriority(child.pid, currentExtractCpuPriority);
+    child.once("spawn", () => lowerExtractProcessPriority(child.pid, currentExtractCpuPriority));
     daemonProcess = child;
     daemonLayout = layout;
 
@@ -2113,8 +2114,8 @@ async function runJvmExtractCommand(
     let stdoutBuffer = "";
     let stderrBuffer = "";
 
-    const child = spawn(layout.javaCommand, args, { windowsHide: true });
-    lowerExtractProcessPriority(child.pid, currentExtractCpuPriority);
+    const child = spawnHosted(layout.javaCommand, args, { windowsHide: true });
+    child.once("spawn", () => lowerExtractProcessPriority(child.pid, currentExtractCpuPriority));
 
     const flushLines = (rawChunk: string, fromStdErr = false): void => {
       if (!rawChunk) {

@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFileHosted } from "./process-host";
 
 export type HostResourceInterval = {
   at: number;
@@ -107,7 +107,7 @@ $result | ConvertTo-Json -Depth 6 -Compress
 
 function runPowerShell(script: string, timeoutMs: number): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(
+    execFileHosted(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
       { encoding: "utf8", timeout: timeoutMs, windowsHide: true, maxBuffer: 16 * 1024 * 1024 },

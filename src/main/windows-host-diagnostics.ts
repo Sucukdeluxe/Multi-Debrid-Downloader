@@ -1,5 +1,6 @@
 import fs from "node:fs";
-import { execFile, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
+import { execFileHosted } from "./process-host";
 
 export interface WindowsHostEvent {
   timeCreated: string;
@@ -262,7 +263,7 @@ foreach ($dir in @("C:\Windows\Minidump", "C:\Windows\Minidumps")) {
 
 function runPowerShellJsonAsync(script: string): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], { encoding: "utf8", timeout: 20_000, windowsHide: true }, (error, stdout, stderr) => {
+    execFileHosted("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], { encoding: "utf8", timeout: 20_000, windowsHide: true }, (error, stdout, stderr) => {
       if (error) {
         reject(new Error(String(stderr || stdout || error.message).trim()));
         return;
