@@ -18,6 +18,18 @@ const DEFAULT_MIN_SEGMENT_BYTES = 8 * 1024 * 1024;
 const DEFAULT_MAX_CHUNK_BYTES = 16 * 1024 * 1024;
 const DEFAULT_CHUNKS_PER_CONNECTION = 8;
 const DEFAULT_PROXY_ATTEMPTS = 3;
+const MIN_ATTEMPTS_WITH_SPARE_PROXIES = 8;
+
+function proxyAttemptBudget(configured: number, availableProxies: number): number {
+  return Math.max(1, Math.min(availableProxies, Math.max(configured, MIN_ATTEMPTS_WITH_SPARE_PROXIES)));
+}
+
+const CERTIFICATE_ERROR_CODE = /^(?:CERT_|ERR_TLS_CERT_|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_GET_ISSUER_CERT)/;
+
+function isOriginCertificateError(error: unknown): boolean {
+  const code = error && typeof error === "object" && "code" in error ? String((error as { code: unknown }).code || "") : "";
+  return CERTIFICATE_ERROR_CODE.test(code);
+}
 const DEFAULT_CONNECTION_LIMIT = 32;
 const MAX_CONNECTION_LIMIT = 80;
 const PROXY_PROBE_END = 1;
@@ -929,11 +941,12 @@ async function probeRangeSupport(
   | { status: "unavailable"; errorCode?: string }
   | { status: "origin_error"; httpStatus: number }
 > {
-  const attempts = Math.min(proxies.length, options.proxyAttempts);
+  const attempts = proxyAttemptBudget(options.proxyAttempts, proxies.length);
   const excluded = new Set<string>();
   let lastHttpStatus = 0;
+  let originFailures = 0;
   let lastErrorCode: string | undefined;
-  for (let index = 0; index < attempts; index += 1) {
+  for (let index = 0; index < attempts && originFailures < options.proxyAttempts; index += 1) {
     let opened: RangeResponse | null = null;
     let lease: ProxyLease | null = null;
     try {
@@ -951,8 +964,17 @@ async function probeRangeSupport(
         options.idleTimeoutMs
       );
       const status = opened.response.statusCode || 0;
+      if (status === 407) {
+        lastErrorCode = "http_407";
+        opened.dispose();
+        opened = null;
+        lease.release({ succeeded: false, reason: lastErrorCode });
+        lease = null;
+        continue;
+      }
       if (status >= 400) {
         lastHttpStatus = status;
+        originFailures += 1;
         opened.dispose();
         opened = null;
         lease.release({ succeeded: true });
@@ -1002,6 +1024,9 @@ async function probeRangeSupport(
       }
       if (isDiskError(error)) {
         throw error;
+      }
+      if (isOriginCertificateError(error)) {
+        break;
       }
     } finally {
       opened?.dispose();
@@ -1440,7 +1465,9 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
     const downloadSegment = async (segment: Segment): Promise<number> => {
       const excluded = new Set<string>();
       let lastError: unknown = null;
-      for (let attempt = 0; attempt < normalized.proxyAttempts; attempt += 1) {
+      const attempts = proxyAttemptBudget(normalized.proxyAttempts, segmentProxies.length);
+      let originFailures = 0;
+      for (let attempt = 0; attempt < attempts && originFailures < normalized.proxyAttempts; attempt += 1) {
         if (signal.aborted) {
           throw abortError();
         }
@@ -1531,17 +1558,18 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
 
           return outcome.bytes;
         } catch (error) {
-          const originError = error instanceof OriginHttpError;
+          const originError = error instanceof OriginHttpError && error.statusCode !== 407;
           const representationChanged = error instanceof Error && error.message === "proxy_representation_changed";
           lease?.release({ succeeded: originError || representationChanged || signal.aborted, reason: proxyFailureCode(error) });
           lease = null;
           if (originError) {
+            originFailures += 1;
             sharedProxyCoordinator.reportOriginStatus(error.statusCode, target.origin);
           }
           if (attemptProgress > 0) {
             updateProgress(-attemptProgress, committedProgress - attemptProgress, probe.totalBytes);
           }
-          if (options.signal.aborted || isDiskError(error)) {
+          if (options.signal.aborted || isDiskError(error) || isOriginCertificateError(error)) {
             throw error;
           }
           if (error instanceof SegmentValidationError) {
