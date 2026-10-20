@@ -51,6 +51,7 @@ function Install-Package($package) {
   }
   if ([IO.DriveInfo]::new($env:SystemDrive).AvailableFreeSpace -lt (15GB + $size)) { throw 'Not enough free space on the system drive.' }
   $target = Join-Path $directory 'package.msu'
+  $extract = Join-Path $directory 'package'
   try {
     Save-State 'downloading' @{ kb=$kb; bytes=0; size=$size }
     Add-Type -AssemblyName System.Net.Http
@@ -87,18 +88,41 @@ function Install-Package($package) {
     if ($sha256 -ne $package.sha256 -or (Get-FileHash -LiteralPath $target -Algorithm SHA1).Hash.ToLowerInvariant() -ne $sha1) { throw 'Package hash mismatch.' }
     $signature = Get-AuthenticodeSignature -LiteralPath $target
     if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '^CN=Microsoft Corporation, O=Microsoft Corporation,') { throw 'Package signature is not a valid Microsoft signature.' }
-    $log = Join-Path $directory 'dism.log'
-    $info = [Diagnostics.ProcessStartInfo]::new("$env:SystemRoot\System32\dism.exe", "/Online /Add-Package `"/PackagePath:$target`" /Quiet /NoRestart `"/LogPath:$log`"")
-    $info.UseShellExecute = $false
-    $info.CreateNoWindow = $true
-    $process = [Diagnostics.Process]::Start($info)
-    Save-State 'installing' @{ kb=$kb; sha256=$sha256; signer=$signature.SignerCertificate.Thumbprint; dismPid=$process.Id; installStartedAt=[DateTime]::UtcNow.ToString('o') }
-    $process.WaitForExit()
-    $exitCode = $process.ExitCode
-    $result = @{ kb=$kb; sha256=$sha256; exitCode=$exitCode; rebootRequired=(($exitCode -eq 3010) -or (Is-RebootPending)); osBuild=(Get-CimInstance Win32_OperatingSystem).Version; ubr=(Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').UBR }
-    if ($exitCode -in @(0, 3010)) { Save-State 'completed' $result } else { Save-State 'failed' $result }
+    Save-State 'extracting' @{ kb=$kb; sha256=$sha256 }
+    [void][IO.Directory]::CreateDirectory($extract)
+    foreach ($pattern in @('SSU-*-x64.cab', "Windows10.0-$kb-x64.cab")) {
+      & "$env:SystemRoot\System32\expand.exe" "-F:$pattern" $target $extract | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw "Package extraction failed: $LASTEXITCODE" }
+    }
+    $ssu = @(Get-ChildItem -LiteralPath $extract -Filter 'SSU-*-x64.cab' | ForEach-Object { $_.FullName })
+    $lcu = Join-Path $extract "Windows10.0-$kb-x64.cab"
+    if ($ssu.Count -gt 1 -or -not (Test-Path -LiteralPath $lcu)) { throw 'Unexpected package content.' }
+    $cabs = @($ssu) + @($lcu)
+    foreach ($cab in $cabs) {
+      $cabSignature = Get-AuthenticodeSignature -LiteralPath $cab
+      if ($cabSignature.Status -ne 'Valid' -or $cabSignature.SignerCertificate.Subject -notmatch '^CN=Microsoft Corporation, O=Microsoft Corporation,') { throw 'Extracted package signature is not a valid Microsoft signature.' }
+    }
+    $steps = @()
+    $failed = $false
+    foreach ($cab in $cabs) {
+      $name = [IO.Path]::GetFileName($cab)
+      $log = Join-Path $directory "dism-$([IO.Path]::GetFileNameWithoutExtension($cab)).log"
+      $info = [Diagnostics.ProcessStartInfo]::new("$env:SystemRoot\System32\dism.exe", "/Online /Add-Package `"/PackagePath:$cab`" /Quiet /NoRestart `"/LogPath:$log`"")
+      $info.UseShellExecute = $false
+      $info.CreateNoWindow = $true
+      $process = [Diagnostics.Process]::Start($info)
+      Save-State 'installing' @{ kb=$kb; sha256=$sha256; package=$name; steps=$steps; dismPid=$process.Id; installStartedAt=[DateTime]::UtcNow.ToString('o') }
+      $process.WaitForExit()
+      $exitCode = $process.ExitCode
+      $steps += [ordered]@{ package=$name; exitCode=$exitCode }
+      $notApplicable = $name -like 'SSU-*' -and $exitCode -eq -2146498530
+      if ($exitCode -notin @(0, 3010) -and -not $notApplicable) { $failed = $true; break }
+    }
+    $result = @{ kb=$kb; sha256=$sha256; steps=$steps; exitCode=$exitCode; rebootRequired=(@($steps | Where-Object { $_.exitCode -eq 3010 }).Count -gt 0 -or (Is-RebootPending)); osBuild=(Get-CimInstance Win32_OperatingSystem).Version; ubr=(Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').UBR }
+    if ($failed) { Save-State 'failed' $result } else { Save-State 'completed' $result }
   } finally {
     if (Test-Path -LiteralPath $target) { [IO.File]::Delete($target) }
+    if (Test-Path -LiteralPath $extract) { [IO.Directory]::Delete($extract, $true) }
   }
 }
 function Restore-Services($services) {
