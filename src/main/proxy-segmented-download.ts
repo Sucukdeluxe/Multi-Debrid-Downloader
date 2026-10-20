@@ -472,8 +472,8 @@ export class SharedProxyCoordinator {
     const state = origin ? this.originThrottle.get(origin) : undefined;
     if (state) {
       state.successes += 1;
-      if (Date.now() - state.lastThrottleAt >= 5_000 && state.successes >= 24) {
-        state.limit = Math.min(this.configuredConnectionLimit, state.limit + 1);
+      if (Date.now() - state.lastThrottleAt >= 5_000 && state.successes >= Math.max(2, state.limit)) {
+        state.limit = Math.min(this.configuredConnectionLimit, state.limit + Math.max(1, Math.ceil(state.limit / 4)));
         state.successes = 0;
         if (state.limit >= this.configuredConnectionLimit) this.originThrottle.delete(origin!);
       }
