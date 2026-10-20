@@ -14,6 +14,8 @@ function TimingSummary($Values) {
   return @{count=$sorted.Count;meanMs=($sorted | Measure-Object -Average).Average;maxMs=$sorted[-1];p95Ms=$sorted[[Math]::Floor(($sorted.Count-1)*0.95)]}
 }
 if ($Mode -eq 'windows-detail') {
+  try { $result.windowsVersion=Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' | Select-Object ProductName,DisplayVersion,CurrentBuild,UBR,BuildLabEx; $result.hotfixes=@(Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 12 HotFixID,InstalledOn); $result.updateServices=@(Get-Service wuauserv,BITS,UsoSvc | Select-Object Name,Status,StartType); $result.rebootPending=@{componentServicing=(Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending');windowsUpdate=(Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired')} } catch { $result.errors+='update-state-unavailable' }
+  try { $result.deviceCache=@(Get-PhysicalDisk | Get-StorageAdvancedProperty | Select-Object FriendlyName,IsPowerProtected,IsDeviceCacheEnabled) } catch { $result.errors+='device-cache-unavailable' }
   try { $result.dirty=@(& "$env:SystemRoot\System32\fsutil.exe" dirty query $env:SystemDrive 2>$null); $result.dirtyExit=$LASTEXITCODE } catch { $result.errors+='dirty-unavailable' }
   try { $result.ntfs=@(& "$env:SystemRoot\System32\fsutil.exe" fsinfo ntfsinfo $env:SystemDrive 2>$null); $result.ntfsExit=$LASTEXITCODE } catch { $result.errors+='ntfs-unavailable' }
   try { $result.trim=@(& "$env:SystemRoot\System32\fsutil.exe" behavior query DisableDeleteNotify 2>$null); $result.trimExit=$LASTEXITCODE } catch { $result.errors+='trim-unavailable' }
