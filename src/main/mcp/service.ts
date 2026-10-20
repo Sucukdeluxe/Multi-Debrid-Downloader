@@ -17,6 +17,7 @@ import { McpUpdateJobs } from "./update-jobs";
 import { McpInstallerUploads } from "./installer-uploads";
 import { DEFAULT_UPDATE_REPO } from "../constants";
 import { normalizeUpdateRepo } from "../update";
+import { WindowsMaintenance } from "../windows-maintenance";
 
 const DEFAULT_RELAY = "https://downloader.24-music.de/mcp-relay";
 const defaults = (): McpConfiguration => ({ enabled: false, relayUrl: DEFAULT_RELAY, name: "Multi-Debrid-Downloader", scopes: ["read", "control", "files"], extraRoots: [] });
@@ -47,8 +48,10 @@ export class McpService {
   private closed = false;
   private updates: McpUpdateJobs;
   private installerUploads: McpInstallerUploads;
+  private windowsMaintenance: WindowsMaintenance;
   constructor(private options: McpServiceOptions) {
     this.directory = path.join(options.baseDir, "mcp");
+    this.windowsMaintenance = new WindowsMaintenance({ root: path.join(options.baseDir, "windows-maintenance") });
     this.updates = new McpUpdateJobs({
       directory: this.directory,
       version: () => options.controller.getVersion(),
@@ -204,7 +207,7 @@ export class McpService {
       const settings = c.getSettings();
       return [{ id: "output", path: settings.outputDir }, { id: "extract", path: settings.extractDir }, { id: "library", path: settings.mkvLibraryDir }, { id: "logs", path: c.getLogDirectory(), logsOnly: true }, ...this.config.extraRoots.map((root, i) => ({ id: `extra-${i + 1}`, path: root }))];
     }, () => [path.dirname(this.options.baseDir), c.getLogDirectory()], () => [c.getSettings().proxyListPath]);
-    const tools = createMcpTools({ ...this.options, files, updates: this.updates, installerUploads: this.installerUploads, getScopes: () => this.scopes(), getSecrets: () => this.redactions(), getInstallationId: () => credentials.installationId });
+    const tools = createMcpTools({ ...this.options, files, windowsMaintenance: this.windowsMaintenance, updates: this.updates, installerUploads: this.installerUploads, getScopes: () => this.scopes(), getSecrets: () => this.redactions(), getInstallationId: () => credentials.installationId });
     this.toolsCount = tools.length;
     this.endpoint = new McpEndpoint({ name: "multi-debrid-downloader", version: c.getVersion(), tools, getScopes: () => this.scopes(), getSecrets: () => this.redactions(), confirm: this.options.confirm, audit: event => this.audit(event) });
     this.agent = new RelayAgent(credentials, this.endpoint, (state, count) => {

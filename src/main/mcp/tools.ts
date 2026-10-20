@@ -16,6 +16,7 @@ import { getNetworkProxyState } from "../network-proxy";
 import { getWindowsHostDiagnosticsAsync } from "../windows-host-diagnostics";
 import { sampleHostResources } from "../host-resources";
 import { startStorageProbe, getStorageProbe, cancelStorageProbe } from "../storage-probe";
+import type { WindowsMaintenance, MaintenanceRequest } from "../windows-maintenance";
 import { extractionLimiter } from "../extraction-limiter";
 import { rendererPerformance } from "../renderer-performance";
 import { getProcessingBudget, setProcessingBudget } from "../processing-budget";
@@ -73,6 +74,7 @@ export interface McpToolDependencies {
   getInstallationId?(): string;
   updates: Pick<McpUpdateJobs, "start" | "status">;
   installerUploads?: Pick<McpInstallerUploads, "begin" | "chunk" | "status" | "commit" | "cancel">;
+  windowsMaintenance?: Pick<WindowsMaintenance, "get" | "start">;
   updateSettings(patch: RendererSettingsUpdate): Promise<unknown>;
   start?(): Promise<void>;
   accountsChanged?(): void;
@@ -122,6 +124,16 @@ export function createMcpTools(deps: McpToolDependencies): McpTool[] {
   read("storage_inspect", "Start a bounded background read-only inspection of Windows storage drivers, recent disk errors, memory policy and filters. Poll storage_probe_get. No arbitrary commands.", object(), () => startStorageProbe("inspect"));
   write("storage_file_test", "Start a bounded background test using only new temporary files: 128 MiB sequential and strided writes, explicit flush and full hash readback. Cleans its own files only. Poll storage_probe_get.", object(), () => startStorageProbe("file-test"));
   read("storage_probe_get", "Read the latest bounded storage inspection or temporary-file test result.", object(), () => getStorageProbe());
+  if (deps.windowsMaintenance) {
+    const maintenance = deps.windowsMaintenance;
+    read("windows_maintenance_get", "Read a persistent Windows maintenance job. A disconnect is not proof of successful installation or reboot.", object({ jobId: str(36) }, []), args => maintenance.get(args.jobId as string | undefined));
+    add("windows_maintenance_start", "Run fixed Windows Server 2022 maintenance: scan enables disabled update services after backing up their state; install uses only exact identities from a completed scan; reboot requires an installation reporting rebootRequired. Requires explicit user authorization and a full VM backup. No arbitrary commands, drivers, security exclusions or forced reboot. All application processing must be stopped.", object({ action: { type: "string", enum: ["scan", "install", "reboot"] }, requestKey: str(100), expectedBuild: { type: "string", enum: ["20348"] }, backupConfirmed: { type: "boolean" }, scanId: str(36), updates: { type: "array", minItems: 1, maxItems: 100, items: object({ id: str(36), revision: integer(2147483647, 1) }) }, sourceJobId: str(36) }, ["action", "requestKey", "expectedBuild", "backupConfirmed"]), ["control", "updates"], args => {
+      const budget = getProcessingBudget();
+      const extraction = extractionLimiter.snapshot();
+      if (snapshot().session.running || c.getSessionStats().activeDownloads || extraction.active || extraction.waiting || Object.values(budget).some(stage => stage.active || stage.waiting) || getStorageProbe().state === "running" || runtimePerformance.snapshot().active.length) throw Error("Downloads und Nachbearbeitung müssen vor der Windows-Wartung vollständig angehalten sein.");
+      return maintenance.start(args as unknown as MaintenanceRequest);
+    }, { destructive: true, confirmationBypassScope: "updates" });
+  }
   read("storage_windows_detail", "Inspect NTFS, TRIM, driver policy, active tasks and sample process I/O for ten seconds in a separate process. No settings changes. Poll storage_probe_get.", object(), () => startStorageProbe("windows-detail"));
   write("storage_native_test", "Test independent Windows .NET file I/O with up to 64 MiB buffered and write-through writes and complete hash readback, only on private temporary files. Poll storage_probe_get.", object(), () => startStorageProbe("native-file-test"));
   write("storage_defender_trace", "Record Defender scan activity for twenty seconds if timed recording is supported. Does not change protection or exclusions. Its bounded recording finishes even after cancellation. Poll storage_probe_get.", object(), () => startStorageProbe("defender-trace"));
