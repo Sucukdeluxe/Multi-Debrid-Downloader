@@ -24,7 +24,7 @@ const PROXY_PROBE_END = 1;
 const MAX_REDIRECTS = 5;
 const MAX_SEGMENTS = 4_096;
 const MAX_PROXY_FILE_BYTES = 8 * 1024 * 1024;
-const SEGMENT_READBACK_BUFFER_BYTES = 16 * 1024 * 1024;
+const SEGMENT_READBACK_BUFFER_BYTES = 1024 * 1024;
 const SEGMENT_WRITE_BUFFER_BYTES = 4 * 1024 * 1024;
 const SEGMENT_WRITE_FLUSH_INTERVAL_MS = 500;
 const SUSPICIOUS_ZERO_RUN_BYTES = 1024;
@@ -1105,7 +1105,8 @@ async function hashFileRange(
         throw abortError();
       }
       const requested = Math.min(buffer.length, remaining);
-      const { bytesRead } = await handle.read(buffer, 0, requested, position);
+      const { bytesRead } = await withProcessingBudget("downloadWrites", signal, () =>
+        runtimePerformance.measure("proxy.readback.read", () => handle.read(buffer, 0, requested, position)));
       if (bytesRead <= 0) {
         throw new Error("proxy_segment_readback_underflow");
       }
