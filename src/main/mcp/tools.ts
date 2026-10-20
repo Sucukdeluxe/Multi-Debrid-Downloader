@@ -16,6 +16,7 @@ import { getNetworkProxyState } from "../network-proxy";
 import { getWindowsHostDiagnosticsAsync } from "../windows-host-diagnostics";
 import { sampleHostResources } from "../host-resources";
 import { extractionLimiter } from "../extraction-limiter";
+import { rendererPerformance } from "../renderer-performance";
 import { runtimePerformance } from "../runtime-performance";
 import { getProxyTransferSnapshot } from "../proxy-segmented-download";
 import type { AddLinksPayload, DebridProvider, PackagePriority, RendererSettingsUpdate } from "../../shared/types";
@@ -110,6 +111,7 @@ export function createMcpTools(deps: McpToolDependencies): McpTool[] {
   read("providers", "Read provider runtime cooldowns, capacity and routing information.", object(), () => getProviderRuntimeSnapshot());
   read("performance", "Read bounded main-thread delay, CPU, memory, disk timings and connection/readback/extraction queue occupancy from memory without running host commands.", object(), () => ({ ...runtimePerformance.snapshot(), threadpoolSize: Number(process.env.UV_THREADPOOL_SIZE) || 4, proxyTransfers: getProxyTransferSnapshot(), extraction: extractionLimiter.snapshot() }));
   read("errors", "Read the latest application warnings and errors.", object({ limit: integer(500, 1) }, []), args => getRecentErrors().slice(-Number(args.limit || 100)));
+  read("renderer_performance", "Read bounded renderer long-task, visible scroll-frame and state-update measurements. Hidden or missing samples do not prove a freeze; frame gaps also depend on display and remote desktop scheduling.", object(), () => rendererPerformance.snapshot());
   read("diagnostics", "Run the existing local diagnostic checks. Does not change downloads.", object(), () => c.getDebugSetupCheck());
   read("host_diagnostics", "Read bounded Windows crash and host diagnostic information.", object(), () => getWindowsHostDiagnosticsAsync());
   read("host_resources", "Sample Windows disk, network, memory and CPU counters for a bounded number of seconds, plus EC2 instance metadata when available. Read-only.", object({ seconds: integer(90, 1) }, []), args => sampleHostResources(Number(args.seconds || 15)));

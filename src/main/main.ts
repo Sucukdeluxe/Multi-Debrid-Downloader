@@ -21,6 +21,7 @@ import { isMdd2Backup } from "./backup-crypto";
 import { relaunchWithThreadpoolSize } from "./threadpool-relaunch";
 import { validateAccountCommand, validateAccountCredentialCheckInput, validateAccountSecretRequest } from "./account-commands";
 import { createRendererSettings } from "./renderer-state";
+import { rendererPerformance } from "./renderer-performance";
 import { validateRendererSettingsUpdate } from "./renderer-settings";
 import { applyMainWindowSecurity, createMainWindowWebPreferences, MAIN_WINDOW_EXTERNAL_HOSTS, openAllowedExternalUrl } from "./browser-security";
 import { assertTrustedIpcSender, type TrustedIpcOptions } from "./ipc-security";
@@ -1264,6 +1265,7 @@ function registerIpcHandlers(): void {
     return importResult;
   });
 
+  onTrusted(IPC_CHANNELS.RENDERER_PERFORMANCE, (_event, report: unknown) => rendererPerformance.record(report));
   onTrusted(IPC_CHANNELS.LOG_RENDERER_ERROR, (_event, rawReport: unknown) => {
     try {
       logger.error(formatRendererErrorReport(rawReport));

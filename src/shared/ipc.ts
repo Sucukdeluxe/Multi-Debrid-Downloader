@@ -102,5 +102,6 @@ export const IPC_CHANNELS = {
   SKIP_ITEMS: "queue:skip-items",
   RESET_ITEMS: "queue:reset-items",
   START_ITEMS: "queue:start-items",
-  LOG_RENDERER_ERROR: "log:renderer-error"
+  LOG_RENDERER_ERROR: "log:renderer-error",
+  RENDERER_PERFORMANCE: "app:renderer-performance"
 } as const;
