@@ -27,6 +27,7 @@ export type HostResourceReport = {
   os: unknown;
   ec2: unknown;
   defender: unknown;
+  license: unknown;
   physicalDisks: unknown;
   volumes: unknown;
   intervals: HostResourceInterval[];
@@ -67,6 +68,7 @@ try {
   $preference = Get-MpPreference
   $result.defender = [ordered]@{ realTimeProtectionEnabled = $status.RealTimeProtectionEnabled; antivirusEnabled = $status.AntivirusEnabled; onAccessProtectionEnabled = $status.OnAccessProtectionEnabled; exclusionPaths = @($preference.ExclusionPath); exclusionProcesses = @($preference.ExclusionProcess); scanAvgCpuLoadFactor = $preference.ScanAvgCPULoadFactor }
 } catch { $result.defender = $null }
+try { $result.license = @(Get-CimInstance SoftwareLicensingProduct -Filter "PartialProductKey IS NOT NULL AND ApplicationID='55c92734-d682-4d71-983e-d6ec3f16059f'" | ForEach-Object { [ordered]@{ name = $_.Name; licenseStatus = $_.LicenseStatus; gracePeriodRemainingMinutes = $_.GracePeriodRemaining; evaluationEndDate = $(if ($_.EvaluationEndDate) { $_.EvaluationEndDate.ToString('o') } else { $null }) } }) } catch { $result.license = $null }
 $samples = New-Object System.Collections.ArrayList
 $deadline = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + ${seconds * 1000}
 do {
@@ -208,7 +210,7 @@ export function summarizeHostResourceIntervals(intervals: HostResourceInterval[]
 
 async function collect(seconds: number): Promise<HostResourceReport> {
   const startedAt = Date.now();
-  const report: HostResourceReport = { supported: process.platform === "win32", collectedAt: new Date().toISOString(), durationMs: 0, computer: null, os: null, ec2: null, defender: null, physicalDisks: [], volumes: [], intervals: [], summary: {}, errors: [] };
+  const report: HostResourceReport = { supported: process.platform === "win32", collectedAt: new Date().toISOString(), durationMs: 0, computer: null, os: null, ec2: null, defender: null, license: null, physicalDisks: [], volumes: [], intervals: [], summary: {}, errors: [] };
   if (!report.supported) return report;
   try {
     const parsed = JSON.parse(await runPowerShell(buildScript(seconds), seconds * 1000 + 20_000)) as Record<string, unknown>;
@@ -216,6 +218,7 @@ async function collect(seconds: number): Promise<HostResourceReport> {
     report.os = parsed.os ?? null;
     report.ec2 = parsed.ec2 ?? null;
     report.defender = parsed.defender ?? null;
+    report.license = parsed.license ?? null;
     report.physicalDisks = parsed.physicalDisks ?? [];
     report.volumes = parsed.volumes ?? [];
     report.errors.push(...list(parsed.errors as string[] | string | undefined).map(String));

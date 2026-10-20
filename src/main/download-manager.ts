@@ -341,6 +341,51 @@ function inspectPackageItemDiskState(pkg: PackageEntry, item: DownloadItem): Pac
   }
 }
 
+async function inspectPackageItemDiskStateAsync(pkg: PackageEntry, item: DownloadItem): Promise<PackageItemDiskState> {
+  const minBytes = itemExpectedMinBytes(item);
+  const diskPath = resolvePackageItemDiskPath(pkg, item);
+  if (!diskPath) {
+    return {
+      diskPath: null,
+      exists: false,
+      size: 0,
+      minBytes,
+      fullOnDisk: false,
+      persistedBytesReady: false,
+      reason: "missing_path"
+    };
+  }
+
+  try {
+    const stat = await fs.promises.stat(diskPath);
+    const fullOnDisk = stat.size >= minBytes;
+    const persistedBytesReady = item.downloadedBytes >= minBytes;
+    return {
+      diskPath,
+      exists: true,
+      size: stat.size,
+      minBytes,
+      fullOnDisk,
+      persistedBytesReady,
+      reason: !fullOnDisk
+        ? "too_small"
+        : !persistedBytesReady
+          ? "persisted_shortfall"
+          : "ok"
+    };
+  } catch {
+    return {
+      diskPath,
+      exists: false,
+      size: 0,
+      minBytes,
+      fullOnDisk: false,
+      persistedBytesReady: false,
+      reason: "missing_file"
+    };
+  }
+}
+
 function stripArchiveSuffixForMatching(fileName: string): string {
   const trimmed = path.basename(String(fileName || "").trim());
   if (!trimmed) {
@@ -8706,7 +8751,7 @@ export class DownloadManager extends EventEmitter {
       const snapshotParts: string[] = [];
       const pending: string[] = [];
       for (const item of archiveItems) {
-        const state = inspectPackageItemDiskState(pkg, item);
+        const state = await inspectPackageItemDiskStateAsync(pkg, item);
         const label = item.fileName || item.id;
         snapshotParts.push(`${item.id}:${state.reason}:${state.size}`);
         if (state.reason !== "ok" || !state.diskPath) {

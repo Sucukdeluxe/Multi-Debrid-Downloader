@@ -1518,7 +1518,8 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
           return outcome.bytes;
         } catch (error) {
           const originError = error instanceof OriginHttpError;
-          lease?.release({ succeeded: originError || signal.aborted, reason: proxyFailureCode(error) });
+          const representationChanged = error instanceof Error && error.message === "proxy_representation_changed";
+          lease?.release({ succeeded: originError || representationChanged || signal.aborted, reason: proxyFailureCode(error) });
           lease = null;
           if (originError) {
             sharedProxyCoordinator.reportOriginStatus(error.statusCode, target.origin);
