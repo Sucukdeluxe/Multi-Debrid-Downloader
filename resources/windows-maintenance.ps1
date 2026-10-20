@@ -53,7 +53,7 @@ try {
   if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Windows maintenance requires an elevated application.' }
   $osInfo = Get-CimInstance Win32_OperatingSystem
   if ($request.backupConfirmed -ne $true -or $request.expectedBuild -ne '20348' -or $osInfo.BuildNumber -ne '20348' -or $osInfo.ProductType -eq 1) { throw 'Expected Windows Server 2022 and confirmed VM backup.' }
-  if ($request.action -notin @('scan', 'install', 'reboot', 'restore')) { throw 'Invalid action.' }
+  if ($request.action -notin @('scan', 'install', 'restore', 'abort', 'reboot')) { throw 'Invalid action.' }
   if ($request.action -eq 'restore') {
     if ($request.sourceJobId -notmatch '^[a-fA-F0-9-]{36}$') { throw 'Invalid source job.' }
     $sourcePath = Join-Path (Join-Path $root $request.sourceJobId) 'status.json'
@@ -61,6 +61,20 @@ try {
     if (-not $source.result.servicesBefore) { throw 'No service backup found.' }
     Restore-Services $source.result.servicesBefore
     Save-State 'completed' @{ restoredFrom=$request.sourceJobId; services=$source.result.servicesBefore }
+    return
+  }
+  if ($request.action -eq 'abort') {
+    if ($request.sourceJobId -notmatch '^[a-fA-F0-9-]{36}$') { throw 'Invalid source job.' }
+    $sourcePath = Join-Path (Join-Path $root $request.sourceJobId) 'status.json'
+    $source = Get-Content -LiteralPath $sourcePath -Raw | ConvertFrom-Json
+    if ($source.state -ne 'installing' -or -not $source.pid -or -not $source.result.servicesBefore) { throw 'Only an active installing job can be aborted.' }
+    Restore-Services $source.result.servicesBefore
+    $sourceState = [ordered]@{ id=$source.id; action=$source.action; state='aborted'; startedAt=$source.startedAt; updatedAt=[DateTime]::UtcNow.ToString('o'); result=$source.result; abortReason='No status progress for more than 30 minutes; process tree stopped by explicit maintenance request.' }
+    $temporary = Join-Path (Split-Path $sourcePath) 'status.abort.tmp'
+    [IO.File]::WriteAllText($temporary, ($sourceState | ConvertTo-Json -Depth 16), [Text.UTF8Encoding]::new($false))
+    [IO.File]::Replace($temporary, $sourcePath, [NullString]::Value)
+    Stop-Process -Id ([int]$source.pid) -Force -ErrorAction SilentlyContinue
+    Save-State 'completed' @{ abortedJob=$request.sourceJobId; services=$source.result.servicesBefore }
     return
   }
   if ($request.action -eq 'reboot') {
