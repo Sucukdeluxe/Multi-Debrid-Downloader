@@ -1,7 +1,7 @@
 import path from "node:path";
 import { Worker } from "node:worker_threads";
 
-type ProbeMode = "inspect" | "file-test";
+type ProbeMode = "inspect" | "file-test" | "windows-detail" | "native-file-test" | "defender-trace";
 type ProbeState = { state: "idle" | "running" | "completed" | "failed"; mode?: ProbeMode; startedAt?: number; completedAt?: number; result?: unknown; error?: string };
 let active: Worker | null = null;
 let state: ProbeState = { state: "idle" };
@@ -10,7 +10,7 @@ export function getStorageProbe(): ProbeState { return structuredClone(state); }
 
 export function startStorageProbe(mode: ProbeMode): ProbeState {
   if (active) throw Error("Eine Speicherprüfung läuft bereits.");
-  if (mode !== "inspect" && mode !== "file-test") throw Error("Ungültige Speicherprüfung.");
+  if (!["inspect", "file-test", "windows-detail", "native-file-test", "defender-trace"].includes(mode)) throw Error("Ungültige Speicherprüfung.");
   const resources = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
   const file = resources ? path.join(resources, "storage-probe-worker.cjs") : path.resolve(__dirname, "../../../resources/storage-probe-worker.cjs");
   const worker = new Worker(file, { workerData: { mode } });

@@ -88,14 +88,35 @@ async function inspect(signal) {
   return JSON.parse(stdout.replace(/^\uFEFF/, ''));
 }
 
+async function runWindowsProbe(mode, signal) {
+  const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'mdd-windows-probe-'));
+  let result;
+  try {
+    const { stdout } = await promisify(execFile)('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+      ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', path.join(__dirname, 'storage-windows-probe.ps1'), '-Mode', mode, '-ScratchDirectory', scratch],
+      { windowsHide: true, shell: false, encoding: 'utf8', timeout: 110000, maxBuffer: 4 * 1024 * 1024, ...(mode === 'defender-trace' ? {} : { signal }) });
+    const marker = 'MDD_STORAGE_RESULT=';
+    const offset = stdout.lastIndexOf(marker);
+    if (offset < 0) throw Error('PROBE_RESULT_MISSING');
+    result = JSON.parse(stdout.slice(offset + marker.length).split(/\r?\n/)[0]);
+  } finally {
+    for (const name of ['buffered.bin', 'write-through.bin', 'defender.etl']) {
+      await fs.unlink(path.join(scratch, name)).catch(error => { if (error.code !== 'ENOENT') throw error; });
+    }
+    await fs.rmdir(scratch);
+  }
+  return { ...result, cleaned: true };
+}
+
 if (parentPort) {
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), 120000);
   parentPort.on('message', message => { if (message === 'cancel') abort.abort(); });
   Promise.resolve().then(() => workerData.mode === 'inspect' ? inspect(abort.signal)
-    : workerData.mode === 'file-test' ? runFileProbe({ signal: abort.signal }) : Promise.reject(Error('INVALID_PROBE_MODE')))
+    : workerData.mode === 'file-test' ? runFileProbe({ signal: abort.signal })
+    : ['windows-detail', 'native-file-test', 'defender-trace'].includes(workerData.mode) ? runWindowsProbe(workerData.mode, abort.signal) : Promise.reject(Error('INVALID_PROBE_MODE')))
     .then(result => parentPort.postMessage({ result }), error => parentPort.postMessage({ error: /^PROBE_/.test(error.message) ? error.message : abort.signal.aborted ? 'PROBE_CANCELLED' : 'PROBE_FAILED' }))
     .finally(() => { clearTimeout(timer); parentPort.close(); });
 }
 
-module.exports = { runFileProbe, inspectScript };
+module.exports = { runFileProbe, inspectScript, runWindowsProbe };
