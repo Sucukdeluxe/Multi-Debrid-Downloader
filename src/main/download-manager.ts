@@ -172,6 +172,8 @@ type HybridFailedArchiveState = {
 
 const DEFAULT_DOWNLOAD_STALL_TIMEOUT_MS = 10000;
 
+const GLOBAL_SPEED_LIMIT_BURST_MS = 100;
+
 const DEFAULT_DOWNLOAD_CONNECT_TIMEOUT_MS = 25000;
 
 const DEFAULT_GLOBAL_STALL_WATCHDOG_TIMEOUT_MS = 60000;
@@ -13486,22 +13488,13 @@ export class DownloadManager extends EventEmitter {
 
   private cachedSpeedLimitAt = 0;
 
-  private globalSpeedLimitQueue: Promise<void> = Promise.resolve();
-
   private globalSpeedLimitNextAt = 0;
-
-  private globalSpeedLimitHealthNextAt = 0;
-
-  private globalSpeedLimitPending = 0;
 
   private globalSpeedLimitGeneration = 0;
 
   private resetGlobalSpeedLimitState(): void {
     this.globalSpeedLimitGeneration += 1;
-    this.globalSpeedLimitQueue = Promise.resolve();
     this.globalSpeedLimitNextAt = 0;
-    this.globalSpeedLimitHealthNextAt = 0;
-    this.globalSpeedLimitPending = 0;
   }
 
   private getEffectiveSpeedLimitKbps(): number {
@@ -13548,77 +13541,40 @@ export class DownloadManager extends EventEmitter {
 
   private async applyGlobalSpeedLimit(chunkBytes: number, bytesPerSecond: number, active?: ActiveTask): Promise<void> {
     const signal = active?.abortController.signal;
-    const generation = this.globalSpeedLimitGeneration;
-    const queuedAt = nowMs();
-    const durationMs = Math.max(1, Math.ceil((chunkBytes / bytesPerSecond) * 1000));
-    const healthReadyAt = Math.max(queuedAt, this.globalSpeedLimitNextAt, this.globalSpeedLimitHealthNextAt);
-    this.globalSpeedLimitHealthNextAt = healthReadyAt + durationMs;
-    this.globalSpeedLimitPending += 1;
-    if (active && healthReadyAt > queuedAt) {
-      active.blockedOnThrottleUntil = Math.max(active.blockedOnThrottleUntil || 0, healthReadyAt);
+    if (signal?.aborted) {
+      throw new Error("aborted:speed_limit");
     }
-    const task = this.globalSpeedLimitQueue
-      .catch(() => undefined)
-      .then(async () => {
-        if (generation !== this.globalSpeedLimitGeneration) {
-          throw new Error("aborted:speed_limit_generation");
-        }
-        if (signal?.aborted) {
-          throw new Error("aborted:speed_limit");
-        }
-        const now = nowMs();
-        const waitMs = Math.max(0, this.globalSpeedLimitNextAt - now);
-        if (waitMs > 0) {
-          await new Promise<void>((resolve, reject) => {
-            let timer: NodeJS.Timeout | null = setTimeout(() => {
-              timer = null;
-              signal?.removeEventListener("abort", onAbort);
-              resolve();
-            }, waitMs);
-
-            const onAbort = (): void => {
-              if (timer) {
-                clearTimeout(timer);
-                timer = null;
-              }
-              signal?.removeEventListener("abort", onAbort);
-              reject(new Error("aborted:speed_limit"));
-            };
-
-            if (signal) {
-              if (signal.aborted) {
-                onAbort();
-                return;
-              }
-              signal.addEventListener("abort", onAbort, { once: true });
-            }
-          });
-        }
-
-        if (generation !== this.globalSpeedLimitGeneration) {
-          throw new Error("aborted:speed_limit_generation");
-        }
-        if (signal?.aborted) {
-          throw new Error("aborted:speed_limit");
-        }
-
-        const startAt = Math.max(nowMs(), this.globalSpeedLimitNextAt);
-        this.globalSpeedLimitNextAt = startAt + durationMs;
-      });
-
-    this.globalSpeedLimitQueue = task;
+    const generation = this.globalSpeedLimitGeneration;
+    const now = nowMs();
+    const startAt = Math.max(this.globalSpeedLimitNextAt, now - GLOBAL_SPEED_LIMIT_BURST_MS);
+    this.globalSpeedLimitNextAt = startAt + (chunkBytes * 1000) / bytesPerSecond;
+    const waitMs = startAt - now;
+    if (waitMs < 1) {
+      return;
+    }
+    const releaseAt = now + waitMs;
+    if (active) {
+      active.blockedOnThrottleUntil = Math.max(active.blockedOnThrottleUntil || 0, releaseAt);
+    }
     try {
-      await task;
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          signal?.removeEventListener("abort", onAbort);
+          resolve();
+        }, waitMs);
+        const onAbort = (): void => {
+          clearTimeout(timer);
+          reject(new Error("aborted:speed_limit"));
+        };
+        signal?.addEventListener("abort", onAbort, { once: true });
+      });
     } finally {
-      if (active && active.blockedOnThrottleUntil === healthReadyAt) {
+      if (active && active.blockedOnThrottleUntil === releaseAt) {
         active.blockedOnThrottleUntil = 0;
       }
-      if (generation === this.globalSpeedLimitGeneration) {
-        this.globalSpeedLimitPending = Math.max(0, this.globalSpeedLimitPending - 1);
-        if (this.globalSpeedLimitPending === 0) {
-          this.globalSpeedLimitHealthNextAt = Math.max(nowMs(), this.globalSpeedLimitNextAt);
-        }
-      }
+    }
+    if (generation !== this.globalSpeedLimitGeneration) {
+      throw new Error("aborted:speed_limit_generation");
     }
   }
 
