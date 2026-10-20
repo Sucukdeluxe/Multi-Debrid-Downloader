@@ -11772,6 +11772,10 @@ export class DownloadManager extends EventEmitter {
             reservedProxyIndex: this.settings.proxyApiProxyIndex,
             signal: active.abortController.signal,
             skipTlsVerify,
+            onDiskActivity: (blocked) => {
+              active.blockedOnDiskWrite = blocked;
+              active.blockedOnDiskSince = blocked ? nowMs() : 0;
+            },
             waitWhilePaused: async () => {
               while (this.session.paused && this.session.running && !active.abortController.signal.aborted) {
                 item.status = "paused";

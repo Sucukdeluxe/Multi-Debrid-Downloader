@@ -97,7 +97,10 @@ export interface ProxySegmentedDownloadOptions {
   onProgress?: (deltaBytes: number, downloadedBytes: number, totalBytes: number) => void;
   onValidationRetry?: (event: ProxySegmentValidationRetry) => void;
   onRepresentationRetry?: () => void;
+  onDiskActivity?: (active: boolean) => void;
 }
+
+type DiskOperation = <T>(operation: () => Promise<T>) => Promise<T>;
 
 export type ProxySegmentedDownloadResult =
   | { status: "completed"; totalBytes: number; connections: number }
@@ -1194,7 +1197,7 @@ async function downloadSegmentOnce(
   proxy: ProxyEndpoint,
   signal: AbortSignal,
   options: Required<Pick<ProxySegmentedDownloadOptions, "skipTlsVerify" | "connectTimeoutMs" | "idleTimeoutMs">>,
-  callbacks: Pick<ProxySegmentedDownloadOptions, "waitWhilePaused" | "onTrafficBytes" | "onProgress"> & { onTransferWritten?: () => void },
+  callbacks: Pick<ProxySegmentedDownloadOptions, "waitWhilePaused" | "onTrafficBytes" | "onProgress"> & { onTransferWritten?: () => void; withDiskActivity: DiskOperation },
   totalBytes: number,
   currentProgress: () => number
 ): Promise<SegmentDownloadOutcome> {
@@ -1234,7 +1237,7 @@ async function downloadSegmentOnce(
 
   let handle: fs.promises.FileHandle;
   try {
-    handle = await fs.promises.open(tempPath, "r+");
+    handle = await callbacks.withDiskActivity(() => fs.promises.open(tempPath, "r+"));
   } catch (error) {
     opened.dispose();
     throw error;
@@ -1253,7 +1256,7 @@ async function downloadSegmentOnce(
     const length = bufferedBytes;
     response.setTimeout(0);
     try {
-      await withProcessingBudget("downloadWrites", signal, () => runtimePerformance.measure("proxy.write", () => writeBufferAt(handle, writeBuffer.subarray(0, length), segment.start + writtenBytes)));
+      await callbacks.withDiskActivity(() => withProcessingBudget("downloadWrites", signal, () => runtimePerformance.measure("proxy.write", () => writeBufferAt(handle, writeBuffer.subarray(0, length), segment.start + writtenBytes))));
     } finally {
       if (!response.destroyed) response.setTimeout(options.idleTimeoutMs);
     }
@@ -1302,16 +1305,17 @@ async function downloadSegmentOnce(
   } finally {
     opened.dispose();
     writeBuffer = Buffer.alloc(0);
-    await handle.close();
+    await callbacks.withDiskActivity(() => handle.close());
   }
   callbacks.onTransferWritten?.();
-  const releaseReadback = await runtimePerformance.measure("proxy.readback.wait", () => sharedReadbackLimiter.acquire(signal));
-  let writtenHash: Buffer;
-  try {
-    writtenHash = await runtimePerformance.measure("proxy.readback", () => hashFileRange(tempPath, segment.start, expectedBytes, signal));
-  } finally {
-    releaseReadback();
-  }
+  const writtenHash = await callbacks.withDiskActivity(async () => {
+    const releaseReadback = await runtimePerformance.measure("proxy.readback.wait", () => sharedReadbackLimiter.acquire(signal));
+    try {
+      return await runtimePerformance.measure("proxy.readback", () => hashFileRange(tempPath, segment.start, expectedBytes, signal));
+    } finally {
+      releaseReadback();
+    }
+  });
   const networkHash = receivedHash.digest();
   if (!timingSafeEqual(networkHash, writtenHash)) {
     throw new SegmentValidationError("readback_mismatch", segment.start, segment.end, segment);
@@ -1320,20 +1324,26 @@ async function downloadSegmentOnce(
 }
 
 export async function downloadWithProxySegments(options: ProxySegmentedDownloadOptions): Promise<ProxySegmentedDownloadResult> {
-  const result = await downloadWithProxySegmentsOnce(options);
+  let pendingDiskOperations = 0;
+  const withDiskActivity: DiskOperation = async (operation) => {
+    if (++pendingDiskOperations === 1) options.onDiskActivity?.(true);
+    try { return await operation(); }
+    finally { if (--pendingDiskOperations === 0) options.onDiskActivity?.(false); }
+  };
+  const result = await downloadWithProxySegmentsOnce(options, withDiskActivity);
   if (result.status !== "fallback" || result.errorCode !== "proxy_representation_changed") return result;
   if (options.signal.aborted) throw abortError();
   try { options.onRepresentationRetry?.(); } catch {}
   if (options.signal.aborted) throw abortError();
-  return downloadWithProxySegmentsOnce(options);
+  return downloadWithProxySegmentsOnce(options, withDiskActivity);
 }
 
-async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOptions): Promise<ProxySegmentedDownloadResult> {
+async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOptions, withDiskActivity: DiskOperation): Promise<ProxySegmentedDownloadResult> {
   const proxyPath = String(options.proxyListPath || "").trim();
   if (!proxyPath) {
     return { status: "fallback", reason: "proxy_file_unavailable" };
   }
-  const loaded = await loadProxyFile(proxyPath);
+  const loaded = await withDiskActivity(() => loadProxyFile(proxyPath));
   if (loaded.status === "unavailable") {
     return { status: "fallback", reason: "proxy_file_unavailable" };
   }
@@ -1391,13 +1401,13 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
     };
   }
 
-  await fs.promises.mkdir(path.dirname(options.targetPath), { recursive: true });
+  await withDiskActivity(() => fs.promises.mkdir(path.dirname(options.targetPath), { recursive: true }));
   try {
-    const targetStat = await fs.promises.stat(options.targetPath);
+    const targetStat = await withDiskActivity(() => fs.promises.stat(options.targetPath));
     if (targetStat.size > 0) {
       return { status: "fallback", reason: "segment_failed" };
     }
-    await fs.promises.rm(options.targetPath, { force: true });
+    await withDiskActivity(() => fs.promises.rm(options.targetPath, { force: true }));
   } catch (error) {
     const code = error && typeof error === "object" && "code" in error
       ? String((error as NodeJS.ErrnoException).code || "")
@@ -1415,6 +1425,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
   };
 
   try {
+    await withDiskActivity(async () => {
     const initialHandle = await fs.promises.open(tempPath, "wx");
     tempCreated = true;
     try {
@@ -1424,6 +1435,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
     } finally {
       await initialHandle.close();
     }
+    });
 
     const segments = buildSegments(probe.totalBytes, connections, minSegmentBytes);
     const segmentController = new AbortController();
@@ -1458,6 +1470,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
             normalized,
             {
               waitWhilePaused: options.waitWhilePaused,
+              withDiskActivity,
               onTrafficBytes: options.onTrafficBytes,
               onTransferWritten: () => {
                 transferDurationMs = Math.max(1, Date.now() - startedAt);
@@ -1598,6 +1611,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
       return { status: "fallback", reason: "segment_failed", errorCode: proxyFailureCode((primaryFailure || failed).reason) };
     }
 
+    return await withDiskActivity(async () => {
     const finalizedHandle = await fs.promises.open(tempPath, "r+");
     try {
       await runtimePerformance.measure("proxy.flush", () => finalizedHandle.datasync());
@@ -1606,11 +1620,12 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
     }
     const finalStat = await fs.promises.stat(tempPath);
     if (finalStat.size !== probe.totalBytes) {
-      return { status: "fallback", reason: "segment_failed" };
+      return { status: "fallback", reason: "segment_failed" } as const;
     }
     await runtimePerformance.measure("proxy.commit", () => fs.promises.rename(tempPath, options.targetPath));
     tempCreated = false;
-    return { status: "completed", totalBytes: probe.totalBytes, connections };
+    return { status: "completed", totalBytes: probe.totalBytes, connections } as const;
+    });
   } catch (error) {
     if (options.signal.aborted || String(error).includes("aborted:proxy_download")) {
       throw abortError();
@@ -1622,7 +1637,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
   } finally {
     if (tempCreated) {
       try {
-        await fs.promises.rm(tempPath, { force: true });
+        await withDiskActivity(() => fs.promises.rm(tempPath, { force: true }));
       } catch {
       }
     }
