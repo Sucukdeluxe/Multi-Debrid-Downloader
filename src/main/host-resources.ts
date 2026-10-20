@@ -5,6 +5,8 @@ export type HostResourceInterval = {
   cpuPercent: number | null;
   availableMemoryBytes: number | null;
   modifiedPageListBytes: number | null;
+  standbyBytes: number | null;
+  processes: Array<{ name: string; readMBps: number; writeMBps: number }>;
   disks: Array<{
     name: string;
     readMBps: number;
@@ -41,6 +43,7 @@ type RawSample = {
   disks?: RawDisk[] | RawDisk;
   network?: RawDisk[] | RawDisk;
   memory?: Record<string, number | null>;
+  processes?: RawDisk[] | RawDisk;
   cpu?: number | null;
 };
 
@@ -76,8 +79,9 @@ do {
   $disks = @(Get-CimInstance Win32_PerfRawData_PerfDisk_PhysicalDisk | Where-Object Name -ne '_Total' | ForEach-Object { [ordered]@{ name = $_.Name; readBytes = [double]$_.DiskReadBytesPersec; writeBytes = [double]$_.DiskWriteBytesPersec; reads = [double]$_.DiskReadsPersec; writes = [double]$_.DiskWritesPersec; readTime = [double]$_.AvgDisksecPerRead; readBase = [double]$_.AvgDisksecPerRead_Base; writeTime = [double]$_.AvgDisksecPerWrite; writeBase = [double]$_.AvgDisksecPerWrite_Base; queue = [double]$_.CurrentDiskQueueLength; idle = [double]$_.PercentIdleTime; perfTime = [double]$_.Timestamp_PerfTime; perfFrequency = [double]$_.Frequency_PerfTime; sys100ns = [double]$_.Timestamp_Sys100NS } })
   $network = @(Get-CimInstance Win32_PerfRawData_Tcpip_NetworkInterface | ForEach-Object { [ordered]@{ name = $_.Name; received = [double]$_.BytesReceivedPersec; sent = [double]$_.BytesSentPersec; bandwidth = [double]$_.CurrentBandwidth; perfTime = [double]$_.Timestamp_PerfTime; perfFrequency = [double]$_.Frequency_PerfTime } })
   $memory = Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory
+  $processes = @(Get-CimInstance Win32_PerfRawData_PerfProc_Process | Where-Object { $_.Name -match '^(Multi|UnRAR|Rar|7z|java|ffmpeg|mkvmerge|MsMpEng|System$|node|electron)' } | ForEach-Object { [ordered]@{ name = $_.Name; read = [double]$_.IOReadBytesPersec; write = [double]$_.IOWriteBytesPersec; perfTime = [double]$_.Timestamp_PerfTime; perfFrequency = [double]$_.Frequency_PerfTime } })
   $cpu = (Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'").PercentProcessorTime
-  [void]$samples.Add([ordered]@{ at = $started; disks = $disks; network = $network; memory = [ordered]@{ availableBytes = [double]$memory.AvailableBytes; modifiedPageListBytes = [double]$memory.ModifiedPageListBytes }; cpu = [double]$cpu })
+  [void]$samples.Add([ordered]@{ at = $started; disks = $disks; network = $network; memory = [ordered]@{ availableBytes = [double]$memory.AvailableBytes; modifiedPageListBytes = [double]$memory.ModifiedPageListBytes; standbyBytes = [double]$memory.StandbyCacheNormalPriorityBytes + [double]$memory.StandbyCacheReserveBytes + [double]$memory.StandbyCacheCoreBytes }; processes = $processes; cpu = [double]$cpu })
   $wait = 1000 - ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $started)
   if ($wait -gt 0 -and $started + 1000 -lt $deadline) { Start-Sleep -Milliseconds $wait }
 } while ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -lt $deadline)
@@ -106,6 +110,26 @@ function runPowerShell(script: string, timeoutMs: number): Promise<string> {
 const list = <T>(value: T[] | T | undefined | null): T[] => Array.isArray(value) ? value : value ? [value] : [];
 const num = (value: unknown): number => typeof value === "number" && Number.isFinite(value) ? value : Number(value) || 0;
 const round = (value: number, digits = 2): number => Number(value.toFixed(digits));
+
+function processDeltas(previous: RawSample, current: RawSample): HostResourceInterval["processes"] {
+  const baseName = (name: unknown) => String(name).replace(/#\d+$/, "");
+  const before = new Map(list(previous.processes).map(entry => [String(entry.name), entry]));
+  const totals = new Map<string, { readMBps: number; writeMBps: number }>();
+  for (const entry of list(current.processes)) {
+    const prior = before.get(String(entry.name));
+    if (!prior) continue;
+    const seconds = (num(entry.perfTime) - num(prior.perfTime)) / Math.max(1, num(entry.perfFrequency));
+    if (seconds <= 0) continue;
+    const readMBps = Math.max(0, num(entry.read) - num(prior.read)) / seconds / 1e6;
+    const writeMBps = Math.max(0, num(entry.write) - num(prior.write)) / seconds / 1e6;
+    const key = baseName(entry.name);
+    const total = totals.get(key) ?? { readMBps: 0, writeMBps: 0 };
+    totals.set(key, { readMBps: total.readMBps + readMBps, writeMBps: total.writeMBps + writeMBps });
+  }
+  return [...totals].map(([name, value]) => ({ name, readMBps: round(value.readMBps), writeMBps: round(value.writeMBps) }))
+    .filter(entry => entry.readMBps > 0 || entry.writeMBps > 0)
+    .sort((a, b) => b.readMBps + b.writeMBps - a.readMBps - a.writeMBps);
+}
 
 export function computeHostResourceIntervals(samples: RawSample[]): HostResourceInterval[] {
   const intervals: HostResourceInterval[] = [];
@@ -155,6 +179,8 @@ export function computeHostResourceIntervals(samples: RawSample[]): HostResource
       cpuPercent: current.cpu === undefined || current.cpu === null ? null : num(current.cpu),
       availableMemoryBytes: current.memory?.availableBytes ?? null,
       modifiedPageListBytes: current.memory?.modifiedPageListBytes ?? null,
+      standbyBytes: current.memory?.standbyBytes ?? null,
+      processes: processDeltas(previous, current),
       disks,
       network
     });
