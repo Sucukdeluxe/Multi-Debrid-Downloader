@@ -125,6 +125,10 @@ function runPowerShell(script: string, timeoutMs: number): Promise<string> {
 const list = <T>(value: T[] | T | undefined | null): T[] => Array.isArray(value) ? value : value ? [value] : [];
 const num = (value: unknown): number => typeof value === "number" && Number.isFinite(value) ? value : Number(value) || 0;
 const round = (value: number, digits = 2): number => Number(value.toFixed(digits));
+const counter32Delta = (current: unknown, previous: unknown): number => {
+  const difference = num(current) - num(previous);
+  return difference < 0 ? difference + 0x1_0000_0000 : difference;
+};
 
 function processDeltas(previous: RawSample, current: RawSample): HostResourceInterval["processes"] {
   const baseName = (name: unknown) => String(name).replace(/#\d+$/, "");
@@ -158,10 +162,10 @@ export function computeHostResourceIntervals(samples: RawSample[]): HostResource
       if (!before) return [];
       const seconds = (num(disk.perfTime) - num(before.perfTime)) / Math.max(1, num(disk.perfFrequency));
       if (seconds <= 0) return [];
-      const reads = num(disk.reads) - num(before.reads);
-      const writes = num(disk.writes) - num(before.writes);
-      const readBase = num(disk.readBase) - num(before.readBase);
-      const writeBase = num(disk.writeBase) - num(before.writeBase);
+      const reads = counter32Delta(disk.reads, before.reads);
+      const writes = counter32Delta(disk.writes, before.writes);
+      const readBase = counter32Delta(disk.readBase, before.readBase);
+      const writeBase = counter32Delta(disk.writeBase, before.writeBase);
       const frequency = Math.max(1, num(disk.perfFrequency));
       const sysTicks = num(disk.sys100ns) - num(before.sys100ns);
       const idleTicks = num(disk.idle) - num(before.idle);
@@ -174,8 +178,8 @@ export function computeHostResourceIntervals(samples: RawSample[]): HostResource
         cumulativeWriteBytes: num(disk.writeBytes),
         readIops: round(reads / seconds, 1),
         writeIops: round(writes / seconds, 1),
-        avgReadMs: readBase > 0 ? round((num(disk.readTime) - num(before.readTime)) / frequency / readBase * 1000) : null,
-        avgWriteMs: writeBase > 0 ? round((num(disk.writeTime) - num(before.writeTime)) / frequency / writeBase * 1000) : null,
+        avgReadMs: readBase > 0 ? round(counter32Delta(disk.readTime, before.readTime) / frequency / readBase * 1000) : null,
+        avgWriteMs: writeBase > 0 ? round(counter32Delta(disk.writeTime, before.writeTime) / frequency / writeBase * 1000) : null,
         queueLength: Number.isFinite(num(disk.queue)) ? num(disk.queue) : null,
         busyPercent: sysTicks > 0 ? round(Math.min(100, Math.max(0, 100 - idleTicks / sysTicks * 100)), 1) : null,
         idlePercent: sysTicks > 0 ? round(Math.min(100, Math.max(0, idleTicks / sysTicks * 100)), 1) : null

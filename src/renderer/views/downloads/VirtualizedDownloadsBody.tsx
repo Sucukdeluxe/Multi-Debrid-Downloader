@@ -24,7 +24,7 @@ import {
 } from "./download-order-transition";
 import type { DownloadsViewActions, DownloadsViewModel } from "./DownloadsView";
 import { ItemRow, PackageCard } from "./DownloadsTable";
-import { calculateDownloadVirtualWindow, getDownloadViewportOverscanRows, DOWNLOAD_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT, DOWNLOAD_VIRTUAL_OVERSCAN_ROWS } from "./download-virtualizer";
+import { calculateDownloadVirtualWindow, getDownloadViewportOverscanRows, shouldAdvanceDownloadRenderWindow, DOWNLOAD_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT, DOWNLOAD_VIRTUAL_OVERSCAN_ROWS } from "./download-virtualizer";
 
 const useRendererLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
@@ -35,6 +35,7 @@ interface DownloadViewportState {
 
 function useDownloadViewport(bodyRef: React.RefObject<HTMLDivElement>): DownloadViewportState {
   const [viewport, setViewport] = useState<DownloadViewportState>({ scrollTop: 0, viewportHeight: DOWNLOAD_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT });
+  const renderedViewport = useRef(viewport);
 
   useEffect(() => {
     const body = bodyRef.current;
@@ -45,7 +46,9 @@ function useDownloadViewport(bodyRef: React.RefObject<HTMLDivElement>): Download
         scrollTop: scrollport.scrollTop,
         viewportHeight: scrollport.clientHeight || DOWNLOAD_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT
       };
-      const update = () => setViewport((current) => current.scrollTop === next.scrollTop && current.viewportHeight === next.viewportHeight ? current : next);
+      if (!shouldAdvanceDownloadRenderWindow(renderedViewport.current, next)) return;
+      renderedViewport.current = next;
+      const update = () => setViewport(next);
       if (synchronous) flushSync(update);
       else update();
     };

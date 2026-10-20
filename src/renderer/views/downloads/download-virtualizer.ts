@@ -8,6 +8,14 @@ export function getDownloadViewportOverscanRows(viewportHeight: number): number 
   return Math.max(DOWNLOAD_VIRTUAL_OVERSCAN_ROWS, Math.ceil(height / DOWNLOAD_FILE_ROW_HEIGHT));
 }
 
+export function shouldAdvanceDownloadRenderWindow(
+  current: { scrollTop: number; viewportHeight: number },
+  next: { scrollTop: number; viewportHeight: number }
+): boolean {
+  return current.viewportHeight !== next.viewportHeight
+    || Math.abs(current.scrollTop - next.scrollTop) >= Math.max(DOWNLOAD_FILE_ROW_HEIGHT, next.viewportHeight / 2);
+}
+
 export interface DownloadVirtualRowInput {
   id: string;
   height: number;

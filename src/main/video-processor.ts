@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { withProcessingBudget } from "./processing-budget";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -425,6 +426,15 @@ function uniqueTempPath(filePath: string): string {
 }
 
 export async function processVideoFile(filePath: string, opts: ProcessVideoOptions, deps: ProcessVideoDeps = {}): Promise<VideoProcessResult> {
+  try {
+    return await withProcessingBudget("remux", opts.signal, () => processVideoFileWithSlot(filePath, opts, deps));
+  } catch (error) {
+    if (opts.signal?.aborted) return { action: "aborted", reason: "aborted" };
+    throw error;
+  }
+}
+
+async function processVideoFileWithSlot(filePath: string, opts: ProcessVideoOptions, deps: ProcessVideoDeps): Promise<VideoProcessResult> {
   const resolveTool = deps.resolveTooling || resolveVideoTooling;
   const run = deps.runProcess || runVideoProcess;
   if (opts.signal?.aborted) {

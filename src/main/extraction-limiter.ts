@@ -1,6 +1,7 @@
 type Waiter = { grant(): void; signal?: AbortSignal; abort(): void };
 
 export class ExtractionLimiter {
+  constructor(private readonly abortMessage = "aborted:extract", private readonly ceiling = 8) {}
   private active = 0;
   private limit = 1;
   private waiters: Waiter[] = [];
@@ -9,15 +10,20 @@ export class ExtractionLimiter {
     return { active: this.active, waiting: this.waiters.length, limit: this.limit };
   }
 
+  updateLimit(limit: number): void {
+    this.limit = Math.max(1, Math.min(this.ceiling, Math.floor(limit) || 1));
+    this.drain();
+  }
+
   acquire(limit: number, signal?: AbortSignal): Promise<() => void> {
-    if (signal?.aborted) return Promise.reject(new Error("aborted:extract"));
-    this.limit = Math.max(1, Math.min(8, Math.floor(limit) || 1));
+    if (signal?.aborted) return Promise.reject(new Error(this.abortMessage));
+    this.limit = Math.max(1, Math.min(this.ceiling, Math.floor(limit) || 1));
     return new Promise((resolve, reject) => {
       const waiter: Waiter = {
         signal,
         abort: () => {
           this.waiters = this.waiters.filter(entry => entry !== waiter);
-          reject(new Error("aborted:extract"));
+          reject(new Error(this.abortMessage));
           this.drain();
         },
         grant: () => {

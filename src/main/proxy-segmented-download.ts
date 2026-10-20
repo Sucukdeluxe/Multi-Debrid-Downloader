@@ -1,5 +1,6 @@
 import { setMaxListeners } from "node:events";
 import fs from "node:fs";
+import { withProcessingBudget } from "./processing-budget";
 import http from "node:http";
 import https from "node:https";
 import path from "node:path";
@@ -1251,7 +1252,7 @@ async function downloadSegmentOnce(
     const length = bufferedBytes;
     response.setTimeout(0);
     try {
-      await runtimePerformance.measure("proxy.write", () => writeBufferAt(handle, writeBuffer.subarray(0, length), segment.start + writtenBytes));
+      await withProcessingBudget("downloadWrites", signal, () => runtimePerformance.measure("proxy.write", () => writeBufferAt(handle, writeBuffer.subarray(0, length), segment.start + writtenBytes)));
     } finally {
       if (!response.destroyed) response.setTimeout(options.idleTimeoutMs);
     }
