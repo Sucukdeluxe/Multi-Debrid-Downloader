@@ -201,6 +201,7 @@ export function createRendererSettings(settings: AppSettings): RendererSettings 
     reconnectWaitSeconds: settings.reconnectWaitSeconds,
     completedCleanupPolicy: settings.completedCleanupPolicy,
     maxParallel: settings.maxParallel,
+    spreadDownloadsAcrossPackages: settings.spreadDownloadsAcrossPackages,
     maxParallelExtract: settings.maxParallelExtract,
     retryLimit: settings.retryLimit,
     offlineSkipScope: settings.offlineSkipScope,

@@ -49,6 +49,7 @@ import {
 } from "../shared/provider-daily-limits";
 import { REQUEST_RETRIES, SAMPLE_VIDEO_EXTENSIONS, SPEED_WINDOW_SECONDS, WRITE_BUFFER_SIZE, WRITE_FLUSH_TIMEOUT_MS, ALLOCATION_UNIT_SIZE, STREAM_HIGH_WATER_MARK, DISK_BUSY_THRESHOLD_MS, DISK_BUSY_STATUS_THRESHOLD_MS } from "./constants";
 import { parseCollectorInput } from "./link-parser";
+import { choosePackageCandidate } from "./package-spread";
 import { RealDebridDownloadBackoffError, RealDebridRepresentationChangedError, getRealDebridDownloadRetryDelay, shouldRelinkAfterRepresentationChange } from "./download-server-backoff";
 
 let tlsSkipRefCount = 0;
@@ -10433,16 +10434,25 @@ export class DownloadManager extends EventEmitter {
 
   private findNextQueuedItem(): { packageId: string; itemId: string } | null {
     const now = nowMs();
-    let normalCandidate: { packageId: string; itemId: string } | null = null;
+    const spread = this.settings.spreadDownloadsAcrossPackages;
+    const activeByPackage = new Map<string, number>();
+    if (spread) {
+      for (const task of this.activeTasks.values()) {
+        activeByPackage.set(task.packageId, (activeByPackage.get(task.packageId) || 0) + 1);
+      }
+    }
+    const normalCandidates: Array<{ packageId: string; itemId: string }> = [];
     let lowCandidate: { packageId: string; itemId: string } | null = null;
+    const normalSearchDone = () => normalCandidates.length > 0
+      && (!spread || (activeByPackage.get(normalCandidates[normalCandidates.length - 1].packageId) || 0) === 0);
 
     for (const packageId of this.session.packageOrder) {
       const pkg = this.session.packages[packageId];
       if (!pkg || pkg.cancelled || !pkg.enabled) continue;
       if (this.runPackageIds.size > 0 && !this.runPackageIds.has(packageId)) continue;
       const pkgPrio = pkg.priority || "normal";
-      if (normalCandidate && pkgPrio === "low") continue;
-      if (normalCandidate && pkgPrio === "normal") continue;
+      if (normalCandidates.length > 0 && pkgPrio === "low") continue;
+      if (pkgPrio === "normal" && normalSearchDone()) continue;
 
       for (const itemId of pkg.itemIds) {
         const item = this.session.items[itemId];
@@ -10460,7 +10470,7 @@ export class DownloadManager extends EventEmitter {
           return candidate;
         }
         if (pkgPrio === "normal") {
-          normalCandidate = candidate;
+          normalCandidates.push(candidate);
         } else if (!lowCandidate) {
           lowCandidate = candidate;
         }
@@ -10468,6 +10478,7 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
+    const normalCandidate = spread ? choosePackageCandidate(normalCandidates, activeByPackage) : normalCandidates[0] || null;
     const chosen = normalCandidate || lowCandidate;
     if (chosen) {
       const retryAfter = this.retryAfterByItem.get(chosen.itemId) || 0;

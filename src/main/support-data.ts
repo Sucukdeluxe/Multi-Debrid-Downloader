@@ -183,6 +183,7 @@ export function buildRedactedSettingsPayload(settings: AppSettings): Record<stri
     },
     downloads: {
       maxParallel: settings.maxParallel,
+      spreadDownloadsAcrossPackages: settings.spreadDownloadsAcrossPackages,
       retryLimit: settings.retryLimit,
       autoResumeOnStart: settings.autoResumeOnStart,
       autoReconnect: settings.autoReconnect,

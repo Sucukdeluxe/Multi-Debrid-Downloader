@@ -633,6 +633,10 @@ export function buildSettingsFormViewModel({
         title: "Download-Verhalten",
         fields: [
           { id: "maxParallel", kind: "number", label: "Max. gleichzeitige Downloads", value: String(settings.maxParallel), min: 1, max: 50 },
+          {
+            id: "spreadDownloadsAcrossPackages", kind: "switch", label: "Downloads auf mehrere Pakete verteilen", value: settings.spreadDownloadsAcrossPackages,
+            help: "Gleichzeitige Downloads werden auf verschiedene Pakete in Queue-Reihenfolge verteilt. Real-Debrid liefert ein Paket meist von einem einzigen Server; verteilt kommen die Daten von mehreren Servern, und die Drosselung eines Servers bremst nur einen Teil. Einzelne Pakete werden dadurch später vollständig."
+          },
           { id: "retryLimit", kind: "number", label: "Automatische Wiederholungen", value: String(settings.retryLimit), min: 0, max: 99 },
           {
             id: "downloadDiskReserveGb", kind: "number", label: "Speicherpuffer für Entpacken (GB)", value: String(settings.downloadDiskReserveGb), min: 0, max: 2000,

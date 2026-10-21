@@ -619,6 +619,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     autoResumeOnStart: Boolean(settings.autoResumeOnStart),
     autoReconnect: Boolean(settings.autoReconnect),
     maxParallel: clampNumber(settings.maxParallel, defaults.maxParallel, 1, 50),
+    spreadDownloadsAcrossPackages: settings.spreadDownloadsAcrossPackages === undefined ? defaults.spreadDownloadsAcrossPackages : Boolean(settings.spreadDownloadsAcrossPackages),
     maxParallelExtract: clampNumber(settings.maxParallelExtract, defaults.maxParallelExtract, 1, 8),
     retryLimit: clampNumber(settings.retryLimit, defaults.retryLimit, 0, 99),
     offlineSkipScope: settings.offlineSkipScope === "package" ? "package" : "archive",

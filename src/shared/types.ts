@@ -210,6 +210,7 @@ export interface AppSettings extends DailyStartSettings, ProxyDownloadSettings {
   reconnectWaitSeconds: number;
   completedCleanupPolicy: FinishedCleanupPolicy;
   maxParallel: number;
+  spreadDownloadsAcrossPackages: boolean;
   maxParallelExtract: number;
   retryLimit: number;
   offlineSkipScope: OfflineSkipScope;
@@ -352,6 +353,7 @@ export interface RendererSettings extends DailyStartSettings, ProxyDownloadSetti
   reconnectWaitSeconds: number;
   completedCleanupPolicy: FinishedCleanupPolicy;
   maxParallel: number;
+  spreadDownloadsAcrossPackages: boolean;
   maxParallelExtract: number;
   retryLimit: number;
   offlineSkipScope: OfflineSkipScope;

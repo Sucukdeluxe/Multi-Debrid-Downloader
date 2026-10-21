@@ -103,6 +103,7 @@ export function defaultSettings(): AppSettings {
     reconnectWaitSeconds: 45,
     completedCleanupPolicy: "never",
     maxParallel: 4,
+    spreadDownloadsAcrossPackages: true,
     maxParallelExtract: 2,
     retryLimit: 0,
     offlineSkipScope: "archive" as const,
