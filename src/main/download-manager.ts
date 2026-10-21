@@ -49,7 +49,7 @@ import {
 } from "../shared/provider-daily-limits";
 import { REQUEST_RETRIES, SAMPLE_VIDEO_EXTENSIONS, SPEED_WINDOW_SECONDS, WRITE_BUFFER_SIZE, WRITE_FLUSH_TIMEOUT_MS, ALLOCATION_UNIT_SIZE, STREAM_HIGH_WATER_MARK, DISK_BUSY_THRESHOLD_MS, DISK_BUSY_STATUS_THRESHOLD_MS } from "./constants";
 import { parseCollectorInput } from "./link-parser";
-import { RealDebridDownloadBackoffError, getRealDebridDownloadRetryDelay } from "./download-server-backoff";
+import { RealDebridDownloadBackoffError, RealDebridRepresentationChangedError, getRealDebridDownloadRetryDelay, shouldRelinkAfterRepresentationChange } from "./download-server-backoff";
 
 let tlsSkipRefCount = 0;
 function acquireTlsSkip(): void {
@@ -2168,6 +2168,8 @@ export class DownloadManager extends EventEmitter {
   }>();
 
   private http416FreshRestartByItem = new Map<string, number>();
+
+  private representationRelinksByItem = new Map<string, number>();
 
   private providerFailures = new Map<string, { count: number; lastFailAt: number; cooldownUntil: number }>();
 
@@ -7196,6 +7198,7 @@ export class DownloadManager extends EventEmitter {
     this.pacedStartReservationByItem.clear();
     this.retryStateByItem.clear();
     this.http416FreshRestartByItem.clear();
+    this.representationRelinksByItem.clear();
     this.itemContributedBytes.clear();
     this.reservedTargetPaths.clear();
     this.claimedTargetPathByItem.clear();
@@ -11093,6 +11096,7 @@ export class DownloadManager extends EventEmitter {
         this.diskLeasesByOwner.get(item.id)?.release();
         this.diskLeasesByOwner.delete(item.id);
         this.recordRunOutcome(item.id, "completed");
+        this.representationRelinksByItem.delete(item.id);
         logger.info(`Download fertig: ${item.fileName} (${humanSize(item.downloadedBytes)}), pkg=${pkg.name}`);
         this.logPackageForItem(item, "INFO", "Download abgeschlossen", {
           downloadedBytes: item.downloadedBytes,
@@ -11312,6 +11316,14 @@ export class DownloadManager extends EventEmitter {
             error: errorText,
             abortReason: reason || "none"
           });
+          if (error instanceof RealDebridRepresentationChangedError) {
+            item.lastError = error.message;
+            item.retries += 1;
+            this.queueRetry(item, active, 2000, "Datei auf dem Downloadserver geändert, neuer Link in 2s");
+            this.persistSoon();
+            this.emitState();
+            return;
+          }
           if (error instanceof RealDebridDownloadBackoffError) {
             item.lastError = error.message;
             if (active.genericErrorRetries < maxGenericErrorRetries) {
@@ -11922,6 +11934,18 @@ export class DownloadManager extends EventEmitter {
             targetPath: effectiveTargetPath
           });
           return { resumable: true };
+        }
+        const representationRelinks = this.representationRelinksByItem.get(item.id) || 0;
+        if (shouldRelinkAfterRepresentationChange(item.provider, proxyResult.errorCode, representationRelinks)) {
+          this.representationRelinksByItem.set(item.id, representationRelinks + 1);
+          item.downloadedBytes = 0;
+          item.progressPercent = 0;
+          item.speedBps = 0;
+          logAttemptEvent("WARN", "Datei auf dem Real-Debrid-Downloadserver erneut geändert; neuer Link wird angefordert", {
+            attempt,
+            relink: representationRelinks + 1
+          });
+          throw new RealDebridRepresentationChangedError();
         }
         item.status = "downloading";
         item.downloadedBytes = 0;
