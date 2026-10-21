@@ -18,8 +18,10 @@ import { configureCredentialProtector } from "./credential-protection";
 import { configureArchivePasswordDiagnostics, flushArchivePasswordDiagnostics } from "./archive-password-diagnostics";
 import { getSupportBundleExportDialogOptions } from "./support-bundle-dialog";
 import { isMdd2Backup } from "./backup-crypto";
+import { relaunchWithThreadpoolSize } from "./threadpool-relaunch";
 import { validateAccountCommand, validateAccountCredentialCheckInput, validateAccountSecretRequest } from "./account-commands";
 import { createRendererSettings } from "./renderer-state";
+import { rendererPerformance } from "./renderer-performance";
 import { validateRendererSettingsUpdate } from "./renderer-settings";
 import { applyMainWindowSecurity, createMainWindowWebPreferences, MAIN_WINDOW_EXTERNAL_HOSTS, openAllowedExternalUrl } from "./browser-security";
 import { assertTrustedIpcSender, type TrustedIpcOptions } from "./ipc-security";
@@ -37,6 +39,7 @@ import {
 import { getProxyAuthentication } from "./network-proxy";
 import { McpService } from "./mcp/service";
 import { runtimePerformance } from "./runtime-performance";
+import { installBlockingIoMonitor } from "./blocking-io-monitor";
 
 forceDarkNativeTheme(nativeTheme);
 
@@ -78,6 +81,11 @@ function validateStringArray(value: unknown, name: string): string[] {
     throw new Error(`${name} muss ein String-Array sein`);
   }
   return value as string[];
+}
+
+if (relaunchWithThreadpoolSize(app)) {
+  app.exit(0);
+  process.exit(0);
 }
 
 const gotLock = app.requestSingleInstanceLock();
@@ -1257,6 +1265,7 @@ function registerIpcHandlers(): void {
     return importResult;
   });
 
+  onTrusted(IPC_CHANNELS.RENDERER_PERFORMANCE, (_event, report: unknown) => rendererPerformance.record(report));
   onTrusted(IPC_CHANNELS.LOG_RENDERER_ERROR, (_event, rawReport: unknown) => {
     try {
       logger.error(formatRendererErrorReport(rawReport));
@@ -1338,14 +1347,15 @@ app.on("second-instance", () => {
     : "Zweite Instanz erkannt – Hauptfenster wiederhergestellt");
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   configureCredentialProtector(safeStorage);
   configureArchivePasswordDiagnostics(path.join(app.getPath("userData"), "runtime"), safeStorage);
   controller = new AppController();
   runtimePerformance.start((sample) => logger.warn(`Hauptthread verzögert: maxDelayMs=${sample.maxDelayMs}, timerDelayMs=${sample.timerDelayMs}, cpuPercent=${sample.cpuPercent}`));
+  installBlockingIoMonitor(runtimePerformance);
   controller.retireLegacyRemoteDiagnostics();
   dailyStartScheduler = new DailyStartScheduler(controller);
-  cleanupStaleSubstDrives();
+  await cleanupStaleSubstDrives();
   registerIpcHandlers();
   mainWindow = createWindow();
   bindMainWindowLifecycle(mainWindow);

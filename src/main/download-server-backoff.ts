@@ -12,6 +12,19 @@ export class RealDebridDownloadBackoffError extends Error {
   }
 }
 
+export const MAX_REPRESENTATION_RELINKS = 2;
+
+export class RealDebridRepresentationChangedError extends Error {
+  constructor() {
+    super("Real-Debrid Downloadserver: Datei während des Downloads geändert");
+    this.name = "RealDebridRepresentationChangedError";
+  }
+}
+
+export function shouldRelinkAfterRepresentationChange(provider: string | null | undefined, errorCode: string | undefined, relinksUsed: number): boolean {
+  return provider === "realdebrid" && errorCode === "proxy_representation_changed" && relinksUsed < MAX_REPRESENTATION_RELINKS;
+}
+
 export function getRealDebridDownloadRetryDelay(error: RealDebridDownloadBackoffError, attempt: number): number {
   const base = error.status === 429 ? 30_000 : 5_000;
   const backoff = Math.min(60_000, base * 2 ** Math.max(0, Math.min(4, attempt - 1)));

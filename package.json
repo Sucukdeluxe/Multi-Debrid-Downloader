@@ -1,6 +1,6 @@
 {
   "name": "multi-debrid-downloader",
-  "version": "2.0.105",
+  "version": "2.0.152",
   "description": "Desktop downloader",
   "main": "build/main/main/main.js",
   "author": "Sucukdeluxe",
@@ -74,6 +74,26 @@
       "package.json"
     ],
     "extraResources": [
+      {
+        "from": "resources/windows-maintenance.ps1",
+        "to": "windows-maintenance.ps1"
+      },
+      {
+        "from": "resources/windows-maintenance-worker.cjs",
+        "to": "windows-maintenance-worker.cjs"
+      },
+      {
+        "from": "resources/storage-windows-probe.ps1",
+        "to": "storage-windows-probe.ps1"
+      },
+      {
+        "from": "resources/storage-probe-worker.cjs",
+        "to": "storage-probe-worker.cjs"
+      },
+      {
+        "from": "resources/process-host-worker.cjs",
+        "to": "process-host-worker.cjs"
+      },
       {
         "from": "resources/licenses",
         "to": "licenses"

@@ -93,7 +93,7 @@ import { sendNotification } from "./notify";
 import { DownloadHealthMonitor } from "./download-health-monitor";
 import { ensureStartupWorkDirectories } from "./startup-work-directories";
 import { shouldDeferAutoResumeToDailyStart } from "./daily-start-scheduler";
-import { configureNetworkProxy, getNetworkProxyState, shutdownNetworkProxy } from "./network-proxy";
+import { configureNetworkProxy, getNetworkProxyProbe, getNetworkProxyState, onNetworkProxyProbe, shutdownNetworkProxy } from "./network-proxy";
 import { createProxyOnlyAccountError, resolveProxyOnlyAccountErrorCode } from "./proxy-account-errors";
 
 function sanitizeSettingsPatch(partial: Partial<AppSettings>): Partial<AppSettings> {
@@ -156,6 +156,7 @@ export class AppController {
   private downloadHealthMonitor: DownloadHealthMonitor;
 
   private downloadHealthTimer: NodeJS.Timeout | null = null;
+  private failedExtractionCleanupTimer: NodeJS.Timeout | null = null;
 
   private downloadHealthEvaluation: Promise<void> | null = null;
   private settingsLogUpdate: Promise<unknown> = Promise.resolve();
@@ -238,13 +239,18 @@ export class AppController {
       }
     });
     this.manager.on("state", (snapshot: UiSnapshot) => {
-      this.onStateHandler?.(snapshot);
+      this.onStateHandler?.({ ...snapshot, networkProxyProbe: getNetworkProxyProbe() });
     });
+    onNetworkProxyProbe(() => this.manager.refreshState());
     void this.evaluateDownloadHealth();
     this.downloadHealthTimer = setInterval(() => {
       void this.evaluateDownloadHealth();
     }, 15_000);
     this.downloadHealthTimer.unref?.();
+    this.failedExtractionCleanupTimer = setInterval(() => {
+      void this.manager.cleanupFailedExtractionArchives().catch((error) => logger.warn(`Entpack-Fehler-Bereinigung fehlgeschlagen: ${String(error)}`));
+    }, 60_000);
+    this.failedExtractionCleanupTimer.unref?.();
     logger.info(`App gestartet v${APP_VERSION}`);
     logger.info(`Log-Datei: ${getLogFilePath()}`);
     logAuditEvent("INFO", "App gestartet", {
@@ -375,7 +381,7 @@ export class AppController {
   }
 
   public getSnapshot(): UiSnapshot {
-    return this.manager.getSnapshot();
+    return { ...this.manager.getSnapshot(), networkProxyProbe: getNetworkProxyProbe() };
   }
 
   public getVersion(): string {
@@ -1417,6 +1423,12 @@ export class AppController {
     this.manager.reorderPackages(packageIds);
   }
 
+  public removeFailedExtractions(itemIds: string[]): { removed: number; filesPreserved: true } {
+    const result = this.manager.removeFailedExtractions(itemIds);
+    this.audit("WARN", "Abgeschlossene Entpackfehler aus Warteschlange entfernt; Dateien erhalten", { itemIds, ...result });
+    return result;
+  }
+
   public removeItem(itemId: string): void {
     this.audit("WARN", "Item entfernt", { itemId });
     this.manager.removeItem(itemId);
@@ -1753,6 +1765,10 @@ export class AppController {
     if (this.downloadHealthTimer) {
       clearInterval(this.downloadHealthTimer);
       this.downloadHealthTimer = null;
+    }
+    if (this.failedExtractionCleanupTimer) {
+      clearInterval(this.failedExtractionCleanupTimer);
+      this.failedExtractionCleanupTimer = null;
     }
     this.manager.suspendDownloadHealthMonitoring?.();
     if (this.runtimeStatsTimer) {

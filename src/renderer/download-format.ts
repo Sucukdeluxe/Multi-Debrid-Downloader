@@ -76,7 +76,7 @@ export function formatAudioStripSummary(summary: AudioStripSummary): { text: str
 }
 
 export function formatSpeedMbps(speedBps: number): string {
-  return `${(Math.max(0, speedBps || 0) / (1024 * 1024)).toFixed(2)} MB/s`;
+  return `${(Math.max(0, speedBps || 0) / 1_000_000).toFixed(2)} MB/s`;
 }
 
 export function humanSize(bytes: number): string {

@@ -1,4 +1,9 @@
-export type McpScope = "read" | "control" | "files" | "transfer" | "secrets" | "updates";
+export const MCP_SCOPES = ["read", "control", "files", "transfer", "secrets", "updates", "extraction", "full_access"] as const;
+export type McpScope = typeof MCP_SCOPES[number];
+
+export function effectiveMcpScopes(scopes: readonly McpScope[]): McpScope[] {
+  return scopes.includes("full_access") ? [...MCP_SCOPES] : [...scopes];
+}
 
 export interface McpConfiguration {
   enabled: boolean;

@@ -695,7 +695,12 @@ function renameStatisticsFileSync(tempPath: string, filePath: string): void {
 }
 
 export function saveStatisticsLedger(filePath: string, ledger: StatisticsLedger): void {
-  statisticsSaveState(filePath).generation += 1;
+  const state = statisticsSaveState(filePath);
+  state.generation += 1;
+  if (state.committing) {
+    try { fs.unlinkSync(`${filePath}.async.tmp`); }
+    catch (error) { if (renameErrorCode(error) !== "ENOENT") throw error; }
+  }
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const tempPath = `${filePath}.tmp`;
   try {
@@ -715,6 +720,7 @@ interface StatisticsSave {
 
 interface StatisticsSaveState {
   generation: number;
+  committing: boolean;
   queued: StatisticsSave | null;
   active: Promise<void> | null;
 }
@@ -724,7 +730,7 @@ const statisticsSaves = new Map<string, StatisticsSaveState>();
 function statisticsSaveState(filePath: string): StatisticsSaveState {
   let state = statisticsSaves.get(filePath);
   if (!state) {
-    state = { generation: 0, queued: null, active: null };
+    state = { generation: 0, committing: false, queued: null, active: null };
     statisticsSaves.set(filePath, state);
   }
   return state;
@@ -739,11 +745,15 @@ async function writeStatisticsPayload(filePath: string, save: StatisticsSave, st
     for (let attempt = 0; ; attempt += 1) {
       if (save.generation !== state.generation) return;
       try {
-        runtimePerformance.measureSync("statistics.commit", () => fs.renameSync(tempPath, filePath));
+        state.committing = true;
+        await runtimePerformance.measure("statistics.commit", () => fsp.rename(tempPath, filePath));
         return;
       } catch (error) {
+        if (save.generation !== state.generation) return;
         if (!isTransientRenameError(error) || attempt >= renameRetryDelaysMs.length) throw error;
         await new Promise((resolve) => setTimeout(resolve, renameRetryDelaysMs[attempt]));
+      } finally {
+        state.committing = false;
       }
     }
   } finally {

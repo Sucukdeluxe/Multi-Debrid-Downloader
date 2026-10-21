@@ -440,6 +440,13 @@ function migrateUpdateRepo(raw: string, fallback: string): string {
   return trimmed;
 }
 
+const DECIMAL_SPEED_UNIT_VERSION = 2;
+
+function toDecimalSpeedKbps(value: unknown, unitVersion: unknown): number {
+  const numeric = Number(value) || 0;
+  return unitVersion === DECIMAL_SPEED_UNIT_VERSION ? numeric : Math.round(numeric * 1000 / 1024);
+}
+
 export function normalizeSettings(settings: AppSettings): AppSettings {
   const defaults = defaultSettings();
   const theme = VALID_THEMES.has(settings.theme) ? settings.theme : defaults.theme;
@@ -612,13 +619,14 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     autoResumeOnStart: Boolean(settings.autoResumeOnStart),
     autoReconnect: Boolean(settings.autoReconnect),
     maxParallel: clampNumber(settings.maxParallel, defaults.maxParallel, 1, 50),
+    spreadDownloadsAcrossPackages: settings.spreadDownloadsAcrossPackages === undefined ? defaults.spreadDownloadsAcrossPackages : Boolean(settings.spreadDownloadsAcrossPackages),
     maxParallelExtract: clampNumber(settings.maxParallelExtract, defaults.maxParallelExtract, 1, 8),
     retryLimit: clampNumber(settings.retryLimit, defaults.retryLimit, 0, 99),
     offlineSkipScope: settings.offlineSkipScope === "package" ? "package" : "archive",
     reconnectWaitSeconds: clampNumber(settings.reconnectWaitSeconds, defaults.reconnectWaitSeconds, 10, 600),
     completedCleanupPolicy: settings.completedCleanupPolicy,
     speedLimitEnabled: Boolean(settings.speedLimitEnabled),
-    speedLimitKbps: clampNumber(settings.speedLimitKbps, defaults.speedLimitKbps, 0, 500000),
+    speedLimitKbps: clampNumber(toDecimalSpeedKbps(settings.speedLimitKbps, settings.speedUnitVersion), defaults.speedLimitKbps, 0, 500000),
     speedLimitMode: settings.speedLimitMode,
     proxyDownloadEnabled: Boolean(settings.proxyDownloadEnabled),
     proxyListPath: asText(settings.proxyListPath).slice(0, 4096),
@@ -665,11 +673,14 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     totalRuntimeAllTimeMs: typeof settings.totalRuntimeAllTimeMs === "number" && settings.totalRuntimeAllTimeMs >= 0 ? settings.totalRuntimeAllTimeMs : defaults.totalRuntimeAllTimeMs,
     theme,
     themePreference,
-    bandwidthSchedules: normalizeBandwidthSchedules(settings.bandwidthSchedules),
+    bandwidthSchedules: normalizeBandwidthSchedules(settings.bandwidthSchedules).map((entry) => ({ ...entry, speedLimitKbps: toDecimalSpeedKbps(entry.speedLimitKbps, settings.speedUnitVersion) })),
+    speedUnitVersion: DECIMAL_SPEED_UNIT_VERSION,
     columnOrder: normalizeColumnOrder(settings.columnOrder, settings.columnOrderVersion),
     columnOrderVersion: 3,
     extractCpuPriority: settings.extractCpuPriority,
     autoExtractWhenStopped: settings.autoExtractWhenStopped !== undefined ? Boolean(settings.autoExtractWhenStopped) : defaults.autoExtractWhenStopped,
+    downloadDiskReserveGb: clampNumber(settings.downloadDiskReserveGb, defaults.downloadDiskReserveGb, 0, 2000),
+    failedExtractionCleanupMinutes: clampNumber(settings.failedExtractionCleanupMinutes, defaults.failedExtractionCleanupMinutes, 0, 1440),
     disabledProviders: normalizeDisabledProviders(settings.disabledProviders),
     hosterRouting: normalizeHosterRouting(settings.hosterRouting, megaDebridPreferApi, megaDebridApiEnabled, megaDebridWebEnabled),
     providerDailyLimitBytes: normalizeProviderByteMap(
@@ -969,7 +980,8 @@ function readSettingsFile(filePath: string, contents?: string): LoadedSettingsFi
       themePreference: Object.prototype.hasOwnProperty.call(parsed, "themePreference")
         ? migrated.themePreference
         : VALID_THEMES.has(migrated.theme) ? migrated.theme : defaultSettings().themePreference,
-      columnOrderVersion: parsed.columnOrderVersion
+      columnOrderVersion: parsed.columnOrderVersion,
+      speedUnitVersion: parsed.speedUnitVersion
     } as AppSettings;
     if (!Object.prototype.hasOwnProperty.call(parsed, "megaDebridApiDisabledAccountIds")) {
       delete (mergedInput as Partial<AppSettings>).megaDebridApiDisabledAccountIds;
@@ -1401,6 +1413,7 @@ function readSessionFile(filePath: string): LoadedSessionFile | null {
 
 export function saveSettings(paths: StoragePaths, settings: AppSettings): void {
   syncSettingsSaveGeneration += 1;
+  invalidatePendingStorageCommits("settings");
   ensureBaseDir(paths.baseDir);
   const payloads = createSettingsSavePayloads(paths, settings);
   writeSettingsFileAtomically(`${paths.configFile}.bak`, payloads.backup);
@@ -1451,10 +1464,12 @@ async function writeSettingsPayload(paths: StoragePaths, settings: AppSettings, 
     return;
   }
   try {
-    runtimePerformance.measureSync("settings.commit", () => {
-      syncRenameWithExdevFallback(backupTempPath, `${paths.configFile}.bak`);
-      syncRenameWithExdevFallback(tempPath, paths.configFile);
-    });
+    await commitStorageFile(backupTempPath, `${paths.configFile}.bak`, generation, "settings");
+    if (generation < syncSettingsSaveGeneration) {
+      await fsp.rm(tempPath, { force: true }).catch(() => {});
+      return;
+    }
+    await commitStorageFile(tempPath, paths.configFile, generation, "settings");
   } catch (error) {
     await Promise.all([
       fsp.rm(backupTempPath, { force: true }).catch(() => {}),
@@ -1616,6 +1631,7 @@ export function loadSession(paths: StoragePaths): SessionState {
 
 export function saveSession(paths: StoragePaths, session: SessionState): void {
   syncSaveGeneration += 1;
+  invalidatePendingStorageCommits("session");
   ensureBaseDir(paths.baseDir);
   if (fs.existsSync(paths.sessionFile)) {
     try {
@@ -1650,6 +1666,29 @@ interface QueuedSessionSave {
 let asyncSaveQueued: QueuedSessionSave | null = null;
 let syncSaveGeneration = 0;
 let activeSessionSave: Promise<void> | null = null;
+const pendingSessionCommits = new Set<string>();
+const pendingSettingsCommits = new Set<string>();
+
+function invalidatePendingStorageCommits(kind: "session" | "settings"): void {
+  for (const source of kind === "session" ? pendingSessionCommits : pendingSettingsCommits) {
+    try { fs.unlinkSync(source); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  }
+}
+
+async function commitStorageFile(source: string, destination: string, generation: number, kind: "session" | "settings"): Promise<void> {
+  const currentGeneration = () => kind === "session" ? syncSaveGeneration : syncSettingsSaveGeneration;
+  const pending = kind === "session" ? pendingSessionCommits : pendingSettingsCommits;
+  if (generation < currentGeneration()) return;
+  pending.add(source);
+  try {
+    await runtimePerformance.measure(`${kind}.commit`, () => fsp.rename(source, destination));
+  } catch (error) {
+    if (generation >= currentGeneration()) throw error;
+  } finally {
+    pending.delete(source);
+  }
+}
 
 async function writeSessionPayload(paths: StoragePaths, payload: string, generation: number): Promise<void> {
   await fs.promises.mkdir(paths.baseDir, { recursive: true });
@@ -1683,13 +1722,17 @@ async function writeSessionPayload(paths: StoragePaths, payload: string, generat
   let backupCleanup: Promise<void> | null = null;
   if (backupReady) {
     try {
-      runtimePerformance.measureSync("session.commit", () => syncRenameWithExdevFallback(backupTempPath, sessionBackupPath(paths.sessionFile)));
+      await commitStorageFile(backupTempPath, sessionBackupPath(paths.sessionFile), generation, "session");
     } catch {
       backupCleanup = fsp.rm(backupTempPath, { force: true }).catch(() => {});
     }
   }
   try {
-    runtimePerformance.measureSync("session.commit", () => syncRenameWithExdevFallback(tempPath, paths.sessionFile));
+    if (generation < syncSaveGeneration) {
+      await fsp.rm(tempPath, { force: true }).catch(() => {});
+      return;
+    }
+    await commitStorageFile(tempPath, paths.sessionFile, generation, "session");
   } catch (error) {
     await fsp.rm(tempPath, { force: true }).catch(() => {});
     throw error;
@@ -1964,6 +2007,8 @@ export async function acquirePersistenceBarrier(): Promise<PersistenceBarrier> {
 export function cancelPendingAsyncSaves(): void {
   syncSettingsSaveGeneration += 1;
   syncSaveGeneration += 1;
+  invalidatePendingStorageCommits("session");
+  invalidatePendingStorageCommits("settings");
   const detached = detachPendingAsyncSaves();
   detached.session?.waiters.forEach((waiter) => waiter.resolve());
   detached.settings?.waiters.forEach((waiter) => waiter.resolve());

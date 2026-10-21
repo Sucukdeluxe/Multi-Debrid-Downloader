@@ -959,7 +959,7 @@ const emptySnapshot = (): UiSnapshot => ({
     cleanupMode: "none", extractConflictMode: "overwrite", removeLinkFilesAfterExtract: false,
     removeSamplesAfterExtract: false, enableIntegrityCheck: true, autoResumeOnStart: true,
     autoReconnect: false, reconnectWaitSeconds: 45, completedCleanupPolicy: "never",
-    maxParallel: 4, maxParallelExtract: 2, extractCpuPriority: "high", retryLimit: 0, offlineSkipScope: "archive", speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
+    maxParallel: 4, spreadDownloadsAcrossPackages: true, maxParallelExtract: 2, extractCpuPriority: "high", retryLimit: 0, offlineSkipScope: "archive", speedLimitEnabled: false, speedLimitKbps: 0, speedLimitMode: "global",
     proxyDownloadEnabled: false, proxyListPath: "", proxyApiProxyIndex: 1, proxyConnectionsPerDownload: 32,
     updateRepo: "", autoUpdateCheck: true, clipboardWatch: false, switchToCollectorOnClipboard: false, minimizeToTray: false,
     theme: "dark", themePreference: "dark", logStorageLocation: "appdata", collapseNewPackages: true, animatePackageDisclosure: true, historyRetentionMode: "permanent", historyMaxEntries: 500, historyMaxAgeDays: 0, autoSortPackagesByProgress: false, autoSkipExtracted: false, hideExtractedItems: true, confirmDeleteSelection: true, backupIncludeDownloads: false, backupIncludeRemoteDiagnostics: false,
@@ -971,6 +971,8 @@ const emptySnapshot = (): UiSnapshot => ({
     columnOrder: ["name", "size", "progress", "hoster", "account", "prio", "status", "speed", "availability"],
     columnOrderVersion: 3,
     autoExtractWhenStopped: true,
+    downloadDiskReserveGb: 50,
+    failedExtractionCleanupMinutes: 10,
     disabledProviders: [],
     hosterRouting: {},
     providerDailyLimitBytes: {},
@@ -1324,8 +1326,9 @@ const BandwidthChart = memo(function BandwidthChart({ running, paused, speedHist
     for (const point of history) {
       if (point.speed > maxSpeed) maxSpeed = point.speed;
     }
-    maxSpeed = Math.max(maxSpeed, 1024 * 1024);
-    const niceMax = Math.pow(2, Math.ceil(Math.log2(maxSpeed)));
+    maxSpeed = Math.max(maxSpeed, 1_000_000);
+    const magnitude = Math.pow(10, Math.floor(Math.log10(maxSpeed)));
+    const niceMax = [1, 2, 5, 10].map((step) => step * magnitude).find((candidate) => candidate >= maxSpeed) ?? 10 * magnitude;
 
     ctx.font = `11px ${palette.fontFamily}`;
     let maxLabelWidth = 0;
@@ -1624,7 +1627,7 @@ const ALL_COLUMN_KEYS = ["name", "size", "progress", "hoster", "account", "prio"
 const COLUMN_DEFS = downloadColumnDefinitions;
 
 function formatMbpsInputFromKbps(kbps: number): string {
-  const mbps = Math.max(0, Number(kbps) || 0) / 1024;
+  const mbps = Math.max(0, Number(kbps) || 0) / 1000;
   return String(Number(mbps.toFixed(2)));
 }
 
@@ -4309,7 +4312,7 @@ export function App(): ReactElement {
     settingsDirtyRef.current = true;
     setSettingsDirty(true);
     setSettingsSaveState("dirty");
-    setSettingsDraft((prev) => ({ ...prev, speedLimitKbps: Math.floor(mbps * 1024) }));
+    setSettingsDraft((prev) => ({ ...prev, speedLimitKbps: Math.round(mbps * 1000) }));
   };
 
   const performQuickAction = async (
@@ -5631,8 +5634,9 @@ export function App(): ReactElement {
     section: settingsSubTab,
     speedLimitInput,
     scheduleSpeedInputs,
-    themeChoice: settingsThemeChoice
-  }), [scheduleSpeedInputs, settingsDraft, settingsSubTab, settingsThemeChoice, speedLimitInput]);
+    themeChoice: settingsThemeChoice,
+    proxyProbe: snapshot.networkProxyProbe
+  }), [scheduleSpeedInputs, settingsDraft, settingsSubTab, settingsThemeChoice, speedLimitInput, snapshot.networkProxyProbe]);
 
   const accountRowViewId = (row: AccountTableRow): string => buildAccountRowId(
     row.entry.service,
@@ -6019,7 +6023,9 @@ export function App(): ReactElement {
         maxParallelExtract: [1, 8, 2],
         reconnectWaitSeconds: [10, 600, 45],
         proxyApiProxyIndex: [1, 100000, 1],
-        proxyConnectionsPerDownload: [2, 80, 32]
+        proxyConnectionsPerDownload: [2, 80, 32],
+        downloadDiskReserveGb: [0, 2000, 50],
+        failedExtractionCleanupMinutes: [0, 1440, 10]
       };
       const bounds = numericLimits[fieldId as keyof RendererSettingsDraft];
       if (bounds) {
@@ -6041,7 +6047,7 @@ export function App(): ReactElement {
           setScheduleSpeedInputs((current) => ({ ...current, [key]: formatMbpsInputFromKbps(schedule.speedLimitKbps) }));
           return;
         }
-        const nextKbps = Math.floor(parsed * 1024);
+        const nextKbps = Math.round(parsed * 1000);
         setScheduleSpeedInputs((current) => ({ ...current, [key]: formatMbpsInputFromKbps(nextKbps) }));
         updateSchedule(index, "speedLimitKbps", nextKbps);
         return;
@@ -6053,7 +6059,7 @@ export function App(): ReactElement {
           return;
         }
         setSpeedLimitMbps(parsed);
-        setSpeedLimitInput(formatMbpsInputFromKbps(Math.floor(parsed * 1024)));
+        setSpeedLimitInput(formatMbpsInputFromKbps(Math.round(parsed * 1000)));
       }
     },
     onAction: (fieldId) => {
@@ -6528,7 +6534,7 @@ export function App(): ReactElement {
                         setSpeedLimitInput(formatMbpsInputFromKbps(settingsDraft.speedLimitKbps));
                         return;
                       }
-                      const kbps = Math.floor(parsed * 1024);
+                      const kbps = Math.round(parsed * 1000);
                       settingsDirtyRef.current = true;
                       const rev = ++settingsDraftRevisionRef.current;
                       setSettingsDraft((prev) => ({ ...prev, speedLimitKbps: kbps }));

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { NotificationEvent } from "./notification-outbox";
+import { formatSpeed } from "../shared/speed-format";
 
 export type DownloadHealthStatus =
   | "idle"
@@ -182,7 +183,7 @@ function recoveryEvent(
       fields: [
         { name: "Incident-Dauer", value: durationText(Math.max(0, now - state.incidentStartedAt)), inline: true },
         { name: "Aktive Downloads", value: String(snapshot.activeTasks), inline: true },
-        { name: "Aktuelle Geschwindigkeit", value: `${byteText(snapshot.currentSpeedBps)}/s`, inline: true }
+        { name: "Aktuelle Geschwindigkeit", value: formatSpeed(snapshot.currentSpeedBps), inline: true }
       ]
     }
   };
@@ -437,6 +438,18 @@ export function saveDownloadHealthState(filePath: string, state: DownloadHealthS
   }
 }
 
+export async function saveDownloadHealthStateAsync(filePath: string, state: DownloadHealthState): Promise<void> {
+  await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.tmp`;
+  try {
+    await fs.promises.writeFile(tempPath, JSON.stringify(persistedState(state)), "utf8");
+    await fs.promises.rename(tempPath, filePath);
+  } catch (error) {
+    await fs.promises.rm(tempPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
 export function loadDownloadHealthState(filePath: string): DownloadHealthState {
   try {
     const raw = JSON.parse(fs.readFileSync(filePath, "utf8")) as Record<string, unknown>;
@@ -503,7 +516,7 @@ export class DownloadHealthMonitor {
         cooldownUntil: acknowledgedAt + finiteInteger(cooldownMs),
         lastDeliveredStallEventId: eventId
       });
-      saveDownloadHealthState(this.filePath, this.state);
+      await saveDownloadHealthStateAsync(this.filePath, this.state);
     });
   }
 
@@ -518,7 +531,7 @@ export class DownloadHealthMonitor {
       for (const event of evaluation.events) {
         await enqueue(event);
       }
-      saveDownloadHealthState(this.filePath, evaluation.state);
+      await saveDownloadHealthStateAsync(this.filePath, evaluation.state);
       this.state = evaluation.state;
       return evaluation;
     });

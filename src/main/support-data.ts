@@ -164,6 +164,8 @@ export function buildRedactedSettingsPayload(settings: AppSettings): Record<stri
     extraction: {
       autoExtract: settings.autoExtract,
       autoExtractWhenStopped: settings.autoExtractWhenStopped,
+      downloadDiskReserveGb: settings.downloadDiskReserveGb,
+      failedExtractionCleanupMinutes: settings.failedExtractionCleanupMinutes,
       hybridExtract: settings.hybridExtract,
       createExtractSubfolder: settings.createExtractSubfolder,
       cleanupMode: settings.cleanupMode,
@@ -181,6 +183,7 @@ export function buildRedactedSettingsPayload(settings: AppSettings): Record<stri
     },
     downloads: {
       maxParallel: settings.maxParallel,
+      spreadDownloadsAcrossPackages: settings.spreadDownloadsAcrossPackages,
       retryLimit: settings.retryLimit,
       autoResumeOnStart: settings.autoResumeOnStart,
       autoReconnect: settings.autoReconnect,

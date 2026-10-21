@@ -12,8 +12,14 @@ import { getRecentErrors } from "../error-ring";
 import { getLogFilePath } from "../logger";
 import { getSessionLogPath } from "../session-log";
 import { getConversionLogPath } from "../conversion-trace";
-import { getNetworkProxyState } from "../network-proxy";
-import { getWindowsHostDiagnostics } from "../windows-host-diagnostics";
+import { getNetworkProxyProbe, getNetworkProxyState } from "../network-proxy";
+import { getWindowsHostDiagnosticsAsync } from "../windows-host-diagnostics";
+import { sampleHostResources } from "../host-resources";
+import { startStorageProbe, getStorageProbe, cancelStorageProbe } from "../storage-probe";
+import type { WindowsMaintenance, MaintenanceRequest } from "../windows-maintenance";
+import { extractionLimiter } from "../extraction-limiter";
+import { rendererPerformance } from "../renderer-performance";
+import { getProcessingBudget, setProcessingBudget } from "../processing-budget";
 import { runtimePerformance } from "../runtime-performance";
 import { getProxyTransferSnapshot } from "../proxy-segmented-download";
 import type { AddLinksPayload, DebridProvider, PackagePriority, RendererSettingsUpdate } from "../../shared/types";
@@ -68,6 +74,7 @@ export interface McpToolDependencies {
   getInstallationId?(): string;
   updates: Pick<McpUpdateJobs, "start" | "status">;
   installerUploads?: Pick<McpInstallerUploads, "begin" | "chunk" | "status" | "commit" | "cancel">;
+  windowsMaintenance?: Pick<WindowsMaintenance, "get" | "start">;
   updateSettings(patch: RendererSettingsUpdate): Promise<unknown>;
   start?(): Promise<void>;
   accountsChanged?(): void;
@@ -97,7 +104,7 @@ export function createMcpTools(deps: McpToolDependencies): McpTool[] {
   }
   read("status", "Read application version, transfer status and counts without returning the whole queue.", object(), () => {
     const current = snapshot();
-    return { version: c.getVersion(), session: { ...current.session, packages: undefined, items: undefined }, packageCount: Object.keys(current.session.packages).length, itemCount: Object.keys(current.session.items).length, stats: c.getSessionStats(), proxy: getNetworkProxyState() };
+    return { version: c.getVersion(), session: { ...current.session, packages: undefined, items: undefined }, packageCount: Object.keys(current.session.packages).length, itemCount: Object.keys(current.session.items).length, stats: c.getSessionStats(), proxy: { ...getNetworkProxyState(), probe: getNetworkProxyProbe() } };
   });
   read("packages_list", "List packages with bounded pagination. Use IDs for actions.", object(page, []), args => paginate(Object.values(snapshot().session.packages), args));
   read("items_list", "List individual downloads, filtered by package or status, with bounded pagination.", object({ ...page, packageId: str(), status: str(50) }, []), args => paginate(Object.values(snapshot().session.items).filter(item => (!args.packageId || item.packageId === args.packageId) && (!args.status || item.status === args.status)), args));
@@ -106,10 +113,31 @@ export function createMcpTools(deps: McpToolDependencies): McpTool[] {
   read("settings_get", "Read non-secret settings. Secret values are never returned.", object(), () => createRendererSettings(c.getSettings()));
   read("accounts_list", "Read accounts and their known validation and usage status; credentials remain masked.", object(page, []), args => paginate(createRendererAccounts(c.getSettings()), args));
   read("providers", "Read provider runtime cooldowns, capacity and routing information.", object(), () => getProviderRuntimeSnapshot());
-  read("performance", "Read bounded main-thread delay, CPU, memory, disk timings and connection/readback queue occupancy from memory without running host commands.", object(), () => ({ ...runtimePerformance.snapshot(), proxyTransfers: getProxyTransferSnapshot() }));
+  read("performance", "Read bounded main-thread delay, CPU, memory, disk timings and connection/readback/extraction queue occupancy from memory without running host commands.", object(), () => ({ ...runtimePerformance.snapshot(), threadpoolSize: Number(process.env.UV_THREADPOOL_SIZE) || 4, proxyTransfers: getProxyTransferSnapshot(), extraction: extractionLimiter.snapshot() }));
   read("errors", "Read the latest application warnings and errors.", object({ limit: integer(500, 1) }, []), args => getRecentErrors().slice(-Number(args.limit || 100)));
+  read("renderer_performance", "Read bounded renderer long-task, visible scroll-frame and state-update measurements. Hidden or missing samples do not prove a freeze; frame gaps also depend on display and remote desktop scheduling.", object(), () => rendererPerformance.snapshot());
+  read("processing_budget", "Read active and waiting download file-I/O and video-processing slots. The legacy downloadWrites field covers both writes and integrity readback.", object(), () => getProcessingBudget());
+  write("processing_budget_set", "Adjust bounded in-memory download file-I/O and video-processing concurrency. downloadWrites covers writes and integrity readback together. Does not abort running work or persist settings; defaults return after restart.", object({ downloadWrites: integer(32, 1), remux: integer(4, 1) }, []), args => setProcessingBudget(args), { idempotent: true });
   read("diagnostics", "Run the existing local diagnostic checks. Does not change downloads.", object(), () => c.getDebugSetupCheck());
-  read("host_diagnostics", "Read bounded Windows crash and host diagnostic information.", object(), () => getWindowsHostDiagnostics());
+  read("host_diagnostics", "Read bounded Windows crash and host diagnostic information.", object(), () => getWindowsHostDiagnosticsAsync());
+  read("host_resources", "Sample Windows disk, network, memory and CPU counters for a bounded number of seconds, plus EC2 instance metadata when available. Read-only.", object({ seconds: integer(90, 1) }, []), args => sampleHostResources(Number(args.seconds || 15)));
+  read("storage_inspect", "Start a bounded background read-only inspection of Windows storage drivers, recent disk errors, memory policy and filters. Poll storage_probe_get. No arbitrary commands.", object(), () => startStorageProbe("inspect"));
+  write("storage_file_test", "Start a bounded background test using only new temporary files: 128 MiB sequential and strided writes, explicit flush and full hash readback. Cleans its own files only. Poll storage_probe_get.", object(), () => startStorageProbe("file-test"));
+  read("storage_probe_get", "Read the latest bounded storage inspection or temporary-file test result.", object(), () => getStorageProbe());
+  if (deps.windowsMaintenance) {
+    const maintenance = deps.windowsMaintenance;
+    read("windows_maintenance_get", "Read a persistent Windows maintenance job. A disconnect is not proof of successful installation or reboot.", object({ jobId: str(36) }, []), args => maintenance.get(args.jobId as string | undefined));
+    add("windows_maintenance_start", "Run fixed Windows Server 2022 maintenance: scan enables disabled update services after backing up their state; install uses only exact identities from a completed scan; package downloads one Windows cumulative update MSU from the Microsoft Update Catalog download host, verifies size, SHA-256, catalog SHA-1 and a valid Microsoft Authenticode signature, extracts its signed servicing stack and cumulative update CABs and installs them in that order with DISM without restart; restore returns a saved service state; abort stops only an explicitly identified, demonstrably stale installing job after recording the reason and may reference its completed scan job for service restoration; reboot requires an installation or package job reporting rebootRequired. Requires explicit user authorization and a full VM backup. No arbitrary commands, drivers, security exclusions or forced reboot. All application processing must be stopped.", object({ action: { type: "string", enum: ["scan", "install", "package", "restore", "abort", "reboot"] }, requestKey: str(100), expectedBuild: { type: "string", enum: ["20348"] }, backupConfirmed: { type: "boolean" }, scanId: str(36), updates: { type: "array", minItems: 1, maxItems: 100, items: object({ id: str(36), revision: integer(2147483647, 1) }) }, sourceJobId: str(36), package: object({ kb: str(9), url: str(300), sha256: str(64), size: integer(4294967296, 1) }) }, ["action", "requestKey", "expectedBuild", "backupConfirmed"]), ["control", "updates"], args => {
+      const budget = getProcessingBudget();
+      const extraction = extractionLimiter.snapshot();
+      if (snapshot().session.running || c.getSessionStats().activeDownloads || extraction.active || extraction.waiting || Object.values(budget).some(stage => stage.active || stage.waiting) || getStorageProbe().state === "running" || runtimePerformance.snapshot().active.length) throw Error("Downloads und Nachbearbeitung müssen vor der Windows-Wartung vollständig angehalten sein.");
+      return maintenance.start(args as unknown as MaintenanceRequest);
+    }, { destructive: true, confirmationBypassScope: "updates" });
+  }
+  read("storage_windows_detail", "Inspect NTFS, TRIM, driver policy, active tasks and sample process I/O for ten seconds in a separate process. No settings changes. Poll storage_probe_get.", object(), () => startStorageProbe("windows-detail"));
+  write("storage_native_test", "Test independent Windows .NET file I/O with up to 64 MiB buffered and write-through writes and complete hash readback, only on private temporary files. Poll storage_probe_get.", object(), () => startStorageProbe("native-file-test"));
+  write("storage_defender_trace", "Record Defender scan activity for twenty seconds if timed recording is supported. Does not change protection or exclusions. Its bounded recording finishes even after cancellation. Poll storage_probe_get.", object(), () => startStorageProbe("defender-trace"));
+  write("storage_probe_cancel", "Request cancellation of the current storage probe and cleanup of its own temporary files.", object(), () => cancelStorageProbe(), { idempotent: true });
   read("notifications", "Read notification queue and incident status without webhook credentials.", object(), () => c.getNotificationSupportPayload());
   read("trace_get", "Read temporary diagnostic trace configuration.", object(), () => c.getTraceConfig());
   write("trace_set", "Enable a time-limited diagnostic trace or disable it.", object({ enabled: { type: "boolean" }, minutes: integer(120, 1) }, ["enabled"]), args => c.setTraceEnabled(Boolean(args.enabled), "MCP", Number(args.minutes || 15) * 60_000), { idempotent: true });
@@ -139,10 +167,11 @@ export function createMcpTools(deps: McpToolDependencies): McpTool[] {
   write("items_reset", "Reset only explicitly selected entries. Requires confirmation.", object({ itemIds: ids }), args => c.resetItems(mustItems(args.itemIds)), { destructive: true });
   write("items_skip", "Skip selected file entries.", object({ itemIds: ids }), args => c.skipItems(mustItems(args.itemIds)), { destructive: true });
   write("item_remove", "Remove one file entry using the existing app action. Requires confirmation.", object({ itemId: str() }), args => c.removeItem(mustItems([String(args.itemId)])[0]), { destructive: true });
+  write("failed_extractions_remove", "Remove only explicitly selected, settled extraction-error entries. Preserve archive and extracted files. Reject the entire selection if any entry is healthy or still processing. Requires local confirmation.", object({ itemIds: ids }, ["itemIds"]), args => c.removeFailedExtractions(mustItems(args.itemIds)), { destructive: true });
   write("offline_remove", "Remove offline archives or packages from the queue according to explicit scope.", object({ packageIds: ids, scope: { type: "string", enum: ["archive", "package"] } }), args => c.removeOfflinePackages(mustPackages(args.packageIds), args.scope as "archive" | "package"), { destructive: true });
   write("queue_clear", "Clear the complete queue through the existing application action. Requires confirmation.", object(), () => c.clearAll(), { destructive: true });
-  write("extract_retry", "Retry failed extraction using the existing extraction and recovery logic.", object({ packageId: str() }), args => c.retryExtraction(mustPackage(args.packageId)), { destructive: true });
-  write("extract_now", "Start extraction through the existing app logic and conflict settings.", object({ packageId: str() }), args => c.extractNow(mustPackage(args.packageId)), { destructive: true });
+  write("extract_retry", "Retry failed extraction using the existing extraction and recovery logic. Local confirmation is required unless the separate extraction permission is enabled locally. Configured conflict and cleanup rules still apply.", object({ packageId: str() }), args => c.retryExtraction(mustPackage(args.packageId)), { destructive: true, confirmationBypassScope: "extraction" });
+  write("extract_now", "Start extraction through the existing app logic and conflict settings. Local confirmation is required unless the separate extraction permission is enabled locally. Integrity checks and configured cleanup rules still apply.", object({ packageId: str() }), args => c.extractNow(mustPackage(args.packageId)), { destructive: true, confirmationBypassScope: "extraction" });
   write("history_remove", "Remove selected history records. Does not request arbitrary filesystem deletion.", object({ entryIds: ids }), args => { const known = new Set(c.getHistory().map(entry => entry.id)); if ((args.entryIds as string[]).some(id => !known.has(id))) throw new Error("Verlaufseintrag nicht gefunden."); return c.removeHistoryEntries(args.entryIds as string[]); }, { destructive: true });
   write("history_clear", "Clear persisted history. Requires confirmation.", object(), () => c.clearHistory(), { destructive: true });
   write("statistics_reset", "Reset session or all-time download statistics.", object({ scope: { type: "string", enum: ["session", "all-time"] } }), args => args.scope === "session" ? c.resetSessionStats() : c.resetDownloadStats(), { destructive: true });

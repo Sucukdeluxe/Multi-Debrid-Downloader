@@ -29,7 +29,7 @@ export function hasPendingDiagnosticLogWrites(filePath: string): boolean {
   return writes.has(filePath);
 }
 
-export function appendDiagnosticLog(filePath: string, text: string, maxBytes?: number): Promise<void> {
+export function appendDiagnosticLog(filePath: string, text: string, maxBytes?: number, headerIfMissing?: string): Promise<void> {
   const bytes = Buffer.byteLength(text, "utf8");
   if (pendingBytes + bytes > MAX_PENDING_BYTES) {
     droppedBytes += bytes;
@@ -55,12 +55,20 @@ export function appendDiagnosticLog(filePath: string, text: string, maxBytes?: n
             if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
           }
         }
+        let output = text;
+        if (headerIfMissing) {
+          try {
+            await fs.promises.access(filePath);
+          } catch {
+            output = headerIfMissing + text;
+          }
+        }
         try {
-          await fs.promises.appendFile(filePath, text, { encoding: "utf8", mode: 0o600 });
+          await fs.promises.appendFile(filePath, output, { encoding: "utf8", mode: 0o600 });
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
           await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-          await fs.promises.appendFile(filePath, text, { encoding: "utf8", mode: 0o600 });
+          await fs.promises.appendFile(filePath, output, { encoding: "utf8", mode: 0o600 });
         }
       });
     } finally {

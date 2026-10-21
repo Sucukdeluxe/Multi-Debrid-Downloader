@@ -3,6 +3,19 @@ export const DOWNLOAD_FILE_ROW_HEIGHT = 38;
 export const DOWNLOAD_VIRTUAL_OVERSCAN_ROWS = 8;
 export const DOWNLOAD_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT = 720;
 
+export function getDownloadViewportOverscanRows(viewportHeight: number): number {
+  const height = Number.isFinite(viewportHeight) && viewportHeight > 0 ? viewportHeight : DOWNLOAD_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT;
+  return Math.max(DOWNLOAD_VIRTUAL_OVERSCAN_ROWS, Math.ceil(height / DOWNLOAD_FILE_ROW_HEIGHT));
+}
+
+export function shouldAdvanceDownloadRenderWindow(
+  current: { scrollTop: number; viewportHeight: number },
+  next: { scrollTop: number; viewportHeight: number }
+): boolean {
+  return current.viewportHeight !== next.viewportHeight
+    || Math.abs(current.scrollTop - next.scrollTop) >= Math.max(DOWNLOAD_FILE_ROW_HEIGHT, next.viewportHeight / 2);
+}
+
 export interface DownloadVirtualRowInput {
   id: string;
   height: number;

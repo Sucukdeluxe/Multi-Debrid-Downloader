@@ -1,8 +1,9 @@
 import fs from "node:fs";
+import { withProcessingBudget } from "./processing-budget";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawnHosted } from "./process-host";
 
 // Removes only-German audio handling for "Dual Language" (.DL.) scene releases.
 // Mirrors the user's ffmpeg script but adds: language-tag detection (with safe
@@ -289,7 +290,7 @@ function killChildTree(child: { pid?: number; kill: () => void }): void {
   const pid = Number(child.pid || 0);
   if (process.platform === "win32" && Number.isFinite(pid) && pid > 0) {
     try {
-      const killer = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+      const killer = spawnHosted("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
       killer.on("error", () => { try { child.kill(); } catch {} });
       return;
     } catch {
@@ -318,8 +319,8 @@ export function runVideoProcess(
     let aborted = false;
     let timeoutId: NodeJS.Timeout | null = null;
 
-    const child = spawn(command, args, { windowsHide: true });
-    applyChildPriority(child.pid, cpuPriority);
+    const child = spawnHosted(command, args, { windowsHide: true });
+    child.once("spawn", () => applyChildPriority(child.pid, cpuPriority));
 
     const onAbort = (): void => {
       aborted = true;
@@ -425,6 +426,15 @@ function uniqueTempPath(filePath: string): string {
 }
 
 export async function processVideoFile(filePath: string, opts: ProcessVideoOptions, deps: ProcessVideoDeps = {}): Promise<VideoProcessResult> {
+  try {
+    return await withProcessingBudget("remux", opts.signal, () => processVideoFileWithSlot(filePath, opts, deps));
+  } catch (error) {
+    if (opts.signal?.aborted) return { action: "aborted", reason: "aborted" };
+    throw error;
+  }
+}
+
+async function processVideoFileWithSlot(filePath: string, opts: ProcessVideoOptions, deps: ProcessVideoDeps): Promise<VideoProcessResult> {
   const resolveTool = deps.resolveTooling || resolveVideoTooling;
   const run = deps.runProcess || runVideoProcess;
   if (opts.signal?.aborted) {

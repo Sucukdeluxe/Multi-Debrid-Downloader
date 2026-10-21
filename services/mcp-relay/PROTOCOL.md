@@ -52,6 +52,10 @@ Open may return a non-secret `reference`: `media-mcp-file:v1:` plus base64url JS
 
 `scripts/pull-mcp-file.mjs` provides a bounded-memory receiver. It reads the credential from a private file, not a command-line token, and writes an exclusive `.mcp-part` plus a token-free checkpoint. On explicit resume it verifies the local prefix and the unchanged source digest. Each block and the entire received file are verified; the file is reread from disk before publication. Final publication never overwrites an existing target. Original source files are never deleted or altered. A failed transfer keeps its local partial file for inspection or resume; it is not reported as complete.
 
+## Unattended extraction
+
+The downloader's optional local `extraction` permission requires `control` and is off by default. It waives individual confirmation only for `mdd_extract_now` and `mdd_extract_retry`. Both still validate package IDs and use the normal extractor, integrity checks, recovery, conflict and cleanup settings. Configured cleanup can remove successfully extracted source archives. Revoking the permission restores confirmation and queued actions recheck it before execution. Remote tools cannot grant this permission. Queue resets, unrelated deletions and backup restoration retain their own confirmations.
+
 ## Signed direct installer updates
 
 The downloader accepts publisher-signed installers through `update_upload_begin`, `update_upload_chunk`, `update_upload_status`, `update_upload_commit` and `update_upload_cancel`. All require locally enabled `control` and `updates` permissions. No caller-supplied paths, URLs or execution arguments are accepted. The installer is limited to 256 MiB and each canonical base64 block to 512 KiB. Uploads are owned by the authenticated principal and authorization generation; exact block retries are idempotent.

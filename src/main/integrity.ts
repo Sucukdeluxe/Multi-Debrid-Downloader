@@ -143,6 +143,51 @@ export function readHashManifest(packageDir: string): Map<string, ParsedHashEntr
   return map;
 }
 
+export async function readHashManifestAsync(packageDir: string): Promise<Map<string, ParsedHashEntry>> {
+  const cacheKey = path.resolve(packageDir);
+  const cached = manifestCache.get(cacheKey);
+  if (cached && Date.now() - cached.at <= MANIFEST_CACHE_TTL_MS) {
+    return new Map(cached.entries);
+  }
+  const map = new Map<string, ParsedHashEntry>();
+  const extensions = new Set([".sfv", ".md5", ".sha1"]);
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(packageDir, { withFileTypes: true });
+  } catch {
+    return map;
+  }
+  const manifestFiles = entries
+    .filter((entry) => entry.isFile() && extensions.has(path.extname(entry.name).toLowerCase()))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+  for (const entry of manifestFiles) {
+    const filePath = path.join(packageDir, entry.name);
+    let lines: string[];
+    try {
+      const stat = await fs.promises.stat(filePath);
+      if (stat.size > MAX_MANIFEST_FILE_BYTES) {
+        continue;
+      }
+      lines = (await fs.promises.readFile(filePath, "utf8")).split(/\r?\n/);
+    } catch {
+      continue;
+    }
+    for (const line of lines) {
+      const parsed = parseHashLine(line);
+      if (!parsed) {
+        continue;
+      }
+      const key = normalizeManifestKey(parsed.fileName);
+      if (!map.has(key)) {
+        map.set(key, parsed);
+      }
+    }
+  }
+  manifestCache.set(cacheKey, { at: Date.now(), entries: new Map(map) });
+  return map;
+}
+
+
 const crcTable = new Int32Array(256);
 for (let i = 0; i < 256; i++) {
   let c = i;
@@ -150,7 +195,7 @@ for (let i = 0; i < 256; i++) {
   crcTable[i] = c;
 }
 
-function crc32Buffer(data: Buffer, seed = 0): number {
+export function crc32Buffer(data: Buffer, seed = 0): number {
   let crc = seed ^ -1;
   for (let i = 0; i < data.length; i++) {
     crc = (crc >>> 8) ^ crcTable[(crc ^ data[i]) & 0xff];
@@ -182,7 +227,7 @@ export async function validateFileAgainstManifest(
   filePath: string,
   packageDir: string
 ): Promise<{ ok: boolean; checked: boolean; message: string }> {
-  const manifest = readHashManifest(packageDir);
+  const manifest = await readHashManifestAsync(packageDir);
   if (manifest.size === 0) {
     return { ok: true, checked: false, message: "Kein Hash verfügbar" };
   }

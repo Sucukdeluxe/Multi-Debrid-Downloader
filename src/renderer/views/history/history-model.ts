@@ -1,4 +1,5 @@
 import type { DebridProvider, HistoryEntry } from "../../../shared/types";
+import { formatSpeed } from "../../../shared/speed-format";
 
 export type HistoryFilter = "all" | "today" | "week" | "older" | "completed" | "partial" | "failed" | "cancelled" | "deleted";
 export type HistoryViewStatus = HistoryEntry["status"] | "failed";
@@ -388,7 +389,7 @@ function toHistoryRow(entry: HistoryViewEntry, language: HistoryLanguage): Histo
     startedLabel: formatTimestamp(startAt, language),
     completedLabel: formatTimestamp(entry.completedAt, language),
     durationLabel: formatHistoryDuration(downloadDurationSeconds),
-    averageSpeedLabel: downloadDurationSeconds > 0 ? `${formatBytes(averageBytesPerSecond, language)}/s` : "—",
+    averageSpeedLabel: downloadDurationSeconds > 0 ? formatSpeed(averageBytesPerSecond, language === "en" ? "en-US" : "de-DE") : "—",
     statusLabel: statusLabels[language][entry.status],
     hasStructuredLifecycle,
     downloadEndedLabel: formatTimestamp(entry.downloadEndedAt, language),

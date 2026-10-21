@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { app, safeStorage } from "electron";
 import type { AppController } from "../app-controller";
 import type { McpConfiguration, McpCredentials, McpScope, McpStatus } from "../../shared/mcp";
+import { effectiveMcpScopes, MCP_SCOPES } from "../../shared/mcp";
 import { collectAccountStatusRedactionValues } from "../account-status-sanitizer";
 import { getNetworkProxyState } from "../network-proxy";
 import { McpEndpoint } from "./endpoint";
@@ -16,6 +17,7 @@ import { McpUpdateJobs } from "./update-jobs";
 import { McpInstallerUploads } from "./installer-uploads";
 import { DEFAULT_UPDATE_REPO } from "../constants";
 import { normalizeUpdateRepo } from "../update";
+import { WindowsMaintenance } from "../windows-maintenance";
 
 const DEFAULT_RELAY = "https://downloader.24-music.de/mcp-relay";
 const defaults = (): McpConfiguration => ({ enabled: false, relayUrl: DEFAULT_RELAY, name: "Multi-Debrid-Downloader", scopes: ["read", "control", "files"], extraRoots: [] });
@@ -46,8 +48,10 @@ export class McpService {
   private closed = false;
   private updates: McpUpdateJobs;
   private installerUploads: McpInstallerUploads;
+  private windowsMaintenance: WindowsMaintenance;
   constructor(private options: McpServiceOptions) {
     this.directory = path.join(options.baseDir, "mcp");
+    this.windowsMaintenance = new WindowsMaintenance({ root: path.join(options.baseDir, "windows-maintenance") });
     this.updates = new McpUpdateJobs({
       directory: this.directory,
       version: () => options.controller.getVersion(),
@@ -101,10 +105,11 @@ export class McpService {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Ungültige MCP-Konfiguration.");
     const input = value as Record<string, unknown>;
     if (Object.keys(input).some(key => !["enabled", "relayUrl", "name", "scopes", "extraRoots"].includes(key)) || typeof input.enabled !== "boolean" || typeof input.name !== "string" || !input.name.trim() || input.name.length > 100 || !Array.isArray(input.scopes) || !Array.isArray(input.extraRoots) || input.extraRoots.length > 16) throw new Error("Ungültige MCP-Konfiguration.");
-    const allowed = new Set(["read", "control", "files", "transfer", "secrets", "updates"]);
+    const allowed = new Set<string>(MCP_SCOPES);
     if (input.scopes.some(scope => typeof scope !== "string" || !allowed.has(scope)) || !input.scopes.includes("read")) throw new Error("Ungültige MCP-Berechtigungen.");
     if (input.scopes.includes("transfer") && !input.scopes.includes("files")) throw new Error("Dateiübertragung benötigt die Dateiberechtigung.");
     if (input.scopes.includes("updates") && !input.scopes.includes("control")) throw new Error("Unbeaufsichtigte Updates benötigen die Steuerungsberechtigung.");
+    if (input.scopes.includes("extraction") && !input.scopes.includes("control")) throw new Error("Unbeaufsichtigtes Entpacken benötigt die Steuerungsberechtigung.");
     if (input.extraRoots.some(root => typeof root !== "string" || !path.isAbsolute(root) || !fs.statSync(root).isDirectory())) throw new Error("Zusätzliche Dateifreigaben müssen vorhandene absolute Ordner sein.");
     return { enabled: input.enabled, name: input.name.trim(), relayUrl: validateRelayUrl(String(input.relayUrl)), scopes: [...new Set(input.scopes)] as McpScope[], extraRoots: [...new Set(input.extraRoots as string[])] };
   }
@@ -133,7 +138,7 @@ export class McpService {
   getStatus(): McpStatus {
     return { ...this.config, scopes: [...this.config.scopes], extraRoots: [...this.config.extraRoots], connection: this.connection, installationId: this.secrets.current?.installationId || null, activeRequests: this.activeRequests, lastContactAt: this.lastContactAt, error: this.error, toolCount: this.toolsCount };
   }
-  private scopes(): McpScope[] { return !this.closed && this.config.enabled ? this.config.scopes : []; }
+  private scopes(): McpScope[] { return !this.closed && this.config.enabled ? effectiveMcpScopes(this.config.scopes) : []; }
   private redactions(): string[] {
     return [...collectAccountStatusRedactionValues(this.options.controller.getSettings()), ...[this.secrets.current, ...this.secrets.revocations].filter(Boolean).flatMap(entry => [entry!.agentToken, entry!.clientToken])];
   }
@@ -202,7 +207,7 @@ export class McpService {
       const settings = c.getSettings();
       return [{ id: "output", path: settings.outputDir }, { id: "extract", path: settings.extractDir }, { id: "library", path: settings.mkvLibraryDir }, { id: "logs", path: c.getLogDirectory(), logsOnly: true }, ...this.config.extraRoots.map((root, i) => ({ id: `extra-${i + 1}`, path: root }))];
     }, () => [path.dirname(this.options.baseDir), c.getLogDirectory()], () => [c.getSettings().proxyListPath]);
-    const tools = createMcpTools({ ...this.options, files, updates: this.updates, installerUploads: this.installerUploads, getScopes: () => this.scopes(), getSecrets: () => this.redactions(), getInstallationId: () => credentials.installationId });
+    const tools = createMcpTools({ ...this.options, files, windowsMaintenance: this.windowsMaintenance, updates: this.updates, installerUploads: this.installerUploads, getScopes: () => this.scopes(), getSecrets: () => this.redactions(), getInstallationId: () => credentials.installationId });
     this.toolsCount = tools.length;
     this.endpoint = new McpEndpoint({ name: "multi-debrid-downloader", version: c.getVersion(), tools, getScopes: () => this.scopes(), getSecrets: () => this.redactions(), confirm: this.options.confirm, audit: event => this.audit(event) });
     this.agent = new RelayAgent(credentials, this.endpoint, (state, count) => {

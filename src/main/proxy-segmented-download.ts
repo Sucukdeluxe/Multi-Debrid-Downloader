@@ -1,4 +1,6 @@
+import { setMaxListeners } from "node:events";
 import fs from "node:fs";
+import { withProcessingBudget } from "./processing-budget";
 import http from "node:http";
 import https from "node:https";
 import path from "node:path";
@@ -8,6 +10,7 @@ import type { IncomingMessage } from "node:http";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { runtimePerformance } from "./runtime-performance";
 import { ProxyReadbackLimiter } from "./proxy-readback-limiter";
+import { markFileSparse } from "./sparse-file";
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 const DEFAULT_IDLE_TIMEOUT_MS = 45_000;
@@ -15,6 +18,39 @@ const DEFAULT_MIN_SEGMENT_BYTES = 8 * 1024 * 1024;
 const DEFAULT_MAX_CHUNK_BYTES = 16 * 1024 * 1024;
 const DEFAULT_CHUNKS_PER_CONNECTION = 8;
 const DEFAULT_PROXY_ATTEMPTS = 3;
+const MIN_ATTEMPTS_WITH_SPARE_PROXIES = 8;
+
+function proxyAttemptBudget(configured: number, availableProxies: number): number {
+  return Math.max(1, Math.min(availableProxies, Math.max(configured, MIN_ATTEMPTS_WITH_SPARE_PROXIES)));
+}
+
+const DEFAULT_ORIGIN_THROTTLE_RETRY_BUDGET_MS = 90_000;
+const ORIGIN_THROTTLE_MAX_DELAY_MS = 15_000;
+
+function waitWithSignal(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(abortError());
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(abortError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+const CERTIFICATE_ERROR_CODE = /^(?:CERT_|ERR_TLS_CERT_|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_GET_ISSUER_CERT)/;
+
+function isOriginCertificateError(error: unknown): boolean {
+  const code = error && typeof error === "object" && "code" in error ? String((error as { code: unknown }).code || "") : "";
+  return CERTIFICATE_ERROR_CODE.test(code);
+}
 const DEFAULT_CONNECTION_LIMIT = 32;
 const MAX_CONNECTION_LIMIT = 80;
 const PROXY_PROBE_END = 1;
@@ -22,8 +58,8 @@ const MAX_REDIRECTS = 5;
 const MAX_SEGMENTS = 4_096;
 const MAX_PROXY_FILE_BYTES = 8 * 1024 * 1024;
 const SEGMENT_READBACK_BUFFER_BYTES = 1024 * 1024;
-const SEGMENT_WRITE_BUFFER_BYTES = 1024 * 1024;
-const SEGMENT_WRITE_FLUSH_INTERVAL_MS = 100;
+const SEGMENT_WRITE_BUFFER_BYTES = 4 * 1024 * 1024;
+const SEGMENT_WRITE_FLUSH_INTERVAL_MS = 500;
 const SUSPICIOUS_ZERO_RUN_BYTES = 1024;
 const MAX_ZERO_RUN_VERIFICATIONS_PER_SEGMENT = 4;
 const ZERO_RUN_SENTINEL = Buffer.alloc(SUSPICIOUS_ZERO_RUN_BYTES);
@@ -89,12 +125,18 @@ export interface ProxySegmentedDownloadOptions {
   connectTimeoutMs?: number;
   idleTimeoutMs?: number;
   proxyAttempts?: number;
+  originRetryBaseMs?: number;
+  originRetryBudgetMs?: number;
   waitWhilePaused?: () => Promise<void>;
+  throttle?: (bytes: number) => Promise<void>;
   onTrafficBytes?: (bytes: number) => void;
   onProgress?: (deltaBytes: number, downloadedBytes: number, totalBytes: number) => void;
   onValidationRetry?: (event: ProxySegmentValidationRetry) => void;
   onRepresentationRetry?: () => void;
+  onDiskActivity?: (active: boolean) => void;
 }
+
+type DiskOperation = <T>(operation: () => Promise<T>) => Promise<T>;
 
 export type ProxySegmentedDownloadResult =
   | { status: "completed"; totalBytes: number; connections: number }
@@ -159,6 +201,7 @@ interface ProxyLeaseOutcome {
   succeeded: boolean;
   transferredBytes?: number;
   durationMs?: number;
+  reason?: string;
 }
 
 interface ProxyLease {
@@ -201,6 +244,9 @@ export class SharedProxyCoordinator {
   private cooldownWakeAt: number | null = null;
   private readonly groupOrigins = new Map<string, string>();
   private readonly originThrottle = new Map<string, { limit: number; lastThrottleAt: number; successes: number }>();
+  private readonly failureReasons = new Map<string, number>();
+  private leaseSuccesses = 0;
+  private leaseFailures = 0;
 
   public snapshot() {
     return {
@@ -211,8 +257,20 @@ export class SharedProxyCoordinator {
       downloadGroups: this.registeredGroups.size,
       cooldownWakeAt: this.cooldownWakeAt,
       throttledAt: Math.max(this.lastThrottleAt, ...Array.from(this.originThrottle.values(), state => state.lastThrottleAt)) || null,
-      originLimits: Array.from(this.originThrottle, ([origin, state]) => ({ origin, limit: state.limit, active: this.activeForOrigin(origin), throttledAt: state.lastThrottleAt }))
+      originLimits: Array.from(this.originThrottle, ([origin, state]) => ({ origin, limit: state.limit, active: this.activeForOrigin(origin), throttledAt: state.lastThrottleAt })),
+      coolingProxies: this.countCoolingProxies(),
+      measuredProxies: this.performance.size,
+      leaseSuccesses: this.leaseSuccesses,
+      leaseFailures: this.leaseFailures,
+      failureReasons: Object.fromEntries(this.failureReasons)
     };
+  }
+
+  private countCoolingProxies(): number {
+    const now = Date.now();
+    let cooling = 0;
+    for (const until of this.cooldownUntil.values()) if (until > now) cooling += 1;
+    return cooling;
   }
 
   public setConnectionLimit(limit: number): void {
@@ -329,7 +387,9 @@ export class SharedProxyCoordinator {
     const originState = origin ? this.originThrottle.get(origin) : undefined;
     if (origin && originState && this.activeForOrigin(origin) >= originState.limit) return null;
     const groupCount = Math.max(1, this.registeredGroups.size);
-    const groupLimit = Math.max(1, Math.ceil(this.adaptiveConnectionLimit / groupCount));
+    const originGroupCount = originState ? Array.from(this.groupOrigins.values()).filter(value => value === origin).length : 0;
+    const originShare = originState ? Math.ceil(originState.limit / Math.max(1, originGroupCount)) : this.adaptiveConnectionLimit;
+    const groupLimit = Math.max(1, Math.min(Math.ceil(this.adaptiveConnectionLimit / groupCount), originShare));
     if (!borrowIdleCapacity && (this.activeConnectionsByGroup.get(waiter.groupId) || 0) >= groupLimit) {
       return null;
     }
@@ -405,6 +465,7 @@ export class SharedProxyCoordinator {
         released = true;
         releaseCapacity();
         if (outcome.succeeded) {
+          this.leaseSuccesses += 1;
           this.cooldownUntil.delete(key);
           if ((outcome.transferredBytes || 0) > 0 && (outcome.durationMs || 0) > 0) {
             const sample = ((outcome.transferredBytes || 0) * 1_000) / Math.max(1, outcome.durationMs || 1);
@@ -419,6 +480,9 @@ export class SharedProxyCoordinator {
             this.restoreAdaptiveCapacity(this.groupOrigins.get(groupId));
           }
         } else {
+          this.leaseFailures += 1;
+          const reason = String(outcome.reason || "unknown").slice(0, 60);
+          if (this.failureReasons.has(reason) || this.failureReasons.size < 40) this.failureReasons.set(reason, (this.failureReasons.get(reason) || 0) + 1);
           this.cooldownUntil.set(key, Date.now() + 30_000);
           const previous = this.performance.get(key);
           this.performance.set(key, {
@@ -444,8 +508,8 @@ export class SharedProxyCoordinator {
     const state = origin ? this.originThrottle.get(origin) : undefined;
     if (state) {
       state.successes += 1;
-      if (Date.now() - state.lastThrottleAt >= 5_000 && state.successes >= 24) {
-        state.limit = Math.min(this.configuredConnectionLimit, state.limit + 1);
+      if (Date.now() - state.lastThrottleAt >= 5_000 && state.successes >= Math.max(2, state.limit)) {
+        state.limit = Math.min(this.configuredConnectionLimit, state.limit + Math.max(1, Math.ceil(state.limit / 4)));
         state.successes = 0;
         if (state.limit >= this.configuredConnectionLimit) this.originThrottle.delete(origin!);
       }
@@ -514,9 +578,10 @@ export class SharedProxyCoordinator {
 
 const sharedProxyCoordinator = new SharedProxyCoordinator();
 const sharedReadbackLimiter = new ProxyReadbackLimiter(8);
+const sparseAllocations = { ok: 0, failed: 0 };
 
 export function getProxyTransferSnapshot() {
-  return { ...sharedProxyCoordinator.snapshot(), readback: sharedReadbackLimiter.snapshot() };
+  return { ...sharedProxyCoordinator.snapshot(), readback: sharedReadbackLimiter.snapshot(), sparseAllocations: { ...sparseAllocations }, representationChanges: representationChanges.map(entry => ({ ...entry })) };
 }
 
 interface ProxyConnectionEntry {
@@ -744,6 +809,13 @@ function parseContentRange(value: string | undefined): ParsedRange | null {
   return { start, end, total };
 }
 
+const representationChanges: Array<{ at: number; host: string; proxyId: number; expectedTotal: number; receivedTotal: number; rangeStart: number; rangeEnd: number; kind: string }> = [];
+
+function recordRepresentationChange(kind: string, target: URL, proxy: ProxyEndpoint, expectedTotal: number, range: ParsedRange): void {
+  representationChanges.push({ at: Date.now(), host: target.host, proxyId: proxy.id, expectedTotal, receivedTotal: range.total, rangeStart: range.start, rangeEnd: range.end, kind });
+  if (representationChanges.length > 20) representationChanges.shift();
+}
+
 function isChangedRepresentation(status: number, range: ParsedRange | null, start: number, end: number, total: number, contentLength: number): boolean {
   return status === 206 && range !== null && range.total !== total
     && range.start === start && range.end === Math.min(end, range.total - 1)
@@ -892,11 +964,12 @@ async function probeRangeSupport(
   | { status: "unavailable"; errorCode?: string }
   | { status: "origin_error"; httpStatus: number }
 > {
-  const attempts = Math.min(proxies.length, options.proxyAttempts);
+  const attempts = proxyAttemptBudget(options.proxyAttempts, proxies.length);
   const excluded = new Set<string>();
   let lastHttpStatus = 0;
+  let originFailures = 0;
   let lastErrorCode: string | undefined;
-  for (let index = 0; index < attempts; index += 1) {
+  for (let index = 0; index < attempts && originFailures < options.proxyAttempts; index += 1) {
     let opened: RangeResponse | null = null;
     let lease: ProxyLease | null = null;
     try {
@@ -914,8 +987,17 @@ async function probeRangeSupport(
         options.idleTimeoutMs
       );
       const status = opened.response.statusCode || 0;
+      if (status === 407) {
+        lastErrorCode = "http_407";
+        opened.dispose();
+        opened = null;
+        lease.release({ succeeded: false, reason: lastErrorCode });
+        lease = null;
+        continue;
+      }
       if (status >= 400) {
         lastHttpStatus = status;
+        originFailures += 1;
         opened.dispose();
         opened = null;
         lease.release({ succeeded: true });
@@ -941,7 +1023,7 @@ async function probeRangeSupport(
         lastErrorCode = "proxy_probe_range_mismatch";
         opened.dispose();
         opened = null;
-        lease.release({ succeeded: false });
+        lease.release({ succeeded: false, reason: lastErrorCode });
         lease = null;
         continue;
       }
@@ -958,7 +1040,7 @@ async function probeRangeSupport(
       lastErrorCode = proxyFailureCode(error);
       opened?.dispose();
       opened = null;
-      lease?.release({ succeeded: signal.aborted });
+      lease?.release({ succeeded: signal.aborted, reason: lastErrorCode });
       lease = null;
       if (signal.aborted) {
         throw abortError();
@@ -966,9 +1048,12 @@ async function probeRangeSupport(
       if (isDiskError(error)) {
         throw error;
       }
+      if (isOriginCertificateError(error)) {
+        break;
+      }
     } finally {
       opened?.dispose();
-      lease?.release({ succeeded: false });
+      lease?.release({ succeeded: false, reason: lastErrorCode || "proxy_probe_incomplete" });
     }
   }
   if (lastHttpStatus > 0) {
@@ -1056,23 +1141,22 @@ function collectSuspiciousZeroRanges(
 }
 
 async function hashFileRange(
-  filePath: string,
+  handle: fs.promises.FileHandle,
   start: number,
   length: number,
   signal: AbortSignal
 ): Promise<Buffer> {
-  const handle = await fs.promises.open(filePath, "r");
   const hash = createHash("sha256");
   const buffer = Buffer.allocUnsafe(Math.min(SEGMENT_READBACK_BUFFER_BYTES, Math.max(1, length)));
   let position = start;
   let remaining = length;
-  try {
     while (remaining > 0) {
       if (signal.aborted) {
         throw abortError();
       }
       const requested = Math.min(buffer.length, remaining);
-      const { bytesRead } = await handle.read(buffer, 0, requested, position);
+      const { bytesRead } = await withProcessingBudget("downloadWrites", signal, () =>
+        runtimePerformance.measure("proxy.readback.read", () => handle.read(buffer, 0, requested, position)));
       if (bytesRead <= 0) {
         throw new Error("proxy_segment_readback_underflow");
       }
@@ -1081,9 +1165,6 @@ async function hashFileRange(
       remaining -= bytesRead;
     }
     return hash.digest();
-  } finally {
-    await handle.close();
-  }
 }
 
 async function readRangeOnce(
@@ -1115,6 +1196,7 @@ async function readRangeOnce(
   const contentRange = parseContentRange(response.headers["content-range"]);
   const contentLength = Number(response.headers["content-length"] || 0);
   if (isChangedRepresentation(status, contentRange, range.start, range.end, totalBytes, contentLength)) {
+    recordRepresentationChange("verification", target, proxy, totalBytes, contentRange!);
     opened.dispose();
     throw new Error("proxy_representation_changed");
   }
@@ -1154,12 +1236,12 @@ async function readRangeOnce(
 
 async function downloadSegmentOnce(
   target: URL,
-  tempPath: string,
+  handle: fs.promises.FileHandle,
   segment: Segment,
   proxy: ProxyEndpoint,
   signal: AbortSignal,
   options: Required<Pick<ProxySegmentedDownloadOptions, "skipTlsVerify" | "connectTimeoutMs" | "idleTimeoutMs">>,
-  callbacks: Pick<ProxySegmentedDownloadOptions, "waitWhilePaused" | "onTrafficBytes" | "onProgress"> & { onTransferWritten?: () => void },
+  callbacks: Pick<ProxySegmentedDownloadOptions, "waitWhilePaused" | "throttle" | "onTrafficBytes" | "onProgress"> & { onTransferWritten?: () => void; withDiskActivity: DiskOperation },
   totalBytes: number,
   currentProgress: () => number
 ): Promise<SegmentDownloadOutcome> {
@@ -1183,6 +1265,7 @@ async function downloadSegmentOnce(
   const range = parseContentRange(response.headers["content-range"]);
   const contentLength = Number(response.headers["content-length"] || 0);
   if (isChangedRepresentation(status, range, segment.start, segment.end, totalBytes, contentLength)) {
+    recordRepresentationChange("segment", target, proxy, totalBytes, range!);
     opened.dispose();
     throw new Error("proxy_representation_changed");
   }
@@ -1196,13 +1279,6 @@ async function downloadSegmentOnce(
     throw new Error("proxy_range_mismatch");
   }
 
-  let handle: fs.promises.FileHandle;
-  try {
-    handle = await fs.promises.open(tempPath, "r+");
-  } catch (error) {
-    opened.dispose();
-    throw error;
-  }
   let received = 0;
   const receivedHash = createHash("sha256");
   const suspiciousZeroRanges: Segment[] = [];
@@ -1211,11 +1287,19 @@ async function downloadSegmentOnce(
   let bufferedBytes = 0;
   let writtenBytes = 0;
   let lastFlushAt = performance.now();
+  const setIdleTimeout = (ms: number): void => {
+    if (response.socket && !response.destroyed) response.setTimeout(ms);
+  };
   const flushBuffered = async (): Promise<void> => {
     if (!bufferedBytes) return;
     if (signal.aborted) throw abortError();
     const length = bufferedBytes;
-    await runtimePerformance.measure("proxy.write", () => writeBufferAt(handle, writeBuffer.subarray(0, length), segment.start + writtenBytes));
+    setIdleTimeout(0);
+    try {
+      await callbacks.withDiskActivity(() => withProcessingBudget("downloadWrites", signal, () => runtimePerformance.measure("proxy.write", () => writeBufferAt(handle, writeBuffer.subarray(0, length), segment.start + writtenBytes))));
+    } finally {
+      setIdleTimeout(options.idleTimeoutMs);
+    }
     writtenBytes += length;
     bufferedBytes = 0;
     lastFlushAt = performance.now();
@@ -1232,9 +1316,14 @@ async function downloadSegmentOnce(
         throw new Error("proxy_segment_overflow");
       }
       if (callbacks.waitWhilePaused) {
-        response.setTimeout(0);
+        setIdleTimeout(0);
         await callbacks.waitWhilePaused();
-        response.setTimeout(options.idleTimeoutMs);
+        setIdleTimeout(options.idleTimeoutMs);
+      }
+      if (callbacks.throttle) {
+        setIdleTimeout(0);
+        await callbacks.throttle(chunk.length);
+        setIdleTimeout(options.idleTimeoutMs);
       }
       receivedHash.update(chunk);
       trailingZeros = collectSuspiciousZeroRanges(
@@ -1261,16 +1350,16 @@ async function downloadSegmentOnce(
   } finally {
     opened.dispose();
     writeBuffer = Buffer.alloc(0);
-    await handle.close();
   }
   callbacks.onTransferWritten?.();
-  const releaseReadback = await runtimePerformance.measure("proxy.readback.wait", () => sharedReadbackLimiter.acquire(signal));
-  let writtenHash: Buffer;
-  try {
-    writtenHash = await runtimePerformance.measure("proxy.readback", () => hashFileRange(tempPath, segment.start, expectedBytes, signal));
-  } finally {
-    releaseReadback();
-  }
+  const writtenHash = await callbacks.withDiskActivity(async () => {
+    const releaseReadback = await runtimePerformance.measure("proxy.readback.wait", () => sharedReadbackLimiter.acquire(signal));
+    try {
+      return await runtimePerformance.measure("proxy.readback", () => hashFileRange(handle, segment.start, expectedBytes, signal));
+    } finally {
+      releaseReadback();
+    }
+  });
   const networkHash = receivedHash.digest();
   if (!timingSafeEqual(networkHash, writtenHash)) {
     throw new SegmentValidationError("readback_mismatch", segment.start, segment.end, segment);
@@ -1279,20 +1368,26 @@ async function downloadSegmentOnce(
 }
 
 export async function downloadWithProxySegments(options: ProxySegmentedDownloadOptions): Promise<ProxySegmentedDownloadResult> {
-  const result = await downloadWithProxySegmentsOnce(options);
+  let pendingDiskOperations = 0;
+  const withDiskActivity: DiskOperation = async (operation) => {
+    if (++pendingDiskOperations === 1) options.onDiskActivity?.(true);
+    try { return await operation(); }
+    finally { if (--pendingDiskOperations === 0) options.onDiskActivity?.(false); }
+  };
+  const result = await downloadWithProxySegmentsOnce(options, withDiskActivity);
   if (result.status !== "fallback" || result.errorCode !== "proxy_representation_changed") return result;
   if (options.signal.aborted) throw abortError();
   try { options.onRepresentationRetry?.(); } catch {}
   if (options.signal.aborted) throw abortError();
-  return downloadWithProxySegmentsOnce(options);
+  return downloadWithProxySegmentsOnce(options, withDiskActivity);
 }
 
-async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOptions): Promise<ProxySegmentedDownloadResult> {
+async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOptions, withDiskActivity: DiskOperation): Promise<ProxySegmentedDownloadResult> {
   const proxyPath = String(options.proxyListPath || "").trim();
   if (!proxyPath) {
     return { status: "fallback", reason: "proxy_file_unavailable" };
   }
-  const loaded = await loadProxyFile(proxyPath);
+  const loaded = await withDiskActivity(() => loadProxyFile(proxyPath));
   if (loaded.status === "unavailable") {
     return { status: "fallback", reason: "proxy_file_unavailable" };
   }
@@ -1328,7 +1423,9 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
     skipTlsVerify: Boolean(options.skipTlsVerify),
     connectTimeoutMs: Math.max(1_000, Math.floor(options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS)),
     idleTimeoutMs: Math.max(2_000, Math.floor(options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS)),
-    proxyAttempts: Math.max(1, Math.min(10, Math.floor(options.proxyAttempts ?? DEFAULT_PROXY_ATTEMPTS)))
+    proxyAttempts: Math.max(1, Math.min(10, Math.floor(options.proxyAttempts ?? DEFAULT_PROXY_ATTEMPTS))),
+    originRetryBaseMs: Math.max(1, Math.floor(options.originRetryBaseMs ?? 1_000)),
+    originRetryBudgetMs: Math.max(0, Math.floor(options.originRetryBudgetMs ?? DEFAULT_ORIGIN_THROTTLE_RETRY_BUDGET_MS))
   };
   const probe = await probeRangeSupport(target, poolKey, groupId, segmentProxies, options.signal, normalized, options.onTrafficBytes);
   if (probe.status === "unsupported") {
@@ -1350,13 +1447,13 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
     };
   }
 
-  await fs.promises.mkdir(path.dirname(options.targetPath), { recursive: true });
+  await withDiskActivity(() => fs.promises.mkdir(path.dirname(options.targetPath), { recursive: true }));
   try {
-    const targetStat = await fs.promises.stat(options.targetPath);
+    const targetStat = await withDiskActivity(() => fs.promises.stat(options.targetPath));
     if (targetStat.size > 0) {
       return { status: "fallback", reason: "segment_failed" };
     }
-    await fs.promises.rm(options.targetPath, { force: true });
+    await withDiskActivity(() => fs.promises.rm(options.targetPath, { force: true }));
   } catch (error) {
     const code = error && typeof error === "object" && "code" in error
       ? String((error as NodeJS.ErrnoException).code || "")
@@ -1368,30 +1465,36 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
   const tempPath = `${options.targetPath}.proxy-${process.pid}-${randomUUID()}.part`;
   let committedProgress = 0;
   let tempCreated = false;
+  let fileHandle: fs.promises.FileHandle | null = null;
   const updateProgress = (deltaBytes: number, _downloadedBytes: number, totalBytes: number): void => {
     committedProgress = Math.max(0, Math.min(totalBytes, committedProgress + deltaBytes));
     options.onProgress?.(deltaBytes, committedProgress, totalBytes);
   };
 
   try {
-    const initialHandle = await fs.promises.open(tempPath, "wx");
+    await withDiskActivity(async () => {
+    fileHandle = await fs.promises.open(tempPath, "wx+");
     tempCreated = true;
-    try {
-      await runtimePerformance.measure("proxy.allocate", () => initialHandle.truncate(probe.totalBytes));
-    } finally {
-      await initialHandle.close();
-    }
+      if (await markFileSparse(tempPath)) sparseAllocations.ok += 1;
+      else sparseAllocations.failed += 1;
+      await runtimePerformance.measure("proxy.allocate", () => fileHandle!.truncate(probe.totalBytes));
+    });
 
     const segments = buildSegments(probe.totalBytes, connections, minSegmentBytes);
     const segmentController = new AbortController();
     const cascadeAbort = (): void => segmentController.abort("parent_abort");
     options.signal.addEventListener("abort", cascadeAbort, { once: true });
     const signal = AbortSignal.any([options.signal, segmentController.signal]);
+    setMaxListeners(0, signal);
 
     const downloadSegment = async (segment: Segment): Promise<number> => {
       const excluded = new Set<string>();
       let lastError: unknown = null;
-      for (let attempt = 0; attempt < normalized.proxyAttempts; attempt += 1) {
+      const attempts = proxyAttemptBudget(normalized.proxyAttempts, segmentProxies.length);
+      let originFailures = 0;
+      let throttledSince = 0;
+      let throttleRetries = 0;
+      for (let attempt = 0; attempt < attempts && originFailures < normalized.proxyAttempts; attempt += 1) {
         if (signal.aborted) {
           throw abortError();
         }
@@ -1407,13 +1510,15 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
         try {
           const outcome = await downloadSegmentOnce(
             target,
-            tempPath,
+            fileHandle!,
             segment,
             primaryProxy,
             signal,
             normalized,
             {
               waitWhilePaused: options.waitWhilePaused,
+              throttle: options.throttle,
+              withDiskActivity,
               onTrafficBytes: options.onTrafficBytes,
               onTransferWritten: () => {
                 transferDurationMs = Math.max(1, Date.now() - startedAt);
@@ -1480,16 +1585,31 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
 
           return outcome.bytes;
         } catch (error) {
-          const originError = error instanceof OriginHttpError;
-          lease?.release({ succeeded: originError || signal.aborted });
+          const originError = error instanceof OriginHttpError && error.statusCode !== 407;
+          const representationChanged = error instanceof Error && error.message === "proxy_representation_changed";
+          lease?.release({ succeeded: originError || representationChanged || signal.aborted, reason: proxyFailureCode(error) });
           lease = null;
-          if (originError) {
-            sharedProxyCoordinator.reportOriginStatus(error.statusCode, target.origin);
-          }
           if (attemptProgress > 0) {
             updateProgress(-attemptProgress, committedProgress - attemptProgress, probe.totalBytes);
           }
-          if (options.signal.aborted || isDiskError(error)) {
+          if (originError) {
+            sharedProxyCoordinator.reportOriginStatus(error.statusCode, target.origin);
+            const now = Date.now();
+            if ((error.statusCode === 503 || error.statusCode === 429) && !options.signal.aborted) {
+              throttledSince ||= now;
+              if (now - throttledSince < normalized.originRetryBudgetMs) {
+                throttleRetries += 1;
+                excluded.delete(proxyEndpointKey(primaryProxy));
+                attempt -= 1;
+                lastError = error;
+                const delayMs = Math.min(ORIGIN_THROTTLE_MAX_DELAY_MS, normalized.originRetryBaseMs * 2 ** Math.min(throttleRetries - 1, 6));
+                await waitWithSignal(delayMs + Math.floor(Math.random() * Math.min(500, delayMs)), signal);
+                continue;
+              }
+            }
+            originFailures += 1;
+          }
+          if (options.signal.aborted || isDiskError(error) || isOriginCertificateError(error)) {
             throw error;
           }
           if (error instanceof SegmentValidationError) {
@@ -1553,19 +1673,18 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
       return { status: "fallback", reason: "segment_failed", errorCode: proxyFailureCode((primaryFailure || failed).reason) };
     }
 
-    const finalizedHandle = await fs.promises.open(tempPath, "r+");
-    try {
-      await runtimePerformance.measure("proxy.flush", () => finalizedHandle.datasync());
-    } finally {
-      await finalizedHandle.close();
-    }
-    const finalStat = await fs.promises.stat(tempPath);
+    return await withDiskActivity(async () => {
+    await runtimePerformance.measure("proxy.flush", () => fileHandle!.datasync());
+    const finalStat = await fileHandle!.stat();
     if (finalStat.size !== probe.totalBytes) {
-      return { status: "fallback", reason: "segment_failed" };
+      return { status: "fallback", reason: "segment_failed" } as const;
     }
+    await runtimePerformance.measure("proxy.close", () => fileHandle!.close());
+    fileHandle = null;
     await runtimePerformance.measure("proxy.commit", () => fs.promises.rename(tempPath, options.targetPath));
     tempCreated = false;
-    return { status: "completed", totalBytes: probe.totalBytes, connections };
+    return { status: "completed", totalBytes: probe.totalBytes, connections } as const;
+    });
   } catch (error) {
     if (options.signal.aborted || String(error).includes("aborted:proxy_download")) {
       throw abortError();
@@ -1575,9 +1694,13 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
     }
     return { status: "fallback", reason: "segment_failed", errorCode: proxyFailureCode(error) };
   } finally {
+    if (fileHandle) {
+      await withDiskActivity(() => runtimePerformance.measure("proxy.close", () => fileHandle!.close()));
+      fileHandle = null;
+    }
     if (tempCreated) {
       try {
-        await fs.promises.rm(tempPath, { force: true });
+        await withDiskActivity(() => fs.promises.rm(tempPath, { force: true }));
       } catch {
       }
     }

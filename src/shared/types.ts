@@ -210,6 +210,7 @@ export interface AppSettings extends DailyStartSettings, ProxyDownloadSettings {
   reconnectWaitSeconds: number;
   completedCleanupPolicy: FinishedCleanupPolicy;
   maxParallel: number;
+  spreadDownloadsAcrossPackages: boolean;
   maxParallelExtract: number;
   retryLimit: number;
   offlineSkipScope: OfflineSkipScope;
@@ -254,8 +255,11 @@ export interface AppSettings extends DailyStartSettings, ProxyDownloadSettings {
   bandwidthSchedules: BandwidthScheduleEntry[];
   columnOrder: string[];
   columnOrderVersion?: number;
+  speedUnitVersion?: number;
   extractCpuPriority: ExtractCpuPriority;
   autoExtractWhenStopped: boolean;
+  downloadDiskReserveGb: number;
+  failedExtractionCleanupMinutes: number;
   disabledProviders: DebridProvider[];
   hosterRouting: Record<string, DebridProvider>;
   providerDailyLimitBytes: Partial<Record<DebridProvider, number>>;
@@ -349,6 +353,7 @@ export interface RendererSettings extends DailyStartSettings, ProxyDownloadSetti
   reconnectWaitSeconds: number;
   completedCleanupPolicy: FinishedCleanupPolicy;
   maxParallel: number;
+  spreadDownloadsAcrossPackages: boolean;
   maxParallelExtract: number;
   retryLimit: number;
   offlineSkipScope: OfflineSkipScope;
@@ -394,8 +399,11 @@ export interface RendererSettings extends DailyStartSettings, ProxyDownloadSetti
   bandwidthSchedules: BandwidthScheduleEntry[];
   columnOrder: string[];
   columnOrderVersion?: number;
+  speedUnitVersion?: number;
   extractCpuPriority: ExtractCpuPriority;
   autoExtractWhenStopped: boolean;
+  downloadDiskReserveGb: number;
+  failedExtractionCleanupMinutes: number;
   disabledProviders: DebridProvider[];
   hosterRouting: Record<string, DebridProvider>;
   providerDailyLimitBytes: Partial<Record<DebridProvider, number>>;
@@ -701,6 +709,14 @@ export interface AccountRuntimeEntry {
   dailyUsageBytes: number;
 }
 
+export interface NetworkProxyProbe {
+  status: "checking" | "reachable" | "auth_required" | "rejected" | "unreachable";
+  proxy: string;
+  checkedAt: number;
+  httpStatus?: number;
+  code?: string;
+}
+
 export interface UiSnapshot {
   settings: RendererSettings;
   accounts: RendererAccount[];
@@ -734,6 +750,7 @@ export interface UiSnapshot {
   removedPackageIds?: string[];
   rotationEvents?: RotationEvent[];
   accountRuntime?: AccountRuntimeEntry[];
+  networkProxyProbe?: NetworkProxyProbe | null;
 }
 
 export interface AddLinksPayload {

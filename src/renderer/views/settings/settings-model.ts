@@ -1,4 +1,4 @@
-import type { RendererSettings } from "../../../shared/types";
+import type { NetworkProxyProbe, RendererSettings } from "../../../shared/types";
 import type { AccountService } from "../../account-edit";
 import { ACCOUNT_SERVICE_ICONS } from "../../account-service-icons";
 
@@ -251,10 +251,16 @@ export type SettingsFieldViewModel =
   | SettingsThemeFieldViewModel
   | SettingsActionFieldViewModel;
 
+export interface SettingsGroupStatusViewModel {
+  tone: "neutral" | "ok" | "error";
+  text: string;
+}
+
 export interface SettingsFormGroupViewModel {
   id: string;
   title: string;
   description?: string;
+  status?: SettingsGroupStatusViewModel;
   fields: readonly SettingsFieldViewModel[];
 }
 
@@ -270,6 +276,17 @@ export interface SettingsFormProjectionInput {
   speedLimitInput: string;
   scheduleSpeedInputs: Readonly<Record<string, string>>;
   themeChoice?: SettingsThemeChoice;
+  proxyProbe?: NetworkProxyProbe | null;
+}
+
+export function describeProxyProbe(probe: NetworkProxyProbe | null | undefined, enabled: boolean): SettingsGroupStatusViewModel | undefined {
+  if (!enabled || !probe) return undefined;
+  const proxy = `Fester API-Proxy ${probe.proxy}`;
+  if (probe.status === "checking") return { tone: "neutral", text: `${proxy} wird geprüft …` };
+  if (probe.status === "reachable") return { tone: "ok", text: `${proxy} ist erreichbar.` };
+  if (probe.status === "auth_required") return { tone: "error", text: `${proxy} verlangt eine Anmeldung (HTTP 407). Zugangsdaten in der Liste oder die IP-Freigabe beim Proxy-Anbieter prüfen.` };
+  if (probe.status === "rejected") return { tone: "error", text: `${proxy} lehnt die Verbindung ab (HTTP ${probe.httpStatus ?? "?"}).` };
+  return { tone: "error", text: `${proxy} ist nicht erreichbar (${probe.code || "keine Antwort"}). Proxy offline, Port gesperrt oder Adresse falsch.` };
 }
 
 const NOTIFICATION_NUMBER_LIMITS = {
@@ -293,7 +310,8 @@ export function buildSettingsFormViewModel({
   section,
   speedLimitInput,
   scheduleSpeedInputs,
-  themeChoice = settings.themePreference
+  themeChoice = settings.themePreference,
+  proxyProbe
 }: SettingsFormProjectionInput): SettingsFormViewModel {
   if (section === "extract") {
     return {
@@ -345,6 +363,10 @@ export function buildSettingsFormViewModel({
           fields: [
             { id: "hybridExtract", kind: "switch", label: "Hybrid-Entpacken", value: settings.hybridExtract },
             { id: "maxParallelExtract", kind: "number", label: "Gleichzeitige Entpackungen", value: String(settings.maxParallelExtract), min: 1, max: 8 },
+            {
+              id: "failedExtractionCleanupMinutes", kind: "number", label: "Archiv nach Entpack-Fehler löschen nach (Minuten)", value: String(settings.failedExtractionCleanupMinutes), min: 0, max: 1440,
+              help: "Löscht die Archivteile eines fehlgeschlagenen Entpackvorgangs nach dieser Wartezeit vom Datenträger, sobald kein Teil desselben Archivs mehr lädt oder entpackt wird. Der Eintrag bleibt als „Entpack-Fehler - gelöscht“ in der Liste; erneutes Entpacken ist danach nicht mehr möglich. 0 schaltet das Löschen ab."
+            },
             {
               id: "extractCpuPriority",
               kind: "select",
@@ -426,6 +448,7 @@ export function buildSettingsFormViewModel({
           id: "speed-proxy",
           title: "Proxy-only",
           description: "Leitet API-, Login- und Link-Anfragen über einen festen HTTP-Proxy. Downloads verwenden zusätzlich mehrere Proxys parallel. Bei aktivem Modus gibt es keinen direkten Rückfall über deine echte Verbindung.",
+          status: describeProxyProbe(proxyProbe, settings.proxyDownloadEnabled),
           fields: [
             {
               id: "proxyDownloadEnabled",
@@ -462,7 +485,7 @@ export function buildSettingsFormViewModel({
               min: 2,
               max: 80,
               disabled: !settings.proxyDownloadEnabled,
-              help: `Dieses Gesamtlimit wird fair zwischen allen gleichzeitigen Segmentdownloads geteilt. Bei ${settings.maxParallel} aktiven Downloads laufen zusammen höchstens ${settings.proxyConnectionsPerDownload} Segmentverbindungen; 32 ist der Standardwert, 80 das Maximum. Langsame und ausgefallene Proxys werden automatisch zurückgestuft. Kleine Dateien, Teil-Downloads und aktive Geschwindigkeitslimits laufen über den festen API-Proxy.`
+              help: `Dieses Gesamtlimit wird fair zwischen allen gleichzeitigen Segmentdownloads geteilt. Bei ${settings.maxParallel} aktiven Downloads laufen zusammen höchstens ${settings.proxyConnectionsPerDownload} Segmentverbindungen; 32 ist der Standardwert, 80 das Maximum. Langsame und ausgefallene Proxys werden automatisch zurückgestuft. Kleine Dateien und Teil-Downloads laufen über den festen API-Proxy.`
             }
           ]
         },
@@ -610,7 +633,15 @@ export function buildSettingsFormViewModel({
         title: "Download-Verhalten",
         fields: [
           { id: "maxParallel", kind: "number", label: "Max. gleichzeitige Downloads", value: String(settings.maxParallel), min: 1, max: 50 },
+          {
+            id: "spreadDownloadsAcrossPackages", kind: "switch", label: "Downloads auf mehrere Pakete verteilen", value: settings.spreadDownloadsAcrossPackages,
+            help: "Gleichzeitige Downloads werden auf verschiedene Pakete in Queue-Reihenfolge verteilt. Real-Debrid liefert ein Paket meist von einem einzigen Server; verteilt kommen die Daten von mehreren Servern, und die Drosselung eines Servers bremst nur einen Teil. Einzelne Pakete werden dadurch später vollständig."
+          },
           { id: "retryLimit", kind: "number", label: "Automatische Wiederholungen", value: String(settings.retryLimit), min: 0, max: 99 },
+          {
+            id: "downloadDiskReserveGb", kind: "number", label: "Speicherpuffer für Entpacken (GB)", value: String(settings.downloadDiskReserveGb), min: 0, max: 2000,
+            help: "Neue Downloads starten erst, wenn neben der Dateigröße noch so viel Platz frei bleibt. Entpacken und Tonspur-Bearbeitung dürfen diesen Puffer nutzen, damit fertige Pakete auch bei fast voller Platte weiterverarbeitet werden. 0 schaltet den Puffer ab."
+          },
           {
             id: "offlineSkipScope",
             kind: "select",

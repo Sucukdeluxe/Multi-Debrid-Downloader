@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { appendDiagnosticLog, finishDiagnosticLog, hasPendingDiagnosticLogWrites } from "./diagnostic-log-writer";
 import { logTimestamp } from "./log-timestamp";
 
 type DesktopRenameLevel = "INFO" | "WARN" | "ERROR";
@@ -43,21 +44,6 @@ function formatFields(fields?: Record<string, unknown>): string {
   return parts.length > 0 ? ` | ${parts.join(" | ")}` : "";
 }
 
-function ensureWritable(): boolean {
-  if (!logDir || !logFilePath) {
-    return false;
-  }
-  try {
-    fs.mkdirSync(logDir, { recursive: true });
-    if (!fs.existsSync(logFilePath)) {
-      fs.writeFileSync(logFilePath, sessionHeader, "utf8");
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function initializeRenameLog(directory: string | null | undefined): void {
   try {
     const base = String(directory || "").trim();
@@ -90,13 +76,10 @@ export function initDesktopRenameLogAt(directory: string | null | undefined): vo
 }
 
 export function logDesktopRename(level: DesktopRenameLevel, message: string, fields?: Record<string, unknown>): void {
-  if (!ensureWritable() || !logFilePath) {
+  if (!logFilePath) {
     return;
   }
-  try {
-    fs.appendFileSync(logFilePath, `${logTimestamp()} [${level}] ${message}${formatFields(fields)}\n`, "utf8");
-  } catch {
-  }
+  void appendDiagnosticLog(logFilePath, `${logTimestamp()} [${level}] ${message}${formatFields(fields)}\n`, undefined, sessionHeader);
 }
 
 export function getDesktopRenameLogPath(): string | null {
@@ -104,18 +87,15 @@ export function getDesktopRenameLogPath(): string | null {
     return null;
   }
   try {
-    return fs.existsSync(logFilePath) ? logFilePath : null;
+    return hasPendingDiagnosticLogWrites(logFilePath) || fs.existsSync(logFilePath) ? logFilePath : null;
   } catch {
     return null;
   }
 }
 
 export function shutdownDesktopRenameLog(): void {
-  if (ensureWritable() && logFilePath) {
-    try {
-      fs.appendFileSync(logFilePath, `=== Rename-Session beendet: ${logTimestamp()} ===\n`, "utf8");
-    } catch {
-    }
+  if (logFilePath) {
+    void finishDiagnosticLog(logFilePath, `=== Rename-Session beendet: ${logTimestamp()} ===\n`);
   }
   logDir = null;
   logFilePath = null;

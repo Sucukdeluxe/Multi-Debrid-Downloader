@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactElement } from "react";
+import { flushSync } from "react-dom";
 import type { DownloadItem } from "../../../shared/types";
 import { buildDownloadLogicalRows, type DownloadDisplayMode, type DownloadLogicalRow } from "./downloads-model";
 import {
@@ -23,7 +24,7 @@ import {
 } from "./download-order-transition";
 import type { DownloadsViewActions, DownloadsViewModel } from "./DownloadsView";
 import { ItemRow, PackageCard } from "./DownloadsTable";
-import { calculateDownloadVirtualWindow, DOWNLOAD_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT, DOWNLOAD_VIRTUAL_OVERSCAN_ROWS } from "./download-virtualizer";
+import { calculateDownloadVirtualWindow, getDownloadViewportOverscanRows, shouldAdvanceDownloadRenderWindow, DOWNLOAD_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT, DOWNLOAD_VIRTUAL_OVERSCAN_ROWS } from "./download-virtualizer";
 
 const useRendererLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
@@ -34,23 +35,25 @@ interface DownloadViewportState {
 
 function useDownloadViewport(bodyRef: React.RefObject<HTMLDivElement>): DownloadViewportState {
   const [viewport, setViewport] = useState<DownloadViewportState>({ scrollTop: 0, viewportHeight: DOWNLOAD_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT });
+  const renderedViewport = useRef(viewport);
 
   useEffect(() => {
     const body = bodyRef.current;
     const scrollport = body?.closest<HTMLElement>(".downloads-table");
     if (!body || !scrollport) return;
-    let frame = 0;
-    const measure = (): void => {
-      frame = 0;
+    const measure = (synchronous = false): void => {
       const next = {
         scrollTop: scrollport.scrollTop,
         viewportHeight: scrollport.clientHeight || DOWNLOAD_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT
       };
-      setViewport((current) => current.scrollTop === next.scrollTop && current.viewportHeight === next.viewportHeight ? current : next);
+      if (!shouldAdvanceDownloadRenderWindow(renderedViewport.current, next)) return;
+      renderedViewport.current = next;
+      const update = () => setViewport(next);
+      if (synchronous) flushSync(update);
+      else update();
     };
     const schedule = (): void => {
-      if (frame !== 0) return;
-      frame = window.requestAnimationFrame(measure);
+      measure(true);
     };
     measure();
     scrollport.addEventListener("scroll", schedule, { passive: true });
@@ -58,7 +61,6 @@ function useDownloadViewport(bodyRef: React.RefObject<HTMLDivElement>): Download
     return () => {
       scrollport.removeEventListener("scroll", schedule);
       window.removeEventListener("resize", schedule);
-      if (frame !== 0) window.cancelAnimationFrame(frame);
     };
   }, [bodyRef]);
 
@@ -123,6 +125,7 @@ function renderVirtualRow(row: DownloadLogicalRow | DownloadDisclosureRow, model
 export function VirtualizedDownloadsBody({ actions, model, state }: { actions: DownloadsViewActions; model: DownloadsViewModel; state: ReactElement | null }): ReactElement {
   const bodyRef = useRef<HTMLDivElement>(null);
   const viewport = useDownloadViewport(bodyRef);
+  const viewportOverscanRows = getDownloadViewportOverscanRows(viewport.viewportHeight);
   const desiredRows = useMemo(() => buildDownloadLogicalRows(model), [model]);
   const desiredRowsRef = useRef(desiredRows);
   desiredRowsRef.current = desiredRows;
@@ -202,9 +205,9 @@ export function VirtualizedDownloadsBody({ actions, model, state }: { actions: D
   const virtualWindow = useMemo(() => calculateDownloadVirtualWindow(renderedRows, {
     scrollTop: viewport.scrollTop,
     viewportHeight: viewport.viewportHeight,
-    overscan: DOWNLOAD_VIRTUAL_OVERSCAN_ROWS,
+    overscan: viewportOverscanRows,
     pinnedIds: [model.editingPackageId, ...transitionPinnedIdsRef.current, ...orderTransitionPinnedIds]
-  }), [model.editingPackageId, orderTransitionPinnedIds, renderedRows, viewport.scrollTop, viewport.viewportHeight]);
+  }), [model.editingPackageId, orderTransitionPinnedIds, renderedRows, viewport.scrollTop, viewport.viewportHeight, viewportOverscanRows]);
 
   useRendererLayoutEffect(() => {
     previousPackageOrderRef.current = packageOrder;

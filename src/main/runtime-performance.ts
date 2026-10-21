@@ -1,11 +1,13 @@
-import { monitorEventLoopDelay, performance, type IntervalHistogram } from "node:perf_hooks";
+import { monitorEventLoopDelay, performance, PerformanceObserver, type IntervalHistogram } from "node:perf_hooks";
 
 export type RuntimeOperation =
+  | `io.${string}`
+  | `gc.${string}`
   | "log.write"
   | "settings.read" | "settings.encode" | "settings.write" | "settings.commit"
   | "session.encode" | "session.write" | "session.sync" | "session.backup" | "session.commit"
   | "statistics.encode" | "statistics.write" | "statistics.commit"
-  | "proxy.allocate" | "proxy.write" | "proxy.readback" | "proxy.readback.wait" | "proxy.flush" | "proxy.commit"
+  | "proxy.allocate" | "proxy.write" | "proxy.readback" | "proxy.readback.wait" | "proxy.readback.read" | "proxy.flush" | "proxy.close" | "proxy.commit"
   | "proxy.wait" | "proxy.response";
 
 interface OperationSummary {
@@ -21,6 +23,7 @@ interface OperationSample {
   durationMs: number;
   synchronous: boolean;
   failed: boolean;
+  callSite?: string[];
 }
 
 interface LoopSample {
@@ -36,6 +39,20 @@ interface LoopSample {
 
 const rounded = (value: number) => Math.round(value * 100) / 100;
 
+const INTERNAL_FRAME = /RuntimePerformance\.|captureCallSite|\bwrapped\b|node:internal|\(node:|^Error:?$/;
+
+export function captureCallSite(): string[] {
+  const limit = Error.stackTraceLimit;
+  Error.stackTraceLimit = 16;
+  const stack = new Error().stack || "";
+  Error.stackTraceLimit = limit;
+  return stack.split(/\r?\n/)
+    .map(line => line.trim().replace(/^at /, ""))
+    .filter(line => line && !INTERNAL_FRAME.test(line))
+    .slice(0, 4)
+    .map(line => line.replace(/\((?:.*[\\/])?([^\\/()]+:\d+:\d+)\)$/, "($1)").replace(/^.*[\\/]([^\\/()]+:\d+:\d+)$/, "$1").slice(0, 200));
+}
+
 export class RuntimePerformance {
   private timer: NodeJS.Timeout | null = null;
   private histogram: IntervalHistogram | null = null;
@@ -45,6 +62,7 @@ export class RuntimePerformance {
   private operations = new Map<RuntimeOperation, OperationSummary>();
   private active = new Map<number, { operation: RuntimeOperation; startedAt: number; clock: number }>();
   private sequence = 0;
+  private gcObserver: PerformanceObserver | null = null;
 
   public start(onDelay?: (sample: LoopSample) => void, intervalMs = 5000): void {
     if (this.timer) return;
@@ -82,16 +100,31 @@ export class RuntimePerformance {
       }
     }, interval);
     this.timer.unref();
+    try {
+      const kinds: Record<number, string> = { 1: "minor", 2: "major", 4: "incremental", 8: "weakcb" };
+      this.gcObserver = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          const kind = kinds[Number((entry as { detail?: { kind?: number } }).detail?.kind)] || "other";
+          const clock = performance.now() - entry.duration;
+          this.finish(`gc.${kind}`, Date.now() - entry.duration, clock, true, false);
+        }
+      });
+      this.gcObserver.observe({ entryTypes: ["gc"] });
+    } catch {
+      this.gcObserver = null;
+    }
   }
 
   public stop(): void {
+    this.gcObserver?.disconnect();
+    this.gcObserver = null;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     this.histogram?.disable();
     this.histogram = null;
   }
 
-  private finish(operation: RuntimeOperation, startedAt: number, clock: number, synchronous: boolean, failed: boolean): void {
+  private finish(operation: RuntimeOperation, startedAt: number, clock: number, synchronous: boolean, failed: boolean, callSite?: () => string[]): void {
     const durationMs = performance.now() - clock;
     const entry = this.operations.get(operation) ?? { count: 0, failures: 0, totalMs: 0, maxMs: 0 };
     entry.count += 1;
@@ -100,7 +133,8 @@ export class RuntimePerformance {
     entry.maxMs = Math.max(entry.maxMs, durationMs);
     this.operations.set(operation, entry);
     if (durationMs >= 100) {
-      const sample = { operation, startedAt, durationMs: rounded(durationMs), synchronous, failed };
+      const sample: OperationSample = { operation, startedAt, durationMs: rounded(durationMs), synchronous, failed };
+      if (synchronous && callSite) sample.callSite = callSite();
       this.slowOperations.push(sample);
       if (this.slowOperations.length > 64) this.slowOperations.shift();
       if (synchronous) {
@@ -120,7 +154,7 @@ export class RuntimePerformance {
       failed = false;
       return result;
     } finally {
-      this.finish(operation, startedAt, clock, true, failed);
+      this.finish(operation, startedAt, clock, true, failed, captureCallSite);
     }
   }
 

@@ -179,6 +179,7 @@ export function compactDownloadStatus(value: string): string {
   if (passwordCracking) {
     return `${passwordCracking[1]}: ${passwordCracking[2]}%${passwordCracking[3] ? ` (${passwordCracking[3]})` : ""}`;
   }
+  if (/^Entpack-Fehler - gelöscht\b/i.test(status)) return "Entpack-Fehler - gelöscht";
   if (/^Entpack-Fehler\b/i.test(status)) return "Entpack-Fehler";
   if (/^Extraction error\b/i.test(status)) return "Extraction error";
   const extractionPending = status.match(/^(Entpacken|Extracting)\s*-\s*(Ausstehend|Pending|Warten auf Parts|Waiting for parts)/i);
@@ -448,7 +449,7 @@ function packageCell(row: DownloadPackageRow, column: string, packageSpeedBps: n
     const downloading = entry.status === "downloading" || entry.status === "validating" || row.items.some((item) => item.status === "downloading" || item.status === "validating");
     const status = postProcessLabel && (/Entpacken\s+\d+%/i.test(postProcessLabel) || entry.status === "extracting")
       ? postProcessLabel
-      : extractFailure ? "Entpack-Fehler"
+      : extractFailure ? (row.allItems.every((item) => !/^Entpack-Fehler\b/i.test(item.fullStatus || "") || /^Entpack-Fehler - gelöscht\b/i.test(item.fullStatus || "")) ? "Entpack-Fehler - gelöscht" : "Entpack-Fehler")
         : waitsForDisk ? "Warte auf Festplatte"
           : downloading ? "Download läuft" : details;
     const statusDetails = extractFailure ? `${details}\n${extractFailure.fullStatus}` : details;

@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
+import { startRendererPerformanceMonitor } from "./performance-monitor";
 import {
   OfflineSkipScope,
   AddLinksPayload,
@@ -185,3 +186,5 @@ const api: ElectronApi = {
 };
 
 contextBridge.exposeInMainWorld("rd", api);
+const performanceMonitor = startRendererPerformanceMonitor(sample => ipcRenderer.send(IPC_CHANNELS.RENDERER_PERFORMANCE, sample));
+ipcRenderer.on(IPC_CHANNELS.STATE_UPDATE, () => performanceMonitor.stateUpdate());
