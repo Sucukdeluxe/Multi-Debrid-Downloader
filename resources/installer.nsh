@@ -1,4 +1,5 @@
 !macro customCheckAppRunning
+  !insertmacro IS_POWERSHELL_AVAILABLE
   !insertmacro FIND_PROCESS "${APP_EXECUTABLE_FILENAME}" $R0
   ${if} $R0 == 0
     ${if} ${isUpdated}
