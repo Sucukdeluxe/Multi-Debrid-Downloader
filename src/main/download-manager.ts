@@ -8167,6 +8167,7 @@ export class DownloadManager extends EventEmitter {
     for (const item of Object.values(this.session.items)) {
       if (item.status !== "completed") continue;
       if (isExtractedLabel(item.fullStatus || "")) continue;
+      if (String(item.fullStatus || "").startsWith(DELETED_EXTRACT_FAILURE_PREFIX)) continue;
       const targetPath = String(item.targetPath || "").trim();
       const archiveLike = isArchiveLikePath(targetPath || item.fileName || "");
       if (archiveLike) {
