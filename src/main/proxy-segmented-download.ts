@@ -24,6 +24,27 @@ function proxyAttemptBudget(configured: number, availableProxies: number): numbe
   return Math.max(1, Math.min(availableProxies, Math.max(configured, MIN_ATTEMPTS_WITH_SPARE_PROXIES)));
 }
 
+const DEFAULT_ORIGIN_THROTTLE_RETRY_BUDGET_MS = 90_000;
+const ORIGIN_THROTTLE_MAX_DELAY_MS = 15_000;
+
+function waitWithSignal(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(abortError());
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(abortError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 const CERTIFICATE_ERROR_CODE = /^(?:CERT_|ERR_TLS_CERT_|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_GET_ISSUER_CERT)/;
 
 function isOriginCertificateError(error: unknown): boolean {
@@ -104,6 +125,8 @@ export interface ProxySegmentedDownloadOptions {
   connectTimeoutMs?: number;
   idleTimeoutMs?: number;
   proxyAttempts?: number;
+  originRetryBaseMs?: number;
+  originRetryBudgetMs?: number;
   waitWhilePaused?: () => Promise<void>;
   throttle?: (bytes: number) => Promise<void>;
   onTrafficBytes?: (bytes: number) => void;
@@ -1400,7 +1423,9 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
     skipTlsVerify: Boolean(options.skipTlsVerify),
     connectTimeoutMs: Math.max(1_000, Math.floor(options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS)),
     idleTimeoutMs: Math.max(2_000, Math.floor(options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS)),
-    proxyAttempts: Math.max(1, Math.min(10, Math.floor(options.proxyAttempts ?? DEFAULT_PROXY_ATTEMPTS)))
+    proxyAttempts: Math.max(1, Math.min(10, Math.floor(options.proxyAttempts ?? DEFAULT_PROXY_ATTEMPTS))),
+    originRetryBaseMs: Math.max(1, Math.floor(options.originRetryBaseMs ?? 1_000)),
+    originRetryBudgetMs: Math.max(0, Math.floor(options.originRetryBudgetMs ?? DEFAULT_ORIGIN_THROTTLE_RETRY_BUDGET_MS))
   };
   const probe = await probeRangeSupport(target, poolKey, groupId, segmentProxies, options.signal, normalized, options.onTrafficBytes);
   if (probe.status === "unsupported") {
@@ -1467,6 +1492,8 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
       let lastError: unknown = null;
       const attempts = proxyAttemptBudget(normalized.proxyAttempts, segmentProxies.length);
       let originFailures = 0;
+      let throttledSince = 0;
+      let throttleRetries = 0;
       for (let attempt = 0; attempt < attempts && originFailures < normalized.proxyAttempts; attempt += 1) {
         if (signal.aborted) {
           throw abortError();
@@ -1562,12 +1589,25 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
           const representationChanged = error instanceof Error && error.message === "proxy_representation_changed";
           lease?.release({ succeeded: originError || representationChanged || signal.aborted, reason: proxyFailureCode(error) });
           lease = null;
-          if (originError) {
-            originFailures += 1;
-            sharedProxyCoordinator.reportOriginStatus(error.statusCode, target.origin);
-          }
           if (attemptProgress > 0) {
             updateProgress(-attemptProgress, committedProgress - attemptProgress, probe.totalBytes);
+          }
+          if (originError) {
+            sharedProxyCoordinator.reportOriginStatus(error.statusCode, target.origin);
+            const now = Date.now();
+            if ((error.statusCode === 503 || error.statusCode === 429) && !options.signal.aborted) {
+              throttledSince ||= now;
+              if (now - throttledSince < normalized.originRetryBudgetMs) {
+                throttleRetries += 1;
+                excluded.delete(proxyEndpointKey(primaryProxy));
+                attempt -= 1;
+                lastError = error;
+                const delayMs = Math.min(ORIGIN_THROTTLE_MAX_DELAY_MS, normalized.originRetryBaseMs * 2 ** Math.min(throttleRetries - 1, 6));
+                await waitWithSignal(delayMs + Math.floor(Math.random() * Math.min(500, delayMs)), signal);
+                continue;
+              }
+            }
+            originFailures += 1;
           }
           if (options.signal.aborted || isDiskError(error) || isOriginCertificateError(error)) {
             throw error;
