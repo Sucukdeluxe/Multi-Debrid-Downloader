@@ -1455,11 +1455,21 @@ let asyncSettingsSaveQueued: QueuedSettingsSave | null = null;
 let syncSettingsSaveGeneration = 0;
 let activeSettingsSave: Promise<void> | null = null;
 
+async function readSettingsFileSnapshot(configFile: string): Promise<string> {
+  const snapshot = `${configFile}.read.tmp`;
+  await fsp.copyFile(configFile, snapshot);
+  try {
+    return await fsp.readFile(snapshot, "utf8");
+  } finally {
+    await fsp.rm(snapshot, { force: true }).catch(() => {});
+  }
+}
+
 async function writeSettingsPayload(paths: StoragePaths, settings: AppSettings, generation: number): Promise<void> {
   await fs.promises.mkdir(paths.baseDir, { recursive: true });
   let previous: LoadedSettingsFile | null = null;
   try {
-    previous = readSettingsFile(paths.configFile, await runtimePerformance.measure("settings.read", () => fsp.readFile(paths.configFile, "utf8")));
+    previous = readSettingsFile(paths.configFile, await runtimePerformance.measure("settings.read", () => readSettingsFileSnapshot(paths.configFile)));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       logger.warn(`Settings-Datei nicht lesbar: ${paths.configFile}: ${String(error)}`);
