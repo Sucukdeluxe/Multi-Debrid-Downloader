@@ -1285,11 +1285,30 @@ function captureSettings(settings: AppSettings): AppSettings {
   return JSON.parse(JSON.stringify(normalizeSettings(settings))) as AppSettings;
 }
 
+const SETTINGS_RENAME_RETRY_DELAYS_MS = [15, 40, 90, 200, 400];
+
+function isTransientRenameError(error: unknown): boolean {
+  const code = error && typeof error === "object" && "code" in error ? String((error as NodeJS.ErrnoException).code) : "";
+  return code === "EPERM" || code === "EACCES" || code === "EBUSY";
+}
+
+function renameSettingsFileSync(tempPath: string, targetPath: string): void {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      syncRenameWithExdevFallback(tempPath, targetPath);
+      return;
+    } catch (error) {
+      if (!isTransientRenameError(error) || attempt >= SETTINGS_RENAME_RETRY_DELAYS_MS.length) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, SETTINGS_RENAME_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+}
+
 function writeSettingsFileAtomically(filePath: string, payload: string): void {
   const tempPath = `${filePath}.tmp`;
   try {
     fs.writeFileSync(tempPath, payload, "utf8");
-    syncRenameWithExdevFallback(tempPath, filePath);
+    renameSettingsFileSync(tempPath, filePath);
   } catch (error) {
     try { fs.rmSync(tempPath, { force: true }); } catch { }
     throw error;
@@ -1682,7 +1701,16 @@ async function commitStorageFile(source: string, destination: string, generation
   if (generation < currentGeneration()) return;
   pending.add(source);
   try {
-    await runtimePerformance.measure(`${kind}.commit`, () => fsp.rename(source, destination));
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await runtimePerformance.measure(`${kind}.commit`, () => fsp.rename(source, destination));
+        return;
+      } catch (error) {
+        if (kind !== "settings" || !isTransientRenameError(error) || attempt >= SETTINGS_RENAME_RETRY_DELAYS_MS.length) throw error;
+        await new Promise((resolve) => setTimeout(resolve, SETTINGS_RENAME_RETRY_DELAYS_MS[attempt]));
+        if (generation < currentGeneration()) return;
+      }
+    }
   } catch (error) {
     if (generation >= currentGeneration()) throw error;
   } finally {
