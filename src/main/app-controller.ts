@@ -1413,6 +1413,11 @@ export class AppController {
     this.manager.cancelPackage(packageId);
   }
 
+  public cancelPackages(packageIds: string[]): void {
+    this.audit("WARN", "Pakete abgebrochen", { count: packageIds.length, packageIds });
+    this.manager.cancelPackages(packageIds);
+  }
+
   public renamePackage(packageId: string, newName: string): void {
     this.audit("INFO", "Paket umbenannt", { packageId, newName });
     this.manager.renamePackage(packageId, newName);
@@ -1432,6 +1437,11 @@ export class AppController {
   public removeItem(itemId: string): void {
     this.audit("WARN", "Item entfernt", { itemId });
     this.manager.removeItem(itemId);
+  }
+
+  public removeItems(itemIds: string[]): void {
+    this.audit("WARN", "Items entfernt", { count: itemIds.length, itemIds });
+    this.manager.removeItems(itemIds);
   }
 
   public togglePackage(packageId: string): void {

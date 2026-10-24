@@ -3278,6 +3278,7 @@ export class DownloadManager extends EventEmitter {
     }
     Object.assign(this.settings, nextSettings);
     this.statisticsLedger = nextLedger;
+    this.statisticsActivityAt = resetAt;
     this.rollingAccountStatistics.reset(nextLedger, resetAt);
     this.statisticsDirty = false;
     this.statisticsUrgent = false;
@@ -3374,8 +3375,56 @@ export class DownloadManager extends EventEmitter {
         throw new Error("Auswahl wird noch verarbeitet. Bereinigung später erneut ausführen.");
       }
     }
-    for (const id of uniqueIds) this.removeItem(id, true);
+    this.removeItems(uniqueIds, true);
     return { removed: uniqueIds.length, filesPreserved: true };
+  }
+
+  public removeItems(itemIds: readonly string[], preserveFiles = false): void {
+    let changed = false;
+    for (const itemId of new Set(itemIds)) {
+      const item = this.session.items[itemId];
+      if (!item) {
+        continue;
+      }
+      changed = true;
+      this.logPackageForItem(item, "WARN", "Item entfernt", {
+        url: item.url
+      });
+      this.recordRunOutcome(itemId, "cancelled");
+      const active = this.activeTasks.get(itemId);
+      const hasActiveTask = Boolean(active);
+      if (active) {
+        active.abortReason = preserveFiles ? "stop" : "cancel";
+        active.abortController.abort(active.abortReason);
+      }
+      const pkg = this.session.packages[item.packageId];
+      let removedByPackageCleanup = false;
+      if (pkg) {
+        pkg.itemIds = pkg.itemIds.filter((id) => id !== itemId);
+        if (pkg.itemIds.length === 0) {
+          this.removePackageFromSession(item.packageId, [itemId]);
+          removedByPackageCleanup = true;
+        } else {
+          pkg.updatedAt = nowMs();
+        }
+      }
+      if (!removedByPackageCleanup) {
+        delete this.session.items[itemId];
+        this.itemCount = Math.max(0, this.itemCount - 1);
+      }
+      this.retryAfterByItem.delete(itemId);
+      this.sourceAvailabilityRecheckAt.delete(itemId);
+      this.retryStateByItem.delete(itemId);
+      this.dropItemContribution(itemId);
+      if (!hasActiveTask) {
+        this.releaseTargetPath(itemId);
+      }
+    }
+    if (!changed) {
+      return;
+    }
+    this.persistSoon();
+    this.emitState(true);
   }
 
   public removeItem(itemId: string, preserveFiles = false): void {
@@ -6550,9 +6599,11 @@ export class DownloadManager extends EventEmitter {
 
   public removeOfflinePackages(packageIds: string[], scope: OfflineSkipScope = "archive"): number {
     const candidates = getPackagesWithOfflineLinks(packageIds, this.session.packages, this.session.items);
+    const packagesToCancel: string[] = [];
+    const itemsToRemove: string[] = [];
     for (const packageId of candidates) {
       if (scope === "package") {
-        this.cancelPackage(packageId, true);
+        packagesToCancel.push(packageId);
         continue;
       }
       const items = this.session.packages[packageId].itemIds.map((id) => this.session.items[id]).filter(Boolean);
@@ -6563,13 +6614,74 @@ export class DownloadManager extends EventEmitter {
         for (const related of resolveOfflineArchiveItemsFromList(item.fileName, items)) itemIds.add(related.id);
       }
       if (itemIds.size === items.length) {
-        this.cancelPackage(packageId, true);
+        packagesToCancel.push(packageId);
       } else {
         this.abortPackagePostProcessing(packageId, "offline_cleanup");
-        for (const itemId of itemIds) this.removeItem(itemId, true);
+        itemsToRemove.push(...itemIds);
       }
     }
+    if (packagesToCancel.length > 0) this.cancelPackages(packagesToCancel, true);
+    if (itemsToRemove.length > 0) this.removeItems(itemsToRemove, true);
     return candidates.length;
+  }
+
+  public cancelPackages(packageIds: readonly string[], preserveFiles = false): void {
+    const cleanups: Array<{ packageName: string; outputDir: string }> = [];
+    let changed = false;
+    for (const packageId of new Set(packageIds)) {
+      const pkg = this.session.packages[packageId];
+      if (!pkg) {
+        continue;
+      }
+      changed = true;
+      this.logPackageForPackage(pkg, "WARN", "Paketabbruch angefordert", {
+        itemCount: pkg.itemIds.length
+      });
+      pkg.cancelled = true;
+      pkg.updatedAt = nowMs();
+      const packageName = pkg.name;
+      const outputDir = pkg.outputDir;
+      const itemIds = [...pkg.itemIds];
+
+      for (const itemId of itemIds) {
+        const item = this.session.items[itemId];
+        if (!item) {
+          continue;
+        }
+        if (item.status !== "completed") {
+          this.recordRunOutcome(itemId, "cancelled");
+        }
+        const active = this.activeTasks.get(itemId);
+        if (active) {
+          active.abortReason = preserveFiles ? "stop" : "cancel";
+          active.abortController.abort(active.abortReason);
+        }
+      }
+
+      this.abortPackagePostProcessing(packageId, "cancel");
+      this.removePackageFromSession(packageId, itemIds);
+      if (!preserveFiles) {
+        cleanups.push({ packageName, outputDir });
+      }
+    }
+    if (!changed) {
+      return;
+    }
+    this.persistSoon();
+    this.emitState(true);
+
+    for (const { packageName, outputDir } of cleanups) {
+      this.cleanupQueue = this.cleanupQueue
+        .then(async () => {
+          const removed = await cleanupCancelledPackageArtifactsAsync(outputDir, {
+            shouldAbort: () => this.packageOutputDirInUse(outputDir)
+          });
+          logger.info(`Paket ${packageName} abgebrochen, ${removed} Artefakte gelöscht`);
+        })
+        .catch((error) => {
+          logger.warn(`Cleanup für Paket ${packageName} fehlgeschlagen: ${compactErrorText(error)}`);
+        });
+    }
   }
 
   public cancelPackage(packageId: string, preserveFiles = false): void {

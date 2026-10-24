@@ -19,6 +19,7 @@ import {
   getDownloadOrderTransitionPinnedIds,
   shouldAnimateDownloadOrderChange,
   hasRemovedDownloadItems,
+  hasRemovedDownloadPackages,
   getDownloadPackageOrder,
   isDownloadPackageOrderChange
 } from "./download-order-transition";
@@ -145,7 +146,8 @@ export function VirtualizedDownloadsBody({ actions, model, state }: { actions: D
   const packageOrderSortRevision = model.packageOrderSortRevision ?? 0;
   const appliedSortRevisionRef = useRef(packageOrderSortRevision);
   const previousQueueItemsRef = useRef(model.queueItems);
-  const itemsRemoved = hasRemovedDownloadItems(previousQueueItemsRef.current, model.queueItems);
+  const itemsRemoved = hasRemovedDownloadItems(previousQueueItemsRef.current, model.queueItems)
+    || hasRemovedDownloadPackages(previousPackageOrderRef.current, packageOrder);
   const orderAnimationsEnabled = shouldAnimateDownloadOrderChange({
     animationsEnabled: model.animationsEnabled && !itemsRemoved,
     sortRevision: packageOrderSortRevision,

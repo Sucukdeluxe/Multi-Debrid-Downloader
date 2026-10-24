@@ -848,6 +848,9 @@ function registerIpcHandlers(): void {
     validateString(packageId, "packageId");
     return controller.cancelPackage(packageId);
   });
+  handleTrusted(IPC_CHANNELS.CANCEL_PACKAGES, (_event: IpcMainInvokeEvent, packageIds: string[]) => {
+    return controller.cancelPackages(validateStringArray(packageIds ?? [], "packageIds"));
+  });
   handleTrusted(IPC_CHANNELS.REMOVE_OFFLINE_PACKAGES, (_event: IpcMainInvokeEvent, packageIds: string[], scope: unknown = "archive") => {
     if (scope !== "archive" && scope !== "package") throw new Error("Ungültiger Bereich für Offline-Bereinigung");
     return controller.removeOfflinePackages(validateStringArray(packageIds, "packageIds"), scope);
@@ -867,6 +870,9 @@ function registerIpcHandlers(): void {
   handleTrusted(IPC_CHANNELS.REMOVE_ITEM, (_event: IpcMainInvokeEvent, itemId: string) => {
     validateString(itemId, "itemId");
     return controller.removeItem(itemId);
+  });
+  handleTrusted(IPC_CHANNELS.REMOVE_ITEMS, (_event: IpcMainInvokeEvent, itemIds: string[]) => {
+    return controller.removeItems(validateStringArray(itemIds ?? [], "itemIds"));
   });
   handleTrusted(IPC_CHANNELS.TOGGLE_PACKAGE, (_event: IpcMainInvokeEvent, packageId: string) => {
     validateString(packageId, "packageId");
