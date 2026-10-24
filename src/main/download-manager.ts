@@ -3278,6 +3278,7 @@ export class DownloadManager extends EventEmitter {
     }
     Object.assign(this.settings, nextSettings);
     this.statisticsLedger = nextLedger;
+    this.statisticsActivityAt = resetAt;
     this.rollingAccountStatistics.reset(nextLedger, resetAt);
     this.statisticsDirty = false;
     this.statisticsUrgent = false;
