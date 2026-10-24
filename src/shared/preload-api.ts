@@ -109,10 +109,12 @@ export interface ElectronApi {
   stop: () => Promise<void>;
   togglePause: () => Promise<boolean>;
   cancelPackage: (packageId: string) => Promise<void>;
+  cancelPackages: (packageIds: string[]) => Promise<void>;
   removeOfflinePackages: (packageIds: string[], scope?: OfflineSkipScope) => Promise<number>;
   renamePackage: (packageId: string, newName: string) => Promise<void>;
   reorderPackages: (packageIds: string[]) => Promise<void>;
   removeItem: (itemId: string) => Promise<void>;
+  removeItems: (itemIds: string[]) => Promise<void>;
   togglePackage: (packageId: string) => Promise<void>;
   exportPackageSelection: (packageIds: string[]) => Promise<{ saved: boolean; packageCount: number; linkCount: number; filePath?: string }>;
   exportItemSelection: (itemIds: string[]) => Promise<{ saved: boolean; packageCount: number; linkCount: number; filePath?: string }>;

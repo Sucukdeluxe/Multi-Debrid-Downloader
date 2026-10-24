@@ -216,6 +216,7 @@ function mergeNewerSnapshot(master: UiSnapshot, incoming: UiSnapshot): UiSnapsho
 export interface SnapshotBootstrapCoordinator {
   initialize: (snapshot: UiSnapshot) => UiSnapshot;
   push: (snapshot: UiSnapshot) => UiSnapshot | null;
+  mutate: (transform: (snapshot: UiSnapshot) => UiSnapshot) => UiSnapshot | null;
   getStatus: () => SnapshotBootstrapStatus;
   fail: (message: string) => SnapshotBootstrapStatus;
   retry: () => SnapshotBootstrapStatus;
@@ -266,6 +267,13 @@ export function createSnapshotBootstrapCoordinator(): SnapshotBootstrapCoordinat
       current = merged;
       return current;
     },
+    mutate: (transform) => {
+      if (!initialized || !current) {
+        return null;
+      }
+      current = transform(current);
+      return current;
+    },
     getStatus: () => ({ ...status }),
     fail: (message) => {
       if (!initialized) {
@@ -279,6 +287,153 @@ export function createSnapshotBootstrapCoordinator(): SnapshotBootstrapCoordinat
       }
       return { ...status };
     }
+  };
+}
+
+export const DOWNLOAD_COLLAPSED_PACKAGES_STORAGE_KEY = "mdd:downloads:collapsed-packages";
+
+export function readPersistedCollapsedPackages(
+  storage: Pick<Storage, "getItem"> | null | undefined = typeof window !== "undefined" ? window.localStorage : null
+): Record<string, boolean> {
+  if (!storage) {
+    return {};
+  }
+  try {
+    const raw = storage.getItem(DOWNLOAD_COLLAPSED_PACKAGES_STORAGE_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    const result: Record<string, boolean> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (key && typeof value === "boolean") {
+        result[key] = value;
+      }
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+export function writePersistedCollapsedPackages(
+  state: Readonly<Record<string, boolean>>,
+  storage: Pick<Storage, "setItem"> | null | undefined = typeof window !== "undefined" ? window.localStorage : null
+): void {
+  if (!storage) {
+    return;
+  }
+  try {
+    storage.setItem(DOWNLOAD_COLLAPSED_PACKAGES_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+  }
+}
+
+export function reconcileDownloadCollapsedPackages(
+  prev: Readonly<Record<string, boolean>>,
+  packageOrder: readonly string[],
+  packages: Readonly<Record<string, PackageEntry>>,
+  collapseNewPackages: boolean,
+  bootstrapReady = true
+): Record<string, boolean> {
+  if (!bootstrapReady) {
+    return prev as Record<string, boolean>;
+  }
+  const defaultCollapsed = Boolean(collapseNewPackages) || packageOrder.length >= 24;
+  let changed = false;
+  const next: Record<string, boolean> = { ...prev };
+  for (const packageId of packageOrder) {
+    if (!(packageId in prev)) {
+      next[packageId] = defaultCollapsed;
+      changed = true;
+    }
+  }
+  for (const packageId of Object.keys(next)) {
+    if (!packages[packageId]) {
+      delete next[packageId];
+      changed = true;
+    }
+  }
+  return changed ? next : (prev as Record<string, boolean>);
+}
+
+export function removeSelectionFromSnapshot(snapshot: UiSnapshot, ids: Iterable<string>): {
+  snapshot: UiSnapshot;
+  removedPackageIds: string[];
+  removedItemIds: string[];
+} {
+  const requestedIds = new Set(ids);
+  if (requestedIds.size === 0) {
+    return { snapshot, removedPackageIds: [], removedItemIds: [] };
+  }
+  const removedPackageSet = new Set<string>();
+  const removedItemSet = new Set<string>();
+  for (const id of requestedIds) {
+    const pkg = snapshot.session.packages[id];
+    if (pkg) {
+      removedPackageSet.add(id);
+      for (const itemId of pkg.itemIds) {
+        removedItemSet.add(itemId);
+      }
+      continue;
+    }
+    if (snapshot.session.items[id]) {
+      removedItemSet.add(id);
+    }
+  }
+  if (removedPackageSet.size === 0 && removedItemSet.size === 0) {
+    return { snapshot, removedPackageIds: [], removedItemIds: [] };
+  }
+  const nextPackages: Record<string, PackageEntry> = {};
+  for (const [packageId, pkg] of Object.entries(snapshot.session.packages)) {
+    if (removedPackageSet.has(packageId)) {
+      continue;
+    }
+    const hasRemovedChild = pkg.itemIds.some((itemId) => removedItemSet.has(itemId));
+    if (!hasRemovedChild) {
+      nextPackages[packageId] = pkg;
+      continue;
+    }
+    const nextItemIds = pkg.itemIds.filter((itemId) => !removedItemSet.has(itemId));
+    if (nextItemIds.length === 0) {
+      removedPackageSet.add(packageId);
+      continue;
+    }
+    nextPackages[packageId] = { ...pkg, itemIds: nextItemIds };
+  }
+  const nextItems: Record<string, DownloadItem> = {};
+  for (const [itemId, item] of Object.entries(snapshot.session.items)) {
+    if (removedItemSet.has(itemId) || removedPackageSet.has(item.packageId)) {
+      removedItemSet.add(itemId);
+      continue;
+    }
+    nextItems[itemId] = item;
+  }
+  const nextPackageOrder = snapshot.session.packageOrder.filter(
+    (packageId) => !removedPackageSet.has(packageId) && Boolean(nextPackages[packageId])
+  );
+  const nextPackageSpeedBps: Record<string, number> = {};
+  for (const [packageId, speed] of Object.entries(snapshot.packageSpeedBps)) {
+    if (!removedPackageSet.has(packageId)) {
+      nextPackageSpeedBps[packageId] = speed;
+    }
+  }
+  return {
+    snapshot: {
+      ...snapshot,
+      packageSpeedBps: nextPackageSpeedBps,
+      session: {
+        ...snapshot.session,
+        packages: nextPackages,
+        items: nextItems,
+        packageOrder: nextPackageOrder
+      }
+    },
+    removedPackageIds: [...removedPackageSet],
+    removedItemIds: [...removedItemSet]
   };
 }
 
@@ -1893,7 +2048,9 @@ export function App(): ReactElement {
   const activeTabRef = useRef<Tab>(tab);
   const packageOrderRef = useRef<string[]>([]);
   const packageOrderStateRef = useRef(createPackageOrderState());
-  const [collapsedPackages, setCollapsedPackages] = useState<Record<string, boolean>>({});
+  const [collapsedPackages, setCollapsedPackages] = useState<Record<string, boolean>>(() => readPersistedCollapsedPackages());
+  const snapshotCoordinatorRef = useRef<SnapshotBootstrapCoordinator | null>(null);
+  const pendingDeleteCountsRef = useRef(new Map<string, number>());
   const [downloadDisclosureRevision, setDownloadDisclosureRevision] = useState(0);
   const [downloadSearch, setDownloadSearch] = useState("");
   const [downloadDisplayMode, setDownloadDisplayMode] = useState<DownloadDisplayMode>("packages");
@@ -2299,7 +2456,11 @@ export function App(): ReactElement {
     let snapshotRequestGeneration = 0;
     let authoritativeSnapshotApplied = false;
     const snapshotCoordinator = createSnapshotBootstrapCoordinator();
-    const applyStreamSnapshot = (merged: UiSnapshot): void => {
+    snapshotCoordinatorRef.current = snapshotCoordinator;
+    const applyStreamSnapshot = (rawMerged: UiSnapshot): void => {
+      const merged = pendingDeleteCountsRef.current.size > 0
+        ? removeSelectionFromSnapshot(rawMerged, pendingDeleteCountsRef.current.keys()).snapshot
+        : rawMerged;
       masterSnapshotRef.current = merged;
       persistedSettingsRef.current = merged.settings;
       latestStateRef.current = merged;
@@ -2319,13 +2480,16 @@ export function App(): ReactElement {
       }, flushDelay);
     };
     const applyAuthoritativeSnapshot = (
-      state: UiSnapshot,
-      storedThemeChoice: SettingsThemeChoice = state.settings.themePreference
+      rawState: UiSnapshot,
+      storedThemeChoice: SettingsThemeChoice = rawState.settings.themePreference
     ): void => {
       if (authoritativeSnapshotApplied) {
         return;
       }
       authoritativeSnapshotApplied = true;
+      const state = pendingDeleteCountsRef.current.size > 0
+        ? removeSelectionFromSnapshot(rawState, pendingDeleteCountsRef.current.keys()).snapshot
+        : rawState;
       packageOrderStateRef.current.accept(state.session.packageOrder);
       masterSnapshotRef.current = state;
       persistedSettingsRef.current = state.settings;
@@ -2334,6 +2498,17 @@ export function App(): ReactElement {
         window.matchMedia("(prefers-color-scheme: light)").matches
       );
       persistedThemeChoiceRef.current = storedThemeChoice;
+      setCollapsedPackages((prev) => {
+        const next = reconcileDownloadCollapsedPackages(
+          prev,
+          state.session.packageOrder,
+          state.session.packages,
+          state.settings.collapseNewPackages,
+          true
+        );
+        writePersistedCollapsedPackages(next);
+        return next;
+      });
       setSnapshot(state);
       setSnapshotBootstrapStatus(snapshotCoordinator.getStatus());
       if (state.settings.columnOrder?.length > 0) {
@@ -2476,25 +2651,23 @@ export function App(): ReactElement {
     if (!downloadsTabActive) {
       return;
     }
+    if (snapshotBootstrapStatus.phase !== "ready") {
+      return;
+    }
     setCollapsedPackages((prev) => {
-      let changed = false;
-      const next: Record<string, boolean> = { ...prev };
-      const defaultCollapsed = totalPackageCount >= 24;
-      for (const packageId of snapshot.session.packageOrder) {
-        if (!(packageId in prev)) {
-          next[packageId] = defaultCollapsed;
-          changed = true;
-        }
+      const next = reconcileDownloadCollapsedPackages(
+        prev,
+        snapshot.session.packageOrder,
+        snapshot.session.packages,
+        snapshot.settings.collapseNewPackages,
+        true
+      );
+      if (next !== prev) {
+        writePersistedCollapsedPackages(next);
       }
-      for (const packageId of Object.keys(next)) {
-        if (!snapshot.session.packages[packageId]) {
-          delete next[packageId];
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
+      return next;
     });
-  }, [downloadsTabActive, packageOrderKey, snapshot.session.packageOrder, snapshot.session.packages, totalPackageCount]);
+  }, [downloadsTabActive, packageOrderKey, snapshot.session.packageOrder, snapshot.session.packages, snapshot.settings.collapseNewPackages, snapshotBootstrapStatus.phase, totalPackageCount]);
 
   // Prune selection when its packages/items disappear (e.g. via delta-removal or
   // a backup-driven session swap). selectedIds holds BOTH package and item ids;
@@ -3820,6 +3993,7 @@ export function App(): ReactElement {
       setCollapsedPackages((prev) => {
         const next = { ...prev };
         for (const id of newIds) { next[id] = true; }
+        writePersistedCollapsedPackages(next);
         return next;
       });
     }
@@ -4468,36 +4642,64 @@ export function App(): ReactElement {
     setDownloadDisclosureRevision((current) => current + 1);
     setCollapsedPackages((prev) => {
       const nextCollapsed = !(prev[packageId] ?? false);
-      return { ...prev, [packageId]: nextCollapsed };
+      const next = { ...prev, [packageId]: nextCollapsed };
+      writePersistedCollapsedPackages(next);
+      return next;
     });
   }, []);
 
-  const onPackageCancel = useCallback((packageId: string): void => {
-    setSnapshot((prev) => {
-      if (!prev) { return prev; }
-      const nextPackages = { ...prev.session.packages };
-      const nextItems = { ...prev.session.items };
-      const pkg = nextPackages[packageId];
-      if (pkg) {
-        for (const itemId of pkg.itemIds) {
-          delete nextItems[itemId];
-        }
-        delete nextPackages[packageId];
+  const markPendingDeletedIds = useCallback((ids: readonly string[], delta: 1 | -1): void => {
+    const map = pendingDeleteCountsRef.current;
+    for (const id of ids) {
+      const next = (map.get(id) ?? 0) + delta;
+      if (next <= 0) {
+        map.delete(id);
+      } else {
+        map.set(id, next);
       }
-      return {
-        ...prev,
-        session: {
-          ...prev.session,
-          packages: nextPackages,
-          items: nextItems,
-          packageOrder: prev.session.packageOrder.filter((id) => id !== packageId)
-        }
-      };
-    });
-    void window.rd.cancelPackage(packageId).catch((error) => {
+    }
+  }, []);
+
+  const applyOptimisticQueueRemoval = useCallback((ids: Iterable<string>): {
+    removedPackageIds: string[];
+    removedItemIds: string[];
+  } => {
+    const removal = removeSelectionFromSnapshot(snapshotRef.current, ids);
+    if (removal.removedPackageIds.length === 0 && removal.removedItemIds.length === 0) {
+      return { removedPackageIds: [], removedItemIds: [] };
+    }
+    const allRemovedIds = [...removal.removedPackageIds, ...removal.removedItemIds];
+    snapshotCoordinatorRef.current?.mutate((state) => removeSelectionFromSnapshot(state, allRemovedIds).snapshot);
+    if (masterSnapshotRef.current) {
+      masterSnapshotRef.current = removeSelectionFromSnapshot(masterSnapshotRef.current, allRemovedIds).snapshot;
+    }
+    if (latestStateRef.current) {
+      latestStateRef.current = removeSelectionFromSnapshot(latestStateRef.current, allRemovedIds).snapshot;
+    }
+    packageOrderStateRef.current.accept(removal.snapshot.session.packageOrder);
+    packageOrderRef.current = removal.snapshot.session.packageOrder;
+    snapshotRef.current = removal.snapshot;
+    setSnapshot(removal.snapshot);
+    setSelectedIds((prev) => pruneSelection(prev, removal.snapshot.session));
+    return {
+      removedPackageIds: removal.removedPackageIds,
+      removedItemIds: removal.removedItemIds
+    };
+  }, []);
+
+  const onPackageCancel = useCallback((packageId: string): void => {
+    const { removedPackageIds, removedItemIds } = applyOptimisticQueueRemoval([packageId]);
+    const trackedIds = [...removedPackageIds, ...removedItemIds];
+    markPendingDeletedIds(trackedIds, 1);
+    const request = typeof window.rd.cancelPackages === "function"
+      ? window.rd.cancelPackages([packageId])
+      : window.rd.cancelPackage(packageId);
+    void request.catch((error) => {
       showToast(`Paket-Löschung fehlgeschlagen: ${String(error)}`, 2400);
+    }).finally(() => {
+      markPendingDeletedIds(trackedIds, -1);
     });
-  }, [showToast]);
+  }, [applyOptimisticQueueRemoval, markPendingDeletedIds, showToast]);
 
   const onPackageMoveUp = useCallback((packageId: string): void => {
     movePackage(packageId, "up");
@@ -4626,36 +4828,18 @@ export function App(): ReactElement {
   }, [showToast]);
 
   const onPackageRemoveItem = useCallback((itemId: string): void => {
-    setSnapshot((prev) => {
-      if (!prev) { return prev; }
-      const item = prev.session.items[itemId];
-      if (!item) { return prev; }
-      const nextItems = { ...prev.session.items };
-      delete nextItems[itemId];
-      const nextPackages = { ...prev.session.packages };
-      const pkg = nextPackages[item.packageId];
-      if (pkg) {
-        const nextItemIds = pkg.itemIds.filter((id) => id !== itemId);
-        if (nextItemIds.length === 0) {
-          delete nextPackages[item.packageId];
-          return {
-            ...prev,
-            session: {
-              ...prev.session,
-              packages: nextPackages,
-              items: nextItems,
-              packageOrder: prev.session.packageOrder.filter((id) => id !== item.packageId)
-            }
-          };
-        }
-        nextPackages[item.packageId] = { ...pkg, itemIds: nextItemIds };
-      }
-      return { ...prev, session: { ...prev.session, packages: nextPackages, items: nextItems } };
-    });
-    void window.rd.removeItem(itemId).catch((error) => {
+    const { removedPackageIds, removedItemIds } = applyOptimisticQueueRemoval([itemId]);
+    const trackedIds = [...removedPackageIds, ...removedItemIds];
+    markPendingDeletedIds(trackedIds, 1);
+    const request = typeof window.rd.removeItems === "function"
+      ? window.rd.removeItems([itemId])
+      : window.rd.removeItem(itemId);
+    void request.catch((error) => {
       showToast(`Entfernen fehlgeschlagen: ${String(error)}`, 2400);
+    }).finally(() => {
+      markPendingDeletedIds(trackedIds, -1);
     });
-  }, [showToast]);
+  }, [applyOptimisticQueueRemoval, markPendingDeletedIds, showToast]);
 
   const onPackageContextMenu = useCallback((packageId: string, itemId: string | undefined, x: number, y: number): void => {
     const clickedId = itemId ?? packageId;
@@ -4863,14 +5047,50 @@ export function App(): ReactElement {
 
   const executeDeleteSelection = useCallback((ids: Set<string>): void => {
     const current = snapshotRef.current;
-    const promises: Promise<void>[] = [];
+    const packageIdsToCancel: string[] = [];
+    const packageIdSet = new Set<string>();
     for (const id of ids) {
-      if (current.session.items[id]) promises.push(window.rd.removeItem(id));
-      else if (current.session.packages[id]) promises.push(window.rd.cancelPackage(id));
+      if (current.session.packages[id]) {
+        packageIdsToCancel.push(id);
+        packageIdSet.add(id);
+      }
     }
-    void Promise.all(promises).catch(() => {});
+    const itemIdsToRemove: string[] = [];
+    for (const id of ids) {
+      const item = current.session.items[id];
+      if (item && !packageIdSet.has(item.packageId)) {
+        itemIdsToRemove.push(id);
+      }
+    }
+    const { removedPackageIds, removedItemIds } = applyOptimisticQueueRemoval(ids);
+    const trackedIds = [...removedPackageIds, ...removedItemIds];
+    markPendingDeletedIds(trackedIds, 1);
+    const promises: Promise<void>[] = [];
+    if (packageIdsToCancel.length > 0) {
+      if (typeof window.rd.cancelPackages === "function") {
+        promises.push(window.rd.cancelPackages(packageIdsToCancel));
+      } else {
+        for (const id of packageIdsToCancel) {
+          promises.push(window.rd.cancelPackage(id));
+        }
+      }
+    }
+    if (itemIdsToRemove.length > 0) {
+      if (typeof window.rd.removeItems === "function") {
+        promises.push(window.rd.removeItems(itemIdsToRemove));
+      } else {
+        for (const id of itemIdsToRemove) {
+          promises.push(window.rd.removeItem(id));
+        }
+      }
+    }
+    void Promise.all(promises)
+      .catch(() => {})
+      .finally(() => {
+        markPendingDeletedIds(trackedIds, -1);
+      });
     setSelectedIds(new Set());
-  }, []);
+  }, [applyOptimisticQueueRemoval, markPendingDeletedIds]);
 
   const requestRemoveOfflinePackages = useCallback((): void => {
     setContextMenu(null);
@@ -5453,6 +5673,7 @@ export function App(): ReactElement {
         for (const entry of packages) {
           next[entry.id] = targetState;
         }
+        writePersistedCollapsedPackages(next);
         return next;
       });
     },

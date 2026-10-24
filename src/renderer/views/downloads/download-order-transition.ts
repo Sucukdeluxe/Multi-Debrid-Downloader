@@ -28,6 +28,12 @@ export function hasRemovedDownloadItems(previous: Readonly<Record<string, unknow
   return Boolean(previous && current && previous !== current && Object.keys(previous).some((id) => !Object.hasOwn(current, id)));
 }
 
+export function hasRemovedDownloadPackages(previousOrder: readonly string[], currentOrder: readonly string[]): boolean {
+  if (previousOrder === currentOrder || previousOrder.length === 0) return false;
+  const currentSet = new Set(currentOrder);
+  return previousOrder.some((id) => !currentSet.has(id));
+}
+
 export function getDownloadOrderTransitionPinnedIds(input: {
   enabled: boolean;
   previousOrder: readonly string[];
