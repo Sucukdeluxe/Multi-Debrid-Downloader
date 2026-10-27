@@ -871,8 +871,18 @@ async function openRangeResponse(
       const location = response.headers.location;
       if (status >= 300 && status < 400 && location) {
         settled = true;
+        let drained = false;
+        let failure: Error | undefined;
+        response.setTimeout(idleTimeoutMs, () => response.destroy(new Error("proxy_idle_timeout")));
+        response.on("error", (error) => { failure ??= error; });
+        response.once("close", () => {
+          if (drained) return;
+          cleanup();
+          reject(signal.aborted ? abortError() : failure ?? new Error("proxy_idle_timeout"));
+        });
         response.resume();
         response.once("end", () => {
+          drained = true;
           cleanup();
           if (redirectCount >= MAX_REDIRECTS) {
             reject(new Error("proxy_redirect_limit"));
