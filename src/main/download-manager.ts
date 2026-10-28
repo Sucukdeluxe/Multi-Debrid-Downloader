@@ -90,6 +90,7 @@ import { StoragePaths, saveSession, saveSessionAsync, saveSettings, saveSettings
 import { compactErrorText, ensureDirPath, filenameFromUrl, formatEta, humanSize, looksLikeOpaqueFilename, nowMs, sanitizeFilename, sleep } from "./utils";
 import { mergeKnownTotalBytes } from "./download-size";
 import { DiskCapacityError, DiskReservationCoordinator, type DiskReservationLease } from "./disk-space";
+import { canOpenPackage, chooseLeastRemainingCandidate, packageDiskBudget, type PackageDiskDemand } from "./disk-admission";
 import { createRendererState } from "./renderer-state";
 import {
   RollingAccountStatisticsAccumulator,
@@ -2159,6 +2160,16 @@ export class DownloadManager extends EventEmitter {
   private diskReservations = new DiskReservationCoordinator();
 
   private diskLeasesByOwner = new Map<string, DiskReservationLease>();
+
+  private diskFreeSnapshot: { bytes: number | null; at: number } = { bytes: null, at: 0 };
+
+  private diskFreeRefreshing = false;
+
+  private packageDiskDemandCache: { at: number; demands: Map<string, PackageDiskDemand & { waiting: boolean }> } | null = null;
+
+  private archiveReclaimAt = 0;
+
+  private archiveReclaimRunning = false;
 
   private retryStateByItem = new Map<string, {
     freshRetryUsed: boolean;
@@ -10590,14 +10601,18 @@ export class DownloadManager extends EventEmitter {
     const now = nowMs();
     const spread = this.settings.spreadDownloadsAcrossPackages;
     const activeByPackage = new Map<string, number>();
-    if (spread) {
-      for (const task of this.activeTasks.values()) {
-        activeByPackage.set(task.packageId, (activeByPackage.get(task.packageId) || 0) + 1);
-      }
+    for (const task of this.activeTasks.values()) {
+      activeByPackage.set(task.packageId, (activeByPackage.get(task.packageId) || 0) + 1);
     }
+    const diskDemands = this.collectPackageDiskDemand(activeByPackage, now);
+    const diskBudget = diskDemands && this.diskFreeSnapshot.bytes !== null
+      ? packageDiskBudget(this.diskFreeSnapshot.bytes, this.settings.downloadDiskReserveGb * 1024 * 1024 * 1024, diskDemands.values())
+      : Number.POSITIVE_INFINITY;
+    const finishFirst = diskBudget < 0;
     const normalCandidates: Array<{ packageId: string; itemId: string }> = [];
     let lowCandidate: { packageId: string; itemId: string } | null = null;
-    const normalSearchDone = () => normalCandidates.length > 0
+    let diskBlockedCandidate: { packageId: string; itemId: string } | null = null;
+    const normalSearchDone = () => !finishFirst && normalCandidates.length > 0
       && (!spread || (activeByPackage.get(normalCandidates[normalCandidates.length - 1].packageId) || 0) === 0);
 
     for (const packageId of this.session.packageOrder) {
@@ -10607,6 +10622,9 @@ export class DownloadManager extends EventEmitter {
       const pkgPrio = pkg.priority || "normal";
       if (normalCandidates.length > 0 && pkgPrio === "low") continue;
       if (pkgPrio === "normal" && normalSearchDone()) continue;
+      const demand = diskDemands?.get(packageId);
+      const diskBlocked = Boolean(demand && !canOpenPackage(demand, diskBudget));
+      if (diskBlocked && diskBlockedCandidate) continue;
 
       for (const itemId of pkg.itemIds) {
         const item = this.session.items[itemId];
@@ -10619,6 +10637,10 @@ export class DownloadManager extends EventEmitter {
         if (this.shouldDelayStartForItem(item)) continue;
 
         const candidate = { packageId, itemId };
+        if (diskBlocked) {
+          diskBlockedCandidate = candidate;
+          break;
+        }
         if (pkgPrio === "high") {
           if (retryAfter > 0) this.retryAfterByItem.delete(itemId);
           return candidate;
@@ -10632,13 +10654,121 @@ export class DownloadManager extends EventEmitter {
       }
     }
 
-    const normalCandidate = spread ? choosePackageCandidate(normalCandidates, activeByPackage) : normalCandidates[0] || null;
-    const chosen = normalCandidate || lowCandidate;
+    const normalCandidate = finishFirst && diskDemands
+      ? chooseLeastRemainingCandidate(normalCandidates, diskDemands)
+      : spread ? choosePackageCandidate(normalCandidates, activeByPackage) : normalCandidates[0] || null;
+    let chosen = normalCandidate || lowCandidate;
+    if (!chosen && diskBlockedCandidate && this.activeTasks.size === 0
+      && ![...(diskDemands?.values() || [])].some((demand) => demand.started && demand.waiting)) {
+      chosen = diskBlockedCandidate;
+    }
     if (chosen) {
       const retryAfter = this.retryAfterByItem.get(chosen.itemId) || 0;
       if (retryAfter > 0) this.retryAfterByItem.delete(chosen.itemId);
     }
     return chosen;
+  }
+
+  private collectPackageDiskDemand(activeByPackage: ReadonlyMap<string, number>, now: number): Map<string, PackageDiskDemand & { waiting: boolean }> | null {
+    if (now - this.diskFreeSnapshot.at > 5000) this.refreshDiskFreeSnapshot();
+    if (this.diskFreeSnapshot.bytes === null) return null;
+    let cached = this.packageDiskDemandCache;
+    if (!cached || now - cached.at > 1000) {
+      const demands = new Map<string, PackageDiskDemand & { waiting: boolean }>();
+      for (const packageId of this.session.packageOrder) {
+        const pkg = this.session.packages[packageId];
+        if (!pkg || pkg.cancelled || !pkg.enabled) continue;
+        let started = false;
+        let waiting = false;
+        let remainingBytes = 0;
+        for (const itemId of pkg.itemIds) {
+          const item = this.session.items[itemId];
+          if (!item) continue;
+          if (item.status === "completed" || item.downloadedBytes > 0) started = true;
+          if (item.status === "queued" || item.status === "reconnect_wait") waiting = true;
+          if (!isFinishedStatus(item.status)) remainingBytes += Math.max(0, (item.totalBytes || 0) - (item.downloadedBytes || 0));
+        }
+        demands.set(packageId, { started, waiting, remainingBytes });
+      }
+      cached = { at: now, demands };
+      this.packageDiskDemandCache = cached;
+    }
+    const demands = new Map<string, PackageDiskDemand & { waiting: boolean }>();
+    for (const [packageId, demand] of cached.demands) {
+      demands.set(packageId, !demand.started && (activeByPackage.get(packageId) || 0) > 0 ? { ...demand, started: true } : demand);
+    }
+    return demands;
+  }
+
+  private refreshDiskFreeSnapshot(): void {
+    const target = this.settings.outputDir;
+    if (this.diskFreeRefreshing || !target) return;
+    this.diskFreeRefreshing = true;
+    void fs.promises.statfs(target)
+      .then((info) => { this.diskFreeSnapshot = { bytes: Number(info.bavail) * Number(info.bsize), at: nowMs() }; })
+      .catch(() => { this.diskFreeSnapshot = { bytes: null, at: nowMs() }; })
+      .finally(() => { this.diskFreeRefreshing = false; });
+  }
+
+  private async reclaimExtractedArchiveSets(pkg: PackageEntry): Promise<number> {
+    if (this.settings.cleanupMode !== "delete" || !pkg.outputDir || !pkg.extractDir) return 0;
+    if (pathKey(pkg.outputDir) === pathKey(pkg.extractDir)) return 0;
+    let dirFiles: string[];
+    try {
+      dirFiles = (await fs.promises.readdir(pkg.outputDir, { withFileTypes: true }))
+        .filter((entry) => entry.isFile())
+        .map((entry) => entry.name);
+    } catch {
+      return 0;
+    }
+    const packageItems = pkg.itemIds.map((itemId) => this.session.items[itemId]).filter(Boolean) as DownloadItem[];
+    const itemByName = new Map<string, DownloadItem>();
+    for (const itemId of pkg.itemIds) {
+      const item = this.session.items[itemId];
+      if (!item) continue;
+      for (const name of [item.targetPath ? path.basename(item.targetPath) : "", item.fileName || ""]) {
+        if (name) itemByName.set(name.toLowerCase(), item);
+      }
+    }
+    const reclaimable: string[] = [];
+    for (const candidate of await findArchiveCandidates(pkg.outputDir)) {
+      const candidateName = path.basename(candidate);
+      if (/\.\d{3}$/i.test(candidateName) && !/\.(zip|7z)\.\d{3}$/i.test(candidateName)) continue;
+      const archiveParts = collectArchiveCleanupTargets(candidate, dirFiles).filter((part) => isArchiveLikePath(part));
+      const extracted = archiveParts.length > 0 && archiveParts.every((part) => {
+        const item = itemByName.get(path.basename(part).toLowerCase());
+        return item?.status === "completed" && isExtractedLabel(item.fullStatus || "");
+      });
+      const setItems = resolveArchiveItemsFromList(candidateName, packageItems);
+      if (extracted && setItems.every((item) => item.status === "completed" && isExtractedLabel(item.fullStatus || ""))) reclaimable.push(candidate);
+    }
+    if (reclaimable.length === 0) return 0;
+    const removed = await cleanupArchives(reclaimable, "delete");
+    if (removed > 0) {
+      this.diskFreeSnapshot = { ...this.diskFreeSnapshot, at: 0 };
+      logger.info(`Hybrid-Cleanup: pkg=${pkg.name}, entpackte Archive entfernt=${removed}`);
+      this.logPackageForPackage(pkg, "INFO", "Entpackte Archive entfernt", { removed, archives: reclaimable.length });
+    }
+    return removed;
+  }
+
+  private reclaimExtractedArchivesSoon(): void {
+    const now = nowMs();
+    if (this.archiveReclaimRunning || now - this.archiveReclaimAt < 60_000) return;
+    this.archiveReclaimAt = now;
+    this.archiveReclaimRunning = true;
+    void (async () => {
+      for (const packageId of [...this.session.packageOrder]) {
+        const pkg = this.session.packages[packageId];
+        if (!pkg || pkg.cancelled) continue;
+        await this.reclaimExtractedArchiveSets(pkg).catch((error) => {
+          logger.warn(`Hybrid-Cleanup fehlgeschlagen: pkg=${pkg.name}, reason=${compactErrorText(error)}`);
+          return 0;
+        });
+      }
+    })().finally(() => {
+      this.archiveReclaimRunning = false;
+    });
   }
 
   private getQueuePresence(now = nowMs()): { hasImmediate: boolean; hasDelayed: boolean } {
@@ -11086,6 +11216,7 @@ export class DownloadManager extends EventEmitter {
               packageId: pkg.id
             }];
             this.releaseTargetPath(item.id);
+            this.reclaimExtractedArchivesSoon();
             this.queueRetry(item, active, Math.max(1000, error.event.retryAt - nowMs()), "Warte auf Festplatte");
             this.persistSoon();
             this.emitState();
@@ -14129,6 +14260,7 @@ export class DownloadManager extends EventEmitter {
     const completedForDeobfuscation = items.filter((item) => item.status === "completed");
     await this.deobfuscateArchiveFiles(pkg, completedForDeobfuscation, signal);
     if (signal?.aborted) return 0;
+    await this.reclaimExtractedArchiveSets(pkg);
 
     const findReadyStart = nowMs();
     const readyArchives = await this.findReadyArchiveSets(pkg);
@@ -14562,6 +14694,7 @@ export class DownloadManager extends EventEmitter {
           entry.updatedAt = updatedAt;
         }
       }
+      await this.reclaimExtractedArchiveSets(pkg);
       return result.extracted;
     } catch (error) {
       const errorText = String(error || "");
@@ -14863,6 +14996,7 @@ export class DownloadManager extends EventEmitter {
             this.diskWaitEvents = [{ ...error.event, packageId }];
             const retryAt = error.event.retryAt;
             this.packageDiskRetryAfterByPackage.set(packageId, retryAt);
+            this.reclaimExtractedArchivesSoon();
             for (const entry of completedItems) {
               entry.fullStatus = "Warte auf Festplatte";
               entry.lastError = "Zu wenig Speicherplatz";
