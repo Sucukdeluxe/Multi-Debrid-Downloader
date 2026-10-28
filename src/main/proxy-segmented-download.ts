@@ -60,6 +60,8 @@ const MAX_PROXY_FILE_BYTES = 8 * 1024 * 1024;
 const SEGMENT_READBACK_BUFFER_BYTES = 1024 * 1024;
 const SEGMENT_WRITE_BUFFER_BYTES = 4 * 1024 * 1024;
 const SEGMENT_WRITE_FLUSH_INTERVAL_MS = 500;
+const TRAFFIC_BATCH_BYTES = 256 * 1024;
+const TRAFFIC_BATCH_INTERVAL_MS = 250;
 const SUSPICIOUS_ZERO_RUN_BYTES = 1024;
 const MAX_ZERO_RUN_VERIFICATIONS_PER_SEGMENT = 4;
 const ZERO_RUN_SENTINEL = Buffer.alloc(SUSPICIOUS_ZERO_RUN_BYTES);
@@ -1309,8 +1311,31 @@ async function downloadSegmentOnce(
   let bufferedBytes = 0;
   let writtenBytes = 0;
   let lastFlushAt = performance.now();
+  let pendingTrafficBytes = 0;
+  let lastTrafficAt = lastFlushAt;
   const setIdleTimeout = (ms: number): void => {
     if (response.socket && !response.destroyed) response.setTimeout(ms);
+  };
+  const reportTraffic = (): number => {
+    const bytes = pendingTrafficBytes;
+    pendingTrafficBytes = 0;
+    lastTrafficAt = performance.now();
+    if (bytes > 0) callbacks.onTrafficBytes?.(bytes);
+    return bytes;
+  };
+  const settleTraffic = async (): Promise<void> => {
+    const bytes = reportTraffic();
+    if (bytes <= 0) return;
+    if (callbacks.waitWhilePaused) {
+      setIdleTimeout(0);
+      await callbacks.waitWhilePaused();
+      setIdleTimeout(options.idleTimeoutMs);
+    }
+    if (callbacks.throttle) {
+      setIdleTimeout(0);
+      await callbacks.throttle(bytes);
+      setIdleTimeout(options.idleTimeoutMs);
+    }
   };
   const flushBuffered = async (): Promise<void> => {
     if (!bufferedBytes) return;
@@ -1333,19 +1358,12 @@ async function downloadSegmentOnce(
         throw abortError();
       }
       const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk);
-      callbacks.onTrafficBytes?.(chunk.length);
+      pendingTrafficBytes += chunk.length;
       if (received + chunk.length > expectedBytes) {
         throw new Error("proxy_segment_overflow");
       }
-      if (callbacks.waitWhilePaused) {
-        setIdleTimeout(0);
-        await callbacks.waitWhilePaused();
-        setIdleTimeout(options.idleTimeoutMs);
-      }
-      if (callbacks.throttle) {
-        setIdleTimeout(0);
-        await callbacks.throttle(chunk.length);
-        setIdleTimeout(options.idleTimeoutMs);
+      if (pendingTrafficBytes >= TRAFFIC_BATCH_BYTES || performance.now() - lastTrafficAt >= TRAFFIC_BATCH_INTERVAL_MS) {
+        await settleTraffic();
       }
       receivedHash.update(chunk);
       trailingZeros = collectSuspiciousZeroRanges(
@@ -1368,8 +1386,10 @@ async function downloadSegmentOnce(
     if (received !== expectedBytes) {
       throw new Error("proxy_segment_underflow");
     }
+    await settleTraffic();
     await flushBuffered();
   } finally {
+    reportTraffic();
     opened.dispose();
     writeBuffer = Buffer.alloc(0);
   }
