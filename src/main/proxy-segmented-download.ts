@@ -571,14 +571,12 @@ export class SharedProxyCoordinator {
     if (!this.waiters.length || this.activeConnections >= this.adaptiveConnectionLimit) return;
     const now = Date.now();
     let earliest = Infinity;
-    for (const waiter of this.waiters) {
-      if (waiter.signal.aborted) continue;
-      for (const proxy of waiter.proxies) {
-        const key = proxyEndpointKey(proxy);
-        if (waiter.excluded.has(key) || this.activeProxies.has(key)) continue;
-        const until = this.cooldownUntil.get(key) || 0;
-        if (until > now) earliest = Math.min(earliest, until);
+    for (const [key, until] of this.cooldownUntil) {
+      if (until <= now) {
+        this.cooldownUntil.delete(key);
+        continue;
       }
+      if (!this.activeProxies.has(key)) earliest = Math.min(earliest, until);
     }
     if (!Number.isFinite(earliest)) return;
     this.cooldownWakeAt = earliest;
