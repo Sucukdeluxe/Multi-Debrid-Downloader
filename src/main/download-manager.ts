@@ -10825,7 +10825,7 @@ export class DownloadManager extends EventEmitter {
   private isRemuxBacklogHolding(now: number): boolean {
     if (!this.settings.autoExtract || !this.settings.keepGermanAudioOnly) return false;
     if (now - this.remuxBacklog.at > 30_000) this.refreshRemuxBacklog();
-    return this.remuxBacklog.holding;
+    return this.remuxBacklog.at === 0 || this.remuxBacklog.holding;
   }
 
   private refreshRemuxBacklog(): void {
