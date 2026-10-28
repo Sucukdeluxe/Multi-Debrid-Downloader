@@ -10876,7 +10876,8 @@ export class DownloadManager extends EventEmitter {
 
   private collectOrphanedExtractOutputsSoon(): void {
     const now = nowMs();
-    if (this.orphanSweepRunning || now - this.orphanSweepAt < 10 * 60_000) return;
+    const interval = this.remuxBacklog.holding ? 2 * 60_000 : 10 * 60_000;
+    if (this.orphanSweepRunning || now - this.orphanSweepAt < interval) return;
     this.orphanSweepAt = now;
     this.orphanSweepRunning = true;
     void this.collectOrphanedExtractOutputs()
@@ -10919,17 +10920,53 @@ export class DownloadManager extends EventEmitter {
       orphans.push({ dir, name: entry.name, videos: videos.length });
     }
     let collected = 0;
+    const jobs: Array<() => Promise<void>> = orphans.map((orphan) => async () => {
+      await this.collectOrphanedExtractDir(orphan.dir, orphan.name, orphan.videos, isOwned);
+      collected += 1;
+    });
+    for (const pkg of await this.idlePackagesWithPendingAudioCleanup()) {
+      jobs.push(() => this.runIdlePackageMediaPostProcess(pkg));
+    }
     let next = 0;
     const worker = async (): Promise<void> => {
-      while (next < orphans.length) {
-        const orphan = orphans[next];
+      while (next < jobs.length) {
+        const job = jobs[next];
         next += 1;
-        await this.collectOrphanedExtractDir(orphan.dir, orphan.name, orphan.videos, isOwned);
-        collected += 1;
+        await job();
       }
     };
-    await Promise.all(Array.from({ length: Math.min(3, orphans.length) }, () => worker()));
+    await Promise.all(Array.from({ length: Math.min(3, jobs.length) }, () => worker()));
     return collected;
+  }
+
+  private async idlePackagesWithPendingAudioCleanup(): Promise<PackageEntry[]> {
+    if (!this.settings.keepGermanAudioOnly) return [];
+    const result: PackageEntry[] = [];
+    for (const packageId of this.session.packageOrder) {
+      const pkg = this.session.packages[packageId];
+      if (!pkg?.extractDir || pkg.cancelled || this.hasPackageLifecycleWork(packageId)) continue;
+      const videos = await this.collectFilesByExtensions(pkg.extractDir, SAMPLE_VIDEO_EXTENSIONS);
+      const pending = videos.some((file) => {
+        const name = path.basename(file);
+        return isRemuxableVideoFile(name) && hasDualLangMarker(name) && !this.remuxUnprocessablePaths.has(pathKey(file))
+          && !path.relative(pkg.extractDir, file).split(path.sep).some((part) => isExtractionStagingDirectoryName(part));
+      });
+      if (pending) result.push(pkg);
+    }
+    return result;
+  }
+
+  private async runIdlePackageMediaPostProcess(pkg: PackageEntry): Promise<void> {
+    if (this.hasPackageLifecycleWork(pkg.id)) return;
+    const shouldAbort = (): boolean => this.session.packages[pkg.id] !== pkg;
+    logger.info(`Ausstehende Tonspur-Bereinigung nachgeholt: pkg=${pkg.name}`);
+    await this.chainPackageFileOp(pkg.id, async () => {
+      await this.autoRenameExtractedVideoFilesImpl(pkg.extractDir, pkg, shouldAbort);
+      await this.keepGermanAudioOnlyImpl(pkg.extractDir, pkg, shouldAbort);
+      await this.collectMkvFilesToLibrary(pkg.id, pkg, shouldAbort, true);
+    }).catch((error) => {
+      logger.warn(`Ausstehende Tonspur-Bereinigung fehlgeschlagen: pkg=${pkg.name}, reason=${compactErrorText(error)}`);
+    });
   }
 
   private async collectOrphanedExtractDir(dir: string, name: string, videoCount: number, isOwned: (dir: string) => boolean): Promise<void> {
