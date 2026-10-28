@@ -226,6 +226,18 @@ interface ProxyPerformance {
   samples: number;
 }
 
+function overloadKey(target: URL): string {
+  return `${target.origin}${target.pathname}${target.search}`;
+}
+
+function overloadOrigin(key: string): string {
+  try {
+    return new URL(key).origin;
+  } catch {
+    return key;
+  }
+}
+
 export class SharedProxyCoordinator {
   private configuredConnectionLimit = DEFAULT_CONNECTION_LIMIT;
   private adaptiveConnectionLimit = DEFAULT_CONNECTION_LIMIT;
@@ -257,7 +269,7 @@ export class SharedProxyCoordinator {
       downloadGroups: this.registeredGroups.size,
       cooldownWakeAt: this.cooldownWakeAt,
       throttledAt: Math.max(this.lastThrottleAt, ...Array.from(this.originThrottle.values(), state => state.lastThrottleAt)) || null,
-      originLimits: Array.from(this.originThrottle, ([origin, state]) => ({ origin, limit: state.limit, active: this.activeForOrigin(origin), throttledAt: state.lastThrottleAt })),
+      originLimits: Array.from(this.originThrottle, ([origin, state]) => ({ origin: overloadOrigin(origin), limit: state.limit, active: this.activeForOrigin(origin), throttledAt: state.lastThrottleAt })),
       coolingProxies: this.countCoolingProxies(),
       measuredProxies: this.performance.size,
       leaseSuccesses: this.leaseSuccesses,
@@ -1067,7 +1079,7 @@ async function probeRangeSupport(
     }
   }
   if (lastHttpStatus > 0) {
-    sharedProxyCoordinator.reportOriginStatus(lastHttpStatus, target.origin);
+    sharedProxyCoordinator.reportOriginStatus(lastHttpStatus, overloadKey(target));
     return { status: "origin_error", httpStatus: lastHttpStatus };
   }
   return { status: "unavailable", ...(lastErrorCode ? { errorCode: lastErrorCode } : {}) };
@@ -1426,7 +1438,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
   }
 
   const groupId = String(options.downloadId || options.targetPath || randomUUID());
-  const unregisterGroup = sharedProxyCoordinator.registerGroup(groupId, target.origin);
+  const unregisterGroup = sharedProxyCoordinator.registerGroup(groupId, overloadKey(target));
   const releaseConnections = sharedProxyConnections.retain(totalConnectionLimit);
   try {
   const normalized = {
@@ -1603,7 +1615,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
             updateProgress(-attemptProgress, committedProgress - attemptProgress, probe.totalBytes);
           }
           if (originError) {
-            sharedProxyCoordinator.reportOriginStatus(error.statusCode, target.origin);
+            sharedProxyCoordinator.reportOriginStatus(error.statusCode, overloadKey(target));
             const now = Date.now();
             if ((error.statusCode === 503 || error.statusCode === 429) && !options.signal.aborted) {
               throttledSince ||= now;
