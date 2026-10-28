@@ -10667,6 +10667,7 @@ export class DownloadManager extends EventEmitter {
     for (const task of this.activeTasks.values()) {
       activeByPackage.set(task.packageId, (activeByPackage.get(task.packageId) || 0) + 1);
     }
+    this.collectOrphanedExtractOutputsSoon();
     if (this.isRemuxBacklogHolding(now)) return null;
     const diskDemands = this.collectPackageDiskDemand(activeByPackage, now);
     const diskBudget = diskDemands && this.diskFreeSnapshot.bytes !== null
