@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import { flushDiagnosticLogWrites } from "../diagnostic-log-writer";
 import crypto from "node:crypto";
+import zlib from "node:zlib";
 import AdmZip from "adm-zip";
 import type { AppController } from "../app-controller";
 import { createRendererAccounts, createRendererSettings } from "../renderer-state";
@@ -22,6 +23,7 @@ import { rendererPerformance } from "../renderer-performance";
 import { getProcessingBudget, setProcessingBudget } from "../processing-budget";
 import { runtimePerformance } from "../runtime-performance";
 import { getProxyTransferSnapshot } from "../proxy-segmented-download";
+import { captureCpuProfile, summarizeCpuProfile } from "../cpu-profile";
 import type { AddLinksPayload, DebridProvider, PackagePriority, RendererSettingsUpdate } from "../../shared/types";
 import type { McpScope } from "../../shared/mcp";
 import type { McpTool } from "./endpoint";
@@ -114,6 +116,10 @@ export function createMcpTools(deps: McpToolDependencies): McpTool[] {
   read("accounts_list", "Read accounts and their known validation and usage status; credentials remain masked.", object(page, []), args => paginate(createRendererAccounts(c.getSettings()), args));
   read("providers", "Read provider runtime cooldowns, capacity and routing information.", object(), () => getProviderRuntimeSnapshot());
   read("performance", "Read bounded main-thread delay, CPU, memory, disk timings and connection/readback/extraction queue occupancy from memory without running host commands.", object(), () => ({ ...runtimePerformance.snapshot(), threadpoolSize: Number(process.env.UV_THREADPOOL_SIZE) || 4, proxyTransfers: getProxyTransferSnapshot(), extraction: extractionLimiter.snapshot() }));
+  read("cpu_profile", "Sample the main process CPU for 1 to 60 seconds with the built-in V8 profiler and return the hottest functions. With keepProfile the full gzip-compressed .cpuprofile is kept as a temporary artifact. Only one capture runs at a time; downloads continue.", object({ seconds: integer(60, 1), limit: integer(100, 5), keepProfile: { type: "boolean" } }, []), async (args, context) => {
+    const profile = await captureCpuProfile(Number(args.seconds || 20), context.signal);
+    return { ...summarizeCpuProfile(profile, Number(args.limit || 40)), ...(args.keepProfile === true ? { profile: artifact(zlib.gzipSync(Buffer.from(JSON.stringify(profile))), ["read"]) } : {}) };
+  });
   read("errors", "Read the latest application warnings and errors.", object({ limit: integer(500, 1) }, []), args => getRecentErrors().slice(-Number(args.limit || 100)));
   read("renderer_performance", "Read bounded renderer long-task, visible scroll-frame and state-update measurements. Hidden or missing samples do not prove a freeze; frame gaps also depend on display and remote desktop scheduling.", object(), () => rendererPerformance.snapshot());
   read("processing_budget", "Read active and waiting download file-I/O and video-processing slots. The legacy downloadWrites field covers both writes and integrity readback.", object(), () => getProcessingBudget());
