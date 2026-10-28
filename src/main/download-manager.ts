@@ -1070,7 +1070,7 @@ const REMUX_BACKLOG_HOLD_BYTES = 40 * 1024 ** 3;
 
 const REMUX_BACKLOG_RESUME_BYTES = 20 * 1024 ** 3;
 
-const REMUX_BACKLOG_DOWNLOADS = 2;
+const REMUX_BACKLOG_STALL_MS = 30 * 60_000;
 
 const REMUX_BACKLOG_MAX_AGE_MS = 6 * 60 * 60_000;
 
@@ -2220,9 +2220,11 @@ export class DownloadManager extends EventEmitter {
 
   private orphanSweepRunning = false;
 
-  private remuxBacklog: { bytes: number; at: number; holding: boolean } = { bytes: 0, at: 0, holding: false };
+  private remuxBacklog = { bytes: 0, at: 0, holding: false, progressBytes: 0, progressAt: 0, stalledUntil: 0 };
 
   private remuxBacklogRefreshing = false;
+
+  private remuxBacklogLimits = { holdBytes: REMUX_BACKLOG_HOLD_BYTES, resumeBytes: REMUX_BACKLOG_RESUME_BYTES };
 
   private remuxUnprocessablePaths = new Set<string>();
 
@@ -10665,7 +10667,7 @@ export class DownloadManager extends EventEmitter {
     for (const task of this.activeTasks.values()) {
       activeByPackage.set(task.packageId, (activeByPackage.get(task.packageId) || 0) + 1);
     }
-    if (this.isRemuxBacklogHolding(now) && this.activeTasks.size >= REMUX_BACKLOG_DOWNLOADS) return null;
+    if (this.isRemuxBacklogHolding(now)) return null;
     const diskDemands = this.collectPackageDiskDemand(activeByPackage, now);
     const diskBudget = diskDemands && this.diskFreeSnapshot.bytes !== null
       ? packageDiskBudget(this.diskFreeSnapshot.bytes, this.settings.downloadDiskReserveGb * 1024 * 1024 * 1024, diskDemands.values())
@@ -10842,14 +10844,26 @@ export class DownloadManager extends EventEmitter {
         if (!stat || Math.max(stat.mtimeMs, stat.ctimeMs) < cutoff) continue;
         bytes += stat.size;
       }
-      const wasHolding = this.remuxBacklog.holding;
-      const holding = wasHolding ? bytes > REMUX_BACKLOG_RESUME_BYTES : bytes > REMUX_BACKLOG_HOLD_BYTES;
-      this.remuxBacklog = { bytes, at: nowMs(), holding };
-      if (holding !== wasHolding) {
+      const now = nowMs();
+      const previous = this.remuxBacklog;
+      const wasHolding = previous.holding;
+      let holding = now >= previous.stalledUntil
+        && (wasHolding ? bytes > this.remuxBacklogLimits.resumeBytes : bytes > this.remuxBacklogLimits.holdBytes);
+      let { progressBytes, progressAt, stalledUntil } = previous;
+      if (holding && (!wasHolding || bytes < progressBytes - 1024 ** 3)) {
+        progressBytes = bytes;
+        progressAt = now;
+      }
+      if (holding && wasHolding && now - progressAt > REMUX_BACKLOG_STALL_MS) {
+        holding = false;
+        stalledUntil = now + REMUX_BACKLOG_STALL_MS;
+        logger.warn(`Tonspur-Rückstau ${humanSize(bytes)} baut sich seit 30 min nicht ab: Downloads laufen wieder normal`);
+      } else if (holding !== wasHolding) {
         logger.info(holding
-          ? `Tonspur-Rückstau ${humanSize(bytes)}: höchstens ${REMUX_BACKLOG_DOWNLOADS} Downloads, bis er abgebaut ist`
+          ? `Tonspur-Rückstau ${humanSize(bytes)}: keine neuen Downloads, bis er unter ${humanSize(this.remuxBacklogLimits.resumeBytes)} liegt`
           : `Tonspur-Rückstau abgebaut (${humanSize(bytes)}): Downloads wieder normal`);
       }
+      this.remuxBacklog = { bytes, at: now, holding, progressBytes, progressAt, stalledUntil };
     })()
       .catch((error) => {
         logger.warn(`Tonspur-Rückstau nicht ermittelt: ${compactErrorText(error)}`);
