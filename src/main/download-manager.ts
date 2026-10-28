@@ -1064,6 +1064,39 @@ function resolveMegaDebridProvider(settings: AppSettings, provider: DebridProvid
   return settings.megaDebridPreferApi ? "megadebrid-api" : "megadebrid-web";
 }
 
+async function listFilesRecursive(root: string): Promise<string[]> {
+  const files: string[] = [];
+  const stack = [root];
+  while (stack.length > 0) {
+    const current = stack.pop() as string;
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = await fs.promises.readdir(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) stack.push(full);
+      else if (entry.isFile()) files.push(full);
+    }
+  }
+  return files;
+}
+
+async function newestChangeMs(dir: string, files: string[]): Promise<number> {
+  let newest = 0;
+  for (const target of [dir, ...files]) {
+    try {
+      const stat = await fs.promises.stat(target);
+      newest = Math.max(newest, stat.mtimeMs, stat.ctimeMs);
+    } catch {
+      newest = Math.max(newest, nowMs());
+    }
+  }
+  return newest;
+}
+
 function pathKey(filePath: string): string {
   const resolved = path.resolve(filePath);
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
@@ -2170,6 +2203,10 @@ export class DownloadManager extends EventEmitter {
   private archiveReclaimAt = 0;
 
   private archiveReclaimRunning = false;
+
+  private orphanSweepAt = 0;
+
+  private orphanSweepRunning = false;
 
   private retryStateByItem = new Map<string, {
     freshRetryUsed: boolean;
@@ -5380,6 +5417,7 @@ export class DownloadManager extends EventEmitter {
         this.packageFileOpChain.delete(pkgId);
       }
       this.tryFinalizePackageResult(pkgId);
+      this.applyPackageDoneCleanup(pkgId);
     });
   }
 
@@ -7832,6 +7870,7 @@ export class DownloadManager extends EventEmitter {
           }
         }
       } else if (policy === "package_done" || policy === "on_start") {
+        if (this.hasPackageLifecycleWork(pkgId)) continue;
         const allCompleted = pkg.itemIds.every((id) => {
           const item = this.session.items[id];
           return !item || item.status === "completed" || item.status === "failed" || item.status === "cancelled";
@@ -9339,6 +9378,7 @@ export class DownloadManager extends EventEmitter {
           );
         } else {
           this.tryFinalizePackageResult(packageId);
+          this.applyPackageDoneCleanup(packageId);
         }
       }
     })();
@@ -10704,6 +10744,7 @@ export class DownloadManager extends EventEmitter {
     const target = this.settings.outputDir;
     if (this.diskFreeRefreshing || !target) return;
     this.diskFreeRefreshing = true;
+    this.collectOrphanedExtractOutputsSoon();
     void fs.promises.statfs(target)
       .then((info) => {
         const firstSnapshot = this.diskFreeSnapshot.at === 0 && this.diskFreeSnapshot.bytes === null;
@@ -10755,6 +10796,78 @@ export class DownloadManager extends EventEmitter {
       this.logPackageForPackage(pkg, "INFO", "Entpackte Archive entfernt", { removed, archives: reclaimable.length });
     }
     return removed;
+  }
+
+  private collectOrphanedExtractOutputsSoon(): void {
+    const now = nowMs();
+    if (this.orphanSweepRunning || now - this.orphanSweepAt < 10 * 60_000) return;
+    this.orphanSweepAt = now;
+    this.orphanSweepRunning = true;
+    void this.collectOrphanedExtractOutputs()
+      .catch((error) => {
+        logger.warn(`Verwaiste Entpackordner: Fehler=${compactErrorText(error)}`);
+        return 0;
+      })
+      .finally(() => {
+        this.orphanSweepRunning = false;
+      });
+  }
+
+  private async collectOrphanedExtractOutputs(): Promise<number> {
+    if (!this.settings.autoExtract || !this.settings.collectMkvToLibrary) return 0;
+    const root = String(this.settings.extractDir || "").trim();
+    const library = String(this.settings.mkvLibraryDir || "").trim();
+    if (!root || !library) return 0;
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(root, { withFileTypes: true });
+    } catch {
+      return 0;
+    }
+    const isOwned = (dir: string): boolean => Object.values(this.session.packages)
+      .some((pkg) => Boolean(pkg?.extractDir) && pathKey(pkg.extractDir) === pathKey(dir));
+    let collected = 0;
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const dir = path.join(root, entry.name);
+      if (isExtractionStagingDirectoryName(entry.name)) {
+        await this.removeStaleExtractionStaging(dir);
+        continue;
+      }
+      if (entry.name.startsWith(".") || isOwned(dir)) continue;
+      if (isPathInsideDir(library, dir) || isPathInsideDir(dir, library)) continue;
+      const videos = await this.collectFilesByExtensions(dir, SAMPLE_VIDEO_EXTENSIONS);
+      if (videos.length === 0) continue;
+      if (nowMs() - await newestChangeMs(dir, videos) < 15 * 60_000) continue;
+      const pkg = {
+        id: `orphan-${createHash("sha1").update(pathKey(dir)).digest("hex").slice(0, 16)}`,
+        name: entry.name,
+        outputDir: "",
+        extractDir: dir,
+        status: "completed",
+        itemIds: [],
+        cancelled: false,
+        enabled: true,
+        createdAt: nowMs(),
+        updatedAt: nowMs()
+      } as unknown as PackageEntry;
+      const shouldAbort = (): boolean => isOwned(dir);
+      logger.info(`Verwaister Entpackordner wird übernommen: dir=${dir}, videos=${videos.length}`);
+      await this.chainPackageFileOp(pkg.id, async () => {
+        await this.autoRenameExtractedVideoFilesImpl(dir, pkg, shouldAbort, true);
+        await this.keepGermanAudioOnlyImpl(dir, pkg, shouldAbort);
+        await this.collectMkvFilesToLibrary(pkg.id, pkg, shouldAbort);
+      });
+      collected += 1;
+    }
+    return collected;
+  }
+
+  private async removeStaleExtractionStaging(dir: string): Promise<void> {
+    const files = await listFilesRecursive(dir);
+    if (nowMs() - await newestChangeMs(dir, files) < 3 * 60 * 60_000) return;
+    await fs.promises.rm(dir, { recursive: true, force: true });
+    logger.info(`Veralteter Entpack-Zwischenordner entfernt: dir=${dir}`);
   }
 
   private reclaimExtractedArchivesSoon(): void {
@@ -14671,6 +14784,7 @@ export class DownloadManager extends EventEmitter {
               this.packageHybridPostProcessTasks.delete(packageId);
             }
             this.tryFinalizePackageResult(packageId);
+            this.applyPackageDoneCleanup(packageId);
           }
         })();
         hybridHandle.task = hybridTask;
@@ -15602,6 +15716,10 @@ export class DownloadManager extends EventEmitter {
       for (const itemId of [...pkg.itemIds]) {
         this.applyCompletedCleanupPolicy(packageId, itemId, { ignoreDeferred: true });
       }
+      return;
+    }
+
+    if (this.hasPackageLifecycleWork(packageId)) {
       return;
     }
 
