@@ -40,6 +40,7 @@ import { getProxyAuthentication } from "./network-proxy";
 import { McpService } from "./mcp/service";
 import { runtimePerformance } from "./runtime-performance";
 import { installBlockingIoMonitor } from "./blocking-io-monitor";
+import { pinProcessWorkingSet } from "./working-set";
 
 forceDarkNativeTheme(nativeTheme);
 
@@ -1378,6 +1379,9 @@ app.whenReady().then(async () => {
   controller = new AppController();
   runtimePerformance.start((sample) => logger.warn(`Hauptthread verzögert: maxDelayMs=${sample.maxDelayMs}, timerDelayMs=${sample.timerDelayMs}, cpuPercent=${sample.cpuPercent}`));
   installBlockingIoMonitor(runtimePerformance);
+  void pinProcessWorkingSet(process.pid, 1024 * 1024 * 1024, 8 * 1024 * 1024 * 1024)
+    .then(() => logger.info("Arbeitsspeicher des Hauptprozesses gegen Auslagern gesichert (mindestens 1 GB)"))
+    .catch((error) => logger.warn(`Arbeitsspeicher konnte nicht gesichert werden: ${String(error)}`));
   controller.retireLegacyRemoteDiagnostics();
   dailyStartScheduler = new DailyStartScheduler(controller);
   await cleanupStaleSubstDrives();
