@@ -1066,6 +1066,14 @@ function resolveMegaDebridProvider(settings: AppSettings, provider: DebridProvid
 
 const processStartedAt = Date.now();
 
+const REMUX_BACKLOG_HOLD_BYTES = 40 * 1024 ** 3;
+
+const REMUX_BACKLOG_RESUME_BYTES = 20 * 1024 ** 3;
+
+const REMUX_BACKLOG_DOWNLOADS = 2;
+
+const REMUX_BACKLOG_MAX_AGE_MS = 6 * 60 * 60_000;
+
 const abandonedProxyPartRe = /\.proxy-(\d+)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.part$/i;
 
 async function listFilesRecursive(root: string): Promise<string[]> {
@@ -2211,6 +2219,12 @@ export class DownloadManager extends EventEmitter {
   private orphanSweepAt = 0;
 
   private orphanSweepRunning = false;
+
+  private remuxBacklog: { bytes: number; at: number; holding: boolean } = { bytes: 0, at: 0, holding: false };
+
+  private remuxBacklogRefreshing = false;
+
+  private remuxUnprocessablePaths = new Set<string>();
 
   private retryStateByItem = new Map<string, {
     freshRetryUsed: boolean;
@@ -5657,6 +5671,9 @@ export class DownloadManager extends EventEmitter {
         }, resolved.item, resolved.matchedBy);
       }
       recordFile(sourceName, result.action, result.error ? `${result.reason} — ${result.error}` : result.reason, langs || undefined);
+      if (result.action === "error" || result.action === "skipped-no-german" || result.action === "skipped-no-audio" || result.action === "skipped-no-tool") {
+        this.remuxUnprocessablePaths.add(pathKey(sourcePath));
+      }
       // Per-file main-log lines so the cause of any unprocessed file is visible
       // without opening the rename/item logs.
       if (result.action === "error") {
@@ -10648,6 +10665,7 @@ export class DownloadManager extends EventEmitter {
     for (const task of this.activeTasks.values()) {
       activeByPackage.set(task.packageId, (activeByPackage.get(task.packageId) || 0) + 1);
     }
+    if (this.isRemuxBacklogHolding(now) && this.activeTasks.size >= REMUX_BACKLOG_DOWNLOADS) return null;
     const diskDemands = this.collectPackageDiskDemand(activeByPackage, now);
     const diskBudget = diskDemands && this.diskFreeSnapshot.bytes !== null
       ? packageDiskBudget(this.diskFreeSnapshot.bytes, this.settings.downloadDiskReserveGb * 1024 * 1024 * 1024, diskDemands.values())
@@ -10800,6 +10818,46 @@ export class DownloadManager extends EventEmitter {
       this.logPackageForPackage(pkg, "INFO", "Entpackte Archive entfernt", { removed, archives: reclaimable.length });
     }
     return removed;
+  }
+
+  private isRemuxBacklogHolding(now: number): boolean {
+    if (!this.settings.autoExtract || !this.settings.keepGermanAudioOnly) return false;
+    if (now - this.remuxBacklog.at > 30_000) this.refreshRemuxBacklog();
+    return this.remuxBacklog.holding;
+  }
+
+  private refreshRemuxBacklog(): void {
+    const root = String(this.settings.extractDir || "").trim();
+    if (this.remuxBacklogRefreshing || !root) return;
+    this.remuxBacklogRefreshing = true;
+    void (async () => {
+      let bytes = 0;
+      const cutoff = nowMs() - REMUX_BACKLOG_MAX_AGE_MS;
+      for (const file of await listFilesRecursive(root)) {
+        const name = path.basename(file);
+        if (!isRemuxableVideoFile(name) || !hasDualLangMarker(name)) continue;
+        if (path.relative(root, file).split(path.sep).some((part) => isExtractionStagingDirectoryName(part))) continue;
+        if (this.remuxUnprocessablePaths.has(pathKey(file))) continue;
+        const stat = await fs.promises.stat(file).catch(() => null);
+        if (!stat || Math.max(stat.mtimeMs, stat.ctimeMs) < cutoff) continue;
+        bytes += stat.size;
+      }
+      const wasHolding = this.remuxBacklog.holding;
+      const holding = wasHolding ? bytes > REMUX_BACKLOG_RESUME_BYTES : bytes > REMUX_BACKLOG_HOLD_BYTES;
+      this.remuxBacklog = { bytes, at: nowMs(), holding };
+      if (holding !== wasHolding) {
+        logger.info(holding
+          ? `Tonspur-Rückstau ${humanSize(bytes)}: höchstens ${REMUX_BACKLOG_DOWNLOADS} Downloads, bis er abgebaut ist`
+          : `Tonspur-Rückstau abgebaut (${humanSize(bytes)}): Downloads wieder normal`);
+      }
+    })()
+      .catch((error) => {
+        logger.warn(`Tonspur-Rückstau nicht ermittelt: ${compactErrorText(error)}`);
+        this.remuxBacklog = { ...this.remuxBacklog, at: nowMs() };
+      })
+      .finally(() => {
+        this.remuxBacklogRefreshing = false;
+      });
   }
 
   private collectOrphanedExtractOutputsSoon(): void {
