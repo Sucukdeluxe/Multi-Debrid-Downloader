@@ -10705,7 +10705,12 @@ export class DownloadManager extends EventEmitter {
     if (this.diskFreeRefreshing || !target) return;
     this.diskFreeRefreshing = true;
     void fs.promises.statfs(target)
-      .then((info) => { this.diskFreeSnapshot = { bytes: Number(info.bavail) * Number(info.bsize), at: nowMs() }; })
+      .then((info) => {
+        const firstSnapshot = this.diskFreeSnapshot.at === 0 && this.diskFreeSnapshot.bytes === null;
+        const bytes = Number(info.bavail) * Number(info.bsize);
+        this.diskFreeSnapshot = { bytes, at: nowMs() };
+        if (firstSnapshot || bytes < 2 * this.settings.downloadDiskReserveGb * 1024 * 1024 * 1024) this.reclaimExtractedArchivesSoon();
+      })
       .catch(() => { this.diskFreeSnapshot = { bytes: null, at: nowMs() }; })
       .finally(() => { this.diskFreeRefreshing = false; });
   }
