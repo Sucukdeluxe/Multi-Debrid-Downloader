@@ -1064,6 +1064,10 @@ function resolveMegaDebridProvider(settings: AppSettings, provider: DebridProvid
   return settings.megaDebridPreferApi ? "megadebrid-api" : "megadebrid-web";
 }
 
+const processStartedAt = Date.now();
+
+const abandonedProxyPartRe = /\.proxy-(\d+)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.part$/i;
+
 async function listFilesRecursive(root: string): Promise<string[]> {
   const files: string[] = [];
   const stack = [root];
@@ -10814,6 +10818,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   private async collectOrphanedExtractOutputs(): Promise<number> {
+    await this.removeAbandonedDownloadParts();
     if (!this.settings.autoExtract || !this.settings.collectMkvToLibrary) return 0;
     const root = String(this.settings.extractDir || "").trim();
     const library = String(this.settings.mkvLibraryDir || "").trim();
@@ -10879,9 +10884,47 @@ export class DownloadManager extends EventEmitter {
     });
   }
 
+  private async removeAbandonedDownloadParts(): Promise<void> {
+    const dirs = new Set<string>();
+    for (const pkg of Object.values(this.session.packages)) {
+      if (pkg?.outputDir) dirs.add(pkg.outputDir);
+    }
+    const root = String(this.settings.outputDir || "").trim();
+    if (root) {
+      const entries = await fs.promises.readdir(root, { withFileTypes: true }).catch(() => [] as fs.Dirent[]);
+      for (const entry of entries) {
+        if (entry.isDirectory() && !entry.name.startsWith(".")) dirs.add(path.join(root, entry.name));
+      }
+    }
+    let removed = 0;
+    let bytes = 0;
+    for (const dir of dirs) {
+      const entries = await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => [] as fs.Dirent[]);
+      for (const entry of entries) {
+        const match = entry.isFile() ? abandonedProxyPartRe.exec(entry.name) : null;
+        if (!match || Number(match[1]) === process.pid) continue;
+        const target = path.join(dir, entry.name);
+        const size = await fs.promises.stat(target).then((stat) => stat.size).catch(() => 0);
+        try {
+          await fs.promises.rm(target, { force: true });
+          removed += 1;
+          bytes += size;
+        } catch (error) {
+          logger.warn(`Verwaiste Download-Teildatei nicht entfernt: file=${target}, reason=${compactErrorText(error)}`);
+        }
+      }
+    }
+    if (removed > 0) {
+      this.diskFreeSnapshot = { ...this.diskFreeSnapshot, at: 0 };
+      logger.info(`Verwaiste Download-Teildateien entfernt: files=${removed}, size=${humanSize(bytes)}`);
+    }
+  }
+
   private async removeStaleExtractionStaging(dir: string): Promise<void> {
+    const createdAt = await fs.promises.stat(dir).then((stat) => stat.birthtimeMs || stat.ctimeMs).catch(() => nowMs());
     const files = await listFilesRecursive(dir);
-    if (nowMs() - await newestChangeMs(dir, files) < 3 * 60 * 60_000) return;
+    const fromEarlierRun = createdAt > 0 && createdAt < processStartedAt - 60_000;
+    if (!fromEarlierRun && nowMs() - await newestChangeMs(dir, files) < 3 * 60 * 60_000) return;
     await fs.promises.rm(dir, { recursive: true, force: true });
     logger.info(`Veralteter Entpack-Zwischenordner entfernt: dir=${dir}`);
   }
