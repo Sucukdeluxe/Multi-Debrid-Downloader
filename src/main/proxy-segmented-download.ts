@@ -52,7 +52,7 @@ function isOriginCertificateError(error: unknown): boolean {
   return CERTIFICATE_ERROR_CODE.test(code);
 }
 const DEFAULT_CONNECTION_LIMIT = 32;
-const MAX_CONNECTION_LIMIT = 80;
+const MAX_CONNECTION_LIMIT = 200;
 const PROXY_PROBE_END = 1;
 const MAX_REDIRECTS = 5;
 const MAX_SEGMENTS = 4_096;
