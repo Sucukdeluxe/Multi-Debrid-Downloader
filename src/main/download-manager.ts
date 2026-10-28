@@ -10826,7 +10826,7 @@ export class DownloadManager extends EventEmitter {
     }
     const isOwned = (dir: string): boolean => Object.values(this.session.packages)
       .some((pkg) => Boolean(pkg?.extractDir) && pathKey(pkg.extractDir) === pathKey(dir));
-    let collected = 0;
+    const orphans: Array<{ dir: string; name: string; videos: number }> = [];
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const dir = path.join(root, entry.name);
@@ -10839,28 +10839,44 @@ export class DownloadManager extends EventEmitter {
       const videos = await this.collectFilesByExtensions(dir, SAMPLE_VIDEO_EXTENSIONS);
       if (videos.length === 0) continue;
       if (nowMs() - await newestChangeMs(dir, videos) < 15 * 60_000) continue;
-      const pkg = {
-        id: `orphan-${createHash("sha1").update(pathKey(dir)).digest("hex").slice(0, 16)}`,
-        name: entry.name,
-        outputDir: "",
-        extractDir: dir,
-        status: "completed",
-        itemIds: [],
-        cancelled: false,
-        enabled: true,
-        createdAt: nowMs(),
-        updatedAt: nowMs()
-      } as unknown as PackageEntry;
-      const shouldAbort = (): boolean => isOwned(dir);
-      logger.info(`Verwaister Entpackordner wird übernommen: dir=${dir}, videos=${videos.length}`);
-      await this.chainPackageFileOp(pkg.id, async () => {
-        await this.autoRenameExtractedVideoFilesImpl(dir, pkg, shouldAbort, true);
-        await this.keepGermanAudioOnlyImpl(dir, pkg, shouldAbort);
-        await this.collectMkvFilesToLibrary(pkg.id, pkg, shouldAbort);
-      });
-      collected += 1;
+      orphans.push({ dir, name: entry.name, videos: videos.length });
     }
+    let collected = 0;
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      while (next < orphans.length) {
+        const orphan = orphans[next];
+        next += 1;
+        await this.collectOrphanedExtractDir(orphan.dir, orphan.name, orphan.videos, isOwned);
+        collected += 1;
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(3, orphans.length) }, () => worker()));
     return collected;
+  }
+
+  private async collectOrphanedExtractDir(dir: string, name: string, videoCount: number, isOwned: (dir: string) => boolean): Promise<void> {
+    const pkg = {
+      id: `orphan-${createHash("sha1").update(pathKey(dir)).digest("hex").slice(0, 16)}`,
+      name,
+      outputDir: "",
+      extractDir: dir,
+      status: "completed",
+      itemIds: [],
+      cancelled: false,
+      enabled: true,
+      createdAt: nowMs(),
+      updatedAt: nowMs()
+    } as unknown as PackageEntry;
+    const shouldAbort = (): boolean => isOwned(dir);
+    logger.info(`Verwaister Entpackordner wird übernommen: dir=${dir}, videos=${videoCount}`);
+    await this.chainPackageFileOp(pkg.id, async () => {
+      await this.autoRenameExtractedVideoFilesImpl(dir, pkg, shouldAbort, true);
+      await this.keepGermanAudioOnlyImpl(dir, pkg, shouldAbort);
+      await this.collectMkvFilesToLibrary(pkg.id, pkg, shouldAbort);
+    }).catch((error) => {
+      logger.warn(`Verwaister Entpackordner fehlgeschlagen: dir=${dir}, reason=${compactErrorText(error)}`);
+    });
   }
 
   private async removeStaleExtractionStaging(dir: string): Promise<void> {
