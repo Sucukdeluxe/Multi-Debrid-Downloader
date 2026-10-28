@@ -13501,6 +13501,10 @@ export class DownloadManager extends EventEmitter {
     if (!context || context.downloadsFinished) {
       return;
     }
+    if (!this.settings.notifyOnRemainingBelow) {
+      context.remainingNotification.snapshot = null;
+      return;
+    }
     const current = this.buildRunRemainingSnapshot();
     if (current.finalizingItems > 0) {
       return;

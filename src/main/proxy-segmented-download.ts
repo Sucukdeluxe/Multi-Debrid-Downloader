@@ -4,7 +4,8 @@ import { withProcessingBudget } from "./processing-budget";
 import http from "node:http";
 import https from "node:https";
 import path from "node:path";
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
+import { crc32 } from "node:zlib";
 import { performance } from "node:perf_hooks";
 import type { IncomingMessage } from "node:http";
 import { HttpsProxyAgent } from "https-proxy-agent";
@@ -1164,13 +1165,13 @@ function collectSuspiciousZeroRanges(
   return trailingZeros;
 }
 
-async function hashFileRange(
+async function checksumFileRange(
   handle: fs.promises.FileHandle,
   start: number,
   length: number,
   signal: AbortSignal
-): Promise<Buffer> {
-  const hash = createHash("sha256");
+): Promise<number> {
+  let checksum = 0;
   const buffer = Buffer.allocUnsafe(Math.min(SEGMENT_READBACK_BUFFER_BYTES, Math.max(1, length)));
   let position = start;
   let remaining = length;
@@ -1184,11 +1185,11 @@ async function hashFileRange(
       if (bytesRead <= 0) {
         throw new Error("proxy_segment_readback_underflow");
       }
-      hash.update(buffer.subarray(0, bytesRead));
+      checksum = crc32(buffer.subarray(0, bytesRead), checksum);
       position += bytesRead;
       remaining -= bytesRead;
     }
-    return hash.digest();
+    return checksum;
 }
 
 async function readRangeOnce(
@@ -1304,7 +1305,7 @@ async function downloadSegmentOnce(
   }
 
   let received = 0;
-  const receivedHash = createHash("sha256");
+  let receivedChecksum = 0;
   const suspiciousZeroRanges: Segment[] = [];
   let trailingZeros = 0;
   let writeBuffer = Buffer.allocUnsafe(Math.min(SEGMENT_WRITE_BUFFER_BYTES, expectedBytes));
@@ -1365,7 +1366,7 @@ async function downloadSegmentOnce(
       if (pendingTrafficBytes >= TRAFFIC_BATCH_BYTES || performance.now() - lastTrafficAt >= TRAFFIC_BATCH_INTERVAL_MS) {
         await settleTraffic();
       }
-      receivedHash.update(chunk);
+      receivedChecksum = crc32(chunk, receivedChecksum);
       trailingZeros = collectSuspiciousZeroRanges(
         chunk,
         segment.start + received,
@@ -1394,16 +1395,15 @@ async function downloadSegmentOnce(
     writeBuffer = Buffer.alloc(0);
   }
   callbacks.onTransferWritten?.();
-  const writtenHash = await callbacks.withDiskActivity(async () => {
+  const writtenChecksum = await callbacks.withDiskActivity(async () => {
     const releaseReadback = await runtimePerformance.measure("proxy.readback.wait", () => sharedReadbackLimiter.acquire(signal));
     try {
-      return await runtimePerformance.measure("proxy.readback", () => hashFileRange(handle, segment.start, expectedBytes, signal));
+      return await runtimePerformance.measure("proxy.readback", () => checksumFileRange(handle, segment.start, expectedBytes, signal));
     } finally {
       releaseReadback();
     }
   });
-  const networkHash = receivedHash.digest();
-  if (!timingSafeEqual(networkHash, writtenHash)) {
+  if (receivedChecksum !== writtenChecksum) {
     throw new SegmentValidationError("readback_mismatch", segment.start, segment.end, segment);
   }
   return { bytes: received, suspiciousZeroRanges };
