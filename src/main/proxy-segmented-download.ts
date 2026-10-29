@@ -52,7 +52,7 @@ function isOriginCertificateError(error: unknown): boolean {
   return CERTIFICATE_ERROR_CODE.test(code);
 }
 const DEFAULT_CONNECTION_LIMIT = 32;
-const MAX_CONNECTION_LIMIT = 80;
+const MAX_CONNECTION_LIMIT = 200;
 const PROXY_PROBE_END = 1;
 const MAX_REDIRECTS = 5;
 const MAX_SEGMENTS = 4_096;
@@ -60,6 +60,8 @@ const MAX_PROXY_FILE_BYTES = 8 * 1024 * 1024;
 const SEGMENT_READBACK_BUFFER_BYTES = 1024 * 1024;
 const SEGMENT_WRITE_BUFFER_BYTES = 4 * 1024 * 1024;
 const SEGMENT_WRITE_FLUSH_INTERVAL_MS = 500;
+const TRAFFIC_BATCH_BYTES = 256 * 1024;
+const TRAFFIC_BATCH_INTERVAL_MS = 250;
 const SUSPICIOUS_ZERO_RUN_BYTES = 1024;
 const MAX_ZERO_RUN_VERIFICATIONS_PER_SEGMENT = 4;
 const ZERO_RUN_SENTINEL = Buffer.alloc(SUSPICIOUS_ZERO_RUN_BYTES);
@@ -226,6 +228,18 @@ interface ProxyPerformance {
   samples: number;
 }
 
+function overloadKey(target: URL): string {
+  return `${target.origin}${target.pathname}${target.search}`;
+}
+
+function overloadOrigin(key: string): string {
+  try {
+    return new URL(key).origin;
+  } catch {
+    return key;
+  }
+}
+
 export class SharedProxyCoordinator {
   private configuredConnectionLimit = DEFAULT_CONNECTION_LIMIT;
   private adaptiveConnectionLimit = DEFAULT_CONNECTION_LIMIT;
@@ -257,7 +271,7 @@ export class SharedProxyCoordinator {
       downloadGroups: this.registeredGroups.size,
       cooldownWakeAt: this.cooldownWakeAt,
       throttledAt: Math.max(this.lastThrottleAt, ...Array.from(this.originThrottle.values(), state => state.lastThrottleAt)) || null,
-      originLimits: Array.from(this.originThrottle, ([origin, state]) => ({ origin, limit: state.limit, active: this.activeForOrigin(origin), throttledAt: state.lastThrottleAt })),
+      originLimits: Array.from(this.originThrottle, ([origin, state]) => ({ origin: overloadOrigin(origin), limit: state.limit, active: this.activeForOrigin(origin), throttledAt: state.lastThrottleAt })),
       coolingProxies: this.countCoolingProxies(),
       measuredProxies: this.performance.size,
       leaseSuccesses: this.leaseSuccesses,
@@ -871,8 +885,18 @@ async function openRangeResponse(
       const location = response.headers.location;
       if (status >= 300 && status < 400 && location) {
         settled = true;
+        let drained = false;
+        let failure: Error | undefined;
+        response.setTimeout(idleTimeoutMs, () => response.destroy(new Error("proxy_idle_timeout")));
+        response.on("error", (error) => { failure ??= error; });
+        response.once("close", () => {
+          if (drained) return;
+          cleanup();
+          reject(signal.aborted ? abortError() : failure ?? new Error("proxy_idle_timeout"));
+        });
         response.resume();
         response.once("end", () => {
+          drained = true;
           cleanup();
           if (redirectCount >= MAX_REDIRECTS) {
             reject(new Error("proxy_redirect_limit"));
@@ -1057,7 +1081,7 @@ async function probeRangeSupport(
     }
   }
   if (lastHttpStatus > 0) {
-    sharedProxyCoordinator.reportOriginStatus(lastHttpStatus, target.origin);
+    sharedProxyCoordinator.reportOriginStatus(lastHttpStatus, overloadKey(target));
     return { status: "origin_error", httpStatus: lastHttpStatus };
   }
   return { status: "unavailable", ...(lastErrorCode ? { errorCode: lastErrorCode } : {}) };
@@ -1287,8 +1311,31 @@ async function downloadSegmentOnce(
   let bufferedBytes = 0;
   let writtenBytes = 0;
   let lastFlushAt = performance.now();
+  let pendingTrafficBytes = 0;
+  let lastTrafficAt = lastFlushAt;
   const setIdleTimeout = (ms: number): void => {
     if (response.socket && !response.destroyed) response.setTimeout(ms);
+  };
+  const reportTraffic = (): number => {
+    const bytes = pendingTrafficBytes;
+    pendingTrafficBytes = 0;
+    lastTrafficAt = performance.now();
+    if (bytes > 0) callbacks.onTrafficBytes?.(bytes);
+    return bytes;
+  };
+  const settleTraffic = async (): Promise<void> => {
+    const bytes = reportTraffic();
+    if (bytes <= 0) return;
+    if (callbacks.waitWhilePaused) {
+      setIdleTimeout(0);
+      await callbacks.waitWhilePaused();
+      setIdleTimeout(options.idleTimeoutMs);
+    }
+    if (callbacks.throttle) {
+      setIdleTimeout(0);
+      await callbacks.throttle(bytes);
+      setIdleTimeout(options.idleTimeoutMs);
+    }
   };
   const flushBuffered = async (): Promise<void> => {
     if (!bufferedBytes) return;
@@ -1311,19 +1358,12 @@ async function downloadSegmentOnce(
         throw abortError();
       }
       const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk);
-      callbacks.onTrafficBytes?.(chunk.length);
+      pendingTrafficBytes += chunk.length;
       if (received + chunk.length > expectedBytes) {
         throw new Error("proxy_segment_overflow");
       }
-      if (callbacks.waitWhilePaused) {
-        setIdleTimeout(0);
-        await callbacks.waitWhilePaused();
-        setIdleTimeout(options.idleTimeoutMs);
-      }
-      if (callbacks.throttle) {
-        setIdleTimeout(0);
-        await callbacks.throttle(chunk.length);
-        setIdleTimeout(options.idleTimeoutMs);
+      if (pendingTrafficBytes >= TRAFFIC_BATCH_BYTES || performance.now() - lastTrafficAt >= TRAFFIC_BATCH_INTERVAL_MS) {
+        await settleTraffic();
       }
       receivedHash.update(chunk);
       trailingZeros = collectSuspiciousZeroRanges(
@@ -1346,8 +1386,10 @@ async function downloadSegmentOnce(
     if (received !== expectedBytes) {
       throw new Error("proxy_segment_underflow");
     }
+    await settleTraffic();
     await flushBuffered();
   } finally {
+    reportTraffic();
     opened.dispose();
     writeBuffer = Buffer.alloc(0);
   }
@@ -1416,7 +1458,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
   }
 
   const groupId = String(options.downloadId || options.targetPath || randomUUID());
-  const unregisterGroup = sharedProxyCoordinator.registerGroup(groupId, target.origin);
+  const unregisterGroup = sharedProxyCoordinator.registerGroup(groupId, overloadKey(target));
   const releaseConnections = sharedProxyConnections.retain(totalConnectionLimit);
   try {
   const normalized = {
@@ -1593,7 +1635,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
             updateProgress(-attemptProgress, committedProgress - attemptProgress, probe.totalBytes);
           }
           if (originError) {
-            sharedProxyCoordinator.reportOriginStatus(error.statusCode, target.origin);
+            sharedProxyCoordinator.reportOriginStatus(error.statusCode, overloadKey(target));
             const now = Date.now();
             if ((error.statusCode === 503 || error.statusCode === 429) && !options.signal.aborted) {
               throttledSince ||= now;

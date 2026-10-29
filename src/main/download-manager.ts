@@ -3323,6 +3323,7 @@ export class DownloadManager extends EventEmitter {
     if (!(minutes > 0) || this.failedExtractionCleanupRunning) return 0;
     this.failedExtractionCleanupRunning = true;
     let deleted = 0;
+    const cleanedPackageIds = new Set<string>();
     try {
       for (const item of Object.values(this.session.items)) {
         const status = item.fullStatus || "";
@@ -3351,6 +3352,11 @@ export class DownloadManager extends EventEmitter {
         this.diskLeasesByOwner.delete(item.id);
         this.logPackageForItem(item, "WARN", "Archivteil nach Entpack-Fehler gelöscht", { targetPath, waitedMinutes: minutes });
         deleted += 1;
+        cleanedPackageIds.add(pkg.id);
+      }
+      for (const packageId of cleanedPackageIds) {
+        const pkg = this.session.packages[packageId];
+        if (pkg) await this.removeFoldersAfterFailedExtractionCleanup(pkg);
       }
     } finally {
       this.failedExtractionCleanupRunning = false;
@@ -3361,6 +3367,42 @@ export class DownloadManager extends EventEmitter {
       this.emitState(true);
     }
     return deleted;
+  }
+
+  private async removeFoldersAfterFailedExtractionCleanup(pkg: PackageEntry): Promise<void> {
+    if (this.packagePostProcessTasks.has(pkg.id)) return;
+    const hasOpenItems = pkg.itemIds.some((id) => {
+      const item = this.session.items[id];
+      return Boolean(item && (!isFinishedStatus(item.status) || this.activeTasks.has(id) || this.retryAfterByItem.has(id)));
+    });
+    if (hasOpenItems) return;
+    const protectedRoots = new Set([this.settings.outputDir, this.settings.extractDir, this.settings.mkvLibraryDir]
+      .map((dir) => String(dir || "").trim())
+      .filter(Boolean)
+      .map((dir) => path.resolve(dir).toLowerCase()));
+    const isProtectedRoot = (dir: string): boolean => protectedRoots.has(path.resolve(dir).toLowerCase());
+    try {
+      if (pkg.outputDir && !await this.directoryHasAnyFiles(pkg.outputDir)) {
+        await clearExtractResumeState(pkg.outputDir, pkg.id);
+        await clearExtractResumeState(pkg.outputDir);
+        if (!isProtectedRoot(pkg.outputDir)) {
+          const removedDirs = await this.removeEmptyDirectoryTree(pkg.outputDir);
+          if (removedDirs > 0) {
+            this.logPackageForPackage(pkg, "INFO", "Leerer Download-Ordner nach Entpack-Fehler entfernt", { dir: pkg.outputDir, removedDirs });
+          }
+        }
+      }
+      const extractDirIsSeparate = pkg.extractDir
+        && path.resolve(pkg.extractDir).toLowerCase() !== path.resolve(pkg.outputDir || "").toLowerCase();
+      if (extractDirIsSeparate && !isProtectedRoot(pkg.extractDir) && !await this.directoryHasAnyFiles(pkg.extractDir)) {
+        const removedDirs = await this.removeEmptyDirectoryTree(pkg.extractDir);
+        if (removedDirs > 0) {
+          this.logPackageForPackage(pkg, "INFO", "Leerer Entpack-Ordner nach Entpack-Fehler entfernt", { dir: pkg.extractDir, removedDirs });
+        }
+      }
+    } catch (error) {
+      this.logPackageForPackage(pkg, "WARN", "Ordner nach Entpack-Fehler konnten nicht bereinigt werden", { error: compactErrorText(error) });
+    }
   }
 
   public removeFailedExtractions(itemIds: string[]): { removed: number; filesPreserved: true } {

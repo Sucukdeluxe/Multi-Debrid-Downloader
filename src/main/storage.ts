@@ -631,7 +631,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     proxyDownloadEnabled: Boolean(settings.proxyDownloadEnabled),
     proxyListPath: asText(settings.proxyListPath).slice(0, 4096),
     proxyApiProxyIndex: clampNumber(settings.proxyApiProxyIndex, defaults.proxyApiProxyIndex, 1, 100000),
-    proxyConnectionsPerDownload: clampNumber(settings.proxyConnectionsPerDownload, defaults.proxyConnectionsPerDownload, 2, 80),
+    proxyConnectionsPerDownload: clampNumber(settings.proxyConnectionsPerDownload, defaults.proxyConnectionsPerDownload, 2, 200),
     autoUpdateCheck: Boolean(settings.autoUpdateCheck),
     updateRepo: migrateUpdateRepo(asText(settings.updateRepo), defaults.updateRepo),
     clipboardWatch: Boolean(settings.clipboardWatch),

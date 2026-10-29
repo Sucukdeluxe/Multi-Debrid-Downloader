@@ -6244,7 +6244,7 @@ export function App(): ReactElement {
         maxParallelExtract: [1, 8, 2],
         reconnectWaitSeconds: [10, 600, 45],
         proxyApiProxyIndex: [1, 100000, 1],
-        proxyConnectionsPerDownload: [2, 80, 32],
+        proxyConnectionsPerDownload: [2, 200, 32],
         downloadDiskReserveGb: [0, 2000, 50],
         failedExtractionCleanupMinutes: [0, 1440, 10]
       };
