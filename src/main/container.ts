@@ -5,7 +5,7 @@ import { DCRYPT_PASTE_URL, DCRYPT_UPLOAD_URL, DLC_AES_IV, DLC_AES_KEY, DLC_SERVI
 import { compactErrorText, inferPackageNameFromLinks, isHttpLink, sanitizeFilename, uniquePreserveOrder } from "./utils";
 import { ParsedPackageInput } from "../shared/types";
 
-const MAX_DLC_FILE_BYTES = 8 * 1024 * 1024;
+const MAX_DLC_FILE_BYTES = 10 * 1024 * 1024;
 
 function isContainerSizeValidationError(error: unknown): boolean {
   const text = compactErrorText(error);
