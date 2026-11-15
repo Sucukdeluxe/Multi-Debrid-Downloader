@@ -41,3 +41,6 @@ services/backup-api/recovery-keys/
 !.env.example
 .DS_Store
 Thumbs.db
+
+!services/backup-api/test/
+!services/backup-api/test/*.test.mjs
