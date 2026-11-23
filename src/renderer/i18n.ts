@@ -1,6 +1,8 @@
 import type { AppLanguage } from "../shared/types";
 
 const pairs = [
+  ["Nachbearbeitung", "Post-processing"], ["Dateien umbenennen", "Renaming files"], ["Tonspur-Bereinigung", "Audio track cleanup"], ["Aufräumen", "Cleaning up"],
+  ["Videos verschieben", "Moving videos"], ["Verschachtelte Archive entpacken", "Extracting nested archives"],
   ["Downloads", "Downloads"], ["Linksammler", "Link collector"], ["Einstellungen", "Settings"], ["Verlauf", "History"], ["Statistiken", "Statistics"],
   ["Datei", "File"], ["Hilfe", "Help"], ["Kontomenü", "Account menu"], ["Allgemein", "General"], ["Accounts", "Accounts"],
   ["Hauptnavigation", "Main navigation"], ["Globale Aktionen", "Global actions"], ["Anwendungsmenü", "Application menu"], ["Seitenleiste einklappen", "Collapse sidebar"], ["Seitenleiste ausklappen", "Expand sidebar"],
@@ -391,6 +393,8 @@ function translateDynamic(value: string, language: AppLanguage): string {
     if (extracting) return `Extracting ${extracting[1]}`;
     const finalizing = value.match(/^Finalisieren - (\d+%)$/);
     if (finalizing) return `Finalizing - ${finalizing[1]}`;
+    const audioCleanup = value.match(/^Tonspur-Bereinigung (\d+\/\d+)$/);
+    if (audioCleanup) return `Audio track cleanup ${audioCleanup[1]}`;
     const checkedUntil = value.match(/^Account geprüft — (.+) bis (.+)$/);
     if (checkedUntil) return `Account checked — ${checkedUntil[1]} until ${checkedUntil[2]}`;
     const checked = value.match(/^Account geprüft — (.+)$/);
@@ -602,6 +606,8 @@ function translateDynamic(value: string, language: AppLanguage): string {
     if (extracting) return `Entpacken ${extracting[1]}`;
     const finalizing = value.match(/^Finalizing - (\d+%)$/);
     if (finalizing) return `Finalisieren - ${finalizing[1]}`;
+    const audioCleanup = value.match(/^Audio track cleanup (\d+\/\d+)$/);
+    if (audioCleanup) return `Tonspur-Bereinigung ${audioCleanup[1]}`;
     const checkedUntil = value.match(/^Account checked — (.+) until (.+)$/);
     if (checkedUntil) return `Account geprüft — ${checkedUntil[1]} bis ${checkedUntil[2]}`;
     const credentialsFor = value.match(/^Credentials for (.+)$/);

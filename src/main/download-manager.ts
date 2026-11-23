@@ -15342,7 +15342,7 @@ export class DownloadManager extends EventEmitter {
       }
 
       if (extractedCount > 0 || alreadyMarkedExtracted) {
-        pkg.postProcessLabel = "Umbenennen";
+        pkg.postProcessLabel = "Dateien umbenennen";
         this.emitState();
         this.logPackageForPackage(pkg, "INFO", "Deferred Auto-Rename gestartet", {
           extractDir: pkg.extractDir
