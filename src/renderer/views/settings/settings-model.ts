@@ -2,17 +2,19 @@ import type { NetworkProxyProbe, RendererSettings } from "../../../shared/types"
 import type { AccountService } from "../../account-edit";
 import { ACCOUNT_SERVICE_ICONS } from "../../account-service-icons";
 
-export type SettingsSection = "allgemein" | "accounts" | "extract" | "speed" | "cleanup" | "updates";
+export type SettingsSection = "allgemein" | "accounts" | "downloads" | "speed" | "extract" | "videos" | "notifications" | "system";
 export type SettingsSaveState = "clean" | "dirty" | "saving" | "saved" | "error";
 export type SettingsThemeChoice = RendererSettings["themePreference"];
 
-export const SETTINGS_SECTIONS: readonly { id: SettingsSection; label: string }[] = [
-  { id: "allgemein", label: "Allgemein" },
-  { id: "accounts", label: "Accounts" },
-  { id: "extract", label: "Entpacken" },
-  { id: "speed", label: "Geschwindigkeit & Proxy" },
-  { id: "cleanup", label: "Bereinigung" },
-  { id: "updates", label: "Updates" }
+export const SETTINGS_SECTIONS: readonly { id: SettingsSection; label: string; hint: string }[] = [
+  { id: "allgemein", label: "Allgemein", hint: "Sprache, Darstellung, Verlauf" },
+  { id: "accounts", label: "Accounts", hint: "Zugänge und Verwendungsregeln" },
+  { id: "downloads", label: "Downloads", hint: "Ordner, Ablauf, Download-Liste" },
+  { id: "speed", label: "Geschwindigkeit & Proxy", hint: "Parallele Downloads, Tempolimit, Proxy" },
+  { id: "extract", label: "Entpacken", hint: "Ablauf, Ziel, Passwörter, Aufräumen" },
+  { id: "videos", label: "Videos", hint: "Umbenennen, Tonspur, Sammelordner" },
+  { id: "notifications", label: "Benachrichtigungen", hint: "Discord-Meldungen" },
+  { id: "system", label: "System", hint: "Updates, Sicherung, Logs" }
 ];
 
 export const ACCOUNT_COLUMNS = [
@@ -208,6 +210,8 @@ export interface SettingsFieldBase {
   label: string;
   help?: string;
   disabled?: boolean;
+  dependsOn?: string;
+  keywords?: string;
 }
 
 export interface SettingsTextFieldViewModel extends SettingsFieldBase {
@@ -305,129 +309,208 @@ export function normalizeNotificationNumberField(fieldId: string, value: unknown
   return Math.max(limits.min, Math.min(limits.max, normalized));
 }
 
-export function buildSettingsFormViewModel({
+export function buildSettingsForms({
   settings,
-  section,
   speedLimitInput,
   scheduleSpeedInputs,
   themeChoice = settings.themePreference,
   proxyProbe
-}: SettingsFormProjectionInput): SettingsFormViewModel {
-  if (section === "extract") {
+}: Omit<SettingsFormProjectionInput, "section">): Record<SettingsSection, SettingsFormViewModel> {
+  const scheduleGroups: SettingsFormGroupViewModel[] = (settings.bandwidthSchedules || []).map((schedule, index) => {
+    const scheduleKey = schedule.id || `schedule-${index}`;
     return {
-      title: "Entpacken",
-      description: "Ablauf, Ziel, Tonspur, Ablageform und Leistung.",
+      id: `schedule:${index}`,
+      title: `Zeitregel ${index + 1}`,
+      fields: [
+        { id: `schedule:${index}:startHour`, kind: "number", label: "Von (Stunde)", value: String(schedule.startHour), min: 0, max: 23 },
+        { id: `schedule:${index}:endHour`, kind: "number", label: "Bis (Stunde)", value: String(schedule.endHour), min: 0, max: 23 },
+        {
+          id: `schedule:${index}:speedLimitMbps`,
+          kind: "number",
+          label: "Limit (MB/s)",
+          value: scheduleSpeedInputs[scheduleKey] ?? String(schedule.speedLimitKbps / 1024),
+          min: 0,
+          step: 0.1,
+          commitOnBlur: true
+        },
+        { id: `schedule:${index}:enabled`, kind: "switch", label: "Zeitregel aktiviert", value: schedule.enabled },
+        { id: `schedule:${index}:remove`, kind: "action", label: "Zeitregel entfernen", actionLabel: "Entfernen" }
+      ]
+    };
+  });
+  return {
+    allgemein: {
+      title: "Allgemein",
+      description: "Sprache, Darstellung, Zwischenablage und Verlauf.",
       groups: [
         {
-          id: "extract-target",
-          title: "Ziel und Ablauf",
+          id: "general-appearance",
+          title: "Sprache und Darstellung",
           fields: [
-            { id: "extractDir", kind: "path", label: "Entpacken nach", value: settings.extractDir, actionLabel: "Wählen", help: "Zielordner für entpackte Dateien." },
-            { id: "autoExtract", kind: "switch", label: "Automatisch entpacken", value: settings.autoExtract },
-            { id: "autoSkipExtracted", kind: "switch", label: "Bereits Entpacktes überspringen", value: settings.autoSkipExtracted },
-            { id: "hideExtractedItems", kind: "switch", label: "Entpackte Einträge ausblenden", value: settings.hideExtractedItems },
-            { id: "autoExtractWhenStopped", kind: "switch", label: "Entpacken auch ohne laufende Sitzung", value: settings.autoExtractWhenStopped }
-          ]
-        },
-        {
-          id: "extract-audio",
-          title: "Deutsche Tonspur",
-          fields: [
-            { id: "keepGermanAudioOnly", kind: "switch", label: "Nur deutsche Tonspur behalten", value: settings.keepGermanAudioOnly, help: "Benötigt ffmpeg." },
             {
-              id: "germanAudioMode",
+              id: "language",
               kind: "select",
-              label: "Welche Tonspur behalten",
-              value: settings.germanAudioMode,
-              disabled: !settings.keepGermanAudioOnly,
+              label: "Sprache",
+              value: settings.language,
+              keywords: "language deutsch englisch english",
               options: [
-                { value: "tag", label: "Deutsche Spur per Sprach-Tag" },
-                { value: "first", label: "Immer erste Tonspur" }
+                { value: "en", label: "English" },
+                { value: "de", label: "Deutsch" }
               ]
-            }
-          ]
-        },
-        {
-          id: "extract-layout",
-          title: "Ablageform",
-          fields: [
-            { id: "autoRename4sf4sj", kind: "switch", label: "Automatisch umbenennen", value: settings.autoRename4sf4sj },
-            { id: "createExtractSubfolder", kind: "switch", label: "In Paket-Unterordner ablegen", value: settings.createExtractSubfolder },
-            { id: "collectMkvToLibrary", kind: "switch", label: "Videos in Sammelordner verschieben", value: settings.collectMkvToLibrary },
-            { id: "mkvLibraryDir", kind: "path", label: "Video-Sammelordner", value: settings.mkvLibraryDir, disabled: !settings.collectMkvToLibrary, actionLabel: "Wählen" }
-          ]
-        },
-        {
-          id: "extract-performance",
-          title: "Leistung",
-          fields: [
-            { id: "hybridExtract", kind: "switch", label: "Hybrid-Entpacken", value: settings.hybridExtract },
-            { id: "maxParallelExtract", kind: "number", label: "Gleichzeitige Entpackungen", value: String(settings.maxParallelExtract), min: 1, max: 8 },
-            {
-              id: "failedExtractionCleanupMinutes", kind: "number", label: "Archiv nach Entpack-Fehler löschen nach (Minuten)", value: String(settings.failedExtractionCleanupMinutes), min: 0, max: 1440,
-              help: "Löscht die Archivteile eines fehlgeschlagenen Entpackvorgangs nach dieser Wartezeit vom Datenträger, sobald kein Teil desselben Archivs mehr lädt oder entpackt wird. Der Eintrag bleibt als „Entpack-Fehler - gelöscht“ in der Liste; erneutes Entpacken ist danach nicht mehr möglich. 0 schaltet das Löschen ab."
             },
             {
-              id: "extractCpuPriority",
-              kind: "select",
-              label: "CPU-Priorität beim Entpacken",
-              value: settings.extractCpuPriority,
+              id: "theme",
+              kind: "theme",
+              label: "Theme",
+              value: themeChoice,
+              keywords: "dunkel hell dark light farbe design aussehen",
               options: [
-                { value: "high", label: "Hoch (80% CPU)" },
-                { value: "middle", label: "Mittel (50% CPU)" },
-                { value: "low", label: "Niedrig (25% CPU)" }
+                { value: "light", label: "Hell" },
+                { value: "dark", label: "Dunkel" },
+                { value: "system", label: "System" }
               ]
+            },
+            { id: "animatePackageDisclosure", kind: "switch", label: "Animationen", value: settings.animatePackageDisclosure, keywords: "bewegung aufklappen" },
+            { id: "minimizeToTray", kind: "switch", label: "In den Infobereich minimieren", value: settings.minimizeToTray, keywords: "tray taskleiste hintergrund" },
+            { id: "confirmDeleteSelection", kind: "switch", label: "Vor dem Löschen nachfragen", value: settings.confirmDeleteSelection, keywords: "bestätigung entfernen" }
+          ]
+        },
+        {
+          id: "general-clipboard",
+          title: "Zwischenablage",
+          fields: [
+            { id: "clipboardWatch", kind: "switch", label: "Zwischenablage überwachen", value: settings.clipboardWatch, keywords: "kopieren links erkennen clipboard" },
+            {
+              id: "switchToCollectorOnClipboard", kind: "switch", label: "Bei erkannten Zwischenablage-Links zum Linksammler wechseln",
+              value: settings.switchToCollectorOnClipboard,
+              dependsOn: "clipboardWatch",
+              disabled: !settings.clipboardWatch,
+              help: "Standardmäßig aus: Links werden im Hintergrund gesammelt, ohne den aktuellen Tab zu wechseln. Gilt nur bei aktivierter Zwischenablage-Überwachung."
             }
           ]
         },
         {
-          id: "extract-passwords",
-          title: "Passwörter",
+          id: "general-history",
+          title: "Verlauf",
           fields: [
-            { id: "archivePasswordList", kind: "textarea", label: "Passwortliste für Archive", value: settings.archivePasswordList, placeholder: settings.archivePasswordListConfigured ? "Gespeichert; leer lassen zum Beibehalten" : "Ein Passwort pro Zeile" }
+            {
+              id: "historyRetentionMode",
+              kind: "select",
+              label: "Verlauf speichern",
+              value: settings.historyRetentionMode === "permanent" && (settings.historyMaxEntries === 100 || settings.historyMaxEntries === 250)
+                ? `permanent-${settings.historyMaxEntries}`
+                : settings.historyRetentionMode,
+              keywords: "historie history",
+              options: [
+                { value: "never", label: "Nie" },
+                { value: "session", label: "Nur aktuelle Session" },
+                { value: "permanent-100", label: "Nur letzte 100 Einträge" },
+                { value: "permanent-250", label: "Nur letzte 250 Einträge" },
+                { value: "permanent", label: "Dauerhaft" }
+              ]
+            },
+            { id: "historyMaxEntries", kind: "number", label: "Maximale Verlauf-Einträge", value: String(settings.historyMaxEntries), min: 50, max: 100000, dependsOn: "historyRetentionMode", disabled: settings.historyRetentionMode !== "permanent" },
+            { id: "historyMaxAgeDays", kind: "number", label: "Einträge löschen älter als (Tage)", value: String(settings.historyMaxAgeDays), min: 0, max: 3650, dependsOn: "historyRetentionMode", disabled: settings.historyRetentionMode !== "permanent" }
           ]
         }
       ]
-    };
-  }
-  if (section === "speed") {
-    const scheduleGroups: SettingsFormGroupViewModel[] = (settings.bandwidthSchedules || []).map((schedule, index) => {
-      const scheduleKey = schedule.id || `schedule-${index}`;
-      return {
-        id: `schedule:${index}`,
-        title: `Zeitregel ${index + 1}`,
-        fields: [
-          { id: `schedule:${index}:startHour`, kind: "number", label: "Von (Stunde)", value: String(schedule.startHour), min: 0, max: 23 },
-          { id: `schedule:${index}:endHour`, kind: "number", label: "Bis (Stunde)", value: String(schedule.endHour), min: 0, max: 23 },
-          {
-            id: `schedule:${index}:speedLimitMbps`,
-            kind: "number",
-            label: "Limit (MB/s)",
-            value: scheduleSpeedInputs[scheduleKey] ?? String(schedule.speedLimitKbps / 1024),
-            min: 0,
-            step: 0.1,
-            commitOnBlur: true
-          },
-          { id: `schedule:${index}:enabled`, kind: "switch", label: "Zeitregel aktiviert", value: schedule.enabled },
-          { id: `schedule:${index}:remove`, kind: "action", label: "Zeitregel entfernen", actionLabel: "Entfernen" }
-        ]
-      };
-    });
-    return {
-      title: "Geschwindigkeit & Proxy",
-      description: "Tempo, Proxy, Wiederverbindung und zeitgesteuerte Bandbreitenregeln.",
+    },
+    accounts: { title: "Accounts", description: "Accounts und Verwendungsregeln.", groups: [] },
+    downloads: {
+      title: "Downloads",
+      description: "Ordner, Ablauf und Download-Liste.",
       groups: [
+        {
+          id: "downloads-folders",
+          title: "Ordner",
+          fields: [
+            { id: "outputDir", kind: "path", label: "Download-Ordner", value: settings.outputDir, actionLabel: "Wählen", help: "Zielordner für heruntergeladene Dateien.", keywords: "speicherort pfad ziel" },
+            {
+              id: "createWorkDirectoriesOnStartup",
+              kind: "switch",
+              label: "Fehlende Arbeitsordner beim Start anlegen",
+              value: settings.createWorkDirectoriesOnStartup,
+              help: "Erstellt fehlende Download-, Entpack- und Videosammelordner sofort beim Speichern sowie bei jedem Programmstart. Optionale Ordner werden nur bei aktiver Funktion angelegt; vorhandene Inhalte bleiben unverändert."
+            },
+            { id: "packageName", kind: "text", label: "Paketname (optional)", value: settings.packageName }
+          ]
+        },
+        {
+          id: "downloads-flow",
+          title: "Ablauf",
+          fields: [
+            { id: "autoResumeOnStart", kind: "switch", label: "Beim Start automatisch fortsetzen", value: settings.autoResumeOnStart, keywords: "autostart weiterladen" },
+            { id: "retryLimit", kind: "number", label: "Automatische Wiederholungen", value: String(settings.retryLimit), min: 0, max: 99, keywords: "versuche retry fehler" },
+            {
+              id: "offlineSkipScope",
+              kind: "select",
+              label: "Wenn ein Quelllink offline geht",
+              value: settings.offlineSkipScope,
+              options: [
+                { value: "archive", label: "Betroffenen Archivsatz überspringen" },
+                { value: "package", label: "Gesamtes Paket überspringen" }
+              ],
+              help: "Beim Archivsatz werden alle noch offenen Teile desselben Mehrteil-Archivs übersprungen. Bereits abgeschlossene Downloads bleiben erhalten."
+            },
+            { id: "enableIntegrityCheck", kind: "switch", label: "Dateien auf Fehler prüfen", value: settings.enableIntegrityCheck, keywords: "integrität prüfsumme crc beschädigt" },
+            {
+              id: "downloadDiskReserveGb", kind: "number", label: "Speicherpuffer für Entpacken (GB)", value: String(settings.downloadDiskReserveGb), min: 0, max: 2000,
+              keywords: "festplatte speicherplatz frei voll reserve",
+              help: "Neue Downloads starten erst, wenn neben der Dateigröße noch so viel Platz frei bleibt. Entpacken und Tonspur-Bearbeitung dürfen diesen Puffer nutzen, damit fertige Pakete auch bei fast voller Platte weiterverarbeitet werden. 0 schaltet den Puffer ab."
+            }
+          ]
+        },
+        {
+          id: "downloads-list",
+          title: "Download-Liste",
+          fields: [
+            { id: "collapseNewPackages", kind: "switch", label: "Neue Pakete eingeklappt zeigen", value: settings.collapseNewPackages },
+            { id: "hideExtractedItems", kind: "switch", label: "Entpackte Einträge ausblenden", value: settings.hideExtractedItems, keywords: "verstecken fertig liste" },
+            {
+              id: "completedCleanupPolicy",
+              kind: "select",
+              label: "Fertige Downloads aus der Liste",
+              value: settings.completedCleanupPolicy,
+              keywords: "entfernen bereinigen aufräumen",
+              options: [
+                { value: "never", label: "Nie" },
+                { value: "immediate", label: "Sofort" },
+                { value: "on_start", label: "Beim App-Start" },
+                { value: "package_done", label: "Sobald Paket fertig ist" }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    speed: {
+      title: "Geschwindigkeit & Proxy",
+      description: "Gleichzeitige Downloads, Tempolimit, Proxy und Wiederverbindung.",
+      groups: [
+        {
+          id: "speed-parallel",
+          title: "Gleichzeitige Downloads",
+          fields: [
+            { id: "maxParallel", kind: "number", label: "Max. gleichzeitige Downloads", value: String(settings.maxParallel), min: 1, max: 50, keywords: "parallel anzahl schneller" },
+            {
+              id: "spreadDownloadsAcrossPackages", kind: "switch", label: "Downloads auf mehrere Pakete verteilen", value: settings.spreadDownloadsAcrossPackages,
+              keywords: "mischen parallel",
+              help: "Gleichzeitige Downloads werden auf verschiedene Pakete in Queue-Reihenfolge verteilt. Real-Debrid liefert ein Paket meist von einem einzigen Server; verteilt kommen die Daten von mehreren Servern, und die Drosselung eines Servers bremst nur einen Teil. Einzelne Pakete werden dadurch später vollständig."
+            }
+          ]
+        },
         {
           id: "speed-limit",
           title: "Tempo-Begrenzung",
           fields: [
-            { id: "speedLimitEnabled", kind: "switch", label: "Geschwindigkeit begrenzen", value: settings.speedLimitEnabled },
-            { id: "speedLimitInput", kind: "number", label: "Höchstgeschwindigkeit (MB/s)", value: speedLimitInput, min: 0, step: 0.1, disabled: !settings.speedLimitEnabled, commitOnBlur: true },
+            { id: "speedLimitEnabled", kind: "switch", label: "Geschwindigkeit begrenzen", value: settings.speedLimitEnabled, keywords: "limit drosseln tempolimit bandbreite" },
+            { id: "speedLimitInput", kind: "number", label: "Höchstgeschwindigkeit (MB/s)", value: speedLimitInput, min: 0, step: 0.1, dependsOn: "speedLimitEnabled", disabled: !settings.speedLimitEnabled, commitOnBlur: true },
             {
               id: "speedLimitMode",
               kind: "select",
               label: "Limit gilt für",
               value: settings.speedLimitMode,
+              dependsOn: "speedLimitEnabled",
               disabled: !settings.speedLimitEnabled,
               options: [
                 { value: "global", label: "Global" },
@@ -436,13 +519,12 @@ export function buildSettingsFormViewModel({
             }
           ]
         },
+        ...scheduleGroups,
         {
-          id: "speed-connection",
-          title: "Verbindung",
-          fields: [
-            { id: "autoReconnect", kind: "switch", label: "Automatisch neu verbinden", value: settings.autoReconnect },
-            { id: "reconnectWaitSeconds", kind: "number", label: "Wartezeit vor neuem Versuch (Sek.)", value: String(settings.reconnectWaitSeconds), min: 10, max: 600 }
-          ]
+          id: "speed-schedule-add",
+          title: "Bandbreitenplanung",
+          description: "Jede Regel legt für ein Zeitfenster ein eigenes Limit fest.",
+          fields: [{ id: "schedule:add", kind: "action", label: "Weitere Zeitregel", actionLabel: "Zeitregel hinzufügen", keywords: "zeitplan uhrzeit nachts limit" }]
         },
         {
           id: "speed-proxy",
@@ -464,6 +546,7 @@ export function buildSettingsFormViewModel({
               value: settings.proxyListPath,
               placeholder: "Textdatei mit einem Proxy pro Zeile",
               actionLabel: "Datei wählen",
+              dependsOn: "proxyDownloadEnabled",
               disabled: !settings.proxyDownloadEnabled,
               help: "Unterstützt unter anderem Benutzer:Passwort@Host:Port. Zugangsdaten werden nicht protokolliert."
             },
@@ -474,6 +557,7 @@ export function buildSettingsFormViewModel({
               value: String(settings.proxyApiProxyIndex),
               min: 1,
               max: 100000,
+              dependsOn: "proxyDownloadEnabled",
               disabled: !settings.proxyDownloadEnabled,
               help: "Dieser 1-basierte Eintrag bleibt für API, Login und Link-Auflösung fest. Ist er offline, wird nicht automatisch ein anderer Proxy oder die direkte Verbindung verwendet."
             },
@@ -484,71 +568,49 @@ export function buildSettingsFormViewModel({
               value: String(settings.proxyConnectionsPerDownload),
               min: 2,
               max: 200,
+              dependsOn: "proxyDownloadEnabled",
               disabled: !settings.proxyDownloadEnabled,
+              keywords: "segmente threads parallel schneller",
               help: `Dieses Gesamtlimit wird fair zwischen allen gleichzeitigen Segmentdownloads geteilt. Bei ${settings.maxParallel} aktiven Downloads laufen zusammen höchstens ${settings.proxyConnectionsPerDownload} Segmentverbindungen; 32 ist der Standardwert, 200 das Maximum. Langsame und ausgefallene Proxys werden automatisch zurückgestuft. Kleine Dateien und Teil-Downloads laufen über den festen API-Proxy.`
             }
           ]
         },
-        ...scheduleGroups,
         {
-          id: "speed-schedule-add",
-          title: "Bandbreitenplanung",
-          description: "Jede Regel legt für ein Zeitfenster ein eigenes Limit fest.",
-          fields: [{ id: "schedule:add", kind: "action", label: "Weitere Zeitregel", actionLabel: "Zeitregel hinzufügen" }]
+          id: "speed-connection",
+          title: "Wiederverbindung",
+          fields: [
+            { id: "autoReconnect", kind: "switch", label: "Automatisch neu verbinden", value: settings.autoReconnect, keywords: "reconnect verbindung abbruch" },
+            { id: "reconnectWaitSeconds", kind: "number", label: "Wartezeit vor neuem Versuch (Sek.)", value: String(settings.reconnectWaitSeconds), min: 10, max: 600, dependsOn: "autoReconnect", disabled: !settings.autoReconnect }
+          ]
         }
       ]
-    };
-  }
-  if (section === "cleanup") {
-    return {
-      title: "Bereinigung",
-      description: "Integritätsprüfung und Aufräumen nach Downloads und Entpacken.",
+    },
+    extract: {
+      title: "Entpacken",
+      description: "Ablauf, Ziel, Passwörter, Leistung und Aufräumen.",
       groups: [
         {
-          id: "cleanup-check",
-          title: "Prüfung",
-          fields: [{ id: "enableIntegrityCheck", kind: "switch", label: "Dateien auf Fehler prüfen", value: settings.enableIntegrityCheck }]
-        },
-        {
-          id: "cleanup-extract",
-          title: "Nach dem Entpacken",
+          id: "extract-flow",
+          title: "Ablauf",
           fields: [
-            { id: "removeLinkFilesAfterExtract", kind: "switch", label: "Link-Dateien danach entfernen", value: settings.removeLinkFilesAfterExtract },
-            { id: "removeSamplesAfterExtract", kind: "switch", label: "Vorschau-Dateien danach entfernen", value: settings.removeSamplesAfterExtract },
-            {
-              id: "cleanupMode",
-              kind: "select",
-              label: "Archive nach dem Entpacken",
-              value: settings.cleanupMode,
-              options: [
-                { value: "none", label: "Keine Archive löschen" },
-                { value: "trash", label: "Archive in Papierkorb" },
-                { value: "delete", label: "Archive löschen" }
-              ]
-            }
+            { id: "autoExtract", kind: "switch", label: "Automatisch entpacken", value: settings.autoExtract, keywords: "rar zip archiv" },
+            { id: "autoExtractWhenStopped", kind: "switch", label: "Entpacken auch ohne laufende Sitzung", value: settings.autoExtractWhenStopped },
+            { id: "hybridExtract", kind: "switch", label: "Hybrid-Entpacken", value: settings.hybridExtract, help: "Entpackt fertige Archive schon, während der Rest des Pakets noch lädt." },
+            { id: "autoSkipExtracted", kind: "switch", label: "Bereits Entpacktes überspringen", value: settings.autoSkipExtracted }
           ]
         },
         {
-          id: "cleanup-finished",
-          title: "Fertige Downloads und Konflikte",
+          id: "extract-target",
+          title: "Ziel",
           fields: [
-            {
-              id: "completedCleanupPolicy",
-              kind: "select",
-              label: "Fertige Downloads aus der Liste",
-              value: settings.completedCleanupPolicy,
-              options: [
-                { value: "never", label: "Nie" },
-                { value: "immediate", label: "Sofort" },
-                { value: "on_start", label: "Beim App-Start" },
-                { value: "package_done", label: "Sobald Paket fertig ist" }
-              ]
-            },
+            { id: "extractDir", kind: "path", label: "Entpacken nach", value: settings.extractDir, actionLabel: "Wählen", help: "Zielordner für entpackte Dateien.", keywords: "ordner pfad speicherort" },
+            { id: "createExtractSubfolder", kind: "switch", label: "In Paket-Unterordner ablegen", value: settings.createExtractSubfolder },
             {
               id: "extractConflictMode",
               kind: "select",
               label: "Bei gleichnamigen Dateien",
               value: settings.extractConflictMode,
+              keywords: "konflikt überschreiben vorhanden doppelt",
               options: [
                 { value: "overwrite", label: "Überschreiben" },
                 { value: "skip", label: "Überspringen" },
@@ -557,186 +619,243 @@ export function buildSettingsFormViewModel({
               ]
             }
           ]
-        }
-      ]
-    };
-  }
-  if (section === "updates") {
-    return {
-      title: "Updates",
-      description: "Quelle und Zeitpunkt der Update-Prüfung.",
-      groups: [
+        },
         {
-          id: "updates-main",
-          title: "Aktualisierung",
+          id: "extract-passwords",
+          title: "Passwörter",
           fields: [
-            { id: "autoUpdateCheck", kind: "switch", label: "Beim Start nach Updates suchen", value: settings.autoUpdateCheck },
-            { id: "updateRepo", kind: "text", label: "Update-Quelle", value: settings.updateRepo, help: "Quelle im Format Benutzer/Repository." },
-            { id: "update:check", kind: "action", label: "Jetzt nach einer neuen Version suchen", actionLabel: "Nach Updates suchen" }
+            { id: "archivePasswordList", kind: "textarea", label: "Passwortliste für Archive", value: settings.archivePasswordList, placeholder: settings.archivePasswordListConfigured ? "Gespeichert; leer lassen zum Beibehalten" : "Ein Passwort pro Zeile", keywords: "kennwort password" }
+          ]
+        },
+        {
+          id: "extract-performance",
+          title: "Leistung",
+          fields: [
+            { id: "maxParallelExtract", kind: "number", label: "Gleichzeitige Entpackungen", value: String(settings.maxParallelExtract), min: 1, max: 8, keywords: "parallel anzahl" },
+            {
+              id: "extractCpuPriority",
+              kind: "select",
+              label: "CPU-Priorität beim Entpacken",
+              value: settings.extractCpuPriority,
+              keywords: "prozessor last",
+              options: [
+                { value: "high", label: "Hoch (80% CPU)" },
+                { value: "middle", label: "Mittel (50% CPU)" },
+                { value: "low", label: "Niedrig (25% CPU)" }
+              ]
+            }
+          ]
+        },
+        {
+          id: "extract-cleanup",
+          title: "Aufräumen nach dem Entpacken",
+          fields: [
+            {
+              id: "cleanupMode",
+              kind: "select",
+              label: "Archive nach dem Entpacken",
+              value: settings.cleanupMode,
+              keywords: "rar löschen papierkorb bereinigen",
+              options: [
+                { value: "none", label: "Keine Archive löschen" },
+                { value: "trash", label: "Archive in Papierkorb" },
+                { value: "delete", label: "Archive löschen" }
+              ]
+            },
+            { id: "removeLinkFilesAfterExtract", kind: "switch", label: "Link-Dateien danach entfernen", value: settings.removeLinkFilesAfterExtract, keywords: "url löschen bereinigen" },
+            { id: "removeSamplesAfterExtract", kind: "switch", label: "Vorschau-Dateien danach entfernen", value: settings.removeSamplesAfterExtract, keywords: "sample löschen bereinigen" },
+            {
+              id: "failedExtractionCleanupMinutes", kind: "number", label: "Archiv nach Entpack-Fehler löschen nach (Minuten)", value: String(settings.failedExtractionCleanupMinutes), min: 0, max: 1440,
+              keywords: "fehlgeschlagen crc bereinigen",
+              help: "Löscht die Archivteile eines fehlgeschlagenen Entpackvorgangs nach dieser Wartezeit vom Datenträger, sobald kein Teil desselben Archivs mehr lädt oder entpackt wird. Der Eintrag bleibt als „Entpack-Fehler - gelöscht“ in der Liste; erneutes Entpacken ist danach nicht mehr möglich. 0 schaltet das Löschen ab."
+            }
           ]
         }
       ]
-    };
-  }
-  if (section === "accounts") {
-    return { title: "Accounts", description: "Accounts und Verwendungsregeln.", groups: [] };
-  }
-  return {
-    title: "Allgemein",
-    description: "Speicherort, Download-Verhalten, Verlauf, Oberfläche und Benachrichtigungen.",
-    groups: [
-      {
-        id: "general-language",
-        title: "Sprache",
-        fields: [
-          {
-            id: "language",
-            kind: "select",
-            label: "Sprache",
-            value: settings.language,
-            options: [
-              { value: "en", label: "English" },
-              { value: "de", label: "Deutsch" }
-            ]
-          }
-        ]
-      },
-      {
-        id: "general-storage",
-        title: "Speicherort",
-        fields: [
-          { id: "outputDir", kind: "path", label: "Download-Ordner", value: settings.outputDir, actionLabel: "Wählen", help: "Zielordner für heruntergeladene Dateien." },
-          {
-            id: "createWorkDirectoriesOnStartup",
-            kind: "switch",
-            label: "Fehlende Arbeitsordner beim Start anlegen",
-            value: settings.createWorkDirectoriesOnStartup,
-            help: "Erstellt fehlende Download-, Entpack- und Videosammelordner sofort beim Speichern sowie bei jedem Programmstart. Optionale Ordner werden nur bei aktiver Funktion angelegt; vorhandene Inhalte bleiben unverändert."
-          },
-          { id: "packageName", kind: "text", label: "Paketname (optional)", value: settings.packageName },
-          {
-            id: "logStorageLocation",
-            kind: "select",
-            label: "Log-Speicherort",
-            value: settings.logStorageLocation,
-            options: [
-              { value: "appdata", label: "AppData (empfohlen)" },
-              { value: "desktop", label: "Desktop / Downloader Log" }
-            ],
-            help: "Beim Wechsel werden vorhandene Log-Dateien übernommen. Zugangsdaten und App-Konfiguration bleiben in AppData."
-          },
-          { id: "logStorageDirectory", kind: "action", label: "Log-Ordner", actionLabel: "Ordner öffnen" }
-        ]
-      },
-      {
-        id: "general-downloads",
-        title: "Download-Verhalten",
-        fields: [
-          { id: "maxParallel", kind: "number", label: "Max. gleichzeitige Downloads", value: String(settings.maxParallel), min: 1, max: 50 },
-          {
-            id: "spreadDownloadsAcrossPackages", kind: "switch", label: "Downloads auf mehrere Pakete verteilen", value: settings.spreadDownloadsAcrossPackages,
-            help: "Gleichzeitige Downloads werden auf verschiedene Pakete in Queue-Reihenfolge verteilt. Real-Debrid liefert ein Paket meist von einem einzigen Server; verteilt kommen die Daten von mehreren Servern, und die Drosselung eines Servers bremst nur einen Teil. Einzelne Pakete werden dadurch später vollständig."
-          },
-          { id: "retryLimit", kind: "number", label: "Automatische Wiederholungen", value: String(settings.retryLimit), min: 0, max: 99 },
-          {
-            id: "downloadDiskReserveGb", kind: "number", label: "Speicherpuffer für Entpacken (GB)", value: String(settings.downloadDiskReserveGb), min: 0, max: 2000,
-            help: "Neue Downloads starten erst, wenn neben der Dateigröße noch so viel Platz frei bleibt. Entpacken und Tonspur-Bearbeitung dürfen diesen Puffer nutzen, damit fertige Pakete auch bei fast voller Platte weiterverarbeitet werden. 0 schaltet den Puffer ab."
-          },
-          {
-            id: "offlineSkipScope",
-            kind: "select",
-            label: "Wenn ein Quelllink offline geht",
-            value: settings.offlineSkipScope,
-            options: [
-              { value: "archive", label: "Betroffenen Archivsatz überspringen" },
-              { value: "package", label: "Gesamtes Paket überspringen" }
-            ],
-            help: "Beim Archivsatz werden alle noch offenen Teile desselben Mehrteil-Archivs übersprungen. Bereits abgeschlossene Downloads bleiben erhalten."
-          },
-          { id: "autoResumeOnStart", kind: "switch", label: "Beim Start automatisch fortsetzen", value: settings.autoResumeOnStart },
-          { id: "clipboardWatch", kind: "switch", label: "Zwischenablage überwachen", value: settings.clipboardWatch },
-          {
-            id: "switchToCollectorOnClipboard", kind: "switch", label: "Bei erkannten Zwischenablage-Links zum Linksammler wechseln",
-            value: settings.switchToCollectorOnClipboard,
-            help: "Standardmäßig aus: Links werden im Hintergrund gesammelt, ohne den aktuellen Tab zu wechseln. Gilt nur bei aktivierter Zwischenablage-Überwachung."
-          }
-        ]
-      },
-      {
-        id: "general-history",
-        title: "Verlauf",
-        fields: [
-          {
-            id: "historyRetentionMode",
-            kind: "select",
-            label: "Verlauf speichern",
-            value: settings.historyRetentionMode === "permanent" && (settings.historyMaxEntries === 100 || settings.historyMaxEntries === 250)
-              ? `permanent-${settings.historyMaxEntries}`
-              : settings.historyRetentionMode,
-            options: [
-              { value: "never", label: "Nie" },
-              { value: "session", label: "Nur aktuelle Session" },
-              { value: "permanent-100", label: "Nur letzte 100 Einträge" },
-              { value: "permanent-250", label: "Nur letzte 250 Einträge" },
-              { value: "permanent", label: "Dauerhaft" }
-            ]
-          },
-          { id: "historyMaxEntries", kind: "number", label: "Maximale Verlauf-Einträge", value: String(settings.historyMaxEntries), min: 50, max: 100000, disabled: settings.historyRetentionMode !== "permanent" },
-          { id: "historyMaxAgeDays", kind: "number", label: "Einträge löschen älter als (Tage)", value: String(settings.historyMaxAgeDays), min: 0, max: 3650, disabled: settings.historyRetentionMode !== "permanent" }
-        ]
-      },
-      {
-        id: "general-interface",
-        title: "Oberfläche und Bedienung",
-        fields: [
-          { id: "collapseNewPackages", kind: "switch", label: "Neue Pakete eingeklappt zeigen", value: settings.collapseNewPackages },
-          { id: "animatePackageDisclosure", kind: "switch", label: "Animationen", value: settings.animatePackageDisclosure },
-          { id: "minimizeToTray", kind: "switch", label: "In den Infobereich minimieren", value: settings.minimizeToTray },
-          { id: "confirmDeleteSelection", kind: "switch", label: "Vor dem Löschen nachfragen", value: settings.confirmDeleteSelection },
-          { id: "backupIncludeDownloads", kind: "switch", label: "Download-Liste mitsichern", value: settings.backupIncludeDownloads },
-          {
-            id: "theme",
-            kind: "theme",
-            label: "Theme",
-            value: themeChoice,
-            options: [
-              { value: "light", label: "Hell" },
-              { value: "dark", label: "Dunkel" },
-              { value: "system", label: "System" }
-            ]
-          }
-        ]
-      },
-      {
-        id: "general-notifications",
-        title: "Discord-Benachrichtigungen",
-        fields: [
-          { id: "notifyUrl", kind: "text", label: "Webhook-Adresse", value: settings.notifyUrl, placeholder: settings.notifyUrlConfigured ? "Gespeichert; leer lassen zum Beibehalten" : "https://discord.com/api/webhooks/…", actionLabel: "Testen" },
-          { id: "notifyMention", kind: "text", label: "Discord-Erwähnung (optional)", value: settings.notifyMention },
-          { id: "notifyOnPackageCompleted", kind: "switch", label: "Melden, wenn ein Paket fertig ist", value: settings.notifyOnPackageCompleted },
-          { id: "notifyOnPackageFailed", kind: "switch", label: "Melden, wenn ein Paket fehlschlägt", value: settings.notifyOnPackageFailed },
-          {
-            id: "notifyPackageSuccessMode",
-            kind: "select",
-            label: "Erfolgsmeldungen senden",
-            value: settings.notifyPackageSuccessMode,
-            disabled: !settings.notifyOnPackageCompleted,
-            options: [
-              { value: "digest", label: "Gesammelt (alle 2 Minuten)" },
-              { value: "individual", label: "Jedes Paket einzeln" }
-            ]
-          },
-          { id: "notifyOnRunFinished", kind: "switch", label: "Melden, wenn der gesamte Lauf fertig ist", value: settings.notifyOnRunFinished },
-          { id: "notifyOnRemainingBelow", kind: "switch", label: "Melden, wenn die Restmenge unterschritten wird", value: settings.notifyOnRemainingBelow },
-          { id: "notifyRemainingThresholdGb", kind: "number", label: "Restmengenschwelle (GB)", value: String(settings.notifyRemainingThresholdGb), min: 1, max: 100000, disabled: !settings.notifyOnRemainingBelow },
-          { id: "notifyOnDownloadStall", kind: "switch", label: "Melden, wenn Downloads stillstehen", value: settings.notifyOnDownloadStall },
-          { id: "notifyStallAfterSeconds", kind: "number", label: "Stillstand bestätigen nach (Sek.)", value: String(settings.notifyStallAfterSeconds), min: 60, max: 3600, disabled: !settings.notifyOnDownloadStall },
-          { id: "notifyStallCooldownMinutes", kind: "number", label: "Frühestens erneut melden nach (Min.)", value: String(settings.notifyStallCooldownMinutes), min: 5, max: 1440, disabled: !settings.notifyOnDownloadStall },
-          { id: "notifyOnDownloadRecovery", kind: "switch", label: "Melden, wenn Downloads wieder laufen", value: settings.notifyOnDownloadRecovery, disabled: !settings.notifyOnDownloadStall }
-        ]
-      }
-    ]
+    },
+    videos: {
+      title: "Videos",
+      description: "Umbenennen, deutsche Tonspur und Sammelordner nach dem Entpacken.",
+      groups: [
+        {
+          id: "videos-names",
+          title: "Dateinamen",
+          fields: [
+            { id: "autoRename4sf4sj", kind: "switch", label: "Automatisch umbenennen", value: settings.autoRename4sf4sj, keywords: "rename folgen staffel" }
+          ]
+        },
+        {
+          id: "videos-audio",
+          title: "Deutsche Tonspur",
+          fields: [
+            { id: "keepGermanAudioOnly", kind: "switch", label: "Nur deutsche Tonspur behalten", value: settings.keepGermanAudioOnly, help: "Benötigt ffmpeg.", keywords: "audio sprache englisch entfernen dl dual" },
+            {
+              id: "germanAudioMode",
+              kind: "select",
+              label: "Welche Tonspur behalten",
+              value: settings.germanAudioMode,
+              dependsOn: "keepGermanAudioOnly",
+              disabled: !settings.keepGermanAudioOnly,
+              options: [
+                { value: "tag", label: "Deutsche Spur per Sprach-Tag" },
+                { value: "first", label: "Immer erste Tonspur" }
+              ]
+            }
+          ]
+        },
+        {
+          id: "videos-library",
+          title: "Sammelordner",
+          fields: [
+            { id: "collectMkvToLibrary", kind: "switch", label: "Videos in Sammelordner verschieben", value: settings.collectMkvToLibrary, keywords: "mkv bibliothek zusammenführen" },
+            { id: "mkvLibraryDir", kind: "path", label: "Video-Sammelordner", value: settings.mkvLibraryDir, dependsOn: "collectMkvToLibrary", disabled: !settings.collectMkvToLibrary, actionLabel: "Wählen", keywords: "mkv ordner pfad" }
+          ]
+        }
+      ]
+    },
+    notifications: {
+      title: "Benachrichtigungen",
+      description: "Discord-Meldungen zu Paketen, Restmenge und Stillstand.",
+      groups: [
+        {
+          id: "notifications-discord",
+          title: "Discord",
+          fields: [
+            { id: "notifyUrl", kind: "text", label: "Webhook-Adresse", value: settings.notifyUrl, placeholder: settings.notifyUrlConfigured ? "Gespeichert; leer lassen zum Beibehalten" : "https://discord.com/api/webhooks/…", actionLabel: "Testen", keywords: "meldung nachricht" },
+            { id: "notifyMention", kind: "text", label: "Discord-Erwähnung (optional)", value: settings.notifyMention, keywords: "ping everyone" }
+          ]
+        },
+        {
+          id: "notifications-packages",
+          title: "Pakete und Lauf",
+          fields: [
+            { id: "notifyOnPackageCompleted", kind: "switch", label: "Melden, wenn ein Paket fertig ist", value: settings.notifyOnPackageCompleted },
+            {
+              id: "notifyPackageSuccessMode",
+              kind: "select",
+              label: "Erfolgsmeldungen senden",
+              value: settings.notifyPackageSuccessMode,
+              dependsOn: "notifyOnPackageCompleted",
+              disabled: !settings.notifyOnPackageCompleted,
+              options: [
+                { value: "digest", label: "Gesammelt (alle 2 Minuten)" },
+                { value: "individual", label: "Jedes Paket einzeln" }
+              ]
+            },
+            { id: "notifyOnPackageFailed", kind: "switch", label: "Melden, wenn ein Paket fehlschlägt", value: settings.notifyOnPackageFailed },
+            { id: "notifyOnRunFinished", kind: "switch", label: "Melden, wenn der gesamte Lauf fertig ist", value: settings.notifyOnRunFinished }
+          ]
+        },
+        {
+          id: "notifications-remaining",
+          title: "Restmenge",
+          fields: [
+            { id: "notifyOnRemainingBelow", kind: "switch", label: "Melden, wenn die Restmenge unterschritten wird", value: settings.notifyOnRemainingBelow },
+            { id: "notifyRemainingThresholdGb", kind: "number", label: "Restmengenschwelle (GB)", value: String(settings.notifyRemainingThresholdGb), min: 1, max: 100000, dependsOn: "notifyOnRemainingBelow", disabled: !settings.notifyOnRemainingBelow }
+          ]
+        },
+        {
+          id: "notifications-stall",
+          title: "Stillstand",
+          fields: [
+            { id: "notifyOnDownloadStall", kind: "switch", label: "Melden, wenn Downloads stillstehen", value: settings.notifyOnDownloadStall, keywords: "hänger stuck" },
+            { id: "notifyStallAfterSeconds", kind: "number", label: "Stillstand bestätigen nach (Sek.)", value: String(settings.notifyStallAfterSeconds), min: 60, max: 3600, dependsOn: "notifyOnDownloadStall", disabled: !settings.notifyOnDownloadStall },
+            { id: "notifyStallCooldownMinutes", kind: "number", label: "Frühestens erneut melden nach (Min.)", value: String(settings.notifyStallCooldownMinutes), min: 5, max: 1440, dependsOn: "notifyOnDownloadStall", disabled: !settings.notifyOnDownloadStall },
+            { id: "notifyOnDownloadRecovery", kind: "switch", label: "Melden, wenn Downloads wieder laufen", value: settings.notifyOnDownloadRecovery, dependsOn: "notifyOnDownloadStall", disabled: !settings.notifyOnDownloadStall }
+          ]
+        }
+      ]
+    },
+    system: {
+      title: "System",
+      description: "Updates, Sicherung und Logs.",
+      groups: [
+        {
+          id: "updates-main",
+          title: "Updates",
+          fields: [
+            { id: "autoUpdateCheck", kind: "switch", label: "Beim Start nach Updates suchen", value: settings.autoUpdateCheck, keywords: "aktualisierung version" },
+            { id: "updateRepo", kind: "text", label: "Update-Quelle", value: settings.updateRepo, help: "Quelle im Format Benutzer/Repository." },
+            { id: "update:check", kind: "action", label: "Jetzt nach einer neuen Version suchen", actionLabel: "Nach Updates suchen", keywords: "aktualisierung" }
+          ]
+        },
+        {
+          id: "system-backup",
+          title: "Sicherung",
+          fields: [
+            { id: "backupIncludeDownloads", kind: "switch", label: "Download-Liste mitsichern", value: settings.backupIncludeDownloads, help: "Gilt für „Exportieren“ unter Datei › Sicherung. Online-Schlüssel sichern nur Einstellungen.", keywords: "backup export warteschlange" }
+          ]
+        },
+        {
+          id: "system-logs",
+          title: "Logs",
+          fields: [
+            {
+              id: "logStorageLocation",
+              kind: "select",
+              label: "Log-Speicherort",
+              value: settings.logStorageLocation,
+              keywords: "protokoll",
+              options: [
+                { value: "appdata", label: "AppData (empfohlen)" },
+                { value: "desktop", label: "Desktop / Downloader Log" }
+              ],
+              help: "Beim Wechsel werden vorhandene Log-Dateien übernommen. Zugangsdaten und App-Konfiguration bleiben in AppData."
+            },
+            { id: "logStorageDirectory", kind: "action", label: "Log-Ordner", actionLabel: "Ordner öffnen", keywords: "protokoll" }
+          ]
+        }
+      ]
+    }
   };
+}
+
+export function buildSettingsFormViewModel(input: SettingsFormProjectionInput): SettingsFormViewModel {
+  return buildSettingsForms(input)[input.section];
+}
+
+export interface SettingsSearchResult {
+  section: SettingsSection;
+  sectionLabel: string;
+  groupTitle: string;
+  fieldId: string;
+  label: string;
+}
+
+function normalizeSearchText(value: string): string {
+  return value.toLocaleLowerCase("de-DE").replace(/ß/g, "ss").normalize("NFD").replace(/[̀-ͯ]/g, "");
+}
+
+export function searchSettings(
+  forms: Record<SettingsSection, SettingsFormViewModel>,
+  query: string,
+  translate: (text: string) => string = (text) => text
+): SettingsSearchResult[] {
+  const tokens = normalizeSearchText(query).split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return [];
+  const matches = (parts: Array<string | undefined>): boolean => {
+    const haystack = normalizeSearchText(parts.filter(Boolean).flatMap((part) => [part as string, translate(part as string)]).join(" "));
+    return tokens.every((token) => haystack.includes(token));
+  };
+  const ranked: Array<{ rank: number; result: SettingsSearchResult }> = [];
+  for (const section of SETTINGS_SECTIONS) {
+    const form = forms[section.id];
+    const sectionRank = matches([section.label]) ? 0 : matches([section.label, section.hint]) ? 2 : -1;
+    if (sectionRank >= 0) {
+      ranked.push({ rank: sectionRank, result: { section: section.id, sectionLabel: section.label, groupTitle: "", fieldId: "", label: section.label } });
+    }
+    for (const group of form.groups) {
+      for (const field of group.fields) {
+        const rank = matches([field.label]) ? 1
+          : matches([field.label, field.keywords, group.title]) ? 2
+            : matches([field.label, field.keywords, group.title, field.help]) ? 3
+              : -1;
+        if (rank < 0) continue;
+        ranked.push({ rank, result: { section: section.id, sectionLabel: section.label, groupTitle: group.title, fieldId: field.id, label: field.label } });
+      }
+    }
+  }
+  return ranked.sort((a, b) => a.rank - b.rank).slice(0, 40).map((entry) => entry.result);
 }
 
 export function buildAccountRowId(service: AccountService, mode: string, identityId: string): string {

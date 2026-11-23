@@ -16,6 +16,7 @@ export interface SettingsFormActions {
 export interface SettingsFormProps {
   model: SettingsFormViewModel;
   actions: SettingsFormActions;
+  highlightFieldId?: string | null;
 }
 
 export type SettingsSelectKeyboardAction =
@@ -62,7 +63,12 @@ function FieldHelp({ field }: { field: SettingsFieldViewModel }): ReactElement |
   return field.help ? <span className="settings-field-help" id={`${field.id}-help`}>{field.help}</span> : null;
 }
 
-function TextControl({ field, actions }: { field: SettingsTextFieldViewModel; actions: SettingsFormActions }): ReactElement {
+function fieldClassName(field: SettingsFieldViewModel, variant: string, highlighted: boolean): string {
+  return `settings-field${variant}${field.dependsOn ? " is-dependent" : ""}${highlighted ? " is-highlighted" : ""}`;
+}
+
+function TextControl({ field, actions, highlighted }: { field: SettingsTextFieldViewModel; actions: SettingsFormActions; highlighted: boolean }): ReactElement {
+  const inline = !field.actionLabel && (field.kind === "number" || field.kind === "text");
   const describedBy = field.help ? `${field.id}-help` : undefined;
   const onChange = (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>): void => {
     actions.onChange(field.id, event.target.value);
@@ -97,8 +103,13 @@ function TextControl({ field, actions }: { field: SettingsTextFieldViewModel; ac
     />
   );
   return (
-    <div className="settings-field">
-      <label htmlFor={field.id}>{field.label}</label>
+    <div className={fieldClassName(field, inline ? " is-inline" : "", highlighted)} data-settings-field={field.id}>
+      {inline ? (
+        <div className="settings-field-text">
+          <label htmlFor={field.id}>{field.label}</label>
+          <FieldHelp field={field} />
+        </div>
+      ) : <label htmlFor={field.id}>{field.label}</label>}
       {field.actionLabel ? (
         <div className="settings-control-row">
           {control}
@@ -110,12 +121,12 @@ function TextControl({ field, actions }: { field: SettingsTextFieldViewModel; ac
           >{field.actionLabel}</button>
         </div>
       ) : control}
-      <FieldHelp field={field} />
+      {inline ? null : <FieldHelp field={field} />}
     </div>
   );
 }
 
-function SelectControl({ field, actions }: { field: SettingsSelectFieldViewModel; actions: SettingsFormActions }): ReactElement {
+function SelectControl({ field, actions, highlighted }: { field: SettingsSelectFieldViewModel; actions: SettingsFormActions; highlighted: boolean }): ReactElement {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -179,8 +190,11 @@ function SelectControl({ field, actions }: { field: SettingsSelectFieldViewModel
   };
 
   return (
-    <div className="settings-field">
-      <label id={`${field.id}-label`}>{field.label}</label>
+    <div className={fieldClassName(field, " is-inline", highlighted)} data-settings-field={field.id}>
+      <div className="settings-field-text">
+        <label id={`${field.id}-label`}>{field.label}</label>
+        <FieldHelp field={field} />
+      </div>
       <div className={`settings-select${open ? " is-open" : ""}${field.disabled ? " is-disabled" : ""}`} onBlur={onBlur} onKeyDown={onSelectKeyDown} ref={rootRef}>
         <button
           aria-controls={`${field.id}-options`}
@@ -218,22 +232,21 @@ function SelectControl({ field, actions }: { field: SettingsSelectFieldViewModel
           ))}
         </div>
       </div>
-      <FieldHelp field={field} />
     </div>
   );
 }
 
-function SettingsField({ field, actions }: { field: SettingsFieldViewModel; actions: SettingsFormActions }): ReactElement {
+function SettingsField({ field, actions, highlighted }: { field: SettingsFieldViewModel; actions: SettingsFormActions; highlighted: boolean }): ReactElement {
   if (field.kind === "text" || field.kind === "path" || field.kind === "number" || field.kind === "textarea") {
-    return <TextControl actions={actions} field={field} />;
+    return <TextControl actions={actions} field={field} highlighted={highlighted} />;
   }
   if (field.kind === "select") {
-    return <SelectControl actions={actions} field={field} />;
+    return <SelectControl actions={actions} field={field} highlighted={highlighted} />;
   }
   if (field.kind === "theme") {
     const selectedIndex = Math.max(0, field.options.findIndex((option) => option.value === field.value));
     return (
-      <fieldset className="settings-field settings-theme-field" disabled={field.disabled}>
+      <fieldset className={fieldClassName(field, " settings-theme-field", highlighted)} data-settings-field={field.id} disabled={field.disabled}>
         <legend id={`${field.id}-label`}>{field.label}</legend>
         <div aria-describedby={field.help ? `${field.id}-help` : undefined} aria-labelledby={`${field.id}-label`} className="settings-theme-options" role="radiogroup">
           {field.options.map((option, index) => (
@@ -268,7 +281,7 @@ function SettingsField({ field, actions }: { field: SettingsFieldViewModel; acti
   }
   if (field.kind === "switch") {
     return (
-      <div className="settings-field settings-switch-field">
+      <div className={fieldClassName(field, " settings-switch-field", highlighted)} data-settings-field={field.id}>
         <div>
           <span className="settings-switch-label" id={`${field.id}-label`}>{field.label}</span>
           <FieldHelp field={field} />
@@ -287,7 +300,7 @@ function SettingsField({ field, actions }: { field: SettingsFieldViewModel; acti
     );
   }
   return (
-    <div className="settings-field settings-action-field">
+    <div className={fieldClassName(field, " settings-action-field", highlighted)} data-settings-field={field.id}>
       <div>
         <span className="settings-switch-label">{field.label}</span>
         <FieldHelp field={field} />
@@ -302,7 +315,7 @@ function SettingsField({ field, actions }: { field: SettingsFieldViewModel; acti
   );
 }
 
-export function SettingsForm({ model, actions }: SettingsFormProps): ReactElement {
+export function SettingsForm({ model, actions, highlightFieldId = null }: SettingsFormProps): ReactElement {
   return (
     <div className="settings-form-column">
       <header className="settings-form-heading">
@@ -317,7 +330,7 @@ export function SettingsForm({ model, actions }: SettingsFormProps): ReactElemen
             {group.status ? <p className="settings-group-status" data-tone={group.status.tone} role="status">{group.status.text}</p> : null}
           </header>
           <div className="settings-form-fields">
-            {group.fields.map((field) => cloneElement(SettingsField({ actions, field }), { key: field.id }))}
+            {group.fields.map((field) => cloneElement(SettingsField({ actions, field, highlighted: field.id === highlightFieldId }), { key: field.id }))}
           </div>
         </section>
       ))}

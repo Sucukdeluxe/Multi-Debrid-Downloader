@@ -1,9 +1,13 @@
-import type { ReactElement } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactElement } from "react";
+import type { AppLanguage } from "../../../shared/types";
+import { translateUiText } from "../../i18n";
 import {
   SETTINGS_SECTIONS,
   getSettingsSaveLabel,
+  searchSettings,
   type SettingsFormViewModel,
   type SettingsSaveState,
+  type SettingsSearchResult,
   type SettingsSection
 } from "./settings-model";
 import {
@@ -22,6 +26,8 @@ export interface SettingsViewModel {
   saveState: SettingsSaveState;
   saveInFlight: boolean;
   form: SettingsFormViewModel;
+  forms: Record<SettingsSection, SettingsFormViewModel>;
+  language: AppLanguage;
   accounts: AccountWorkspaceViewModel;
 }
 
@@ -55,17 +61,87 @@ export function SettingsSidebar({ model, actions }: SettingsViewProps): ReactEle
             key={section.id}
             onClick={() => actions.onSectionChange(section.id)}
             type="button"
-          >{section.label}</button>
+          >
+            <span className="settings-sidebar-item-label">{section.label}</span>
+            <span className="settings-sidebar-item-hint">{section.hint}</span>
+          </button>
         ))}
       </SlidingSelection>
     </nav>
   );
 }
 
+function SettingsSearchResults({ results, onOpen }: { results: readonly SettingsSearchResult[]; onOpen: (result: SettingsSearchResult) => void }): ReactElement {
+  return (
+    <div className="settings-form-column settings-search-results">
+      <header className="settings-form-heading">
+        <h2>Suchergebnisse</h2>
+        <p>{results.length === 0 ? "Keine Einstellung gefunden." : "Ein Klick öffnet den Bereich und markiert die Einstellung."}</p>
+      </header>
+      {results.length === 0 ? null : (
+        <ul className="settings-search-list">
+          {results.map((result) => (
+            <li key={`${result.section}:${result.fieldId}`}>
+              <button className="settings-search-result" onClick={() => onOpen(result)} type="button">
+                <span className="settings-search-result-label">{result.label}</span>
+                <span className="settings-search-result-path">
+                  {result.groupTitle ? (
+                    <>
+                      <span>{result.sectionLabel}</span>
+                      <span aria-hidden="true">›</span>
+                      <span>{result.groupTitle}</span>
+                    </>
+                  ) : <span>Bereich</span>}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export function SettingsContent({ model, actions }: SettingsViewProps): ReactElement {
+  const [query, setQuery] = useState("");
+  const [highlightFieldId, setHighlightFieldId] = useState<string | null>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
   const saveLabel = getSettingsSaveLabel(model.saveState);
   const saveDisabled = model.saveInFlight || model.saveState === "clean" || model.saveState === "saved" || model.saveState === "saving";
   const discardDisabled = model.saveInFlight || model.saveState === "clean" || model.saveState === "saved" || model.saveState === "saving";
+  const searching = query.trim() !== "";
+  const results = useMemo(
+    () => searchSettings(model.forms, query, model.language === "en" ? (text) => translateUiText(text, "en") : undefined),
+    [model.forms, model.language, query]
+  );
+
+  const openResult = (result: SettingsSearchResult): void => {
+    actions.onSectionChange(result.section);
+    setQuery("");
+    setHighlightFieldId(result.fieldId || null);
+  };
+
+  const onSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
+    if (event.key === "Escape" && query !== "") {
+      event.preventDefault();
+      event.stopPropagation();
+      setQuery("");
+    } else if (event.key === "Enter" && results.length > 0) {
+      event.preventDefault();
+      openResult(results[0]);
+    }
+  };
+
+  useEffect(() => {
+    if (!highlightFieldId || searching) return;
+    const field = [...(bodyRef.current?.querySelectorAll<HTMLElement>("[data-settings-field]") ?? [])]
+      .find((element) => element.dataset.settingsField === highlightFieldId);
+    if (!field) return;
+    field.scrollIntoView({ block: "center" });
+    const timer = window.setTimeout(() => setHighlightFieldId(null), 2200);
+    return () => window.clearTimeout(timer);
+  }, [highlightFieldId, model.section, searching]);
+
   return (
     <section aria-label="Einstellungsbereich" className="settings-content settings-static">
       <header className="settings-content-header">
@@ -74,6 +150,15 @@ export function SettingsContent({ model, actions }: SettingsViewProps): ReactEle
           <span aria-live="polite" className={`settings-save-state is-${model.saveState}`} role="status">{saveLabel}</span>
         </div>
         <div className="settings-content-actions">
+          <input
+            aria-label="Einstellung suchen"
+            className="settings-control settings-search-input"
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={onSearchKeyDown}
+            placeholder="Einstellung suchen"
+            type="search"
+            value={query}
+          />
           <button
             className="settings-button settings-button-secondary settings-discard-button"
             disabled={discardDisabled}
@@ -89,10 +174,26 @@ export function SettingsContent({ model, actions }: SettingsViewProps): ReactEle
           >Einstellungen speichern</button>
         </div>
       </header>
-      <div className={`settings-content-body${model.section === "accounts" ? " is-accounts" : ""}`}>
-        {model.section === "accounts"
-          ? <AccountWorkspace actions={actions.accounts} model={model.accounts} />
-          : <SettingsForm actions={actions.form} model={model.form} />}
+      <nav aria-label="Bereiche" className="settings-section-tabs">
+        {SETTINGS_SECTIONS.map((section) => (
+          <button
+            aria-current={model.section === section.id ? "page" : undefined}
+            className={`settings-section-tab${model.section === section.id ? " is-active" : ""}`}
+            key={section.id}
+            onClick={() => {
+              setQuery("");
+              actions.onSectionChange(section.id);
+            }}
+            type="button"
+          >{section.label}</button>
+        ))}
+      </nav>
+      <div className={`settings-content-body${!searching && model.section === "accounts" ? " is-accounts" : ""}`} ref={bodyRef}>
+        {searching
+          ? <SettingsSearchResults onOpen={openResult} results={results} />
+          : model.section === "accounts"
+            ? <AccountWorkspace actions={actions.accounts} model={model.accounts} />
+            : <SettingsForm actions={actions.form} highlightFieldId={highlightFieldId} model={model.form} />}
       </div>
     </section>
   );

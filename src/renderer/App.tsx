@@ -137,7 +137,7 @@ import {
 } from "./views/downloads/DownloadsView";
 import {
   buildAccountRowId,
-  buildSettingsFormViewModel,
+  buildSettingsForms,
   buildTargetedAccountCheck,
   projectAccountRows,
   resolveHistoryRetentionSelection,
@@ -5850,14 +5850,14 @@ export function App(): ReactElement {
     onRemoveSelected: removeSelectedCollectorLinks
   };
 
-  const settingsFormModel = useMemo<SettingsFormViewModel>(() => buildSettingsFormViewModel({
+  const settingsForms = useMemo(() => buildSettingsForms({
     settings: settingsDraft,
-    section: settingsSubTab,
     speedLimitInput,
     scheduleSpeedInputs,
     themeChoice: settingsThemeChoice,
     proxyProbe: snapshot.networkProxyProbe
-  }), [scheduleSpeedInputs, settingsDraft, settingsSubTab, settingsThemeChoice, speedLimitInput, snapshot.networkProxyProbe]);
+  }), [scheduleSpeedInputs, settingsDraft, settingsThemeChoice, speedLimitInput, snapshot.networkProxyProbe]);
+  const settingsFormModel: SettingsFormViewModel = settingsForms[settingsSubTab];
 
   const accountRowViewId = (row: AccountTableRow): string => buildAccountRowId(
     row.entry.service,
@@ -6331,6 +6331,8 @@ export function App(): ReactElement {
     saveState: settingsDirty && settingsSaveState === "clean" ? "dirty" : settingsSaveState,
     saveInFlight: settingsSaveInFlight,
     form: settingsFormModel,
+    forms: settingsForms,
+    language: normalizeLanguage(settingsDraft.language),
     accounts: accountWorkspaceModel
   };
   const settingsViewActions: SettingsViewActions = {

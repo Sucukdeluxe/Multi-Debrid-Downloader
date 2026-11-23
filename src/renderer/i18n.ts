@@ -1,8 +1,42 @@
 import type { AppLanguage } from "../shared/types";
 
 const pairs = [
+  ["Speicherpuffer für Entpacken (GB)", "Disk reserve for extraction (GB)"],
+  ["Neue Downloads starten erst, wenn neben der Dateigröße noch so viel Platz frei bleibt. Entpacken und Tonspur-Bearbeitung dürfen diesen Puffer nutzen, damit fertige Pakete auch bei fast voller Platte weiterverarbeitet werden. 0 schaltet den Puffer ab.", "New downloads only start if this much space stays free in addition to the file size. Extraction and audio track processing may use this reserve so finished packages can still be processed when the disk is almost full. 0 turns the reserve off."],
+  ["Downloads auf mehrere Pakete verteilen", "Spread downloads across multiple packages"],
+  ["Gleichzeitige Downloads werden auf verschiedene Pakete in Queue-Reihenfolge verteilt. Real-Debrid liefert ein Paket meist von einem einzigen Server; verteilt kommen die Daten von mehreren Servern, und die Drosselung eines Servers bremst nur einen Teil. Einzelne Pakete werden dadurch später vollständig.", "Simultaneous downloads are spread across different packages in queue order. Real-Debrid usually serves a package from a single server; spread out, the data comes from several servers and throttling on one server slows only part of it. Individual packages are completed later as a result."],
+  ["Leitet API-, Login- und Link-Anfragen über einen festen HTTP-Proxy. Downloads verwenden zusätzlich mehrere Proxys parallel. Bei aktivem Modus gibt es keinen direkten Rückfall über deine echte Verbindung.", "Routes API, login and link requests through one fixed HTTP proxy. Downloads additionally use several proxies in parallel. While this mode is active there is no direct fallback through your real connection."],
+  ["Ist der feste API-Proxy nicht erreichbar oder ungültig, schlagen Netzwerkanfragen geschlossen fehl. Es wird nie ungefragt direkt verbunden.", "If the fixed API proxy is unreachable or invalid, network requests fail closed. The app never connects directly without being asked."],
+  ["Proxy-Liste", "Proxy list"],
+  ["Unterstützt unter anderem Benutzer:Passwort@Host:Port. Zugangsdaten werden nicht protokolliert.", "Supports formats such as user:password@host:port. Credentials are not logged."],
+  ["Textdatei mit einem Proxy pro Zeile", "Text file with one proxy per line"],
+  ["Datei wählen", "Choose file"],
+  ["Fester API-Proxy (gültiger Listeneintrag)", "Fixed API proxy (valid list entry)"],
+  ["Dieser 1-basierte Eintrag bleibt für API, Login und Link-Auflösung fest. Ist er offline, wird nicht automatisch ein anderer Proxy oder die direkte Verbindung verwendet.", "This 1-based entry stays fixed for API, login and link resolution. If it is offline, no other proxy and no direct connection is used automatically."],
+  ["Proxy-Verbindungen insgesamt", "Total proxy connections"],
+  ["Archiv nach Entpack-Fehler löschen nach (Minuten)", "Delete archive after extraction error after (minutes)"],
+  ["Löscht die Archivteile eines fehlgeschlagenen Entpackvorgangs nach dieser Wartezeit vom Datenträger, sobald kein Teil desselben Archivs mehr lädt oder entpackt wird. Der Eintrag bleibt als „Entpack-Fehler - gelöscht“ in der Liste; erneutes Entpacken ist danach nicht mehr möglich. 0 schaltet das Löschen ab.", "Deletes the archive parts of a failed extraction from disk after this waiting time, once no part of the same archive is still downloading or extracting. The entry stays in the list as “Extraction error - deleted”; extracting it again is no longer possible afterwards. 0 turns deletion off."],
+  ["Deutsche Spur per Sprach-Tag", "German track by language tag"],
+  ["Log-Speicherort", "Log location"],
+  ["Beim Wechsel werden vorhandene Log-Dateien übernommen. Zugangsdaten und App-Konfiguration bleiben in AppData.", "When switching, existing log files are moved over. Credentials and app configuration stay in AppData."],
+  ["AppData (empfohlen)", "AppData (recommended)"],
+  ["Log-Ordner", "Log folder"],
+  ["Ordner öffnen", "Open folder"],
   ["Nachbearbeitung", "Post-processing"], ["Dateien umbenennen", "Renaming files"], ["Tonspur-Bereinigung", "Audio track cleanup"], ["Aufräumen", "Cleaning up"],
   ["Videos verschieben", "Moving videos"], ["Verschachtelte Archive entpacken", "Extracting nested archives"],
+  ["Benachrichtigungen", "Notifications"], ["Sprache, Darstellung, Verlauf", "Language, appearance, history"], ["Zugänge und Verwendungsregeln", "Accounts and usage rules"],
+  ["Ordner, Ablauf, Download-Liste", "Folders, workflow, download list"], ["Parallele Downloads, Tempolimit, Proxy", "Parallel downloads, speed limit, proxy"], ["Ablauf, Ziel, Passwörter, Aufräumen", "Workflow, destination, passwords, cleanup"],
+  ["Umbenennen, Tonspur, Sammelordner", "Renaming, audio track, library folder"], ["Discord-Meldungen", "Discord messages"], ["Updates, Sicherung, Logs", "Updates, backup, logs"],
+  ["Sprache, Darstellung, Zwischenablage und Verlauf.", "Language, appearance, clipboard and history."], ["Ordner, Ablauf und Download-Liste.", "Folders, workflow and download list."], ["Gleichzeitige Downloads, Tempolimit, Proxy und Wiederverbindung.", "Simultaneous downloads, speed limit, proxy and reconnecting."],
+  ["Ablauf, Ziel, Passwörter, Leistung und Aufräumen.", "Workflow, destination, passwords, performance and cleanup."], ["Umbenennen, deutsche Tonspur und Sammelordner nach dem Entpacken.", "Renaming, German audio track and library folder after extraction."], ["Discord-Meldungen zu Paketen, Restmenge und Stillstand.", "Discord messages about packages, remaining amount and stalls."],
+  ["Updates, Sicherung und Logs.", "Updates, backup and logs."], ["Sprache und Darstellung", "Language and appearance"], ["Zwischenablage", "Clipboard"],
+  ["Ordner", "Folders"], ["Ablauf", "Workflow"], ["Download-Liste", "Download list"],
+  ["Gleichzeitige Downloads", "Simultaneous downloads"], ["Wiederverbindung", "Reconnecting"], ["Ziel", "Destination"],
+  ["Aufräumen nach dem Entpacken", "Cleanup after extraction"], ["Dateinamen", "File names"], ["Sammelordner", "Library folder"],
+  ["Pakete und Lauf", "Packages and run"], ["Restmenge", "Remaining amount"], ["Stillstand", "Stalls"],
+  ["Entpackt fertige Archive schon, während der Rest des Pakets noch lädt.", "Extracts finished archives while the rest of the package is still downloading."], ["Gilt für „Exportieren“ unter Datei › Sicherung. Online-Schlüssel sichern nur Einstellungen.", "Applies to “Export” under File › Backup. Online keys back up settings only."], ["Einstellung suchen", "Search settings"],
+  ["Suchergebnisse", "Search results"], ["Keine Einstellung gefunden.", "No setting found."], ["Ein Klick öffnet den Bereich und markiert die Einstellung.", "A click opens the section and highlights the setting."],
+  ["Bereich", "Section"],
   ["Downloads", "Downloads"], ["Linksammler", "Link collector"], ["Einstellungen", "Settings"], ["Verlauf", "History"], ["Statistiken", "Statistics"],
   ["Datei", "File"], ["Hilfe", "Help"], ["Kontomenü", "Account menu"], ["Allgemein", "General"], ["Accounts", "Accounts"],
   ["Hauptnavigation", "Main navigation"], ["Globale Aktionen", "Global actions"], ["Anwendungsmenü", "Application menu"], ["Seitenleiste einklappen", "Collapse sidebar"], ["Seitenleiste ausklappen", "Expand sidebar"],
@@ -395,6 +429,8 @@ function translateDynamic(value: string, language: AppLanguage): string {
     if (finalizing) return `Finalizing - ${finalizing[1]}`;
     const audioCleanup = value.match(/^Tonspur-Bereinigung (\d+\/\d+)$/);
     if (audioCleanup) return `Audio track cleanup ${audioCleanup[1]}`;
+    const proxyConnections = value.match(/^Dieses Gesamtlimit wird fair zwischen allen gleichzeitigen Segmentdownloads geteilt\. Bei (\d+) aktiven Downloads laufen zusammen höchstens (\d+) Segmentverbindungen; 32 ist der Standardwert, 200 das Maximum\. Langsame und ausgefallene Proxys werden automatisch zurückgestuft\. Kleine Dateien und Teil-Downloads laufen über den festen API-Proxy\.$/);
+    if (proxyConnections) return `This total limit is shared fairly between all simultaneous segment downloads. With ${proxyConnections[1]} active downloads, at most ${proxyConnections[2]} segment connections run in total; 32 is the default, 200 the maximum. Slow and failed proxies are demoted automatically. Small files and partial downloads go through the fixed API proxy.`;
     const checkedUntil = value.match(/^Account geprüft — (.+) bis (.+)$/);
     if (checkedUntil) return `Account checked — ${checkedUntil[1]} until ${checkedUntil[2]}`;
     const checked = value.match(/^Account geprüft — (.+)$/);
@@ -608,6 +644,8 @@ function translateDynamic(value: string, language: AppLanguage): string {
     if (finalizing) return `Finalisieren - ${finalizing[1]}`;
     const audioCleanup = value.match(/^Audio track cleanup (\d+\/\d+)$/);
     if (audioCleanup) return `Tonspur-Bereinigung ${audioCleanup[1]}`;
+    const proxyConnections = value.match(/^This total limit is shared fairly between all simultaneous segment downloads\. With (\d+) active downloads, at most (\d+) segment connections run in total; 32 is the default, 200 the maximum\. Slow and failed proxies are demoted automatically\. Small files and partial downloads go through the fixed API proxy\.$/);
+    if (proxyConnections) return `Dieses Gesamtlimit wird fair zwischen allen gleichzeitigen Segmentdownloads geteilt. Bei ${proxyConnections[1]} aktiven Downloads laufen zusammen höchstens ${proxyConnections[2]} Segmentverbindungen; 32 ist der Standardwert, 200 das Maximum. Langsame und ausgefallene Proxys werden automatisch zurückgestuft. Kleine Dateien und Teil-Downloads laufen über den festen API-Proxy.`;
     const checkedUntil = value.match(/^Account checked — (.+) until (.+)$/);
     if (checkedUntil) return `Account geprüft — ${checkedUntil[1]} bis ${checkedUntil[2]}`;
     const credentialsFor = value.match(/^Credentials for (.+)$/);
