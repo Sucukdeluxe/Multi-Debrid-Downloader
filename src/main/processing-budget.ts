@@ -2,7 +2,7 @@ import { ExtractionLimiter } from "./extraction-limiter";
 import { runtimePerformance } from "./runtime-performance";
 
 type Stage = "downloadWrites" | "remux";
-const limits = { downloadWrites: 8, remux: 1 };
+const limits = { downloadWrites: 8, remux: 3 };
 const queues = {
   downloadWrites: new ExtractionLimiter("aborted", 32),
   remux: new ExtractionLimiter("aborted", 4)

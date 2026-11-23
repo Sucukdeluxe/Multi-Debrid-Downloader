@@ -194,6 +194,19 @@ function isExtracted(item: DownloadItem): boolean {
   return item.fullStatus.trim().toLocaleLowerCase("de-DE").startsWith("entpackt");
 }
 
+function isPostProcessingExtractedPackage(pkg: PackageEntry, packageItems: readonly DownloadItem[]): boolean {
+  return Boolean(pkg.postProcessLabel?.trim()) && packageItems.length > 0 && packageItems.every(isExtracted);
+}
+
+function getVisiblePackageItems(pkg: PackageEntry, packageItems: DownloadItem[], hideExtractedItems: boolean): DownloadItem[] {
+  if (!hideExtractedItems || isPostProcessingExtractedPackage(pkg, packageItems)) return packageItems;
+  return packageItems.filter((item) => !isExtracted(item));
+}
+
+function getPackageItems(pkg: PackageEntry, items: Record<string, DownloadItem>): DownloadItem[] {
+  return pkg.itemIds.map((id) => items[id]).filter((item): item is DownloadItem => Boolean(item));
+}
+
 function matchesQuery(value: string | undefined, query: string): boolean {
   return Boolean(value?.toLocaleLowerCase("de-DE").includes(query));
 }
@@ -221,10 +234,10 @@ export function getPackageErrorItemIds(
   return [...errorItemIds];
 }
 
-function classifyDownloadItem(item: DownloadItem, pkg: PackageEntry): DownloadSidebarFilter {
+function classifyDownloadItem(item: DownloadItem, pkg: PackageEntry, postProcessing = false): DownloadSidebarFilter {
   if (isDownloadItemError(item)) return "failed";
   if (item.status === "cancelled") return "all";
-  if (isExtracted(item)) return "completed";
+  if (isExtracted(item)) return postProcessing ? "active" : "completed";
   if ((pkg.status === "extracting" || pkg.status === "integrity_check") && item.status === "completed") return "active";
   if (item.status === "completed") return "completed";
   if (pkg.status === "failed") return "failed";
@@ -235,19 +248,19 @@ function classifyDownloadItem(item: DownloadItem, pkg: PackageEntry): DownloadSi
 function buildDownloadLifecycleCounts(packages: readonly PackageEntry[], items: Record<string, DownloadItem>, hideExtractedItems: boolean): DownloadFilterCounts {
   const counts: DownloadFilterCounts = { all: 0, active: 0, queued: 0, paused: 0, completed: 0, failed: 0 };
   for (const pkg of packages) {
-    for (const itemId of pkg.itemIds) {
-      const item = items[itemId];
-      if (!item || (hideExtractedItems && isExtracted(item))) continue;
+    const packageItems = getPackageItems(pkg, items);
+    const postProcessing = isPostProcessingExtractedPackage(pkg, packageItems);
+    for (const item of getVisiblePackageItems(pkg, packageItems, hideExtractedItems)) {
       counts.all += 1;
-      const category = classifyDownloadItem(item, pkg);
+      const category = classifyDownloadItem(item, pkg, postProcessing);
       if (category !== "all") counts[category] += 1;
     }
   }
   return counts;
 }
 
-function matchesFilter(item: DownloadItem, pkg: PackageEntry, filter: DownloadSidebarFilter): boolean {
-  return filter === "all" || classifyDownloadItem(item, pkg) === filter;
+function matchesFilter(item: DownloadItem, pkg: PackageEntry, filter: DownloadSidebarFilter, postProcessing = false): boolean {
+  return filter === "all" || classifyDownloadItem(item, pkg, postProcessing) === filter;
 }
 
 function matchesProvider(item: DownloadItem, providerFilter: string): boolean {
@@ -274,8 +287,8 @@ export function buildDownloadsViewModel(input: DownloadsModelInput): DownloadsVi
   const allPackages = input.packageOrder
     .map((id) => input.packages[id])
     .filter((entry): entry is PackageEntry => Boolean(entry));
-  const allItems = allPackages.flatMap((entry) => entry.itemIds.map((id) => input.items[id]).filter((item): item is DownloadItem => Boolean(item)));
-  const eligibleItems = input.hideExtractedItems ? allItems.filter((item) => !isExtracted(item)) : allItems;
+  const allItems = allPackages.flatMap((entry) => getPackageItems(entry, input.items));
+  const eligibleItems = allPackages.flatMap((entry) => getVisiblePackageItems(entry, getPackageItems(entry, input.items), input.hideExtractedItems));
   const eligiblePackageCount = new Set(eligibleItems.map((item) => item.packageId)).size;
   const counts = buildDownloadLifecycleCounts(allPackages, input.items, input.hideExtractedItems);
   const providerMap = new Map<string, string>();
@@ -288,11 +301,9 @@ export function buildDownloadsViewModel(input: DownloadsModelInput): DownloadsVi
   const collapsed = new Set(input.collapsedPackageIds);
   const selectedIds = new Set(input.selectedIds);
   const packageRows = allPackages.flatMap((entry): DownloadPackageRow[] => {
-    const allPackageItems = entry.itemIds
-      .map((id) => input.items[id])
-      .filter((item): item is DownloadItem => Boolean(item));
-    const items = allPackageItems
-      .filter((item) => !input.hideExtractedItems || !isExtracted(item));
+    const allPackageItems = getPackageItems(entry, input.items);
+    const postProcessing = isPostProcessingExtractedPackage(entry, allPackageItems);
+    const items = getVisiblePackageItems(entry, allPackageItems, input.hideExtractedItems);
     const packageMatchesQuery = query === "" || matchesQuery(entry.name, query) || matchesQuery(entry.status, query);
     const matchingItems = items.filter((item) => {
       const itemMatchesQuery = query === ""
@@ -302,11 +313,11 @@ export function buildDownloadsViewModel(input: DownloadsModelInput): DownloadsVi
         || matchesQuery(item.providerAccountLabel, query)
         || matchesQuery(item.fullStatus, query)
         || matchesQuery(item.lastError, query);
-      return matchesFilter(item, entry, input.filter) && matchesProvider(item, providerFilter) && (packageMatchesQuery || itemMatchesQuery);
+      return matchesFilter(item, entry, input.filter, postProcessing) && matchesProvider(item, providerFilter) && (packageMatchesQuery || itemMatchesQuery);
     });
     if (matchingItems.length === 0) return [];
     const visibleItems = packageMatchesQuery && query !== ""
-      ? items.filter((item) => matchesFilter(item, entry, input.filter) && matchesProvider(item, providerFilter))
+      ? items.filter((item) => matchesFilter(item, entry, input.filter, postProcessing) && matchesProvider(item, providerFilter))
       : matchingItems;
     return [{ package: entry, items: visibleItems, allItems: allPackageItems, collapsed: collapsed.has(entry.id) }];
   });

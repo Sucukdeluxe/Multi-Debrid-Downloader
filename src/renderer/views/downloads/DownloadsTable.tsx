@@ -447,7 +447,7 @@ function packageCell(row: DownloadPackageRow, column: string, packageSpeedBps: n
     const waitsForDisk = row.allItems.some((item) => compactDownloadStatus(item.fullStatus || "") === "Warte auf Festplatte");
     const details = `${stats.done}/${stats.total}${stats.failed > 0 ? ` · ${stats.failed} Fehler` : ""}${stats.cancelled > 0 ? ` · ${stats.cancelled} abgebrochen` : ""}${postProcessLabel ? ` · ${postProcessLabel}` : ""}${extractFailure ? " · Entpack-Fehler" : ""}${audio ? ` · ${audio.text}` : ""}`;
     const downloading = entry.status === "downloading" || entry.status === "validating" || row.items.some((item) => item.status === "downloading" || item.status === "validating");
-    const status = postProcessLabel && (/Entpacken\s+\d+%/i.test(postProcessLabel) || entry.status === "extracting")
+    const status = postProcessLabel && (/Entpacken\s+\d+%/i.test(postProcessLabel) || entry.status === "extracting" || entry.status === "completed")
       ? postProcessLabel
       : extractFailure ? (row.allItems.every((item) => !/^Entpack-Fehler\b/i.test(item.fullStatus || "") || /^Entpack-Fehler - gelöscht\b/i.test(item.fullStatus || "")) ? "Entpack-Fehler - gelöscht" : "Entpack-Fehler")
         : waitsForDisk ? "Warte auf Festplatte"
