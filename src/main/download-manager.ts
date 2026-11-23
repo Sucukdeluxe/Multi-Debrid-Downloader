@@ -5369,6 +5369,7 @@ export class DownloadManager extends EventEmitter {
         this.packageFileOpChain.delete(pkgId);
       }
       this.tryFinalizePackageResult(pkgId);
+      this.applyPackageDoneCleanup(pkgId);
     });
   }
 
@@ -5445,13 +5446,14 @@ export class DownloadManager extends EventEmitter {
     extractDir: string,
     pkg?: PackageEntry,
     shouldAbort?: () => boolean,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onProgress?: (current: number, total: number) => void
   ): Promise<number> {
     if (!pkg) {
-      return this.keepGermanAudioOnlyImpl(extractDir, undefined, shouldAbort, signal);
+      return this.keepGermanAudioOnlyImpl(extractDir, undefined, shouldAbort, signal, onProgress);
     }
     return this.chainPackageFileOp(pkg.id, () =>
-      this.keepGermanAudioOnlyImpl(extractDir, pkg, shouldAbort, signal)
+      this.keepGermanAudioOnlyImpl(extractDir, pkg, shouldAbort, signal, onProgress)
     );
   }
 
@@ -5463,7 +5465,8 @@ export class DownloadManager extends EventEmitter {
     extractDir: string,
     pkg?: PackageEntry,
     shouldAbort?: () => boolean,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onProgress?: (current: number, total: number) => void
   ): Promise<number> {
     if (!this.settings.keepGermanAudioOnly) {
       return 0;
@@ -5536,10 +5539,11 @@ export class DownloadManager extends EventEmitter {
     const mode: GermanAudioMode = this.settings.germanAudioMode === "first" ? "first" : "tag";
     let processed = 0;
     let failed = 0;
-    for (const sourcePath of targets) {
+    for (const [index, sourcePath] of targets.entries()) {
       if (shouldAbort?.() || signal?.aborted) {
         return processed;
       }
+      onProgress?.(index + 1, targets.length);
       if (!await this.canPostProcessMediaFile(pkg, sourcePath)) continue;
       const sourceName = path.basename(sourcePath);
       const remuxStartedAt = nowMs();
@@ -7821,6 +7825,7 @@ export class DownloadManager extends EventEmitter {
           }
         }
       } else if (policy === "package_done" || policy === "on_start") {
+        if (this.hasPackageLifecycleWork(pkgId)) continue;
         const allCompleted = pkg.itemIds.every((id) => {
           const item = this.session.items[id];
           return !item || item.status === "completed" || item.status === "failed" || item.status === "cancelled";
@@ -9328,6 +9333,7 @@ export class DownloadManager extends EventEmitter {
           );
         } else {
           this.tryFinalizePackageResult(packageId);
+          this.applyPackageDoneCleanup(packageId);
         }
       }
     })();
@@ -14530,6 +14536,7 @@ export class DownloadManager extends EventEmitter {
               this.packageHybridPostProcessTasks.delete(packageId);
             }
             this.tryFinalizePackageResult(packageId);
+            this.applyPackageDoneCleanup(packageId);
           }
         })();
         hybridHandle.task = hybridTask;
@@ -15185,6 +15192,8 @@ export class DownloadManager extends EventEmitter {
     extractedCount: number
   ): Promise<void> {
     this.trackPackagePostProcessResult(packageId);
+    pkg.postProcessLabel = "Nachbearbeitung";
+    this.emitState();
     const task = this.executeDeferredPostExtraction(packageId, pkg, success, failed, alreadyMarkedExtracted, extractedCount)
       .finally(() => {
         this.finalizeActiveArchiveOperations(pkg);
@@ -15263,7 +15272,7 @@ export class DownloadManager extends EventEmitter {
         const nestedCandidates = (await findArchiveCandidates(pkg.extractDir))
           .filter((p) => !nestedBlacklist.test(p));
         if (nestedCandidates.length > 0) {
-          pkg.postProcessLabel = "Nested Entpacken...";
+          pkg.postProcessLabel = "Verschachtelte Archive entpacken";
           this.emitState();
           logger.info(`Deferred Nested-Extraction: ${nestedCandidates.length} Archive in ${pkg.extractDir}`);
           this.logPackageForPackage(pkg, "INFO", "Deferred Nested-Extraction gestartet", {
@@ -15333,7 +15342,7 @@ export class DownloadManager extends EventEmitter {
       }
 
       if (extractedCount > 0 || alreadyMarkedExtracted) {
-        pkg.postProcessLabel = "Renaming...";
+        pkg.postProcessLabel = "Dateien umbenennen";
         this.emitState();
         this.logPackageForPackage(pkg, "INFO", "Deferred Auto-Rename gestartet", {
           extractDir: pkg.extractDir
@@ -15341,15 +15350,18 @@ export class DownloadManager extends EventEmitter {
         throwIfAborted();
         await this.autoRenameExtractedVideoFiles(pkg.extractDir, pkg, shouldAbort, true);
         if (this.settings.keepGermanAudioOnly) {
-          pkg.postProcessLabel = "Tonspur...";
+          pkg.postProcessLabel = "Tonspur-Bereinigung";
           this.emitState();
           throwIfAborted();
-          await this.keepGermanAudioOnly(pkg.extractDir, pkg, shouldAbort, deferredController.signal);
+          await this.keepGermanAudioOnly(pkg.extractDir, pkg, shouldAbort, deferredController.signal, (current, total) => {
+            pkg.postProcessLabel = `Tonspur-Bereinigung ${current}/${total}`;
+            this.emitState();
+          });
         }
       }
 
       if ((extractedCount > 0 || alreadyMarkedExtracted) && failed === 0 && this.settings.cleanupMode !== "none") {
-        pkg.postProcessLabel = "Aufräumen...";
+        pkg.postProcessLabel = "Aufräumen";
         this.emitState();
         throwIfAborted();
         if (hasBlockingExtractError) {
@@ -15410,7 +15422,7 @@ export class DownloadManager extends EventEmitter {
 
       if (success > 0 && (pkg.status === "completed" || pkg.status === "failed")) {
         throwIfAborted();
-        pkg.postProcessLabel = "Verschiebe Videos...";
+        pkg.postProcessLabel = "Videos verschieben";
         this.emitState();
         await this.chainPackageFileOp(pkg.id, () => this.collectMkvFilesToLibrary(packageId, pkg, shouldAbort));
       }
@@ -15459,6 +15471,10 @@ export class DownloadManager extends EventEmitter {
       for (const itemId of [...pkg.itemIds]) {
         this.applyCompletedCleanupPolicy(packageId, itemId, { ignoreDeferred: true });
       }
+      return;
+    }
+
+    if (this.hasPackageLifecycleWork(packageId)) {
       return;
     }
 
