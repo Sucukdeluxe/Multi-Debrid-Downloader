@@ -56,6 +56,12 @@ const DEFAULT_CONNECTION_LIMIT = 32;
 const MAX_CONNECTION_LIMIT = 200;
 const PROXY_PROBE_END = 1;
 const PLACEHOLDER_TOTAL_EXTRA_PROBES = 4;
+const MEBIBYTE = 1024 * 1024;
+
+function placeholderTotalFor(announcedTotalBytes?: number): number {
+  const announced = Math.max(0, Math.floor(announcedTotalBytes || 0));
+  return announced > 0 && announced % MEBIBYTE !== 0 ? announced : 0;
+}
 const MAX_REDIRECTS = 5;
 const MAX_SEGMENTS = 4_096;
 const MAX_PROXY_FILE_BYTES = 8 * 1024 * 1024;
@@ -1467,7 +1473,7 @@ export async function downloadWithProxySegments(options: ProxySegmentedDownloadO
   if (options.signal.aborted) throw abortError();
   try { options.onRepresentationRetry?.(result.representation); } catch {}
   if (options.signal.aborted) throw abortError();
-  const announced = Math.max(0, Math.floor(options.announcedTotalBytes || 0));
+  const announced = placeholderTotalFor(options.announcedTotalBytes);
   const placeholderSeen = announced > 0 && (result.representation?.expectedTotal === announced || result.representation?.receivedTotal === announced);
   return downloadWithProxySegmentsOnce(options, withDiskActivity, placeholderSeen ? announced : undefined);
 }
@@ -1518,7 +1524,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
     originRetryBudgetMs: Math.max(0, Math.floor(options.originRetryBudgetMs ?? DEFAULT_ORIGIN_THROTTLE_RETRY_BUDGET_MS))
   };
   const probe = await probeRangeSupport(target, poolKey, groupId, segmentProxies, options.signal, normalized, options.onTrafficBytes, placeholderTotal);
-  const announcedTotal = Math.max(0, Math.floor(options.announcedTotalBytes || 0));
+  const announcedTotal = placeholderTotalFor(options.announcedTotalBytes);
   if (probe.status === "unsupported") {
     return { status: "fallback", reason: "range_unsupported" };
   }
