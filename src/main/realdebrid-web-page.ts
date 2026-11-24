@@ -196,7 +196,7 @@ function normalizePageError(value: unknown): { status: number; error: string; er
   if (lower.includes("hoster_maintenance")) return { status: 503, error: "hoster_maintenance", errorCode: 17 };
   if (lower.includes("file_unavailable")) return { status: 503, error: "file_unavailable", errorCode: 24 };
   if (lower.includes("service_unavailable")) return { status: 503, error: "service_unavailable", errorCode: 25 };
-  if (lower.includes("fair_usage_limit")) return { status: 429, error: "fair_usage_limit", errorCode: 36 };
+  if (lower.includes("fair_usage_limit")) return { status: 440, error: "fair_usage_limit", errorCode: 36 };
   if (lower.includes("ip_not_allowed")) return { status: 403, error: "ip_not_allowed", errorCode: 22 };
   if (lower.includes("traffic_exhausted")) return { status: 403, error: "traffic_exhausted", errorCode: 23 };
   if (lower.includes("too_many_requests")) return { status: 429, error: "too_many_requests", errorCode: 34 };

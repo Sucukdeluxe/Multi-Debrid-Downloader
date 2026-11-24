@@ -70,7 +70,7 @@ import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, rem
 import { planDownloadCompletion, reconcileFinalizedSize, validateDownloadedFileCompletion } from "./download-completion";
 import { downloadWithProxySegments, type ProxyFallbackReason } from "./proxy-segmented-download";
 import { formatSpeed, speedLimitBytesPerSecond } from "../shared/speed-format";
-import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkDdownloadOnline, checkOneFichierLinks, checkRapidgatorOnline, fetchAllDebridHostInfo, filenameFromDdownloadUrlPath, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, isDdownloadLink, isOneFichierLink, isRealDebridAccountBlockedForStart, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown, type DdownloadCheckResult, type OneFichierCheckResult } from "./debrid";
+import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkDdownloadOnline, checkOneFichierLinks, checkRapidgatorOnline, fetchAllDebridHostInfo, filenameFromDdownloadUrlPath, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, isDdownloadLink, isOneFichierLink, isRealDebridAccountBlockedForStart, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown, REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS, REAL_DEBRID_FAIR_USAGE_RETRY_MS, type DdownloadCheckResult, type OneFichierCheckResult } from "./debrid";
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractionActivityLabel, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo, type ExtractProgressUpdate } from "./extractor";
 import { planRarVolumeAliases } from "./archive-volume-names";
 import { filesHaveEqualContent, validateFileAgainstManifest } from "./integrity";
@@ -494,7 +494,9 @@ export function resolveUnrestrictTimeoutBudgetMs(
     if (accountCount === 0) {
       return total;
     }
-    return total + Math.max(baseTimeoutMs, realDebridAccountAttemptTimeoutMs * accountCount);
+    return total
+      + Math.max(baseTimeoutMs, realDebridAccountAttemptTimeoutMs * accountCount)
+      + (REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS - 1) * (REAL_DEBRID_FAIR_USAGE_RETRY_MS + realDebridAccountAttemptTimeoutMs);
   }, 0);
   return Math.max(baseTimeoutMs, Math.min(Number.MAX_SAFE_INTEGER, budgetMs));
 }

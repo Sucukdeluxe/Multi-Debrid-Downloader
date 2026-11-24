@@ -775,6 +775,54 @@ function setRealDebridAccountCooldown(
 }
 
 const REAL_DEBRID_FAIR_USAGE_COOLDOWN_MS = 30 * 60 * 1000;
+export const REAL_DEBRID_FAIR_USAGE_RETRY_MS = 40_000;
+export const REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS = 6;
+const REAL_DEBRID_LINK_CHECK_TIMEOUT_MS = 15_000;
+
+export function canonicalRealDebridLink(link: string): string {
+  const text = String(link || "").trim();
+  let canonical: string;
+  try {
+    const url = new URL(text);
+    url.search = "";
+    url.hash = "";
+    canonical = url.toString();
+  } catch {
+    canonical = text.replace(/[?#].*$/, "");
+  }
+  return canonical.replace(/\.html$/i, "");
+}
+
+class RealDebridUnlockedLinkError extends Error {
+  public constructor(status: number) {
+    super(`freigegebener Link noch nicht ladbar (${status > 0 ? `HTTP ${status}` : "keine Antwort"})`);
+    this.name = "RealDebridUnlockedLinkError";
+  }
+}
+
+function isRealDebridFairUsageError(error: unknown): boolean {
+  if (error instanceof RealDebridUnlockedLinkError) return true;
+  if (error instanceof RealDebridApiError && (error.status === 440 || error.apiError.toLowerCase() === "fair_usage_limit")) return true;
+  return /fair[ _-]?usage/i.test(compactErrorText(error));
+}
+
+async function checkRealDebridDownloadLink(directUrl: string, signal?: AbortSignal): Promise<number> {
+  try {
+    const response = await fetch(directUrl, {
+      method: "GET",
+      headers: { Range: "bytes=0-1", "User-Agent": DEBRID_USER_AGENT },
+      signal: withTimeoutSignal(signal, REAL_DEBRID_LINK_CHECK_TIMEOUT_MS)
+    });
+    try {
+      await response.body?.cancel();
+    } catch {
+    }
+    return response.status;
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return 0;
+  }
+}
 
 function realDebridPoolCooldown(accounts: RealDebridAccountEntry[], now = Date.now()): { retryMs: number; dailyLimit: boolean } | null {
   const enabled = accounts.filter((account) => account.enabled);
@@ -4602,6 +4650,9 @@ export class DebridService {
 
   private classifyRealDebridFailure(error: unknown): RealDebridFailureClassification {
     const message = compactErrorText(error);
+    if (isRealDebridFairUsageError(error)) {
+      return { rotateAccount: true, cooldownMs: REAL_DEBRID_FAIR_USAGE_COOLDOWN_MS, category: "quota", message: `Tageslimit (Fair Use) erreicht – ${message}` };
+    }
     const status = error instanceof RealDebridApiError ? error.status : 0;
     const apiError = error instanceof RealDebridApiError ? error.apiError.toLowerCase() : "";
     if (status === 401 || /^(bad_token|invalid_token|token_expired)$/.test(apiError) || /HTTP\s*401|bad[ _-]?token|invalid.*token|unauthorized/i.test(message)) {
@@ -4613,9 +4664,6 @@ export class DebridService {
     if (/^(file_unavailable|invalid_link|bad_link|unsupported_hoster|hoster_unsupported|hoster_not_supported|hoster_unavailable|hoster_maintenance|hoster_temporarily_unavailable|service_unavailable)$/.test(apiError)
       || /file[ _-]?unavailable|invalid[ _-]?link|bad[ _-]?link|unsupported[ _-]?hoster|hoster.*not.*supported|hoster[ _-]?(unavailable|maintenance|temporarily[ _-]?unavailable)|service[ _-]?unavailable/i.test(message)) {
       return { rotateAccount: false, cooldownMs: 0, category: "provider_or_link", message };
-    }
-    if (status === 440 || apiError === "fair_usage_limit" || /fair[ _-]?usage/i.test(message)) {
-      return { rotateAccount: true, cooldownMs: REAL_DEBRID_FAIR_USAGE_COOLDOWN_MS, category: "quota", message: `Tageslimit (Fair Use) erreicht – ${message}` };
     }
     if (status === 403
       || /^(permission_denied|traffic_exhausted|account_locked|account_not_activated|invalid_login|invalid_password|hoster_limit_reached|too_many_active_downloads|ip_not_allowed)$/.test(apiError)
@@ -4640,6 +4688,7 @@ export class DebridService {
   ): Promise<UnrestrictedLink> {
     const failures: string[] = [];
     const attempted = new Set<string>();
+    const fairUsage = { attempts: 0 };
     while (true) {
       if (signal?.aborted) {
         throw new Error(`aborted:${String(signal.reason || "caller")}`);
@@ -4654,16 +4703,8 @@ export class DebridService {
       attempted.add(account.id);
       realDebridInFlight.set(account.id, (realDebridInFlight.get(account.id) || 0) + 1);
       recordAccountRuntimeAttempt("realdebrid", account.id);
-      const timeoutMs = getRealDebridAccountAttemptTimeoutMs();
-      const timeoutSignal = AbortSignal.timeout(timeoutMs);
-      const accountSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
       try {
-        const result = account.kind === "api"
-          ? await new RealDebridClient(account.token).unrestrictLink(link, accountSignal)
-          : await this.options.realDebridWebUnrestrict?.(account.id, link, accountSignal);
-        if (!result) {
-          throw new Error("Real-Debrid-Web-Fallback nicht verfügbar");
-        }
+        const result = await this.unrestrictWithRealDebridFairUsageRetry(account, link, fairUsage, signal);
         realDebridAccountCooldowns.delete(account.id);
         if (realDebridStickyAccountId === account.id) {
           realDebridStickyCount += 1;
@@ -4712,6 +4753,52 @@ export class DebridService {
       }
     }
     throw realDebridUnavailableError(this.getConfiguredRealDebridAccounts(settings), failures);
+  }
+
+  private async unrestrictWithRealDebridFairUsageRetry(
+    account: RealDebridAccountEntry,
+    link: string,
+    fairUsage: { attempts: number },
+    signal?: AbortSignal
+  ): Promise<UnrestrictedLink> {
+    let requestLink = link;
+    while (true) {
+      const timeoutSignal = AbortSignal.timeout(getRealDebridAccountAttemptTimeoutMs());
+      const accountSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+      try {
+        const result = account.kind === "api"
+          ? await new RealDebridClient(account.token).unrestrictLink(requestLink, accountSignal)
+          : await this.options.realDebridWebUnrestrict?.(account.id, requestLink, accountSignal);
+        if (!result) {
+          throw new Error("Real-Debrid-Web-Fallback nicht verfügbar");
+        }
+        if (fairUsage.attempts > 0) {
+          const linkStatus = await checkRealDebridDownloadLink(result.directUrl, signal);
+          if (linkStatus < 200 || linkStatus >= 300) {
+            throw new RealDebridUnlockedLinkError(linkStatus);
+          }
+        }
+        return result;
+      } catch (error) {
+        if (signal?.aborted || !isRealDebridFairUsageError(error)) {
+          throw error;
+        }
+        fairUsage.attempts += 1;
+        const fileLabel = filenameFromUrl(link) || link;
+        const reason = error instanceof RealDebridUnlockedLinkError ? `, ${error.message}` : "";
+        if (fairUsage.attempts > REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS) {
+          logger.info(`Real-Debrid ${account.label}: Fair Use${reason}, Account pausiert 30 min: ${fileLabel}`);
+          throw error;
+        }
+        if (fairUsage.attempts === REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS) {
+          logger.info(`Real-Debrid ${account.label}: Fair Use: Versuch ${fairUsage.attempts}/${REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS} erfolglos${reason}, Account pausiert 30 min: ${fileLabel}`);
+          throw error;
+        }
+        logger.info(`Real-Debrid ${account.label}: Fair Use: Versuch ${fairUsage.attempts}/${REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS}, nächster in ${Math.round(REAL_DEBRID_FAIR_USAGE_RETRY_MS / 1000)} s${reason}: ${fileLabel}`);
+        requestLink = canonicalRealDebridLink(link);
+        await sleepWithSignal(REAL_DEBRID_FAIR_USAGE_RETRY_MS, signal);
+      }
+    }
   }
 
   private async unrestrictViaProvider(settings: AppSettings, provider: DebridProvider, link: string, signal?: AbortSignal): Promise<UnrestrictedLink> {
