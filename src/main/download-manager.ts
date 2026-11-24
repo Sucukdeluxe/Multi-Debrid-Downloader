@@ -2632,6 +2632,18 @@ export class DownloadManager extends EventEmitter {
       this.releaseMegaDebridResetParks();
     }
 
+    const providerSetupChanged = megaPoolChanged
+      || credChanges.some((change) => change.prev !== change.next)
+      || (previous.providerOrder || []).join(",") !== (next.providerOrder || []).join(",")
+      || previous.providerPrimary !== next.providerPrimary
+      || previous.providerSecondary !== next.providerSecondary
+      || previous.providerTertiary !== next.providerTertiary
+      || previous.autoProviderFallback !== next.autoProviderFallback
+      || (previous.disabledProviders || []).join(",") !== (next.disabledProviders || []).join(",");
+    if (!opts?.settingsOnlyImport && providerSetupChanged) {
+      this.releaseRealDebridCooldownParks();
+    }
+
     if (!opts?.settingsOnlyImport) {
       this.resolveExistingQueuedOpaqueFilenames();
       void this.cleanupExistingExtractedArchives().catch((err) => logger.warn(`cleanupExistingExtractedArchives Fehler (setSettings): ${compactErrorText(err)}`));
@@ -2643,13 +2655,21 @@ export class DownloadManager extends EventEmitter {
   }
 
   private releaseMegaDebridResetParks(): number {
+    return this.releaseParkedItems(/Mega-Debrid bis Tagesreset gesperrt/i, "Mega-Debrid-Tagesreset-Warteitem(s)");
+  }
+
+  private releaseRealDebridCooldownParks(): number {
+    return this.releaseParkedItems(/^Real-Debrid: (?:Tageslimit aller Accounts erreicht|alle Accounts pausiert)/i, "Real-Debrid-Warteitem(s)");
+  }
+
+  private releaseParkedItems(statusPattern: RegExp, label: string): number {
     const activeItemIds = new Set([...this.activeTasks.values()].map((task) => task.itemId));
     const affectedPackageIds = new Set<string>();
     let released = 0;
     for (const item of Object.values(this.session.items)) {
       if (activeItemIds.has(item.id)) continue;
       if (item.status !== "queued" && item.status !== "reconnect_wait") continue;
-      if (!/Mega-Debrid bis Tagesreset gesperrt/i.test(item.fullStatus || "")) continue;
+      if (!statusPattern.test(item.fullStatus || "")) continue;
       this.retryAfterByItem.delete(item.id);
       this.retryStateByItem.delete(item.id);
       item.status = "queued";
@@ -2668,7 +2688,7 @@ export class DownloadManager extends EventEmitter {
       if (pkg) this.refreshPackageStatus(pkg);
     }
     if (released > 0) {
-      logger.info(`Settings-Update: ${released} Mega-Debrid-Tagesreset-Warteitem(s) wegen geaendertem Account-Pool freigegeben`);
+      logger.info(`Settings-Update: ${released} ${label} wegen geänderter Provider-Einstellungen freigegeben`);
       this.persistSoon();
       if (this.session.running) {
         void this.ensureScheduler().catch((error) => logger.error(`Scheduler nach Account-Update fehlgeschlagen: ${compactErrorText(error)}`));
@@ -11737,7 +11757,7 @@ export class DownloadManager extends EventEmitter {
             this.queueRetry(
               item,
               active,
-              Math.min(realDebridCooldown.delayMs + 1000, 310_000),
+              realDebridCooldown.delayMs + 1000,
               `${realDebridCooldown.detail || "Real-Debrid pausiert"}, neuer Versuch um ${resumeClock}`
             );
             item.lastError = realDebridCooldown.detail || errorText;
