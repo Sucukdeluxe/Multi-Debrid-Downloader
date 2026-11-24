@@ -6,6 +6,7 @@ import { appendDiagnosticLog, finishDiagnosticLog, flushDiagnosticLogWrites } fr
 
 const PACKAGE_LOG_FLUSH_INTERVAL_MS = 200;
 const PACKAGE_LOG_RETENTION_DAYS = 30;
+const PACKAGE_LOG_MAX_FILE_BYTES = 8 * 1024 * 1024;
 
 type PackageLogLevel = "INFO" | "WARN" | "ERROR";
 
@@ -92,7 +93,7 @@ function flushPending(asynchronous = false): void {
     const chunk = lines.join("");
     pendingLinesByPackage.set(packageId, []);
     try {
-      if (asynchronous) void appendDiagnosticLog(logPath, chunk);
+      if (asynchronous) void appendDiagnosticLog(logPath, chunk, PACKAGE_LOG_MAX_FILE_BYTES);
       else void finishDiagnosticLog(logPath, chunk);
     } catch {
     }
@@ -114,7 +115,7 @@ async function cleanupOldPackageLogs(dir: string): Promise<void> {
     const files = await fs.promises.readdir(dir);
     const cutoff = Date.now() - PACKAGE_LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000;
     for (const file of files) {
-      if (!file.startsWith("package_") || !file.endsWith(".txt")) {
+      if (!file.startsWith("package_") || !/\.txt(?:\.old)?$/.test(file)) {
         continue;
       }
       const filePath = path.join(dir, file);

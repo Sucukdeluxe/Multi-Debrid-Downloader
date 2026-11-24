@@ -70,7 +70,7 @@ import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, rem
 import { planDownloadCompletion, reconcileFinalizedSize, validateDownloadedFileCompletion } from "./download-completion";
 import { downloadWithProxySegments, type ProxyFallbackReason } from "./proxy-segmented-download";
 import { formatSpeed, speedLimitBytesPerSecond } from "../shared/speed-format";
-import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkDdownloadOnline, checkOneFichierLinks, checkRapidgatorOnline, fetchAllDebridHostInfo, filenameFromDdownloadUrlPath, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, isDdownloadLink, isOneFichierLink, isRealDebridAccountBlockedForStart, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown, type DdownloadCheckResult, type OneFichierCheckResult } from "./debrid";
+import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkDdownloadOnline, checkOneFichierLinks, checkRapidgatorOnline, fetchAllDebridHostInfo, filenameFromDdownloadUrlPath, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, isDdownloadLink, isOneFichierLink, isRealDebridAccountBlockedForStart, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown, REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS, REAL_DEBRID_FAIR_USAGE_RETRY_MS, type DdownloadCheckResult, type OneFichierCheckResult } from "./debrid";
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractionActivityLabel, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo, type ExtractProgressUpdate } from "./extractor";
 import { planRarVolumeAliases } from "./archive-volume-names";
 import { filesHaveEqualContent, validateFileAgainstManifest } from "./integrity";
@@ -494,7 +494,9 @@ export function resolveUnrestrictTimeoutBudgetMs(
     if (accountCount === 0) {
       return total;
     }
-    return total + Math.max(baseTimeoutMs, realDebridAccountAttemptTimeoutMs * accountCount);
+    return total
+      + Math.max(baseTimeoutMs, realDebridAccountAttemptTimeoutMs * accountCount)
+      + (REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS - 1) * (REAL_DEBRID_FAIR_USAGE_RETRY_MS + realDebridAccountAttemptTimeoutMs);
   }, 0);
   return Math.max(baseTimeoutMs, Math.min(Number.MAX_SAFE_INTEGER, budgetMs));
 }
@@ -793,6 +795,10 @@ export function getAuthoritativeRealDebridTotal(
     || evaluateCandidate(contentLength, "content-length");
 }
 
+function isProviderPoolCooldownError(errorText: string): boolean {
+  return /(?:real_debrid|mega_debrid|debrid_link)_cooldown:\d+:/i.test(String(errorText || ""));
+}
+
 function isPermanentLinkError(errorText: string): boolean {
   const text = String(errorText || "").toLowerCase();
   return text.includes("source_link_offline:")
@@ -832,6 +838,18 @@ function parseDebridLinkCooldownRetry(errorText: string): { delayMs: number; det
     return null;
   }
   return { delayMs, detail };
+}
+
+export function parseRealDebridFileCooldownRetry(errorText: string): { delayMs: number; detail: string } | null {
+  const match = String(errorText || "").match(/real_debrid_file_cooldown:(\d+):([^|]*)/i);
+  if (!match) {
+    return null;
+  }
+  const raw = Number(match[1]);
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return null;
+  }
+  return { delayMs: Math.max(1000, Math.min(2 * 60 * 60 * 1000, raw)), detail: String(match[2] || "").trim() };
 }
 
 export function parseRealDebridCooldownRetry(errorText: string): { delayMs: number; detail: string } | null {
@@ -2628,6 +2646,18 @@ export class DownloadManager extends EventEmitter {
       this.releaseMegaDebridResetParks();
     }
 
+    const providerSetupChanged = megaPoolChanged
+      || credChanges.some((change) => change.prev !== change.next)
+      || (previous.providerOrder || []).join(",") !== (next.providerOrder || []).join(",")
+      || previous.providerPrimary !== next.providerPrimary
+      || previous.providerSecondary !== next.providerSecondary
+      || previous.providerTertiary !== next.providerTertiary
+      || previous.autoProviderFallback !== next.autoProviderFallback
+      || (previous.disabledProviders || []).join(",") !== (next.disabledProviders || []).join(",");
+    if (!opts?.settingsOnlyImport && providerSetupChanged) {
+      this.releaseRealDebridCooldownParks();
+    }
+
     if (!opts?.settingsOnlyImport) {
       this.resolveExistingQueuedOpaqueFilenames();
       void this.cleanupExistingExtractedArchives().catch((err) => logger.warn(`cleanupExistingExtractedArchives Fehler (setSettings): ${compactErrorText(err)}`));
@@ -2639,13 +2669,21 @@ export class DownloadManager extends EventEmitter {
   }
 
   private releaseMegaDebridResetParks(): number {
+    return this.releaseParkedItems(/Mega-Debrid bis Tagesreset gesperrt/i, "Mega-Debrid-Tagesreset-Warteitem(s)");
+  }
+
+  private releaseRealDebridCooldownParks(): number {
+    return this.releaseParkedItems(/^Real-Debrid: (?:Tageslimit aller Accounts erreicht|alle Accounts pausiert|Datei derzeit nicht freigegeben)/i, "Real-Debrid-Warteitem(s)");
+  }
+
+  private releaseParkedItems(statusPattern: RegExp, label: string): number {
     const activeItemIds = new Set([...this.activeTasks.values()].map((task) => task.itemId));
     const affectedPackageIds = new Set<string>();
     let released = 0;
     for (const item of Object.values(this.session.items)) {
       if (activeItemIds.has(item.id)) continue;
       if (item.status !== "queued" && item.status !== "reconnect_wait") continue;
-      if (!/Mega-Debrid bis Tagesreset gesperrt/i.test(item.fullStatus || "")) continue;
+      if (!statusPattern.test(item.fullStatus || "")) continue;
       this.retryAfterByItem.delete(item.id);
       this.retryStateByItem.delete(item.id);
       item.status = "queued";
@@ -2664,7 +2702,7 @@ export class DownloadManager extends EventEmitter {
       if (pkg) this.refreshPackageStatus(pkg);
     }
     if (released > 0) {
-      logger.info(`Settings-Update: ${released} Mega-Debrid-Tagesreset-Warteitem(s) wegen geaendertem Account-Pool freigegeben`);
+      logger.info(`Settings-Update: ${released} ${label} wegen geänderter Provider-Einstellungen freigegeben`);
       this.persistSoon();
       if (this.session.running) {
         void this.ensureScheduler().catch((error) => logger.error(`Scheduler nach Account-Update fehlgeschlagen: ${compactErrorText(error)}`));
@@ -4386,6 +4424,9 @@ export class DownloadManager extends EventEmitter {
     }
     if (item.onlineStatus === "offline") {
       return "hoster";
+    }
+    if (isProviderPoolCooldownError(errorText)) {
+      return null;
     }
     if (item.status !== "validating" || item.onlineStatus === "checking") {
       return null;
@@ -11718,6 +11759,16 @@ export class DownloadManager extends EventEmitter {
           }
 
           const megaRawError = error instanceof Error ? String(error.message || "") : String(error || "");
+          const realDebridFilePark = parseRealDebridFileCooldownRetry(megaRawError);
+          if (realDebridFilePark) {
+            const detail = realDebridFilePark.detail || "Real-Debrid: Datei derzeit nicht freigegeben";
+            const resumeClock = new Date(nowMs() + realDebridFilePark.delayMs).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+            this.queueRetry(item, active, realDebridFilePark.delayMs + 1000, `${detail}, neuer Versuch um ${resumeClock}`);
+            item.lastError = detail;
+            this.persistSoon();
+            this.emitState();
+            return;
+          }
           const realDebridCooldown = parseRealDebridCooldownRetry(megaRawError);
           if (realDebridCooldown) {
             const resumeAt = nowMs() + realDebridCooldown.delayMs;
@@ -11730,7 +11781,7 @@ export class DownloadManager extends EventEmitter {
             this.queueRetry(
               item,
               active,
-              Math.min(realDebridCooldown.delayMs + 1000, 310_000),
+              realDebridCooldown.delayMs + 1000,
               `${realDebridCooldown.detail || "Real-Debrid pausiert"}, neuer Versuch um ${resumeClock}`
             );
             item.lastError = realDebridCooldown.detail || errorText;

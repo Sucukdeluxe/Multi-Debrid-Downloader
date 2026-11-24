@@ -689,12 +689,25 @@ export function getRealDebridAccountAttemptTimeoutMs(): number {
   return Number.isFinite(timeoutMsRaw) ? Math.max(1000, Math.floor(timeoutMsRaw)) : 35_000;
 }
 
+const SKIPPED_PROVIDER_LOG_INTERVAL_MS = 60_000;
+const skippedProviderLoggedAt = new Map<string, number>();
+
+function logSkippedProvider(key: string, message: string): void {
+  const now = Date.now();
+  const last = skippedProviderLoggedAt.get(key);
+  if (last !== undefined && now - last < SKIPPED_PROVIDER_LOG_INTERVAL_MS) return;
+  skippedProviderLoggedAt.set(key, now);
+  logger.info(message);
+}
+
 export function resetRealDebridRuntimeStateForTests(): void {
   realDebridAccountCooldowns.clear();
   realDebridInFlight.clear();
   realDebridRotationCursor = 0;
   realDebridStickyAccountId = "";
   realDebridStickyCount = 0;
+  skippedProviderLoggedAt.clear();
+  realDebridLockedFileTimes = [];
   resetAccountRuntimeSessionForProvider("realdebrid");
 }
 
@@ -763,6 +776,69 @@ function setRealDebridAccountCooldown(
 }
 
 const REAL_DEBRID_FAIR_USAGE_COOLDOWN_MS = 30 * 60 * 1000;
+export const REAL_DEBRID_FAIR_USAGE_RETRY_MS = 500;
+export const REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS = 4;
+export const REAL_DEBRID_FAIR_USAGE_FILE_PARK_MS = 30 * 60 * 1000;
+export const REAL_DEBRID_FAIR_USAGE_POOL_FAILURES = 12;
+const REAL_DEBRID_FAIR_USAGE_POOL_WINDOW_MS = 10 * 60 * 1000;
+const REAL_DEBRID_LINK_CHECK_TIMEOUT_MS = 15_000;
+let realDebridLockedFileTimes: number[] = [];
+
+function noteRealDebridLockedFile(now = Date.now()): boolean {
+  realDebridLockedFileTimes = realDebridLockedFileTimes.filter((at) => now - at < REAL_DEBRID_FAIR_USAGE_POOL_WINDOW_MS);
+  realDebridLockedFileTimes.push(now);
+  if (realDebridLockedFileTimes.length < REAL_DEBRID_FAIR_USAGE_POOL_FAILURES) return false;
+  realDebridLockedFileTimes = [];
+  return true;
+}
+
+export function canonicalRealDebridLink(link: string): string {
+  const text = String(link || "").trim();
+  if (!isRapidgatorLink(text)) return text;
+  const url = new URL(text);
+  url.search = "";
+  url.hash = "";
+  return url.toString().replace(/\.html$/i, "");
+}
+
+function isUsableRealDebridLinkStatus(status: number): boolean {
+  return (status >= 200 && status < 300) || status === 429 || status === 503;
+}
+
+function formatFairUsageWait(ms: number): string {
+  return ms < 1000 ? `${ms} ms` : `${Math.round(ms / 1000)} s`;
+}
+
+class RealDebridUnlockedLinkError extends Error {
+  public constructor(status: number) {
+    super(`freigegebener Link noch nicht ladbar (${status > 0 ? `HTTP ${status}` : "keine Antwort"})`);
+    this.name = "RealDebridUnlockedLinkError";
+  }
+}
+
+function isRealDebridFairUsageError(error: unknown): boolean {
+  if (error instanceof RealDebridUnlockedLinkError) return true;
+  if (error instanceof RealDebridApiError && (error.status === 440 || error.apiError.toLowerCase() === "fair_usage_limit")) return true;
+  return /fair[ _-]?usage/i.test(compactErrorText(error));
+}
+
+async function checkRealDebridDownloadLink(directUrl: string, signal?: AbortSignal): Promise<number> {
+  try {
+    const response = await fetch(directUrl, {
+      method: "GET",
+      headers: { Range: "bytes=0-1", "User-Agent": DEBRID_USER_AGENT },
+      signal: withTimeoutSignal(signal, REAL_DEBRID_LINK_CHECK_TIMEOUT_MS)
+    });
+    try {
+      await response.body?.cancel();
+    } catch {
+    }
+    return response.status;
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return 0;
+  }
+}
 
 function realDebridPoolCooldown(accounts: RealDebridAccountEntry[], now = Date.now()): { retryMs: number; dailyLimit: boolean } | null {
   const enabled = accounts.filter((account) => account.enabled);
@@ -4390,7 +4466,7 @@ export class DebridService {
           logger.warn(`Hoster-Zuordnung ${hosterKey} → ${PROVIDER_LABELS[routedProvider]} fehlgeschlagen, Fallback auf Provider-Kette: ${errorText}`);
         }
       } else if (this.isProviderConfiguredFor(settings, routedProvider) && this.isProviderDailyLimited(settings, routedProvider)) {
-        logger.info(`Hoster-Zuordnung ${hosterKey} → ${PROVIDER_LABELS[routedProvider]} übersprungen (${this.formatProviderLimitMessage(settings, routedProvider)})`);
+        logSkippedProvider(`routing:${hosterKey}:${routedProvider}`, `Hoster-Zuordnung ${hosterKey} → ${PROVIDER_LABELS[routedProvider]} übersprungen (${this.formatProviderLimitMessage(settings, routedProvider)})`);
       } else {
         logger.warn(`Hoster-Zuordnung ${hosterKey} → ${PROVIDER_LABELS[routedProvider]} übersprungen (Provider nicht konfiguriert/deaktiviert)`);
       }
@@ -4484,8 +4560,9 @@ export class DebridService {
       }
       configuredFound = true;
       if (this.isProviderDailyLimited(settings, provider)) {
-        logger.info(`Provider-Kette: ${PROVIDER_LABELS[provider]} uebersprungen (${this.formatProviderLimitMessage(settings, provider)})`);
-        unavailableProviders.push(this.formatProviderLimitMessage(settings, provider));
+        const limitMessage = this.formatProviderLimitMessage(settings, provider);
+        logSkippedProvider(`chain:${provider}`, `Provider-Kette: ${PROVIDER_LABELS[provider]} übersprungen (${limitMessage})`);
+        unavailableProviders.push(limitMessage);
         continue;
       }
 
@@ -4589,6 +4666,9 @@ export class DebridService {
 
   private classifyRealDebridFailure(error: unknown): RealDebridFailureClassification {
     const message = compactErrorText(error);
+    if (isRealDebridFairUsageError(error)) {
+      return { rotateAccount: true, cooldownMs: REAL_DEBRID_FAIR_USAGE_COOLDOWN_MS, category: "quota", message: `Tageslimit (Fair Use) erreicht – ${message}` };
+    }
     const status = error instanceof RealDebridApiError ? error.status : 0;
     const apiError = error instanceof RealDebridApiError ? error.apiError.toLowerCase() : "";
     if (status === 401 || /^(bad_token|invalid_token|token_expired)$/.test(apiError) || /HTTP\s*401|bad[ _-]?token|invalid.*token|unauthorized/i.test(message)) {
@@ -4600,9 +4680,6 @@ export class DebridService {
     if (/^(file_unavailable|invalid_link|bad_link|unsupported_hoster|hoster_unsupported|hoster_not_supported|hoster_unavailable|hoster_maintenance|hoster_temporarily_unavailable|service_unavailable)$/.test(apiError)
       || /file[ _-]?unavailable|invalid[ _-]?link|bad[ _-]?link|unsupported[ _-]?hoster|hoster.*not.*supported|hoster[ _-]?(unavailable|maintenance|temporarily[ _-]?unavailable)|service[ _-]?unavailable/i.test(message)) {
       return { rotateAccount: false, cooldownMs: 0, category: "provider_or_link", message };
-    }
-    if (status === 440 || apiError === "fair_usage_limit" || /fair[ _-]?usage/i.test(message)) {
-      return { rotateAccount: true, cooldownMs: REAL_DEBRID_FAIR_USAGE_COOLDOWN_MS, category: "quota", message: `Tageslimit (Fair Use) erreicht – ${message}` };
     }
     if (status === 403
       || /^(permission_denied|traffic_exhausted|account_locked|account_not_activated|invalid_login|invalid_password|hoster_limit_reached|too_many_active_downloads|ip_not_allowed)$/.test(apiError)
@@ -4627,6 +4704,7 @@ export class DebridService {
   ): Promise<UnrestrictedLink> {
     const failures: string[] = [];
     const attempted = new Set<string>();
+    const fairUsage = { attempts: 0 };
     while (true) {
       if (signal?.aborted) {
         throw new Error(`aborted:${String(signal.reason || "caller")}`);
@@ -4641,17 +4719,10 @@ export class DebridService {
       attempted.add(account.id);
       realDebridInFlight.set(account.id, (realDebridInFlight.get(account.id) || 0) + 1);
       recordAccountRuntimeAttempt("realdebrid", account.id);
-      const timeoutMs = getRealDebridAccountAttemptTimeoutMs();
-      const timeoutSignal = AbortSignal.timeout(timeoutMs);
-      const accountSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
       try {
-        const result = account.kind === "api"
-          ? await new RealDebridClient(account.token).unrestrictLink(link, accountSignal)
-          : await this.options.realDebridWebUnrestrict?.(account.id, link, accountSignal);
-        if (!result) {
-          throw new Error("Real-Debrid-Web-Fallback nicht verfügbar");
-        }
+        const result = await this.unrestrictWithRealDebridFairUsageRetry(account, link, fairUsage, signal);
         realDebridAccountCooldowns.delete(account.id);
+        realDebridLockedFileTimes = [];
         if (realDebridStickyAccountId === account.id) {
           realDebridStickyCount += 1;
         } else {
@@ -4675,6 +4746,21 @@ export class DebridService {
         }
         const failure = this.classifyRealDebridFailure(error);
         recordAccountRuntimeFailure("realdebrid", account.id);
+        if (isRealDebridFairUsageError(error) && fairUsage.attempts >= REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS) {
+          const reason = error instanceof RealDebridUnlockedLinkError ? `, ${error.message}` : "";
+          const fileLabel = filenameFromUrl(link) || link;
+          const attemptText = `Fair Use: Versuch ${REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS}/${REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS} erfolglos${reason}`;
+          if (!noteRealDebridLockedFile()) {
+            logger.info(`Real-Debrid ${account.label}: ${attemptText}, Datei pausiert ${Math.round(REAL_DEBRID_FAIR_USAGE_FILE_PARK_MS / 60_000)} min: ${fileLabel}`);
+            throw new Error(`real_debrid_file_cooldown:${REAL_DEBRID_FAIR_USAGE_FILE_PARK_MS}:Real-Debrid: Datei derzeit nicht freigegeben (Fair Use)`);
+          }
+          logger.info(`Real-Debrid ${account.label}: ${attemptText}, ${REAL_DEBRID_FAIR_USAGE_POOL_FAILURES} Dateien in Folge ohne Freigabe, alle Accounts pausiert 30 min: ${fileLabel}`);
+          for (const candidate of this.getConfiguredRealDebridAccounts(settings).filter((entry) => entry.enabled)) {
+            setRealDebridAccountCooldown(candidate.id, REAL_DEBRID_FAIR_USAGE_COOLDOWN_MS, failure.message, "quota");
+          }
+          failures.push(`${account.label}: ${failure.message}`);
+          break;
+        }
         if (!failure.rotateAccount) {
           throw error;
         }
@@ -4699,6 +4785,46 @@ export class DebridService {
       }
     }
     throw realDebridUnavailableError(this.getConfiguredRealDebridAccounts(settings), failures);
+  }
+
+  private async unrestrictWithRealDebridFairUsageRetry(
+    account: RealDebridAccountEntry,
+    link: string,
+    fairUsage: { attempts: number },
+    signal?: AbortSignal
+  ): Promise<UnrestrictedLink> {
+    const requestLink = canonicalRealDebridLink(link);
+    while (true) {
+      const timeoutSignal = AbortSignal.timeout(getRealDebridAccountAttemptTimeoutMs());
+      const accountSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+      try {
+        const result = account.kind === "api"
+          ? await new RealDebridClient(account.token).unrestrictLink(requestLink, accountSignal)
+          : await this.options.realDebridWebUnrestrict?.(account.id, requestLink, accountSignal);
+        if (!result) {
+          throw new Error("Real-Debrid-Web-Fallback nicht verfügbar");
+        }
+        if (fairUsage.attempts > 0) {
+          const linkStatus = await checkRealDebridDownloadLink(result.directUrl, signal);
+          if (!isUsableRealDebridLinkStatus(linkStatus)) {
+            throw new RealDebridUnlockedLinkError(linkStatus);
+          }
+        }
+        return result;
+      } catch (error) {
+        if (signal?.aborted || !isRealDebridFairUsageError(error)) {
+          throw error;
+        }
+        fairUsage.attempts += 1;
+        if (fairUsage.attempts >= REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS) {
+          throw error;
+        }
+        const fileLabel = filenameFromUrl(link) || link;
+        const reason = error instanceof RealDebridUnlockedLinkError ? `, ${error.message}` : "";
+        logger.info(`Real-Debrid ${account.label}: Fair Use: Versuch ${fairUsage.attempts}/${REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS}, nächster in ${formatFairUsageWait(REAL_DEBRID_FAIR_USAGE_RETRY_MS)}${reason}: ${fileLabel}`);
+        await sleepWithSignal(REAL_DEBRID_FAIR_USAGE_RETRY_MS, signal);
+      }
+    }
   }
 
   private async unrestrictViaProvider(settings: AppSettings, provider: DebridProvider, link: string, signal?: AbortSignal): Promise<UnrestrictedLink> {
