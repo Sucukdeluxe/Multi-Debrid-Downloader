@@ -148,8 +148,15 @@ export interface ProxyRepresentationSizes {
   receivedTotal: number;
 }
 
+export interface ProxyTransferStats {
+  busyAnswers: number;
+  representationAnswers: number;
+  zeroRunChecks: number;
+  zeroRunsConfirmed: number;
+}
+
 export type ProxySegmentedDownloadResult =
-  | { status: "completed"; totalBytes: number; connections: number }
+  | { status: "completed"; totalBytes: number; connections: number; stats?: ProxyTransferStats }
   | { status: "fallback"; reason: ProxyFallbackReason; httpStatus?: number; errorCode?: string; representation?: ProxyRepresentationSizes };
 
 export type ProxyFallbackReason =
@@ -1572,6 +1579,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
     setMaxListeners(0, signal);
 
     let representationSeen: ProxyRepresentationSizes | undefined;
+    const stats: ProxyTransferStats = { busyAnswers: 0, representationAnswers: 0, zeroRunChecks: 0, zeroRunsConfirmed: 0 };
     const otherRepresentationProxies = new Set<string>();
     const downloadSegment = async (segment: Segment): Promise<number> => {
       const excluded = new Set<string>();
@@ -1634,6 +1642,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
             const verificationStartedAt = Date.now();
             let verificationBytes = 0;
             for (const suspiciousRange of outcome.suspiciousZeroRanges) {
+              stats.zeroRunChecks += 1;
               const verification = await readRangeOnce(
                 target,
                 lease.proxy,
@@ -1646,7 +1655,9 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
                   options.onTrafficBytes?.(bytes);
                 }
               );
-              if (!timingSafeEqual(verification, ZERO_RUN_SENTINEL)) {
+              if (timingSafeEqual(verification, ZERO_RUN_SENTINEL)) {
+                stats.zeroRunsConfirmed += 1;
+              } else {
                 lease.release({
                   succeeded: true,
                   transferredBytes: verificationBytes,
@@ -1674,6 +1685,8 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
         } catch (error) {
           const originError = error instanceof OriginHttpError && error.statusCode !== 407;
           const representationChanged = error instanceof Error && error.message === "proxy_representation_changed";
+          if (representationChanged) stats.representationAnswers += 1;
+          if (error instanceof OriginHttpError && (error.statusCode === 503 || error.statusCode === 429)) stats.busyAnswers += 1;
           const exactTotalAvailable = error instanceof RepresentationChangedError
             && announcedTotal > 0
             && probe.totalBytes === announcedTotal
@@ -1784,7 +1797,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
     fileHandle = null;
     await runtimePerformance.measure("proxy.commit", () => fs.promises.rename(tempPath, options.targetPath));
     tempCreated = false;
-    return { status: "completed", totalBytes: probe.totalBytes, connections } as const;
+    return { status: "completed", totalBytes: probe.totalBytes, connections, stats } as const;
     });
   } catch (error) {
     if (options.signal.aborted || String(error).includes("aborted:proxy_download")) {

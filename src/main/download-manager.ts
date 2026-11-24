@@ -12114,7 +12114,8 @@ export class DownloadManager extends EventEmitter {
             attempt,
             connections: proxyResult.connections,
             totalBytes: proxyResult.totalBytes,
-            targetPath: effectiveTargetPath
+            targetPath: effectiveTargetPath,
+            ...(proxyResult.stats || {})
           });
           return { resumable: true };
         }
