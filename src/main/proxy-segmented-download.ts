@@ -55,7 +55,7 @@ function isOriginCertificateError(error: unknown): boolean {
 const DEFAULT_CONNECTION_LIMIT = 32;
 const MAX_CONNECTION_LIMIT = 200;
 const PROXY_PROBE_END = 1;
-const ANNOUNCED_TOTAL_EXTRA_PROBES = 4;
+const PLACEHOLDER_TOTAL_EXTRA_PROBES = 4;
 const MAX_REDIRECTS = 5;
 const MAX_SEGMENTS = 4_096;
 const MAX_PROXY_FILE_BYTES = 8 * 1024 * 1024;
@@ -1011,7 +1011,7 @@ async function probeRangeSupport(
   signal: AbortSignal,
   options: Required<Pick<ProxySegmentedDownloadOptions, "skipTlsVerify" | "connectTimeoutMs" | "idleTimeoutMs" | "proxyAttempts">>,
   onTrafficBytes?: (bytes: number) => void,
-  preferredTotal?: number
+  placeholderTotal?: number
 ): Promise<
   { status: "ok"; totalBytes: number }
   | { status: "unsupported" }
@@ -1023,9 +1023,9 @@ async function probeRangeSupport(
   let lastHttpStatus = 0;
   let originFailures = 0;
   let lastErrorCode: string | undefined;
-  let otherTotal: number | undefined;
-  let preferenceProbes = 0;
-  for (let index = 0; index < attempts + preferenceProbes && originFailures < options.proxyAttempts; index += 1) {
+  let placeholderSeen = false;
+  let placeholderProbes = 0;
+  for (let index = 0; index < attempts + placeholderProbes && originFailures < options.proxyAttempts; index += 1) {
     let opened: RangeResponse | null = null;
     let lease: ProxyLease | null = null;
     try {
@@ -1089,11 +1089,11 @@ async function probeRangeSupport(
       if (received === expectedBytes) {
         lease.release({ succeeded: true });
         lease = null;
-        if (!preferredTotal || range.total === preferredTotal || preferenceProbes >= ANNOUNCED_TOTAL_EXTRA_PROBES) {
+        if (!placeholderTotal || range.total !== placeholderTotal || placeholderProbes >= PLACEHOLDER_TOTAL_EXTRA_PROBES) {
           return { status: "ok", totalBytes: range.total };
         }
-        otherTotal ??= range.total;
-        preferenceProbes += 1;
+        placeholderSeen = true;
+        placeholderProbes += 1;
         continue;
       }
       lastErrorCode = "proxy_probe_underflow";
@@ -1117,8 +1117,8 @@ async function probeRangeSupport(
       lease?.release({ succeeded: false, reason: lastErrorCode || "proxy_probe_incomplete" });
     }
   }
-  if (otherTotal !== undefined) {
-    return { status: "ok", totalBytes: otherTotal };
+  if (placeholderSeen && placeholderTotal) {
+    return { status: "ok", totalBytes: placeholderTotal };
   }
   if (lastHttpStatus > 0) {
     sharedProxyCoordinator.reportOriginStatus(lastHttpStatus, overloadKey(target));
@@ -1461,11 +1461,11 @@ export async function downloadWithProxySegments(options: ProxySegmentedDownloadO
   try { options.onRepresentationRetry?.(result.representation); } catch {}
   if (options.signal.aborted) throw abortError();
   const announced = Math.max(0, Math.floor(options.announcedTotalBytes || 0));
-  const announcedSeen = announced > 0 && (result.representation?.expectedTotal === announced || result.representation?.receivedTotal === announced);
-  return downloadWithProxySegmentsOnce(options, withDiskActivity, announcedSeen ? announced : undefined);
+  const placeholderSeen = announced > 0 && (result.representation?.expectedTotal === announced || result.representation?.receivedTotal === announced);
+  return downloadWithProxySegmentsOnce(options, withDiskActivity, placeholderSeen ? announced : undefined);
 }
 
-async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOptions, withDiskActivity: DiskOperation, preferredTotal?: number): Promise<ProxySegmentedDownloadResult> {
+async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOptions, withDiskActivity: DiskOperation, placeholderTotal?: number): Promise<ProxySegmentedDownloadResult> {
   const proxyPath = String(options.proxyListPath || "").trim();
   if (!proxyPath) {
     return { status: "fallback", reason: "proxy_file_unavailable" };
@@ -1510,7 +1510,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
     originRetryBaseMs: Math.max(1, Math.floor(options.originRetryBaseMs ?? 1_000)),
     originRetryBudgetMs: Math.max(0, Math.floor(options.originRetryBudgetMs ?? DEFAULT_ORIGIN_THROTTLE_RETRY_BUDGET_MS))
   };
-  const probe = await probeRangeSupport(target, poolKey, groupId, segmentProxies, options.signal, normalized, options.onTrafficBytes, preferredTotal);
+  const probe = await probeRangeSupport(target, poolKey, groupId, segmentProxies, options.signal, normalized, options.onTrafficBytes, placeholderTotal);
   const announcedTotal = Math.max(0, Math.floor(options.announcedTotalBytes || 0));
   if (probe.status === "unsupported") {
     return { status: "fallback", reason: "range_unsupported" };
@@ -1674,12 +1674,12 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
         } catch (error) {
           const originError = error instanceof OriginHttpError && error.statusCode !== 407;
           const representationChanged = error instanceof Error && error.message === "proxy_representation_changed";
-          const announcedAvailable = error instanceof RepresentationChangedError
+          const exactTotalAvailable = error instanceof RepresentationChangedError
             && announcedTotal > 0
-            && error.receivedTotal === announcedTotal
-            && probe.totalBytes !== announcedTotal;
+            && probe.totalBytes === announcedTotal
+            && error.receivedTotal !== announcedTotal;
           if (error instanceof RepresentationChangedError) {
-            if (announcedAvailable) representationSeen = { expectedTotal: error.expectedTotal, receivedTotal: error.receivedTotal };
+            if (exactTotalAvailable) representationSeen = { expectedTotal: error.expectedTotal, receivedTotal: error.receivedTotal };
             else representationSeen ??= { expectedTotal: error.expectedTotal, receivedTotal: error.receivedTotal };
             otherRepresentationProxies.add(proxyEndpointKey(primaryProxy));
           }
@@ -1705,7 +1705,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
             }
             originFailures += 1;
           }
-          if (options.signal.aborted || isDiskError(error) || isOriginCertificateError(error) || announcedAvailable) {
+          if (options.signal.aborted || isDiskError(error) || isOriginCertificateError(error) || exactTotalAvailable) {
             throw error;
           }
           if (error instanceof SegmentValidationError) {
