@@ -689,12 +689,24 @@ export function getRealDebridAccountAttemptTimeoutMs(): number {
   return Number.isFinite(timeoutMsRaw) ? Math.max(1000, Math.floor(timeoutMsRaw)) : 35_000;
 }
 
+const SKIPPED_PROVIDER_LOG_INTERVAL_MS = 60_000;
+const skippedProviderLoggedAt = new Map<string, number>();
+
+function logSkippedProvider(key: string, message: string): void {
+  const now = Date.now();
+  const last = skippedProviderLoggedAt.get(key);
+  if (last !== undefined && now - last < SKIPPED_PROVIDER_LOG_INTERVAL_MS) return;
+  skippedProviderLoggedAt.set(key, now);
+  logger.info(message);
+}
+
 export function resetRealDebridRuntimeStateForTests(): void {
   realDebridAccountCooldowns.clear();
   realDebridInFlight.clear();
   realDebridRotationCursor = 0;
   realDebridStickyAccountId = "";
   realDebridStickyCount = 0;
+  skippedProviderLoggedAt.clear();
   resetAccountRuntimeSessionForProvider("realdebrid");
 }
 
@@ -4390,7 +4402,7 @@ export class DebridService {
           logger.warn(`Hoster-Zuordnung ${hosterKey} → ${PROVIDER_LABELS[routedProvider]} fehlgeschlagen, Fallback auf Provider-Kette: ${errorText}`);
         }
       } else if (this.isProviderConfiguredFor(settings, routedProvider) && this.isProviderDailyLimited(settings, routedProvider)) {
-        logger.info(`Hoster-Zuordnung ${hosterKey} → ${PROVIDER_LABELS[routedProvider]} übersprungen (${this.formatProviderLimitMessage(settings, routedProvider)})`);
+        logSkippedProvider(`routing:${hosterKey}:${routedProvider}`, `Hoster-Zuordnung ${hosterKey} → ${PROVIDER_LABELS[routedProvider]} übersprungen (${this.formatProviderLimitMessage(settings, routedProvider)})`);
       } else {
         logger.warn(`Hoster-Zuordnung ${hosterKey} → ${PROVIDER_LABELS[routedProvider]} übersprungen (Provider nicht konfiguriert/deaktiviert)`);
       }
@@ -4484,8 +4496,9 @@ export class DebridService {
       }
       configuredFound = true;
       if (this.isProviderDailyLimited(settings, provider)) {
-        logger.info(`Provider-Kette: ${PROVIDER_LABELS[provider]} uebersprungen (${this.formatProviderLimitMessage(settings, provider)})`);
-        unavailableProviders.push(this.formatProviderLimitMessage(settings, provider));
+        const limitMessage = this.formatProviderLimitMessage(settings, provider);
+        logSkippedProvider(`chain:${provider}`, `Provider-Kette: ${PROVIDER_LABELS[provider]} übersprungen (${limitMessage})`);
+        unavailableProviders.push(limitMessage);
         continue;
       }
 
