@@ -762,6 +762,34 @@ function setRealDebridAccountCooldown(
   });
 }
 
+const REAL_DEBRID_FAIR_USAGE_COOLDOWN_MS = 30 * 60 * 1000;
+
+function realDebridPoolCooldown(accounts: RealDebridAccountEntry[], now = Date.now()): { retryMs: number; dailyLimit: boolean } | null {
+  const enabled = accounts.filter((account) => account.enabled);
+  if (enabled.length === 0) return null;
+  let earliest = Number.POSITIVE_INFINITY;
+  let dailyLimit = true;
+  for (const account of enabled) {
+    const cooldown = getRealDebridAccountCooldown(account.id, now);
+    if (!cooldown) return null;
+    earliest = Math.min(earliest, cooldown.until);
+    if (!/fair[ _-]?use/i.test(cooldown.message)) dailyLimit = false;
+  }
+  return { retryMs: Math.max(1000, Math.ceil(earliest - now)), dailyLimit };
+}
+
+function realDebridUnavailableError(accounts: RealDebridAccountEntry[], failures: string[] = []): Error {
+  const pool = realDebridPoolCooldown(accounts);
+  if (pool) {
+    const detail = pool.dailyLimit ? "Real-Debrid: Tageslimit aller Accounts erreicht (Fair Use)" : "Real-Debrid: alle Accounts pausiert";
+    return new Error(`real_debrid_cooldown:${pool.retryMs}:${detail}${failures.length > 0 ? ` | ${failures.join(" | ")}` : ""}`);
+  }
+  if (failures.length > 0) {
+    return new Error(`Real-Debrid Account-Pool fehlgeschlagen: ${failures.join(" | ")}`);
+  }
+  return new Error("Real-Debrid nicht verfügbar (alle aktiven Accounts deaktiviert, im Cooldown oder ausgeschöpft)");
+}
+
 function getRealDebridAccountCooldown(accountId: string, now = Date.now()): RealDebridCooldownDetail | null {
   const detail = realDebridAccountCooldowns.get(accountId);
   if (!detail) {
@@ -4315,7 +4343,7 @@ export class DebridService {
     if (effectiveProvider === "realdebrid"
       && this.getConfiguredRealDebridAccounts(settings).some((account) => account.enabled)
       && this.getAvailableRealDebridAccounts(settings).length === 0) {
-      return "Real-Debrid nicht verfügbar (alle aktiven Accounts deaktiviert, im Cooldown oder ausgeschöpft)";
+      return realDebridUnavailableError(this.getConfiguredRealDebridAccounts(settings)).message;
     }
     if (effectiveProvider === "debridlink" && parseDebridLinkApiKeys(settings.debridLinkApiKeys).length > 0 && getAvailableDebridLinkApiKeys(settings).length === 0) {
       return "Debrid-Link nicht verfuegbar (alle aktiven API-Keys deaktiviert oder ausgeschopft)";
@@ -4573,6 +4601,9 @@ export class DebridService {
       || /file[ _-]?unavailable|invalid[ _-]?link|bad[ _-]?link|unsupported[ _-]?hoster|hoster.*not.*supported|hoster[ _-]?(unavailable|maintenance|temporarily[ _-]?unavailable)|service[ _-]?unavailable/i.test(message)) {
       return { rotateAccount: false, cooldownMs: 0, category: "provider_or_link", message };
     }
+    if (status === 440 || apiError === "fair_usage_limit" || /fair[ _-]?usage/i.test(message)) {
+      return { rotateAccount: true, cooldownMs: REAL_DEBRID_FAIR_USAGE_COOLDOWN_MS, category: "quota", message: `Tageslimit (Fair Use) erreicht – ${message}` };
+    }
     if (status === 403
       || /^(permission_denied|traffic_exhausted|account_locked|account_not_activated|invalid_login|invalid_password|hoster_limit_reached|too_many_active_downloads|ip_not_allowed)$/.test(apiError)
       || /HTTP\s*403|traffic|quota|premium/i.test(message)) {
@@ -4667,10 +4698,7 @@ export class DebridService {
         }
       }
     }
-    if (failures.length > 0) {
-      throw new Error(`Real-Debrid Account-Pool fehlgeschlagen: ${failures.join(" | ")}`);
-    }
-    throw new Error("Real-Debrid nicht verfügbar (alle aktiven Accounts deaktiviert, im Cooldown oder ausgeschöpft)");
+    throw realDebridUnavailableError(this.getConfiguredRealDebridAccounts(settings), failures);
   }
 
   private async unrestrictViaProvider(settings: AppSettings, provider: DebridProvider, link: string, signal?: AbortSignal): Promise<UnrestrictedLink> {
