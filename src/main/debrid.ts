@@ -775,22 +775,21 @@ function setRealDebridAccountCooldown(
 }
 
 const REAL_DEBRID_FAIR_USAGE_COOLDOWN_MS = 30 * 60 * 1000;
-export const REAL_DEBRID_FAIR_USAGE_RETRY_MS = 40_000;
-export const REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS = 6;
+export const REAL_DEBRID_FAIR_USAGE_RETRY_MS = 500;
+export const REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS = 4;
 const REAL_DEBRID_LINK_CHECK_TIMEOUT_MS = 15_000;
 
 export function canonicalRealDebridLink(link: string): string {
   const text = String(link || "").trim();
-  let canonical: string;
-  try {
-    const url = new URL(text);
-    url.search = "";
-    url.hash = "";
-    canonical = url.toString();
-  } catch {
-    canonical = text.replace(/[?#].*$/, "");
-  }
-  return canonical.replace(/\.html$/i, "");
+  if (!isRapidgatorLink(text)) return text;
+  const url = new URL(text);
+  url.search = "";
+  url.hash = "";
+  return url.toString().replace(/\.html$/i, "");
+}
+
+function formatFairUsageWait(ms: number): string {
+  return ms < 1000 ? `${ms} ms` : `${Math.round(ms / 1000)} s`;
 }
 
 class RealDebridUnlockedLinkError extends Error {
@@ -4761,7 +4760,7 @@ export class DebridService {
     fairUsage: { attempts: number },
     signal?: AbortSignal
   ): Promise<UnrestrictedLink> {
-    let requestLink = link;
+    const requestLink = canonicalRealDebridLink(link);
     while (true) {
       const timeoutSignal = AbortSignal.timeout(getRealDebridAccountAttemptTimeoutMs());
       const accountSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
@@ -4794,8 +4793,7 @@ export class DebridService {
           logger.info(`Real-Debrid ${account.label}: Fair Use: Versuch ${fairUsage.attempts}/${REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS} erfolglos${reason}, Account pausiert 30 min: ${fileLabel}`);
           throw error;
         }
-        logger.info(`Real-Debrid ${account.label}: Fair Use: Versuch ${fairUsage.attempts}/${REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS}, nächster in ${Math.round(REAL_DEBRID_FAIR_USAGE_RETRY_MS / 1000)} s${reason}: ${fileLabel}`);
-        requestLink = canonicalRealDebridLink(link);
+        logger.info(`Real-Debrid ${account.label}: Fair Use: Versuch ${fairUsage.attempts}/${REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS}, nächster in ${formatFairUsageWait(REAL_DEBRID_FAIR_USAGE_RETRY_MS)}${reason}: ${fileLabel}`);
         await sleepWithSignal(REAL_DEBRID_FAIR_USAGE_RETRY_MS, signal);
       }
     }
