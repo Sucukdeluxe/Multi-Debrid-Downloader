@@ -793,6 +793,10 @@ export function getAuthoritativeRealDebridTotal(
     || evaluateCandidate(contentLength, "content-length");
 }
 
+function isProviderPoolCooldownError(errorText: string): boolean {
+  return /(?:real_debrid|mega_debrid|debrid_link)_cooldown:\d+:/i.test(String(errorText || ""));
+}
+
 function isPermanentLinkError(errorText: string): boolean {
   const text = String(errorText || "").toLowerCase();
   return text.includes("source_link_offline:")
@@ -4386,6 +4390,9 @@ export class DownloadManager extends EventEmitter {
     }
     if (item.onlineStatus === "offline") {
       return "hoster";
+    }
+    if (isProviderPoolCooldownError(errorText)) {
+      return null;
     }
     if (item.status !== "validating" || item.onlineStatus === "checking") {
       return null;
