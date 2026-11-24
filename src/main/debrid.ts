@@ -788,6 +788,10 @@ export function canonicalRealDebridLink(link: string): string {
   return url.toString().replace(/\.html$/i, "");
 }
 
+function isUsableRealDebridLinkStatus(status: number): boolean {
+  return (status >= 200 && status < 300) || status === 429 || status === 503;
+}
+
 function formatFairUsageWait(ms: number): string {
   return ms < 1000 ? `${ms} ms` : `${Math.round(ms / 1000)} s`;
 }
@@ -4773,7 +4777,7 @@ export class DebridService {
         }
         if (fairUsage.attempts > 0) {
           const linkStatus = await checkRealDebridDownloadLink(result.directUrl, signal);
-          if (linkStatus < 200 || linkStatus >= 300) {
+          if (!isUsableRealDebridLinkStatus(linkStatus)) {
             throw new RealDebridUnlockedLinkError(linkStatus);
           }
         }
