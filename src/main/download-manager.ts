@@ -12005,6 +12005,7 @@ export class DownloadManager extends EventEmitter {
         });
         let limitWindowBytes = 0;
         let limitWindowStarted = nowMs();
+        const announcedTotalBytes = Math.max(0, Number(item.totalBytes) || 0);
         const proxyResult = await downloadWithProxySegments({
           directUrl,
           targetPath: effectiveTargetPath,
@@ -12012,6 +12013,7 @@ export class DownloadManager extends EventEmitter {
           connections: this.settings.proxyConnectionsPerDownload,
           totalConnectionLimit: this.settings.proxyConnectionsPerDownload,
           downloadId: active.itemId,
+          announcedTotalBytes: announcedTotalBytes || undefined,
           reservedProxyIndex: this.settings.proxyApiProxyIndex,
           signal: active.abortController.signal,
           skipTlsVerify,
@@ -12073,9 +12075,11 @@ export class DownloadManager extends EventEmitter {
               lastProxyUiEmitAt = nowTick;
             }
           },
-          onRepresentationRetry: () => {
+          onRepresentationRetry: (sizes) => {
             logAttemptEvent("WARN", "Dateigröße zwischen Proxy-Antworten geändert; Segmentdownload wird einmal vollständig neu geprüft", {
-              attempt
+              attempt,
+              announcedBytes: announcedTotalBytes,
+              ...(sizes ? { firstTotalBytes: sizes.expectedTotal, otherTotalBytes: sizes.receivedTotal } : {})
             });
           },
           onValidationRetry: (event) => {
@@ -12089,6 +12093,14 @@ export class DownloadManager extends EventEmitter {
           }
         });
         if (proxyResult.status === "completed") {
+          if (announcedTotalBytes > 0 && announcedTotalBytes !== proxyResult.totalBytes) {
+            logAttemptEvent("WARN", "Dateigröße weicht von der Angabe des Anbieters ab", {
+              attempt,
+              announcedBytes: announcedTotalBytes,
+              receivedBytes: proxyResult.totalBytes,
+              differenceBytes: proxyResult.totalBytes - announcedTotalBytes
+            });
+          }
           active.resumable = true;
           item.status = "downloading";
           item.downloadedBytes = proxyResult.totalBytes;

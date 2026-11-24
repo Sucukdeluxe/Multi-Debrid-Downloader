@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID, verify } from "node:crypto";
 
-export const DIRECT_UPDATE_PUBLIC_KEY = "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAsxxTU+SLgr/uMXILBlGWMmWJ4WjY45VhhVmU8fq5CJs=\n-----END PUBLIC KEY-----\n";
+export const DIRECT_UPDATE_PUBLIC_KEY = "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAdZBUUYAO+F6ISO/tdaSsEWQv4WZHKKgj2jT+2Ckaays=\n-----END PUBLIC KEY-----\n";
 export interface InstallerManifest {
   version: string;
   baseVersion: string;

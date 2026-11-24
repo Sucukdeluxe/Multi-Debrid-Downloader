@@ -55,6 +55,7 @@ function isOriginCertificateError(error: unknown): boolean {
 const DEFAULT_CONNECTION_LIMIT = 32;
 const MAX_CONNECTION_LIMIT = 200;
 const PROXY_PROBE_END = 1;
+const ANNOUNCED_TOTAL_EXTRA_PROBES = 4;
 const MAX_REDIRECTS = 5;
 const MAX_SEGMENTS = 4_096;
 const MAX_PROXY_FILE_BYTES = 8 * 1024 * 1024;
@@ -125,6 +126,7 @@ export interface ProxySegmentedDownloadOptions {
   signal: AbortSignal;
   skipTlsVerify?: boolean;
   minSegmentBytes?: number;
+  announcedTotalBytes?: number;
   connectTimeoutMs?: number;
   idleTimeoutMs?: number;
   proxyAttempts?: number;
@@ -135,15 +137,20 @@ export interface ProxySegmentedDownloadOptions {
   onTrafficBytes?: (bytes: number) => void;
   onProgress?: (deltaBytes: number, downloadedBytes: number, totalBytes: number) => void;
   onValidationRetry?: (event: ProxySegmentValidationRetry) => void;
-  onRepresentationRetry?: () => void;
+  onRepresentationRetry?: (sizes?: ProxyRepresentationSizes) => void;
   onDiskActivity?: (active: boolean) => void;
 }
 
 type DiskOperation = <T>(operation: () => Promise<T>) => Promise<T>;
 
+export interface ProxyRepresentationSizes {
+  expectedTotal: number;
+  receivedTotal: number;
+}
+
 export type ProxySegmentedDownloadResult =
   | { status: "completed"; totalBytes: number; connections: number }
-  | { status: "fallback"; reason: ProxyFallbackReason; httpStatus?: number; errorCode?: string };
+  | { status: "fallback"; reason: ProxyFallbackReason; httpStatus?: number; errorCode?: string; representation?: ProxyRepresentationSizes };
 
 export type ProxyFallbackReason =
   | "proxy_file_unavailable"
@@ -176,6 +183,12 @@ function proxyEndpointKey(proxy: ProxyEndpoint): string {
 class OriginHttpError extends Error {
   public constructor(public readonly statusCode: number) {
     super(`origin_http_${statusCode}`);
+  }
+}
+
+class RepresentationChangedError extends Error {
+  public constructor(public readonly expectedTotal: number, public readonly receivedTotal: number) {
+    super("proxy_representation_changed");
   }
 }
 
@@ -997,7 +1010,8 @@ async function probeRangeSupport(
   proxies: ProxyEndpoint[],
   signal: AbortSignal,
   options: Required<Pick<ProxySegmentedDownloadOptions, "skipTlsVerify" | "connectTimeoutMs" | "idleTimeoutMs" | "proxyAttempts">>,
-  onTrafficBytes?: (bytes: number) => void
+  onTrafficBytes?: (bytes: number) => void,
+  preferredTotal?: number
 ): Promise<
   { status: "ok"; totalBytes: number }
   | { status: "unsupported" }
@@ -1009,7 +1023,9 @@ async function probeRangeSupport(
   let lastHttpStatus = 0;
   let originFailures = 0;
   let lastErrorCode: string | undefined;
-  for (let index = 0; index < attempts && originFailures < options.proxyAttempts; index += 1) {
+  let otherTotal: number | undefined;
+  let preferenceProbes = 0;
+  for (let index = 0; index < attempts + preferenceProbes && originFailures < options.proxyAttempts; index += 1) {
     let opened: RangeResponse | null = null;
     let lease: ProxyLease | null = null;
     try {
@@ -1073,7 +1089,12 @@ async function probeRangeSupport(
       if (received === expectedBytes) {
         lease.release({ succeeded: true });
         lease = null;
-        return { status: "ok", totalBytes: range.total };
+        if (!preferredTotal || range.total === preferredTotal || preferenceProbes >= ANNOUNCED_TOTAL_EXTRA_PROBES) {
+          return { status: "ok", totalBytes: range.total };
+        }
+        otherTotal ??= range.total;
+        preferenceProbes += 1;
+        continue;
       }
       lastErrorCode = "proxy_probe_underflow";
     } catch (error) {
@@ -1095,6 +1116,9 @@ async function probeRangeSupport(
       opened?.dispose();
       lease?.release({ succeeded: false, reason: lastErrorCode || "proxy_probe_incomplete" });
     }
+  }
+  if (otherTotal !== undefined) {
+    return { status: "ok", totalBytes: otherTotal };
   }
   if (lastHttpStatus > 0) {
     sharedProxyCoordinator.reportOriginStatus(lastHttpStatus, overloadKey(target));
@@ -1238,7 +1262,7 @@ async function readRangeOnce(
   if (isChangedRepresentation(status, contentRange, range.start, range.end, totalBytes, contentLength)) {
     recordRepresentationChange("verification", target, proxy, totalBytes, contentRange!);
     opened.dispose();
-    throw new Error("proxy_representation_changed");
+    throw new RepresentationChangedError(totalBytes, contentRange!.total);
   }
   if (status !== 206
     || !contentRange
@@ -1307,7 +1331,7 @@ async function downloadSegmentOnce(
   if (isChangedRepresentation(status, range, segment.start, segment.end, totalBytes, contentLength)) {
     recordRepresentationChange("segment", target, proxy, totalBytes, range!);
     opened.dispose();
-    throw new Error("proxy_representation_changed");
+    throw new RepresentationChangedError(totalBytes, range!.total);
   }
   if (status !== 206
     || !range
@@ -1434,12 +1458,14 @@ export async function downloadWithProxySegments(options: ProxySegmentedDownloadO
   const result = await downloadWithProxySegmentsOnce(options, withDiskActivity);
   if (result.status !== "fallback" || result.errorCode !== "proxy_representation_changed") return result;
   if (options.signal.aborted) throw abortError();
-  try { options.onRepresentationRetry?.(); } catch {}
+  try { options.onRepresentationRetry?.(result.representation); } catch {}
   if (options.signal.aborted) throw abortError();
-  return downloadWithProxySegmentsOnce(options, withDiskActivity);
+  const announced = Math.max(0, Math.floor(options.announcedTotalBytes || 0));
+  const announcedSeen = announced > 0 && (result.representation?.expectedTotal === announced || result.representation?.receivedTotal === announced);
+  return downloadWithProxySegmentsOnce(options, withDiskActivity, announcedSeen ? announced : undefined);
 }
 
-async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOptions, withDiskActivity: DiskOperation): Promise<ProxySegmentedDownloadResult> {
+async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOptions, withDiskActivity: DiskOperation, preferredTotal?: number): Promise<ProxySegmentedDownloadResult> {
   const proxyPath = String(options.proxyListPath || "").trim();
   if (!proxyPath) {
     return { status: "fallback", reason: "proxy_file_unavailable" };
@@ -1484,7 +1510,8 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
     originRetryBaseMs: Math.max(1, Math.floor(options.originRetryBaseMs ?? 1_000)),
     originRetryBudgetMs: Math.max(0, Math.floor(options.originRetryBudgetMs ?? DEFAULT_ORIGIN_THROTTLE_RETRY_BUDGET_MS))
   };
-  const probe = await probeRangeSupport(target, poolKey, groupId, segmentProxies, options.signal, normalized, options.onTrafficBytes);
+  const probe = await probeRangeSupport(target, poolKey, groupId, segmentProxies, options.signal, normalized, options.onTrafficBytes, preferredTotal);
+  const announcedTotal = Math.max(0, Math.floor(options.announcedTotalBytes || 0));
   if (probe.status === "unsupported") {
     return { status: "fallback", reason: "range_unsupported" };
   }
@@ -1544,6 +1571,8 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
     const signal = AbortSignal.any([options.signal, segmentController.signal]);
     setMaxListeners(0, signal);
 
+    let representationSeen: ProxyRepresentationSizes | undefined;
+    const otherRepresentationProxies = new Set<string>();
     const downloadSegment = async (segment: Segment): Promise<number> => {
       const excluded = new Set<string>();
       let lastError: unknown = null;
@@ -1555,6 +1584,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
         if (signal.aborted) {
           throw abortError();
         }
+        for (const key of otherRepresentationProxies) excluded.add(key);
         let lease = await runtimePerformance.measure("proxy.wait", () => sharedProxyCoordinator.acquire(poolKey, groupId, segmentProxies, excluded, signal));
         if (!lease) {
           break;
@@ -1644,6 +1674,15 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
         } catch (error) {
           const originError = error instanceof OriginHttpError && error.statusCode !== 407;
           const representationChanged = error instanceof Error && error.message === "proxy_representation_changed";
+          const announcedAvailable = error instanceof RepresentationChangedError
+            && announcedTotal > 0
+            && error.receivedTotal === announcedTotal
+            && probe.totalBytes !== announcedTotal;
+          if (error instanceof RepresentationChangedError) {
+            if (announcedAvailable) representationSeen = { expectedTotal: error.expectedTotal, receivedTotal: error.receivedTotal };
+            else representationSeen ??= { expectedTotal: error.expectedTotal, receivedTotal: error.receivedTotal };
+            otherRepresentationProxies.add(proxyEndpointKey(primaryProxy));
+          }
           lease?.release({ succeeded: originError || representationChanged || signal.aborted, reason: proxyFailureCode(error) });
           lease = null;
           if (attemptProgress > 0) {
@@ -1666,7 +1705,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
             }
             originFailures += 1;
           }
-          if (options.signal.aborted || isDiskError(error) || isOriginCertificateError(error)) {
+          if (options.signal.aborted || isDiskError(error) || isOriginCertificateError(error) || announcedAvailable) {
             throw error;
           }
           if (error instanceof SegmentValidationError) {
@@ -1727,7 +1766,12 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
       const primaryFailure = settled.find((result): result is PromiseRejectedResult => (
         result.status === "rejected" && !String(result.reason).includes("aborted:proxy_download")
       ));
-      return { status: "fallback", reason: "segment_failed", errorCode: proxyFailureCode((primaryFailure || failed).reason) };
+      return {
+        status: "fallback",
+        reason: "segment_failed",
+        errorCode: proxyFailureCode((primaryFailure || failed).reason),
+        ...(representationSeen ? { representation: representationSeen } : {})
+      };
     }
 
     return await withDiskActivity(async () => {
