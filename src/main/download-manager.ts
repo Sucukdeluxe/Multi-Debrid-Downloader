@@ -834,6 +834,18 @@ function parseDebridLinkCooldownRetry(errorText: string): { delayMs: number; det
   return { delayMs, detail };
 }
 
+export function parseRealDebridCooldownRetry(errorText: string): { delayMs: number; detail: string } | null {
+  const match = String(errorText || "").match(/real_debrid_cooldown:(\d+):([^|]*)/i);
+  if (!match) {
+    return null;
+  }
+  const raw = Number(match[1]);
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return null;
+  }
+  return { delayMs: Math.max(1000, Math.min(2 * 60 * 60 * 1000, raw)), detail: String(match[2] || "").trim() };
+}
+
 export function parseMegaDebridCooldownRetry(errorText: string): { delayMs: number; detail: string } | null {
   const text = String(errorText || "");
   const matches = [...text.matchAll(/mega_debrid_cooldown:(\d+)/gi)];
@@ -2173,6 +2185,8 @@ export class DownloadManager extends EventEmitter {
   private representationRelinksByItem = new Map<string, number>();
 
   private providerFailures = new Map<string, { count: number; lastFailAt: number; cooldownUntil: number }>();
+
+  private realDebridCooldownLoggedUntil = 0;
 
   private allDebridHostInfoCache = new Map<string, { info: AllDebridHostInfo; cachedAt: number }>();
 
@@ -11704,6 +11718,26 @@ export class DownloadManager extends EventEmitter {
           }
 
           const megaRawError = error instanceof Error ? String(error.message || "") : String(error || "");
+          const realDebridCooldown = parseRealDebridCooldownRetry(megaRawError);
+          if (realDebridCooldown) {
+            const resumeAt = nowMs() + realDebridCooldown.delayMs;
+            this.applyProviderBusyBackoff(this.getProviderFailureKeyForItem(item, "realdebrid"), realDebridCooldown.delayMs);
+            if (Math.abs(resumeAt - this.realDebridCooldownLoggedUntil) > 60_000) {
+              this.realDebridCooldownLoggedUntil = resumeAt;
+              logger.warn(`${realDebridCooldown.detail || "Real-Debrid pausiert"}: neuer Versuch in ${Math.ceil(realDebridCooldown.delayMs / 60_000)} min`);
+            }
+            const resumeClock = new Date(resumeAt).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+            this.queueRetry(
+              item,
+              active,
+              Math.min(realDebridCooldown.delayMs + 1000, 310_000),
+              `${realDebridCooldown.detail || "Real-Debrid pausiert"}, neuer Versuch um ${resumeClock}`
+            );
+            item.lastError = realDebridCooldown.detail || errorText;
+            this.persistSoon();
+            this.emitState();
+            return;
+          }
           const megaSlowLinkRetry = parseMegaDebridSlowLinkRetry(megaRawError);
           if (megaSlowLinkRetry && active.unrestrictRetries < maxUnrestrictRetries) {
             active.unrestrictRetries += 1;
@@ -12114,7 +12148,8 @@ export class DownloadManager extends EventEmitter {
             attempt,
             connections: proxyResult.connections,
             totalBytes: proxyResult.totalBytes,
-            targetPath: effectiveTargetPath
+            targetPath: effectiveTargetPath,
+            ...(proxyResult.stats || {})
           });
           return { resumable: true };
         }

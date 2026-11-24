@@ -2136,9 +2136,42 @@ export function normalizeHistoryEntry(raw: unknown, index: number): HistoryEntry
   };
 }
 
-function readHistoryFile(filePath: string): HistoryEntry[] | null {
+interface HistoryFileCache {
+  filePath: string;
+  mtimeMs: number;
+  size: number;
+  entries: HistoryEntry[];
+  payload: string;
+}
+
+let historyFileCache: HistoryFileCache | null = null;
+
+function cachedHistoryFile(filePath: string): { entries: HistoryEntry[]; payload: string } | null {
+  const cache = historyFileCache;
+  if (!cache || cache.filePath !== filePath) return null;
   try {
-    const raw = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+    const stat = fs.statSync(filePath);
+    if (stat.mtimeMs === cache.mtimeMs && stat.size === cache.size) {
+      return { entries: cache.entries.slice(), payload: cache.payload };
+    }
+  } catch {
+  }
+  historyFileCache = null;
+  return null;
+}
+
+function rememberHistoryFile(filePath: string, entries: HistoryEntry[], payload: string): void {
+  try {
+    const stat = fs.statSync(filePath);
+    historyFileCache = { filePath, mtimeMs: stat.mtimeMs, size: stat.size, entries: entries.slice(), payload };
+  } catch {
+    historyFileCache = null;
+  }
+}
+
+function parseHistoryPayload(payload: string): HistoryEntry[] | null {
+  try {
+    const raw = JSON.parse(payload) as unknown;
     if (!Array.isArray(raw)) return null;
 
     const entries: HistoryEntry[] = [];
@@ -2152,10 +2185,36 @@ function readHistoryFile(filePath: string): HistoryEntry[] | null {
   }
 }
 
+function readHistoryFile(filePath: string): HistoryEntry[] | null {
+  const cached = cachedHistoryFile(filePath);
+  if (cached) return cached.entries;
+  let payload: string;
+  try {
+    payload = fs.readFileSync(filePath, "utf8");
+  } catch {
+    return null;
+  }
+  const entries = parseHistoryPayload(payload);
+  if (entries) rememberHistoryFile(filePath, entries, payload);
+  return entries;
+}
+
 function writeHistoryPayload(filePath: string, payload: string): void {
   const tempPath = `${filePath}.tmp`;
   try {
     fs.writeFileSync(tempPath, payload, "utf8");
+    syncRenameWithExdevFallback(tempPath, filePath);
+  } catch (error) {
+    try { fs.rmSync(tempPath, { force: true }); } catch { }
+    throw error;
+  }
+}
+
+function replaceHistoryKeepingBackup(filePath: string, payload: string): void {
+  const tempPath = `${filePath}.tmp`;
+  try {
+    fs.writeFileSync(tempPath, payload, "utf8");
+    syncRenameWithExdevFallback(filePath, `${filePath}.bak`);
     syncRenameWithExdevFallback(tempPath, filePath);
   } catch (error) {
     try { fs.rmSync(tempPath, { force: true }); } catch { }
@@ -2189,14 +2248,22 @@ export function saveHistory(paths: StoragePaths, entries: HistoryEntry[], limits
   ensureBaseDir(paths.baseDir);
   const trimmed = pruneHistoryEntries(entries, limits);
   const payload = JSON.stringify(trimmed, safeJsonReplacer, 2);
-  const previous = fs.existsSync(paths.historyFile) ? readHistoryFile(paths.historyFile) : null;
-  if (previous) {
-    writeHistoryPayload(`${paths.historyFile}.bak`, JSON.stringify(previous, safeJsonReplacer, 2));
+  if (cachedHistoryFile(paths.historyFile)) {
+    replaceHistoryKeepingBackup(paths.historyFile, payload);
+  } else {
+    const previous = fs.existsSync(paths.historyFile) ? readHistoryFile(paths.historyFile) : null;
+    if (previous) {
+      writeHistoryPayload(`${paths.historyFile}.bak`, JSON.stringify(previous, safeJsonReplacer, 2));
+    }
+    writeHistoryPayload(paths.historyFile, payload);
   }
-  writeHistoryPayload(paths.historyFile, payload);
+  const written = parseHistoryPayload(payload);
+  if (written) rememberHistoryFile(paths.historyFile, written, payload);
+  else historyFileCache = null;
 }
 
 function restoreHistoryPayload(filePath: string, payload: string | null): void {
+  historyFileCache = null;
   if (payload === null) {
     fs.rmSync(`${filePath}.tmp`, { force: true });
     fs.rmSync(filePath, { force: true });
@@ -2218,6 +2285,7 @@ export function createHistoryRollback(paths: StoragePaths): () => void {
 
 export function replaceHistory(paths: StoragePaths, entries: HistoryEntry[], limits?: HistoryLimits): () => void {
   ensureBaseDir(paths.baseDir);
+  historyFileCache = null;
   const payload = JSON.stringify(pruneHistoryEntries(entries, limits), safeJsonReplacer, 2);
   const backupFile = `${paths.historyFile}.bak`;
   const rollback = createHistoryRollback(paths);
@@ -2279,6 +2347,7 @@ export function removeHistoryEntry(paths: StoragePaths, entryId: string, limits?
 
 export function clearHistory(paths: StoragePaths): void {
   ensureBaseDir(paths.baseDir);
+  historyFileCache = null;
   for (const filePath of [`${paths.historyFile}.bak.tmp`, `${paths.historyFile}.tmp`, `${paths.historyFile}.bak`, paths.historyFile]) {
     fs.rmSync(filePath, { force: true });
   }
