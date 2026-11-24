@@ -4426,7 +4426,7 @@ export class DownloadManager extends EventEmitter {
     if (item.onlineStatus === "offline") {
       return "hoster";
     }
-    if (isProviderPoolCooldownError(errorText)) {
+    if (isProviderPoolCooldownError(errorText) || parseRealDebridFileCooldownRetry(errorText)) {
       return null;
     }
     if (item.status !== "validating" || item.onlineStatus === "checking") {
@@ -11084,7 +11084,7 @@ export class DownloadManager extends EventEmitter {
           if (offlineConfirmation) {
             throw new Error(`source_link_offline:${offlineConfirmation}:${errText}`);
           }
-          if (isProviderUnrestrictFailure(errText) && !isHosterUnavailableError(errText)) {
+          if (isProviderUnrestrictFailure(errText) && !isHosterUnavailableError(errText) && !parseRealDebridFileCooldownRetry(errText)) {
             this.recordProviderFailure(cooldownProvider);
             const backoffKind = classifyProviderUnrestrictBackoff(errText);
             if (backoffKind) {
