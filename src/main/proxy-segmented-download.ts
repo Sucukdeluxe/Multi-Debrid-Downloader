@@ -135,15 +135,20 @@ export interface ProxySegmentedDownloadOptions {
   onTrafficBytes?: (bytes: number) => void;
   onProgress?: (deltaBytes: number, downloadedBytes: number, totalBytes: number) => void;
   onValidationRetry?: (event: ProxySegmentValidationRetry) => void;
-  onRepresentationRetry?: () => void;
+  onRepresentationRetry?: (sizes?: ProxyRepresentationSizes) => void;
   onDiskActivity?: (active: boolean) => void;
 }
 
 type DiskOperation = <T>(operation: () => Promise<T>) => Promise<T>;
 
+export interface ProxyRepresentationSizes {
+  expectedTotal: number;
+  receivedTotal: number;
+}
+
 export type ProxySegmentedDownloadResult =
   | { status: "completed"; totalBytes: number; connections: number }
-  | { status: "fallback"; reason: ProxyFallbackReason; httpStatus?: number; errorCode?: string };
+  | { status: "fallback"; reason: ProxyFallbackReason; httpStatus?: number; errorCode?: string; representation?: ProxyRepresentationSizes };
 
 export type ProxyFallbackReason =
   | "proxy_file_unavailable"
@@ -176,6 +181,12 @@ function proxyEndpointKey(proxy: ProxyEndpoint): string {
 class OriginHttpError extends Error {
   public constructor(public readonly statusCode: number) {
     super(`origin_http_${statusCode}`);
+  }
+}
+
+class RepresentationChangedError extends Error {
+  public constructor(public readonly expectedTotal: number, public readonly receivedTotal: number) {
+    super("proxy_representation_changed");
   }
 }
 
@@ -1238,7 +1249,7 @@ async function readRangeOnce(
   if (isChangedRepresentation(status, contentRange, range.start, range.end, totalBytes, contentLength)) {
     recordRepresentationChange("verification", target, proxy, totalBytes, contentRange!);
     opened.dispose();
-    throw new Error("proxy_representation_changed");
+    throw new RepresentationChangedError(totalBytes, contentRange!.total);
   }
   if (status !== 206
     || !contentRange
@@ -1307,7 +1318,7 @@ async function downloadSegmentOnce(
   if (isChangedRepresentation(status, range, segment.start, segment.end, totalBytes, contentLength)) {
     recordRepresentationChange("segment", target, proxy, totalBytes, range!);
     opened.dispose();
-    throw new Error("proxy_representation_changed");
+    throw new RepresentationChangedError(totalBytes, range!.total);
   }
   if (status !== 206
     || !range
@@ -1434,7 +1445,7 @@ export async function downloadWithProxySegments(options: ProxySegmentedDownloadO
   const result = await downloadWithProxySegmentsOnce(options, withDiskActivity);
   if (result.status !== "fallback" || result.errorCode !== "proxy_representation_changed") return result;
   if (options.signal.aborted) throw abortError();
-  try { options.onRepresentationRetry?.(); } catch {}
+  try { options.onRepresentationRetry?.(result.representation); } catch {}
   if (options.signal.aborted) throw abortError();
   return downloadWithProxySegmentsOnce(options, withDiskActivity);
 }
@@ -1544,6 +1555,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
     const signal = AbortSignal.any([options.signal, segmentController.signal]);
     setMaxListeners(0, signal);
 
+    let representationSeen: ProxyRepresentationSizes | undefined;
     const downloadSegment = async (segment: Segment): Promise<number> => {
       const excluded = new Set<string>();
       let lastError: unknown = null;
@@ -1644,6 +1656,9 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
         } catch (error) {
           const originError = error instanceof OriginHttpError && error.statusCode !== 407;
           const representationChanged = error instanceof Error && error.message === "proxy_representation_changed";
+          if (error instanceof RepresentationChangedError) {
+            representationSeen ??= { expectedTotal: error.expectedTotal, receivedTotal: error.receivedTotal };
+          }
           lease?.release({ succeeded: originError || representationChanged || signal.aborted, reason: proxyFailureCode(error) });
           lease = null;
           if (attemptProgress > 0) {
@@ -1727,7 +1742,12 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
       const primaryFailure = settled.find((result): result is PromiseRejectedResult => (
         result.status === "rejected" && !String(result.reason).includes("aborted:proxy_download")
       ));
-      return { status: "fallback", reason: "segment_failed", errorCode: proxyFailureCode((primaryFailure || failed).reason) };
+      return {
+        status: "fallback",
+        reason: "segment_failed",
+        errorCode: proxyFailureCode((primaryFailure || failed).reason),
+        ...(representationSeen ? { representation: representationSeen } : {})
+      };
     }
 
     return await withDiskActivity(async () => {
