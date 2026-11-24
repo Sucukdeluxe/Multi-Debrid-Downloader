@@ -161,8 +161,15 @@ export function normalizeProxyConnectionLimit(value: number, fallback = DEFAULT_
   return Math.max(2, Math.min(MAX_CONNECTION_LIMIT, Math.floor(candidate)));
 }
 
+const proxyEndpointKeys = new WeakMap<ProxyEndpoint, string>();
+
 function proxyEndpointKey(proxy: ProxyEndpoint): string {
-  return `${proxy.url}\0${proxy.authorization}`;
+  let key = proxyEndpointKeys.get(proxy);
+  if (key === undefined) {
+    key = `${proxy.url}\0${proxy.authorization}`;
+    proxyEndpointKeys.set(proxy, key);
+  }
+  return key;
 }
 
 class OriginHttpError extends Error {
@@ -259,6 +266,7 @@ export class SharedProxyCoordinator {
   private readonly groupOrigins = new Map<string, string>();
   private readonly originThrottle = new Map<string, { limit: number; lastThrottleAt: number; successes: number }>();
   private readonly failureReasons = new Map<string, number>();
+  private readonly originResponses = new Map<string, number>();
   private leaseSuccesses = 0;
   private leaseFailures = 0;
 
@@ -276,7 +284,8 @@ export class SharedProxyCoordinator {
       measuredProxies: this.performance.size,
       leaseSuccesses: this.leaseSuccesses,
       leaseFailures: this.leaseFailures,
-      failureReasons: Object.fromEntries(this.failureReasons)
+      failureReasons: Object.fromEntries(this.failureReasons),
+      originResponses: Object.fromEntries(this.originResponses)
     };
   }
 
@@ -323,23 +332,30 @@ export class SharedProxyCoordinator {
     };
   }
 
-  public reportOriginStatus(statusCode: number, origin?: string): void {
+  public reportOriginStatus(statusCode: number, origin?: string, requestStartedAt?: number): void {
     if (statusCode !== 429 && statusCode !== 503) return;
     const now = Date.now();
     if (statusCode === 503 && origin) {
       const state = this.originThrottle.get(origin);
-      if (state && now - state.lastThrottleAt < 1_500) return;
+      const stale = Boolean(state && requestStartedAt !== undefined && requestStartedAt < state.lastThrottleAt);
+      this.countOriginResponse(stale ? "503_before_last_cut" : "503");
+      if (stale || (state && now - state.lastThrottleAt < 1_500)) return;
       const originGroups = Array.from(this.groupOrigins.values()).filter(value => value === origin).length;
       const share = Math.max(2, Math.ceil(this.adaptiveConnectionLimit * Math.max(1, originGroups) / Math.max(1, this.registeredGroups.size)));
       this.originThrottle.set(origin, { limit: Math.max(2, Math.min(state?.limit ?? share, share) - 2), lastThrottleAt: now, successes: 0 });
       this.drain();
       return;
     }
+    this.countOriginResponse(String(statusCode));
     if (now - this.lastThrottleAt < 1_500) return;
     this.lastThrottleAt = now;
     this.successfulTransfersSinceThrottle = 0;
     this.adaptiveConnectionLimit = Math.max(2, this.adaptiveConnectionLimit - 2);
     this.drain();
+  }
+
+  private countOriginResponse(key: string): void {
+    this.originResponses.set(key, (this.originResponses.get(key) || 0) + 1);
   }
 
   public reportContentMismatch(proxy: ProxyEndpoint): void {
@@ -410,38 +426,39 @@ export class SharedProxyCoordinator {
     const now = Date.now();
     const start = (this.cursors.get(waiter.poolKey) || 0) % waiter.proxies.length;
     const select = (allowCooldown: boolean): ProxyEndpoint | null => {
-      const candidates: Array<{ proxy: ProxyEndpoint; index: number; key: string }> = [];
+      let candidateCount = 0;
+      let unknownCount = 0;
+      let firstUnknownIndex = -1;
+      let bestIndex = -1;
+      let bestScore = Number.NEGATIVE_INFINITY;
       for (let offset = 0; offset < waiter.proxies.length; offset += 1) {
         const index = (start + offset) % waiter.proxies.length;
-        const proxy = waiter.proxies[index];
-        const key = proxyEndpointKey(proxy);
+        const key = proxyEndpointKey(waiter.proxies[index]);
         if (waiter.excluded.has(key)
           || this.activeProxies.has(key)
           || (!allowCooldown && (this.cooldownUntil.get(key) || 0) > now)) {
           continue;
         }
-        candidates.push({ proxy, index, key });
-      }
-      if (candidates.length === 0) return null;
-      this.acquisitionCount += 1;
-      const unknown = candidates.filter((candidate) => !this.performance.has(candidate.key));
-      const exploreUnknown = unknown.length > 0 && (unknown.length === candidates.length || this.acquisitionCount % 8 === 0);
-      let selected = exploreUnknown ? unknown[0] : candidates[0];
-      if (!exploreUnknown) {
-        let selectedScore = Number.NEGATIVE_INFINITY;
-        for (const candidate of candidates) {
-          const metric = this.performance.get(candidate.key);
-          const score = metric
-            ? (metric.ewmaBytesPerSecond / (1 + metric.failures)) - (metric.failures * 1024 * 1024)
-            : 0;
-          if (score > selectedScore) {
-            selected = candidate;
-            selectedScore = score;
-          }
+        candidateCount += 1;
+        const metric = this.performance.get(key);
+        if (!metric) {
+          unknownCount += 1;
+          if (firstUnknownIndex < 0) firstUnknownIndex = index;
+        }
+        const score = metric
+          ? (metric.ewmaBytesPerSecond / (1 + metric.failures)) - (metric.failures * 1024 * 1024)
+          : 0;
+        if (score > bestScore) {
+          bestIndex = index;
+          bestScore = score;
         }
       }
-      this.cursors.set(waiter.poolKey, (selected.index + 1) % waiter.proxies.length);
-      return selected.proxy;
+      if (candidateCount === 0) return null;
+      this.acquisitionCount += 1;
+      const exploreUnknown = unknownCount > 0 && (unknownCount === candidateCount || this.acquisitionCount % 8 === 0);
+      const selectedIndex = exploreUnknown ? firstUnknownIndex : bestIndex;
+      this.cursors.set(waiter.poolKey, (selectedIndex + 1) % waiter.proxies.length);
+      return waiter.proxies[selectedIndex];
     };
     const available = select(false);
     if (available) return available;
@@ -570,14 +587,12 @@ export class SharedProxyCoordinator {
     if (!this.waiters.length || this.activeConnections >= this.adaptiveConnectionLimit) return;
     const now = Date.now();
     let earliest = Infinity;
-    for (const waiter of this.waiters) {
-      if (waiter.signal.aborted) continue;
-      for (const proxy of waiter.proxies) {
-        const key = proxyEndpointKey(proxy);
-        if (waiter.excluded.has(key) || this.activeProxies.has(key)) continue;
-        const until = this.cooldownUntil.get(key) || 0;
-        if (until > now) earliest = Math.min(earliest, until);
+    for (const [key, until] of this.cooldownUntil) {
+      if (until <= now) {
+        this.cooldownUntil.delete(key);
+        continue;
       }
+      if (until < earliest && !this.activeProxies.has(key)) earliest = until;
     }
     if (!Number.isFinite(earliest)) return;
     this.cooldownWakeAt = earliest;
@@ -1635,7 +1650,7 @@ async function downloadWithProxySegmentsOnce(options: ProxySegmentedDownloadOpti
             updateProgress(-attemptProgress, committedProgress - attemptProgress, probe.totalBytes);
           }
           if (originError) {
-            sharedProxyCoordinator.reportOriginStatus(error.statusCode, overloadKey(target));
+            sharedProxyCoordinator.reportOriginStatus(error.statusCode, overloadKey(target), startedAt);
             const now = Date.now();
             if ((error.statusCode === 503 || error.statusCode === 429) && !options.signal.aborted) {
               throttledSince ||= now;
