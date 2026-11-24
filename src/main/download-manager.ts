@@ -840,6 +840,18 @@ function parseDebridLinkCooldownRetry(errorText: string): { delayMs: number; det
   return { delayMs, detail };
 }
 
+export function parseRealDebridFileCooldownRetry(errorText: string): { delayMs: number; detail: string } | null {
+  const match = String(errorText || "").match(/real_debrid_file_cooldown:(\d+):([^|]*)/i);
+  if (!match) {
+    return null;
+  }
+  const raw = Number(match[1]);
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return null;
+  }
+  return { delayMs: Math.max(1000, Math.min(2 * 60 * 60 * 1000, raw)), detail: String(match[2] || "").trim() };
+}
+
 export function parseRealDebridCooldownRetry(errorText: string): { delayMs: number; detail: string } | null {
   const match = String(errorText || "").match(/real_debrid_cooldown:(\d+):([^|]*)/i);
   if (!match) {
@@ -2661,7 +2673,7 @@ export class DownloadManager extends EventEmitter {
   }
 
   private releaseRealDebridCooldownParks(): number {
-    return this.releaseParkedItems(/^Real-Debrid: (?:Tageslimit aller Accounts erreicht|alle Accounts pausiert)/i, "Real-Debrid-Warteitem(s)");
+    return this.releaseParkedItems(/^Real-Debrid: (?:Tageslimit aller Accounts erreicht|alle Accounts pausiert|Datei derzeit nicht freigegeben)/i, "Real-Debrid-Warteitem(s)");
   }
 
   private releaseParkedItems(statusPattern: RegExp, label: string): number {
@@ -11747,6 +11759,16 @@ export class DownloadManager extends EventEmitter {
           }
 
           const megaRawError = error instanceof Error ? String(error.message || "") : String(error || "");
+          const realDebridFilePark = parseRealDebridFileCooldownRetry(megaRawError);
+          if (realDebridFilePark) {
+            const detail = realDebridFilePark.detail || "Real-Debrid: Datei derzeit nicht freigegeben";
+            const resumeClock = new Date(nowMs() + realDebridFilePark.delayMs).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+            this.queueRetry(item, active, realDebridFilePark.delayMs + 1000, `${detail}, neuer Versuch um ${resumeClock}`);
+            item.lastError = detail;
+            this.persistSoon();
+            this.emitState();
+            return;
+          }
           const realDebridCooldown = parseRealDebridCooldownRetry(megaRawError);
           if (realDebridCooldown) {
             const resumeAt = nowMs() + realDebridCooldown.delayMs;

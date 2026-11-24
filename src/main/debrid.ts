@@ -707,6 +707,7 @@ export function resetRealDebridRuntimeStateForTests(): void {
   realDebridStickyAccountId = "";
   realDebridStickyCount = 0;
   skippedProviderLoggedAt.clear();
+  realDebridLockedFileTimes = [];
   resetAccountRuntimeSessionForProvider("realdebrid");
 }
 
@@ -777,7 +778,19 @@ function setRealDebridAccountCooldown(
 const REAL_DEBRID_FAIR_USAGE_COOLDOWN_MS = 30 * 60 * 1000;
 export const REAL_DEBRID_FAIR_USAGE_RETRY_MS = 500;
 export const REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS = 4;
+export const REAL_DEBRID_FAIR_USAGE_FILE_PARK_MS = 30 * 60 * 1000;
+export const REAL_DEBRID_FAIR_USAGE_POOL_FAILURES = 12;
+const REAL_DEBRID_FAIR_USAGE_POOL_WINDOW_MS = 10 * 60 * 1000;
 const REAL_DEBRID_LINK_CHECK_TIMEOUT_MS = 15_000;
+let realDebridLockedFileTimes: number[] = [];
+
+function noteRealDebridLockedFile(now = Date.now()): boolean {
+  realDebridLockedFileTimes = realDebridLockedFileTimes.filter((at) => now - at < REAL_DEBRID_FAIR_USAGE_POOL_WINDOW_MS);
+  realDebridLockedFileTimes.push(now);
+  if (realDebridLockedFileTimes.length < REAL_DEBRID_FAIR_USAGE_POOL_FAILURES) return false;
+  realDebridLockedFileTimes = [];
+  return true;
+}
 
 export function canonicalRealDebridLink(link: string): string {
   const text = String(link || "").trim();
@@ -4709,6 +4722,7 @@ export class DebridService {
       try {
         const result = await this.unrestrictWithRealDebridFairUsageRetry(account, link, fairUsage, signal);
         realDebridAccountCooldowns.delete(account.id);
+        realDebridLockedFileTimes = [];
         if (realDebridStickyAccountId === account.id) {
           realDebridStickyCount += 1;
         } else {
@@ -4732,6 +4746,21 @@ export class DebridService {
         }
         const failure = this.classifyRealDebridFailure(error);
         recordAccountRuntimeFailure("realdebrid", account.id);
+        if (isRealDebridFairUsageError(error) && fairUsage.attempts >= REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS) {
+          const reason = error instanceof RealDebridUnlockedLinkError ? `, ${error.message}` : "";
+          const fileLabel = filenameFromUrl(link) || link;
+          const attemptText = `Fair Use: Versuch ${REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS}/${REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS} erfolglos${reason}`;
+          if (!noteRealDebridLockedFile()) {
+            logger.info(`Real-Debrid ${account.label}: ${attemptText}, Datei pausiert ${Math.round(REAL_DEBRID_FAIR_USAGE_FILE_PARK_MS / 60_000)} min: ${fileLabel}`);
+            throw new Error(`real_debrid_file_cooldown:${REAL_DEBRID_FAIR_USAGE_FILE_PARK_MS}:Real-Debrid: Datei derzeit nicht freigegeben (Fair Use)`);
+          }
+          logger.info(`Real-Debrid ${account.label}: ${attemptText}, ${REAL_DEBRID_FAIR_USAGE_POOL_FAILURES} Dateien in Folge ohne Freigabe, alle Accounts pausiert 30 min: ${fileLabel}`);
+          for (const candidate of this.getConfiguredRealDebridAccounts(settings).filter((entry) => entry.enabled)) {
+            setRealDebridAccountCooldown(candidate.id, REAL_DEBRID_FAIR_USAGE_COOLDOWN_MS, failure.message, "quota");
+          }
+          failures.push(`${account.label}: ${failure.message}`);
+          break;
+        }
         if (!failure.rotateAccount) {
           throw error;
         }
@@ -4787,16 +4816,11 @@ export class DebridService {
           throw error;
         }
         fairUsage.attempts += 1;
+        if (fairUsage.attempts >= REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS) {
+          throw error;
+        }
         const fileLabel = filenameFromUrl(link) || link;
         const reason = error instanceof RealDebridUnlockedLinkError ? `, ${error.message}` : "";
-        if (fairUsage.attempts > REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS) {
-          logger.info(`Real-Debrid ${account.label}: Fair Use${reason}, Account pausiert 30 min: ${fileLabel}`);
-          throw error;
-        }
-        if (fairUsage.attempts === REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS) {
-          logger.info(`Real-Debrid ${account.label}: Fair Use: Versuch ${fairUsage.attempts}/${REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS} erfolglos${reason}, Account pausiert 30 min: ${fileLabel}`);
-          throw error;
-        }
         logger.info(`Real-Debrid ${account.label}: Fair Use: Versuch ${fairUsage.attempts}/${REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS}, nächster in ${formatFairUsageWait(REAL_DEBRID_FAIR_USAGE_RETRY_MS)}${reason}: ${fileLabel}`);
         await sleepWithSignal(REAL_DEBRID_FAIR_USAGE_RETRY_MS, signal);
       }
