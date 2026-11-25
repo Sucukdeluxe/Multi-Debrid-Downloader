@@ -3407,6 +3407,21 @@ export function App(): ReactElement {
     setAccountDialog((prev) => createAccountDialogState(prev?.mode ?? "create", kind, settingsDraft));
   }, [settingsDraft]);
 
+  const applyAccountDialogFilter = (query: string, serviceFilter: string): void => {
+    setAccountDialogSearch(query);
+    setAccountDialogServiceFilter(serviceFilter);
+    if (!accountDialog) {
+      return;
+    }
+    const visibleKind = resolveVisibleAccountKind(
+      accountDialog.kind,
+      filterAccountDialogOptions(accountDialogSelectableOptions, query, serviceFilter).map((option) => option.kind)
+    );
+    if (visibleKind !== accountDialog.kind) {
+      setAccountDialog((current) => current ? createAccountDialogState(current.mode, visibleKind, settingsDraft) : current);
+    }
+  };
+
   useEffect(() => {
     if (!accountDialog) {
       return;
@@ -5868,7 +5883,9 @@ export function App(): ReactElement {
   const activeAccountContextRow = accountContextMenu
     ? accountRowBindings.get(accountContextMenu.rowId) ?? null
     : null;
-  const accountSources = useMemo<AccountRowSource[]>(() => accountRows.map((row) => {
+  const accountSources = useMemo<AccountRowSource[]>(() => {
+    const rollingBytes = new Map((snapshot.stats.rolling24Hours?.accounts ?? []).map((account) => [account.id, account.bytes]));
+    return accountRows.map((row) => {
     const checkedStatus = row.accountId ? snapshot.settings.debridAccountStatuses?.[row.accountId] : undefined;
     const state: AccountRowSource["status"]["state"] = resolveAccountStatusState(row.disabled, checkedStatus, runtimeNow);
     return {
@@ -5889,11 +5906,13 @@ export function App(): ReactElement {
       dailyLimitBytes: row.dailyLimitBytes,
       dailyUsageBytes: row.dailyUsedBytes,
       totalUsageBytes: row.totalUsedBytes,
+      last24HoursBytes: rollingBytes.get(row.accountId || `provider:${row.entry.provider}`) ?? 0,
       username: row.username,
       credentialKind: row.credentialLabel.includes("API") ? "api-key" : row.credentialLabel.includes("•") ? "password" : "protected",
       canCheck: row.checkable
     };
-  }), [accountRows, runtimeNow, snapshot.settings.debridAccountStatuses]);
+    });
+  }, [accountRows, runtimeNow, snapshot.settings.debridAccountStatuses, snapshot.stats.rolling24Hours]);
   const selectedAccountViewIds = useMemo(() => accountRows
     .filter((row) => selectedAccountRowKeys.has(row.rowKey))
     .map(accountRowViewId), [accountRows, selectedAccountRowKeys]);
@@ -6358,8 +6377,8 @@ export function App(): ReactElement {
   const accountAddDialog = (
     <AccountAddDialog
       actions={{
-        onQueryChange: setAccountDialogSearch,
-        onServiceFilterChange: setAccountDialogServiceFilter,
+        onQueryChange: (query) => applyAccountDialogFilter(query, accountDialogServiceFilter),
+        onServiceFilterChange: (serviceFilter) => applyAccountDialogFilter(accountDialogSearch, serviceFilter),
         onOptionSelect: (optionId) => updateAccountDialogKind(optionId as AccountKind),
         onFieldChange: (fieldId, value) => setAccountDialog((current) => current ? { ...current, [fieldId]: value } : current),
         onClose: closeAccountDialog,

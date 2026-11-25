@@ -524,7 +524,12 @@
   opacity: 0.5;
 }
 
-.settings-control:focus-visible,
+.settings-control:focus,
+.settings-control:focus-visible {
+  outline: none;
+  border-color: var(--ui-text-muted);
+}
+
 .settings-button:focus-visible,
 .settings-switch:focus-visible,
 .settings-theme-option:focus-visible,
