@@ -70,7 +70,7 @@ import { cleanupCancelledPackageArtifactsAsync, removeDownloadLinkArtifacts, rem
 import { planDownloadCompletion, reconcileFinalizedSize, validateDownloadedFileCompletion } from "./download-completion";
 import { downloadWithProxySegments, type ProxyFallbackReason } from "./proxy-segmented-download";
 import { formatSpeed, speedLimitBytesPerSecond } from "../shared/speed-format";
-import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkDdownloadOnline, checkOneFichierLinks, checkRapidgatorOnline, fetchAllDebridHostInfo, filenameFromDdownloadUrlPath, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, isDdownloadLink, isOneFichierLink, isRealDebridAccountBlockedForStart, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown, REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS, REAL_DEBRID_FAIR_USAGE_RETRY_MS, type DdownloadCheckResult, type OneFichierCheckResult } from "./debrid";
+import { AllDebridWebUnrestrictor, BestDebridWebUnrestrictor, DebridService, MegaWebUnrestrictor, RealDebridWebUnrestrictor, checkDdownloadOnline, checkOneFichierLinks, checkRapidgatorOnline, fetchAllDebridHostInfo, filenameFromDdownloadUrlPath, getAvailableDebridLinkApiKeys, getAvailableMegaDebridAccounts, getAvailableRealDebridAccounts, getMegaDebridAccountCooldownState, getMegaDebridInFlightCountForMode, getRealDebridAccountAttemptTimeoutMs, isDdownloadLink, isOneFichierLink, isRealDebridAccountBlockedForStart, pruneExpiredDebridLinkRuntimeState, pruneExpiredMegaDebridRuntimeState, pruneExpiredRealDebridRuntimeState, releaseRealDebridAccountCooldown, REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS, REAL_DEBRID_FAIR_USAGE_PACING_MAX_WAIT_MS, REAL_DEBRID_FAIR_USAGE_RETRY_MS, type DdownloadCheckResult, type OneFichierCheckResult } from "./debrid";
 import { cleanupArchives, clearExtractResumeState, collectArchiveCleanupTargets, detectArchiveSignature, extractionActivityLabel, extractPackageArchives, findArchiveCandidates, hasAnyFilesRecursive, removeEmptyDirectoryTree, resetExtractorCachesForPasswordChange, type ExtractArchiveFailureInfo, type ExtractProgressUpdate } from "./extractor";
 import { planRarVolumeAliases } from "./archive-volume-names";
 import { filesHaveEqualContent, validateFileAgainstManifest } from "./integrity";
@@ -496,6 +496,7 @@ export function resolveUnrestrictTimeoutBudgetMs(
     }
     return total
       + Math.max(baseTimeoutMs, realDebridAccountAttemptTimeoutMs * accountCount)
+      + REAL_DEBRID_FAIR_USAGE_PACING_MAX_WAIT_MS
       + (REAL_DEBRID_FAIR_USAGE_MAX_ATTEMPTS - 1) * (REAL_DEBRID_FAIR_USAGE_RETRY_MS + realDebridAccountAttemptTimeoutMs);
   }, 0);
   return Math.max(baseTimeoutMs, Math.min(Number.MAX_SAFE_INTEGER, budgetMs));
@@ -4425,7 +4426,7 @@ export class DownloadManager extends EventEmitter {
     if (item.onlineStatus === "offline") {
       return "hoster";
     }
-    if (isProviderPoolCooldownError(errorText)) {
+    if (isProviderPoolCooldownError(errorText) || parseRealDebridFileCooldownRetry(errorText)) {
       return null;
     }
     if (item.status !== "validating" || item.onlineStatus === "checking") {
@@ -11083,7 +11084,7 @@ export class DownloadManager extends EventEmitter {
           if (offlineConfirmation) {
             throw new Error(`source_link_offline:${offlineConfirmation}:${errText}`);
           }
-          if (isProviderUnrestrictFailure(errText) && !isHosterUnavailableError(errText)) {
+          if (isProviderUnrestrictFailure(errText) && !isHosterUnavailableError(errText) && !parseRealDebridFileCooldownRetry(errText)) {
             this.recordProviderFailure(cooldownProvider);
             const backoffKind = classifyProviderUnrestrictBackoff(errText);
             if (backoffKind) {

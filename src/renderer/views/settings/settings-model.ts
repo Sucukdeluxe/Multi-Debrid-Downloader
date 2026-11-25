@@ -20,20 +20,22 @@ export const SETTINGS_SECTIONS: readonly { id: SettingsSection; label: string; h
 export const ACCOUNT_COLUMNS = [
   "Hoster",
   "Status",
-  "Download-Traffic übrig",
   "Benutzername",
   "E-Mail",
   "Verfallsdatum",
+  "Download-Traffic übrig",
+  "Download-Traffic (letzte 24 Stunden)",
   "Passwort/Zugang"
 ] as const;
 
 export const ACCOUNT_TABLE_COLUMN_IDS = [
   "hoster",
   "status",
-  "traffic",
   "username",
   "email",
   "expires",
+  "traffic",
+  "traffic24h",
   "credential"
 ] as const;
 
@@ -44,6 +46,7 @@ const ACCOUNT_TABLE_COLUMN_LIMITS: Record<AccountTableColumnId, { initial: numbe
   hoster: { initial: 210, min: 140, max: 520 },
   status: { initial: 250, min: 120, max: 520 },
   traffic: { initial: 210, min: 150, max: 420 },
+  traffic24h: { initial: 280, min: 150, max: 420 },
   username: { initial: 170, min: 120, max: 420 },
   email: { initial: 200, min: 140, max: 480 },
   expires: { initial: 150, min: 120, max: 280 },
@@ -150,6 +153,7 @@ export interface AccountRowSource {
   dailyLimitBytes?: number;
   dailyUsageBytes?: number;
   totalUsageBytes?: number;
+  last24HoursBytes?: number;
   username: string;
   credentialKind: "password" | "api-key" | "protected";
   canCheck: boolean;
@@ -169,6 +173,7 @@ export interface AccountRowViewModel {
     checkedAgo: string;
   };
   traffic: string;
+  traffic24h: string;
   username: string;
   email: string;
   expires: string;
@@ -872,22 +877,19 @@ function formatBytes(bytes: number): string {
   return `${new Intl.NumberFormat("de-DE", { maximumFractionDigits: value >= 100 ? 0 : value >= 10 ? 1 : 2 }).format(value)} ${units[unitIndex]}`;
 }
 
-function formatTraffic(limitBytes?: number, usageBytes?: number, totalUsageBytes?: number): string {
-  const total = Number.isFinite(totalUsageBytes) && totalUsageBytes && totalUsageBytes > 0
-    ? ` · Gesamt ${formatBytes(totalUsageBytes)}`
-    : "";
+function formatTraffic(limitBytes?: number, usageBytes?: number): string {
   if (!Number.isFinite(limitBytes) || !limitBytes || limitBytes <= 0) {
-    return `Unbeschränkt${total}`;
+    return "Unbeschränkt";
   }
   const safeUsage = Number.isFinite(usageBytes) && usageBytes && usageBytes > 0 ? usageBytes : 0;
-  return `${formatBytes(Math.max(0, limitBytes - safeUsage))} von ${formatBytes(limitBytes)} übrig${total}`;
+  return `${formatBytes(Math.max(0, limitBytes - safeUsage))} von ${formatBytes(limitBytes)} übrig`;
 }
 
 function formatExpiry(premiumUntilMs: number | null): string {
   if (!premiumUntilMs || !Number.isFinite(premiumUntilMs) || premiumUntilMs <= 0) {
     return "—";
   }
-  return new Intl.DateTimeFormat("de-DE").format(new Date(premiumUntilMs));
+  return new Intl.DateTimeFormat("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date(premiumUntilMs));
 }
 
 function formatCheckedAgo(checkedAt: number | undefined, nowMs: number): string {
@@ -968,7 +970,8 @@ export function projectAccountRows(
       enabled: source.enabled,
       selected: selected.has(id),
       status: { ...status, checkedAgo: formatCheckedAgo(source.status.checkedAt, nowMs) },
-      traffic: formatTraffic(source.dailyLimitBytes, source.dailyUsageBytes, source.totalUsageBytes),
+      traffic: formatTraffic(source.dailyLimitBytes, source.dailyUsageBytes),
+      traffic24h: formatBytes(source.last24HoursBytes ?? 0),
       username: identity.username,
       email: identity.email,
       expires: formatExpiry(source.status.premiumUntilMs),
