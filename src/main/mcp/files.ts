@@ -37,6 +37,20 @@ export class McpFiles {
     }
     return { root, target, realRoot };
   }
+  async remove(rootId: string, relative: string): Promise<unknown> {
+    const { root, target, realRoot } = await this.resolve(rootId, relative);
+    if (root.logsOnly) throw new Error("Logdateien können nicht gelöscht werden.");
+    if (path.relative(realRoot, target) === "") throw new Error("Der freigegebene Ordner selbst kann nicht gelöscht werden.");
+    const stat = await fs.lstat(target);
+    if (stat.isSymbolicLink()) throw new Error("Verknüpfungen sind nicht freigegeben.");
+    for (const other of this.roots().filter(entry => entry.path)) {
+      const otherRoot = await fs.realpath(other.path).catch(() => path.resolve(other.path));
+      if (within(target, otherRoot)) throw new Error("Der Ordner enthält einen anderen freigegebenen Ordner.");
+    }
+    if (stat.isDirectory()) await fs.rm(target, { recursive: true });
+    else await fs.unlink(target);
+    return { removed: true, directory: stat.isDirectory() };
+  }
   async list(rootId: string, relative: string, offset: number, limit: number): Promise<unknown> {
     const { root, target } = await this.resolve(rootId, relative);
     const entries = (await fs.readdir(target, { withFileTypes: true })).filter(entry => !entry.isSymbolicLink() && !privateFile.test(entry.name) && (!root.logsOnly || entry.isDirectory() || /\.(?:log|txt)(?:\.old)?$/i.test(entry.name))).sort((a, b) => a.name.localeCompare(b.name));
