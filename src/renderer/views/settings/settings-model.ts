@@ -672,7 +672,7 @@ export function buildSettingsForms({
             {
               id: "failedExtractionCleanupMinutes", kind: "number", label: "Archiv nach Entpack-Fehler löschen nach (Minuten)", value: String(settings.failedExtractionCleanupMinutes), min: 0, max: 1440,
               keywords: "fehlgeschlagen crc bereinigen",
-              help: "Löscht die Archivteile eines fehlgeschlagenen Entpackvorgangs nach dieser Wartezeit vom Datenträger, sobald kein Teil desselben Archivs mehr lädt oder entpackt wird. Der Eintrag bleibt als „Entpack-Fehler - gelöscht“ in der Liste; erneutes Entpacken ist danach nicht mehr möglich. 0 schaltet das Löschen ab."
+              help: "Löscht die Archivteile eines fehlgeschlagenen Entpackvorgangs nach dieser Wartezeit vom Datenträger, sobald kein Teil desselben Archivs mehr lädt oder entpackt wird. Der Eintrag steht danach als „Entpack-Fehler - gelöscht“ in der Liste und verschwindet nach der Einstellung „Fertige Downloads aus der Liste“; erneutes Entpacken ist danach nicht mehr möglich. 0 schaltet das Löschen ab."
             }
           ]
         }
