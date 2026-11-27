@@ -218,9 +218,19 @@ function DownloadMeter({ value, text }: { value: number; text: string }): ReactE
   );
 }
 
+export function downloadStatusTitle(status: string, title?: string): string {
+  const source = /^(Finalisieren|Finalizing)\b/i.test(status) ? compactDownloadStatus(status) : title || status;
+  return source.split("\n").map((line) => line
+    .replace(/\s*·\s*\d+\s*s(?=\s*(?:·|$))/g, "")
+    .replace(/\s*\(\d+\/\d+\)/g, "")
+    .replace(/\s*[-:]?\s*-?\d+(?:[.,]\d+)?\s*%/g, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim()).join("\n");
+}
+
 function DownloadStatusCell({ status, title }: { status: string; title?: string }): ReactElement {
   const visibleStatus = compactDownloadStatus(status);
-  const statusTitle = /^(Finalisieren|Finalizing)\b/i.test(status) ? visibleStatus : title || status;
+  const statusTitle = downloadStatusTitle(status, title);
   return (
     <span aria-label={visibleStatus} className="downloads-cell downloads-status-cell" title={statusTitle}>
       <span aria-hidden="true" className="downloads-status-full">{visibleStatus}</span>

@@ -107,7 +107,7 @@ export function extractionActivityLabel(progress: ExtractProgressUpdate): string
     case "integrity": return "Archivintegrität prüfen";
     case "repairing": return "Archiv reparieren";
     case "retrying": return "Entpackversuch wiederholen";
-    case "publishing": return "Entpackte Dateien übernehmen";
+    case "publishing": return "Entpackte Dateien verschieben";
     case "extracting": return `Entpacken ${Math.floor(progress.archivePercent ?? 0)}%`;
     default: return undefined;
   }
