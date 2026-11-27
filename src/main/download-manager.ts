@@ -2271,6 +2271,7 @@ export class DownloadManager extends EventEmitter {
     this.checkExistingOneFichierLinks();
     this.scheduleBackgroundAvailabilityCheck(BACKGROUND_AVAILABILITY_INITIAL_DELAY_MS);
     void this.cleanupExistingExtractedArchives().catch((err) => logger.warn(`cleanupExistingExtractedArchives Fehler (constructor): ${compactErrorText(err)}`));
+    void this.cleanupStaleWorkingFiles(startedAt).catch((err) => logger.warn(`cleanupStaleWorkingFiles Fehler (constructor): ${compactErrorText(err)}`));
     setRotationEventListener(() => {
       if (this.rotationListenerActive === false) {
         return;
@@ -4819,6 +4820,91 @@ export class DownloadManager extends EventEmitter {
       }
     }
     return targets;
+  }
+
+  private async cleanupStaleWorkingFiles(startedAt: number): Promise<void> {
+    const packages = Object.values(this.session.packages);
+    const knownPackageIds = new Set(Object.keys(this.session.packages));
+    const knownOutputDirs = new Set(packages.map((pkg) => pkg.outputDir ? pathKey(pkg.outputDir) : "").filter(Boolean));
+    const extractRoots = new Set<string>();
+    for (const dir of [this.settings.extractDir, ...packages.map((pkg) => pkg.extractDir ? path.dirname(pkg.extractDir) : "")]) {
+      if (dir) extractRoots.add(path.resolve(dir));
+    }
+    let stagingRemoved = 0;
+    for (const extractRoot of extractRoots) {
+      let entries: fs.Dirent[];
+      try {
+        entries = await fs.promises.readdir(extractRoot, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        if (!entry.isDirectory() || !isExtractionStagingDirectoryName(entry.name)) {
+          continue;
+        }
+        const stagingDir = path.join(extractRoot, entry.name);
+        try {
+          const stat = await fs.promises.stat(stagingDir);
+          const createdAt = stat.birthtimeMs > 0 ? stat.birthtimeMs : stat.mtimeMs;
+          if (createdAt >= startedAt) {
+            continue;
+          }
+          await fs.promises.rm(stagingDir, { recursive: true, force: true });
+          stagingRemoved += 1;
+        } catch {
+        }
+      }
+    }
+    let markersRemoved = 0;
+    let foldersRemoved = 0;
+    const outputRoot = this.settings.outputDir ? path.resolve(this.settings.outputDir) : "";
+    let outputEntries: fs.Dirent[] = [];
+    if (outputRoot) {
+      try {
+        outputEntries = await fs.promises.readdir(outputRoot, { withFileTypes: true });
+      } catch {
+        outputEntries = [];
+      }
+    }
+    for (const entry of outputEntries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const folder = path.join(outputRoot, entry.name);
+      if (knownOutputDirs.has(pathKey(folder))) {
+        continue;
+      }
+      let files: fs.Dirent[];
+      try {
+        files = await fs.promises.readdir(folder, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      const staleMarkers = files.filter((file) => {
+        const match = file.isFile() ? /^\.rd_extract_progress_(.+)\.json$/.exec(file.name) : null;
+        return Boolean(match && !knownPackageIds.has(match[1]));
+      });
+      if (staleMarkers.length === 0) {
+        continue;
+      }
+      for (const marker of staleMarkers) {
+        try {
+          await fs.promises.rm(path.join(folder, marker.name), { force: true });
+          markersRemoved += 1;
+        } catch {
+        }
+      }
+      if (staleMarkers.length === files.length) {
+        try {
+          await fs.promises.rmdir(folder);
+          foldersRemoved += 1;
+        } catch {
+        }
+      }
+    }
+    if (stagingRemoved > 0 || markersRemoved > 0 || foldersRemoved > 0) {
+      logger.info(`Reste früherer Läufe entfernt: Entpack-Zwischenordner=${stagingRemoved}, Fortschrittsdateien=${markersRemoved}, leere Ordner=${foldersRemoved}`);
+    }
   }
 
   private queueExtractedArchiveCleanup(packageId: string): void {
