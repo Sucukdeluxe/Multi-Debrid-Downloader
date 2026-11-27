@@ -4778,9 +4778,94 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
+  private async collectExtractedArchiveSetTargets(pkg: PackageEntry, dirFilesCache: Map<string, string[]>): Promise<Set<string>> {
+    const targets = new Set<string>();
+    const items = pkg.itemIds
+      .map((itemId) => this.session.items[itemId])
+      .filter(Boolean) as DownloadItem[];
+    const itemPath = (item: DownloadItem): string => String(item.targetPath || "").trim()
+      || (item.fileName ? path.join(pkg.outputDir, sanitizeFilename(item.fileName)) : "");
+    const isExtracted = (item: DownloadItem): boolean => item.status === "completed" && isExtractedLabel(item.fullStatus || "");
+    const pendingNames = new Set(items
+      .filter((item) => !isExtracted(item))
+      .map((item) => path.basename(itemPath(item)).toLowerCase())
+      .filter(Boolean));
+    for (const item of items) {
+      if (!isExtracted(item)) {
+        continue;
+      }
+      const targetPath = itemPath(item);
+      if (!targetPath || !isArchiveLikePath(targetPath)) {
+        continue;
+      }
+      const dir = path.dirname(targetPath);
+      let filesInDir = dirFilesCache.get(dir);
+      if (!filesInDir) {
+        try {
+          filesInDir = (await fs.promises.readdir(dir, { withFileTypes: true }))
+            .filter((entry) => entry.isFile())
+            .map((entry) => entry.name);
+        } catch {
+          filesInDir = [];
+        }
+        dirFilesCache.set(dir, filesInDir);
+      }
+      const setTargets = collectArchiveCleanupTargets(targetPath, filesInDir);
+      if (setTargets.some((target) => pendingNames.has(path.basename(target).toLowerCase()))) {
+        continue;
+      }
+      for (const target of setTargets) {
+        targets.add(target);
+      }
+    }
+    return targets;
+  }
+
+  private queueExtractedArchiveCleanup(packageId: string): void {
+    if (this.settings.cleanupMode !== "delete") {
+      return;
+    }
+    this.cleanupQueue = this.cleanupQueue
+      .then(async () => {
+        const pkg = this.session.packages[packageId];
+        if (!pkg || pkg.cancelled || !pkg.outputDir || !pkg.extractDir) {
+          return;
+        }
+        if (pathKey(pkg.outputDir) === pathKey(pkg.extractDir)) {
+          return;
+        }
+        const targets = await this.collectExtractedArchiveSetTargets(pkg, new Map());
+        let removed = 0;
+        for (const targetPath of targets) {
+          if (!isPathInsideDir(targetPath, pkg.outputDir) || !await this.existsAsync(targetPath)) {
+            continue;
+          }
+          try {
+            await fs.promises.rm(targetPath, { force: true });
+            removed += 1;
+          } catch {
+          }
+        }
+        if (removed > 0) {
+          logger.info(`Archive nach dem Entpacken entfernt: pkg=${pkg.name}, entfernt=${removed}`);
+          this.logPackageForPackage(pkg, "INFO", "Archive nach dem Entpacken entfernt", { removed });
+        }
+      })
+      .catch((error) => {
+        logger.warn(`Archive-Cleanup nach dem Entpacken fehlgeschlagen: ${compactErrorText(error)}`);
+      });
+  }
+
   private async cleanupExistingExtractedArchives(): Promise<void> {
     if (this.settings.cleanupMode === "none") {
       return;
+    }
+
+    for (const packageId of this.session.packageOrder) {
+      const pkg = this.session.packages[packageId];
+      if (pkg && !pkg.cancelled && pkg.status !== "completed") {
+        this.queueExtractedArchiveCleanup(packageId);
+      }
     }
 
     const extractDirUsage = new Map<string, number>();
@@ -14636,6 +14721,7 @@ export class DownloadManager extends EventEmitter {
             }
             this.tryFinalizePackageResult(packageId);
             this.applyPackageDoneCleanup(packageId);
+            this.queueExtractedArchiveCleanup(packageId);
           }
         })();
         hybridHandle.task = hybridTask;
