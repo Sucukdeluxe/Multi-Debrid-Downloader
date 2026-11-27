@@ -196,7 +196,7 @@ export function buildFfmpegRemuxArgs(opts: { input: string; output: string; audi
 
 // Stream-copy remux is disk-bound; generous budget scaled by size, clamped.
 export function computeRemuxTimeoutMs(bytes: number): number {
-  const perBytes = Math.ceil((Number(bytes) || 0) / (10 * 1024 * 1024)) * 1000;
+  const perBytes = Math.ceil((Number(bytes) || 0) / (2 * 1024 * 1024)) * 1000;
   return Math.max(120_000, Math.min(60 * 60 * 1000, 120_000 + perBytes));
 }
 
@@ -401,6 +401,19 @@ function delayMs(ms: number): Promise<void> {
 // transient: a rename that hits EBUSY/EACCES/EPERM/EEXIST often succeeds a moment
 // later. Retry with backoff before giving up so a momentary lock doesn't abort
 // the atomic replace and leave the file unprocessed.
+async function clearReadOnlyTarget(from: string, to: string): Promise<boolean> {
+  try {
+    const [source, target] = await Promise.all([fs.promises.stat(from), fs.promises.stat(to)]);
+    if (!source.isFile() || !target.isFile() || (target.mode & 0o200) !== 0) {
+      return false;
+    }
+    await fs.promises.chmod(to, target.mode | 0o200);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function renameWithRetry(from: string, to: string): Promise<void> {
   for (let attempt = 0; ; attempt += 1) {
     try {
@@ -410,6 +423,9 @@ export async function renameWithRetry(from: string, to: string): Promise<void> {
       const code = (error as NodeJS.ErrnoException)?.code;
       if (!code || !RENAME_RETRYABLE_CODES.has(code) || attempt >= RENAME_RETRY_DELAYS_MS.length) {
         throw error;
+      }
+      if ((code === "EPERM" || code === "EACCES") && await clearReadOnlyTarget(from, to)) {
+        continue;
       }
       await delayMs(RENAME_RETRY_DELAYS_MS[attempt]);
     }
