@@ -1012,6 +1012,14 @@ function isExtractedLabel(statusText: string): boolean {
   return /^entpackt\b/i.test(String(statusText || "").trim());
 }
 
+function isDeletedExtractFailureLabel(statusText: string): boolean {
+  return String(statusText || "").trim().startsWith(DELETED_EXTRACT_FAILURE_PREFIX);
+}
+
+function isListCleanupDoneLabel(statusText: string): boolean {
+  return isExtractedLabel(statusText) || isDeletedExtractFailureLabel(statusText);
+}
+
 function isExtractErrorLabel(statusText: string): boolean {
   const text = String(statusText || "").trim();
   return /^entpacken\b/i.test(text) && /\berror\b/i.test(text)
@@ -3411,6 +3419,19 @@ export class DownloadManager extends EventEmitter {
       for (const packageId of cleanedPackageIds) {
         const pkg = this.session.packages[packageId];
         if (pkg) await this.removeFoldersAfterFailedExtractionCleanup(pkg);
+      }
+      for (const pkg of Object.values(this.session.packages)) {
+        const deletedFailureIds = pkg.itemIds.filter((itemId) => isDeletedExtractFailureLabel(this.session.items[itemId]?.fullStatus || ""));
+        if (deletedFailureIds.length === 0) {
+          continue;
+        }
+        if (this.settings.completedCleanupPolicy === "immediate") {
+          for (const itemId of deletedFailureIds) {
+            this.applyCompletedCleanupPolicy(pkg.id, itemId, { ignoreDeferred: true });
+          }
+        } else if (pkg.status === "completed" || pkg.status === "failed") {
+          this.applyPackageDoneCleanup(pkg.id);
+        }
       }
     } finally {
       this.failedExtractionCleanupRunning = false;
@@ -7995,7 +8016,7 @@ export class DownloadManager extends EventEmitter {
           return false;
         }
         if (item.status === "completed") {
-          if (this.settings.autoExtract && !isExtractedLabel(item.fullStatus || "")) {
+          if (this.settings.autoExtract && !isListCleanupDoneLabel(item.fullStatus || "")) {
             return true;
           }
           completedItemIds.push(itemId);
@@ -8032,7 +8053,7 @@ export class DownloadManager extends EventEmitter {
         const completedItemIds = pkg.itemIds.filter((itemId) => {
           const item = this.session.items[itemId];
           if (!item || item.status !== "completed") return false;
-          if (this.settings.autoExtract) return isExtractedLabel(item.fullStatus || "");
+          if (this.settings.autoExtract) return isListCleanupDoneLabel(item.fullStatus || "");
           return true;
         });
         for (const itemId of completedItemIds) {
@@ -8063,7 +8084,7 @@ export class DownloadManager extends EventEmitter {
             const item = this.session.items[id];
             if (!item) return true;
             if (item.status === "failed" || item.status === "cancelled") return true;
-            return isExtractedLabel(item.fullStatus || "");
+            return isListCleanupDoneLabel(item.fullStatus || "");
           });
           if (!allExtracted) continue;
         }
@@ -13841,6 +13862,13 @@ export class DownloadManager extends EventEmitter {
     return providers.length === 1 ? providers[0] : null;
   }
 
+  private hasOnlyDeletedExtractFailures(pkg: PackageEntry): boolean {
+    const items = pkg.itemIds.map((itemId) => this.session.items[itemId]);
+    return items.length > 0
+      && items.every((item) => Boolean(item) && item.status === "completed" && isListCleanupDoneLabel(item.fullStatus || ""))
+      && items.some((item) => isDeletedExtractFailureLabel(item?.fullStatus || ""));
+  }
+
   private hasPackageLifecycleWork(packageId: string): boolean {
     if ([...this.activeTasks.values()].some((task) => task.packageId === packageId)) {
       return true;
@@ -15749,7 +15777,7 @@ export class DownloadManager extends EventEmitter {
       return;
     }
 
-    if (pkg.status !== "completed") {
+    if (pkg.status !== "completed" && !this.hasOnlyDeletedExtractFailures(pkg)) {
       return;
     }
 
@@ -15766,7 +15794,7 @@ export class DownloadManager extends EventEmitter {
         const item = this.session.items[itemId];
         if (!item) return true;
         if (item.status === "failed" || item.status === "cancelled") return true;
-        return isExtractedLabel(item.fullStatus || "");
+        return isListCleanupDoneLabel(item.fullStatus || "");
       });
       if (!allExtracted) {
         return;
@@ -15801,7 +15829,7 @@ export class DownloadManager extends EventEmitter {
         return;
       }
       if (this.settings.autoExtract) {
-        const extracted = isExtractedLabel(item.fullStatus || "");
+        const extracted = isListCleanupDoneLabel(item.fullStatus || "");
         if (!extracted) {
           return;
         }
